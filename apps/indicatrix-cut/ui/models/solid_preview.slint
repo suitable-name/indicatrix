@@ -1,0 +1,40 @@
+// State for the Edit tab's solid-inspection viewport (`SolidViewportView`): a
+// flat-shaded CPU render of the design's solid, independent of the GPU path tracer
+// (`gui::solid_preview`). Rust reaches this via `ui.global::<SolidPreviewModel>()`.
+export global SolidPreviewModel {
+    in property <image> image;
+    in property <bool> has_solid: false;
+    in property <string> status: "";
+    in-out property <int> view_mode: 0;
+    // Sized by `gui::editor::view::refresh_viewport` to the rasterizer's actual
+    // logical viewport size (not the render resolution); `SolidViewportView` pushes
+    // these on every layout change since Slint has no built-in way to report a
+    // widget's rendered size back to Rust.
+    in-out property <length> viewport_width: 800px;
+    in-out property <length> viewport_height: 600px;
+    // `true` while the shown solid is the last SOLVED one, not the current
+    // (edited-past-budget) design (`solid_preview::live_update::Freshness::Stale`).
+    in property <bool> stale: false;
+    // The "Both" view mode's transparent-fill/opaque-edges layer.
+    in property <image> edges_image;
+    in property <bool> has_solid_edges: false;
+    // View mode 3 ("Diagram"): the GemCAD-style crown/pavilion/profile 2D facet
+    // diagram (`gui::solid_preview::diagram2d`), plus its own hover text and picking
+    // callbacks -- a separate pick buffer from the Solid rasterizer's, since the
+    // diagram's pixel layout is entirely different (see `solid_viewport.slint`'s own
+    // doc comment). Wired by `gui::solid_preview::diagram_wiring`.
+    in property <image> diagram_image;
+    in property <bool> has_diagram: false;
+    in property <string> diagram_hover_text: "";
+    callback diagram_facet_hover(length, length);
+    callback diagram_facet_click(length, length);
+    // Hover tooltip text and the picking callbacks driving it (`solid_viewport.slint`'s
+    // `facet_hover`/`facet_click`/`hover_text`).
+    in property <string> hover_text: "";
+    callback facet_hover(length, length);
+    callback facet_click(length, length);
+    // Persists `view_mode` through the debounced settings writer
+    // (`settings/persist.rs`'s `SettingsPersister::update`).
+    callback view_mode_changed(int);
+    changed view_mode => { view_mode_changed(view_mode); }
+}

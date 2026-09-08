@@ -1,0 +1,27 @@
+[package]
+name = "indicatrix-vault"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+authors = { workspace = true }
+description = "SQLite-backed storage, data models, and local import/export for gemstone faceting design libraries."
+license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+documentation = "https://docs.rs/indicatrix-vault"
+keywords = ["gemstone", "faceting", "sqlite", "catalog", "database"]
+categories = ["database", "database-implementations"]
+publish = { workspace = true }
+
+[dependencies]
+anyhow = { workspace = true }
+# Local library only: reads/writes the user's own `.asc` files (see `crate::local`).
+# Keeping this crate's dependency surface to exactly these five is deliberate -- it is
+# the storage layer, and nothing in it should ever reach outside the process.
+indicatrix-formats = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+tracing = { workspace = true }
+
+[lints]
+workspace = true

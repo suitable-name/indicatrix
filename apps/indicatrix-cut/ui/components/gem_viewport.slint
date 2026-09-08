@@ -1,0 +1,636 @@
+import { ComboBox, Button, LineEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { LightingPresetItem } from "../types.slint";
+import { SettingsDialog } from "settings_dialog.slint";
+import { MaterialEditorDialog } from "material_editor_dialog.slint";
+import { PerformanceGraphDialog } from "performance_graph_dialog.slint";
+import { ExportDialog } from "export_dialog.slint";
+import { ExportModel } from "../models/export.slint";
+import { ViewportModel } from "../models/viewport.slint";
+import { SettingsModel } from "../models/settings.slint";
+import { TiltModel } from "../models/tilt.slint";
+import { EditorModel } from "../models/editor.slint";
+
+export component GemViewportView inherits Rectangle {
+    vertical-stretch: 1;
+    min-height: 380px;
+
+    property <length> last_mouse_x;
+    property <length> last_mouse_y;
+    property <bool> is_right_drag: false;
+    property <bool> is_dragging: false;
+    property <bool> saving_view_preset: false;
+    property <string> new_view_preset_name: "";
+
+    function toggle_performance_dialog() {
+        TiltModel.dialog_open = !TiltModel.dialog_open;
+        if TiltModel.dialog_open {
+            if TiltModel.cached_curve_material != "" && TiltModel.is_cached_curve_material_stale(TiltModel.cached_curve_material, ViewportModel.material_options[ViewportModel.selected_material_index]) {
+                TiltModel.rerender_curve_with_current_material();
+            } else {
+                TiltModel.request_tilt_profile_axes();
+            }
+        }
+    }
+
+    background: #080a0f;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    clip: true;
+
+    // Viewport TouchArea for Orbit, Pan, Zoom with True Incremental Deltas
+    touch_area := TouchArea {
+        enabled: !SettingsModel.is_open && !ViewportModel.material_editor_open && !TiltModel.dialog_open;
+
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.last_mouse_x = touch_area.mouse-x;
+                root.last_mouse_y = touch_area.mouse-y;
+                // Shift+drag is an ALTERNATIVE to the right button, not a convenience:
+                // on a Windows Precision Touchpad, holding the two-finger right-click
+                // gesture and moving is delivered by the driver as a held *left*
+                // button, so a laptop user physically cannot produce a right-drag no
+                // matter how this is wired. The light would silently orbit the camera
+                // instead. A modifier+left-drag is the standard answer (it is why 3D
+                // applications have one at all), and it costs mouse users nothing --
+                // the right button still works exactly as before.
+                //
+                // Captured once, at `down`, rather than read live during `moved`: the
+                // gesture's meaning is fixed when it starts, so pressing or releasing
+                // Shift mid-drag must not flip the camera into the light halfway
+                // through a movement.
+                root.is_right_drag = (event.button == PointerEventButton.right)
+                    || event.modifiers.shift;
+                root.is_dragging = true;
+            } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                root.is_dragging = false;
+            }
+        }
+        moved => {
+            if (root.is_dragging) {
+                let dx = (touch_area.mouse-x - root.last_mouse_x) / 1px;
+                let dy = (touch_area.mouse-y - root.last_mouse_y) / 1px;
+                root.last_mouse_x = touch_area.mouse-x;
+                root.last_mouse_y = touch_area.mouse-y;
+                if (root.is_right_drag) {
+                    ViewportModel.light_move(dx, dy);
+                } else {
+                    ViewportModel.camera_orbit(dx, dy);
+                }
+            }
+        }
+        scroll-event(event) => {
+            ViewportModel.camera_zoom(event.delta-y / 1px);
+            accept
+        }
+    }
+
+    // Live Rendered Image
+    if ViewportModel.has_render: Image {
+        width: 100%;
+        height: 100%;
+        source: ViewportModel.render_image;
+        image-fit: contain;
+    }
+
+    // Fallback when initial state
+    if !ViewportModel.has_render: VerticalLayout {
+        alignment: center;
+        spacing: 12px;
+
+        Image {
+            source: @image-url("../icons/gem.svg");
+            colorize: Theme.text-muted;
+            width: 56px;
+            height: 56px;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: "Physically Based Spectral Gem Viewport";
+            font-size: 16px;
+            font-weight: 700;
+            color: Theme.text-primary;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: "Drag with left mouse button to rotate freely in 3D";
+            font-size: 12px;
+            color: Theme.text-muted;
+            horizontal-alignment: center;
+        }
+    }
+
+    // --- TOP CONTROLS OVERLAY (Material, Lighting, Settings & Metrics) ---
+    VerticalLayout {
+        padding: 12px;
+        alignment: space-between;
+
+        HorizontalLayout {
+            alignment: space-between;
+
+            // Material & Lighting Selectors & Action Buttons
+            HorizontalLayout {
+                spacing: 8px;
+
+                // Render Material Dropdown -- UI/UX review finding 3: renamed from the
+                // bare, unlabelled "Material" this control used to be (a `ComboBox`
+                // with no caption at all), which collided in name with
+                // `editor_view.slint`'s unrelated Yield Material/SG-override control.
+                // This one picks what's simulated for colour/dispersion/birefringence
+                // in the render; it never touches the cut itself.
+                Rectangle {
+                    width: 140px;
+                    height: 32px;
+                    background: #1e293bee;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-medium;
+
+                    Tooltip { text: @markdown("Render Material -- material simulated for colour, dispersion and birefringence. Does not change the cut."); }
+
+                    ComboBox {
+                        model: ViewportModel.material_options;
+                        current-index <=> ViewportModel.selected_material_index;
+                        selected(val) => { ViewportModel.material_changed(val); }
+                    }
+                }
+
+                // A3: "Linked to design" -- see `viewport_material_linked`'s own doc
+                // comment above. Only shown on an `editor` build; a build with no
+                // Edit tab has nothing for this dropdown to link to.
+                if EditorModel.enabled: Rectangle {
+                    width: link_txt.preferred-width + 44px;
+                    height: 32px;
+                    background: #1e293bee;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-medium;
+                    Tooltip { text: @markdown("Linked to design -- while on, this dropdown follows the Edit tab's own material instead of an independent choice."); }
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 6px;
+                        Rectangle {
+                            width: 28px;
+                            height: 16px;
+                            border-radius: 8px;
+                            background: ViewportModel.viewport_material_linked ? Theme.accent-cyan : #334155;
+                            TouchArea {
+                                clicked => {
+                                    ViewportModel.viewport_material_linked = !ViewportModel.viewport_material_linked;
+                                    ViewportModel.viewport_material_linked_changed(ViewportModel.viewport_material_linked);
+                                }
+                            }
+                            Rectangle {
+                                width: 12px;
+                                height: 12px;
+                                border-radius: 6px;
+                                background: white;
+                                x: ViewportModel.viewport_material_linked ? parent.width - self.width - 2px : 2px;
+                                y: 2px;
+                                animate x { duration: 120ms; }
+                            }
+                        }
+                        link_txt := Text {
+                            text: "Linked to design";
+                            font-size: 10px;
+                            color: Theme.text-secondary;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Edit / Custom Material Button (✎)
+                Rectangle {
+                    width: 32px;
+                    height: 32px;
+                    background: ViewportModel.material_editor_open ? Theme.accent-purple : (edit_mat_touch.has-hover ? Theme.bg-elevated : #1e293bee);
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: ViewportModel.material_editor_open ? Theme.accent-purple : Theme.border-medium;
+
+                    edit_mat_touch := TouchArea {
+                        clicked => { ViewportModel.material_editor_open = !ViewportModel.material_editor_open; }
+                    }
+                    Tooltip { text: @markdown("Define a custom material: R.I., dispersion, birefringence, colour."); }
+
+                    Image {
+                        source: @image-url("../icons/pencil.svg");
+                        colorize: ViewportModel.material_editor_open ? #ffffff : Theme.accent-purple;
+                        width: 15px;
+                        height: 15px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Lighting Dropdown
+                Rectangle {
+                    width: 190px;
+                    height: 32px;
+                    background: #1e293bee;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-medium;
+
+                    Tooltip { text: @markdown("Studio rig: D65 daylight, incandescent, ring lights or spotlight."); }
+
+                    ComboBox {
+                        model: ViewportModel.lighting_options;
+                        current-index <=> ViewportModel.selected_lighting_index;
+                        // Emits the INDEX (already synced into
+                        // `selected_lighting_index` via the two-way binding above by
+                        // the time `selected` fires), not the display string `val`.
+                        selected(val) => { ViewportModel.lighting_changed(ViewportModel.selected_lighting_index); }
+                    }
+                }
+
+                // Performance Curve Graph Trigger Button (📊 Tilt Curve)
+                Rectangle {
+                    height: 32px;
+                    background: TiltModel.dialog_open ? Theme.accent-cyan : (perf_touch.has-hover ? Theme.bg-elevated : #1e293bee);
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: TiltModel.dialog_open ? Theme.accent-cyan : Theme.border-medium;
+
+                    perf_touch := TouchArea {
+                        clicked => { root.toggle_performance_dialog(); }
+                    }
+                    Tooltip { text: @markdown("Open the tilt-performance chart: brilliance, windowing and extinction versus tilt."); }
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 5px;
+                        alignment: center;
+                        Image {
+                            source: @image-url("../icons/bar-chart.svg");
+                            colorize: TiltModel.dialog_open ? #0f172a : Theme.text-primary;
+                            width: 13px;
+                            height: 13px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: "Tilt Curve";
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: TiltModel.dialog_open ? #0f172a : Theme.text-primary;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Reset Camera Button
+                Rectangle {
+                    width: 32px;
+                    height: 32px;
+                    background: reset_touch.has-hover ? Theme.bg-elevated : #1e293bee;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-medium;
+
+                    reset_touch := TouchArea {
+                        clicked => { ViewportModel.reset_camera(); }
+                    }
+                    Tooltip { text: @markdown("Return the camera to its default orbit and distance."); }
+
+                    Image {
+                        source: @image-url("../icons/reset.svg");
+                        colorize: Theme.text-secondary;
+                        width: 16px;
+                        height: 16px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // "Save as preset" button -- captures the FULL current view (lighting
+                // AND camera pose) as a new named preset, unlike the settings dialog's
+                // own lighting-only save button. See `app.slint`'s `save_view_preset`
+                // doc comment, and `settings::model::LightingPreset`'s for why the
+                // camera is captured here specifically.
+                Rectangle {
+                    width: 32px;
+                    height: 32px;
+                    background: root.saving_view_preset ? Theme.accent-cyan : (save_view_touch.has-hover ? Theme.bg-elevated : #1e293bee);
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: root.saving_view_preset ? Theme.accent-cyan : Theme.border-medium;
+
+                    save_view_touch := TouchArea {
+                        clicked => {
+                            root.saving_view_preset = !root.saving_view_preset;
+                            root.new_view_preset_name = "";
+                        }
+                    }
+                    Tooltip { text: @markdown("Save the current lighting and camera pose as a named preset."); }
+
+                    Image {
+                        source: @image-url("../icons/save.svg");
+                        colorize: root.saving_view_preset ? #0f172a : Theme.text-secondary;
+                        width: 14px;
+                        height: 14px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Inline "name this view" popup for the button above -- same
+                // click-to-open, type-and-confirm idiom `SettingsDialog`'s own
+                // "add lighting preset" row uses, just living in the viewport toolbar
+                // instead of the settings dialog.
+                if root.saving_view_preset: Rectangle {
+                    width: 160px;
+                    height: 32px;
+                    background: #1e293bee;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.accent-cyan;
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 4px;
+                        spacing: 4px;
+
+                        LineEdit {
+                            text <=> root.new_view_preset_name;
+                            placeholder-text: "Name this view...";
+                        }
+
+                        Rectangle {
+                            width: 24px;
+                            height: 24px;
+                            border-radius: Theme.radius-sm;
+                            background: confirm_view_preset_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
+
+                            confirm_view_preset_touch := TouchArea {
+                                clicked => {
+                                    if (root.new_view_preset_name != "") {
+                                        ViewportModel.save_view_preset(root.new_view_preset_name);
+                                        root.saving_view_preset = false;
+                                        root.new_view_preset_name = "";
+                                    }
+                                }
+                            }
+
+                            Image { source: @image-url("../icons/check.svg"); colorize: #0f172a; width: 11px; height: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+                }
+
+                // Pause / Resume Render Button -- explicit user pause control (Task: render pause/stop).
+                // Also reflects `is_exporting` for DISPLAY purposes only, the same amber
+                // "suspended" treatment `render_paused` already gets -- see
+                // `RenderContext::export_active`'s own doc comment for why an export
+                // suspends local tracing without touching `render_paused` itself. The
+                // touch area is disabled while exporting so a click can't flip the
+                // user's real pause state out from under them while its displayed state
+                // is showing something else (it would otherwise toggle `render_paused`
+                // from whatever the user actually left it at, not from what's on screen).
+                Rectangle {
+                    height: 32px;
+                    background: (ViewportModel.render_paused || ExportModel.is_exporting) ? Theme.accent-amber : (pause_touch.has-hover ? Theme.bg-elevated : #1e293bee);
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: (ViewportModel.render_paused || ExportModel.is_exporting) ? Theme.accent-amber : Theme.border-medium;
+
+                    pause_touch := TouchArea {
+                        enabled: !ExportModel.is_exporting;
+                        clicked => {
+                            ViewportModel.render_paused = !ViewportModel.render_paused;
+                            ViewportModel.pause_toggled(ViewportModel.render_paused);
+                        }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 5px;
+                        alignment: center;
+                        Image {
+                            source: ViewportModel.render_paused ? @image-url("../icons/play.svg") : @image-url("../icons/pause.svg");
+                            colorize: (ViewportModel.render_paused || ExportModel.is_exporting) ? #0f172a : Theme.text-primary;
+                            width: 13px;
+                            height: 13px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: ViewportModel.render_paused ? "Paused" : (ExportModel.is_exporting ? "Exporting" : "Live");
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: (ViewportModel.render_paused || ExportModel.is_exporting) ? #0f172a : Theme.text-primary;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                // Settings Dialog Trigger Button (⚙)
+                Rectangle {
+                    width: 32px;
+                    height: 32px;
+                    background: SettingsModel.is_open ? Theme.accent-cyan : (settings_touch.has-hover ? Theme.bg-elevated : #1e293bee);
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: SettingsModel.is_open ? Theme.accent-cyan : Theme.border-medium;
+
+                    settings_touch := TouchArea {
+                        clicked => { SettingsModel.is_open = !SettingsModel.is_open; }
+                    }
+                    Tooltip { text: @markdown("Rendering quality, resolution, compute target and scene settings."); }
+
+                    Image {
+                        source: @image-url("../icons/gear.svg");
+                        colorize: SettingsModel.is_open ? #0f172a : Theme.text-secondary;
+                        width: 15px;
+                        height: 15px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // High-Resolution Export Trigger Button
+                Rectangle {
+                    height: 32px;
+                    background: (ExportModel.is_open || ExportModel.is_exporting) ? Theme.accent-emerald : (export_touch.has-hover ? Theme.bg-elevated : #1e293bee);
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: (ExportModel.is_open || ExportModel.is_exporting) ? Theme.accent-emerald : Theme.border-medium;
+
+                    export_touch := TouchArea {
+                        clicked => { ExportModel.is_open = !ExportModel.is_open; }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 5px;
+                        alignment: center;
+                        Image {
+                            source: @image-url("../icons/save.svg");
+                            colorize: (ExportModel.is_open || ExportModel.is_exporting) ? #0f172a : Theme.text-primary;
+                            width: 13px;
+                            height: 13px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: ExportModel.is_exporting ? "Exporting..." : "Export";
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: (ExportModel.is_open || ExportModel.is_exporting) ? #0f172a : Theme.text-primary;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // Real-Time 5-Point Gemological Metrics HUD
+            Rectangle {
+                background: #0f172aee;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-medium;
+
+                hud_touch := TouchArea {
+                    clicked => { ViewportModel.copy_metrics(); }
+                }
+                Tooltip { text: @markdown("Click to copy brilliance, fire, scintillation, windowing and extinction."); }
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    padding-top: 6px;
+                    padding-bottom: 6px;
+                    spacing: 12px;
+
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text { text: "Brilliance:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                        Text { text: Math.round(ViewportModel.brilliance_pct) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-emerald; }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text { text: "Fire:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                        Text { text: Math.round(ViewportModel.fire_index * 100.0) / 100.0; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text { text: "Scintillation:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                        Text { text: Math.round(ViewportModel.scintillation_pct) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-purple; }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text { text: "Windowing:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                        Text { text: Math.round(ViewportModel.windowing_pct) + "%"; font-size: 11px; font-weight: 700; color: ViewportModel.windowing_pct > 10.0 ? Theme.accent-ruby : Theme.text-secondary; }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text { text: "Extinction:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                        Text { text: Math.round(ViewportModel.extinction_pct) + "%"; font-size: 11px; font-weight: 700; color: ViewportModel.extinction_pct > 12.0 ? Theme.accent-amber : Theme.text-secondary; }
+                    }
+                }
+            }
+        }
+
+        // --- BOTTOM INTERACTION HINT BADGES ---
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: center;
+
+            Rectangle {
+                background: #1e293bdd;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                HorizontalLayout {
+                    padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 5px;
+                    Image { source: @image-url("../icons/mouse.svg"); colorize: #cbd5e1; width: 10px; height: 10px; vertical-alignment: center; }
+                    Text { text: "Left Drag: 360° Gem Orbit"; font-size: 10px; font-weight: 600; color: #cbd5e1; vertical-alignment: center; }
+                }
+            }
+
+            Rectangle {
+                background: #1e293bdd;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                HorizontalLayout {
+                    padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 5px;
+                    Image { source: @image-url("../icons/lightbulb.svg"); colorize: #cbd5e1; width: 10px; height: 10px; vertical-alignment: center; }
+                    Text { text: "Right / Shift+Drag: Move Light"; font-size: 10px; font-weight: 600; color: #cbd5e1; vertical-alignment: center; }
+                }
+            }
+
+            Rectangle {
+                background: #1e293bdd;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                HorizontalLayout {
+                    padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 5px;
+                    Image { source: @image-url("../icons/search.svg"); colorize: #cbd5e1; width: 10px; height: 10px; vertical-alignment: center; }
+                    Text { text: "Scroll: Zoom"; font-size: 10px; font-weight: 600; color: #cbd5e1; vertical-alignment: center; }
+                }
+            }
+
+            Rectangle {
+                background: #1e293bdd;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                HorizontalLayout {
+                    padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 5px;
+                    Image { source: @image-url("../icons/clipboard.svg"); colorize: #cbd5e1; width: 10px; height: 10px; vertical-alignment: center; }
+                    Text { text: "Click HUD: Copy Metrics"; font-size: 10px; font-weight: 600; color: #cbd5e1; vertical-alignment: center; }
+                }
+            }
+        }
+    }
+
+    // --- MODAL BACKDROP FOR SETTINGS DIALOG ---
+    if SettingsModel.is_open: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000055;
+        z: 150;
+
+        TouchArea {
+            clicked => { SettingsModel.is_open = false; }
+        }
+    }
+
+    // --- FLOATING SETTINGS DIALOG CARD ---
+    if SettingsModel.is_open: SettingsDialog {
+        x: 12px;
+        y: 48px;
+        z: 200;
+        available_height: root.height;
+    }
+
+    // --- MODAL GEM MATERIAL EDITOR DIALOG ---
+    if ViewportModel.material_editor_open: MaterialEditorDialog {
+        width: 100%;
+        height: 100%;
+        z: 300;
+    }
+
+    // --- MODAL PERFORMANCE GRAPH DIALOG ---
+    if TiltModel.dialog_open: PerformanceGraphDialog {
+        width: 100%;
+        height: 100%;
+        z: 350;
+    }
+
+    // --- MODAL HIGH-RESOLUTION EXPORT DIALOG ---
+    if ExportModel.is_open: ExportDialog {
+        width: 100%;
+        height: 100%;
+        z: 400;
+    }
+}

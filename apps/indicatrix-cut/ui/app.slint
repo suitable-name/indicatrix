@@ -1,0 +1,391 @@
+import { DiagramItem, AngleItem, FileItem, DiagramDetailData, OpticalMetricsData, LightingPresetItem, WorkerItem, PreviewThumbnails, PerformanceFilterRow, EditorTierItem, OptimizeResultRow, GearRemapRow } from "types.slint";
+import { NewDesignDialog } from "components/new_design_dialog.slint";
+import { Theme } from "theme.slint";
+import { HeaderToolbar } from "components/header.slint";
+import { DiagramListView, CollapsedLibraryRail } from "components/diagram_list.slint";
+import { DetailHeaderView } from "components/detail_header.slint";
+import { MetadataEditorDialog } from "components/metadata_editor_dialog.slint";
+import { GemViewportView } from "components/gem_viewport.slint";
+import { CuttingTableView } from "components/cutting_table.slint";
+import { AttachmentsView } from "components/attachments_view.slint";
+import { Toast } from "components/toast.slint";
+import { PreviewBatchDialog } from "components/preview_batch_dialog.slint";
+import { TiltBatchDialog } from "components/tilt_batch_dialog.slint";
+import { DetachedRenderWindow } from "detached_render_window.slint";
+import { EditorView } from "components/editor_view.slint";
+import { RetargetDialog, RetargetRowItem } from "components/retarget_dialog.slint";
+import { SolidViewportView } from "components/solid_viewport.slint";
+
+import { SolidPreviewModel } from "models/solid_preview.slint";
+import { ViewportModel } from "models/viewport.slint";
+import { RetargetModel } from "models/retarget.slint";
+import { ExportModel } from "models/export.slint";
+import { SettingsModel } from "models/settings.slint";
+import { RemoteWorkerModel } from "models/remote_worker.slint";
+import { BatchModel } from "models/batch.slint";
+import { TiltModel } from "models/tilt.slint";
+import { LibraryModel } from "models/library.slint";
+import { EditorModel } from "models/editor.slint";
+
+export {
+    DiagramItem, AngleItem, FileItem, DiagramDetailData, OpticalMetricsData,
+    LightingPresetItem, WorkerItem, PerformanceFilterRow, EditorTierItem,
+    OptimizeResultRow, GearRemapRow, RetargetRowItem, DetachedRenderWindow,
+    SolidPreviewModel, ViewportModel, RetargetModel, ExportModel, SettingsModel,
+    RemoteWorkerModel, BatchModel, TiltModel, LibraryModel, EditorModel
+}
+
+export component MainWindow inherits Window {
+    title: "Facet Diagrams Studio — Physically Based Gem Explorer";
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    min-width: 960px;
+    min-height: 600px;
+    background: Theme.bg-darkest;
+    default-font-family: "Segoe UI";
+
+    in-out property <int> active_tab: 0; // 0: 3D Gem, 1: Cutting Table, 2: Attachments
+    callback active_tab_changed(int);
+    in-out property <int> render_view_tab: 0;
+    callback render_view_tab_changed(int);
+    in-out property <bool> live_render_detached: false;
+    callback live_render_detach_toggled(bool);
+
+    callback open_user_manual();
+
+    in property <string> toast_message: "";
+    in-out property <bool> toast_visible: false;
+    in property <string> toast_type: "info";
+    in-out property <int> toast_generation: 0;
+
+    // --- MENU BAR ---
+    MenuBar {
+        Menu {
+            title: "File";
+            MenuItem {
+                title: "New";
+                enabled: EditorModel.enabled;
+                activated => { EditorModel.new_dialog_open = true; }
+            }
+            MenuItem {
+                title: "Open Native...";
+                enabled: EditorModel.enabled;
+                activated => { EditorModel.open_native(); }
+            }
+            MenuItem {
+                title: "Save Native";
+                enabled: EditorModel.enabled;
+                activated => { EditorModel.save_native(); }
+            }
+            MenuItem {
+                title: "Export Edited .asc";
+                enabled: EditorModel.enabled;
+                activated => { EditorModel.export_asc(); }
+            }
+        }
+        Menu {
+            title: "Edit";
+            MenuItem {
+                title: "Undo";
+                enabled: EditorModel.enabled && EditorModel.can_undo;
+                activated => { EditorModel.undo(); }
+            }
+            MenuItem {
+                title: "Redo";
+                enabled: EditorModel.enabled && EditorModel.can_redo;
+                activated => { EditorModel.redo(); }
+            }
+        }
+        Menu {
+            title: "Help";
+            MenuItem {
+                title: "User Manual";
+                activated => { root.open_user_manual(); }
+            }
+        }
+    }
+
+    // --- GLOBAL KEYBOARD SHORTCUTS ---
+    global_shortcuts := FocusScope {
+        width: 100%;
+        height: 100%;
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "s" {
+                if EditorModel.enabled {
+                    EditorModel.save_native();
+                }
+                return accept;
+            } else if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "z" {
+                if EditorModel.enabled {
+                    EditorModel.undo();
+                }
+                return accept;
+            } else if (event.modifiers.control || event.modifiers.meta) && (event.text == "y" || (event.modifiers.shift && event.text == "Z")) {
+                if EditorModel.enabled {
+                    EditorModel.redo();
+                }
+                return accept;
+            } else if (event.modifiers.control || event.modifiers.meta) && event.text == "f" {
+                header_toolbar.focus_search();
+                return accept;
+            } else if (event.modifiers.control || event.modifiers.meta) && event.text == "1" {
+                root.active_tab = 0;
+                root.active_tab_changed(0);
+                return accept;
+            } else if (event.modifiers.control || event.modifiers.meta) && event.text == "2" {
+                root.active_tab = 1;
+                root.active_tab_changed(1);
+                return accept;
+            } else if (event.modifiers.control || event.modifiers.meta) && event.text == "3" {
+                root.active_tab = 2;
+                root.active_tab_changed(2);
+                return accept;
+            }
+            return reject;
+        }
+
+        VerticalLayout {
+            padding: 12px;
+            spacing: 12px;
+
+            // 1. TOP BAR
+            header_toolbar := HeaderToolbar {}
+
+            // 2. MAIN SPLIT WORKSPACE
+            HorizontalLayout {
+                spacing: 12px;
+
+                if !LibraryModel.panel_collapsed: DiagramListView {}
+                if LibraryModel.panel_collapsed: CollapsedLibraryRail {}
+
+                // Right: Detail Area (Header + Tab Content)
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 12px;
+
+                    DetailHeaderView {
+                        active_tab <=> root.active_tab;
+                    }
+
+                    // Tab 0: 3D Preview
+                    if root.active_tab == 0: VerticalLayout {
+                        spacing: 8px;
+
+                        HorizontalLayout {
+                            height: 32px;
+                            spacing: 8px;
+
+                            Rectangle {
+                                height: 32px;
+                                background: root.render_view_tab == 0 ? Theme.primary : (live_render_tab_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                                border-radius: Theme.radius-sm;
+                                border-width: 1px;
+                                border-color: root.render_view_tab == 0 ? Theme.accent-cyan : Theme.border-subtle;
+                                live_render_tab_touch := TouchArea {
+                                    clicked => { root.render_view_tab = 0; root.render_view_tab_changed(0); }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    alignment: center;
+                                    spacing: 6px;
+                                    Image {
+                                        source: @image-url("icons/gem.svg");
+                                        colorize: root.render_view_tab == 0 ? Theme.text-on-primary : Theme.text-secondary;
+                                        width: 12px;
+                                        height: 12px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "Live Render";
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        color: root.render_view_tab == 0 ? Theme.text-on-primary : Theme.text-secondary;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            if EditorModel.enabled: Rectangle {
+                                height: 32px;
+                                background: root.render_view_tab == 1 ? Theme.primary : (edit_tab_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                                border-radius: Theme.radius-sm;
+                                border-width: 1px;
+                                border-color: root.render_view_tab == 1 ? Theme.accent-cyan : Theme.border-subtle;
+                                edit_tab_touch := TouchArea {
+                                    clicked => { root.render_view_tab = 1; root.render_view_tab_changed(1); }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 14px;
+                                    padding-right: 14px;
+                                    alignment: center;
+                                    spacing: 6px;
+                                    Image {
+                                        source: @image-url("icons/pencil.svg");
+                                        colorize: root.render_view_tab == 1 ? Theme.text-on-primary : Theme.text-secondary;
+                                        width: 12px;
+                                        height: 12px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "Edit";
+                                        font-size: 12px;
+                                        font-weight: 600;
+                                        color: root.render_view_tab == 1 ? Theme.text-on-primary : Theme.text-secondary;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            Rectangle { horizontal-stretch: 1; }
+
+                            if root.render_view_tab == 0: Rectangle {
+                                height: 32px;
+                                background: root.live_render_detached ? Theme.accent-emerald : (detach_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                                border-radius: Theme.radius-sm;
+                                border-width: 1px;
+                                border-color: root.live_render_detached ? Theme.accent-emerald : Theme.border-subtle;
+                                detach_touch := TouchArea {
+                                    clicked => { root.live_render_detach_toggled(!root.live_render_detached); }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 10px;
+                                    padding-right: 10px;
+                                    alignment: center;
+                                    spacing: 6px;
+                                    Image {
+                                        source: @image-url("icons/arrow-up-right.svg");
+                                        colorize: root.live_render_detached ? Theme.text-on-primary : Theme.text-secondary;
+                                        width: 11px;
+                                        height: 11px;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: root.live_render_detached ? "Popped Out" : "Pop Out";
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        color: root.live_render_detached ? Theme.text-on-primary : Theme.text-secondary;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.render_view_tab == 0 && !root.live_render_detached: GemViewportView {}
+
+                        if root.render_view_tab == 0 && root.live_render_detached: Rectangle {
+                            vertical-stretch: 1;
+                            min-height: 380px;
+                            background: Theme.bg-card;
+                            border-radius: Theme.radius-md;
+                            border-width: 1px;
+                            border-color: Theme.border-subtle;
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 12px;
+                                Image {
+                                    source: @image-url("icons/arrow-up-right.svg");
+                                    colorize: Theme.text-muted;
+                                    width: 40px;
+                                    height: 40px;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "Live Render is open in its own window";
+                                    font-size: 14px;
+                                    font-weight: 700;
+                                    color: Theme.text-primary;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "It stays on top of this window -- move it anywhere, or dock it back here.";
+                                    font-size: 11px;
+                                    color: Theme.text-muted;
+                                    horizontal-alignment: center;
+                                }
+                                Rectangle {
+                                    height: 32px;
+                                    width: 130px;
+                                    background: dock_back_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                                    border-radius: Theme.radius-sm;
+                                    border-width: 1px;
+                                    border-color: Theme.border-medium;
+                                    dock_back_touch := TouchArea { clicked => { root.live_render_detach_toggled(false); } }
+                                    Text {
+                                        text: "Dock Back";
+                                        font-size: 11px;
+                                        font-weight: 600;
+                                        color: Theme.text-primary;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.render_view_tab == 1 && EditorModel.enabled: SolidViewportView {
+                            vertical-stretch: 1;
+                            min-height: 380px;
+                        }
+
+                        if root.render_view_tab == 1 && EditorModel.enabled: EditorView {
+                            vertical-stretch: 1;
+                            min-height: 380px;
+                        }
+                    }
+
+                    // Tab 1: Cutting Schedule Table
+                    if root.active_tab == 1: CuttingTableView {}
+
+                    // Tab 2: Attached Files & GemCAD downloads
+                    if root.active_tab == 2: AttachmentsView {}
+                }
+            }
+        }
+
+        // Dialogs:
+        if EditorModel.new_dialog_open: NewDesignDialog {
+            width: 100%;
+            height: 100%;
+            z: 400;
+        }
+
+        if RetargetModel.is_open: RetargetDialog {
+            width: 100%;
+            height: 100%;
+            z: 400;
+        }
+
+        if LibraryModel.metadata_editor_open: MetadataEditorDialog {
+            width: 100%;
+            height: 100%;
+            z: 400;
+        }
+
+        if BatchModel.preview_visible: PreviewBatchDialog {
+            width: 100%;
+            height: 100%;
+            z: 400;
+        }
+
+        if BatchModel.tilt_visible: TiltBatchDialog {
+            width: 100%;
+            height: 100%;
+            z: 400;
+        }
+
+        Toast {
+            x: (parent.width - self.width) / 2;
+            y: parent.height - self.height - 24px;
+            text: root.toast_message;
+            is_visible: root.toast_visible;
+            toast_type: root.toast_type;
+
+            dismiss => {
+                root.toast_visible = false;
+            }
+        }
+    } // global_shortcuts
+}

@@ -1,0 +1,99 @@
+import { LightingPresetItem } from "../types.slint";
+
+// High-resolution render export, independent of the live viewport
+// (`bridge::export_thread`). `ExportDialog` reads this directly; `GemViewportView`
+// only needs `is_open` to decide whether to instantiate the dialog at all.
+export global ExportModel {
+    in-out property <bool> is_open: false;
+
+    in-out property <int> selected_size_preset: 0; // 0: 1080p, 1: 4K, 2: Custom
+    in-out property <int> custom_width: 1920;
+    in-out property <int> custom_height: 1080;
+    // Continuous drag target for the sample-count slider; `sample_exponent` (in
+    // `export_dialog.slint`) rounds it to the nearest integer so the power-of-two math
+    // stays exact even mid-drag. 10.0 is the exponent for 1024, matching the old
+    // "High" preset's default.
+    in-out property <float> sample_exponent_raw: 10.0;
+    // Wide-gamut export: 0 = sRGB (default, untagged, byte-identical to exports made
+    // before this control existed), 1 = Display P3, 2 = Rec.2020 -- both wide-gamut
+    // choices get an embedded ICC profile (`bridge::icc_profile::build`) so the file is
+    // never silently misread as sRGB by a viewer.
+    in-out property <int> selected_color_space_index: 0;
+
+    // Whether a configured worker was confirmed reachable and render-capable the last
+    // time `check_remote_availability` ran. `false` disables the Remote/Local+Remote
+    // pills WITH a reason shown, never silently hides them.
+    in property <bool> remote_available: false;
+    // Human-readable reason `remote_available` is `false` -- distinguishes "no worker
+    // configured" / "worker unreachable" / "worker is library-only" (see
+    // `bridge::export_thread::remote::RemoteUnavailable::message`), rather than one
+    // generic "unavailable".
+    in property <string> remote_unavailable_reason: "";
+
+    // Preset fan-out: every export-usable preset
+    // (`gui::render_export::setup_populate_export_fanout_presets_callback` rebuilds
+    // this every time the dialog opens), each with its own checkbox (`item.selected`,
+    // toggled via `toggle_preset_selected`). A selected preset produces an ADDITIONAL
+    // rendered file alongside the current-view render, named from the same template
+    // with `{preset}` filled in -- see `bridge::export_thread`'s module doc comment.
+    in property <[LightingPresetItem]> fanout_presets: [];
+    callback toggle_preset_selected(int);
+    callback populate_fanout_presets();
+
+    // Fan-out progress status: current job index/total/label, for the dialog's own
+    // "Rendering preset 2 of 5" status text (`export_progress` below already folds
+    // these into one combined fraction for the progress bar).
+    in property <int> preset_index: 0;
+    in property <int> preset_total: 1;
+    in property <string> current_preset_label: "";
+
+    // The export directory and filename template. `directory` is READ-ONLY here (""
+    // means "not chosen yet -- the next export will prompt with a native folder
+    // picker"); `change_directory` opens that same picker on demand, for changing a
+    // folder already chosen without waiting for it to somehow become unset again.
+    // `filename_template` is a plain editable text field; Rust persists every edit via
+    // `filename_template_changed`, matching how `env_map_path`'s free-text field is
+    // already persisted on edit elsewhere in this app.
+    in property <string> directory: "";
+    callback change_directory();
+    in-out property <string> filename_template: "";
+    callback filename_template_changed(string);
+    // Live "resolves to" preview of the filename template plus unrecognized `{name}`
+    // placeholders, both against a fixed example, not the live selected design.
+    pure callback preview_filename_template(string) -> string;
+    pure callback filename_template_unknown_placeholders(string) -> string;
+
+    // Max ray bounces: the export's OWN cap, independent of the live viewport's -- see
+    // `bridge::export_thread::scene_snapshot`'s doc comment on why an export must not
+    // silently inherit whatever the viewport happens to be set to. `live_bounce_index`
+    // is the live viewport's CURRENT pill index (`SettingsModel.bounce_index`), already
+    // resolved via `gui::mod::bounces_index`'s nearest-rung matching -- reused here
+    // rather than re-deriving a second mapping.
+    in property <int> live_bounce_index: 2;
+
+    in property <bool> is_exporting: false;
+    in property <float> progress: 0.0; // 0.0 .. 1.0
+    in property <string> status_message: "";
+    in property <bool> has_error: false;
+    // Live preview: a small in-progress thumbnail of the accumulation buffer, pushed
+    // alongside `progress` at up to ~2 updates/sec (see
+    // `bridge::export_thread::preview::PreviewThrottle`). `preview_samples_done` is
+    // also the "has a preview arrived yet" flag -- 0 until the first tick.
+    in property <image> preview_image;
+    in property <int> preview_samples_done: 0;
+    in property <int> preview_samples_total: 0;
+
+    callback close();
+    // width, height, samples-per-pixel, colour-space index, compute-target index, max
+    // ray bounces (the resolved rung VALUE, not the pill index).
+    callback start_export(int, int, int, int, int, int);
+    callback cancel_export();
+    callback check_remote_availability();
+
+    changed is_open => {
+        if root.is_open {
+            root.check_remote_availability();
+            root.populate_fanout_presets();
+        }
+    }
+}

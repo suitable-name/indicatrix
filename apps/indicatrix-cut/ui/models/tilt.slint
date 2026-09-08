@@ -1,0 +1,30 @@
+export global TiltModel {
+    in-out property <bool> dialog_open: false;
+
+    in property <[float]> graph_brilliance: [20.0, 25.0, 32.0, 42.0, 50.0, 58.0, 65.0, 72.0, 78.0, 82.0, 84.0, 85.0, 84.0, 82.0, 80.0, 76.0, 70.0, 62.0, 50.0];
+    in property <[float]> graph_extinction: [65.0, 58.0, 50.0, 40.0, 32.0, 25.0, 18.0, 14.0, 10.0, 8.0, 6.0, 5.0, 6.0, 7.0, 9.0, 12.0, 18.0, 26.0, 38.0];
+    in property <[float]> graph_windowing: [40.0, 35.0, 28.0, 20.0, 15.0, 10.0, 8.0, 6.0, 5.0, 4.0, 4.0, 5.0, 6.0, 8.0, 10.0, 14.0, 18.0, 24.0, 30.0];
+
+    in property <string> graph_brilliance_path: "";
+    in property <string> graph_extinction_path: "";
+    in property <string> graph_windowing_path: "";
+
+    in property <[[float]]> graph_brilliance_extra_axes: [];
+    in property <[[float]]> graph_extinction_extra_axes: [];
+    in property <[[float]]> graph_windowing_extra_axes: [];
+    in property <[string]> graph_brilliance_extra_paths: [];
+    in property <[string]> graph_extinction_extra_paths: [];
+    in property <[string]> graph_windowing_extra_paths: [];
+    in property <bool> extra_axes_loading: false;
+    in property <float> cam_pitch_deg: 45.0;
+
+    in property <string> cached_curve_material: "";
+    pure callback is_cached_curve_material_stale(string, string) -> bool;
+    callback rerender_curve_with_current_material();
+
+    in property <image> hover_preview_image;
+    callback request_tilt_hover_preview(int, float);
+
+    callback request_tilt_profile_axes();
+    callback copy_curve_data();
+}

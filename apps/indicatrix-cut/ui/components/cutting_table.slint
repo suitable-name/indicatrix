@@ -1,0 +1,147 @@
+import { ScrollView, Button } from "std-widgets.slint";
+import { AngleItem } from "../types.slint";
+import { Theme } from "../theme.slint";
+import { LibraryModel } from "../models/library.slint";
+
+export component CuttingTableView inherits Rectangle {
+    in property <[AngleItem]> angles: LibraryModel.current_angles;
+    in-out property <int> filter_mode: 0; // 0 = All, 1 = Pavilion, 2 = Crown
+
+    callback copy_row(int); // order_idx
+    copy_row(idx) => { LibraryModel.copy_cutting_row(idx); }
+    callback copy_table();
+    copy_table => { LibraryModel.copy_cutting_table(); }
+
+    background: Theme.bg-darkest;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 10px;
+
+        // Table Action Header
+        HorizontalLayout {
+            alignment: space-between;
+
+            HorizontalLayout {
+                spacing: 6px;
+
+                Rectangle {
+                    background: root.filter_mode == 0 ? #2563eb : Theme.bg-card;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: root.filter_mode == 0 ? Theme.accent-cyan : Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 10px; padding-right: 10px; padding-top: 4px; padding-bottom: 4px;
+                        Text { text: "All Steps (" + root.angles.length + ")"; font-size: 11px; font-weight: 600; color: #ffffff; }
+                    }
+                    TouchArea { clicked => { root.filter_mode = 0; } }
+                }
+
+                Rectangle {
+                    background: root.filter_mode == 1 ? #2563eb : Theme.bg-card;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: root.filter_mode == 1 ? Theme.accent-cyan : Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 10px; padding-right: 10px; padding-top: 4px; padding-bottom: 4px;
+                        Text { text: "Pavilion"; font-size: 11px; font-weight: 600; color: #ffffff; }
+                    }
+                    TouchArea { clicked => { root.filter_mode = 1; } }
+                }
+
+                Rectangle {
+                    background: root.filter_mode == 2 ? #2563eb : Theme.bg-card;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: root.filter_mode == 2 ? Theme.accent-cyan : Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 10px; padding-right: 10px; padding-top: 4px; padding-bottom: 4px;
+                        Text { text: "Crown"; font-size: 11px; font-weight: 600; color: #ffffff; }
+                    }
+                    TouchArea { clicked => { root.filter_mode = 2; } }
+                }
+            }
+
+            Button {
+                text: "Copy Schedule";
+                icon: @image-url("../icons/clipboard.svg");
+                colorize-icon: true;
+                clicked => { root.copy_table(); }
+            }
+        }
+
+        // Table Column Headers
+        Rectangle {
+            height: 32px;
+            background: Theme.bg-card;
+            border-radius: Theme.radius-sm;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                alignment: start;
+
+                Text { width: 50px; text: "#"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                Text { width: 90px; text: "FACET"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                Text { width: 90px; text: "ANGLE"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                // UI/UX review finding 14: was "INDEX GEAR" here vs "Indices" in
+                // `editor_view.slint`'s own tier-list column for the same concept --
+                // picked "Indices" (the shorter, already-used-elsewhere name) for both.
+                Text { width: 150px; text: "INDICES"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                Text { horizontal-stretch: 1; text: "INSTRUCTIONS / NOTES"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+            }
+        }
+
+        if root.angles.length == 0: VerticalLayout {
+            alignment: center;
+            spacing: 8px;
+            vertical-stretch: 1;
+
+            Image { source: @image-url("../icons/ruler.svg"); colorize: Theme.text-muted; width: 32px; height: 32px; horizontal-alignment: center; }
+            Text { text: "No cutting schedule recorded for this diagram"; font-size: 13px; color: Theme.text-muted; horizontal-alignment: center; }
+        }
+
+        if root.angles.length > 0: ScrollView {
+            VerticalLayout {
+                spacing: 2px;
+
+                for row in root.angles: Rectangle {
+                    height: 32px;
+                    background: row_touch.has-hover ? Theme.bg-card-hover : (Math.mod(row.order_idx, 2) == 0 ? Theme.bg-input : Theme.bg-card);
+                    border-radius: 2px;
+
+                    row_touch := TouchArea {
+                        clicked => { root.copy_row(row.order_idx); }
+                    }
+                    Tooltip { text: @markdown("Click to copy this row."); }
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        alignment: start;
+
+                        Text { width: 50px; text: row.order_idx + 1; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; }
+                        Text { width: 90px; text: row.facet; font-size: 11px; font-weight: 600; color: Theme.accent-cyan; vertical-alignment: center; }
+                        Text { width: 90px; text: row.angle; font-size: 11px; font-weight: 600; color: Theme.accent-amber; vertical-alignment: center; }
+                        Text { width: 150px; text: row.index_val; font-size: 11px; color: Theme.text-primary; vertical-alignment: center; }
+                        Text { horizontal-stretch: 1; text: row.notes; font-size: 11px; color: Theme.text-secondary; overflow: elide; vertical-alignment: center; }
+                        // Also item: a clipboard icon on hover, so a copy-on-click row
+                        // has some visible affordance for that behaviour instead of
+                        // being a plain-looking row that happens to react to a click.
+                        Image {
+                            source: @image-url("../icons/clipboard.svg");
+                            colorize: Theme.text-muted;
+                            width: 12px;
+                            height: 12px;
+                            visible: row_touch.has-hover;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

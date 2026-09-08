@@ -1,0 +1,158 @@
+[package]
+name = "indicatrix-cut"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+authors = { workspace = true }
+description = "Desktop faceting-design editor: library browsing, spectral 3D rendering, material retargeting, and a solid inspection view."
+license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+documentation = { workspace = true }
+keywords = ["gemstone", "faceting", "gui", "slint", "rendering"]
+categories = ["gui", "graphics", "rendering"]
+publish = { workspace = true }
+
+[lib]
+name = "indicatrix_cut"
+path = "src/lib.rs"
+
+[[bin]]
+name = "indicatrix-cut"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+bytemuck = { workspace = true }
+indicatrix-vault = { workspace = true }
+# `hdr` (Radiance `.hdr` decoding, for `EnvironmentMap::from_hdr_file`) is enabled
+# unconditionally rather than behind a feature of this crate's own. It was briefly a
+# feature, but `bridge::render_thread::load_env_map` calls `from_hdr_file` with no
+# `#[cfg]`, so `--no-default-features` did not compile -- a feature that cannot be
+# switched off is a lie in the manifest. It is also genuinely cheap: `image` is already
+# a direct dependency below with `features = ["png"]`, and cargo unifies the two feature
+# lists into one build, so this adds a format decoder rather than a dependency tree.
+# Contrast `gpu` below, which stays opt-in because `wgpu`/`pollster` really is one.
+indicatrix = { workspace = true, features = ["hdr"] }
+# Remote rendering (Task: remote rendering) -- the client protocol driver
+# (`indicatrix_net::client`), settings model types (`TransferMode`/`StreamConfig`/
+# `PreviewConfig`), and mutual-TLS config building (`indicatrix_net::tls`).
+# `render` is not optional for this crate: the viewer IS a render client -- it builds a
+# `SceneState`, sends a `RenderRequest`, and reads the stream back. That feature exists
+# so a LIBRARY-ONLY `indicatrix-worker` can avoid compiling `indicatrix` at all; a viewer that
+# renders has no such option and would fail to compile without it.
+indicatrix-net = { workspace = true, features = ["render"] }
+# The editor-core crate (Task: wire the editor core into the Edit tab) -- preform,
+# editable cutting schedule, and undo/redo, see `indicatrix-cut-core`'s own module doc comment.
+# Optional, and pulled in only by the `editor` feature below: with that feature off,
+# this crate must still build (`--no-default-features` in this crate's own CI
+# requirement), and indicatrix-cut-core existing at all is otherwise pointless weight.
+indicatrix-cut-core = { workspace = true, optional = true }
+glam = { workspace = true }
+image = { workspace = true, features = ["png"] }
+# Local import ("Import" button) and export ("Export .asc" -- see `gui::library`) of
+# the user's own `.asc` files.
+indicatrix-formats = { workspace = true }
+postcard = { workspace = true }
+# Native OS file/folder picker dialogs for every path input in this crate's GUI
+# (import .asc, HDR environment map, remote-worker cert-dir, high-res PNG export, and
+# attachment export -- see each call site's own comment). Used via the blocking
+# `rfd::FileDialog` API, called synchronously from Slint callbacks on the UI/event-loop
+# thread: rfd's own docs give no threading caveat for that (the only thread guidance
+# they give is macOS-specific, recommending -- not requiring -- the main thread), and
+# on Windows this pops the native `IFileDialog` modal, which pumps its own message loop
+# while blocked on it, same as any other native Win32 modal dialog. `AsyncFileDialog` +
+# `slint::spawn_local` was the alternative; not used since nothing here needs the UI
+# thread free while the dialog is up, and this app has no existing `spawn_local`
+# convention to fold into.
+rfd = { workspace = true }
+# Remote rendering (Task: remote rendering) -- `bridge::remote_render` owns the actual
+# mutual-TLS `TcpStream` to a configured worker (`rustls::ClientConnection`/
+# `StreamOwned`, built from `indicatrix_net::tls::client_config`) and postcard-decodes
+# `StreamEvent` headers itself so it can apply a short read timeout between frames --
+# see that module's doc comment for why (interleaving a `CANCEL` write without a
+# second thread touching the same TLS connection).
+rustls = { workspace = true }
+serde = { workspace = true }
+# Connection-liveness-only dependency (review findings N1/N5/N7: connect/handshake/write
+# deadlines and TCP keepalive tuning for `bridge::remote::remote_render::connection`).
+# `std::net::TcpStream` has no API to tune keepalive probe timing at all -- only
+# `set_nodelay`/`set_read_timeout`/`set_write_timeout`/`connect_timeout` are std, so this
+# is the one piece that genuinely needs an external crate. Not added to
+# `[workspace.dependencies]` -- deliberately scoped to this crate alone, since nothing
+# else in this workspace needs it.
+socket2 = "0.6.5"
+# slint 1.17.1's own `default` set, named verbatim because the workspace root sets
+# `default-features = false` on `slint` (see the root manifest's comment on why that
+# override must live there and not in a member).
+slint = { workspace = true, features = [
+    "std",
+    "backend-default",
+    "renderer-femtovg",
+    "renderer-software",
+    "accessibility",
+    "compat-1-2",
+    "system-tray",
+    # The detached Live Render window (Task: pop the live render out into its own
+    # always-on-top OS window) needs `slint::winit_030::WinitWindowAccessor` to reach
+    # the underlying `winit::window::Window` and call `set_window_level` -- there is no
+    # always-on-top call in Slint's own public `slint::Window` API (it exposes only
+    # `set_position`/`set_size`/`set_fullscreen`/`set_maximized`/`set_minimized`/
+    # `set_rendering_notifier`). This feature is additive on top of `backend-default`
+    # above (it also implies `backend-winit`, already what `backend-default` resolves
+    # to on desktop) -- see `gui::detached_render`'s module doc comment for the actual
+    # call site and its ordering caveat (the accessor only succeeds once the event loop
+    # is running).
+    "unstable-winit-030",
+] }
+# Settings-persistence-only dependency (Task: settings persistence). Also used by
+# `indicatrix_cut_core::native` for its on-disk design-file format, so this is pulled through the
+# workspace table rather than pinned here alone.
+toml = { workspace = true }
+tracing = { workspace = true }
+
+[features]
+default = ["editor"]
+# The faceting-design editor UI shell (Task: editor tab). In `default` because the
+# brief asks for an ordinary build to show the Edit tab -- `--no-default-features`
+# drops it.
+#
+# The asymmetry worth stating plainly: Slint markup has no `#[cfg]` of its own, so this
+# feature cannot remove a single line of `.slint` -- the Edit tab's `EditorView` body in
+# `ui/app.slint` compiles into the binary regardless of whether this feature is on, and
+# costs nothing extra to compile (it is cheap markup, conditionally *instantiated* via
+# `if root.render_view_tab == 1 && root.editor_enabled:`, the same `if <flag>:`
+# convention every dialog in that file already uses -- see its own comment). What this
+# feature actually gates is `gui::mod::build_main_window`'s `cfg!(feature = "editor")`
+# check that drives `MainWindow.editor_enabled` (with the feature off, that property
+# stays permanently `false` and the Edit tab is simply never reachable at runtime, even
+# though its markup is still sitting in the binary) AND, now that `indicatrix-cut-core` (the
+# editor-core crate) is wired in below, whether `indicatrix-cut-core` itself gets linked at all
+# (`dep:indicatrix-cut-core`, plus `gui::mod`'s own `#[cfg(feature = "editor")] mod editor;`) -- a
+# `--no-default-features` build compiles neither the dependency nor `gui::editor`'s
+# Rust wiring, only the inert `.slint` markup and the permanently-`false` flag.
+editor = ["dep:indicatrix-cut-core"]
+# Routes the viewport's progressive accumulation through `indicatrix`'s verified GPU
+# megakernel (`indicatrix::renderer::gpu::frame`), falling back to the CPU tracer per frame
+# whenever the GPU declines -- no adapter on this machine, or a scene the megakernel has
+# no `env_mode` for. Off by default: the CPU path is the reference implementation and
+# needs no `wgpu`/`pollster` dependency tree, so an ordinary build stays exactly as lean
+# as it was. See `bridge::render_thread::GpuBackend`.
+gpu = ["indicatrix/gpu"]
+
+[build-dependencies]
+slint-build = { workspace = true }
+
+[dev-dependencies]
+# Test-only: `bridge::library_mirror`'s tests build a deterministic stand-in for the
+# real server-side content hash (`apps/indicatrix-worker/src/serve/library/mod.rs`'s own
+# `hash_summary`/`hash_record`) so a scripted `FakeTransport` can produce
+# `DesignSummary`/`DesignRecord` version hashes that change exactly when a test wants
+# them to -- see that module's `tests::content_hash`.
+sha2 = { workspace = true }
+
+[lints]
+workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = { workspace = true }

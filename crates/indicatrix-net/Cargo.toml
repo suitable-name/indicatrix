@@ -1,0 +1,75 @@
+[package]
+name = "indicatrix-net"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+authors = { workspace = true }
+description = "Wire protocol for offloading indicatrix spectral ray samples to a remote render worker: scene-state and radiance-buffer codecs, message framing, and a build-compatibility handshake. Types and framing only -- no networking, no sockets."
+license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+documentation = "https://docs.rs/indicatrix-net"
+keywords = ["gemstone", "raytracer", "spectral", "protocol", "rendering"]
+categories = ["encoding", "rendering", "network-programming"]
+publish = { workspace = true }
+
+[dependencies]
+bytemuck = { workspace = true }
+# `SceneState`'s fully-resolved scene description: `GemMaterial`, `GpuFacetPlane`,
+# `LightingPreset` and `BUILD_ID` (see the crate's own `serde` feature and `build.rs`).
+# Optional, gated behind this crate's own `render` feature (see `[features]` below) --
+# a library-only build (the default; see `crate::library`) never needs `indicatrix` at all,
+# not even the CPU tracer it compiles in as one indivisible crate (see `indicatrix`'s own
+# `Cargo.toml`: there is no finer-grained feature separating its type definitions from
+# its renderer/optics code, so depending on it for the types alone still compiles the
+# whole crate -- `optional = true` here is what lets a library-only `indicatrix-worker`
+# build skip that entirely rather than paying for it just to get `GemMaterial`).
+indicatrix = { workspace = true, features = ["serde"], optional = true }
+# `glam/bytemuck` is enabled here (not on `indicatrix`'s own dependency line) so
+# `glam::Vec3` -- the radiance buffer's element type -- is `bytemuck::Pod`, letting
+# `radiance::encode`/`decode` use `bytemuck::cast_slice` for a zero-copy byte view.
+# `indicatrix` itself stays untouched: its default build (`cargo tree -p indicatrix --depth 1`)
+# has no opinion on this feature, since Cargo only unifies it across a build that
+# actually includes indicatrix-net.
+glam = { workspace = true, features = ["bytemuck"] }
+postcard = { workspace = true }
+# `tls` module: mutual-TLS config building and the fingerprint allowlist. Socket-free --
+# see this crate's own doc comment on why ("types, codec, and framing only") and the
+# `tls` module's doc comment on why building a `rustls::ServerConfig`/`ClientConfig`
+# from bytes doesn't violate that.
+rustls = { workspace = true }
+rustls-pemfile = { workspace = true }
+serde = { workspace = true }
+sha2 = { workspace = true }
+# `enroll`/`token` modules (token-based worker enrollment, shared by
+# `apps/indicatrix-worker`'s `cert claim` and `apps/indicatrix-cut`'s own token-redeem UI --
+# see `enroll`'s module doc comment for why both moved here): zeroizes the bearer
+# secret and the claimed private key the moment each is no longer needed, the same
+# `zeroize` version `apps/indicatrix-worker` already pins for the same purpose.
+zeroize = "1.9"
+
+[features]
+default = []
+# Gates everything that needs `indicatrix`'s resolved scene/material types: `crate::scene`
+# (`SceneState`), `RenderRequest`, and the `ClientMessage::RenderRequest` variant. Off
+# by default so a library-only `indicatrix-worker` build (see that crate's own `worker`
+# feature) never compiles `indicatrix` in at all -- see the `indicatrix` dependency comment
+# above. Named to match `indicatrix-worker`'s own `worker` feature at the call site
+# (`indicatrix-net/render` is what that feature turns on), but scoped to this crate's own
+# concern (the wire types), not the worker binary's.
+render = ["dep:indicatrix"]
+
+# Both integration tests trace real samples through `indicatrix::optics::raytracer` (or
+# round-trip a real `SceneState`) directly -- they need `indicatrix`, so (like `indicatrix`'s
+# own `gpu`-only examples) they're skipped entirely by a default `cargo test`, not just
+# skipped at runtime, and only built under `--features render`.
+[[test]]
+name = "scene_roundtrip"
+required-features = ["render"]
+
+[[test]]
+name = "partition_correctness"
+required-features = ["render"]
+
+[lints]
+workspace = true

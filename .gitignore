@@ -1,0 +1,10 @@
+target
+.cargo
+.cargo2
+**/*.swp
+*.sqlite
+*.sqlite.bak
+out.txt
+*.exe
+/bin
+certs

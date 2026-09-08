@@ -1,0 +1,106 @@
+[package]
+name = "indicatrix-worker"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+authors = { workspace = true }
+description = "Library server for a indicatrix-backed design catalogue (`serve`, default build): serves indicatrix-net's read-only design-library protocol over mutual TLS. The optional `worker` feature adds render capacity on top -- accepting RenderRequests and replying with traced radiance -- and `render` a one-shot scene-to-PNG CLI."
+license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+documentation = { workspace = true }
+keywords = ["gemstone", "raytracer", "server", "rendering", "spectral"]
+categories = ["command-line-utilities", "network-programming", "rendering"]
+publish = { workspace = true }
+
+[[bin]]
+name = "indicatrix-worker"
+path = "src/main.rs"
+
+[dependencies]
+# `indicatrix-vault`'s `Database` methods return `anyhow::Result` -- `crate::serve::library`
+# matches on those errors directly (to log the real reason server-side while reporting
+# a generic message to the peer -- see that module's doc comment).
+anyhow = { workspace = true }
+bytemuck = { workspace = true, optional = true }
+# Always present: the design library this binary serves. Opened read-only when
+# possible (`--db`, or the default `facet_diagrams.sqlite` -- see `crate::serve::library`
+# and `indicatrix_vault::db::sqlite::Database::open_read_only`).
+indicatrix-vault = { workspace = true }
+# `indicatrix-net` already depends on `indicatrix` with the `serde` feature on (for
+# `SceneState`'s nested types, gated behind `indicatrix-net`'s own `render` feature); this
+# crate also names `indicatrix::` directly (`gpu_backend::GpuBackend`, the CPU tracer's
+# `optics::raytracer`, `renderer::buffers::MAX_ABSORPTION_BANDS`), so it needs its own
+# dependency line too, not merely a re-export.
+indicatrix = { workspace = true, features = ["serde"], optional = true }
+# Always present: the wire protocol (library-protocol types are always compiled in;
+# `indicatrix-net`'s own `render` feature -- which pulls in `indicatrix`-dependent types like
+# `SceneState`/`RenderRequest` -- is turned on only by this crate's `worker` feature
+# below, never unconditionally).
+indicatrix-net = { workspace = true }
+glam = { workspace = true, features = ["bytemuck"], optional = true }
+image = { workspace = true, features = ["png"], optional = true }
+# Decodes a `ClientMessage` (CANCEL or RenderRequest) raw postcard bytes directly in
+# `stream_emit::poll_for_client_message`, which already has the payload as a `Vec<u8>`
+# (read with its own timeout-tolerant loop) -- `indicatrix_net::messages::read_message` isn't
+# reusable there since it reads from a `Read` itself rather than decoding bytes already
+# in hand.
+postcard = { workspace = true, optional = true }
+# `pki` module (the `cert init`/`issue-server`/`issue-client` subcommands) and mutual
+# TLS itself: in-process CA/leaf certificate generation and the TLS wrapping every
+# accepted connection goes through, regardless of whether this build has render
+# capacity -- the library protocol sits behind the exact same authentication as the
+# render protocol (see `serve`'s module docs), so these stay unconditional deps, never
+# gated by `worker`.
+rcgen = { workspace = true }
+# `enroll`/`enroll_client` modules: reused here as the CSPRNG source for a fresh 256-bit
+# enrollment secret, rather than adding a new randomness dependency.
+ring = "0.17.14"
+rustls = { workspace = true }
+# Scene-file loading for the `render` subcommand only.
+serde_json = { workspace = true, optional = true }
+# `enroll`/`enroll_client` modules (token-based cert enrollment -- see `enroll.rs`'s
+# module doc comment): reused here (and by `crate::serve::library`'s per-design
+# content-hash versioning, see that module's own doc comment) to hash the enrollment
+# token's bearer secret before it's ever stored.
+sha2 = { workspace = true }
+# TCP keepalive + TCP_NODELAY tuning for every accepted connection (`crate::serve::run`'s
+# accept loop) -- unconditional (not gated by the `worker` feature): the library-only build
+# also serves long-lived streamed responses (a large search result, an attachment fetch) that
+# benefit equally from detecting a vanished peer and from not paying Nagle's coalescing delay
+# on small, latency-sensitive writes.
+socket2 = { workspace = true }
+# `enroll`/`enroll_client` modules: constant-time secret comparison (already a direct
+# dependency of `rustls`).
+subtle = "2.6.1"
+time = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# `enroll`/`enroll_client` modules: key-material zeroization on drop (already a direct
+# dependency of `rustls`).
+zeroize = "1.9"
+
+[features]
+default = []
+# The render path: `RenderRequest` handling, `stream_emit`, `render_core`, `render_cmd`,
+# the `render` subcommand, and `Backend` advertisement in `WELCOME`. Off by default --
+# see the crate docs on why serving the design library, not rendering, is this binary's
+# default, primary role. Turns on `indicatrix-net`'s own `render` feature too, which is what
+# actually gates `indicatrix` out of a default build's dependency tree (see that crate's
+# `Cargo.toml`) -- without that half, `indicatrix-net` would still pull `indicatrix` in via its
+# own unconditional dependency, and this feature alone wouldn't achieve anything.
+worker = ["dep:indicatrix", "dep:glam", "dep:bytemuck", "dep:postcard", "dep:serde_json", "dep:image", "indicatrix-net/render"]
+# GPU with no render capacity is meaningless, so this implies `worker`. Routes tracing
+# through indicatrix's verified GPU megakernel (`indicatrix::renderer::gpu::frame::GpuFrameRenderer`,
+# wrapped by this crate's own `gpu_backend::GpuBackend`) for both `render` and `serve`,
+# falling back to the CPU tracer per batch whenever the GPU declines (no adapter,
+# `--only-cpu`, or a biaxial material -- see `gpu_backend`'s own doc comment). Off by
+# default even with `worker` on: `wgpu`/`pollster` is a real dependency tree, and a
+# render-capable server may still run on a machine with no GPU adapter at all.
+gpu = ["worker", "indicatrix/gpu"]
+
+[lints]
+workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = { workspace = true }

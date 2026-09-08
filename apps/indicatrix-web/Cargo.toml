@@ -1,0 +1,104 @@
+[package]
+name = "indicatrix-web"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+authors = { workspace = true }
+description = "Browser build of indicatrix: upload a GemCAD .asc cutting schedule, get an interactive rendered stone. No design library, no remote worker, no database."
+license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+documentation = { workspace = true }
+keywords = ["gemstone", "faceting", "wasm", "webgpu", "rendering"]
+categories = ["wasm", "graphics", "rendering"]
+publish = { workspace = true }
+
+# `cdylib` is what `wasm-bindgen`/`trunk` need to produce a loadable `.wasm` module;
+# `rlib` is kept alongside it (not the whole story on its own, but harmless and lets
+# `cargo check -p indicatrix-web` -- run from a native host, as the orchestrator's own
+# clippy/check pass does -- type-check this crate as an ordinary library without a
+# final wasm-bindgen link step). See `src/lib.rs`'s crate doc comment for why almost
+# everything in this crate compiles to nothing at all on a non-wasm32 target: this
+# crate exists for exactly one target triple, `wasm32-unknown-unknown`, and must not
+# cost the rest of this workspace's native build anything.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Every dependency this crate actually uses lives under the `wasm32` target section
+# below, not here -- see `src/lib.rs`'s crate doc comment for why: `src/app.rs`,
+# `src/render.rs`, and `src/scene.rs` (the only code that touches any of them) are
+# `#[cfg(target_arch = "wasm32")]`-gated modules, so on a native host build every one
+# of them is genuinely unused, and `cargo`'s own `unused_dependencies` lint (part of
+# `cargo clippy --workspace --all-targets --all-features`, which this workspace's
+# other crates must stay clean under) correctly flags a dependency declared here but
+# never referenced on that target. Declaring them where they are actually used, rather
+# than silencing that lint, is both the honest fix and the one that keeps a native
+# `cargo tree` for this crate empty -- see the workspace root's own hard constraint
+# that `indicatrix-vault`/`indicatrix-net` (and, by the same logic, everything else this
+# crate depends on) must never appear in a native dependency listing for it.
+[dependencies]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# wasm32-only glue: the entry point (`#[wasm_bindgen(start)]`), the executor
+# `slint::spawn_local` runs on this target, and a panic hook that turns a Rust panic
+# into a readable `console.error` line instead of the browser's default "unreachable
+# executed" WebAssembly trap message, which names no file or line.
+console_error_panic_hook = "0.1"
+# The spectral renderer this whole crate is a browser shell around. `gpu` is enabled
+# unconditionally (not behind a feature of this crate's own) because this build is
+# WebGPU-only with no CPU fallback at all -- see `src/render.rs`'s module doc comment
+# for the full reasoning -- so `renderer::gpu::frame`'s wasm32-only
+# `GpuFrameRenderer::new_async`/`accumulate_async` are not optional machinery, they are
+# this crate's entire rendering path.
+#
+# `default-features = false`: `indicatrix`'s own default feature set is empty already (see
+# its `Cargo.toml`), so this is documentation of intent, not a behaviour change --
+# written out so a future feature added to `indicatrix`'s `default` list doesn't silently
+# leak into this crate's dependency tree. `hdr` is deliberately NOT enabled: an HDR
+# environment map has no picker in this crate's small control surface, and could not
+# be rendered by this GPU-only build even if it did (the megakernel has no `env_mode`
+# for one -- see `src/render.rs`'s doc comment) -- turning `hdr` on would pull in
+# `image` to decode a file format this build can never display.
+# No `default-features = false` needed: `indicatrix`'s own `default` set is empty (see
+# its `[features]`), so naming `gpu` alone already selects exactly this and nothing
+# else -- and repeating the override would be rejected outright by newer Cargo.
+indicatrix = { workspace = true, features = ["gpu"] }
+glam = { workspace = true }
+# Parses the uploaded `.asc` cutting schedule. Zero runtime dependencies of its own
+# (see its own `Cargo.toml`), so it costs this crate's wasm binary nothing beyond its
+# own small parser.
+indicatrix-formats = { workspace = true }
+# Native file-picker dialogs on every other target `apps/indicatrix-cut` builds for; on
+# `wasm32-unknown-unknown` its `AsyncFileDialog` backend instead opens a hidden
+# `<input type="file">` element and resolves once the browser's own file picker
+# returns a `web_sys::File` (see `rfd`'s `src/backend/wasm.rs`) -- genuinely async, no
+# blocking, no hand-rolled DOM plumbing of this crate's own. This is the same crate
+# `apps/indicatrix-cut` already uses for its native "Import .asc" button, just called
+# through its async (rather than blocking) API -- see `src/app.rs`'s file-choice
+# callback for why blocking is not an option in a browser tab.
+rfd = { workspace = true }
+slint = { workspace = true, features = [
+    "backend-winit",
+    "renderer-femtovg",
+    "std",
+    # Slint refuses to compile at all without this (a `compile_error!` in its own
+    # `lib.rs`, not a lint) -- it exists so a crate pinning an old `slint` version
+    # doesn't silently pick up an unannounced behavioural change in the next minor
+    # release. `slint`'s own `default` feature set enables it automatically;
+    # `default-features = false` above means this crate has to name it explicitly.
+    "compat-1-2",
+] }
+tracing = { workspace = true }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+# `Performance::now` for `src/render.rs`'s chunk-timing measurement (how CHUNK_SPP
+# was picked -- see that module's own doc comment), and the `console` binding so
+# that measurement is visible in the browser devtools without pulling in a whole
+# `tracing` subscriber crate this small a use does not justify.
+web-sys = { version = "0.3", default-features = false, features = ["console", "Performance", "Window"] }
+
+[build-dependencies]
+slint-build = { workspace = true }
+
+[lints]
+workspace = true

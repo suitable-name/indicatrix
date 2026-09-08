@@ -1,0 +1,293 @@
+import { Theme } from "../theme.slint";
+import { SolidPreviewModel } from "../models/solid_preview.slint";
+import { ViewportModel } from "../models/viewport.slint";
+
+// The Edit tab's solid-inspection viewport: a flat-shaded software render of the
+// current design's solid, shown as a static image after Solve. Reads
+// `SolidPreviewModel` directly rather than taking its state as local properties.
+//
+// `view_mode` picks among the images this component accepts: `0` (Solid) shows
+// `image` alone, `1` (Path-traced) shows `render_image` alone -- the same image
+// `GemViewportView` draws in the Live Render tab, forwarded here so a user can compare
+// without switching tabs. `2` (Both) shows `render_image` as a base layer
+// with `edges_image` (the solid's transparent-fill/opaque-edges render --
+// `gui::solid_preview::edges_layer`) composited on top. `3` (Diagram) shows
+// `diagram_image` -- a GemCAD-style three-panel (crown/pavilion/profile) 2D facet
+// diagram (`gui::solid_preview::diagram2d`), fixed/orthographic rather than tied to
+// the shared orbit camera, so dragging is disabled in this mode (see `drag_area`
+// below) and hover/click route through their OWN `diagram_facet_hover`/
+// `diagram_facet_click` callbacks against the diagram's own pick buffer, since its
+// pixel layout is entirely different from the Solid rasterizer's.
+export component SolidViewportView inherits Rectangle {
+    vertical-stretch: 1;
+    min-height: 380px;
+
+    // The "Not solved" banner takes precedence over mesh_cache status when the shown
+    // solid is stale.
+    property <string> status_text: SolidPreviewModel.stale ? "Not solved -- showing the last solved solid. Click Solve to refresh." : SolidPreviewModel.status;
+    // Diagram mode (view_mode 3) shows its own hover text; every other mode keeps the
+    // Solid rasterizer's.
+    property <string> hover_text: SolidPreviewModel.view_mode == 3 ? SolidPreviewModel.diagram_hover_text : SolidPreviewModel.hover_text;
+
+    property <bool> is_dragging: false;
+    property <length> last_mouse_x;
+    property <length> last_mouse_y;
+
+    background: #080a0f;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    clip: true;
+
+    // Slint has no built-in way to report a widget's rendered size back to Rust (see
+    // `bridge::render_thread::context::RenderContext`'s own `width`/`height` doc
+    // comment on the same limitation for the Live Render viewport) -- push this
+    // component's own layout size straight into the global on every change so
+    // `gui::editor::view::refresh_viewport` sizes the rasterizer to exactly the
+    // logical size, never the render resolution.
+    changed width => { SolidPreviewModel.viewport_width = self.width; }
+    changed height => { SolidPreviewModel.viewport_height = self.height; }
+
+    drag_area := TouchArea {
+        pointer-event(event) => {
+            // Diagram mode's three panels are fixed orthographic projections, not
+            // tied to the orbit camera -- dragging has nothing to move, so a drag
+            // gesture there is simply never started.
+            if (SolidPreviewModel.view_mode == 3) {
+                return;
+            }
+            if (event.kind == PointerEventKind.down) {
+                root.last_mouse_x = drag_area.mouse-x;
+                root.last_mouse_y = drag_area.mouse-y;
+                root.is_dragging = true;
+            } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                root.is_dragging = false;
+            }
+        }
+        moved => {
+            if (SolidPreviewModel.view_mode == 3) {
+                SolidPreviewModel.diagram_facet_hover(drag_area.mouse-x, drag_area.mouse-y);
+            } else if (root.is_dragging) {
+                let dx = (drag_area.mouse-x - root.last_mouse_x) / 1px;
+                let dy = (drag_area.mouse-y - root.last_mouse_y) / 1px;
+                root.last_mouse_x = drag_area.mouse-x;
+                root.last_mouse_y = drag_area.mouse-y;
+                ViewportModel.camera_orbit(dx, dy);
+            } else {
+                // Only picking, not dragging -- the hover tooltip.
+                SolidPreviewModel.facet_hover(drag_area.mouse-x, drag_area.mouse-y);
+            }
+        }
+        clicked => {
+            if (SolidPreviewModel.view_mode == 3) {
+                SolidPreviewModel.diagram_facet_click(drag_area.mouse-x, drag_area.mouse-y);
+            } else {
+                SolidPreviewModel.facet_click(drag_area.mouse-x, drag_area.mouse-y);
+            }
+        }
+    }
+
+    if SolidPreviewModel.view_mode == 0 && SolidPreviewModel.has_solid: Image {
+        width: 100%;
+        height: 100%;
+        source: SolidPreviewModel.image;
+        image-fit: contain;
+    }
+
+    if SolidPreviewModel.view_mode == 1 && ViewportModel.has_render: Image {
+        width: 100%;
+        height: 100%;
+        source: ViewportModel.render_image;
+        image-fit: contain;
+    }
+
+    // "Both" mode: the path-traced image as a base layer, with the solid's
+    // transparent-fill/opaque-edges layer composited on top -- see
+    // `gui::solid_preview::edges_layer`'s own doc comment.
+    if SolidPreviewModel.view_mode == 2 && ViewportModel.has_render: Image {
+        width: 100%;
+        height: 100%;
+        source: ViewportModel.render_image;
+        image-fit: contain;
+    }
+    if SolidPreviewModel.view_mode == 2 && SolidPreviewModel.has_solid_edges: Image {
+        width: 100%;
+        height: 100%;
+        source: SolidPreviewModel.edges_image;
+        image-fit: contain;
+    }
+
+    // Diagram mode: the three-panel 2D facet diagram (`gui::solid_preview::diagram2d`)
+    // -- see this component's own doc comment.
+    if SolidPreviewModel.view_mode == 3 && SolidPreviewModel.has_diagram: Image {
+        width: 100%;
+        height: 100%;
+        source: SolidPreviewModel.diagram_image;
+        image-fit: contain;
+    }
+
+    // Placeholder: nothing solved yet in Solid mode, nothing rendered yet in
+    // Path-traced/Both mode, or nothing solved yet in Diagram mode.
+    if (SolidPreviewModel.view_mode == 0 && !SolidPreviewModel.has_solid) || (SolidPreviewModel.view_mode == 3 && !SolidPreviewModel.has_diagram) || (SolidPreviewModel.view_mode != 0 && SolidPreviewModel.view_mode != 3 && !ViewportModel.has_render): VerticalLayout {
+        alignment: center;
+        spacing: 12px;
+
+        Image {
+            source: @image-url("../icons/gem.svg");
+            colorize: Theme.text-muted;
+            width: 48px;
+            height: 48px;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: (SolidPreviewModel.view_mode == 0 || SolidPreviewModel.view_mode == 3) ? "Solve to preview" : "Nothing rendered yet";
+            font-size: 13px;
+            color: Theme.text-muted;
+            horizontal-alignment: center;
+        }
+    }
+
+    // A small hover tooltip panel, bottom-left of the image -- see `hover_text`'s own
+    // doc comment above.
+    if root.hover_text != "": Rectangle {
+        x: 10px;
+        y: parent.height - self.height - 46px;
+        width: hover_label.preferred-width + 16px;
+        height: hover_label.preferred-height + 10px;
+        background: Theme.bg-elevated;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.border-subtle;
+
+        hover_label := Text {
+            text: root.hover_text;
+            font-size: 11px;
+            color: Theme.text-primary;
+            x: 8px;
+            y: 5px;
+        }
+    }
+
+    // --- Mode toggle: Solid | Path-traced, same pill look as the Live Render/Edit
+    // sub-tab buttons in `app.slint`.
+    VerticalLayout {
+        padding: 10px;
+        alignment: space-between;
+
+        HorizontalLayout {
+            spacing: 8px;
+
+            Rectangle {
+                height: 28px;
+                width: 84px;
+                background: SolidPreviewModel.view_mode == 0 ? Theme.primary : (solid_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: SolidPreviewModel.view_mode == 0 ? Theme.accent-cyan : Theme.border-subtle;
+
+                Tooltip { text: @markdown("Flat-shaded software render of the solved solid -- independent of the spectral path tracer."); }
+
+                solid_pill_touch := TouchArea {
+                    clicked => { SolidPreviewModel.view_mode = 0; }
+                }
+                Text {
+                    text: "Solid";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: SolidPreviewModel.view_mode == 0 ? Theme.text-on-primary : Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                height: 28px;
+                width: 110px;
+                background: SolidPreviewModel.view_mode == 1 ? Theme.primary : (traced_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: SolidPreviewModel.view_mode == 1 ? Theme.accent-cyan : Theme.border-subtle;
+
+                Tooltip { text: @markdown("The same spectral path-traced image shown in the Live Render tab."); }
+
+                traced_pill_touch := TouchArea {
+                    clicked => { SolidPreviewModel.view_mode = 1; }
+                }
+                Text {
+                    text: "Path-traced";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: SolidPreviewModel.view_mode == 1 ? Theme.text-on-primary : Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                height: 28px;
+                width: 84px;
+                background: SolidPreviewModel.view_mode == 2 ? Theme.primary : (both_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: SolidPreviewModel.view_mode == 2 ? Theme.accent-cyan : Theme.border-subtle;
+
+                Tooltip { text: @markdown("The path-traced image with the solid's own facet edges overlaid."); }
+
+                both_pill_touch := TouchArea {
+                    clicked => { SolidPreviewModel.view_mode = 2; }
+                }
+                Text {
+                    text: "Both";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: SolidPreviewModel.view_mode == 2 ? Theme.text-on-primary : Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle {
+                height: 28px;
+                width: 96px;
+                background: SolidPreviewModel.view_mode == 3 ? Theme.primary : (diagram_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: SolidPreviewModel.view_mode == 3 ? Theme.accent-cyan : Theme.border-subtle;
+
+                Tooltip { text: @markdown("A GemCAD-style crown/pavilion/profile 2D facet diagram with the index wheel -- fixed, not tied to the orbit camera."); }
+
+                diagram_pill_touch := TouchArea {
+                    clicked => { SolidPreviewModel.view_mode = 3; }
+                }
+                Text {
+                    text: "Diagram";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: SolidPreviewModel.view_mode == 3 ? Theme.text-on-primary : Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        if root.status_text != "": Rectangle {
+            height: 22px;
+            background: Theme.bg-input;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+
+            Text {
+                text: root.status_text;
+                font-size: 11px;
+                color: Theme.text-secondary;
+                horizontal-alignment: left;
+                vertical-alignment: center;
+                x: 8px;
+            }
+        }
+    }
+}

@@ -1,0 +1,40 @@
+# Trunk (https://trunkrs.dev) build config for `indicatrix-web`. Run from this directory
+# (`apps/indicatrix-web`): `trunk serve` for a dev server with live rebuild, `trunk build
+# --release` for a deployable `dist/`. Neither is run by this workspace's own tooling
+# -- see `README.md` for why `trunk` is a tool the user installs themselves
+# (`cargo install --locked trunk`), never something this repository's build assumes.
+[build]
+target = "index.html"
+dist = "dist"
+# Subresource Integrity off. Trunk stamps an `integrity="sha384-..."` attribute onto the
+# `<script>`/`<link>` tags it generates, hashing the bytes it wrote to `dist/`; the
+# browser rehashes what it actually RECEIVED and refuses to run the file if the two
+# differ. That is a guarantee about the transport, not about this build -- so anything
+# that rewrites the payload between `dist/` and the browser breaks it, even though the
+# code is fine. In practice that means an edge/CDN layer doing JS minification or
+# script injection (Cloudflare's Auto Minify and Rocket Loader both do exactly this), or
+# a deploy that copies a fresh `.js` while an older `index.html` is still cached.
+#
+# Observed against the real deployment: `Failed to find a valid digest in the
+# 'integrity' attribute for resource '.../indicatrix-web-<hash>.js' ... The resource has
+# been blocked.` -- a hard failure with a blank page, not a degraded one.
+#
+# The cost of turning it off is real but small here: SRI's purpose is to detect a host
+# or CDN serving tampered script bytes. This page is served over HTTPS from the user's
+# own host and loads no third-party scripts at all (see `index.html` -- Trunk's own
+# generated tag is the only one), so TLS already covers the in-transit case this would
+# add to. Re-enable by deleting this line if the upstream rewriting is ever identified
+# and switched off.
+no_sri = true
+# WebGPU is a young enough browser API that targeting a lower `wasm-opt` optimization
+# level or an older Wasm feature set buys nothing -- every browser that implements
+# WebGPU at all is recent enough for a plain, un-downleveled `wasm32-unknown-unknown`
+# build. Nothing here overrides Trunk's own defaults for that reason.
+
+[watch]
+watch = ["src", "ui", "Cargo.toml", "build.rs"]
+
+[serve]
+addresses = ["127.0.0.1"]
+port = 8080
+open = false

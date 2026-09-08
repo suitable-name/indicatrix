@@ -1,0 +1,1172 @@
+import { ScrollView, Button, LineEdit, ComboBox } from "std-widgets.slint";
+import { EditorTierItem, OptimizeResultRow, GearRemapRow } from "../types.slint";
+import { Theme } from "../theme.slint";
+import { EditorModel } from "../models/editor.slint";
+import { RetargetModel } from "../models/retarget.slint";
+// One tier-list row's angle cell -- click-to-edit rather than always a `LineEdit`
+// (see the manual's "Inline Angle Editing" chapter): a plain, click-through `Text`
+// display normally, so the row's ordinary click-to-select/Ctrl+click/hover behavior
+// around it is completely unaffected, with a small `TouchArea` over just this cell
+// that (a) opens an editable `LineEdit` on a plain click and (b) nudges the value
+// +-0.1deg on every scroll-wheel tick regardless of whether it's currently in edit
+// mode. `EditorView.nudge_angle`/`inline_set_angle` are the only two ways this
+// component ever reports intent -- it never touches `Design` itself, matching this
+// whole file's "dumb about the design" convention (see `EditorView`'s own top doc
+// comment).
+//
+// Commit path: Enter (`accepted`) or focus loss (`changed has-focus`, since
+// `LineEdit` exposes no separate "blurred" callback -- see the interface in
+// `i-slint-compiler`'s `widgets/interfaces/lineedit.slint`) both call `commit` with
+// the field's current text, then close edit mode. Escape closes edit mode WITHOUT
+// calling `commit` -- the `LineEdit` is destroyed uncommitted and the display
+// reverts to `value` (still whatever `Design` actually holds), no separate "revert"
+// step needed. Up/Down step +-0.1deg (Shift +-1deg, Ctrl +-0.01deg) via the
+// `LineEdit`'s own `key-pressed` -- see `i-slint-compiler`'s `widgets/interfaces/
+// lineedit.slint` for why this, not a wrapping `FocusScope`, is the mechanism: a
+// plain `Rectangle`/`FocusScope` has no `scroll-event` in Slint 1.17 (only
+// `TouchArea`/`Flickable` do, per `builtins.slint`), which is why the wheel-nudge
+// below lives on `area` instead.
+//
+// `focus_target`/`focus_pulse` are how the tier list's F2 shortcut opens THIS
+// specific row's editor from outside (`EditorView`'s own `key-pressed` cannot reach
+// into one `for`-loop iteration's local state directly) -- `focus_pulse` is a
+// monotonically increasing counter, not a plain flag, so pressing F2 on the SAME row
+// twice in a row still fires a fresh `changed focus_pulse` each time (a flag that
+// merely equals the target index again would not fire it a second time).
+component TierAngleCell inherits Rectangle {
+    in property <string> value;
+    in property <int> index;
+    in property <int> focus_target: -1;
+    in property <int> focus_pulse: 0;
+    callback commit(string);
+    // (index, delta_deg)
+    callback nudge(int, float);
+
+    width: 60px;
+    height: 100%;
+    property <bool> editing: false;
+    property <int> seen_pulse: 0;
+
+    changed focus_pulse => {
+        if root.focus_target == root.index && root.focus_pulse != root.seen_pulse {
+            root.seen_pulse = root.focus_pulse;
+            root.editing = true;
+        }
+    }
+
+    function step(shift: bool, ctrl: bool, sign: float) {
+        if shift {
+            root.nudge(root.index, sign * 1.0);
+        } else if ctrl {
+            root.nudge(root.index, sign * 0.01);
+        } else {
+            root.nudge(root.index, sign * 0.1);
+        }
+    }
+
+    area := TouchArea {
+        clicked => { root.editing = true; }
+        scroll-event(event) => {
+            if event.delta-y != 0 {
+                root.nudge(root.index, event.delta-y > 0 ? 0.1 : -0.1);
+                return accept;
+            }
+            reject
+        }
+    }
+
+    if !root.editing: Text {
+        text: root.value;
+        font-size: 11px;
+        font-weight: 600;
+        color: Theme.accent-amber;
+        vertical-alignment: center;
+    }
+
+    if root.editing: edit := LineEdit {
+        width: 100%;
+        height: 100%;
+        text: root.value;
+        font-size: 11px;
+        init => {
+            self.select-all();
+            self.focus();
+        }
+        accepted => {
+            root.commit(self.text);
+            root.editing = false;
+        }
+        changed has-focus => {
+            if !self.has-focus {
+                root.commit(self.text);
+                root.editing = false;
+            }
+        }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.editing = false;
+                return accept;
+            } else if event.text == Key.UpArrow {
+                root.step(event.modifiers.shift, event.modifiers.control, 1.0);
+                return accept;
+            } else if event.text == Key.DownArrow {
+                root.step(event.modifiers.shift, event.modifiers.control, -1.0);
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
+// The "Edit" sub-tab's body -- a working faceting-design editor over
+// `indicatrix_cut_core::Design`/`History`, wired from Rust in `gui::editor`.
+//
+// This component is deliberately "dumb" about the design itself: every genuine piece
+// of design state (the tier list, undo/redo availability, validation status, the
+// current preform) is an `in` (or `in-out`, for the preform) property MainWindow owns
+// and `gui::editor` pushes into after every edit, the same convention
+// `GemViewportView`/`CuttingTableView` use for `current_angles`/`render_image`. This
+// component never constructs an `Edit`, a `PreformSpec`, or a `ConstraintTier` itself
+// -- it only collects form text and hands it to Rust via a callback, keeping
+// `History` the sole mutator of `Design`. The solved mast shown per row and the
+// `SolveStrategy` badge next to it are pure display -- there is no callback that lets
+// this component write a mast anywhere.
+//
+// The tier-edit form and the preform form's text fields are seeded the same "current
+// value doubles as scratch buffer" way, not `in`: they double as the current value's
+// display (Rust seeds them after a load/new/undo/redo) and the user's in-progress
+// edit, via a two-way `<=>` alias -- the same idiom `remote_worker_dialog.slint`'s
+// `form_*` fields use.
+export component EditorView inherits Rectangle {
+    property <string> tier_angle: "0.0";
+    property <int> tier_constraint_kind: 0;
+    property <string> tier_constraint_text: "";
+    property <string> tier_name: "";
+    property <string> tier_indices: "";
+
+    property <int> keyboard_focus_index: -1;
+    property <int> inline_edit_target: -1;
+    property <int> inline_edit_pulse: 0;
+
+    function load_tier_into_form(idx: int) {
+        if idx < 0 || idx >= EditorModel.tiers.length {
+            return;
+        }
+        EditorModel.selected_tier_index = idx;
+        root.tier_angle = EditorModel.tiers[idx].angle_deg;
+        root.tier_constraint_kind = EditorModel.tiers[idx].constraint_kind;
+        root.tier_constraint_text = EditorModel.tiers[idx].constraint_text;
+        root.tier_name = EditorModel.tiers[idx].name;
+        root.tier_indices = EditorModel.tiers[idx].indices;
+    }
+
+    function stepped_angle_text(current: string, shift: bool, ctrl: bool, sign: float) -> string {
+        if shift {
+            return (current.to-float() + sign * 1.0).to-fixed(2);
+        } else if ctrl {
+            return (current.to-float() + sign * 0.01).to-fixed(2);
+        }
+        return (current.to-float() + sign * 0.1).to-fixed(2);
+    }
+
+    function scrolled_to_show(idx: int, viewport_y: length, visible_height: length, viewport_height: length) -> length {
+        if idx < 0 {
+            return viewport_y;
+        }
+        if -viewport_y > idx * 30px {
+            return -max(0px, idx * 30px);
+        } else if (-viewport_y + visible_height) < (idx * 30px + 28px) {
+            return -max(0px, min(viewport_height - visible_height, idx * 30px + 28px - visible_height));
+        }
+        return viewport_y;
+    }
+    background: Theme.bg-card;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 10px;
+
+        // --- Top toolbar: an "Edit" cluster (New/Load Selected/Undo/Redo) and a
+        // "Verify & Solve" cluster (Solve/Deep Solve/Optimize), each under its own
+        // small caption with a divider between them; Export/Save/Open Native stay
+        // ungrouped at the right as a third, unrelated kind of action (file I/O).
+        HorizontalLayout {
+            spacing: 16px;
+
+            VerticalLayout {
+                spacing: 3px;
+                Text { text: "EDIT"; font-size: 9px; font-weight: 700; color: Theme.text-muted; letter-spacing: 0.5px; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button { text: "New"; clicked => { EditorModel.new_dialog_open = true;; } }
+                    Button { text: "Load Selected"; clicked => { EditorModel.load_selected(); } }
+                    Button { text: "Undo"; enabled: EditorModel.can_undo; clicked => { EditorModel.undo(); } }
+                    Button { text: "Redo"; enabled: EditorModel.can_redo; clicked => { EditorModel.redo(); } }
+                }
+            }
+
+            Rectangle { width: 1px; background: Theme.border-subtle; }
+
+            VerticalLayout {
+                spacing: 3px;
+                Text { text: "VERIFY & SOLVE"; font-size: 9px; font-weight: 700; color: Theme.text-muted; letter-spacing: 0.5px; }
+                HorizontalLayout {
+                    spacing: 10px;
+
+                    Rectangle {
+                        width: solve_btn.preferred-width;
+                        height: solve_btn.preferred-height;
+                        Tooltip { text: @markdown("Recompute every tier's depth and validate the design. Runs in the background above 16 tiers -- the button relabels while that's in flight."); }
+                        // Styled with the same "problem" ruby accent the validation
+                        // banner uses while stale, so the button that clears
+                        // staleness stays visually tied to the banner announcing it.
+                        solve_btn := Button {
+                            text: EditorModel.solve_running ? "Solving..." : "Solve";
+                            enabled: !EditorModel.solve_running;
+                            primary: EditorModel.status_is_problem && !EditorModel.solve_running;
+                            clicked => { EditorModel.solve(); }
+                        }
+                    }
+
+                    // Auto-solve budget: after an edit, a background re-solve is
+                    // scheduled automatically (debounced) whenever this design's last
+                    // measured solve took less than the selected budget -- see
+                    // `solve_running`/`status_text` above for what a triggered one
+                    // looks like. "Off" reproduces the plain stale-marker behaviour
+                    // this control didn't used to have a way to opt out of.
+                    VerticalLayout {
+                        spacing: 1px;
+                        Rectangle {
+                            height: auto_solve_lbl.preferred-height;
+                            Tooltip { text: @markdown("After an edit, automatically re-solve (debounced) once this design's own last solve took less than the selected budget. \"Off\" only marks the panel stale, same as clicking Solve yourself."); }
+                            auto_solve_lbl := Text { text: "AUTO-SOLVE"; font-size: 9px; font-weight: 700; color: Theme.text-muted; letter-spacing: 0.5px; }
+                        }
+                        HorizontalLayout {
+                            spacing: 3px;
+                            Button { text: "Off"; primary: EditorModel.auto_solve_budget_ms == 0; clicked => { EditorModel.auto_solve_budget_ms = 0; } }
+                            Button { text: "150ms"; primary: EditorModel.auto_solve_budget_ms == 150; clicked => { EditorModel.auto_solve_budget_ms = 150; } }
+                            Button { text: "300ms"; primary: EditorModel.auto_solve_budget_ms == 300; clicked => { EditorModel.auto_solve_budget_ms = 300; } }
+                            Button { text: "1s"; primary: EditorModel.auto_solve_budget_ms == 1000; clicked => { EditorModel.auto_solve_budget_ms = 1000; } }
+                            Button { text: "3s"; primary: EditorModel.auto_solve_budget_ms == 3000; clicked => { EditorModel.auto_solve_budget_ms = 3000; } }
+                        }
+                    }
+
+                    // A separate, slower, externally-verified action from "Solve"
+                    // above. Disabled (with `deep_solve_hint` explaining why, shown
+                    // in the banner below) rather than hidden, so a design with
+                    // nothing to verify against reads as "not applicable right now,"
+                    // not "missing." The one-line caption underneath is always
+                    // visible since "never changes the design" is worth saying up
+                    // front.
+                    if !EditorModel.deep_solve_running: VerticalLayout {
+                        spacing: 1px;
+                        Rectangle {
+                            width: deep_solve_btn.preferred-width;
+                            height: deep_solve_btn.preferred-height;
+                            Tooltip { text: @markdown("Slow check against the catalogue's printed proportions. Never changes the design."); }
+                            deep_solve_btn := Button {
+                                text: "Deep Solve";
+                                enabled: EditorModel.deep_solve_available;
+                                clicked => { EditorModel.deep_solve(); }
+                            }
+                        }
+                        Text {
+                            text: "checks against the printed proportions, never changes the design";
+                            font-size: 9px;
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                            width: 130px;
+                        }
+                    }
+                    if EditorModel.deep_solve_running: Button {
+                        text: "Cancel Deep Solve";
+                        clicked => { EditorModel.deep_solve_cancel(); }
+                    }
+
+                    // Same disabled-with-a-hint treatment as Deep Solve above, except
+                    // genuinely DISABLED when there is nothing free to move. The
+                    // weight form and result table live in the right-hand panel's
+                    // "Optimize" section, since this toolbar row has no room for
+                    // either.
+                    if !EditorModel.optimize_running: VerticalLayout {
+                        spacing: 1px;
+                        Rectangle {
+                            width: optimize_btn.preferred-width;
+                            height: optimize_btn.preferred-height;
+                            Tooltip { text: @markdown("Search free (unpinned) tiers for better optics. Adopt a tier first if disabled."); }
+                            optimize_btn := Button {
+                                text: "Optimize";
+                                enabled: EditorModel.optimize_available;
+                                clicked => {
+                                    EditorModel.optimize(EditorModel.optimize_weight_windowing, EditorModel.optimize_weight_extinction, EditorModel.optimize_weight_tilt_brilliance);
+                                }
+                            }
+                        }
+                        Text {
+                            text: "searches free tiers, needs Apply";
+                            font-size: 9px;
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                            width: 130px;
+                        }
+                    }
+                    if EditorModel.optimize_running: Button {
+                        text: "Cancel Optimize";
+                        clicked => { EditorModel.optimize_cancel(); }
+                    }
+
+                    // Proposes new facet angles for a different material, reviewed
+                    // in a modal dialog before anything is applied.
+                    VerticalLayout {
+                        spacing: 1px;
+                        Rectangle {
+                            width: retarget_btn.preferred-width;
+                            height: retarget_btn.preferred-height;
+                            Tooltip { text: @markdown("Propose new facet angles for a different material, reviewed before applying."); }
+                            retarget_btn := Button {
+                                text: "Retarget for material...";
+                                clicked => { RetargetModel.is_open = true;; }
+                            }
+                        }
+                        Text {
+                            text: "opens a review dialog";
+                            font-size: 9px;
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                            width: 130px;
+                        }
+                    }
+                }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            // The native design-file format. "Save Native" always writes a real
+            // `.asc` alongside its `.indicatrix.toml` sidecar, never the sidecar
+            // alone. "Export Edited .asc" exports the design AS EDITED in this tab,
+            // distinct from `detail_header.slint`'s catalogue-original export.
+            Button { text: "Export Edited .asc"; clicked => { EditorModel.export_asc(); } }
+            Button { text: "Save Native"; clicked => { EditorModel.save_native(); } }
+            Button { text: "Open Native"; clicked => { EditorModel.open_native(); } }
+        }
+
+        // --- Validation status banner ---
+        Rectangle {
+            height: 30px;
+            background: Theme.bg-input;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: EditorModel.status_is_problem ? Theme.accent-ruby : Theme.accent-emerald;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                Text {
+                    text: EditorModel.status_text;
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: EditorModel.status_is_problem ? Theme.accent-ruby : Theme.accent-emerald;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // --- Deep Solve status/hint banner: shown whenever there is something to say
+        // (an availability hint, or a running/finished search's status), styled amber
+        // while running and ruby/emerald once a result is in, matching the
+        // validation banner's own problem/all-clear convention.
+        if EditorModel.deep_solve_running || EditorModel.deep_solve_status != "" || !EditorModel.deep_solve_available || EditorModel.deep_solve_hint != "": Rectangle {
+            height: 26px;
+            background: Theme.bg-input;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: EditorModel.deep_solve_running ? Theme.accent-amber : (EditorModel.deep_solve_status != "" ? (EditorModel.deep_solve_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.border-subtle);
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                Text {
+                    text: EditorModel.deep_solve_running ? EditorModel.deep_solve_status : (EditorModel.deep_solve_status != "" ? EditorModel.deep_solve_status : EditorModel.deep_solve_hint);
+                    font-size: 11px;
+                    color: EditorModel.deep_solve_running ? Theme.accent-amber : (EditorModel.deep_solve_status != "" ? (EditorModel.deep_solve_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.text-muted);
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        // --- Manufacturability warnings. Amber, never ruby: these are never treated
+        // as errors that stop anything, only things the user should look at. Shown
+        // only while there is at least one, leaving no gap in the layout otherwise.
+        if EditorModel.manufacturability_warnings.length > 0: Rectangle {
+            background: Theme.bg-input;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.accent-amber;
+            VerticalLayout {
+                padding: 8px;
+                spacing: 3px;
+                Text {
+                    text: "Manufacturability (" + EditorModel.manufacturability_warnings.length + ")";
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: Theme.accent-amber;
+                }
+                for w in EditorModel.manufacturability_warnings: Text {
+                    text: "- " + w;
+                    font-size: 10px;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        // --- Does the design fit its rough? Same amber treatment the
+        // manufacturability box above uses, shown only while non-empty.
+        if EditorModel.preform_fit_warning != "": Rectangle {
+            background: Theme.bg-input;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.accent-amber;
+            VerticalLayout {
+                padding: 8px;
+                spacing: 3px;
+                Text {
+                    text: "Rough Fit";
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: Theme.accent-amber;
+                }
+                Text {
+                    text: EditorModel.preform_fit_warning;
+                    font-size: 10px;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        // --- Catalogue-load material suggestion banner.
+        if EditorModel.material_suggestion_text != "": Rectangle {
+            height: 30px;
+            background: Theme.bg-input;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.accent-cyan;
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                spacing: 8px;
+                Text {
+                    horizontal-stretch: 1;
+                    text: EditorModel.material_suggestion_text;
+                    font-size: 11px;
+                    color: Theme.accent-cyan;
+                    vertical-alignment: center;
+                }
+                Button { text: "Set Material"; clicked => { EditorModel.material_suggestion_accept(EditorModel.material_suggestion_name); } }
+                Button { text: "No Thanks"; clicked => { EditorModel.material_suggestion_dismiss(); } }
+            }
+        }
+
+        // --- Design Settings panel -- material combo (built-ins, custom catalogue
+        // materials, then "Custom RI…"), RI override/effective/critical-angle
+        // readouts, gear combo, symmetry order and mirror. Lives above the tier
+        // list: this is the design's own schedule-wide state, not a per-tier one.
+        Rectangle {
+            background: Theme.bg-darkest;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+            VerticalLayout {
+                padding: 8px;
+                spacing: 6px;
+                Text { text: "Design Settings"; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
+                HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 3px;
+                        Rectangle {
+                            height: mat_combo_lbl.preferred-height;
+                            Tooltip { text: @markdown("Material -- built-ins, then custom catalogue materials, then \"Custom RI…\" for a typed refractive index. Drives the critical angle, the optimizer, the tilt curve, and (when linked) the viewport's Render Material. A custom catalogue material with only a flat RI/dispersion pair renders non-dispersive."); }
+                            mat_combo_lbl := Text { text: "Material"; font-size: 10px; color: Theme.text-muted; }
+                        }
+                        ComboBox {
+                            model: EditorModel.material_combo_options;
+                            current-index <=> EditorModel.material_combo_index;
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 3px;
+                        Rectangle {
+                            height: ri_lbl.preferred-height;
+                            Tooltip { text: @markdown("RI override -- blank uses the selected material's own refractive index."); }
+                            ri_lbl := Text { text: "RI Override"; font-size: 10px; color: Theme.text-muted; }
+                        }
+                        LineEdit {
+                            width: 90px;
+                            text <=> EditorModel.ri_override_text;
+                            placeholder-text: "auto";
+                            accepted => { EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text); }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 3px;
+                        Text { text: " "; font-size: 10px; }
+                        Button {
+                            text: "Apply Material";
+                            clicked => { EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text); }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 3px;
+                        Text { text: "Effective RI"; font-size: 10px; color: Theme.text-muted; }
+                        Text { text: EditorModel.effective_ri_text == "" ? "-" : EditorModel.effective_ri_text; font-size: 12px; font-weight: 600; color: Theme.text-primary; }
+                    }
+                    VerticalLayout {
+                        spacing: 3px;
+                        Rectangle {
+                            height: crit_lbl.preferred-height;
+                            Tooltip { text: @markdown("Critical angle -- pavilion facets below this window (see the tier list's MARGIN column)."); }
+                            crit_lbl := Text { text: "Critical Angle"; font-size: 10px; color: Theme.text-muted; }
+                        }
+                        Text { text: EditorModel.critical_angle_text == "" ? "-" : EditorModel.critical_angle_text; font-size: 12px; font-weight: 600; color: Theme.text-primary; }
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.border-subtle; }
+                HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        spacing: 3px;
+                        Rectangle {
+                            height: gear_combo_lbl.preferred-height;
+                            Tooltip { text: @markdown("Index gear tooth count. Changing it opens a remap confirmation -- a non-multiple gear (e.g. 96 to 80) loses precision on some indices, shown in red before you confirm."); }
+                            gear_combo_lbl := Text { text: "Index Gear"; font-size: 10px; color: Theme.text-muted; }
+                        }
+                        ComboBox {
+                            model: ["96", "80", "77", "72", "64", "120", "Custom"];
+                            current-index <=> EditorModel.gear_index;
+                        }
+                    }
+                    if EditorModel.gear_index == 6: VerticalLayout {
+                        spacing: 3px;
+                        Text { text: "Custom Teeth"; font-size: 10px; color: Theme.text-muted; }
+                        LineEdit { width: 70px; text <=> EditorModel.gear_custom_text; }
+                    }
+                    Rectangle {
+                        width: gear_apply_btn.preferred-width;
+                        height: gear_apply_btn.preferred-height;
+                        y: 14px;
+                        gear_apply_btn := Button {
+                            text: "Apply Gear";
+                            clicked => { EditorModel.gear_apply(EditorModel.gear_index, EditorModel.gear_custom_text); }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 3px;
+                        Text { text: "Symmetry Order"; font-size: 10px; color: Theme.text-muted; }
+                        LineEdit { width: 60px; text <=> EditorModel.symmetry_order_text; }
+                    }
+                    VerticalLayout {
+                        spacing: 3px;
+                        Text { text: "Mirror"; font-size: 10px; color: Theme.text-muted; }
+                        HorizontalLayout {
+                            height: 26px;
+                            alignment: start;
+                            Rectangle {
+                                width: 32px;
+                                height: 18px;
+                                border-radius: 9px;
+                                background: EditorModel.mirror ? Theme.accent-cyan : Theme.bg-card-hover;
+                                TouchArea { clicked => { EditorModel.mirror = !EditorModel.mirror; } }
+                                Rectangle {
+                                    width: 14px;
+                                    height: 14px;
+                                    border-radius: 7px;
+                                    background: white;
+                                    x: EditorModel.mirror ? parent.width - self.width - 2px : 2px;
+                                    y: 2px;
+                                    animate x { duration: 120ms; }
+                                }
+                            }
+                        }
+                    }
+                    Rectangle {
+                        width: sym_apply_btn.preferred-width;
+                        height: sym_apply_btn.preferred-height;
+                        y: 14px;
+                        sym_apply_btn := Button {
+                            text: "Apply Symmetry";
+                            clicked => { EditorModel.apply_symmetry(EditorModel.symmetry_order_text, EditorModel.mirror); }
+                        }
+                    }
+                }
+
+                // --- Gear remap confirmation. Non-integral remaps (a lossy
+                // tooth-count change) are shown in red.
+                if EditorModel.gear_remap_open: Rectangle {
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.accent-amber;
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 4px;
+                        Text {
+                            text: "Confirm index remap -- every tier's indices are recomputed for the new gear:";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: Theme.accent-amber;
+                            wrap: word-wrap;
+                        }
+                        for row in EditorModel.gear_remap_rows: HorizontalLayout {
+                            spacing: 6px;
+                            Text { width: 60px; text: row.name; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                            Text { horizontal-stretch: 1; text: row.old_indices + "  ->  " + row.new_indices; font-size: 10px; font-weight: row.non_integral ? 700 : 400; color: row.non_integral ? Theme.accent-ruby : Theme.text-secondary; overflow: elide; }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            Button { text: "Confirm Remap"; primary: true; clicked => { EditorModel.gear_remap_confirm(); } }
+                            Button { text: "Cancel"; clicked => { EditorModel.gear_remap_cancel(); } }
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 12px;
+            vertical-stretch: 1;
+
+            // --- Left: tier list ---
+            Rectangle {
+                horizontal-stretch: 1;
+                background: Theme.bg-darkest;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+
+                VerticalLayout {
+                    padding: 8px;
+                    spacing: 4px;
+
+                    Rectangle {
+                        height: 26px;
+                        HorizontalLayout {
+                            padding-left: 4px;
+                            padding-right: 4px;
+                            Text { width: 30px; text: "#"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                            Text { width: 60px; text: "ANGLE"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                            Text { horizontal-stretch: 1; text: "NAME / INDICES"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                            Text { width: 60px; text: "MAST"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                            Text { width: 96px; text: "SOLVE"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                            // Margin over the design's effective critical angle
+                            // (pavilion tiers only) and the risk band it falls into
+                            // (`EditorTierItem::margin_text`/`risk_level`).
+                            Text { width: 70px; text: "MARGIN"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                            // Whether this row is one orbit, several folded together,
+                            // or partial/inconsistent (`EditorTierItem::orbit_status`)
+                            // -- makes "editing this row moves more than one facet"
+                            // visible before the user clicks Save.
+                            Text { width: 76px; text: "ORBIT"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                            // What the source file claims this facet meets, when
+                            // import pinned the tier instead of deriving it
+                            // (`EditorTierItem::imported_meet_text`).
+                            Text { width: 64px; text: "IMPORTED"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                            Text { width: 56px; text: ""; }
+                            Text { width: 20px; text: ""; }
+                            Text { width: 20px; text: ""; }
+                        }
+                    }
+
+                    if EditorModel.tiers.length == 0: Text {
+                        text: "No tiers yet -- fill in the form on the right and click Save Tier.";
+                        font-size: 11px;
+                        color: Theme.text-muted;
+                        horizontal-alignment: center;
+                    }
+
+                    // Wrapped in a `FocusScope` for keyboard navigation
+                    // (Up/Down/Enter/Delete/Ctrl+D/F2 -- see the manual's "Editing
+                    // Tiers" chapter). Every branch below either `return accept`s or
+                    // falls through to the trailing `reject`, so the global shortcuts
+                    // in `app.slint` (Ctrl+Z/Y/S, F5, 1/2/3) still work while this
+                    // list has focus -- none of those keys are handled here, so they
+                    // always fall to `reject` and bubble up.
+                    if EditorModel.tiers.length > 0: FocusScope {
+                        key-pressed(event) => {
+                            if event.text == Key.DownArrow {
+                                root.keyboard_focus_index = root.keyboard_focus_index < 0
+                                    ? 0
+                                    : Math.min(root.keyboard_focus_index + 1, EditorModel.tiers.length - 1);
+                                tier_scroll.viewport-y = root.scrolled_to_show(root.keyboard_focus_index, tier_scroll.viewport-y, tier_scroll.visible-height, tier_scroll.viewport-height);
+                                return accept;
+                            } else if event.text == Key.UpArrow {
+                                root.keyboard_focus_index = root.keyboard_focus_index <= 0
+                                    ? 0
+                                    : root.keyboard_focus_index - 1;
+                                tier_scroll.viewport-y = root.scrolled_to_show(root.keyboard_focus_index, tier_scroll.viewport-y, tier_scroll.visible-height, tier_scroll.viewport-height);
+                                return accept;
+                            } else if event.text == Key.Return {
+                                root.load_tier_into_form(root.keyboard_focus_index);
+                                return accept;
+                            } else if event.text == Key.Delete || event.text == Key.Backspace {
+                                if root.keyboard_focus_index >= 0 && root.keyboard_focus_index < EditorModel.tiers.length {
+                                    EditorModel.remove_tier(root.keyboard_focus_index);
+                                    if EditorModel.selected_tier_index == root.keyboard_focus_index {
+                                        EditorModel.selected_tier_index = -1;
+                                    }
+                                }
+                                return accept;
+                            } else if (event.modifiers.control || event.modifiers.meta) && event.text == "d" {
+                                if root.keyboard_focus_index >= 0 && root.keyboard_focus_index < EditorModel.tiers.length {
+                                    EditorModel.duplicate_tier(root.keyboard_focus_index);
+                                }
+                                return accept;
+                            } else if event.text == Key.F2 {
+                                if root.keyboard_focus_index >= 0 && root.keyboard_focus_index < EditorModel.tiers.length {
+                                    root.inline_edit_target = root.keyboard_focus_index;
+                                    root.inline_edit_pulse += 1;
+                                    tier_scroll.viewport-y = root.scrolled_to_show(root.keyboard_focus_index, tier_scroll.viewport-y, tier_scroll.visible-height, tier_scroll.viewport-height);
+                                }
+                                return accept;
+                            }
+                            reject
+                        }
+
+                    tier_scroll := ScrollView {
+                        VerticalLayout {
+                            spacing: 2px;
+                            for row in EditorModel.tiers: Rectangle {
+                                height: 28px;
+                                background: row.index == EditorModel.selected_tier_index
+                                    ? Theme.primary-glow
+                                    : (row_touch.has-hover ? Theme.bg-card-hover : (Math.mod(row.index, 2) == 0 ? Theme.bg-input : Theme.bg-card));
+                                border-radius: 2px;
+                                // Keyboard-cursor ring and multi-select tint -- both
+                                // additive to the selection background above, never
+                                // replacing it.
+                                border-width: row.index == root.keyboard_focus_index ? 1.5px : (row.multi_selected ? 1px : 0px);
+                                border-color: row.index == root.keyboard_focus_index ? Theme.accent-cyan : (row.multi_selected ? Theme.accent-cyan : transparent);
+
+                                // `ctrl_down` records the LAST press's modifier state
+                                // (from `pointer-event`, the only place `TouchArea`
+                                // exposes `KeyboardModifiers`) so `clicked` -- which
+                                // carries no event/modifier argument of its own -- can
+                                // still tell a plain click from a Ctrl+click.
+                                property <bool> ctrl_down: false;
+                                row_touch := TouchArea {
+                                    pointer-event(event) => {
+                                        if event.kind == PointerEventKind.down {
+                                            parent.ctrl_down = event.modifiers.control || event.modifiers.meta;
+                                        }
+                                    }
+                                    clicked => {
+                                        root.keyboard_focus_index = row.index;
+                                        if parent.ctrl_down {
+                                            EditorModel.toggle_multi_select(row.index);
+                                        } else {
+                                            root.load_tier_into_form(row.index);
+                                        }
+                                    }
+                                }
+
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    padding-right: 4px;
+                                    Text { width: 30px; text: row.index + 1; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; }
+                                    TierAngleCell {
+                                        value: row.angle_deg;
+                                        index: row.index;
+                                        focus_target: root.inline_edit_target;
+                                        focus_pulse: root.inline_edit_pulse;
+                                        commit(text) => { EditorModel.inline_set_angle(row.index, text); }
+                                        nudge(idx, delta) => { EditorModel.nudge_angle(idx, delta); }
+                                    }
+                                    Text {
+                                        horizontal-stretch: 1;
+                                        text: (row.name == "" ? "(unnamed)" : row.name) + "  [" + row.indices + "]";
+                                        font-size: 11px;
+                                        color: Theme.text-secondary;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        width: 60px;
+                                        text: row.mast;
+                                        font-size: 11px;
+                                        color: Theme.text-secondary;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                    // Solve-strategy badge: `DependencyOrder`/`JointGroup`
+                                    // (a real vertex-derived mast) reads normally;
+                                    // `LeastSquaresFallback`/`Failed`/no-anchor-yet is
+                                    // flagged in amber (`EditorTierItem::strategy_is_uncertain`).
+                                    Text {
+                                        width: 96px;
+                                        text: row.strategy;
+                                        font-size: 10px;
+                                        font-weight: row.strategy_is_uncertain ? 700 : 400;
+                                        color: row.strategy_is_uncertain ? Theme.accent-amber : Theme.text-muted;
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                    // Margin over the critical angle + risk badge -- ""
+                                    // / -1 (crown/girdle, or no material resolved)
+                                    // reads as a plain dash, nothing to flag.
+                                    Text {
+                                        width: 70px;
+                                        text: row.margin_text == "" ? "-" : row.margin_text;
+                                        font-size: 10px;
+                                        font-weight: row.risk_level >= 1 ? 700 : 400;
+                                        color: row.risk_level == 2 ? Theme.accent-ruby : (row.risk_level == 1 ? Theme.accent-amber : (row.risk_level == 0 ? Theme.accent-emerald : Theme.text-muted));
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                    // This tier's orbit shape (`EditorTierItem::orbit_status`)
+                                    // -- emerald for a complete orbit (or several
+                                    // folded together), amber for incomplete/
+                                    // inconsistent, muted with a trailing "*" once the
+                                    // row is detached (still shown, no longer
+                                    // auto-followed).
+                                    Text {
+                                        width: 76px;
+                                        text: row.orbit_status == "" ? "" : (row.is_detached ? row.orbit_status + " *" : row.orbit_status);
+                                        font-size: 10px;
+                                        font-weight: (row.orbit_incomplete && !row.is_detached) ? 700 : 400;
+                                        color: row.is_detached ? Theme.text-muted : (row.orbit_incomplete ? Theme.accent-amber : Theme.accent-emerald);
+                                        overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                    // One-click "Adopt": switches this pinned tier over
+                                    // to the meet instruction the file actually stated
+                                    // (`Edit::SetConstraint`). Empty when there is
+                                    // nothing to adopt (`imported_meet_text == ""`).
+                                    Rectangle {
+                                        width: 64px;
+                                        if row.imported_meet_text != "": Rectangle {
+                                            background: adopt_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+                                            border-radius: 3px;
+                                            Text {
+                                                text: "Adopt";
+                                                font-size: 10px;
+                                                font-weight: 600;
+                                                color: Theme.accent-cyan;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                            adopt_touch := TouchArea {
+                                                clicked => { EditorModel.adopt_meet(row.index); }
+                                            }
+                                            Tooltip { text: @markdown("Switch this pinned tier to the file's meet geometry so the solver and Optimize can move it."); }
+                                        }
+                                    }
+                                    // Explicit, visible detach/reattach act
+                                    // (`Design::detach_all_in_tier`/`reattach_all_in_tier`)
+                                    // -- hidden for a tier with nothing to link
+                                    // (`orbit_status == ""`), like the Adopt column.
+                                    Rectangle {
+                                        width: 54px;
+                                        if row.orbit_status != "": Rectangle {
+                                            background: detach_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+                                            border-radius: 3px;
+                                            Text {
+                                                text: row.is_detached ? "Reattach" : "Detach";
+                                                font-size: 9px;
+                                                font-weight: 600;
+                                                color: row.is_detached ? Theme.accent-cyan : Theme.text-secondary;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                            detach_touch := TouchArea {
+                                                clicked => { EditorModel.toggle_detach(row.index); }
+                                            }
+                                            Tooltip { text: @markdown("Exempt this tier from orbit symmetry handling."); }
+                                        }
+                                    }
+                                    // Duplicate this tier -- the row-button half of
+                                    // the tier list's Ctrl+D shortcut.
+                                    Rectangle {
+                                        width: 20px;
+                                        height: 20px;
+                                        Text {
+                                            text: "\u{29C9}";
+                                            color: Theme.accent-cyan;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                        TouchArea {
+                                            clicked => { EditorModel.duplicate_tier(row.index); }
+                                        }
+                                        Tooltip { text: @markdown("Duplicate this tier (Ctrl+D)."); }
+                                    }
+                                    Rectangle {
+                                        width: 20px;
+                                        height: 20px;
+                                        Text {
+                                            text: "x";
+                                            color: Theme.accent-ruby;
+                                            font-weight: 700;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                        TouchArea {
+                                            clicked => {
+                                                EditorModel.remove_tier(row.index);
+                                                if EditorModel.selected_tier_index == row.index {
+                                                    EditorModel.selected_tier_index = -1;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    } // FocusScope (tier list keyboard navigation)
+                }
+            }
+
+            // --- Right: tier-edit form + preform controls ---
+            Rectangle {
+                width: 260px;
+                background: Theme.bg-darkest;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+
+                // Wrapped in a `ScrollView` since this panel's form content doesn't
+                // reliably fit a fixed-height right column -- the tier list at left
+                // already scrolls its own overflow the same way.
+                ScrollView {
+                VerticalLayout {
+                    padding: 10px;
+                    spacing: 8px;
+
+                    Text {
+                        text: EditorModel.selected_tier_index < 0 ? "Add Tier" : "Edit Tier #" + (EditorModel.selected_tier_index + 1);
+                        font-size: 12px;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                    }
+                    Rectangle {
+                        height: angle_lbl.preferred-height;
+                        Tooltip { text: @markdown("Angle from the girdle plane in degrees. Negative is pavilion, zero or positive is crown."); }
+                        angle_lbl := Text { text: "Angle (deg)"; font-size: 10px; color: Theme.text-muted; }
+                    }
+                    // Up/Down/Shift/Ctrl step this scratch buffer the SAME
+                    // +-0.1/1/0.01deg the tier-list's inline cell uses, but purely as
+                    // local text here -- this form is a staging area (nothing commits
+                    // until "Save Tier"/"Add Tier" below), unlike the inline cell,
+                    // which nudges an EXISTING tier immediately and undoably. Nudging
+                    // an as-yet-unsaved "Add Tier" draft has no `Design` edit to apply
+                    // in the first place.
+                    LineEdit {
+                        text <=> root.tier_angle;
+                        key-pressed(event) => {
+                            if event.text == Key.UpArrow {
+                                root.tier_angle = root.stepped_angle_text(root.tier_angle, event.modifiers.shift, event.modifiers.control, 1.0);
+                                return accept;
+                            } else if event.text == Key.DownArrow {
+                                root.tier_angle = root.stepped_angle_text(root.tier_angle, event.modifiers.shift, event.modifiers.control, -1.0);
+                                return accept;
+                            }
+                            reject
+                        }
+                    }
+                    // What this facet meets, not a depth number -- the constraint is
+                    // the authored value; the mast (shown read-only at left) is only
+                    // ever solved.
+                    Rectangle {
+                        height: meets_lbl.preferred-height;
+                        Tooltip { text: @markdown("How the depth is derived: an unnamed meet, named facets, or a stated dimension (anchor)."); }
+                        meets_lbl := Text { text: "Meets"; font-size: 10px; color: Theme.text-muted; }
+                    }
+                    ComboBox {
+                        model: ["Unspecified vertex", "Named facet(s)", "Exact scale value"];
+                        current-index <=> root.tier_constraint_kind;
+                    }
+                    if root.tier_constraint_kind == 1: Text { text: "Facet names (comma-separated)"; font-size: 10px; color: Theme.text-muted; }
+                    if root.tier_constraint_kind == 2: Text { text: "Scale value (a real dimension, e.g. girdle half-width)"; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
+                    if root.tier_constraint_kind != 0: LineEdit { text <=> root.tier_constraint_text; }
+                    Rectangle {
+                        height: name_lbl.preferred-height;
+                        Tooltip { text: @markdown("Facet name, referenced by other tiers' named-facet field."); }
+                        name_lbl := Text { text: "Name"; font-size: 10px; color: Theme.text-muted; }
+                    }
+                    LineEdit { text <=> root.tier_name; }
+                    Rectangle {
+                        height: indices_lbl.preferred-height;
+                        Tooltip { text: @markdown("Gear positions this tier occupies, comma-separated. Several values form a symmetric family."); }
+                        indices_lbl := Text { text: "Indices (comma-separated)"; font-size: 10px; color: Theme.text-muted; }
+                    }
+                    LineEdit { text <=> root.tier_indices; }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Button {
+                            text: EditorModel.selected_tier_index < 0 ? "Add Tier" : "Save Tier";
+                            clicked => {
+                                EditorModel.save_tier(EditorModel.selected_tier_index, root.tier_angle, root.tier_constraint_kind, root.tier_constraint_text, root.tier_name, root.tier_indices);
+                            }
+                        }
+                        Button {
+                            text: "New";
+                            clicked => {
+                                EditorModel.selected_tier_index = -1;
+                                root.tier_angle = "0.0";
+                                root.tier_constraint_kind = 0;
+                                root.tier_constraint_text = "";
+                                root.tier_name = "";
+                                root.tier_indices = "";
+                            }
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                    Rectangle {
+                        height: preform_lbl.preferred-height;
+                        Tooltip { text: @markdown("Starting rough shape and size the design's blank is built from."); }
+                        preform_lbl := Text { text: "Preform"; font-size: 12px; font-weight: 700; color: Theme.text-primary; }
+                    }
+                    ComboBox {
+                        model: ["Block", "Cylinder"];
+                        current-index <=> EditorModel.preform_shape_index;
+                    }
+                    Text { text: "Half-Width"; font-size: 10px; color: Theme.text-muted; }
+                    LineEdit { text <=> EditorModel.preform_half_width; }
+                    Text { text: "Length / Width"; font-size: 10px; color: Theme.text-muted; }
+                    LineEdit { text <=> EditorModel.preform_length_over_width; }
+                    Text { text: "Depth"; font-size: 10px; color: Theme.text-muted; }
+                    LineEdit { text <=> EditorModel.preform_depth; }
+                    Button {
+                        text: "Apply Preform";
+                        clicked => {
+                            EditorModel.apply_preform(EditorModel.preform_shape_index, EditorModel.preform_half_width, EditorModel.preform_length_over_width, EditorModel.preform_depth);
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                    // --- Real units, the rough, and yield.
+                    Text { text: "Yield"; font-size: 12px; font-weight: 700; color: Theme.text-primary; }
+                    Rectangle {
+                        height: girdle_lbl.preferred-height;
+                        Tooltip { text: @markdown("Real girdle diameter in millimetres, used for the carat estimate."); }
+                        girdle_lbl := Text { text: "Girdle Diameter (mm)"; font-size: 10px; color: Theme.text-muted; }
+                    }
+                    LineEdit { text <=> EditorModel.girdle_diameter_mm; placeholder-text: "unset"; }
+                    // Distinct from `gem_viewport.slint`'s unrelated Render Material
+                    // control -- this one is specific gravity only, for the carat
+                    // estimate; it never touches the render.
+                    Rectangle {
+                        height: yield_material_lbl.preferred-height;
+                        Tooltip { text: @markdown("Yield Material -- specific gravity for the carat estimate. Does not affect the render."); }
+                        yield_material_lbl := Text { text: "Yield Material"; font-size: 10px; color: Theme.text-muted; }
+                    }
+                    ComboBox {
+                        // EXACT order of `gui::editor::MATERIAL_PRESET_NAMES` -- kept
+                        // in sync by hand.
+                        model: ["(none)", "Diamond", "Sapphire", "Ruby", "Emerald", "Zircon", "Alexandrite", "Topaz", "Spinel", "Quartz", "Tourmaline", "Tanzanite", "Synthetic Moissanite", "Cubic Zirconia"];
+                        current-index <=> EditorModel.material_index;
+                    }
+                    Rectangle {
+                        height: sg_override_lbl.preferred-height;
+                        Tooltip { text: @markdown("Specific gravity for the carat estimate. Does not affect the render."); }
+                        sg_override_lbl := Text { text: "Specific Gravity Override"; font-size: 10px; color: Theme.text-muted; }
+                    }
+                    LineEdit { text <=> EditorModel.specific_gravity_override; placeholder-text: "use material default"; }
+                    Button {
+                        text: "Apply Yield Inputs";
+                        clicked => {
+                            EditorModel.apply_yield_inputs(EditorModel.girdle_diameter_mm, EditorModel.material_index, EditorModel.specific_gravity_override);
+                        }
+                    }
+
+                    // Read-only results; go blank until the next Solve.
+                    Text { text: "Volumetric Yield: " + (EditorModel.volumetric_yield_text == "" ? "-" : EditorModel.volumetric_yield_text); font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                    Text { text: "Est. Carat Weight: " + (EditorModel.carat_weight_text == "" ? "-" : EditorModel.carat_weight_text); font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                    Text { text: "Specific Gravity Used: " + (EditorModel.specific_gravity_used_text == "" ? "-" : EditorModel.specific_gravity_used_text); font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+
+                    Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                    // --- Optimize -- see `optimize_available` above for the
+                    // zero-free-tiers case every freshly imported design starts in
+                    // (correct, not broken).
+                    Text { text: "Optimize"; font-size: 12px; font-weight: 700; color: Theme.text-primary; }
+                    Rectangle {
+                        height: weights_lbl.preferred-height;
+                        Tooltip { text: @markdown("Relative importance, any positive number. 1.0 is neutral."); }
+                        weights_lbl := Text { text: "Weights: windowing / extinction / tilt brilliance"; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        LineEdit { text <=> EditorModel.optimize_weight_windowing; }
+                        LineEdit { text <=> EditorModel.optimize_weight_extinction; }
+                        LineEdit { text <=> EditorModel.optimize_weight_tilt_brilliance; }
+                    }
+                    // Non-numeric/negative input is rejected Rust-side
+                    // (surfaced as an error toast) before it reaches `optimize_design`.
+                    Text {
+                        text: "Relative weight, any positive number. Higher matters more.";
+                        font-size: 9px;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+
+                    // Hint / running status / result -- same problem/all-clear/
+                    // running color convention the Deep Solve banner above uses.
+                    // Lives here (not the top toolbar) since the weight form and
+                    // result table belong together.
+                    if EditorModel.optimize_hint != "" || EditorModel.optimize_status != "": Rectangle {
+                        background: Theme.bg-input;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: EditorModel.optimize_running ? Theme.accent-amber : (EditorModel.optimize_status != "" ? (EditorModel.optimize_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.border-subtle);
+                        VerticalLayout {
+                            padding: 6px;
+                            spacing: 4px;
+                            Text {
+                                text: EditorModel.optimize_running ? EditorModel.optimize_status : (EditorModel.optimize_status != "" ? EditorModel.optimize_status : EditorModel.optimize_hint);
+                                font-size: 10px;
+                                color: EditorModel.optimize_running ? Theme.accent-amber : (EditorModel.optimize_status != "" ? (EditorModel.optimize_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.text-muted);
+                                wrap: word-wrap;
+                            }
+                            // Per-component before/after: windowing/extinction/tilt
+                            // brilliance each get their own row, with the blended
+                            // score as a separate fourth row, rather than one number
+                            // that could hide a trade-off.
+                            if EditorModel.optimize_result_rows.length > 0: VerticalLayout {
+                                spacing: 2px;
+                                for row in EditorModel.optimize_result_rows: HorizontalLayout {
+                                    spacing: 4px;
+                                    Text { horizontal-stretch: 1; text: row.label; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                                    Text { text: row.before; font-size: 10px; color: Theme.text-muted; }
+                                    Text { text: "->"; font-size: 10px; color: Theme.text-muted; }
+                                    Text { text: row.after; font-size: 10px; font-weight: 600; color: Theme.text-primary; }
+                                }
+                            }
+                            // Only shown while there is a real, current (not stale)
+                            // result to commit. Goes through `History::apply`, never
+                            // a direct mutation, so it is undoable like every other edit.
+                            if EditorModel.optimize_can_apply: Rectangle {
+                                height: apply_optimize_btn.preferred-height;
+                                Tooltip { text: @markdown("Commit the Optimize result as an undoable edit."); }
+                                apply_optimize_btn := Button {
+                                    text: "Apply Optimize Result";
+                                    primary: true;
+                                    clicked => { EditorModel.optimize_apply(); }
+                                }
+                            }
+                        }
+                    }
+                }
+                }
+            }
+        }
+    }
+}

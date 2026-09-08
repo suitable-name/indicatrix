@@ -1,0 +1,121 @@
+import { ScrollView, Button } from "std-widgets.slint";
+import { FileItem } from "../types.slint";
+import { Theme } from "../theme.slint";
+import { LibraryModel } from "../models/library.slint";
+
+export component AttachmentsView inherits Rectangle {
+    in property <[FileItem]> files: LibraryModel.current_files;
+
+    callback export_file(string);
+    export_file(name) => { LibraryModel.export_file(name); }
+    callback copy_file_url(string);
+    copy_file_url(url) => { LibraryModel.copy_text(url); }
+
+    background: Theme.bg-darkest;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 12px;
+
+        HorizontalLayout {
+            alignment: space-between;
+
+            Text {
+                text: "Attached Files (" + root.files.length + ")";
+                font-size: 13px;
+                font-weight: 700;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+            }
+
+            Text {
+                text: "Exported files are saved to ./exports/";
+                font-size: 11px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+        }
+
+        if root.files.length == 0: VerticalLayout {
+            alignment: center;
+            spacing: 8px;
+            vertical-stretch: 1;
+
+            Image { source: @image-url("../icons/folder.svg"); colorize: Theme.text-muted; width: 32px; height: 32px; horizontal-alignment: center; }
+            Text { text: "No files or GemCAD data attached to this diagram"; font-size: 13px; color: Theme.text-muted; horizontal-alignment: center; }
+        }
+
+        if root.files.length > 0: ScrollView {
+            VerticalLayout {
+                spacing: 8px;
+
+                for file in root.files: Rectangle {
+                    height: 52px;
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        alignment: space-between;
+
+                        HorizontalLayout {
+                            spacing: 12px;
+                            alignment: start;
+
+                            Image {
+                                source: @image-url("../icons/page.svg");
+                                colorize: Theme.text-secondary;
+                                width: 20px;
+                                height: 20px;
+                                vertical-alignment: center;
+                            }
+
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 2px;
+
+                                Text {
+                                    text: file.name;
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    color: Theme.text-primary;
+                                }
+
+                                Text {
+                                    text: file.size_str != "" ? file.size_str : "Binary Content";
+                                    font-size: 11px;
+                                    color: Theme.text-muted;
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: center;
+
+                            Button {
+                                text: "Save / Export";
+                                icon: @image-url("../icons/save.svg");
+                                colorize-icon: true;
+                                clicked => { root.export_file(file.name); }
+                            }
+
+                            Button {
+                                text: "Copy URL";
+                                icon: @image-url("../icons/link.svg");
+                                colorize-icon: true;
+                                clicked => { root.copy_file_url(file.url); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

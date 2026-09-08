@@ -1,0 +1,334 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { RetargetRowItem } from "../types.slint";
+import { RetargetModel } from "../models/retarget.slint";
+
+export { RetargetRowItem }
+
+export component RetargetDialog inherits Rectangle {
+    callback close();
+    close => { RetargetModel.is_open = false; RetargetModel.close(); }
+
+    property <bool> can_apply: RetargetModel.rows.length > 0 && RetargetModel.anchored_tier_errors.length == 0 && RetargetModel.solve_error == "" && !RetargetModel.is_busy;
+
+    visible: RetargetModel.is_open;
+    background: #00000088;
+
+    TouchArea {
+        clicked => { if (!RetargetModel.is_busy) { root.close(); } }
+    }
+
+    Rectangle {
+        width: 560px;
+        height: min(680px, root.height - 40px);
+        background: #11151f;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: #334155;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #000000bb;
+        clip: true;
+
+        TouchArea {} // Isolate clicks inside the modal.
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+
+            // 1. Header
+            HorizontalLayout {
+                alignment: space-between;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
+                    Text { text: "Retarget for Material"; font-size: 14px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
+                }
+                Rectangle {
+                    width: 24px;
+                    height: 24px;
+                    border-radius: Theme.radius-sm;
+                    background: close_touch.has-hover ? #2d3748 : #1a202c;
+                    close_touch := TouchArea {
+                        clicked => { if (!RetargetModel.is_busy) { root.close(); } }
+                    }
+                    Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-muted; width: 12px; height: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+
+            Rectangle { height: 1px; background: #1e293b; }
+
+            // 2. Target material readout
+            Rectangle {
+                height: target_row.preferred-height + 12px;
+                border-radius: Theme.radius-sm;
+                background: #0f172a;
+                border-width: 1px;
+                border-color: #334155;
+
+                Tooltip { text: @markdown("The material this proposal retargets TO -- chosen in the design settings panel before opening this dialog."); }
+
+                target_row := HorizontalLayout {
+                    padding: 8px;
+                    spacing: 14px;
+                    Text { text: "Target:"; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; }
+                    Text { text: RetargetModel.target_material_name; font-size: 12px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; horizontal-stretch: 1; }
+                    Text { text: "n_D " + RetargetModel.target_material_ri; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
+                    Text { text: "critical " + RetargetModel.target_critical_angle; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
+                }
+            }
+
+            // 3. Mode selector
+            VerticalLayout {
+                spacing: 6px;
+                Rectangle {
+                    height: mode_lbl.preferred-height;
+                    Tooltip { text: @markdown("Shift keeps every pavilion tier's own margin over the critical angle fixed -- deterministic, always available. Optimize seeds from that same shift, then searches free (non-anchored) tiers for the target material's own best score."); }
+                    mode_lbl := Text { text: "Mode"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                }
+
+                HorizontalLayout {
+                    spacing: 4px;
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: RetargetModel.mode_index == 0 ? Theme.accent-cyan : (shift_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: RetargetModel.mode_index == 0 ? Theme.accent-cyan : #334155;
+
+                        shift_touch := TouchArea {
+                            enabled: !RetargetModel.is_busy;
+                            clicked => { RetargetModel.mode_index = 0; RetargetModel.proposal_changed(); }
+                        }
+
+                        Text { text: "Shift"; font-size: 11px; font-weight: 600; color: RetargetModel.mode_index == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: RetargetModel.mode_index == 1 ? Theme.accent-cyan : (optimize_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: RetargetModel.mode_index == 1 ? Theme.accent-cyan : #334155;
+
+                        optimize_touch := TouchArea {
+                            enabled: !RetargetModel.is_busy;
+                            clicked => { RetargetModel.mode_index = 1; RetargetModel.proposal_changed(); }
+                        }
+
+                        Text { text: "Optimize"; font-size: 11px; font-weight: 600; color: RetargetModel.mode_index == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+            }
+
+            // 4. Crown handling
+            VerticalLayout {
+                spacing: 6px;
+                Rectangle {
+                    height: crown_lbl.preferred-height;
+                    Tooltip { text: @markdown("How crown tiers follow the pavilion's critical-angle move. Default (0%) leaves the crown untouched, matching common faceting practice."); }
+                    crown_lbl := Text { text: "Crown Handling"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Fraction of shift:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 18px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 9px;
+                        background: #0f172a;
+                        border-width: 1px;
+                        border-color: #334155;
+                        clip: true;
+
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * RetargetModel.crown_fraction;
+                            height: 100%;
+                            background: RetargetModel.scale_crown_by_ratio ? #334155 : Theme.accent-cyan;
+                        }
+
+                        crown_touch := TouchArea {
+                            enabled: !RetargetModel.is_busy && !RetargetModel.scale_crown_by_ratio;
+                            moved => {
+                                if (self.pressed) {
+                                    RetargetModel.crown_fraction = max(0.0, min(1.0, self.mouse-x / self.width));
+                                    RetargetModel.proposal_changed();
+                                }
+                            }
+                            clicked => {
+                                RetargetModel.crown_fraction = max(0.0, min(1.0, self.mouse-x / self.width));
+                                RetargetModel.proposal_changed();
+                            }
+                        }
+                    }
+                    Text { text: Math.round(RetargetModel.crown_fraction * 100) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; vertical-alignment: center; }
+                }
+
+                Rectangle {
+                    height: 22px;
+                    Tooltip { text: @markdown("Instead of a fraction of the pavilion's shift, scale every crown tier's own raw angle by the ratio of the two materials' critical angles."); }
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Rectangle {
+                            width: 14px;
+                            height: 14px;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 3px;
+                            background: RetargetModel.scale_crown_by_ratio ? Theme.accent-cyan : transparent;
+                            border-width: 1px;
+                            border-color: RetargetModel.scale_crown_by_ratio ? Theme.accent-cyan : #475569;
+
+                            if RetargetModel.scale_crown_by_ratio: Image {
+                                source: @image-url("../icons/check.svg");
+                                colorize: #0f172a;
+                                width: 9px;
+                                height: 9px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            ratio_touch := TouchArea {
+                                enabled: !RetargetModel.is_busy;
+                                clicked => {
+                                    RetargetModel.scale_crown_by_ratio = !RetargetModel.scale_crown_by_ratio;
+                                    RetargetModel.proposal_changed();
+                                }
+                            }
+                        }
+                        Text { text: "Scale crown by ratio instead"; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: #1e293b; }
+
+            // 5. Errors: shown instead of the table whenever the current mode/crown
+            // combination cannot produce a valid proposal.
+            if RetargetModel.solve_error != "": Text {
+                text: "Design does not solve: " + RetargetModel.solve_error;
+                font-size: 11px;
+                font-weight: 600;
+                color: #f87171;
+                wrap: word-wrap;
+            }
+            if RetargetModel.anchored_tier_errors.length > 0: VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: "Adopt these tiers' meet constraint before optimizing (Edit tab -> tier list -> Adopt Meet):";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.accent-amber;
+                    wrap: word-wrap;
+                }
+                for line in RetargetModel.anchored_tier_errors: Text {
+                    text: "• " + line;
+                    font-size: 11px;
+                    color: Theme.text-secondary;
+                }
+            }
+
+            // 6. The proposal table -- one row per pavilion/crown tier.
+            if RetargetModel.solve_error == "" && RetargetModel.anchored_tier_errors.length == 0: VerticalLayout {
+                vertical-stretch: 1;
+                spacing: 4px;
+
+                HorizontalLayout {
+                    padding-right: 10px;
+                    spacing: 6px;
+                    Text { text: "Block"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 56px; }
+                    Text { text: "Tier"; font-size: 10px; font-weight: 700; color: Theme.text-muted; horizontal-stretch: 1; }
+                    Text { text: "Old"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 60px; horizontal-alignment: right; }
+                    Text { text: "New"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 60px; horizontal-alignment: right; }
+                    Text { text: "Margin"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 60px; horizontal-alignment: right; }
+                    Text { text: "Risk"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 64px; horizontal-alignment: right; }
+                }
+
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 2px;
+                        for row in RetargetModel.rows: Rectangle {
+                            height: 24px;
+                            border-radius: Theme.radius-sm;
+                            background: #0f172a;
+
+                            Tooltip { text: @markdown("Tier #\{row.tier_index} \"\{row.name}\" (\{row.block})"); }
+
+                            HorizontalLayout {
+                                padding-left: 6px;
+                                padding-right: 10px;
+                                spacing: 6px;
+                                Text { text: row.block; font-size: 10px; color: Theme.text-muted; width: 56px; vertical-alignment: center; }
+                                Text { text: row.name; font-size: 11px; color: Theme.text-primary; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
+                                Text { text: row.old_angle; font-size: 11px; color: Theme.text-secondary; width: 60px; horizontal-alignment: right; vertical-alignment: center; }
+                                Text { text: row.new_angle; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; width: 60px; horizontal-alignment: right; vertical-alignment: center; }
+                                Text { text: row.margin; font-size: 11px; color: Theme.text-secondary; width: 60px; horizontal-alignment: right; vertical-alignment: center; }
+                                Text { text: row.risk_label; font-size: 11px; font-weight: 700; color: row.risk_color; width: 64px; horizontal-alignment: right; vertical-alignment: center; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 7. Notes
+            if RetargetModel.notes.length > 0: VerticalLayout {
+                spacing: 2px;
+                for line in RetargetModel.notes: Text {
+                    text: line;
+                    font-size: 10px;
+                    font-italic: true;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+            }
+
+            if RetargetModel.is_busy: Text { text: "Optimizing..."; font-size: 11px; font-weight: 600; color: Theme.accent-cyan; }
+
+            Rectangle { height: 1px; background: #1e293b; }
+
+            // 8. Footer
+            HorizontalLayout {
+                spacing: 8px;
+
+                Rectangle {
+                    width: 90px;
+                    height: 32px;
+                    border-radius: Theme.radius-sm;
+                    background: cancel_touch.has-hover ? #1e293b : #0f172a;
+                    border-width: 1px;
+                    border-color: #334155;
+
+                    cancel_touch := TouchArea {
+                        enabled: !RetargetModel.is_busy;
+                        clicked => { root.close(); }
+                    }
+
+                    Text { text: "Cancel"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 32px;
+                    border-radius: Theme.radius-sm;
+                    opacity: root.can_apply ? 1.0 : 0.45;
+                    background: apply_touch.has-hover && root.can_apply ? #7dd3fc : Theme.accent-cyan;
+
+                    Tooltip { text: @markdown("Pushes one undoable edit retargeting every listed tier, then re-solves the design."); }
+
+                    apply_touch := TouchArea {
+                        enabled: root.can_apply;
+                        clicked => { RetargetModel.apply(); }
+                    }
+
+                    Text { text: "Apply"; font-size: 12px; font-weight: 700; color: #0f172a; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+        }
+    }
+}

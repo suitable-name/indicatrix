@@ -1,0 +1,431 @@
+// The whole UI for `indicatrix-web`, deliberately small -- see the crate's `README.md`
+// "What this deliberately omits" section for why this is not a port of
+// `apps/indicatrix-cut`'s much larger `ui/app.slint`: no design library, no remote
+// worker to configure, no export pipeline. One window, one image, a handful of controls.
+import { Button, ComboBox, Slider, VerticalBox, HorizontalBox } from "std-widgets.slint";
+
+// -- The rendered stone, and its drag-to-orbit surface -------------------------------
+//
+// Factored out of `AppWindow` so the SAME markup -- drag logic, progress badge,
+// placeholder text -- can be instantiated from either of `AppWindow`'s two layout
+// branches (side-by-side on a wide viewport, stacked on a narrow one) without
+// duplicating the `TouchArea`'s pointer-tracking state in two places.
+component RenderSurface inherits Rectangle {
+    in property <image> stone-image;
+    in property <string> progress-text;
+    in property <bool> has-stone;
+    // Camera pose: `in-out` (not just `in`) because the drag handler below WRITES
+    // yaw/pitch as the user drags -- `AppWindow` binds these `<=>` (two-way) to its
+    // own `yaw`/`pitch` properties so a drag here and the Distance slider in
+    // `ControlsPanel` both read and write the SAME single source of truth.
+    in-out property <float> yaw;
+    in-out property <float> pitch;
+    in property <float> distance;
+    callback camera-changed(float, float, float);
+    // Fires whenever THIS element's own resolved size changes -- `AppWindow` forwards
+    // it straight to Rust (`src/app.rs`'s `on_render_size_changed`), which debounces
+    // it and turns it into a new render-target size. See `src/app.rs`'s
+    // `RESIZE_DEBOUNCE` for why a raw per-tick callback would be wrong to wire
+    // `Accumulator::reset` to directly.
+    callback render-size-changed(length, length);
+
+    // No fixed `width` (that was the whole problem this component exists to fix) --
+    // `min-width` is the floor `AppWindow`'s two layout branches shrink this element
+    // toward before letting the layout overflow rather than rendering the stone into
+    // an unusably small box. Picked to still show a recognisable gem-shaped image.
+    min-width: 280px;
+    min-height: 220px;
+    background: #101014;
+    border-width: 1px;
+    border-color: #33333a;
+
+    // Two separate `changed` handlers (not one combined check) because Slint fires a
+    // `changed` callback per PROPERTY, not per "the element's geometry changed" --
+    // width and height can change independently. Both report the CURRENT full
+    // `(self.width, self.height)` pair regardless of which one actually moved, since
+    // `render-size-changed`'s contract is "the current resolved size," not "the delta."
+    changed width => { root.render-size-changed(self.width, self.height); }
+    changed height => { root.render-size-changed(self.width, self.height); }
+
+    Image {
+        source: root.stone-image;
+        width: 100%;
+        height: 100%;
+        // Deliberately unaffected by `src/scene.rs::MAX_RENDER_DIM`: the GPU-rendered
+        // buffer can be smaller than this element's actual on-screen size, and
+        // `contain` scales that smaller buffer up to fill however large this box laid
+        // out to. The user sees a full-size image; only the GPU work is capped.
+        image-fit: contain;
+    }
+
+    drag := TouchArea {
+        width: 100%;
+        height: 100%;
+        // Position at the start of the current drag -- set on `PointerEventKind.down`,
+        // read from every subsequent `moved` so the yaw/pitch delta is against the
+        // LAST reported position, not the position at press.
+        property <length> last-x;
+        property <length> last-y;
+
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                self.last-x = self.mouse-x;
+                self.last-y = self.mouse-y;
+            }
+        }
+
+        moved => {
+            if (self.pressed && root.has-stone) {
+                // Pixels-to-radians (0.008) is tuned by feel, not derived from
+                // anything physical. Signs and coefficients match the desktop app's
+                // exactly (`gui::camera_lighting`'s `on_camera_orbit`), so a drag here
+                // moves the stone the same way it does in `apps/indicatrix-cut`.
+                //
+                // The yaw sign must not be "tidied" to match pitch: it is negative
+                // because the drag rotates the STONE, not the camera, and the user
+                // specifically asked for that axis to be flipped after trying it the
+                // other way. The clamp matches the desktop's +/-1.48 so the two builds
+                // stop at the same pose.
+                root.yaw -= (self.mouse-x - self.last-x) / 1px * 0.008;
+                root.pitch += (self.mouse-y - self.last-y) / 1px * 0.008;
+                root.pitch = Math.max(-1.48, Math.min(1.48, root.pitch));
+                root.camera-changed(root.yaw, root.pitch, root.distance);
+            }
+            self.last-x = self.mouse-x;
+            self.last-y = self.mouse-y;
+        }
+    }
+
+    if root.has-stone: Rectangle {
+        x: 8px;
+        y: 8px;
+        width: 118px;
+        height: 22px;
+        background: #000000a0;
+        border-radius: 4px;
+        Text {
+            text: root.progress-text;
+            color: white;
+            font-size: 11px;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+
+    if !root.has-stone: Text {
+        text: "(no stone loaded)";
+        color: #55555c;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// -- Material / lighting / camera / exposure controls ---------------------------------
+//
+// Factored out for the same reason `RenderSurface` is: `AppWindow` instantiates this
+// once per layout branch, avoiding duplicating the combo boxes/sliders in both places.
+component ControlsPanel inherits VerticalBox {
+    in property <[string]> material-options;
+    in-out property <int> material-index;
+    in property <[string]> lighting-options;
+    in-out property <int> lighting-index;
+    // Two-way bound to `AppWindow`'s (and, through it, `RenderSurface`'s) own
+    // yaw/pitch/distance -- the Distance slider below reads the CURRENT yaw/pitch so
+    // dragging it doesn't reset the orbit angle the render surface's drag handler left.
+    in-out property <float> yaw;
+    in-out property <float> pitch;
+    in-out property <float> distance;
+    in-out property <float> exposure;
+    callback material-changed(int);
+    callback lighting-changed(int);
+    callback camera-changed(float, float, float);
+    callback exposure-changed(float);
+
+    // Narrower floor than `RenderSurface`'s: a combo box and a slider both still read
+    // fine at 200px, and this panel matters less than the stone it controls when space
+    // is tight -- see `AppWindow`'s layout doc comment for the full reasoning.
+    min-width: 200px;
+    padding: 0px;
+    spacing: 14px;
+    alignment: start;
+
+    VerticalBox {
+        padding: 0px;
+        spacing: 4px;
+        Text { text: "Material"; color: #9aa0a6; font-size: 12px; }
+        ComboBox {
+            model: root.material-options;
+            current-index <=> root.material-index;
+            selected(v) => { root.material-changed(root.material-index); }
+        }
+    }
+
+    VerticalBox {
+        padding: 0px;
+        spacing: 4px;
+        Text { text: "Lighting"; color: #9aa0a6; font-size: 12px; }
+        ComboBox {
+            model: root.lighting-options;
+            current-index <=> root.lighting-index;
+            selected(v) => { root.lighting-changed(root.lighting-index); }
+        }
+    }
+
+    VerticalBox {
+        padding: 0px;
+        spacing: 4px;
+        // Label and live value on one row. A bare `Slider` shows only a handle
+        // position, so "how far out is the camera actually?" was unanswerable
+        // without dragging it to an end stop and back. Matches how
+        // `apps/indicatrix-cut` labels its own sliders.
+        HorizontalLayout {
+            Text { text: "Distance"; color: #9aa0a6; font-size: 12px; }
+            Text {
+                text: Math.round(root.distance * 10) / 10;
+                color: #c8ccd0;
+                font-size: 12px;
+                horizontal-alignment: right;
+            }
+        }
+        Slider {
+            minimum: 2.2;
+            maximum: 9.0;
+            value <=> root.distance;
+            changed(v) => { root.camera-changed(root.yaw, root.pitch, v); }
+        }
+    }
+
+    VerticalBox {
+        padding: 0px;
+        spacing: 4px;
+        // Two decimals, not one: the usable exposure range is 0.2-3.0, so a single
+        // decimal would quantise it into 29 visible steps and make small corrections
+        // near the low end look like they did nothing.
+        HorizontalLayout {
+            Text { text: "Exposure"; color: #9aa0a6; font-size: 12px; }
+            Text {
+                text: Math.round(root.exposure * 100) / 100;
+                color: #c8ccd0;
+                font-size: 12px;
+                horizontal-alignment: right;
+            }
+        }
+        Slider {
+            minimum: 0.2;
+            maximum: 3.0;
+            value <=> root.exposure;
+            changed(v) => { root.exposure-changed(v); }
+        }
+    }
+
+    Text {
+        wrap: word-wrap;
+        font-size: 11px;
+        color: #666a70;
+        text: "Drag the stone to orbit. Renders progressively toward 256 samples/pixel over WebGPU -- this build needs WebGPU and has no fallback if your browser lacks it; see the README.";
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "indicatrix-web";
+    // A hint, not a hard size: in a browser this window's canvas fills whatever the
+    // page/iframe gives it, so `preferred-width`/`preferred-height` only matter for a
+    // non-browser embedding or the very first frame before the browser's own layout
+    // has run. Kept at this crate's original 980x620 as a reasonable starting point.
+    preferred-width: 980px;
+    preferred-height: 620px;
+    background: #1b1b1f;
+    default-font-family: "Segoe UI";
+
+    // -- State the Rust side owns and pushes into ------------------------------------
+    // Rendered frame, already tone-mapped to sRGB bytes by `src/render.rs` and wrapped
+    // as a `slint::Image` -- this window never touches raw pixels itself.
+    in-out property <image> stone-image;
+    // Human-readable status: the current file name, a parse error, or "no file yet".
+    in-out property <string> status-text: "Choose a GemCAD .asc cutting schedule to begin.";
+    in-out property <bool> has-error: false;
+    in-out property <bool> has-stone: false;
+    in-out property <bool> busy: false;
+    // "WebGPU: <adapter>" once acquired -- see `src/render.rs`'s module doc comment
+    // for why this build has no other backend to report (GPU-only, no CPU fallback).
+    in-out property <string> backend-label: "";
+    // "128 / 256 spp" -- formatted in Rust (`src/app.rs::progress_text`) so this
+    // window has no string-formatting logic of its own to keep in sync with
+    // `src/render.rs`'s `TARGET_SPP`.
+    in-out property <string> progress-text: "";
+
+    // -- Camera / material / lighting, all driven from this window back into Rust ----
+    in-out property <float> yaw: 0.6;
+    in-out property <float> pitch: 0.35;
+    in-out property <float> distance: 4.2;
+    in-out property <float> exposure: 1.0;
+    in property <[string]> material-options: ["Diamond", "Ruby", "Sapphire", "Emerald"];
+    in-out property <int> material-index: 0;
+    in property <[string]> lighting-options: ["Daylight", "Incandescent", "Ring Lights", "Dark Spotlight"];
+    in-out property <int> lighting-index: 0;
+
+    // Rendering can be paused mid-accumulation and resumed without losing the samples
+    // already traced -- see `src/app.rs`'s `RenderCoordinator::paused` for why a pause
+    // must never reset. Owned by Rust (`in-out`), since the render loop itself parks on
+    // it; the button below only toggles.
+    in-out property <bool> paused: false;
+    callback toggle-pause();
+
+    callback choose-file();
+    // (yaw, pitch, distance) -- one callback for every camera-affecting control so
+    // Rust has one re-render trigger to debounce, not three.
+    callback camera-changed(float, float, float);
+    callback material-changed(int);
+    callback lighting-changed(int);
+    callback exposure-changed(float);
+    // Forwarded straight through from `RenderSurface`'s own callback of the same name
+    // -- `AppWindow` adds no logic of its own here, it just gives Rust one stable
+    // callback name regardless of which layout branch currently mounts `RenderSurface`.
+    callback render-size-changed(length, length);
+
+    // Below this width, a side-by-side render+controls layout would squeeze the
+    // render surface under `RenderSurface.min-width` (280px) before the controls
+    // panel even reaches ITS floor -- so `AppWindow` switches to stacking the panel
+    // below the render area instead. See the `if`/`if` pair further down.
+    //
+    // Stacking, not a min-width clamp: side-by-side floors sum to 516px
+    // (`RenderSurface.min-width` 280px + `ControlsPanel.min-width` 200px + 12px
+    // spacing + 24px padding) -- already wider than a 375px phone in portrait, so a
+    // min-width-only treatment would leave the two floors fighting for space on
+    // exactly the case this exists to fix. Stacking gives each panel the FULL
+    // viewport width to shrink within.
+    //
+    // 640px is comfortably above that 516px floor sum, with slack left for the render
+    // surface to still look like more than a sliver (at exactly 640px side-by-side it
+    // gets 640 - 516 + 280 = 404px, well above its 280px floor); below it, two
+    // side-by-side boxes read as cramped before they'd actually hit their floors.
+    property <bool> stacked: root.width < 640px;
+
+    VerticalBox {
+        padding: 12px;
+        spacing: 10px;
+
+        HorizontalBox {
+            padding: 0px;
+            spacing: 10px;
+            height: 32px;
+            Button {
+                text: "Choose .asc file...";
+                clicked => { root.choose-file(); }
+            }
+            Text {
+                text: root.status-text;
+                color: root.has-error ? #ff8a80 : #cfd8dc;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+            }
+            // Disabled (not hidden) so the header doesn't reflow when a file loads.
+            Button {
+                text: root.paused ? "Resume" : "Pause";
+                enabled: root.has-stone;
+                clicked => { root.toggle-pause(); }
+            }
+            Text {
+                text: root.backend-label;
+                color: #8fd3ff;
+                vertical-alignment: center;
+                horizontal-alignment: right;
+            }
+        }
+
+        // Wraps both layout branches in an element with fixed min-width/min-height
+        // literals, rather than derived from whichever branch is mounted.
+        //
+        // Without this wrapper, `stacked`'s two `if`s would be direct children of this
+        // `VerticalBox`, which sizes itself from ITS children's layout info -- which
+        // depends on whichever branch `stacked` picked, while `stacked` itself reads
+        // `root.width`, derivable from that same layout info absent an explicit size.
+        // That's a genuine binding loop (`root.width` -> `stacked` -> which branch
+        // exists -> this container's layout info -> `root.width` again), one Slint
+        // 1.17 warns will "cause a panic at runtime" in a future release. Fixed
+        // `min-width`/`min-height` literals below make this wrapper's contribution to
+        // the outer layout constant regardless of `stacked`, breaking the cycle
+        // without changing what either branch renders.
+        content-area := Rectangle {
+            min-width: 280px;
+            min-height: 220px;
+            vertical-stretch: 1;
+
+            // -- Render surface + controls: side-by-side on a wide viewport... ------
+            if !root.stacked: HorizontalBox {
+                width: 100%;
+                height: 100%;
+                padding: 0px;
+                spacing: 12px;
+
+                RenderSurface {
+                    horizontal-stretch: 1;
+                    stone-image: root.stone-image;
+                    progress-text: root.progress-text;
+                    has-stone: root.has-stone;
+                    yaw <=> root.yaw;
+                    pitch <=> root.pitch;
+                    distance: root.distance;
+                    camera-changed(y, p, d) => { root.camera-changed(y, p, d); }
+                    render-size-changed(w, h) => { root.render-size-changed(w, h); }
+                }
+
+                ControlsPanel {
+                    horizontal-stretch: 0;
+                    preferred-width: 260px;
+                    material-options: root.material-options;
+                    material-index <=> root.material-index;
+                    lighting-options: root.lighting-options;
+                    lighting-index <=> root.lighting-index;
+                    yaw <=> root.yaw;
+                    pitch <=> root.pitch;
+                    distance <=> root.distance;
+                    exposure <=> root.exposure;
+                    material-changed(i) => { root.material-changed(i); }
+                    lighting-changed(i) => { root.lighting-changed(i); }
+                    camera-changed(y, p, d) => { root.camera-changed(y, p, d); }
+                    exposure-changed(v) => { root.exposure-changed(v); }
+                }
+            }
+
+            // -- ...stacked (controls below the render area) on a narrow one --------
+            // Same two components, same property wiring, just arranged vertically --
+            // see `stacked`'s own doc comment for why.
+            if root.stacked: VerticalBox {
+                width: 100%;
+                height: 100%;
+                padding: 0px;
+                spacing: 12px;
+
+                RenderSurface {
+                    vertical-stretch: 1;
+                    stone-image: root.stone-image;
+                    progress-text: root.progress-text;
+                    has-stone: root.has-stone;
+                    yaw <=> root.yaw;
+                    pitch <=> root.pitch;
+                    distance: root.distance;
+                    camera-changed(y, p, d) => { root.camera-changed(y, p, d); }
+                    render-size-changed(w, h) => { root.render-size-changed(w, h); }
+                }
+
+                ControlsPanel {
+                    vertical-stretch: 0;
+                    material-options: root.material-options;
+                    material-index <=> root.material-index;
+                    lighting-options: root.lighting-options;
+                    lighting-index <=> root.lighting-index;
+                    yaw <=> root.yaw;
+                    pitch <=> root.pitch;
+                    distance <=> root.distance;
+                    exposure <=> root.exposure;
+                    material-changed(i) => { root.material-changed(i); }
+                    lighting-changed(i) => { root.lighting-changed(i); }
+                    camera-changed(y, p, d) => { root.camera-changed(y, p, d); }
+                    exposure-changed(v) => { root.exposure-changed(v); }
+                }
+            }
+        }
+    }
+}

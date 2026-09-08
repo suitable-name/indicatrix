@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>indicatrix-web</title>
+    <!--
+      No CSS/JS of this page's own beyond this reset: Slint's `renderer-femtovg`
+      backend creates its own `<canvas>` and drives everything inside it. `trunk`
+      rewrites the `data-trunk` link below into a `<script type="module">` that loads
+      the built `.wasm`/`.js` pair and runs `indicatrix-web`'s `#[wasm_bindgen(start)]`
+      entry point automatically -- no inline script of this crate's own is needed to
+      kick it off.
+    -->
+    <style>
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: #1b1b1f;
+      }
+      /*
+        Sized in CSS, not in width/height attributes. Slint reads this element's
+        `client_width`/`client_height` to derive the window's preferred size (see
+        `i-slint-backend-winit`'s `winitwindowadapter.rs`, "Try to maintain the existing
+        size of the canvas element") and writes the backing-store `width`/`height` itself
+        from the physical size. So CSS is what makes the responsive layout actually see
+        the viewport; setting the attributes here would fight it.
+      */
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <!--
+      `id="canvas"` is REQUIRED and is not a convention of this page's own: Slint's winit
+      backend looks up exactly `document.getElementById("canvas")` and binds its renderer
+      to that element (`winitwindowadapter.rs`, the `.with_canvas(Some(html_canvas))`
+      branch). Without it that lookup returns `None`, winit falls back to creating a
+      canvas of its own -- and its web backend does NOT attach that one to the document,
+      so the app runs, paints into an element that is not in the DOM, and the page shows
+      nothing but this stylesheet's background colour. That was the symptom: a dark page,
+      no canvas in the DOM, and no error beyond winit's own "Using exceptions for control
+      flow" notice (which is expected on every Slint web app -- see README).
+    -->
+    <canvas id="canvas"></canvas>
+    <link data-trunk rel="rust" data-wasm-opt="0" />
+  </body>
+</html>

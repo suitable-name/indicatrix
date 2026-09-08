@@ -1,0 +1,301 @@
+import { Theme } from "../theme.slint";
+import { Button, ScrollView } from "std-widgets.slint";
+import { BatchModel } from "../models/batch.slint";
+
+// Batch tilt-performance-curve computation (Task 4). One component, two states, the
+// exact same shape `preview_batch_dialog.slint` already established for the preview
+// batch -- see that file's own doc comment for the `confirming`/running-or-done split
+// this mirrors line for line. Kept as a SEPARATE component rather than a generalized
+// shared one: see `app.slint`'s `tilt_batch_visible` doc comment for why.
+//
+// `LiveComputeTarget::Both` runs `batch_queue::local_lane_count` local lanes plus a
+// remote dispatcher concurrently (`gui::tilt_batch`'s module doc comment, "Local +
+// remote" section), pulling designs off one shared queue -- so `design_index` is a
+// COMPLETED count, not a current-item cursor. With N local lanes each possibly
+// mid-design at once, no single title/axis-index pair can describe "the" local lane's
+// progress any more (there used to be exactly one local lane, back when this dialog's
+// within-design bar tracked axis `j` of 4 -- `indicatrix::color::metrics::
+// PROFILE_AZIMUTHS_DEG` -- for that one lane), so `local_active`/`local_lane_total`
+// report a plain busy-count instead (see `gui::tilt_batch`'s module doc comment's
+// "Progress with N local lanes (plus remote) in flight" section). `remote_title`/
+// `remote_active` describe the REMOTE lane's own in-flight design, UNCHANGED from
+// before -- remote stays a single dispatcher, with no numeric sub-progress since a
+// remote dispatch is one blocking request covering all 4 axes at once, with nothing
+// observable in between (same module's own doc comment).
+export component TiltBatchDialog inherits Rectangle {
+    in property <bool> confirming: BatchModel.tilt_confirming;
+    in property <int> offer_count: BatchModel.tilt_offer_count;
+    in property <bool> running: BatchModel.tilt_batch_running;
+    in property <int> design_index: BatchModel.tilt_design_index;
+    in property <int> design_total: BatchModel.tilt_design_total;
+    in property <int> local_active: BatchModel.tilt_local_active;
+    in property <int> local_lane_total: BatchModel.tilt_local_lane_total;
+    in property <string> remote_title: BatchModel.tilt_remote_title;
+    in property <bool> remote_active: BatchModel.tilt_remote_active;
+    in property <bool> done: BatchModel.tilt_done;
+    in property <string> summary: BatchModel.tilt_summary;
+
+    callback generate_confirmed();
+    generate_confirmed => { BatchModel.tilt_generate_confirmed(); }
+    callback dismiss_offer();
+    dismiss_offer => { BatchModel.tilt_dismiss_offer(); }
+    callback cancel();
+    cancel => { BatchModel.tilt_cancel(); }
+    callback close();
+    close => { BatchModel.tilt_close(); }
+
+    property <float> design_fraction: root.design_total > 0
+        ? (root.design_index * 1.0) / root.design_total
+        : 0.0;
+    // `* 1.0` forces float division rather than Slint's integer division truncating --
+    // same idiom `preview_batch_dialog.slint` uses.
+    property <float> local_fraction: root.local_lane_total > 0
+        ? (root.local_active * 1.0) / root.local_lane_total
+        : 0.0;
+
+    background: #00000088;
+
+    // The card is wrapped in centering layouts rather than being a bare child with an
+    // explicit `height`. That is load-bearing, not cosmetic:
+    //
+    // A child of a plain `Rectangle` is not laid out -- it defaults to filling its
+    // parent -- so the card previously carried `height: card.preferred-height` to size
+    // itself to its content. That silently under-measures: the card's `Text` elements
+    // use `wrap: word-wrap`, and a wrapped text's preferred height is only meaningful
+    // once its WIDTH is known. Queried that way it resolved against an unconstrained
+    // width (as if each paragraph were one long line), so the card came out far shorter
+    // than its content, and `clip: true` cut the overflow away -- taking the buttons at
+    // the bottom with it. The dialog rendered as truncated text with nothing clickable.
+    //
+    // Centring alone did NOT fix it, though -- that was the first attempt. Slint
+    // measures a wrapped Text's preferred height as one unwrapped line whether it is
+    // asked directly or via a layout, so the card stayed too short either way. The
+    // actual fix is on the card itself: a stated height plus a scrollable body between
+    // a fixed title and fixed buttons. See the `height` binding below.
+    VerticalLayout {
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 380px;
+                // Explicit, and deliberately NOT derived from the content.
+                //
+                // Slint computes a `wrap: word-wrap` Text's preferred height as though
+                // it were a single unwrapped line, so ANY height derived from this
+                // card's children under-measures -- whether asked for directly
+                // (`card.preferred-height`, the original bug) or implicitly by placing
+                // the card in a layout (the first attempted fix). Both produced a card
+                // shorter than its text, and `clip: true` then cut the overflow away,
+                // taking the buttons with it.
+                //
+                // So the height is stated, and the body below is put in a `ScrollView`
+                // between a fixed title and fixed buttons. That makes the buttons
+                // structurally impossible to clip at ANY text length or window size:
+                // they are not inside the scrollable region. Capped against
+                // `root.height` so the card can never exceed the window it sits in.
+                height: root.confirming
+                    ? Math.min(root.height - 96px, 430px)
+                    : Math.min(root.height - 96px, 340px);
+                background: #11151f;
+                border-radius: Theme.radius-md;
+                border-width: 1px;
+                border-color: #334155;
+                drop-shadow-blur: 24px;
+                drop-shadow-color: #000000bb;
+                clip: true;
+
+                // Swallows clicks so they never reach anything behind this dialog -- same
+                // idiom `preview_batch_dialog.slint`'s own inner card uses.
+                TouchArea {}
+
+                card := VerticalLayout {
+                    padding: 18px;
+                    spacing: 12px;
+
+                    if root.confirming: VerticalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: "Compute tilt-performance curves?";
+                            font-size: 14px;
+                            font-weight: 700;
+                            color: Theme.text-primary;
+                        }
+                        // Body between the fixed title above and the fixed buttons
+                        // below -- see the card's `height` comment for why the buttons
+                        // must live OUTSIDE this scrollable region.
+                        ScrollView {
+                            vertical-stretch: 1;
+                            VerticalLayout {
+                                spacing: 10px;
+                                Text {
+                                    text: root.offer_count == 1
+                                        ? "1 design has no computed tilt-performance curves yet. Compute its full ±90° sweep now?"
+                                        : root.offer_count + " designs have no computed tilt-performance curves yet. Compute their full ±90° sweeps now?";
+                                    font-size: 12px;
+                                    color: Theme.text-secondary;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: "This is much slower than generating previews -- roughly 1.4 seconds per design on one CPU core, more over the whole catalogue -- but a configured remote worker is used automatically when available. It renders in the background: you can keep browsing while it runs, and cancel at any time without losing what's already been computed.";
+                                    font-size: 11px;
+                                    color: Theme.text-muted;
+                                    wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: end;
+
+                            Button {
+                                text: "Not now";
+                                clicked => { root.dismiss_offer(); }
+                            }
+                            Button {
+                                text: "Compute";
+                                primary: true;
+                                clicked => { root.generate_confirmed(); }
+                            }
+                        }
+                    }
+
+                    if !root.confirming: VerticalLayout {
+                        spacing: 12px;
+
+                        Text {
+                            text: root.done ? "Tilt-curve computation finished" : "Computing tilt-performance curves...";
+                            font-size: 14px;
+                            font-weight: 700;
+                            color: Theme.text-primary;
+                        }
+
+                        if !root.done: VerticalLayout {
+                            spacing: 10px;
+
+                            // Local runs `local_lane_total` lanes concurrently (Task:
+                            // saturate cores, not pin one) -- with N lanes each possibly
+                            // mid-design at once, no single title is meaningful any
+                            // more, so this reports a plain busy-count instead. Hidden
+                            // entirely under `RemoteOnly`, where no local lane runs at
+                            // all.
+                            if root.local_lane_total > 0: Text {
+                                text: "Local: " + root.local_active + " / " + root.local_lane_total + " lane(s) busy";
+                                font-size: 12px;
+                                color: Theme.text-secondary;
+                                overflow: elide;
+                            }
+
+                            // The remote lane's own in-flight design -- only shown at
+                            // all while that lane is actually running (`LocalOnly`
+                            // never sets `remote_active`, and `RemoteOnly` shows only
+                            // this row, no "Local:" row above, since no local lane
+                            // runs in that mode).
+                            if root.remote_active: Text {
+                                text: "Remote: " + (root.remote_title == "" ? "Starting..." : root.remote_title);
+                                font-size: 12px;
+                                color: Theme.text-secondary;
+                                overflow: elide;
+                            }
+
+                            // Overall progress: designs completed so far, out of `N` --
+                            // NOT a current-item cursor (see this component's own doc
+                            // comment): with local and remote both possibly in flight,
+                            // there is no single "current" design left to point at.
+                            VerticalLayout {
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    alignment: space-between;
+                                    Text {
+                                        text: "Completed " + root.design_index + " / " + root.design_total;
+                                        font-size: 10px;
+                                        color: Theme.text-muted;
+                                    }
+                                    Text {
+                                        text: Math.round(root.design_fraction * 100) + "%";
+                                        font-size: 10px;
+                                        font-weight: 700;
+                                        color: Theme.accent-cyan;
+                                    }
+                                }
+                                Rectangle {
+                                    height: 8px;
+                                    border-radius: 4px;
+                                    background: #0f172a;
+                                    border-width: 1px;
+                                    border-color: #334155;
+                                    clip: true;
+                                    Rectangle {
+                                        x: 0;
+                                        y: 0;
+                                        width: parent.width * root.design_fraction;
+                                        height: 100%;
+                                        background: Theme.accent-cyan;
+                                        animate width { duration: 150ms; }
+                                    }
+                                }
+                            }
+
+                            // How busy the local lane pool is right now (not
+                            // within-design axis progress any more -- see this
+                            // component's own doc comment for why that stopped being
+                            // meaningful with N local lanes). Hidden under `RemoteOnly`,
+                            // same as the "Local:" row above.
+                            if root.local_lane_total > 0: VerticalLayout {
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    alignment: space-between;
+                                    Text {
+                                        text: "Local lanes " + root.local_active + " / " + root.local_lane_total;
+                                        font-size: 10px;
+                                        color: Theme.text-muted;
+                                    }
+                                }
+                                Rectangle {
+                                    height: 6px;
+                                    border-radius: 3px;
+                                    background: #0f172a;
+                                    border-width: 1px;
+                                    border-color: #334155;
+                                    clip: true;
+                                    Rectangle {
+                                        x: 0;
+                                        y: 0;
+                                        width: parent.width * root.local_fraction;
+                                        height: 100%;
+                                        background: Theme.accent-amber;
+                                        animate width { duration: 150ms; }
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.done: Text {
+                            text: root.summary;
+                            font-size: 12px;
+                            color: Theme.text-secondary;
+                            wrap: word-wrap;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            alignment: end;
+
+                            if !root.done: Button {
+                                text: "Cancel";
+                                clicked => { root.cancel(); }
+                            }
+                            if root.done: Button {
+                                text: "Close";
+                                primary: true;
+                                clicked => { root.close(); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

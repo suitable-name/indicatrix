@@ -1,0 +1,112 @@
+import { EditorTierItem, GearRemapRow, OptimizeResultRow } from "../types.slint";
+
+export global EditorModel {
+    in property <bool> enabled: false;
+
+    in-out property <int> selected_tier_index: -1;
+    callback selected_tier_changed(int);
+
+    in property <[EditorTierItem]> tiers: [];
+    in property <bool> can_undo: false;
+    in property <bool> can_redo: false;
+    in property <string> status_text: "";
+    in property <bool> status_is_problem: false;
+
+    in-out property <int> preform_shape_index: 1;
+    in-out property <string> preform_half_width: "1.20";
+    in-out property <string> preform_length_over_width: "1.00";
+    in-out property <string> preform_depth: "1.20";
+
+    in-out property <string> girdle_diameter_mm: "";
+    in-out property <int> material_index: 0;
+    in-out property <string> specific_gravity_override: "";
+    callback apply_yield_inputs(string, int, string);
+
+    in property <string> volumetric_yield_text: "";
+    in property <string> carat_weight_text: "";
+    in property <string> specific_gravity_used_text: "";
+    in property <string> preform_fit_warning: "";
+
+    in property <[string]> material_combo_options: ["(none)"];
+    in-out property <int> material_combo_index: 0;
+    in-out property <string> ri_override_text: "";
+    in property <string> effective_ri_text: "";
+    in property <string> critical_angle_text: "";
+    callback apply_design_material(int, string);
+
+    in-out property <int> gear_index: 1;
+    in-out property <string> gear_custom_text: "96";
+    callback gear_apply(int, string);
+    in property <bool> gear_remap_open: false;
+    in property <[GearRemapRow]> gear_remap_rows: [];
+    callback gear_remap_confirm();
+    callback gear_remap_cancel();
+
+    in-out property <string> symmetry_order_text: "8";
+    in-out property <bool> mirror: true;
+    callback apply_symmetry(string, bool);
+
+    in property <string> material_suggestion_text: "";
+    in property <string> material_suggestion_name: "";
+    callback material_suggestion_accept(string);
+    callback material_suggestion_dismiss();
+
+    in-out property <bool> new_dialog_open: false;
+    in-out property <int> new_preform_shape_index: 1;
+    in-out property <string> new_preform_half_width: "1.50";
+    in-out property <string> new_preform_length_over_width: "1.00";
+    in-out property <string> new_preform_depth: "1.50";
+    in-out property <int> new_gear_index: 0;
+    in-out property <string> new_gear_custom_text: "96";
+    in-out property <string> new_symmetry_order_text: "8";
+    in-out property <bool> new_mirror: true;
+    in-out property <int> new_material_index: 0;
+    callback new_design_create(int, string, string, string, int, string, string, bool, int);
+
+    callback load_selected();
+    callback solve();
+    in property <bool> solve_running: false;
+
+    in-out property <int> auto_solve_budget_ms: 300;
+    callback auto_solve_budget_ms_changed(int);
+    changed auto_solve_budget_ms => { auto_solve_budget_ms_changed(auto_solve_budget_ms); }
+
+    callback undo();
+    callback redo();
+    callback apply_preform(int, string, string, string);
+    callback save_tier(int, string, int, string, string, string);
+    callback remove_tier(int);
+    callback toggle_detach(int);
+    callback inline_set_angle(int, string);
+    callback nudge_angle(int, float);
+    callback duplicate_tier(int);
+    callback toggle_multi_select(int);
+    callback export_asc();
+    callback save_native();
+    callback open_native();
+    callback adopt_meet(int);
+
+    in property <bool> deep_solve_available: false;
+    in property <string> deep_solve_hint: "";
+    in property <bool> deep_solve_running: false;
+    in property <string> deep_solve_status: "";
+    in property <bool> deep_solve_status_is_problem: false;
+    callback deep_solve();
+    callback deep_solve_cancel();
+
+    in property <bool> optimize_available: false;
+    in property <string> optimize_hint: "";
+    in property <bool> optimize_running: false;
+    in property <string> optimize_status: "";
+    in property <bool> optimize_status_is_problem: false;
+    in property <[OptimizeResultRow]> optimize_result_rows: [];
+    in property <bool> optimize_can_apply: false;
+    in-out property <string> optimize_weight_windowing: "1.0";
+    in-out property <string> optimize_weight_extinction: "1.0";
+    in-out property <string> optimize_weight_tilt_brilliance: "1.0";
+    callback optimize(string, string, string);
+    callback optimize_cancel();
+    callback optimize_apply();
+
+    in property <[string]> manufacturability_warnings: [];
+}

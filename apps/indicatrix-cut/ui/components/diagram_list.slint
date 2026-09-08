@@ -1,0 +1,427 @@
+import { ScrollView } from "std-widgets.slint";
+import { DiagramItem, PreviewThumbnails } from "../types.slint";
+import { Theme } from "../theme.slint";
+import { LibraryModel } from "../models/library.slint";
+
+export component CollapsedLibraryRail inherits Rectangle {
+    width: 40px;
+    horizontal-stretch: 0;
+    background: Theme.bg-card;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    callback expand_requested();
+    expand_requested => {
+        LibraryModel.panel_collapsed = false;
+        LibraryModel.panel_collapsed_changed(false);
+    }
+
+    VerticalLayout {
+        padding-top: 10px;
+
+        HorizontalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 28px;
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                background: expand_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                border-width: 1px;
+                border-color: Theme.border-medium;
+
+                expand_touch := TouchArea {
+                    clicked => { root.expand_requested(); }
+                }
+
+                Image {
+                    source: @image-url("../icons/folder.svg");
+                    colorize: Theme.text-secondary;
+                    width: 13px;
+                    height: 13px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}
+
+export component DiagramListView inherits Rectangle {
+    property <int> keyboard_focus_index: -1;
+    property <int> list_length: LibraryModel.diagram_list.length;
+    changed list_length => { root.keyboard_focus_index = -1; }
+
+    callback collapse_requested();
+    collapse_requested => {
+        LibraryModel.panel_collapsed = true;
+        LibraryModel.panel_collapsed_changed(true);
+    }
+    min-width: 260px;
+    max-width: 440px;
+    preferred-width: 340px;
+    horizontal-stretch: 0;
+    background: Theme.bg-card;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    VerticalLayout {
+        padding: 10px;
+        spacing: 8px;
+
+        // List Header with counters
+        HorizontalLayout {
+            padding-left: 4px;
+            padding-right: 4px;
+            alignment: space-between;
+
+            Text {
+                text: "Catalog (" + LibraryModel.diagram_list.length + " of " + LibraryModel.total_count + ")";
+                font-size: 12px;
+                font-weight: 700;
+                color: Theme.text-primary;
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+
+                if LibraryModel.diagram_list.length == 0: Text {
+                    text: "No matches";
+                    font-size: 11px;
+                    color: Theme.accent-amber;
+                }
+
+                // Task 3: collapse the panel down to a thin rail -- see
+                // `collapse_requested`'s own doc comment above.
+                Rectangle {
+                    width: 20px;
+                    height: 20px;
+                    border-radius: Theme.radius-sm;
+                    background: collapse_touch.has-hover ? Theme.bg-elevated : transparent;
+                    collapse_touch := TouchArea {
+                        clicked => { root.collapse_requested(); }
+                    }
+                    Image {
+                        source: @image-url("../icons/close.svg");
+                        colorize: Theme.text-secondary;
+                        width: 10px;
+                        height: 10px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // Empty state when search yields 0 items
+        if LibraryModel.diagram_list.length == 0: Rectangle {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: center;
+                spacing: 8px;
+
+                Image {
+                    source: @image-url("../icons/search.svg");
+                    colorize: Theme.text-secondary;
+                    width: 28px;
+                    height: 28px;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: "No diagrams found";
+                    font-size: 13px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                    horizontal-alignment: center;
+                }
+
+                Text {
+                    text: "Try adjusting your search terms or filters";
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+
+        // Diagram Cards List
+        if LibraryModel.diagram_list.length > 0: FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.DownArrow {
+                    root.keyboard_focus_index = root.keyboard_focus_index < 0
+                        ? 0
+                        : Math.min(root.keyboard_focus_index + 1, LibraryModel.diagram_list.length - 1);
+                    return accept;
+                } else if event.text == Key.UpArrow {
+                    root.keyboard_focus_index = root.keyboard_focus_index <= 0
+                        ? 0
+                        : root.keyboard_focus_index - 1;
+                    return accept;
+                } else if event.text == Key.Return {
+                    if root.keyboard_focus_index >= 0 && root.keyboard_focus_index < LibraryModel.diagram_list.length {
+                        LibraryModel.select_diagram(LibraryModel.diagram_list[root.keyboard_focus_index].id);
+                    }
+                    return accept;
+                }
+                reject
+            }
+
+            ScrollView {
+            VerticalLayout {
+                // Pack the cards at their own preferred heights and leave any leftover
+                // space empty. Without this, a `VerticalLayout` distributes surplus
+                // height across its children, and a `card` has no height of its own
+                // (it is sized by its content), so a short result list -- a narrow
+                // search, or the tail of a long one -- rendered its last few cards
+                // stretched tall with the text floating in the middle of them.
+                alignment: start;
+                spacing: 6px;
+
+                for item[idx] in LibraryModel.diagram_list: card := Rectangle {
+                    // Ignored rows (Task 3, shown only while "Show ignored designs" is
+                    // on -- see `RangeFilter::include_ignored`) render visually
+                    // distinct from a normal row: a dimmed background/opacity plus a
+                    // dashed-looking amber border, so they never look like an ordinary
+                    // catalogue entry that just happens to be selected or hovered.
+                    background: LibraryModel.selected_entry_id == item.id ? #1e3a8a : (item_touch.has-hover ? Theme.bg-card-hover : Theme.bg-input);
+                    opacity: item.ignored ? 0.55 : 1.0;
+                    border-radius: Theme.radius-sm;
+                    // Keyboard focus ring: takes priority over the plain-hover border
+                    // so Up/Down is visibly trackable even with the mouse sitting
+                    // still elsewhere; selection (blue background above) and ignored
+                    // (amber, above) still read through since only the border color
+                    // changes here.
+                    border-width: (item.ignored || idx == root.keyboard_focus_index) ? 1.5px : 1px;
+                    border-color: idx == root.keyboard_focus_index
+                        ? Theme.primary
+                        : (item.ignored ? Theme.accent-amber : (LibraryModel.selected_entry_id == item.id ? Theme.accent-cyan : (item_touch.has-hover ? Theme.border-medium : transparent)));
+
+                    // Rendered front/top previews for this row (Task: rendered design
+                    // previews) -- looked up once per card via the cache-backed
+                    // callback declared above; see this property's own use below for
+                    // the fixed-size-box-or-placeholder rule that keeps a row with no
+                    // previews yet from ever showing a broken/stretched image or
+                    // shifting this card's layout relative to a row that has them.
+                    property <PreviewThumbnails> preview: LibraryModel.get_preview_thumbnails(item.id, LibraryModel.preview_cache_version);
+
+                    item_touch := TouchArea {
+                        clicked => {
+                            LibraryModel.select_diagram(item.id);
+                        }
+                    }
+
+                    // Task 4, trigger #3: an unobtrusive per-design "regenerate
+                    // previews" action -- a builtin native context menu (cursor
+                    // positioning, outside-click dismissal, and OS-native rendering
+                    // all handled by Slint itself -- see `i-slint-compiler`'s
+                    // `widgets/common/menus.slint`/`internal-components.slint` for the
+                    // `ContextMenuArea`/`Menu`/`MenuItem` this uses directly, no
+                    // hand-rolled equivalent needed). `expands_to_parent_geometry`
+                    // (this element's own default) makes it cover the whole card
+                    // without an explicit width/height.
+                    ContextMenuArea {
+                        Menu {
+                            MenuItem {
+                                title: "Generate Previews";
+                                activated => {
+                                    LibraryModel.generate_previews_for_entry(item.id);
+                                }
+                            }
+                            MenuItem {
+                                title: "Compute Tilt Curves";
+                                activated => {
+                                    LibraryModel.compute_tilt_curves_for_entry(item.id);
+                                }
+                            }
+                            MenuItem {
+                                title: item.ignored ? "Un-ignore" : "Ignore";
+                                activated => {
+                                    LibraryModel.toggle_ignored(item.id);
+                                }
+                            }
+                        }
+                    }
+
+                    // Also item: a "⋮" hover affordance -- the context menu above is
+                    // otherwise only reachable by knowing to right-click, with nothing
+                    // on screen suggesting it exists. Visual only (right-click still
+                    // opens the menu via `ContextMenuArea` above; this doesn't add a
+                    // second click target of its own).
+                    if item_touch.has-hover: Text {
+                        x: card.width - self.width - 8px;
+                        y: 6px;
+                        text: "⋮";
+                        font-size: 16px;
+                        font-weight: 700;
+                        color: Theme.text-muted;
+                    }
+
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 6px;
+
+                        // Front/top preview thumbnails -- two fixed-size boxes side
+                        // by side, always both present regardless of `has_front`/
+                        // `has_top` (a placeholder Rectangle stands in for either
+                        // that's missing) so no card's height ever depends on whether
+                        // its previews have been generated yet.
+                        HorizontalLayout {
+                            spacing: 6px;
+
+                            // Front and top boxes are written out explicitly (rather
+                            // than looped over a small array) -- each is a fixed
+                            // 56x56px box regardless of whether its image is ready, so
+                            // neither view's presence/absence ever changes this row's
+                            // height or the other box's position.
+                            Rectangle {
+                                width: 56px;
+                                height: 56px;
+                                border-radius: Theme.radius-sm;
+                                background: Theme.bg-input;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                clip: true;
+
+                                if card.preview.has_front: Image {
+                                    source: card.preview.front;
+                                    width: 100%;
+                                    height: 100%;
+                                    image-fit: contain;
+                                }
+                                // Placeholder: never generated yet, or still decoding
+                                // -- a small centered glyph rather than an empty box.
+                                if !card.preview.has_front: Text {
+                                    text: "F";
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    color: Theme.text-muted;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    width: 100%;
+                                    height: 100%;
+                                }
+                            }
+
+                            Rectangle {
+                                width: 56px;
+                                height: 56px;
+                                border-radius: Theme.radius-sm;
+                                background: Theme.bg-input;
+                                border-width: 1px;
+                                border-color: Theme.border-subtle;
+                                clip: true;
+
+                                if card.preview.has_top: Image {
+                                    source: card.preview.top;
+                                    width: 100%;
+                                    height: 100%;
+                                    image-fit: contain;
+                                }
+                                if !card.preview.has_top: Text {
+                                    text: "T";
+                                    font-size: 11px;
+                                    font-weight: 600;
+                                    color: Theme.text-muted;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    width: 100%;
+                                    height: 100%;
+                                }
+                            }
+                        }
+
+                        // Title & Shape Badge
+                        HorizontalLayout {
+                            alignment: space-between;
+                            spacing: 8px;
+
+                            Text {
+                                text: item.title;
+                                font-size: 13px;
+                                font-weight: 600;
+                                color: Theme.text-primary;
+                                overflow: elide;
+                                max-width: 220px;
+                            }
+
+                            if item.shape != "": Rectangle {
+                                background: #2563eb;
+                                border-radius: 3px;
+                                height: 18px;
+                                HorizontalLayout {
+                                    padding-left: 5px;
+                                    padding-right: 5px;
+                                    Text {
+                                        text: item.shape;
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        color: #eff6ff;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            if item.ignored: Rectangle {
+                                background: #78350f;
+                                border-radius: 3px;
+                                height: 18px;
+                                HorizontalLayout {
+                                    padding-left: 5px;
+                                    padding-right: 5px;
+                                    Text {
+                                        text: "Ignored";
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        color: Theme.accent-amber;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Designer & Specs row
+                        HorizontalLayout {
+                            alignment: space-between;
+
+                            Text {
+                                text: item.designer != "" ? item.designer : "Unknown Designer";
+                                font-size: 11px;
+                                color: Theme.text-muted;
+                                overflow: elide;
+                                max-width: 160px;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                if item.gear != "": HorizontalLayout {
+                                    spacing: 3px;
+                                    Image { source: @image-url("../icons/gear.svg"); colorize: Theme.accent-cyan; width: 9px; height: 9px; vertical-alignment: center; }
+                                    Text {
+                                        text: item.gear;
+                                        font-size: 10px;
+                                        color: Theme.accent-cyan;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                if item.facets != "": HorizontalLayout {
+                                    spacing: 3px;
+                                    Image { source: @image-url("../icons/diamond.svg"); colorize: Theme.accent-amber; width: 9px; height: 9px; vertical-alignment: center; }
+                                    Text {
+                                        text: item.facets;
+                                        font-size: 10px;
+                                        color: Theme.accent-amber;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            } // ScrollView
+        } // FocusScope
+    }
+}

@@ -1,0 +1,41 @@
+import { WorkerItem } from "../types.slint";
+
+export global RemoteWorkerModel {
+    in property <[WorkerItem]> workers: [];
+    out property <bool> live_remote_available: root.workers.length > 0;
+    in-out property <bool> denoise_enabled: true;
+    in-out property <float> render_samples_exponent: 9.0;
+    in property <int> testing_worker_index: -1;
+    in property <string> test_connection_result: "";
+    in property <int> test_connection_result_index: -1;
+    in property <bool> test_connection_is_error: false;
+    in property <bool> served_by_remote: false;
+    in property <string> served_by_worker_name: "";
+
+    in property <int> library_source_worker_index: -1;
+    in property <string> library_source_label: "Local library";
+    in property <bool> library_is_remote: false;
+
+    in property <int> mirror_worker_index: -1;
+    in property <bool> mirror_in_progress: false;
+    in property <float> mirror_progress_fraction: 0.0;
+    in property <string> mirror_status_text: "";
+    in property <bool> mirror_has_error: false;
+
+    in property <bool> claiming_token: false;
+    in property <string> claim_result_text: "";
+    in property <int> claim_result_index: -1;
+    in property <bool> claim_result_is_error: false;
+    in property <string> claimed_cert_dir: "";
+
+    callback pick_cert_dir(string) -> string;
+    callback denoise_toggled(bool);
+    callback render_samples_changed(int);
+    callback test_worker_connection(int, string, string);
+    callback save_worker(int, WorkerItem);
+    callback remove_worker(int);
+    callback claim_token(int, string, string, string);
+    callback switch_library_source(int);
+    callback start_mirror_sync(int);
+    callback cancel_mirror_sync();
+}

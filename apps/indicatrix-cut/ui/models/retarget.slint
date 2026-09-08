@@ -1,0 +1,50 @@
+import { RetargetRowItem } from "../types.slint";
+
+// "Retarget for material": reviews a `gui::editor::retarget::RetargetProposal` before
+// applying it as one undoable `Edit::RetargetAngles`. `target_material_*` comes from
+// the design settings panel's material combo, not necessarily `state.design.material`;
+// `RetargetMode::Optimize` still runs synchronously on this first wiring pass
+// (`gui::editor::callbacks::retarget_actions`).
+export global RetargetModel {
+    in-out property <bool> is_open: false;
+
+    // Mode selector: 0 = Shift (deterministic, default), 1 = Optimize
+    // (`optimize_design`-backed).
+    in-out property <int> mode_index: 0;
+
+    // Crown handling (`gui::editor::retarget::CrownShift`): a fraction (0.0..1.0) of
+    // the pavilion's own critical-angle delta, OR (when `scale_crown_by_ratio` is on)
+    // ignore the fraction and scale the raw crown angle by the two critical angles'
+    // ratio instead. Disabled (not hidden) while `scale_crown_by_ratio` is on, so the
+    // last fraction value survives toggling back off.
+    in-out property <float> crown_fraction: 0.0;
+    in-out property <bool> scale_crown_by_ratio: false;
+
+    // Target material readout (`ResolvedMaterial`, already resolved by whatever
+    // material picker opened this dialog) -- display only.
+    in property <string> target_material_name: "";
+    in property <string> target_material_ri: "";
+    in property <string> target_critical_angle: "";
+
+    // The proposal itself: one row per pavilion/crown tier, plus the notes
+    // `RetargetProposal::notes` carries. Rebuilt by Rust every time the mode/crown
+    // controls change (a live re-proposal, not a stale snapshot from when the dialog
+    // opened).
+    in property <[RetargetRowItem]> rows: [];
+    in property <[string]> notes: [];
+    // Optimize mode's own refusal (`RetargetError::AnchoredTiers`), pre-formatted as
+    // one line per anchored tier -- empty means either Shift mode (which never
+    // refuses) or an Optimize proposal that built successfully.
+    in property <[string]> anchored_tier_errors: [];
+    // `RetargetError::Solve`'s message, or "" -- the OTHER way Optimize mode can fail
+    // to produce a proposal at all.
+    in property <string> solve_error: "";
+    in property <bool> is_busy: false; // Optimize mode's search is running.
+
+    // Opens the dialog and builds the first (Shift-mode) proposal.
+    callback open();
+    callback close();
+    // The dialog's mode/crown controls changed -- rebuild the proposal.
+    callback proposal_changed();
+    callback apply();
+}

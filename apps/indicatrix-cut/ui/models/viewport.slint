@@ -1,0 +1,69 @@
+import { LightingPresetItem } from "../types.slint";
+
+// Shared state for the 3D viewport interactions (`GemViewportView`'s camera/lighting/
+// material controls and the read-only optical-metrics readout), plus
+// `SolidViewportView`'s camera drag, which moves the SAME shared
+// `bridge::render_thread::context::RenderContext` yaw/pitch as the Live Render
+// viewport.
+export global ViewportModel {
+    in property <image> render_image;
+    in property <bool> has_render: false;
+    // Hoisted here rather than local to `GemViewportView`: reading a global survives
+    // that view being conditionally destroyed/recreated across tab switches, unlike a
+    // local property, which would silently reset and desync from the render thread's
+    // actual `paused` flag.
+    in-out property <bool> render_paused: false;
+    callback pause_toggled(bool);
+    // The Material Editor dialog's own visibility -- hoisted here rather than local to
+    // `GemViewportView` for the same reason as `render_paused` above, and because it's
+    // reached from the same material-picker row this global already owns.
+    in-out property <bool> material_editor_open: false;
+
+    in property <[string]> material_options: ["Diamond", "Sapphire", "Ruby", "Emerald", "Zircon", "Tanzanite", "Moissanite", "Topaz", "Spinel", "Quartz"];
+    in-out property <int> selected_material_index: 0;
+    // While the Edit sub-tab is active, "linked to design" (default on) makes the
+    // Render Material dropdown follow the design's own material instead of an
+    // independent selection (`gui::editor::view::refresh_design_settings`). Off makes
+    // it a plain display override again.
+    in-out property <bool> viewport_material_linked: true;
+    callback viewport_material_linked_changed(bool);
+
+    // This list is what actually reaches the ComboBox. ORDER is load-bearing: must
+    // match `LightingPreset::ALL` (`Daylight`, `Incandescent`, `RingLights`,
+    // `DarkSpotlight`) exactly, since `lighting_changed` below carries the selected
+    // INDEX, not the label text.
+    in property <[string]> lighting_options: ["D65 Daylight (6500K)", "Incandescent (3200K)", "Gem Studio Ring Lights", "Dramatic Dark Spotlight"];
+    in-out property <int> selected_lighting_index: 0;
+    in property <[LightingPresetItem]> lighting_presets: [];
+
+    in property <float> brilliance_pct: 0.0;
+    in property <float> fire_index: 0.0;
+    in property <float> scintillation_pct: 0.0;
+    in property <float> windowing_pct: 0.0;
+    in property <float> extinction_pct: 0.0;
+
+    callback camera_orbit(float, float);
+    callback camera_zoom(float);
+    callback light_move(float, float);
+    callback light_pos_changed(float, float);
+    callback reset_camera();
+    callback material_changed(string);
+    // Carries the selected preset's INDEX into `lighting_options`/`LightingPreset::ALL`,
+    // not its label text.
+    callback lighting_changed(int);
+    callback save_lighting_preset(string);
+    // The renderer's own "Save as preset" button -- captures the FULL current view
+    // (lighting AND camera pose), unlike `save_lighting_preset` above (lighting only).
+    callback save_view_preset(string);
+    callback apply_lighting_preset(int);
+    callback rename_lighting_preset(int, string);
+    callback delete_lighting_preset(int);
+    // The settings dialog's "usable for export" checkbox next to a preset row.
+    callback toggle_preset_export_usable(int, bool);
+    callback copy_metrics();
+    // name, ri, dispersion, birefringence, color_idx, crystal_system_idx,
+    // optical_character_idx, biaxial_delta_beta_alpha -- see
+    // `MaterialEditorDialog.save_material`'s own callback doc comment.
+    callback save_custom_material(string, float, float, float, int, int, int, float);
+    callback delete_custom_material(string);
+}

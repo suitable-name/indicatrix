@@ -1,0 +1,393 @@
+import { Theme } from "../theme.slint";
+import { LineEdit, ComboBox } from "std-widgets.slint";
+import { LibraryModel } from "../models/library.slint";
+
+// Metadata editor: title, designer, shape, refractive index, index gear, facet
+// count, symmetry order, mirror symmetry, and the five geometry-derived proportion
+// ratios -- every field a user might legitimately hand-correct on their own local
+// design (see `apps/indicatrix-cut`'s `gui::detail::setup_save_metadata_callback` and
+// `indicatrix_vault::db::sqlite::Database::update_diagram_metadata`, which is what
+// actually persists this without zeroing anything else).
+//
+// A MODAL, not more inline pencils like the existing title/shape editors in
+// `detail_header.slint`: thirteen fields is too many to fit as inline chips without
+// the header turning into an editing form by default, so this follows this app's
+// established modal convention (`material_editor_dialog.slint`'s full-viewport
+// backdrop + centered content-sized card) rather than inventing a new one.
+export component MetadataEditorDialog inherits Rectangle {
+    in-out property <string> title_draft: LibraryModel.current_detail.title;
+    in-out property <string> designer_draft: LibraryModel.current_detail.designer;
+    in property <[string]> shape_options: LibraryModel.shape_picker_options;
+    in-out property <int> shape_index: LibraryModel.shape_picker_current_index;
+    // The design's current shape verbatim -- used as `selected_shape`'s fallback when
+    // `shape_index` doesn't land inside `shape_options` (e.g. a design's shape isn't
+    // in the current vocabulary, mirroring `detail_header.slint`'s own shape chip,
+    // which shows `detail.shape` regardless of whether the picker's own option list
+    // happens to contain it).
+    in-out property <string> shape_draft: LibraryModel.current_detail.shape;
+    in-out property <string> ri_draft: LibraryModel.current_detail.ri;
+    in-out property <string> gear_draft: LibraryModel.current_detail.gear;
+    in-out property <string> facets_draft: LibraryModel.current_detail.facets;
+    in-out property <string> symmetry_order_draft: LibraryModel.current_detail.symmetry_order;
+    in-out property <bool> mirror_symmetry_draft: LibraryModel.current_detail.mirror_symmetry;
+    in-out property <string> lw_ratio_draft: LibraryModel.current_detail.lw_ratio;
+    in-out property <string> hw_ratio_draft: LibraryModel.current_detail.hw_ratio;
+    in-out property <string> cw_ratio_draft: LibraryModel.current_detail.cw_ratio;
+    in-out property <string> pw_ratio_draft: LibraryModel.current_detail.pw_ratio;
+    in-out property <string> volume_draft: LibraryModel.current_detail.volume;
+
+    callback close();
+    close => { LibraryModel.metadata_editor_open = false; }
+    // title, designer, shape, refractive_index, index_gear, facets_count,
+    // symmetry_order, mirror_symmetry, lw_ratio, hw_ratio, cw_ratio, pw_ratio, volume
+    callback save(string, string, string, string, string, string, string, bool, string, string, string, string, string);
+    save(title, designer, shape, ri, gear, facets, symmetry_order, mirror_symmetry, lw_ratio, hw_ratio, cw_ratio, pw_ratio, volume) => {
+        LibraryModel.save_metadata(title, designer, shape, ri, gear, facets, symmetry_order, mirror_symmetry, lw_ratio, hw_ratio, cw_ratio, pw_ratio, volume);
+        LibraryModel.metadata_editor_open = false;
+    }
+
+    property <string> selected_shape: (root.shape_index >= 0 && root.shape_index < root.shape_options.length)
+        ? root.shape_options[root.shape_index] : root.shape_draft;
+
+    // Full viewport modal backdrop -- same idiom as `material_editor_dialog.slint`.
+    background: #00000088;
+
+    TouchArea {
+        clicked => { root.close(); }
+    }
+
+    Rectangle {
+        width: 460px;
+        // Content-driven height -- see `material_editor_dialog.slint`'s own doc
+        // comment on this exact line for why (`settings_dialog.slint`/
+        // `import_dialog.slint` share the same idiom).
+        height: content.preferred-height;
+        background: #11151f;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: #334155;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #000000bb;
+        clip: true;
+
+        TouchArea {}
+
+        content := VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+
+            // 1. Header Bar
+            HorizontalLayout {
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Image { source: @image-url("../icons/pencil.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
+                    Text {
+                        text: "Edit Design Metadata";
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    width: 24px;
+                    height: 24px;
+                    border-radius: Theme.radius-sm;
+                    background: close_touch.has-hover ? #2d3748 : #1a202c;
+                    close_touch := TouchArea { clicked => { root.close(); } }
+                    Image {
+                        source: @image-url("../icons/close.svg");
+                        colorize: Theme.text-muted;
+                        width: 12px;
+                        height: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: #1e293b; }
+
+            // Title / Designer
+            HorizontalLayout {
+                spacing: 10px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    Text { text: "Title:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                    Rectangle {
+                        height: 30px;
+                        background: #1e293b;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: #334155;
+                        LineEdit { text <=> root.title_draft; placeholder-text: "Design title..."; }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    Text { text: "Designer:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                    Rectangle {
+                        height: 30px;
+                        background: #1e293b;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: #334155;
+                        LineEdit { text <=> root.designer_draft; placeholder-text: "Designer name..."; }
+                    }
+                }
+            }
+
+            // Shape / Index Gear
+            HorizontalLayout {
+                spacing: 10px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    Text { text: "Shape:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                    Rectangle {
+                        height: 30px;
+                        background: #1e293b;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: #334155;
+                        ComboBox {
+                            model: root.shape_options;
+                            current-index <=> root.shape_index;
+                        }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    Text { text: "Index Gear:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                    Rectangle {
+                        height: 30px;
+                        background: #1e293b;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: #334155;
+                        LineEdit { text <=> root.gear_draft; placeholder-text: "96..."; }
+                    }
+                }
+            }
+
+            // Refractive Index / Facet Count
+            HorizontalLayout {
+                spacing: 10px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    Text { text: "Refractive Index:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                    Rectangle {
+                        height: 30px;
+                        background: #1e293b;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: #334155;
+                        LineEdit { text <=> root.ri_draft; placeholder-text: "2.417..."; }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    Text { text: "Facet Count:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                    Rectangle {
+                        height: 30px;
+                        background: #1e293b;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: #334155;
+                        LineEdit { text <=> root.facets_draft; placeholder-text: "57+8..."; }
+                    }
+                }
+            }
+
+            // Symmetry Order / Mirror Symmetry
+            HorizontalLayout {
+                spacing: 10px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    Text { text: "Symmetry Order:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                    Rectangle {
+                        height: 30px;
+                        background: #1e293b;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: #334155;
+                        LineEdit { text <=> root.symmetry_order_draft; placeholder-text: "8..."; }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    Text { text: "Mirror Symmetry:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                    HorizontalLayout {
+                        height: 30px;
+                        alignment: start;
+                        // Same on/off pill idiom as `settings_dialog.slint`'s "Frosted
+                        // Girdle" toggle.
+                        Rectangle {
+                            width: 36px;
+                            height: 20px;
+                            border-radius: 10px;
+                            background: root.mirror_symmetry_draft ? Theme.accent-cyan : #334155;
+                            TouchArea {
+                                clicked => { root.mirror_symmetry_draft = !root.mirror_symmetry_draft; }
+                            }
+                            Rectangle {
+                                width: 16px;
+                                height: 16px;
+                                border-radius: 8px;
+                                background: white;
+                                x: root.mirror_symmetry_draft ? parent.width - self.width - 2px : 2px;
+                                y: 2px;
+                                animate x { duration: 120ms; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: #1e293b; }
+
+            Text {
+                text: "Proportions (as measured or as printed on the design sheet):";
+                font-size: 10.5px;
+                font-weight: 600;
+                color: Theme.text-secondary;
+            }
+
+            // L/W / H/W
+            HorizontalLayout {
+                spacing: 10px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    Text { text: "L/W Ratio:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                    Rectangle {
+                        height: 30px;
+                        background: #1e293b;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: #334155;
+                        LineEdit { text <=> root.lw_ratio_draft; placeholder-text: "1.052..."; }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    Text { text: "H/W Ratio:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                    Rectangle {
+                        height: 30px;
+                        background: #1e293b;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: #334155;
+                        LineEdit { text <=> root.hw_ratio_draft; placeholder-text: "0.612..."; }
+                    }
+                }
+            }
+
+            // C/W / P/W
+            HorizontalLayout {
+                spacing: 10px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    Text { text: "C/W Ratio:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                    Rectangle {
+                        height: 30px;
+                        background: #1e293b;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: #334155;
+                        LineEdit { text <=> root.cw_ratio_draft; placeholder-text: "0.172..."; }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 4px;
+                    Text { text: "P/W Ratio:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                    Rectangle {
+                        height: 30px;
+                        background: #1e293b;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: #334155;
+                        LineEdit { text <=> root.pw_ratio_draft; placeholder-text: "0.440..."; }
+                    }
+                }
+            }
+
+            // Volume
+            VerticalLayout {
+                spacing: 4px;
+                Text { text: "Volume (Vol/W\u{b3}):"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                Rectangle {
+                    height: 30px;
+                    background: #1e293b;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: #334155;
+                    LineEdit { text <=> root.volume_draft; placeholder-text: "0.420..."; }
+                }
+            }
+
+            Rectangle { height: 1px; background: #1e293b; }
+
+            // Action Buttons Bar
+            HorizontalLayout {
+                spacing: 8px;
+
+                Rectangle {
+                    width: 90px;
+                    height: 32px;
+                    border-radius: Theme.radius-sm;
+                    background: cancel_touch.has-hover ? #1e293b : #0f172a;
+                    border-width: 1px;
+                    border-color: #334155;
+                    cancel_touch := TouchArea { clicked => { root.close(); } }
+                    Text { text: "Cancel"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 32px;
+                    border-radius: Theme.radius-sm;
+                    background: save_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
+                    save_touch := TouchArea {
+                        clicked => {
+                            root.save(
+                                root.title_draft,
+                                root.designer_draft,
+                                root.selected_shape,
+                                root.ri_draft,
+                                root.gear_draft,
+                                root.facets_draft,
+                                root.symmetry_order_draft,
+                                root.mirror_symmetry_draft,
+                                root.lw_ratio_draft,
+                                root.hw_ratio_draft,
+                                root.cw_ratio_draft,
+                                root.pw_ratio_draft,
+                                root.volume_draft
+                            );
+                        }
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        Image { source: @image-url("../icons/check.svg"); colorize: #0f172a; width: 12px; height: 12px; vertical-alignment: center; }
+                        Text { text: "Save Metadata"; font-size: 12px; font-weight: 700; color: #0f172a; vertical-alignment: center; }
+                    }
+                }
+            }
+        }
+    }
+}

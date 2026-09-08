@@ -1,0 +1,124 @@
+[package]
+name = "indicatrix"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+authors = { workspace = true }
+description = "A physically-based spectral gemstone renderer that turns GemCAD-style cutting schedules into rendered output."
+license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+documentation = "https://docs.rs/indicatrix"
+keywords = ["gemstone", "raytracer", "spectral", "rendering", "faceting"]
+categories = ["rendering", "graphics", "science"]
+publish = { workspace = true }
+
+[dependencies]
+bytemuck = { workspace = true }
+chull = { workspace = true }
+glam = { workspace = true }
+# Only pulled in behind the `hdr` feature (Radiance .hdr decoding for
+# `renderer::env_map`). `default-features = false` plus the single `hdr`
+# format feature keeps this lean -- the default `image` feature set drags in
+# png/gif/webp/avif/exr/etc. decoders indicatrix has no use for.
+image = { workspace = true, optional = true, features = ["hdr"] }
+# For `geometry::cuts::StandardGemCuts::from_asc_schedule`, which turns a parsed
+# GemCAD `.asc` cutting schedule (indicatrix_formats::asc::AscSchedule) into real,
+# non-fabricated facet planes. Zero-dependency format crate -- adds nothing to
+# indicatrix's own dependency tree beyond itself.
+indicatrix-formats = { workspace = true }
+pollster = { workspace = true, optional = true }
+# Only pulled in behind the `serde` feature, for `indicatrix-net`'s wire protocol (which
+# needs `Serialize`/`Deserialize` on `GemMaterial`, `GpuFacetPlane`, `LightingPreset`
+# and their nested types). Off by default so the base `indicatrix` dependency count (the
+# five listed above) stays publishable.
+serde = { workspace = true, optional = true }
+tracing = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# `wgpu`'s own default features (`dx12`, `metal`, `gles`, `vulkan`, `webgpu`, ...) --
+# every native compute backend this crate's Phase 0/1/2/3 self-tests and
+# `renderer::gpu`/`renderer::gpu_backend` were built and verified against. Split into
+# its own target-specific section (rather than one unconditional `[dependencies]`
+# entry) purely so the wasm32 arm below can trim it to the one backend a browser
+# actually has -- this arm's behaviour is completely unchanged from before the split.
+# wgpu 30.0.1's own `default` set, named explicitly because the workspace root
+# declares `default-features = false` (a member may only ADD features to an
+# inherited dependency, never remove them -- see the root manifest's own comment).
+# This list IS wgpu's default, verbatim, so native behaviour is unchanged.
+wgpu = { workspace = true, optional = true, features = [
+    "std",
+    "parking_lot",
+    "dx12",
+    "metal",
+    "gles",
+    "vulkan",
+    "wgsl",
+    "webgpu",
+] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# wasm32 gets its own `wgpu` feature set: `webgpu` is the only backend a browser
+# exposes (there is no DX12/Metal/Vulkan/GLES driver to talk to from inside a wasm32
+# module), and `default-features = false` drops the native-backend feature flags
+# (`dx12`/`metal`/`gles`/`vulkan`) that pull in `wgpu-hal`'s OS-specific glue for
+# nothing -- see `apps/indicatrix-web`'s crate docs for why the compute-only megakernel
+# dispatch this crate does needs no on-screen surface/canvas at all, on any target.
+# `wgsl` stays on since `renderer::gpu::frame::SHADER_SRC` is WGSL source text handed
+# to `wgpu::Device::create_shader_module` exactly as on every other target.
+wgpu = { workspace = true, optional = true, features = [
+    "wgsl",
+    "webgpu",
+] }
+# Resolves `wgpu::Buffer::map_async`'s callback into an `.await`-able future for
+# `renderer::gpu::frame`'s wasm32-only `accumulate_async`/`new_async` (see that
+# module's doc comment). Needed only there: native's `renderer::gpu::compute::
+# begin_map_read`/`finish_map_read` instead block the calling OS thread on
+# `Device::poll(Maintain::Wait)`, which has no OS thread to block on wasm32 --
+# `wasm32-unknown-unknown` has no thread to create one on (see
+# `apps/indicatrix-web/README.md` for the full explanation). Pure Rust, no I/O of its
+# own; it only needs an executor to poll the future it returns, which `apps/indicatrix-web`
+# supplies via `slint::spawn_local` (backed by `wasm-bindgen-futures` on this target).
+futures-channel = { version = "0.3.34", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+# Used only by examples/meet_solver_validation.rs, which validates
+# geometry::meet_solver against a real design corpus by reading a
+# facet_diagrams.sqlite catalogue directly. A dev-dependency, so it never reaches a
+# built binary -- see that example's own doc comment for why that validation cannot
+# live in this crate's test suite instead.
+rusqlite = { workspace = true }
+# Parses and validates every WGSL shader (the three build.rs-generated transport
+# units and the standalone check kernels) in `renderer::gpu::shader_validation_tests`.
+# Nothing else validates WGSL before a pipeline is created at runtime, so without
+# this a syntax error in a shader only surfaces on a machine with a GPU. Pinned to
+# the same version `wgpu` bundles so accepted syntax matches what runs.
+naga = { version = "30.0.1", default-features = false, features = ["wgsl-in"] }
+
+[features]
+default = []
+gpu = ["dep:wgpu", "dep:pollster"]
+# Loads Radiance `.hdr` equirectangular environment maps for
+# `renderer::env_map::EnvironmentMap`. Off by default so the base `indicatrix`
+# dependency count (the four listed above) stays publishable; the CPU-side
+# importance-sampling machinery in `env_map` itself needs no extra
+# dependency and is always available.
+hdr = ["dep:image"]
+# Derives `Serialize`/`Deserialize` for the scene-description types `indicatrix-net` sends
+# over the wire to a remote render worker: `GemMaterial` and its nested types
+# (`CrystalSystem`, `OpticalCharacter`, `DispersionModel`, `AbsorptionBand`,
+# `AbsorptionTensor`), `geometry::GpuFacetPlane`, and `optics::raytracer::LightingPreset`.
+# Also turns on glam's own `serde` feature, needed for `GemMaterial::c_axis: Vec3`.
+# Off by default -- see the `serde` dependency comment above.
+serde = ["dep:serde", "glam/serde"]
+
+[[example]]
+name = "gpu_equivalence_harness"
+# Needs a real GPU adapter (see the example's own doc comment) -- `cargo check
+# --workspace --all-targets` / `cargo test` without `--features gpu` must skip
+# building it entirely, not merely skip running it, since `renderer::gpu` (which it
+# imports) doesn't exist without the feature either.
+required-features = ["gpu"]
+
+[lints]
+workspace = true

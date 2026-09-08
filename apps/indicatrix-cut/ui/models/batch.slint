@@ -1,0 +1,39 @@
+export global BatchModel {
+    in-out property <bool> preview_visible: false;
+    in property <bool> preview_confirming: false;
+    in property <int> preview_offer_count: 0;
+    in property <[int]> preview_offer_ids: [];
+    in property <bool> preview_batch_running: false;
+    in property <int> preview_design_index: 0;
+    in property <int> preview_design_total: 0;
+    in property <int> preview_local_active: 0;
+    in property <int> preview_local_lane_total: 0;
+    in property <string> preview_remote_title: "";
+    in property <bool> preview_remote_active: false;
+    in property <bool> preview_done: false;
+    in property <string> preview_summary: "";
+
+    callback preview_cancel();
+    callback preview_close();
+    callback preview_dismiss_offer();
+    callback preview_generate_confirmed();
+
+    in-out property <bool> tilt_visible: false;
+    in property <bool> tilt_confirming: false;
+    in property <int> tilt_offer_count: 0;
+    in property <[int]> tilt_offer_ids: [];
+    in property <bool> tilt_batch_running: false;
+    in property <int> tilt_design_index: 0;
+    in property <int> tilt_design_total: 0;
+    in property <int> tilt_local_active: 0;
+    in property <int> tilt_local_lane_total: 0;
+    in property <string> tilt_remote_title: "";
+    in property <bool> tilt_remote_active: false;
+    in property <bool> tilt_done: false;
+    in property <string> tilt_summary: "";
+
+    callback tilt_cancel();
+    callback tilt_close();
+    callback tilt_dismiss_offer();
+    callback tilt_generate_confirmed();
+}

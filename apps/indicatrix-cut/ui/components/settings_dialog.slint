@@ -1,0 +1,1471 @@
+import { Slider, Button, LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { LightingPresetItem } from "../types.slint";
+import { SettingsModel } from "../models/settings.slint";
+import { ViewportModel } from "../models/viewport.slint";
+import { RemoteWorkerModel } from "../models/remote_worker.slint";
+import { TiltModel } from "../models/tilt.slint";
+
+export component SettingsDialog inherits Rectangle {
+    // This popup is positioned by absolute x/y/z in `gem_viewport.slint` rather than
+    // laid out in a container, so `GemViewportView` passes its own height through
+    // explicitly; the cap below is a fraction of it instead of a fixed pixel number.
+    in property <length> available_height: 600px;
+
+    // Rounded exponent driving the displayed sample count: `SliderBase` only snaps to
+    // `step` on arrow-key nudges, not on pointer drag, so the rounding happens here.
+    property <int> sample_exponent: Math.round(SettingsModel.target_samples_exponent);
+    property <int> target_samples_count: Math.round(Math.pow(2.0, root.sample_exponent));
+
+    property <[string]> graph_angles: ["0", "5", "10", "15", "20", "25", "30", "35", "40", "45", "50", "55", "60", "65", "70", "75", "80", "85", "90"];
+    property <[float]> graph_angles_num: [0.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 35.0, 40.0, 45.0, 50.0, 55.0, 60.0, 65.0, 70.0, 75.0, 80.0, 85.0, 90.0];
+    property <string> live_remote_unavailable_reason: "";
+
+    property <bool> adding_preset: false;
+    property <string> new_preset_name: "";
+    property <bool> confirming_reset: false;
+    property <int> renaming_index: -1;
+    property <string> rename_text: "";
+
+    callback close();
+    close => { SettingsModel.is_open = false; SettingsModel.close(); }
+
+    callback open_performance_graph();
+    open_performance_graph => {
+        SettingsModel.is_open = false;
+        TiltModel.dialog_open = true;
+        SettingsModel.open_performance_graph();
+    }
+
+    function reset_defaults() {
+        SettingsModel.target_samples_exponent = 8.0;
+        SettingsModel.resolution_index = 1;
+        SettingsModel.preview_size_val = 160.0;
+        SettingsModel.preview_spp_val = 256.0;
+        SettingsModel.local_preview_scale_index = 0;
+        SettingsModel.live_compute_target_index = 2;
+        SettingsModel.local_compute_target_index = 1;
+        SettingsModel.bounce_index = 2;
+        SettingsModel.exposure_val = 1.0;
+        SettingsModel.light_yaw_deg = 48.0;
+        SettingsModel.light_pitch_deg = 54.0;
+        SettingsModel.inclusion_sigma_s = 0.0;
+        SettingsModel.c_axis_override_enabled = false;
+        SettingsModel.c_axis_tilt_deg = 0.0;
+        SettingsModel.c_axis_azimuth_deg = 0.0;
+        SettingsModel.girdle_frosted = false;
+        SettingsModel.edge_rounding_radius = 0.0;
+        SettingsModel.stone_width_mm = 0.0;
+        SettingsModel.target_samples_changed(8);
+        SettingsModel.resolution_changed(800, 600);
+        SettingsModel.preview_size_changed(160);
+        SettingsModel.preview_spp_changed(256);
+        SettingsModel.local_preview_scale_changed(0);
+        SettingsModel.live_compute_target_changed(2);
+        SettingsModel.local_compute_target_changed(1);
+        SettingsModel.bounces_changed(12);
+        SettingsModel.exposure_changed(1.0);
+        ViewportModel.light_pos_changed(48.0, 54.0);
+        SettingsModel.inclusion_changed(0.0);
+        SettingsModel.c_axis_override_changed(false);
+        SettingsModel.c_axis_angles_changed(0.0, 0.0);
+        SettingsModel.girdle_frosted_changed(false);
+        SettingsModel.edge_rounding_changed(0.0);
+        SettingsModel.stone_width_changed(0.0);
+        SettingsModel.reset_defaults();
+    }
+    width: 380px;
+    // Content-driven height, capped: unset, this `Rectangle` would expand to fill
+    // `GemViewportView`, the full-viewport area it's anchored inside; `height_cap`
+    // bounds it to a fraction of `available_height` instead of a fixed pixel number,
+    // and `ScrollView` below makes the part past the cap reachable.
+    //
+    // THE TRAP: a `ScrollView` always sizes to its constraint (unlike a bare
+    // `Rectangle`), so naively wrapping `content` in one and leaving this binding as
+    // `content.preferred-height` would reintroduce the stretch-to-bottom failure this
+    // exists to prevent. `min(content.preferred-height, height_cap)` keeps both cases
+    // working: short content is unaffected, tall content is clamped and scrollable.
+    property <length> height_cap: root.available_height * 0.85;
+    height: content.preferred-height < root.height_cap ? content.preferred-height : root.height_cap;
+    background: #111827ee;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: #334155;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: #000000ee;
+    drop-shadow-offset-y: 6px;
+
+    // `width`/`height: 100%` are deliberate: `root.height` above is already the
+    // resolved min(content, cap), so 100% matches the `ScrollView` to that.
+    ScrollView {
+        width: 100%;
+        height: 100%;
+
+    content := VerticalLayout {
+        padding: 16px;
+        spacing: 14px;
+
+        // Header with Title and Close '×' button
+        HorizontalLayout {
+            alignment: space-between;
+
+            HorizontalLayout {
+                spacing: 8px;
+                Image { source: @image-url("../icons/gear.svg"); colorize: Theme.accent-cyan; width: 15px; height: 15px; vertical-alignment: center; }
+                Text { text: "Rendering Settings"; font-size: 13px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
+            }
+
+            Rectangle {
+                width: 24px;
+                height: 24px;
+                border-radius: 12px;
+                background: close_btn.has-hover ? #1e293b : transparent;
+
+                close_btn := TouchArea {
+                    clicked => { root.close(); }
+                }
+
+                Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+
+        // Target Samples moves in powers of two -- noise falls as 1/sqrt(N), so a
+        // linear 8..1024 control would spend ~97% of its travel above 32 spp where
+        // each step barely changes anything visible. The slider drags the EXPONENT
+        // (3..=10); `sample_exponent`/`target_samples_count` above derive the count.
+        VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                alignment: space-between;
+                Text { text: "Target Samples"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                Text { text: root.target_samples_count; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+            }
+            Slider {
+                minimum: 3;
+                maximum: 10;
+                step: 1;
+                value <=> SettingsModel.target_samples_exponent;
+                // `SliderBase.set-value` updates `target_samples_exponent` BEFORE
+                // firing `changed`, so `root.sample_exponent` reflects this change
+                // by the time it's read here.
+                changed(val) => { SettingsModel.target_samples_changed(root.sample_exponent); }
+            }
+        }
+
+        // Catalogue preview thumbnails: size and quality. Plain linear sliders (not
+        // the samples-exponent's drag-then-round idiom) since both ranges (96-256px,
+        // 32-512spp) are narrow enough for a linear drag to stay fine-grained.
+        VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                alignment: space-between;
+                Text { text: "Preview Image Size"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                Text { text: Math.round(SettingsModel.preview_size_val) + "px"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+            }
+            Slider {
+                minimum: 96;
+                maximum: 256;
+                step: 16;
+                value <=> SettingsModel.preview_size_val;
+                changed(val) => { SettingsModel.preview_size_changed(Math.round(val)); }
+            }
+        }
+        VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                alignment: space-between;
+                Text { text: "Preview Samples"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                Text { text: Math.round(SettingsModel.preview_spp_val); font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+            }
+            Slider {
+                minimum: 32;
+                maximum: 512;
+                step: 32;
+                value <=> SettingsModel.preview_spp_val;
+                changed(val) => { SettingsModel.preview_spp_changed(Math.round(val)); }
+            }
+        }
+
+        // Render Resolution - Segmented Pill Selector, same idiom as the Ray Bounces
+        // picker below and `export_dialog.slint`'s "Output Size" pills. A fixed list
+        // rather than a slider -- see `resolution_index` above for why.
+        VerticalLayout {
+            spacing: 6px;
+            Text { text: "Render Resolution"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+
+            HorizontalLayout {
+                spacing: 4px;
+
+                // 640x480
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.resolution_index == 0 ? Theme.accent-cyan : (res0_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.resolution_index == 0 ? Theme.accent-cyan : #334155;
+
+                    res0_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.resolution_index = 0;
+                            SettingsModel.resolution_changed(640, 480);
+                        }
+                    }
+
+                    Text {
+                        text: "640×480";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: SettingsModel.resolution_index == 0 ? #0f172a : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // 800x600 (default)
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.resolution_index == 1 ? Theme.accent-cyan : (res1_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.resolution_index == 1 ? Theme.accent-cyan : #334155;
+
+                    res1_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.resolution_index = 1;
+                            SettingsModel.resolution_changed(800, 600);
+                        }
+                    }
+
+                    Text {
+                        text: "800×600";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: SettingsModel.resolution_index == 1 ? #0f172a : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // 1280x720
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.resolution_index == 2 ? Theme.accent-cyan : (res2_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.resolution_index == 2 ? Theme.accent-cyan : #334155;
+
+                    res2_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.resolution_index = 2;
+                            SettingsModel.resolution_changed(1280, 720);
+                        }
+                    }
+
+                    Text {
+                        text: "1280×720";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: SettingsModel.resolution_index == 2 ? #0f172a : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // 1920x1080
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.resolution_index == 3 ? Theme.accent-cyan : (res3_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.resolution_index == 3 ? Theme.accent-cyan : #334155;
+
+                    res3_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.resolution_index = 3;
+                            SettingsModel.resolution_changed(1920, 1080);
+                        }
+                    }
+
+                    Text {
+                        text: "1920×1080";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: SettingsModel.resolution_index == 3 ? #0f172a : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // Plain factual cost note, not an estimator -- render time depends on
+            // scene/hardware in ways this dialog has no way to know.
+            Text {
+                text: "Higher resolutions render more pixels per sample and take proportionally longer to converge.";
+                font-size: 11px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+        }
+
+        // Motion Preview Resolution, off by default. Same segmented-pill idiom as
+        // Render Resolution above; a discrete choice rather than a slider since
+        // there's no meaningful continuum between "half" and "0.47".
+        VerticalLayout {
+            spacing: 6px;
+            Text { text: "Motion Preview Resolution"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+
+            HorizontalLayout {
+                spacing: 4px;
+
+                // Off (default): always renders at full "Render Resolution" above.
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.local_preview_scale_index == 0 ? Theme.accent-cyan : (mp0_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.local_preview_scale_index == 0 ? Theme.accent-cyan : #334155;
+
+                    mp0_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.local_preview_scale_index = 0;
+                            SettingsModel.local_preview_scale_changed(0);
+                        }
+                    }
+
+                    Text {
+                        text: "Off";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: SettingsModel.local_preview_scale_index == 0 ? #0f172a : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Half resolution while the camera is moving.
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.local_preview_scale_index == 1 ? Theme.accent-cyan : (mp1_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.local_preview_scale_index == 1 ? Theme.accent-cyan : #334155;
+
+                    mp1_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.local_preview_scale_index = 1;
+                            SettingsModel.local_preview_scale_changed(1);
+                        }
+                    }
+
+                    Text {
+                        text: "Half";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: SettingsModel.local_preview_scale_index == 1 ? #0f172a : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Quarter resolution while the camera is moving.
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.local_preview_scale_index == 2 ? Theme.accent-cyan : (mp2_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.local_preview_scale_index == 2 ? Theme.accent-cyan : #334155;
+
+                    mp2_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.local_preview_scale_index = 2;
+                            SettingsModel.local_preview_scale_changed(2);
+                        }
+                    }
+
+                    Text {
+                        text: "Quarter";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: SettingsModel.local_preview_scale_index == 2 ? #0f172a : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            Text {
+                text: "While dragging the gem, render at a reduced resolution for a smoother feel, then snap back to full resolution once you stop moving.";
+                font-size: 11px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+        }
+
+        // Live Compute: which engine(s) trace the settled viewport image. Same
+        // segmented-pill idiom, and the same disabled-with-a-reason treatment, as
+        // `export_dialog.slint`'s "Compute" section.
+        VerticalLayout {
+            spacing: 6px;
+            Text { text: "Live Compute"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+
+            HorizontalLayout {
+                spacing: 4px;
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.live_compute_target_index == 0 ? Theme.accent-cyan : (lct0_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.live_compute_target_index == 0 ? Theme.accent-cyan : #334155;
+
+                    lct0_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.live_compute_target_index = 0;
+                            SettingsModel.live_compute_target_changed(0);
+                        }
+                    }
+
+                    Text { text: "Local only"; font-size: 11px; font-weight: 600; color: SettingsModel.live_compute_target_index == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    opacity: RemoteWorkerModel.live_remote_available ? 1.0 : 0.45;
+                    background: SettingsModel.live_compute_target_index == 1 ? Theme.accent-cyan : (lct1_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.live_compute_target_index == 1 ? Theme.accent-cyan : #334155;
+
+                    lct1_touch := TouchArea {
+                        enabled: RemoteWorkerModel.live_remote_available;
+                        clicked => {
+                            SettingsModel.live_compute_target_index = 1;
+                            SettingsModel.live_compute_target_changed(1);
+                        }
+                    }
+
+                    Text { text: "Remote only"; font-size: 11px; font-weight: 600; color: SettingsModel.live_compute_target_index == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    opacity: RemoteWorkerModel.live_remote_available ? 1.0 : 0.45;
+                    background: SettingsModel.live_compute_target_index == 2 ? Theme.accent-cyan : (lct2_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.live_compute_target_index == 2 ? Theme.accent-cyan : #334155;
+
+                    lct2_touch := TouchArea {
+                        enabled: RemoteWorkerModel.live_remote_available;
+                        clicked => {
+                            SettingsModel.live_compute_target_index = 2;
+                            SettingsModel.live_compute_target_changed(2);
+                        }
+                    }
+
+                    Text { text: "Local + Remote"; font-size: 11px; font-weight: 600; color: SettingsModel.live_compute_target_index == 2 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+
+            if !RemoteWorkerModel.live_remote_available: Text {
+                text: root.live_remote_unavailable_reason == "" ? "No remote worker is configured." : root.live_remote_unavailable_reason;
+                font-size: 11px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+
+            if RemoteWorkerModel.live_remote_available: Text {
+                text: "Once the camera settles, Local + Remote lets both engines keep tracing the same image together for a faster converge; Remote only hands the whole image to the worker.";
+                font-size: 11px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+        }
+
+        // Local Compute: which engine(s) the LOCAL (non-remote) render loop uses --
+        // only shown on a GPU-capable build (`gpu_build`), since the choice is
+        // meaningless without a `gpu` feature to route through.
+        if SettingsModel.gpu_build: VerticalLayout {
+            spacing: 6px;
+            Text { text: "Local Compute"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+
+            HorizontalLayout {
+                spacing: 4px;
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.local_compute_target_index == 0 ? Theme.accent-cyan : (lcpu_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.local_compute_target_index == 0 ? Theme.accent-cyan : #334155;
+
+                    lcpu_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.local_compute_target_index = 0;
+                            SettingsModel.local_compute_target_changed(0);
+                        }
+                    }
+
+                    Text { text: "CPU"; font-size: 11px; font-weight: 600; color: SettingsModel.local_compute_target_index == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.local_compute_target_index == 1 ? Theme.accent-cyan : (lcpugpu_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.local_compute_target_index == 1 ? Theme.accent-cyan : #334155;
+
+                    lcpugpu_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.local_compute_target_index = 1;
+                            SettingsModel.local_compute_target_changed(1);
+                        }
+                    }
+
+                    Text { text: "CPU + GPU"; font-size: 11px; font-weight: 600; color: SettingsModel.local_compute_target_index == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.local_compute_target_index == 2 ? Theme.accent-cyan : (lgpu_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.local_compute_target_index == 2 ? Theme.accent-cyan : #334155;
+
+                    lgpu_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.local_compute_target_index = 2;
+                            SettingsModel.local_compute_target_changed(2);
+                        }
+                    }
+
+                    Text { text: "GPU only"; font-size: 11px; font-weight: 600; color: SettingsModel.local_compute_target_index == 2 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+
+            Text {
+                text: "Which engine(s) trace the live viewport. \"GPU only\" still falls back to the CPU tracer for a scene the GPU declines (no adapter, or an unsupported material), so nothing ever fails to render.";
+                font-size: 11px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+        }
+
+        // Ray Bounces - Segmented Pill Selector.
+        //
+        // Ladder is 4/8/12/24/64/128, backed by
+        // `crates/indicatrix/examples/bounce_cost.rs` measurements: cost is nearly
+        // flat in the cap (an 85x spread from 12 to 1024 costs under 1.4x wall-clock,
+        // CPU) because the path population is short-tailed (median 4 bounces, p95 29,
+        // only 0.03% ever reach 128). 12 is the default, the sane interactive middle.
+        // 64 and 128 are the measured points where the hardest case (Diamond) crosses
+        // 99.5% and 99.99% converged against a 1024-bounce reference; nothing above
+        // 128 is offered since the measurement shows zero further change up to 1024.
+        VerticalLayout {
+            spacing: 6px;
+            Text { text: "Max Ray Bounces (Dispersion Depth)"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+
+            HorizontalLayout {
+                spacing: 4px;
+
+                // 4 Bounces
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.bounce_index == 0 ? Theme.accent-cyan : (b0_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.bounce_index == 0 ? Theme.accent-cyan : #334155;
+
+                    b0_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.bounce_index = 0;
+                            SettingsModel.bounces_changed(4);
+                        }
+                    }
+
+                    Text {
+                        text: "4";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: SettingsModel.bounce_index == 0 ? #0f172a : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // 8 Bounces
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.bounce_index == 1 ? Theme.accent-cyan : (b1_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.bounce_index == 1 ? Theme.accent-cyan : #334155;
+
+                    b1_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.bounce_index = 1;
+                            SettingsModel.bounces_changed(8);
+                        }
+                    }
+
+                    Text {
+                        text: "8";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: SettingsModel.bounce_index == 1 ? #0f172a : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // 12 Bounces (default)
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.bounce_index == 2 ? Theme.accent-cyan : (b2_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.bounce_index == 2 ? Theme.accent-cyan : #334155;
+
+                    b2_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.bounce_index = 2;
+                            SettingsModel.bounces_changed(12);
+                        }
+                    }
+
+                    Text {
+                        text: "12";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: SettingsModel.bounce_index == 2 ? #0f172a : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // 24 Bounces
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.bounce_index == 3 ? Theme.accent-cyan : (b3_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.bounce_index == 3 ? Theme.accent-cyan : #334155;
+
+                    b3_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.bounce_index = 3;
+                            SettingsModel.bounces_changed(24);
+                        }
+                    }
+
+                    Text {
+                        text: "24";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: SettingsModel.bounce_index == 3 ? #0f172a : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // 64 Bounces
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.bounce_index == 4 ? Theme.accent-cyan : (b4_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.bounce_index == 4 ? Theme.accent-cyan : #334155;
+
+                    b4_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.bounce_index = 4;
+                            SettingsModel.bounces_changed(64);
+                        }
+                    }
+
+                    Text {
+                        text: "64";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: SettingsModel.bounce_index == 4 ? #0f172a : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                // 128 Bounces (ceiling)
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.bounce_index == 5 ? Theme.accent-cyan : (b5_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.bounce_index == 5 ? Theme.accent-cyan : #334155;
+
+                    b5_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.bounce_index = 5;
+                            SettingsModel.bounces_changed(128);
+                        }
+                    }
+
+                    Text {
+                        text: "128";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: SettingsModel.bounce_index == 5 ? #0f172a : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // Flat cost holds on CPU, but GPU threads run in lockstep, so the few
+            // long paths in the tail stall the whole workgroup at this rung range.
+            if SettingsModel.bounce_index >= 4: Text {
+                text: "Modest cost on CPU, but noticeably steeper on GPU -- long paths stall the whole workgroup there since threads run in lockstep.";
+                font-size: 11px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+        }
+
+        // Inclusion Haze: subsurface/inclusion scattering amount, off by default.
+        // Linear, unlike the samples slider above, since `scattering_sigma_s` is
+        // already a physical linear coefficient.
+        VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                alignment: space-between;
+                Rectangle {
+                    height: inclusion_lbl.preferred-height;
+                    Tooltip { text: @markdown("Subsurface haze from 0 (clean) to 3 (milky)."); }
+                    inclusion_lbl := Text { text: "Inclusion Haze"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                }
+                Text {
+                    text: SettingsModel.inclusion_sigma_s <= 0.0 ? "Off" : Math.round(SettingsModel.inclusion_sigma_s * 100.0) / 100.0 + "";
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: Theme.accent-cyan;
+                }
+            }
+            Slider {
+                minimum: 0.0;
+                maximum: 3.0;
+                value <=> SettingsModel.inclusion_sigma_s;
+                changed(val) => { SettingsModel.inclusion_changed(val); }
+            }
+        }
+
+        // Crystal Axis Orientation: tilt/azimuth of the optic axis relative to the
+        // table normal (+Y). Off ("As Cut") by default. `c_axis_override_available`
+        // (Rust-driven) is false for an isotropic material, which has no crystal axis
+        // to orient: the switch is disabled and greyed out rather than silently doing
+        // nothing.
+        VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                alignment: space-between;
+                Text {
+                    text: "Crystal Axis Orientation";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: SettingsModel.c_axis_override_available ? Theme.text-muted : #475569;
+                }
+                Rectangle {
+                    width: 36px;
+                    height: 20px;
+                    border-radius: 10px;
+                    opacity: SettingsModel.c_axis_override_available ? 1.0 : 0.5;
+                    background: SettingsModel.c_axis_override_enabled ? Theme.accent-cyan : #334155;
+
+                    axis_toggle_touch := TouchArea {
+                        enabled: SettingsModel.c_axis_override_available;
+                        clicked => {
+                            SettingsModel.c_axis_override_enabled = !SettingsModel.c_axis_override_enabled;
+                            SettingsModel.c_axis_override_changed(SettingsModel.c_axis_override_enabled);
+                        }
+                    }
+
+                    Rectangle {
+                        width: 16px;
+                        height: 16px;
+                        border-radius: 8px;
+                        background: white;
+                        x: SettingsModel.c_axis_override_enabled ? parent.width - self.width - 2px : 2px;
+                        y: 2px;
+                        animate x { duration: 120ms; }
+                    }
+                }
+            }
+
+            if SettingsModel.c_axis_override_available: Text {
+                text: "Off renders the material's axis as cut. On: tilt 0-90° from the table normal, azimuth 0-360° around it.";
+                font-size: 11px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+
+            if !SettingsModel.c_axis_override_available: Text {
+                text: "This material is isotropic (e.g. Diamond, Spinel, Cubic Zirconia) -- it has no crystal axis to orient.";
+                font-size: 11px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+
+            if SettingsModel.c_axis_override_available && SettingsModel.c_axis_override_enabled: VerticalLayout {
+                spacing: 8px;
+
+                VerticalLayout {
+                    spacing: 2px;
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text { text: "Tilt"; font-size: 10px; color: Theme.text-muted; }
+                        Text { text: Math.round(SettingsModel.c_axis_tilt_deg) + "°"; font-size: 10px; font-weight: 700; color: Theme.accent-cyan; }
+                    }
+                    Slider {
+                        minimum: 0.0;
+                        maximum: 90.0;
+                        value <=> SettingsModel.c_axis_tilt_deg;
+                        changed(val) => { SettingsModel.c_axis_angles_changed(val, SettingsModel.c_axis_azimuth_deg); }
+                    }
+                }
+
+                VerticalLayout {
+                    spacing: 2px;
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text { text: "Azimuth"; font-size: 10px; color: Theme.text-muted; }
+                        Text { text: Math.round(SettingsModel.c_axis_azimuth_deg) + "°"; font-size: 10px; font-weight: 700; color: Theme.accent-cyan; }
+                    }
+                    Slider {
+                        minimum: 0.0;
+                        maximum: 360.0;
+                        value <=> SettingsModel.c_axis_azimuth_deg;
+                        changed(val) => { SettingsModel.c_axis_angles_changed(SettingsModel.c_axis_tilt_deg, val); }
+                    }
+                }
+            }
+        }
+
+        // Frosted Girdle: renders the girdle band with a bruted (ground, diffusely
+        // scattering) finish instead of polished. Off by default.
+        VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                alignment: space-between;
+                Rectangle {
+                    height: frosted_lbl.preferred-height;
+                    Tooltip { text: @markdown("Render the girdle band ground instead of polished."); }
+                    frosted_lbl := Text { text: "Frosted Girdle"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                }
+                Rectangle {
+                    width: 36px;
+                    height: 20px;
+                    border-radius: 10px;
+                    background: SettingsModel.girdle_frosted ? Theme.accent-cyan : #334155;
+
+                    TouchArea {
+                        clicked => {
+                            SettingsModel.girdle_frosted = !SettingsModel.girdle_frosted;
+                            SettingsModel.girdle_frosted_changed(SettingsModel.girdle_frosted);
+                        }
+                    }
+
+                    Rectangle {
+                        width: 16px;
+                        height: 16px;
+                        border-radius: 8px;
+                        background: white;
+                        x: SettingsModel.girdle_frosted ? parent.width - self.width - 2px : 2px;
+                        y: 2px;
+                        animate x { duration: 120ms; }
+                    }
+                }
+            }
+        }
+
+        // Edge Rounding: softens meet-point edges from perfectly sharp (0.0, default)
+        // toward a subtle rounded glint.
+        VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                alignment: space-between;
+                Rectangle {
+                    height: edge_rounding_lbl.preferred-height;
+                    Tooltip { text: @markdown("Soften facet edges from sharp toward a subtle rounded glint."); }
+                    edge_rounding_lbl := Text { text: "Edge Rounding"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                }
+                Text {
+                    text: SettingsModel.edge_rounding_radius <= 0.0 ? "Off" : Math.round(SettingsModel.edge_rounding_radius * 1000.0) / 1000.0 + "";
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: Theme.accent-cyan;
+                }
+            }
+            Slider {
+                minimum: 0.0;
+                maximum: 0.03;
+                value <=> SettingsModel.edge_rounding_radius;
+                changed(val) => { SettingsModel.edge_rounding_changed(val); }
+            }
+        }
+
+        // Stone Size: physical width across the girdle, in mm. 0.0 (default) means
+        // off: unscaled.
+        VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                alignment: space-between;
+                Rectangle {
+                    height: stone_size_lbl.preferred-height;
+                    Tooltip { text: @markdown("Girdle width in millimetres for scale-accurate rendering."); }
+                    stone_size_lbl := Text { text: "Stone Size"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                }
+                Text {
+                    text: SettingsModel.stone_width_mm <= 0.0 ? "Off" : Math.round(SettingsModel.stone_width_mm * 100.0) / 100.0 + "mm";
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: Theme.accent-cyan;
+                }
+            }
+            Slider {
+                minimum: 0.0;
+                maximum: 20.0;
+                value <=> SettingsModel.stone_width_mm;
+                changed(val) => { SettingsModel.stone_width_changed(val); }
+            }
+        }
+
+        // Environment Map (HDR): loads a Radiance .hdr equirectangular panorama as the
+        // render's environment in place of the analytic studio rig below (Studio
+        // Exposure / Light Azimuth / Light Elevation), superseded while a map is
+        // loaded.
+        VerticalLayout {
+            spacing: 4px;
+            Rectangle {
+                height: env_map_lbl.preferred-height;
+                Tooltip { text: @markdown("Load a Radiance .hdr panorama in place of the studio rig. Forces CPU rendering."); }
+                env_map_lbl := Text { text: "Environment Map (HDR)"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+            }
+
+            LineEdit {
+                placeholder-text: "C:\\path\\to\\studio.hdr";
+                text <=> SettingsModel.env_map_path;
+                accepted => { SettingsModel.load_env_map(SettingsModel.env_map_path); }
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+
+                Rectangle {
+                    width: 76px;
+                    height: 26px;
+                    border-radius: Theme.radius-sm;
+                    background: browse_hdr_touch.has-hover ? #1e293b : #0f172a;
+                    border-width: 1px;
+                    border-color: #334155;
+
+                    browse_hdr_touch := TouchArea {
+                        clicked => { SettingsModel.env_map_path = SettingsModel.pick_hdr_file(SettingsModel.env_map_path); }
+                    }
+
+                    Text { text: "Browse..."; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 26px;
+                    border-radius: Theme.radius-sm;
+                    background: load_env_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
+
+                    load_env_touch := TouchArea {
+                        enabled: SettingsModel.env_map_path != "";
+                        clicked => { SettingsModel.load_env_map(SettingsModel.env_map_path); }
+                    }
+
+                    Text { text: "Load"; font-size: 11px; font-weight: 700; color: #0f172a; horizontal-alignment: center; vertical-alignment: center; }
+                }
+
+                if SettingsModel.env_map_loaded: Rectangle {
+                    width: 60px;
+                    height: 26px;
+                    border-radius: Theme.radius-sm;
+                    background: clear_env_touch.has-hover ? #1e293b : #0f172a;
+                    border-width: 1px;
+                    border-color: #334155;
+
+                    clear_env_touch := TouchArea {
+                        clicked => { SettingsModel.clear_env_map(); }
+                    }
+
+                    Text { text: "Clear"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+
+            if SettingsModel.env_map_status != "": Text {
+                text: SettingsModel.env_map_status;
+                font-size: 10px;
+                color: Theme.accent-emerald;
+                wrap: word-wrap;
+            }
+
+            // Loading an environment map forces the switch to the slower CPU tracer,
+            // which needs a visible explanation rather than an unexplained frame-rate drop.
+            if SettingsModel.env_map_loaded: Text {
+                text: "Replaces the studio lighting rig, exposure, and light-position controls below. Renders on the CPU only (no GPU support yet) -- expect slower, but physically accurate, results.";
+                font-size: 11px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+        }
+
+        // Studio Exposure Slider
+        VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                alignment: space-between;
+                Rectangle {
+                    height: exposure_lbl.preferred-height;
+                    Tooltip { text: @markdown("Overall brightness; key-light position around and above the stone."); }
+                    exposure_lbl := Text { text: "Studio Exposure"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                }
+                Text { text: Math.round(SettingsModel.exposure_val * 100.0) / 100.0 + "x"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+            }
+            Slider {
+                minimum: 0.4;
+                maximum: 2.5;
+                value <=> SettingsModel.exposure_val;
+                changed(val) => { SettingsModel.exposure_changed(val); }
+            }
+        }
+
+        // Light Source Azimuth
+        VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                alignment: space-between;
+                Rectangle {
+                    height: azimuth_row.preferred-height;
+                    Tooltip { text: @markdown("Overall brightness; key-light position around and above the stone."); }
+                    azimuth_row := HorizontalLayout {
+                        spacing: 5px;
+                        Image { source: @image-url("../icons/lightbulb.svg"); colorize: Theme.text-muted; width: 10px; height: 10px; vertical-alignment: center; }
+                        Text { text: "Light Azimuth"; font-size: 11px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; }
+                    }
+                }
+                Text { text: Math.round(SettingsModel.light_yaw_deg) + "°"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+            }
+            Slider {
+                minimum: 0.0;
+                maximum: 360.0;
+                value <=> SettingsModel.light_yaw_deg;
+                changed(val) => { ViewportModel.light_pos_changed(val, SettingsModel.light_pitch_deg); }
+            }
+        }
+
+        // Light Source Elevation
+        VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                alignment: space-between;
+                Rectangle {
+                    height: elevation_row.preferred-height;
+                    Tooltip { text: @markdown("Overall brightness; key-light position around and above the stone."); }
+                    elevation_row := HorizontalLayout {
+                        spacing: 5px;
+                        Image { source: @image-url("../icons/lightbulb.svg"); colorize: Theme.text-muted; width: 10px; height: 10px; vertical-alignment: center; }
+                        Text { text: "Light Elevation"; font-size: 11px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; }
+                    }
+                }
+                Text { text: Math.round(SettingsModel.light_pitch_deg) + "°"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+            }
+            Slider {
+                minimum: 10.0;
+                maximum: 90.0;
+                value <=> SettingsModel.light_pitch_deg;
+                changed(val) => { ViewportModel.light_pos_changed(SettingsModel.light_yaw_deg, val); }
+            }
+        }
+
+        // Named Lighting Presets. A preset bundles light yaw/pitch, exposure, the
+        // lighting-rig selection, and camera distance -- deliberately NOT camera
+        // yaw/pitch, so applying one never spins the gem out from under the user.
+        VerticalLayout {
+            spacing: 6px;
+            HorizontalLayout {
+                alignment: space-between;
+                Rectangle {
+                    height: lighting_presets_lbl.preferred-height;
+                    Tooltip { text: @markdown("Save the current lighting and camera as a preset; \"export-usable\" lists it in the export fan-out."); }
+                    lighting_presets_lbl := Text { text: "Lighting Presets"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                }
+
+                Rectangle {
+                    width: 20px;
+                    height: 20px;
+                    border-radius: 4px;
+                    background: root.adding_preset ? Theme.accent-cyan : (add_preset_touch.has-hover ? #1e293b : transparent);
+
+                    add_preset_touch := TouchArea {
+                        clicked => {
+                            root.adding_preset = !root.adding_preset;
+                            root.new_preset_name = "";
+                        }
+                    }
+
+                    Image {
+                        source: @image-url("../icons/save.svg");
+                        colorize: root.adding_preset ? #0f172a : Theme.accent-cyan;
+                        width: 11px;
+                        height: 11px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            // Inline "save current lighting as new preset" row
+            if root.adding_preset: HorizontalLayout {
+                spacing: 6px;
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 26px;
+                    background: #1e293b;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.accent-cyan;
+
+                    LineEdit {
+                        text <=> root.new_preset_name;
+                        placeholder-text: "New preset name...";
+                    }
+                }
+
+                Rectangle {
+                    width: 26px;
+                    height: 26px;
+                    border-radius: Theme.radius-sm;
+                    background: confirm_new_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
+
+                    confirm_new_touch := TouchArea {
+                        clicked => {
+                            if (root.new_preset_name != "") {
+                                ViewportModel.save_lighting_preset(root.new_preset_name);
+                                root.adding_preset = false;
+                                root.new_preset_name = "";
+                            }
+                        }
+                    }
+
+                    Image { source: @image-url("../icons/check.svg"); colorize: #0f172a; width: 12px; height: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+
+            // Preset rows: click the name to apply; pencil/check to rename (user
+            // presets only); trash to delete (user presets only). Built-in presets
+            // never show rename/delete since the Rust side refuses those operations
+            // on them anyway.
+            for preset[idx] in ViewportModel.lighting_presets: Rectangle {
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                background: #0f172a;
+                border-width: 1px;
+                border-color: #334155;
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 6px;
+                    spacing: 6px;
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+
+                        apply_touch := TouchArea {
+                            enabled: root.renaming_index != idx;
+                            clicked => { ViewportModel.apply_lighting_preset(idx); }
+                        }
+
+                        if root.renaming_index != idx: Text {
+                            text: preset.name;
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: apply_touch.has-hover ? Theme.accent-cyan : (preset.built_in ? Theme.text-secondary : Theme.text-primary);
+                            vertical-alignment: center;
+                        }
+
+                        if root.renaming_index == idx: Rectangle {
+                            height: 22px;
+                            background: #0f172a;
+                            border-radius: 3px;
+                            border-width: 1px;
+                            border-color: Theme.accent-cyan;
+
+                            LineEdit {
+                                text <=> root.rename_text;
+                            }
+                        }
+                    }
+
+                    // "Usable for export" toggle. Shown for EVERY preset, built-ins
+                    // included (unlike rename/delete below): whether a lighting mood
+                    // is worth re-rendering under is a matter of taste, not identity.
+                    Rectangle {
+                        width: 18px;
+                        height: 18px;
+                        border-radius: 3px;
+                        background: preset.export_usable ? Theme.accent-cyan : (export_usable_touch.has-hover ? #334155 : transparent);
+
+                        export_usable_touch := TouchArea {
+                            clicked => { ViewportModel.toggle_preset_export_usable(idx, !preset.export_usable); }
+                        }
+
+                        Image {
+                            source: @image-url("../icons/save.svg");
+                            colorize: preset.export_usable ? #0f172a : Theme.text-muted;
+                            width: 9px;
+                            height: 9px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    if !preset.built_in && root.renaming_index != idx: Rectangle {
+                        width: 18px;
+                        height: 18px;
+                        border-radius: 3px;
+                        background: rename_touch.has-hover ? #334155 : transparent;
+
+                        rename_touch := TouchArea {
+                            clicked => {
+                                root.renaming_index = idx;
+                                root.rename_text = preset.name;
+                            }
+                        }
+
+                        Image { source: @image-url("../icons/pencil.svg"); colorize: Theme.text-muted; width: 10px; height: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    if root.renaming_index == idx: Rectangle {
+                        width: 18px;
+                        height: 18px;
+                        border-radius: 3px;
+                        background: confirm_rename_touch.has-hover ? #334155 : transparent;
+
+                        confirm_rename_touch := TouchArea {
+                            clicked => {
+                                if (root.rename_text != "") {
+                                    ViewportModel.rename_lighting_preset(idx, root.rename_text);
+                                }
+                                root.renaming_index = -1;
+                            }
+                        }
+
+                        Image { source: @image-url("../icons/check.svg"); colorize: Theme.accent-emerald; width: 10px; height: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    if !preset.built_in && root.renaming_index != idx: Rectangle {
+                        width: 18px;
+                        height: 18px;
+                        border-radius: 3px;
+                        background: delete_touch.has-hover ? #450a0a : transparent;
+
+                        delete_touch := TouchArea {
+                            clicked => { ViewportModel.delete_lighting_preset(idx); }
+                        }
+
+                        Image { source: @image-url("../icons/trash.svg"); colorize: #f87171; width: 10px; height: 10px; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+            }
+        }
+
+        // Performance Curve over Tilt Angles (Extinction & Brilliance Graph)
+        VerticalLayout {
+            spacing: 6px;
+            HorizontalLayout {
+                alignment: space-between;
+                HorizontalLayout {
+                    spacing: 6px;
+                    Image { source: @image-url("../icons/trend-up.svg"); colorize: Theme.text-muted; width: 11px; height: 11px; vertical-alignment: center; }
+                    Text { text: "Tilt Performance Curve"; font-size: 11px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; }
+                    Rectangle {
+                        width: 18px;
+                        height: 18px;
+                        border-radius: 3px;
+                        background: exp_touch.has-hover ? #334155 : transparent;
+                        exp_touch := TouchArea {
+                            clicked => { root.open_performance_graph(); }
+                        }
+                        Image { source: @image-url("../icons/arrow-up-right.svg"); colorize: Theme.accent-cyan; width: 11px; height: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 3px;
+                        alignment: center;
+                        Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.accent-cyan; }
+                        Text { text: "Brilliance"; font-size: 11px; color: Theme.accent-cyan; vertical-alignment: center; }
+                    }
+                    HorizontalLayout {
+                        spacing: 3px;
+                        alignment: center;
+                        Rectangle { width: 7px; height: 7px; border-radius: 3px; background: #ef4444; }
+                        Text { text: "Extinction"; font-size: 11px; color: #ef4444; vertical-alignment: center; }
+                    }
+                }
+            }
+
+            // Interactive Mini Graph Canvas / Bar Columns
+            Rectangle {
+                height: 72px;
+                background: #090d16;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: #334155;
+                clip: true;
+
+                // 19 Elevation Angle Columns (0° to 90° in 5° steps)
+                HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    padding-top: 6px;
+                    padding-bottom: 4px;
+                    spacing: 2px;
+                    alignment: space-between;
+
+                    for val[idx] in TiltModel.graph_extinction : VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: end;
+                        spacing: 2px;
+
+                        // Dual Bar Comparison: Brilliance (Cyan) & Extinction (Red)
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 1px;
+                            Rectangle {
+                                width: 3.5px;
+                                height: max(2px, min(48px, TiltModel.graph_brilliance[idx] * 0.48px));
+                                background: Theme.accent-cyan;
+                                border-radius: 1px;
+                            }
+                            Rectangle {
+                                width: 3.5px;
+                                height: max(2px, min(48px, TiltModel.graph_extinction[idx] * 0.48px));
+                                background: #ef4444;
+                                border-radius: 1px;
+                            }
+                        }
+
+                        // Angle label below column (highlight current light elevation in 5° steps)
+                        Text {
+                            text: (Math.mod(idx, 3) == 0 || idx == 18) ? root.graph_angles[idx] + "°" : "·";
+                            font-size: 11px;
+                            color: Math.abs(SettingsModel.light_pitch_deg - root.graph_angles_num[idx]) < 2.6 ? Theme.accent-cyan : #64748b;
+                            font-weight: Math.abs(SettingsModel.light_pitch_deg - root.graph_angles_num[idx]) < 2.6 ? 700 : 400;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Footer Actions
+        HorizontalLayout {
+            alignment: space-between;
+            spacing: 8px;
+
+            // Two-step affordance: the first click only opens the confirm prompt
+            // below; nothing resets until "Confirm" is clicked.
+            if !root.confirming_reset: Rectangle {
+                width: 130px;
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: rst_touch.has-hover ? #1e293b : #0f172a;
+                border-width: 1px;
+                border-color: #334155;
+
+                rst_touch := TouchArea {
+                    clicked => { root.confirming_reset = true; }
+                }
+                Tooltip { text: @markdown("Reset every setting here to its default. Cannot be undone."); }
+
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 5px;
+                    Image { source: @image-url("../icons/reset.svg"); colorize: Theme.text-secondary; width: 11px; height: 11px; vertical-alignment: center; }
+                    Text { text: "Reset to Defaults"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; vertical-alignment: center; }
+                }
+            }
+            if root.confirming_reset: HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Reset everything?";
+                    font-size: 11px;
+                    color: Theme.accent-amber;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    width: 64px;
+                    height: 30px;
+                    border-radius: Theme.radius-sm;
+                    background: confirm_reset_touch.has-hover ? #b91c1c : Theme.accent-ruby;
+                    confirm_reset_touch := TouchArea {
+                        clicked => {
+                            root.confirming_reset = false;
+                            root.reset_defaults();
+                        }
+                    }
+                    Text { text: "Confirm"; font-size: 11px; font-weight: 700; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                }
+                Rectangle {
+                    width: 60px;
+                    height: 30px;
+                    border-radius: Theme.radius-sm;
+                    background: cancel_reset_touch.has-hover ? #1e293b : #0f172a;
+                    border-width: 1px;
+                    border-color: #334155;
+                    cancel_reset_touch := TouchArea {
+                        clicked => { root.confirming_reset = false; }
+                    }
+                    Text { text: "Cancel"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 30px;
+                border-radius: Theme.radius-sm;
+                background: done_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
+
+                done_touch := TouchArea {
+                    clicked => { root.close(); }
+                }
+
+                Text { text: "Done"; font-size: 12px; font-weight: 700; color: #0f172a; horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+    }
+    }
+}

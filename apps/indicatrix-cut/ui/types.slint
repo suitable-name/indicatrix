@@ -1,0 +1,266 @@
+export struct DiagramItem {
+    id: int,
+    title: string,
+    shape: string,
+    gear: string,
+    facets: string,
+    designer: string,
+    lw_ratio: string,
+    ri: string,
+    // Whether this row is currently marked ignored. Always `false` while
+    // `RangeFilter::include_ignored` is off, since an ignored row is excluded from
+    // the result set entirely in that case. `diagram_list.slint` uses this to render
+    // an ignored row visually distinct from a normal one.
+    ignored: bool,
+}
+
+// One row of the tilt-performance search filter panel: "only X% windowing in a tilt
+// radius of Y%", and the brilliance/extinction equivalents -- the Slint-facing mirror
+// of `indicatrix_vault::model::performance::PerformanceFilter`. Several of these
+// compose by AND (`filter_panel.slint`'s list).
+//
+// Every field is a plain index/float rather than an enum -- Slint structs have no
+// enum fields, so the index<->enum mapping happens once, in Rust, at
+// `gui::search::read_range_filter`.
+export struct PerformanceFilterRow {
+    // 0 = Brilliance, 1 = Extinction, 2 = Windowing.
+    metric_index: int,
+    // 0 = At Most, 1 = At Least.
+    bound_index: int,
+    // 0..100, the percentage threshold `bound_index` is measured against.
+    threshold_pct: float,
+    // 0..90 degrees -- an arbitrary value, not a preset ladder. `read_range_filter`
+    // validates this via `PerformanceFilter::new` before it ever reaches a query.
+    tilt_radius_deg: float,
+    // 0 = Worst, 1 = Mean.
+    aggregate_index: int,
+}
+
+// Decoded catalogue-preview thumbnails for one diagram-list row, returned by
+// `MainWindow.get_preview_thumbnails(id)` -- see `gui::preview_cache`'s module doc
+// comment for why this is a synchronous lookup callback rather than fields on
+// `DiagramItem` itself. `has_front`/`has_top` are independently `false` for a view
+// never generated or still decoding -- `diagram_list.slint` shows a fixed-size
+// placeholder in either case rather than an empty/broken `Image`.
+export struct PreviewThumbnails {
+    front: image,
+    top: image,
+    has_front: bool,
+    has_top: bool,
+}
+
+export struct AngleItem {
+    order_idx: int,
+    facet: string,
+    angle: string,
+    index_val: string,
+    notes: string,
+}
+
+export struct FileItem {
+    name: string,
+    url: string,
+    size_str: string,
+}
+
+// One row of the Edit sub-tab's tier list -- the Slint-facing mirror of an
+// `indicatrix-cut-core`/`lapidary::asc::AscTier`, converted at the `gui::editor`
+// boundary (`indicatrix`/`indicatrix-cut-core`/`lapidary` must not depend on Slint).
+// `index` is this tier's position in `Design::tiers`, round-tripped back to Rust by
+// `EditorView.save_tier`/`remove_tier` -- the same "list index is the identity"
+// convention `WorkerItem`/`LightingPresetItem` use.
+//
+// `mast` is no longer authored -- it is `Design::solve`'s derived output, formatted
+// read-only for display. What the user actually authors is the constraint:
+// `constraint_kind` (0 = meet an unspecified vertex / `MeetConstraint::MeetExisting`,
+// 1 = meet named facets / `MeetConstraint::MeetNamed`, 2 = an exact authored scale
+// value / `MeetConstraint::ScaleReference`) plus `constraint_text` (comma-separated
+// facet names for kind 1, the numeric value for kind 2, unused for kind 0). `strategy`
+// is `SolveStrategy`'s human-readable label for this tier's solved mast -- shown per
+// tier because a real derived value and an estimate/untrusted placeholder are very
+// different confidence levels a user must be able to tell apart at a glance.
+export struct EditorTierItem {
+    index: int,
+    angle_deg: string,
+    name: string,
+    indices: string,
+    constraint_kind: int,
+    constraint_text: string,
+    mast: string,
+    strategy: string,
+    // `true` for `LeastSquaresFallback`/`Failed` (or "no anchor yet"/"not solved
+    // yet" -- `tier_items_stale` sets `mast`/`strategy` to placeholders and this to
+    // `true` after every edit that isn't the explicit "Solve" action) -- exactly the
+    // cases where `mast` is not a real vertex-derived value right now, so
+    // `EditorView` can flag the row instead of showing it identically to a trusted
+    // solve.
+    strategy_is_uncertain: bool,
+    // What the source `.asc` file's `G` field actually claimed this facet meets
+    // (`ConstraintTier::imported_meet`, formatted like `constraint_text`), or `""`
+    // when there is nothing to adopt. Doubles as the "show the Adopt button"
+    // condition in `EditorView`: import pins every tier's constraint to its real
+    // recorded mast, so this is the only place a user can still see -- and act on
+    // via `adopt_meet` -- what the file's geometry actually implied.
+    imported_meet_text: string,
+    // A short label for what `orbit::orbit_units` derived from this tier's `indices`
+    // against the schedule's `symmetry_order`/`mirror`/`gear_teeth_abs` -- e.g.
+    // "orbit x4" (one complete orbit), "2 orbits" (a clean multi-facet fold), "3/4
+    // orbit" (incomplete), or "not symmetric" (a genuinely inconsistent tier). "" for
+    // a trivial <=1-index tier. Makes "editing this row affects more than one facet"
+    // visible before the user clicks Save.
+    orbit_status: string,
+    // `true` iff `orbit_status` describes an incomplete/inconsistent orbit --
+    // `EditorView` flags this the same amber `strategy_is_uncertain` uses, rather
+    // than a third ad hoc color.
+    orbit_incomplete: bool,
+    // `true` iff every occurrence in this tier has been explicitly detached from
+    // orbit-wide propagation (`ConstraintTier::detached` covers the whole tier, since
+    // the UI's one-button-per-row granularity uses the tier-wide convenience rather
+    // than a per-position picker). Drives both the row's "Detached" badge and which
+    // action `toggle_detach` performs next.
+    is_detached: bool,
+    // This tier's margin over the design's effective critical angle, and the
+    // `optics_hints::Risk` band that falls out of it. Meaningful for a pavilion
+    // tier's angle specifically (a crown/girdle tier, or no material resolved, gets
+    // `margin_text: ""`/`risk_level: -1`, treated as "nothing to show"). Needs only
+    // the tier's own authored `angle_deg` and the design's resolved `n_d`, neither of
+    // which needs a solve, so this is populated identically by both `tier_items` and
+    // `tier_items_stale`.
+    margin_text: string,
+    // -1 = not applicable (crown/girdle, or no material resolved), 0 = Safe,
+    // 1 = Marginal, 2 = Windows -- see `optics_hints::Risk`.
+    risk_level: int,
+    // `true` iff this row is currently Ctrl+click-toggled into the tier list's
+    // multi-select group (angle-nudge batching -- see `EditorView`'s
+    // `toggle_multi_select` callback and `gui::editor::callbacks::tier_actions::
+    // setup_nudge_angle_callback`). Always `false` right after a real edit's refresh
+    // (`gui::editor::state::tier_items`/`tier_items_stale` never set it) --
+    // `setup_toggle_multi_select_callback` patches it onto the already-pushed row
+    // list in place instead, so toggling a selection never re-labels the design "not
+    // solved" the way a real edit's stale-refresh does.
+    multi_selected: bool,
+}
+
+// One row of the gear-remap confirmation panel (`editor_view.slint`) -- shown after
+// the user picks a different index-gear tooth count in the Design Settings panel,
+// before `Edit::RemapIndices` is actually applied. `new_indices` is exactly what
+// `Edit::RemapIndices` would write (a real dry run against a cloned design), while
+// `non_integral` is computed independently, from the unrounded ratio, so it flags a
+// tier whose ideal new position isn't a whole tooth regardless of which rounding mode
+// is currently previewed.
+export struct GearRemapRow {
+    name: string,
+    old_indices: string,
+    new_indices: string,
+    non_integral: bool,
+}
+
+// One row of the Edit sub-tab's Optimize result table -- one objective component's
+// before/after values, kept separate per component rather than folded into the
+// blended score alone, so an optimizer that improved windowing by wrecking extinction
+// is visibly doing that. `gui::editor::optimize_result_rows` builds exactly four of
+// these from an `OptimizeOutcome` -- windowing, extinction, and tilt brilliance, then
+// the blended `ObjectiveWeights::score` last.
+export struct OptimizeResultRow {
+    label: string,
+    before: string,
+    after: string,
+}
+
+export struct OpticalMetricsData {
+    brilliance_pct: float,
+    fire_index: float,
+    windowing_pct: float,
+    extinction_pct: float,
+    scintillation: float,
+    render_time_ms: float,
+    accumulated_samples: int,
+}
+
+// Named lighting presets: only what the row UI needs to display and reference a
+// preset -- the full numeric payload lives in Rust's `settings::LightingPreset` and is
+// applied/captured there. Slint just needs the name, whether it's a built-in (to hide
+// the rename/delete affordances), `export_usable` (the settings dialog's checkbox
+// state, and the export dialog's fan-out filter), and `has_env_map` (an
+// export-dialog-only hint: an HDR-carrying preset forces the slow CPU path for its
+// render).
+export struct LightingPresetItem {
+    name: string,
+    built_in: bool,
+    export_usable: bool,
+    has_env_map: bool,
+    // Export-dialog-only, transient checkbox state -- unused/always `false` in the
+    // settings dialog's own preset list. See `GemViewportView.export_fanout_presets`
+    // for the separate, dialog-scoped list this actually matters on.
+    selected: bool,
+}
+
+// Remote rendering: one row in the worker-list panel. Rust owns the real
+// `settings::WorkerSettings` -- this is just enough to render/edit a row and
+// round-trip an edit back to Rust by list index.
+export struct WorkerItem {
+    name: string,
+    address: string,
+    cert_dir: string,
+    // 0 = LiveProgressive, 1 = FinalOnly -- matches `indicatrix_net::messages::TransferMode`.
+    transfer_mode_index: int,
+    cadence_ms: int,
+    // 0 = Full, 1 = Half, 2 = Quarter, 3 = Custom -- matches `settings::PreviewScale`.
+    preview_scale_index: int,
+    // Only meaningful when preview_scale_index == 3.
+    preview_scale_percent: int,
+}
+
+export struct DiagramDetailData {
+    id: int,
+    title: string,
+    url: string,
+    designer: string,
+    shape: string,
+    gear: string,
+    facets: string,
+    lw_ratio: string,
+    ri: string,
+    volume: string,
+    competition: string,
+    image_name: string,
+    has_image: bool,
+    // Whether `url` is a synthetic `local://...` id from a locally-imported design
+    // rather than a real page on the web -- gates the "Open on Web"/"Copy Link"
+    // affordances in `detail_header.slint`.
+    is_local: bool,
+    // Proportions `apply_measured_metadata` derives alongside `lw_ratio`/`volume`
+    // above, shown in the same metric grid, formatted to 3 decimal places (see
+    // `gui::detail`'s `format_proportion`). Empty string means "not known for this
+    // design" and hides the chip entirely.
+    hw_ratio: string,
+    cw_ratio: string,
+    pw_ratio: string,
+    // Metadata-editor-only fields (see `metadata_editor_dialog.slint`): not shown as
+    // their own chips here, only pre-filled into the edit form. `symmetry_order` is a
+    // display string rather than an int since it's `None`-able and this struct
+    // otherwise never plumbs an "unknown" sentinel through an `int` field.
+    symmetry_order: string,
+    mirror_symmetry: bool,
+}
+
+// "Retarget for material" dialog row: one per pavilion/crown tier; girdle tiers are
+// never listed (see `gui::editor::retarget`'s own doc comment).
+export struct RetargetRowItem {
+    tier_index: int,
+    // "Crown" / "Pavilion" -- girdle tiers are never included, so this dialog never
+    // needs to render that third case.
+    block: string,
+    name: string,
+    // Pre-formatted (e.g. "-50.40°").
+    old_angle: string,
+    new_angle: string,
+    // This row's margin over the TARGET material's own critical angle, pre-formatted
+    // (e.g. "+3.21°" / "-1.05°").
+    margin: string,
+    // "Safe" / "Marginal" / "Windows" -- `indicatrix_cut_core::Risk` formatted once in
+    // Rust, matching `risk_color` below (`Theme.accent-emerald` / `accent-amber` / a
+    // red) chosen the same place so the two never drift apart.
+    risk_label: string,
+    risk_color: color,
+}

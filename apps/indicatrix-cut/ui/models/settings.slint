@@ -1,0 +1,104 @@
+// Rendering-quality/device settings (the "Settings" gear panel docked over the Live
+// Render viewport): sample count, resolution, local-preview scale, compute-target
+// split, ray bounces, exposure/light, inclusion scattering, crystal-axis override,
+// girdle finish, edge rounding, physical size, and the HDR environment map.
+export global SettingsModel {
+    in-out property <bool> is_open: false;
+
+    // Carries the "Target Samples" slider's EXPONENT (3..=10 => 8..1024 samples), not
+    // the sample count -- noise falls as 1/sqrt(N), so a linear control would spend
+    // ~97% of its travel above 32 spp where each step barely changes anything visible.
+    // `gui::sample_scale` converts to/from the persisted count. Default 8.0 => 256
+    // samples (`settings::model::DEFAULT_TARGET_SAMPLES`).
+    in-out property <float> target_samples_exponent: 8.0;
+    // 12 Bounces default -- see `settings_dialog.slint`'s pill ladder (4/8/12/24/64/128).
+    in-out property <int> bounce_index: 2;
+    in-out property <float> exposure_val: 1.0;
+    in-out property <float> light_yaw_deg: 48.0;
+    in-out property <float> light_pitch_deg: 54.0;
+    // Inclusion/subsurface scattering amount, off by default -- range and endpoint
+    // meanings from `GemMaterial::scattering_sigma_s`.
+    in-out property <float> inclusion_sigma_s: 0.0;
+    // Crystal-axis orientation override, off ("as cut") by default. `c_axis_tilt_deg`
+    // (0-90 from the table normal) and `c_axis_azimuth_deg` (0-360 around the table
+    // normal) only apply while enabled (`gui::c_axis` for the angle-to-vector mapping).
+    // `c_axis_override_available` (Rust-driven) is `false` for an isotropic material,
+    // whose optic axis is meaningless; `settings_dialog.slint` greys the control out
+    // rather than letting the user drag a slider that does nothing.
+    in-out property <bool> c_axis_override_enabled: false;
+    in-out property <float> c_axis_tilt_deg: 0.0;
+    in-out property <float> c_axis_azimuth_deg: 0.0;
+    in property <bool> c_axis_override_available: true;
+    // Bruted (frosted) girdle finish toggle, off by default.
+    in-out property <bool> girdle_frosted: false;
+    // Facet edge (meet-point) rounding radius, `0.0`-`0.03`, sharp by default.
+    in-out property <float> edge_rounding_radius: 0.0;
+    // Physical stone size (girdle width, mm), 0 = unscaled by default.
+    in-out property <float> stone_width_mm: 0.0;
+
+    // Live render resolution pill index: 0 = 640x480, 1 = 800x600 (default, matches
+    // `RenderContext::default()`), 2 = 1280x720, 3 = 1920x1080.
+    in-out property <int> resolution_index: 1;
+    // Catalogue preview-thumbnail size (px) and quality (samples per pixel) -- ranges
+    // (96-256px, 32-512spp) and defaults (160/256) from `bridge::preview_render`'s
+    // measured cost table.
+    in-out property <float> preview_size_val: 160.0;
+    in-out property <float> preview_spp_val: 256.0;
+    callback preview_size_changed(int);
+    callback preview_spp_changed(int);
+    // Local preview-then-settle rendering: while the camera moves, trace at a fraction
+    // of "Render Resolution" (`LocalPreviewScale::Off`/`Half`/`Quarter`), then snap to
+    // full resolution once it settles. Discrete pill index (0: Off/default, 1: Half, 2:
+    // Quarter), not a slider.
+    in-out property <int> local_preview_scale_index: 0;
+    // Live rendering's Local/Remote/Local+Remote choice once the camera settles. `2`
+    // (Local+Remote) matches `LiveComputeTarget`'s own `Default`.
+    in-out property <int> live_compute_target_index: 2;
+    // Local live-rendering CPU/CPU+GPU/GPU choice. `1` (CPU+GPU) matches
+    // `LocalComputeTarget`'s own `Default`. Only shown on a `gpu`-feature build
+    // (`gpu_build` below).
+    in-out property <int> local_compute_target_index: 1;
+    // Whether this build has the `gpu` feature -- Rust-driven (`cfg!(feature =
+    // "gpu")`), set once at startup, never user-settable.
+    in property <bool> gpu_build: false;
+
+    // HDR environment map: `env_map_path` is the typed path field's live text;
+    // `env_map_status`/`env_map_loaded` are Rust-driven read-outs.
+    // `gui::mod::apply_loaded_settings` seeds `env_map_path` from the last-loaded path
+    // at startup.
+    in-out property <string> env_map_path: "";
+    in property <string> env_map_status: "";
+    in property <bool> env_map_loaded: false;
+    // HDR environment map: carries the typed path field's text; `pick_hdr_file` below
+    // only fills the field, this is a separate step.
+    callback load_env_map(string);
+    // Native file-open picker for `env_map_path` above.
+    callback pick_hdr_file(string) -> string;
+    callback clear_env_map();
+
+    callback close();
+    callback reset_defaults();
+    callback open_performance_graph();
+    callback target_samples_changed(int);
+    // Carries the resolved (width, height) directly; a fixed pill list rather than a
+    // slider since Slint never reports an `Image`'s actual on-screen size back to Rust.
+    callback resolution_changed(int, int);
+    // Carries the pill's clicked index directly (`gui::mod::local_preview_scale_from_index`
+    // maps it to `LocalPreviewScale`).
+    callback local_preview_scale_changed(int);
+    // Carries the pill's clicked index directly (`gui::remote::live_compute_target_from_index`).
+    callback live_compute_target_changed(int);
+    // Carries the pill's clicked index directly (`gui::local_compute_target_from_index`).
+    callback local_compute_target_changed(int);
+    callback bounces_changed(int);
+    callback exposure_changed(float);
+    // Carries the raw value directly (linear).
+    callback inclusion_changed(float);
+    callback c_axis_override_changed(bool);
+    // Carries BOTH angles (moved slider's new value plus the other slider's current
+    // value), same treatment `ViewportModel.light_pos_changed` gives yaw/pitch.
+    callback c_axis_angles_changed(float, float);
+    callback girdle_frosted_changed(bool);
+    callback edge_rounding_changed(float);
+    callback stone_width_changed(float);
+}

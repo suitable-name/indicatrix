@@ -1,0 +1,492 @@
+import { Slider, Button, ComboBox } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { PerformanceFilterRow } from "../types.slint";
+import { LibraryModel } from "../models/library.slint";
+
+// One attribute's min/max range control: a label + current "min – max" readout above
+// two stacked sliders (Slint has no built-in dual-handle slider, so two single-handle
+// ones -- following the existing single-value-slider convention from
+// `material_editor_dialog.slint`/`settings_dialog.slint`). Each slider's own `minimum`/
+// `maximum` is the *data* bound, so its whole travel communicates the real range
+// present in the catalogue rather than an arbitrary fixed scale. Dragging one handle
+// past the other pushes the other along, so `value_min` can never exceed `value_max`.
+component RangeRow inherits VerticalLayout {
+    in property <string> label: "";
+    in property <image> icon;
+    in property <color> accent: Theme.accent-cyan;
+    in property <float> bound_min: 0.0;
+    in property <float> bound_max: 1.0;
+    in-out property <float> value_min: 0.0;
+    in-out property <float> value_max: 1.0;
+    // Facet counts display as whole numbers; every other attribute rounds to 2dp.
+    in property <bool> is_integer: false;
+    callback changed();
+
+    spacing: 5px;
+
+    Rectangle {
+        height: label_row.preferred-height;
+        Tooltip { text: @markdown("Drag either handle to narrow the range; the values shown are the catalogue's own min and max."); }
+        label_row := HorizontalLayout {
+            spacing: 6px;
+            alignment: space-between;
+
+            HorizontalLayout {
+                spacing: 5px;
+                Image { source: root.icon; colorize: root.accent; width: 11px; height: 11px; vertical-alignment: center; }
+                Text { text: root.label; font-size: 11px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; }
+            }
+
+            Text {
+                text: (root.is_integer ? Math.round(root.value_min) : Math.round(root.value_min * 100) / 100)
+                    + " – "
+                    + (root.is_integer ? Math.round(root.value_max) : Math.round(root.value_max * 100) / 100);
+                font-size: 11px;
+                font-weight: 700;
+                color: root.accent;
+            }
+        }
+    }
+
+    Slider {
+        minimum: root.bound_min;
+        maximum: root.bound_max;
+        value <=> root.value_min;
+        changed(v) => {
+            if v > root.value_max {
+                root.value_max = v;
+            }
+            root.changed();
+        }
+    }
+    Slider {
+        minimum: root.bound_min;
+        maximum: root.bound_max;
+        value <=> root.value_max;
+        changed(v) => {
+            if v < root.value_min {
+                root.value_min = v;
+            }
+            root.changed();
+        }
+    }
+}
+
+// Floating filter panel. Inherits `PopupWindow`, not `Rectangle`: a `PopupWindow`
+// renders in Slint's dedicated popup layer, always on top of the rest of the window
+// regardless of sibling declaration order, and (like every popup/dialog card in this
+// app) needs an explicit content-driven `height` since plain `Rectangle`s default to
+// filling their parent's size when no height is set. See `header.slint`'s
+// `filter_popup` instantiation for the show()/close() wiring this requires -- a
+// `PopupWindow` can't be used with the `if condition: FilterPanel { ... }` pattern
+// that used to sit there (that's a compile error: "PopupWindow cannot be directly
+// repeated or conditional").
+export component FilterPanel inherits PopupWindow {
+    // Add-performance-filter form local draft state
+    property <int> perf_draft_metric: 2; // Windowing
+    property <int> perf_draft_bound: 0; // At Most
+    property <float> perf_draft_threshold: 20.0;
+    property <float> perf_draft_radius: 45.0;
+    property <int> perf_draft_aggregate: 0; // Worst
+
+    pure function perf_metric_label(idx: int) -> string {
+        return idx == 0 ? "Brilliance" : idx == 1 ? "Extinction" : "Windowing";
+    }
+    pure function perf_bound_label(idx: int) -> string {
+        return idx == 0 ? "at most" : "at least";
+    }
+    pure function perf_aggregate_label(idx: int) -> string {
+        return idx == 0 ? "worst" : "mean";
+    }
+
+    close-policy: PopupClosePolicy.no-auto-close;
+
+    function reset() {
+        LibraryModel.ri_filter_min = LibraryModel.ri_bounds_min;
+        LibraryModel.ri_filter_max = LibraryModel.ri_bounds_max;
+        LibraryModel.lw_filter_min = LibraryModel.lw_bounds_min;
+        LibraryModel.lw_filter_max = LibraryModel.lw_bounds_max;
+        LibraryModel.volume_filter_min = LibraryModel.volume_bounds_min;
+        LibraryModel.volume_filter_max = LibraryModel.volume_bounds_max;
+        LibraryModel.facets_filter_min = LibraryModel.facets_bounds_min;
+        LibraryModel.facets_filter_max = LibraryModel.facets_bounds_max;
+        LibraryModel.ri_tolerance_enabled = false;
+        LibraryModel.ri_tolerance_center = LibraryModel.ri_material_default;
+        LibraryModel.ri_tolerance_value = 0.02;
+        LibraryModel.show_ignored = false;
+        LibraryModel.performance_filters_clear();
+        LibraryModel.filters_changed();
+    }
+    width: 360px;
+    // Content-driven height: matches whatever `content` (the padded VerticalLayout
+    // below) actually needs, instead of defaulting to the height of whatever this
+    // popup happens to be anchored to.
+    height: content.preferred-height;
+
+    Rectangle {
+        background: #111827ee;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: #334155;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #000000ee;
+        drop-shadow-offset-y: 6px;
+
+        content := VerticalLayout {
+        padding: 16px;
+        spacing: 14px;
+
+        // Header with Title and Close '×' button
+        HorizontalLayout {
+            alignment: space-between;
+
+            HorizontalLayout {
+                spacing: 8px;
+                Image { source: @image-url("../icons/ruler.svg"); colorize: Theme.accent-cyan; width: 15px; height: 15px; vertical-alignment: center; }
+                Text { text: "Advanced Filters"; font-size: 13px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
+            }
+
+            Rectangle {
+                width: 24px;
+                height: 24px;
+                border-radius: 12px;
+                background: close_btn.has-hover ? #1e293b : transparent;
+
+                close_btn := TouchArea {
+                    clicked => { root.close(); }
+                }
+
+                Text {
+                    text: "×";
+                    font-size: 16px;
+                    color: Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        Text {
+            text: LibraryModel.diagram_list.length + " of " + LibraryModel.total_count + " designs match";
+            font-size: 11px;
+            color: LibraryModel.diagram_list.length == 0 ? Theme.accent-ruby : Theme.text-muted;
+        }
+
+        RangeRow {
+            label: "Refractive Index";
+            icon: @image-url("../icons/gem.svg");
+            accent: Theme.accent-cyan;
+            bound_min: LibraryModel.ri_bounds_min;
+            bound_max: LibraryModel.ri_bounds_max;
+            value_min <=> LibraryModel.ri_filter_min;
+            value_max <=> LibraryModel.ri_filter_max;
+            changed => { LibraryModel.filters_changed(); }
+        }
+
+        RangeRow {
+            label: "L/W Ratio";
+            icon: @image-url("../icons/ruler.svg");
+            accent: Theme.accent-purple;
+            bound_min: LibraryModel.lw_bounds_min;
+            bound_max: LibraryModel.lw_bounds_max;
+            value_min <=> LibraryModel.lw_filter_min;
+            value_max <=> LibraryModel.lw_filter_max;
+            changed => { LibraryModel.filters_changed(); }
+        }
+
+        RangeRow {
+            label: "Volume (vol/w³)";
+            icon: @image-url("../icons/bar-chart.svg");
+            accent: Theme.accent-emerald;
+            bound_min: LibraryModel.volume_bounds_min;
+            bound_max: LibraryModel.volume_bounds_max;
+            value_min <=> LibraryModel.volume_filter_min;
+            value_max <=> LibraryModel.volume_filter_max;
+            changed => { LibraryModel.filters_changed(); }
+        }
+
+        RangeRow {
+            label: "Facet Count";
+            icon: @image-url("../icons/diamond.svg");
+            accent: Theme.accent-amber;
+            bound_min: LibraryModel.facets_bounds_min;
+            bound_max: LibraryModel.facets_bounds_max;
+            value_min <=> LibraryModel.facets_filter_min;
+            value_max <=> LibraryModel.facets_filter_max;
+            is_integer: true;
+            changed => { LibraryModel.filters_changed(); }
+        }
+
+        Rectangle { height: 1px; background: #334155; }
+
+        // --- RI CENTRE + TOLERANCE FILTER (Task 1) ---
+        // A second, independent RI predicate alongside the min/max `RangeRow` above --
+        // see `RangeFilter::ri_tolerance`'s own doc comment for why the two compose by
+        // intersection rather than one replacing the other.
+        VerticalLayout {
+            spacing: 5px;
+
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: space-between;
+                Rectangle {
+                    Tooltip { text: @markdown("Find designs whose R.I. is close to a chosen value, independent of the range filter."); }
+                    HorizontalLayout {
+                        spacing: 5px;
+                        Image { source: @image-url("../icons/gem.svg"); colorize: Theme.accent-emerald; width: 11px; height: 11px; vertical-alignment: center; }
+                        Text { text: "RI Match (current material)"; font-size: 11px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; }
+                    }
+                }
+                Rectangle {
+                    width: 34px;
+                    height: 18px;
+                    border-radius: 9px;
+                    background: LibraryModel.ri_tolerance_enabled ? Theme.accent-emerald : #334155;
+                    TouchArea {
+                        clicked => {
+                            LibraryModel.ri_tolerance_enabled = !LibraryModel.ri_tolerance_enabled;
+                            LibraryModel.filters_changed();
+                        }
+                    }
+                    Rectangle {
+                        width: 14px;
+                        height: 14px;
+                        border-radius: 7px;
+                        background: white;
+                        x: LibraryModel.ri_tolerance_enabled ? parent.width - self.width - 2px : 2px;
+                        y: 2px;
+                        animate x { duration: 120ms; }
+                    }
+                }
+            }
+
+            if LibraryModel.ri_tolerance_enabled: VerticalLayout {
+                spacing: 4px;
+                HorizontalLayout {
+                    spacing: 6px;
+                    alignment: space-between;
+                    Text {
+                        text: "Centre " + (Math.round(LibraryModel.ri_tolerance_center * 1000) / 1000)
+                            + " \u{b1} " + (Math.round(LibraryModel.ri_tolerance_value * 1000) / 1000);
+                        font-size: 11px;
+                        font-weight: 700;
+                        color: Theme.accent-emerald;
+                    }
+                    Rectangle {
+                        border-radius: 3px;
+                        background: use_current_touch.has-hover ? #1e293b : transparent;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        HorizontalLayout {
+                            padding-left: 5px;
+                            padding-right: 5px;
+                            padding-top: 2px;
+                            padding-bottom: 2px;
+                            Text { text: "Use current material"; font-size: 9px; color: Theme.text-secondary; }
+                        }
+                        use_current_touch := TouchArea {
+                            clicked => {
+                                LibraryModel.ri_tolerance_center = LibraryModel.ri_material_default;
+                                LibraryModel.filters_changed();
+                            }
+                        }
+                    }
+                }
+                Text { text: "Centre"; font-size: 9px; color: Theme.text-muted; }
+                Slider {
+                    minimum: LibraryModel.ri_bounds_min;
+                    maximum: LibraryModel.ri_bounds_max;
+                    value <=> LibraryModel.ri_tolerance_center;
+                    changed => { LibraryModel.filters_changed(); }
+                }
+                Text { text: "Tolerance (\u{b1})"; font-size: 9px; color: Theme.text-muted; }
+                Slider {
+                    minimum: 0.001;
+                    maximum: (LibraryModel.ri_bounds_max - LibraryModel.ri_bounds_min) / 2;
+                    value <=> LibraryModel.ri_tolerance_value;
+                    changed => { LibraryModel.filters_changed(); }
+                }
+            }
+        }
+
+        Rectangle { height: 1px; background: #334155; }
+
+        // --- SHOW IGNORED DESIGNS TOGGLE (Task 3) ---
+        HorizontalLayout {
+            alignment: space-between;
+            Rectangle {
+                Tooltip { text: @markdown("Include designs you marked Ignored."); }
+                Text { text: "Show ignored designs"; font-size: 11px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; }
+            }
+            Rectangle {
+                width: 34px;
+                height: 18px;
+                border-radius: 9px;
+                background: LibraryModel.show_ignored ? Theme.accent-amber : #334155;
+                TouchArea {
+                    clicked => {
+                        LibraryModel.show_ignored = !LibraryModel.show_ignored;
+                        LibraryModel.filters_changed();
+                    }
+                }
+                Rectangle {
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 7px;
+                    background: white;
+                    x: LibraryModel.show_ignored ? parent.width - self.width - 2px : 2px;
+                    y: 2px;
+                    animate x { duration: 120ms; }
+                }
+            }
+        }
+
+        Rectangle { height: 1px; background: #334155; }
+
+        // --- TILT-PERFORMANCE SEARCH FILTERS (Task 2) ---
+        VerticalLayout {
+            spacing: 6px;
+
+            Rectangle {
+                height: tilt_perf_header.preferred-height;
+                Tooltip { text: @markdown("Build a filter like \"windowing at most 20 %, worst case within ±45° of face-up\"."); }
+                tilt_perf_header := HorizontalLayout {
+                    spacing: 5px;
+                    Image { source: @image-url("../icons/bar-chart.svg"); colorize: Theme.accent-purple; width: 11px; height: 11px; vertical-alignment: center; }
+                    Text { text: "Tilt Performance"; font-size: 11px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; }
+                }
+            }
+
+            for row[idx] in LibraryModel.performance_filters: Rectangle {
+                background: #0f172a;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: #334155;
+                HorizontalLayout {
+                    padding: 6px;
+                    alignment: space-between;
+                    Text {
+                        text: root.perf_metric_label(row.metric_index) + " " + root.perf_bound_label(row.bound_index)
+                            + " " + (Math.round(row.threshold_pct * 10) / 10) + "% (" + root.perf_aggregate_label(row.aggregate_index)
+                            + ", \u{b1}" + (Math.round(row.tilt_radius_deg * 10) / 10) + "\u{b0})";
+                        font-size: 10px;
+                        color: Theme.text-secondary;
+                        wrap: word-wrap;
+                    }
+                    Rectangle {
+                        width: 16px;
+                        height: 16px;
+                        border-radius: 4px;
+                        background: perf_remove_touch.has-hover ? #450a0a : transparent;
+                        perf_remove_touch := TouchArea {
+                            clicked => {
+                                LibraryModel.performance_filter_remove(idx);
+                                LibraryModel.filters_changed();
+                            }
+                        }
+                        Text { text: "×"; font-size: 12px; color: #f87171; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+            }
+
+            // Excluded-for-missing-curves notice (Task 2's own requirement: never
+            // silently hide these designs) -- only shown while a performance filter is
+            // actually active and it excluded at least one design this way.
+            if LibraryModel.performance_filters.length > 0 && LibraryModel.performance_excluded_count > 0: Rectangle {
+                background: #422006;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.accent-amber;
+                VerticalLayout {
+                    padding: 6px;
+                    spacing: 4px;
+                    Text {
+                        text: LibraryModel.performance_excluded_count + (LibraryModel.performance_excluded_count == 1 ? " design has" : " designs have")
+                            + " no computed tilt-performance curves, so they can't be tested against these filters and are excluded.";
+                        font-size: 10px;
+                        color: Theme.accent-amber;
+                        wrap: word-wrap;
+                    }
+                    Rectangle {
+                        border-radius: 3px;
+                        background: compute_now_touch.has-hover ? #1e293b : transparent;
+                        border-width: 1px;
+                        border-color: Theme.accent-amber;
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            padding-top: 3px;
+                            padding-bottom: 3px;
+                            Text { text: "Compute missing tilt curves"; font-size: 9px; font-weight: 600; color: Theme.accent-amber; }
+                        }
+                        compute_now_touch := TouchArea {
+                            clicked => { root.close(); LibraryModel.compute_missing_tilt_curves(); }
+                        }
+                    }
+                }
+            }
+
+            // Add-filter form: metric x bound x threshold% x tilt radius x aggregate,
+            // committed as one new row via `performance_filter_add` -- see this
+            // component's own `perf_draft_*` doc comment.
+            VerticalLayout {
+                spacing: 4px;
+                HorizontalLayout {
+                    spacing: 4px;
+                    ComboBox {
+                        model: ["Brilliance", "Extinction", "Windowing"];
+                        current-index <=> root.perf_draft_metric;
+                    }
+                    ComboBox {
+                        model: ["at most", "at least"];
+                        current-index <=> root.perf_draft_bound;
+                    }
+                }
+                Text { text: "Threshold: " + (Math.round(root.perf_draft_threshold * 10) / 10) + "%"; font-size: 9px; color: Theme.text-muted; }
+                Slider {
+                    minimum: 0;
+                    maximum: 100;
+                    value <=> root.perf_draft_threshold;
+                }
+                Text { text: "Tilt radius: \u{b1}" + (Math.round(root.perf_draft_radius * 10) / 10) + "\u{b0}"; font-size: 9px; color: Theme.text-muted; }
+                Slider {
+                    minimum: 0;
+                    maximum: 90;
+                    value <=> root.perf_draft_radius;
+                }
+                ComboBox {
+                    model: ["worst", "mean"];
+                    current-index <=> root.perf_draft_aggregate;
+                }
+                Button {
+                    text: "+ Add Filter";
+                    clicked => {
+                        LibraryModel.performance_filter_add({
+                            metric_index: root.perf_draft_metric,
+                            bound_index: root.perf_draft_bound,
+                            threshold_pct: root.perf_draft_threshold,
+                            tilt_radius_deg: root.perf_draft_radius,
+                            aggregate_index: root.perf_draft_aggregate,
+                        });
+                        LibraryModel.filters_changed();
+                        // Reset the draft to its defaults for the NEXT addition -- see
+                        // this component's own `perf_draft_*` doc comment.
+                        root.perf_draft_metric = 2;
+                        root.perf_draft_bound = 0;
+                        root.perf_draft_threshold = 20.0;
+                        root.perf_draft_radius = 45.0;
+                        root.perf_draft_aggregate = 0;
+                    }
+                }
+            }
+        }
+
+        Button {
+            text: "Reset Filters";
+            icon: @image-url("../icons/reset.svg");
+            colorize-icon: true;
+            clicked => { root.reset(); }
+        }
+        }
+    }
+}

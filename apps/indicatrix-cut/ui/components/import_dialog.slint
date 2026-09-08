@@ -1,0 +1,207 @@
+import { Button } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { LibraryModel } from "../models/library.slint";
+
+// "Import" popup: brings the user's own `.asc` file(s) into the local library.
+// Picking a file or folder runs the import immediately -- there is no path field to
+// edit and no separate "Import" button to confirm through; `pick_asc_file`/
+// `pick_asc_folder` (handled in Rust with `rfd::FileDialog`, see
+// `gui::library::setup_import_callback`'s doc comment) pick AND import in one step,
+// off the UI thread. Cancelling either native dialog does nothing at all -- no
+// import, no error, this popup just stays open. Two buttons rather than one because
+// a folder import (every `.asc` file directly inside it) and a single-file import are
+// both genuinely useful, and one native dialog can't offer both at once.
+//
+// Inherits `PopupWindow` -- same reasoning as `filter_panel.slint`: renders in
+// Slint's dedicated popup layer, always on top, and must be instantiated
+// unconditionally and driven via show()/close() (see `header.slint`'s
+// `import_popup` instantiation).
+export component ImportDialog inherits PopupWindow {
+    in property <string> result_text: LibraryModel.import_result_text;
+    in property <bool> importing: LibraryModel.is_busy;
+    // Overall progress for the import currently running -- 0.0..1.0, only meaningful
+    // while `importing` is true. `import_done`/`import_total` are the raw file counts
+    // behind it (`import_total` is 0 before the first file finishes), shown as
+    // "file N / M" for a folder import; see `gui::library::spawn_import`'s progress
+    // callback, the only place these are set.
+    in property <int> import_done: LibraryModel.import_done;
+    in property <int> import_total: LibraryModel.import_total;
+    in property <float> import_progress: LibraryModel.import_progress;
+
+    // Whether the NEXT folder pick should also walk subfolders (Task: FEATURE 3).
+    // Read at the moment "Choose folder..." is clicked and handed to
+    // `pick_asc_folder` as its argument -- NOT polled afterwards. This has to be set
+    // BEFORE that click: picking a folder starts the import in the same step (see
+    // this component's own doc comment above), so there is no later point at which
+    // toggling this would still have anything left to affect. The toggle sits above
+    // the buttons, in click order, for exactly that reason.
+    property <bool> recurse_subfolders: false;
+
+    // The default `close-policy` (`close-on-click`) would close the popup on the
+    // very first click anywhere inside it -- including a press on "Choose file..."
+    // itself, before that click could ever reach the button -- which is exactly why
+    // the whole import flow was unreachable before this fix (see this task's BUG 1).
+    // `filter_panel.slint`/`remote_worker_dialog.slint` make the same choice for the
+    // same reason. Closing is handled explicitly instead: the '×' button below calls
+    // the inherited `close()`.
+    close-policy: PopupClosePolicy.no-auto-close;
+
+    // Neither takes nor returns a path -- there's no field left to seed a starting
+    // directory from or to receive a result into. Each just runs a native picker and,
+    // if the user didn't cancel it, the import. `pick_asc_folder` additionally
+    // carries `recurse_subfolders`'s current value -- see that property's own doc
+    // comment.
+    callback pick_asc_file();
+    pick_asc_file => { LibraryModel.pick_asc_file(); }
+    callback pick_asc_folder(bool);
+    pick_asc_folder(recurse) => { LibraryModel.pick_asc_folder(recurse); }
+
+    Rectangle {
+        width: 420px;
+        height: layout.preferred-height + 24px;
+        background: Theme.bg-card;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-medium;
+        drop-shadow-blur: 20px;
+        drop-shadow-color: #000000aa;
+        drop-shadow-offset-y: 6px;
+
+        layout := VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            HorizontalLayout {
+                alignment: space-between;
+                Text {
+                    text: "Import .asc files";
+                    font-size: 14px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                }
+                Button {
+                    text: "×";
+                    width: 26px;
+                    height: 26px;
+                    clicked => { root.close(); }
+                }
+            }
+
+            Text {
+                text: "Pick a single .asc file, or a folder of .asc files -- the import runs immediately.";
+                font-size: 11px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+
+            // Must be set BEFORE "Choose folder..." below is clicked -- see
+            // `recurse_subfolders`'s own doc comment. Placed above the buttons, in
+            // the order the user actually needs to use them, rather than next to
+            // "Choose folder..." where it would read as a same-click option.
+            HorizontalLayout {
+                alignment: space-between;
+                Text {
+                    text: "Include subfolders (set this first)";
+                    font-size: 11px;
+                    color: root.importing ? Theme.text-muted : Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    width: 36px;
+                    height: 20px;
+                    border-radius: 10px;
+                    background: root.recurse_subfolders ? Theme.accent-cyan : #334155;
+                    opacity: root.importing ? 0.5 : 1.0;
+                    TouchArea {
+                        enabled: !root.importing;
+                        clicked => { root.recurse_subfolders = !root.recurse_subfolders; }
+                    }
+                    Rectangle {
+                        width: 16px;
+                        height: 16px;
+                        border-radius: 8px;
+                        background: white;
+                        x: root.recurse_subfolders ? parent.width - self.width - 2px : 2px;
+                        y: 2px;
+                        animate x { duration: 120ms; }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+                Button {
+                    text: "Choose file...";
+                    icon: @image-url("../icons/page.svg");
+                    colorize-icon: true;
+                    enabled: !root.importing;
+                    clicked => { root.pick_asc_file(); }
+                }
+                Button {
+                    text: "Choose folder...";
+                    icon: @image-url("../icons/folder.svg");
+                    colorize-icon: true;
+                    enabled: !root.importing;
+                    clicked => { root.pick_asc_folder(root.recurse_subfolders); }
+                }
+            }
+
+            if root.importing: VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Importing...";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.accent-amber;
+                }
+
+                // Only shown for a folder import once the first file has reported in
+                // (`import_total > 1`, i.e. more than the single file a lone-file
+                // import always reports as `1 / 1`) -- for one file there's no
+                // meaningful "N / M" to show, and the bar would just jump straight to
+                // 100% too fast to read.
+                if root.import_total > 1: VerticalLayout {
+                    spacing: 4px;
+                    HorizontalLayout {
+                        alignment: space-between;
+                        Text {
+                            text: "file " + root.import_done + " / " + root.import_total;
+                            font-size: 10px;
+                            color: Theme.text-muted;
+                        }
+                        Text {
+                            text: Math.round(root.import_progress * 100) + "%";
+                            font-size: 10px;
+                            font-weight: 700;
+                            color: Theme.accent-cyan;
+                        }
+                    }
+                    Rectangle {
+                        height: 8px;
+                        border-radius: 4px;
+                        background: #0f172a;
+                        border-width: 1px;
+                        border-color: #334155;
+                        clip: true;
+
+                        Rectangle {
+                            x: 0;
+                            y: 0;
+                            width: parent.width * root.import_progress;
+                            height: 100%;
+                            background: Theme.accent-cyan;
+                            animate width { duration: 150ms; }
+                        }
+                    }
+                }
+            }
+
+            if !root.importing && root.result_text != "": Text {
+                text: root.result_text;
+                font-size: 11px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+        }
+    }
+}

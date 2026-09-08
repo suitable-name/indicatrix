@@ -1,0 +1,210 @@
+import { Theme } from "../theme.slint";
+import { LineEdit, ComboBox } from "std-widgets.slint";
+import { EditorModel } from "../models/editor.slint";
+
+// New design dialog replacing the bare "New" action --
+// preform, gear, symmetry, mirror and starting material all named up front,
+// fed straight to indicatrix_cut_core::Design::fresh_from_spec via
+// gui::editor::loading::parse_new_design_form
+// (gui::editor::callbacks::setup_new_design_create_callback).
+//
+// Same full-viewport modal backdrop + centered content-sized card convention as
+// metadata_editor_dialog.slint/material_editor_dialog.slint.
+export component NewDesignDialog inherits Rectangle {
+    function cancel() {
+        EditorModel.new_dialog_open = false;
+        
+    }
+
+    function do_create() {
+        EditorModel.new_dialog_open = false;
+        EditorModel.new_design_create(
+            EditorModel.new_preform_shape_index,
+            EditorModel.new_preform_half_width,
+            EditorModel.new_preform_length_over_width,
+            EditorModel.new_preform_depth,
+            EditorModel.new_gear_index,
+            EditorModel.new_gear_custom_text,
+            EditorModel.new_symmetry_order_text,
+            EditorModel.new_mirror,
+            EditorModel.new_material_index
+        );
+    }
+
+    background: #00000088;
+
+    TouchArea {
+        clicked => { root.cancel(); }
+    }
+
+    Rectangle {
+        width: 380px;
+        height: content.preferred-height;
+        background: #11151f;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: #334155;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #000000bb;
+        clip: true;
+
+        TouchArea {}
+
+        content := VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Text {
+                text: "New Design";
+                font-size: 14px;
+                font-weight: 700;
+                color: Theme.text-primary;
+            }
+            Text {
+                text: "Preform, index gear, symmetry, mirror and starting material -- everything Design::fresh_from_spec needs.";
+                font-size: 10px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+
+            Text { text: "Preform Shape"; font-size: 10px; color: Theme.text-muted; }
+            ComboBox {
+                model: ["Block", "Cylinder"];
+                current-index <=> EditorModel.new_preform_shape_index;
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                VerticalLayout {
+                    spacing: 2px;
+                    Text { text: "Half-Width"; font-size: 9px; color: Theme.text-muted; }
+                    LineEdit { text <=> EditorModel.new_preform_half_width; }
+                }
+                VerticalLayout {
+                    spacing: 2px;
+                    Text { text: "Length / Width"; font-size: 9px; color: Theme.text-muted; }
+                    LineEdit { text <=> EditorModel.new_preform_length_over_width; }
+                }
+                VerticalLayout {
+                    spacing: 2px;
+                    Text { text: "Depth"; font-size: 9px; color: Theme.text-muted; }
+                    LineEdit { text <=> EditorModel.new_preform_depth; }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.border-subtle; }
+
+            HorizontalLayout {
+                spacing: 6px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    Rectangle {
+                        height: gear_lbl.preferred-height;
+                        Tooltip { text: @markdown("The index-gear tooth count -- how many positions the wheel that cuts facets around the stone has."); }
+                        gear_lbl := Text { text: "Index Gear"; font-size: 9px; color: Theme.text-muted; }
+                    }
+                    ComboBox {
+                        model: ["96", "80", "77", "72", "64", "120", "Custom"];
+                        current-index <=> EditorModel.new_gear_index;
+                    }
+                }
+                if EditorModel.new_gear_index == 6: VerticalLayout {
+                    spacing: 2px;
+                    Text { text: "Custom Teeth"; font-size: 9px; color: Theme.text-muted; }
+                    LineEdit { text <=> EditorModel.new_gear_custom_text; }
+                }
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 2px;
+                    Rectangle {
+                        height: sym_lbl.preferred-height;
+                        Tooltip { text: @markdown("How many repeats the design has around the stone -- an 8-fold design repeats every 45 degrees."); }
+                        sym_lbl := Text { text: "Symmetry Order"; font-size: 9px; color: Theme.text-muted; }
+                    }
+                    LineEdit { text <=> EditorModel.new_symmetry_order_text; }
+                }
+                VerticalLayout {
+                    spacing: 2px;
+                    Rectangle {
+                        height: mirror_lbl.preferred-height;
+                        Tooltip { text: @markdown("Whether each repeat is also mirrored -- most brilliant-style cuts are."); }
+                        mirror_lbl := Text { text: "Mirror"; font-size: 9px; color: Theme.text-muted; }
+                    }
+                    HorizontalLayout {
+                        height: 30px;
+                        alignment: start;
+                        Rectangle {
+                            width: 36px;
+                            height: 20px;
+                            border-radius: 10px;
+                            background: EditorModel.new_mirror ? Theme.accent-cyan : #334155;
+                            TouchArea {
+                                clicked => { EditorModel.new_mirror = !EditorModel.new_mirror; }
+                            }
+                            Rectangle {
+                                width: 16px;
+                                height: 16px;
+                                border-radius: 8px;
+                                background: white;
+                                x: EditorModel.new_mirror ? parent.width - self.width - 2px : 2px;
+                                y: 2px;
+                                animate x { duration: 120ms; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.border-subtle; }
+
+            Rectangle {
+                height: mat_lbl.preferred-height;
+                Tooltip { text: @markdown("A starting material -- change it any time afterward in the Edit tab's Design Settings panel, including custom catalogue materials."); }
+                mat_lbl := Text { text: "Starting Material"; font-size: 9px; color: Theme.text-muted; }
+            }
+            ComboBox {
+                model: ["(none)", "Diamond", "Sapphire", "Ruby", "Emerald", "Zircon", "Alexandrite", "Topaz", "Spinel", "Quartz", "Tourmaline", "Tanzanite", "Synthetic Moissanite", "Cubic Zirconia"];
+                current-index <=> EditorModel.new_material_index;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                Rectangle {
+                    width: cancel_txt.preferred-width + 20px;
+                    height: 30px;
+                    border-radius: Theme.radius-sm;
+                    background: cancel_touch.has-hover ? #334155 : #1e293b;
+                    cancel_txt := Text {
+                        text: "Cancel";
+                        color: Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    cancel_touch := TouchArea { clicked => { root.cancel(); } }
+                }
+                Rectangle {
+                    width: create_txt.preferred-width + 20px;
+                    height: 30px;
+                    border-radius: Theme.radius-sm;
+                    background: Theme.accent-cyan;
+                    create_txt := Text {
+                        text: "Create";
+                        font-weight: 700;
+                        color: #0b1220;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    TouchArea {
+                        clicked => {
+                            root.do_create();
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

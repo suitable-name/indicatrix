@@ -1,0 +1,97 @@
+// Task 2: the "pop the live render out into its own window" OS window itself.
+//
+// A separate top-level `Window`, not a `PopupWindow` -- `PopupWindow` is an in-window
+// overlay layer (it closes the instant focus leaves it, and never gets its own
+// taskbar entry or OS-level always-on-top treatment), which is the opposite of what
+// this needs: a freely movable, independently focusable, always-on-top OS window that
+// keeps running alongside the main one. See `gui::detached_render`'s module doc
+// comment for how Rust creates, shows, and applies always-on-top to this window (the
+// latter needs the winit backend, reached through `slint::winit_030`, since Slint's
+// own public `Window` API has no always-on-top call of its own), and for how frames
+// from the render thread reach whichever of this window or the docked "Live Render"
+// sub-tab is currently the visible one.
+//
+// Deliberately minimal: just the rendered image (contain-fit, matching the docked
+// `GemViewportView`'s own `image-fit: contain`) plus a small top bar with a "Dock
+// Back" button, for a user who would rather click a button than hunt for the titlebar.
+// It carries none of `GemViewportView`'s material/lighting/settings controls -- those
+// stay on the main window; this window's only job is to show wherever that viewport's
+// image currently is, from anywhere else on the desktop.
+import { Theme } from "theme.slint";
+
+export component DetachedRenderWindow inherits Window {
+    title: "Live Render — Facet Diagrams Studio";
+    preferred-width: 640px;
+    preferred-height: 480px;
+    background: Theme.bg-darkest;
+
+    in property <image> render_image;
+    in property <bool> has_render: false;
+    // Fired by this window's own "Dock Back" button. Closing the window via its OS
+    // titlebar X is handled separately, in Rust (`gui::detached_render`'s
+    // `on_close_requested` on `root.window()`) -- Slint has no way to express that as
+    // markup here, since a `Window`'s close button isn't a callback this file can wire
+    // like any other `TouchArea`.
+    callback redock();
+
+    if root.has_render: Image {
+        width: 100%;
+        height: 100%;
+        source: root.render_image;
+        image-fit: contain;
+    }
+
+    if !root.has_render: VerticalLayout {
+        width: 100%;
+        height: 100%;
+        alignment: center;
+        spacing: 10px;
+
+        Text {
+            text: "Waiting for the first rendered frame…";
+            font-size: 13px;
+            color: Theme.text-muted;
+            horizontal-alignment: center;
+        }
+    }
+
+    // Overlaid on top of the image above (Slint paints children in declaration
+    // order, so this -- declared last -- always sits on top), the same "toolbar
+    // floats over the full-size viewport image" convention `gem_viewport.slint`'s own
+    // controls overlay already uses.
+    Rectangle {
+        width: 100%;
+        height: 32px;
+        background: Theme.bg-card;
+        border-width: 1px;
+        border-color: Theme.border-subtle;
+
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            alignment: end;
+
+            Rectangle {
+                height: 24px;
+                width: 96px;
+                background: dock_back_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-medium;
+
+                dock_back_touch := TouchArea {
+                    clicked => { root.redock(); }
+                }
+
+                Text {
+                    text: "Dock Back";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.text-primary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

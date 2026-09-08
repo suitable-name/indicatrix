@@ -1,0 +1,337 @@
+import { LineEdit, ComboBox, Button } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { FilterPanel } from "filter_panel.slint";
+import { ImportDialog } from "import_dialog.slint";
+import { RemoteWorkerDialog } from "remote_worker_dialog.slint";
+import { LibraryModel } from "../models/library.slint";
+import { RemoteWorkerModel } from "../models/remote_worker.slint";
+
+export component HeaderToolbar inherits Rectangle {
+    public function focus_search() {
+        search_input.focus();
+    }
+
+    property <bool> filters_open: filter_popup.is-open;
+    property <bool> remote_open: remote_popup.is-open;
+
+    property <bool> filters_active: Math.abs(LibraryModel.ri_filter_min - LibraryModel.ri_bounds_min) > 0.0001
+        || Math.abs(LibraryModel.ri_filter_max - LibraryModel.ri_bounds_max) > 0.0001
+        || Math.abs(LibraryModel.lw_filter_min - LibraryModel.lw_bounds_min) > 0.0001
+        || Math.abs(LibraryModel.lw_filter_max - LibraryModel.lw_bounds_max) > 0.0001
+        || Math.abs(LibraryModel.volume_filter_min - LibraryModel.volume_bounds_min) > 0.0001
+        || Math.abs(LibraryModel.volume_filter_max - LibraryModel.volume_bounds_max) > 0.0001
+        || Math.abs(LibraryModel.facets_filter_min - LibraryModel.facets_bounds_min) > 0.0001
+        || Math.abs(LibraryModel.facets_filter_max - LibraryModel.facets_bounds_max) > 0.0001;
+
+    height: 64px;
+    background: Theme.bg-card;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        alignment: space-between;
+
+        // Logo & Title Area
+        HorizontalLayout {
+            spacing: 12px;
+            alignment: start;
+
+            Rectangle {
+                width: 36px;
+                height: 36px;
+                background: #1e3a8a;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: Theme.accent-cyan;
+
+                Image {
+                    source: @image-url("../icons/gem.svg");
+                    colorize: Theme.accent-cyan;
+                    width: 18px;
+                    height: 18px;
+                    horizontal-alignment: center;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+
+                Text {
+                    text: "Facet Diagrams Studio";
+                    font-size: 15px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                }
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    Rectangle {
+                        width: 7px;
+                        height: 7px;
+                        border-radius: 3.5px;
+                        background: LibraryModel.is_busy ? Theme.accent-amber : Theme.accent-emerald;
+                            }
+                    Text {
+                        text: LibraryModel.status_message;
+                        font-size: 11px;
+                        color: LibraryModel.is_busy ? Theme.accent-amber : Theme.text-muted;
+                        overflow: elide;
+                        max-width: 260px;
+                    }
+                }
+
+                // Always-visible "which library am I looking at" badge --
+                // deliberately shown here, next to the status line, not only inside the
+                // worker panel (`remote_popup`), so switching away from local is
+                // obvious even with that panel closed. See this component's own
+                // `library_source_label`/`library_is_remote` doc comment.
+                Rectangle {
+                    height: 20px;
+                    border-radius: 10px;
+                    background: RemoteWorkerModel.library_is_remote ? #164e63 : Theme.bg-elevated;
+                    border-width: 1px;
+                    border-color: RemoteWorkerModel.library_is_remote ? Theme.accent-cyan : Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 4px;
+                        alignment: center;
+                        Rectangle {
+                            width: 6px;
+                            height: 6px;
+                            border-radius: 3px;
+                            background: RemoteWorkerModel.library_is_remote ? Theme.accent-cyan : Theme.text-muted;
+                        }
+                        Text {
+                            text: RemoteWorkerModel.library_source_label;
+                            font-size: 10px;
+                            font-weight: 600;
+                            color: RemoteWorkerModel.library_is_remote ? Theme.accent-cyan : Theme.text-muted;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Search & Filter Controls
+        HorizontalLayout {
+            spacing: 10px;
+            alignment: center;
+
+            // Search Bar with icon
+            Rectangle {
+                width: 260px;
+                height: 38px;
+                background: Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+
+                Tooltip { text: @markdown("Search by design title, designer or notes."); }
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 6px;
+                    alignment: center;
+
+                    Image {
+                        source: @image-url("../icons/search.svg");
+                        colorize: Theme.text-muted;
+                        width: 12px;
+                        height: 12px;
+                    }
+
+                    search_input := LineEdit {
+                        text <=> LibraryModel.search_text;
+                        placeholder-text: "Search diagram, designer, notes... (Ctrl+F)";
+                        edited => { LibraryModel.search_changed(self.text); }
+                    }
+
+                    if LibraryModel.search_text != "": Rectangle {
+                        width: 20px;
+                        height: 20px;
+                        border-radius: 10px;
+                        background: Theme.bg-elevated;
+        
+                        TouchArea {
+                            clicked => {
+                                search_input.text = "";
+                                LibraryModel.search_changed("");
+                            }
+                        }
+
+                        Text {
+                            text: "×";
+                            font-size: 14px;
+                            color: Theme.text-secondary;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // Shape Selector
+            Rectangle {
+                width: 160px;
+                height: 38px;
+
+                Tooltip { text: @markdown("Filter the catalogue to one shape classification."); }
+
+                ComboBox {
+                    model: LibraryModel.shape_options;
+                    current-index <=> LibraryModel.selected_shape_index;
+                    selected(val) => { LibraryModel.filter_shape_changed(val); }
+                }
+            }
+
+            // Gear Selector
+            Rectangle {
+                width: 130px;
+                height: 38px;
+
+                Tooltip { text: @markdown("Filter to designs cut on this index gear (number of teeth)."); }
+
+                ComboBox {
+                    model: LibraryModel.gear_options;
+                    current-index <=> LibraryModel.selected_gear_index;
+                    selected(val) => { LibraryModel.filter_gear_changed(val); }
+                }
+            }
+
+            // Advanced Range Filters Toggle
+            Rectangle {
+                width: 84px;
+                height: 38px;
+                background: root.filters_open ? Theme.accent-cyan : (filters_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: root.filters_open ? Theme.accent-cyan : (root.filters_active ? Theme.accent-amber : Theme.border-subtle);
+
+                filters_touch := TouchArea {
+                    clicked => {
+                        if (filter_popup.is-open) {
+                            filter_popup.close();
+                        } else {
+                            filter_popup.show();
+                        }
+                    }
+                }
+                Tooltip { text: @markdown("Open range filters: refractive index, L/W, volume, facet count, RI match, tilt performance."); }
+
+                HorizontalLayout {
+                    spacing: 5px;
+                    alignment: center;
+                    Image {
+                        source: @image-url("../icons/ruler.svg");
+                        colorize: root.filters_open ? #0f172a : (root.filters_active ? Theme.accent-amber : Theme.text-secondary);
+                        width: 12px;
+                        height: 12px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: "Filters";
+                        font-size: 12px;
+                        font-weight: 600;
+                        color: root.filters_open ? #0f172a : (root.filters_active ? Theme.accent-amber : Theme.text-secondary);
+                        vertical-alignment: center;
+                    }
+                    if root.filters_active: Rectangle {
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 3px;
+                        background: root.filters_open ? #0f172a : Theme.accent-amber;
+                    }
+                }
+            }
+
+            // Import your own `.asc` file(s) into the local library.
+            Rectangle {
+                width: import_btn.preferred-width;
+                height: 38px;
+                Tooltip { text: @markdown("Import one .asc file or a whole folder into your local library."); }
+                import_btn := Button {
+                    text: "Import";
+                    icon: @image-url("../icons/folder.svg");
+                    colorize-icon: true;
+                    height: 38px;
+                    clicked => {
+                        if (import_popup.is-open) {
+                            import_popup.close();
+                        } else {
+                            import_popup.show();
+                        }
+                    }
+                }
+            }
+
+            // Remote rendering: opens the worker-list panel.
+            Rectangle {
+                width: remote_btn.preferred-width;
+                height: 38px;
+                Tooltip { text: @markdown("Configure and connect to a remote render worker."); }
+                remote_btn := Button {
+                    text: "Remote";
+                    icon: @image-url("../icons/gem.svg");
+                    colorize-icon: true;
+                    height: 38px;
+                    clicked => {
+                        if (remote_popup.is-open) {
+                            remote_popup.close();
+                        } else {
+                            remote_popup.show();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- MODAL BACKDROP FOR THE FILTER PANEL ---
+    if root.filters_open: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000055;
+        z: 150;
+
+        TouchArea {
+            clicked => { filter_popup.close(); }
+        }
+    }
+
+    // --- FLOATING FILTER PANEL ---
+    filter_popup := FilterPanel {
+        x: parent.width - self.width - 16px;
+        y: root.height + 6px;
+    }
+
+    // --- FLOATING IMPORT POPUP ---
+    import_popup := ImportDialog {
+        x: parent.width - self.width - 16px;
+        y: root.height + 6px;
+    }
+
+    // --- MODAL BACKDROP FOR THE REMOTE-WORKERS POPUP ---
+    if root.remote_open: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000055;
+        z: 150;
+
+        TouchArea {
+            clicked => { remote_popup.close(); }
+        }
+    }
+
+    // --- FLOATING REMOTE-WORKERS POPUP ---
+    remote_popup := RemoteWorkerDialog {
+        x: parent.width - self.width - 16px;
+        y: root.height + 6px;
+    }
+}

@@ -1,0 +1,877 @@
+import { SpinBox, Slider, LineEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { ExportModel } from "../models/export.slint";
+
+// High-resolution render export, independent of the viewport. Follows the
+// same modal-card conventions as `MaterialEditorDialog` (full-viewport backdrop +
+// centered card), the same segmented-pill selector style as `SettingsDialog`
+// (quality/bounce pickers) for output size, and the same labelled-value `Slider`
+// pattern as `MaterialEditorDialog`'s RI/dispersion/birefringence controls for the
+// sample count, whose useful range is too wide for a handful of pills. Reads
+// `ExportModel` directly.
+export component ExportDialog inherits Rectangle {
+    // Compute target: 0 = Local only, 1 = Remote only, 2 = Local + Remote. Defaults to
+    // Local + Remote whenever a usable worker exists (`ExportModel.remote_available`),
+    // otherwise Local only -- matching `bridge::export_thread::run_export`'s own
+    // default split behaviour (see `gui::render_export`'s doc comment). This is a
+    // plain (non `in-out`) property bound to that default expression rather than a
+    // fixed initial value, so it re-evaluates every time `remote_available` changes --
+    // e.g. right after `check_remote_availability`'s background probe reports back,
+    // which happens every time this dialog opens -- UNTIL the user clicks a pill, at
+    // which point Slint's own "an imperative assignment overrides a binding" rule
+    // takes over and this stops re-deriving from `remote_available` for the rest of
+    // this dialog instance's life.
+    property <int> compute_target: ExportModel.remote_available ? 2 : 0;
+
+    // Max ray bounces: the export's OWN cap, independent of the live viewport's --
+    // see `bridge::export_thread::scene_snapshot`'s doc comment on why an export must
+    // not silently inherit whatever the viewport happens to be set to. Same six-rung
+    // ladder (4/8/12/24/64/128) and index convention as `settings_dialog.slint`'s
+    // `selected_bounce_index` -- see that file's "Ray Bounces" section for the
+    // `bounce_cost.rs` measurements the ladder itself is backed by.
+    //
+    // `ExportModel.live_bounce_index` is the live viewport's CURRENT pill index
+    // (`SettingsModel.bounce_index`), already resolved via `gui::mod::bounces_index`'s
+    // nearest-rung matching -- reused here rather than re-deriving a second mapping.
+    // `selected_bounce_index` is a plain (non `in-out`) property bound to it, so it
+    // re-derives every time `live_bounce_index` changes (i.e. every time this dialog
+    // opens showing the CURRENT live value) UNTIL the user clicks a pill, exactly like
+    // `compute_target` above.
+    property <int> selected_bounce_index: ExportModel.live_bounce_index;
+
+    property <int> effective_width: ExportModel.selected_size_preset == 2 ? ExportModel.custom_width : (ExportModel.selected_size_preset == 1 ? 3840 : 1920);
+    property <int> effective_height: ExportModel.selected_size_preset == 2 ? ExportModel.custom_height : (ExportModel.selected_size_preset == 1 ? 2160 : 1080);
+    // Samples move in powers of two, not linearly: image noise falls as 1/sqrt(N), so
+    // a linear 8..32768 control would spend nearly all its travel in a range where
+    // each step looks visually identical. The slider drives this exponent (3..15);
+    // this is what's shown to the user and what lands in the filename template's
+    // `{spp}` variable (`bridge::export_thread::filename_template`).
+    property <int> sample_exponent: Math.round(ExportModel.sample_exponent_raw);
+    property <int> effective_samples: Math.round(Math.pow(2.0, root.sample_exponent));
+    // Index -> rung value, same nested-ternary idiom `effective_width`/`effective_height`
+    // above use for their own pill selectors.
+    property <int> effective_max_bounces: root.selected_bounce_index == 0 ? 4 : (root.selected_bounce_index == 1 ? 8 : (root.selected_bounce_index == 2 ? 12 : (root.selected_bounce_index == 3 ? 24 : (root.selected_bounce_index == 4 ? 64 : 128))));
+
+    callback close();
+    close => { ExportModel.is_open = false; ExportModel.close(); }
+    // width, height, samples-per-pixel, colour-space index (see
+    // `selected_color_space_index`'s own doc comment), compute-target index (see
+    // `compute_target`'s own doc comment), max-bounce count (see
+    // `effective_max_bounces`'s own doc comment -- the resolved rung VALUE, not the
+    // pill index, matching `effective_width`/`effective_height`/`effective_samples`
+    // above)
+    callback start_export(int, int, int, int, int, int);
+    start_export(w, h, spp, cs, ct, mb) => { ExportModel.start_export(w, h, spp, cs, ct, mb); }
+    callback cancel_export();
+    cancel_export => { ExportModel.cancel_export(); }
+
+    // Full viewport modal backdrop
+    background: #00000088;
+
+    TouchArea {
+        clicked => { if (!ExportModel.is_exporting) { root.close(); } }
+    }
+
+    // Modal Card Container
+    Rectangle {
+        width: 420px;
+        // Content-driven height: without this, `Rectangle`'s default sizing ("expand to
+        // fill the parent" when width/height aren't both set explicitly) makes this card
+        // inherit the full-viewport backdrop's height -- i.e. it stretches to the bottom
+        // of the window instead of sizing to its content. Same idiom, and same reason, as
+        // `settings_dialog.slint` and `import_dialog.slint`.
+        height: content.preferred-height;
+        background: #11151f;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: #334155;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #000000bb;
+        clip: true;
+
+        // Isolate clicks inside modal
+        TouchArea {}
+
+        content := VerticalLayout {
+            padding: 16px;
+            spacing: 14px;
+
+            // 1. Header Bar
+            HorizontalLayout {
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
+                    Text {
+                        text: "Export High-Resolution Render";
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    width: 24px;
+                    height: 24px;
+                    border-radius: Theme.radius-sm;
+                    background: close_touch.has-hover ? #2d3748 : #1a202c;
+
+                    close_touch := TouchArea {
+                        clicked => { if (!ExportModel.is_exporting) { root.close(); } }
+                    }
+
+                    Image {
+                        source: @image-url("../icons/close.svg");
+                        colorize: Theme.text-muted;
+                        width: 12px;
+                        height: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: #1e293b; }
+
+            // 1b. Output Location (Tasks 3/4): the export directory (chosen once via a
+            // native folder picker -- see `export_directory`'s own doc comment -- and
+            // just displayed/changeable here) and the filename template every file in
+            // this export (the current-view render, and every fanned-out preset render
+            // below) resolves its own name from. See
+            // `bridge::export_thread::filename_template`'s module doc comment for the
+            // full variable list, sanitising, and collision behaviour.
+            VerticalLayout {
+                spacing: 6px;
+                Rectangle {
+                    height: output_location_lbl.preferred-height;
+                    Tooltip { text: @markdown("Folder new exports save to; remembered after the first choice."); }
+                    output_location_lbl := Text { text: "Output Location"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                }
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 26px;
+                        background: #0f172a;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: #334155;
+                        clip: true;
+
+                        Text {
+                            text: ExportModel.directory == "" ? "Chosen on first export..." : ExportModel.directory;
+                            font-size: 10px;
+                            color: ExportModel.directory == "" ? Theme.text-muted : Theme.text-secondary;
+                            vertical-alignment: center;
+                            horizontal-alignment: left;
+                            x: 8px;
+                            width: parent.width - 16px;
+                            overflow: elide;
+                        }
+                    }
+
+                    Rectangle {
+                        width: 70px;
+                        height: 26px;
+                        border-radius: Theme.radius-sm;
+                        background: change_dir_touch.has-hover ? #1e293b : #0f172a;
+                        border-width: 1px;
+                        border-color: #334155;
+
+                        change_dir_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting;
+                            clicked => { ExportModel.change_directory(); }
+                        }
+
+                        Text { text: "Change..."; font-size: 10px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+
+                Text { text: "Filename template:"; font-size: 10px; color: Theme.text-muted; }
+                Rectangle {
+                    height: 26px;
+                    horizontal-stretch: 1;
+                    min-width: 200px;
+                    background: #0f172a;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: #334155;
+
+                    LineEdit {
+                        // Fills the full width/height of the enclosing background/
+                        // border `Rectangle` -- unlike the directory field just above
+                        // (a `HorizontalLayout`, which stretches its own children
+                        // itself), a plain `Rectangle` is not a layout, so without an
+                        // explicit size here `LineEdit` fell back to its own narrow
+                        // default preferred width, leaving it floating at the left
+                        // edge of an otherwise-empty-looking full-width background --
+                        // reading as "the field is too small" even though its
+                        // container already spanned the dialog's full content width,
+                        // same as the directory field's own row does. `LineEdit`
+                        // already scrolls its own text horizontally past this width
+                        // rather than clipping or wrapping it (the same native
+                        // single-line behaviour every other `LineEdit` in this dialog
+                        // already relies on), so a long template stays fully visible
+                        // and editable by scrolling, not truncated.
+                        width: 100%;
+                        height: 100%;
+                        text <=> ExportModel.filename_template;
+                        enabled: !ExportModel.is_exporting;
+                        edited(text) => { ExportModel.filename_template_changed(text); }
+                    }
+                }
+                Text {
+                    text: "{design} {designer} {shape} {material} {ri} {width} {height} {spp} {bounces} {colorspace} {preset} {lighting} {yaw} {pitch} {distance} {exposure} {date} {time} {timestamp}";
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+                // Also item: which placeholder exists ONLY with preset fan-out on --
+                // `{preset}` is the design's own current-view render's `preset`
+                // (empty for that render; the fanned-out preset's own name for each
+                // additional file -- see `bridge::export_thread`'s module doc
+                // comment). Every other placeholder resolves for every export.
+                Text {
+                    text: "{preset} only fills in when preset fan-out below is selected -- it stays empty for this design's own current-view render.";
+                    font-size: 11px;
+                    font-italic: true;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+
+                // Also item: a live "resolves to" preview, rendered against a fixed
+                // example (see `preview_filename_template`'s own doc comment for why
+                // not the live selected design). Recomputed on every keystroke via
+                // `<=>`-bound `export_filename_template` above changing.
+                property <string> preview_name: ExportModel.preview_filename_template(ExportModel.filename_template);
+                property <string> unknown_placeholders: ExportModel.filename_template_unknown_placeholders(ExportModel.filename_template);
+                Text {
+                    text: "Resolves to: " + preview_name;
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.accent-cyan;
+                    wrap: word-wrap;
+                }
+                if unknown_placeholders != "": Text {
+                    text: "Unrecognised placeholder(s), kept literal in the filename: " + unknown_placeholders;
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.accent-amber;
+                    wrap: word-wrap;
+                }
+            }
+
+            Rectangle { height: 1px; background: #1e293b; }
+
+            // 2. Output Size
+            VerticalLayout {
+                spacing: 6px;
+                Rectangle {
+                    height: output_size_lbl.preferred-height;
+                    Tooltip { text: @markdown("1080p, 4K, or a custom pixel size."); }
+                    output_size_lbl := Text { text: "Output Size"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                }
+
+                HorizontalLayout {
+                    spacing: 4px;
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: ExportModel.selected_size_preset == 0 ? Theme.accent-cyan : (sz0_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: ExportModel.selected_size_preset == 0 ? Theme.accent-cyan : #334155;
+
+                        sz0_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting;
+                            clicked => { ExportModel.selected_size_preset = 0; }
+                        }
+
+                        Text { text: "1080p"; font-size: 11px; font-weight: 600; color: ExportModel.selected_size_preset == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: ExportModel.selected_size_preset == 1 ? Theme.accent-cyan : (sz1_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: ExportModel.selected_size_preset == 1 ? Theme.accent-cyan : #334155;
+
+                        sz1_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting;
+                            clicked => { ExportModel.selected_size_preset = 1; }
+                        }
+
+                        Text { text: "4K"; font-size: 11px; font-weight: 600; color: ExportModel.selected_size_preset == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: ExportModel.selected_size_preset == 2 ? Theme.accent-cyan : (sz2_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: ExportModel.selected_size_preset == 2 ? Theme.accent-cyan : #334155;
+
+                        sz2_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting;
+                            clicked => { ExportModel.selected_size_preset = 2; }
+                        }
+
+                        Text { text: "Custom"; font-size: 11px; font-weight: 600; color: ExportModel.selected_size_preset == 2 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+
+                if ExportModel.selected_size_preset == 2: HorizontalLayout {
+                    spacing: 10px;
+
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 2px;
+                        Text { text: "Width (px)"; font-size: 10px; color: Theme.text-muted; }
+                        SpinBox { minimum: 16; maximum: 8192; step-size: 8; value <=> ExportModel.custom_width; enabled: !ExportModel.is_exporting; }
+                    }
+
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        spacing: 2px;
+                        Text { text: "Height (px)"; font-size: 10px; color: Theme.text-muted; }
+                        SpinBox { minimum: 16; maximum: 8192; step-size: 8; value <=> ExportModel.custom_height; enabled: !ExportModel.is_exporting; }
+                    }
+                }
+
+                Text { text: root.effective_width + " x " + root.effective_height + " px"; font-size: 10px; color: Theme.text-muted; }
+            }
+
+            // 2b. Colour Space: sRGB stays the default -- untagged, and the
+            // only choice byte-identical to an export made before this control
+            // existed. Display P3 / Rec.2020 are wider gamuts (particularly red/green,
+            // exactly where gemstone dispersion "fire" lands) tagged with an embedded
+            // ICC profile so they display correctly instead of looking washed-out (an
+            // untagged wide-gamut PNG is read as sRGB by every viewer). `ACEScg` is
+            // deliberately not offered: it is scene-linear with no transfer function,
+            // meant for further compositing in a floating-point/high-bit-depth
+            // pipeline -- quantizing scene-linear light straight to 8-bit PNG would
+            // concentrate almost the whole visible range into a handful of the darkest
+            // code values, severe banding that a transfer curve like sRGB's or
+            // Rec.2020's exists specifically to avoid.
+            VerticalLayout {
+                spacing: 6px;
+                Text { text: "Colour Space"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+
+                HorizontalLayout {
+                    spacing: 4px;
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: ExportModel.selected_color_space_index == 0 ? Theme.accent-cyan : (cs0_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: ExportModel.selected_color_space_index == 0 ? Theme.accent-cyan : #334155;
+
+                        cs0_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting;
+                            clicked => { ExportModel.selected_color_space_index = 0; }
+                        }
+
+                        Text { text: "sRGB"; font-size: 11px; font-weight: 600; color: ExportModel.selected_color_space_index == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: ExportModel.selected_color_space_index == 1 ? Theme.accent-cyan : (cs1_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: ExportModel.selected_color_space_index == 1 ? Theme.accent-cyan : #334155;
+
+                        cs1_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting;
+                            clicked => { ExportModel.selected_color_space_index = 1; }
+                        }
+
+                        Text { text: "Display P3"; font-size: 11px; font-weight: 600; color: ExportModel.selected_color_space_index == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: ExportModel.selected_color_space_index == 2 ? Theme.accent-cyan : (cs2_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: ExportModel.selected_color_space_index == 2 ? Theme.accent-cyan : #334155;
+
+                        cs2_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting;
+                            clicked => { ExportModel.selected_color_space_index = 2; }
+                        }
+
+                        Text { text: "Rec.2020"; font-size: 11px; font-weight: 600; color: ExportModel.selected_color_space_index == 2 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+
+                if ExportModel.selected_color_space_index != 0: Text {
+                    text: "Wider gamut, tagged with an embedded colour profile so viewers display it correctly.";
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+            }
+
+            // 2c. Compute target: which engine(s) trace this export. Same segmented-
+            // pill idiom as "Output Size"/"Colour Space" above -- the Remote/Local+Remote
+            // pills are disabled (not hidden) with `remote_unavailable_reason` shown
+            // beneath whenever `!ExportModel.remote_available`, so a user without a worker
+            // configured always sees WHY those choices aren't offered right now.
+            VerticalLayout {
+                spacing: 6px;
+                Text { text: "Compute"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+
+                HorizontalLayout {
+                    spacing: 4px;
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: root.compute_target == 0 ? Theme.accent-cyan : (ct0_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: root.compute_target == 0 ? Theme.accent-cyan : #334155;
+
+                        ct0_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting;
+                            clicked => { root.compute_target = 0; }
+                        }
+
+                        Text { text: "Local only"; font-size: 11px; font-weight: 600; color: root.compute_target == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        opacity: ExportModel.remote_available ? 1.0 : 0.45;
+                        background: root.compute_target == 1 ? Theme.accent-cyan : (ct1_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: root.compute_target == 1 ? Theme.accent-cyan : #334155;
+
+                        ct1_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting && ExportModel.remote_available;
+                            clicked => { root.compute_target = 1; }
+                        }
+
+                        Text { text: "Remote only"; font-size: 11px; font-weight: 600; color: root.compute_target == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        opacity: ExportModel.remote_available ? 1.0 : 0.45;
+                        background: root.compute_target == 2 ? Theme.accent-cyan : (ct2_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: root.compute_target == 2 ? Theme.accent-cyan : #334155;
+
+                        ct2_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting && ExportModel.remote_available;
+                            clicked => { root.compute_target = 2; }
+                        }
+
+                        Text { text: "Local + Remote"; font-size: 11px; font-weight: 600; color: root.compute_target == 2 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+
+                if !ExportModel.remote_available: Text {
+                    text: ExportModel.remote_unavailable_reason == "" ? "Checking for a remote worker..." : ExportModel.remote_unavailable_reason;
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+            }
+
+            // 2d. Max Ray Bounces -- the export's OWN cap, independent of the live
+            // viewport's. Same segmented-pill idiom and ladder (4/8/12/24/64/128) as
+            // `settings_dialog.slint`'s "Ray Bounces" section -- see that file's own
+            // doc comment for the `bounce_cost.rs` measurements behind these six rungs.
+            // Defaults to `live_bounce_index` (see that property's own doc comment) so
+            // opening this dialog shows the value an export would have used anyway.
+            VerticalLayout {
+                spacing: 6px;
+                Text { text: "Max Ray Bounces"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+
+                HorizontalLayout {
+                    spacing: 4px;
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: root.selected_bounce_index == 0 ? Theme.accent-cyan : (mb0_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: root.selected_bounce_index == 0 ? Theme.accent-cyan : #334155;
+
+                        mb0_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting;
+                            clicked => { root.selected_bounce_index = 0; }
+                        }
+
+                        Text { text: "4"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: root.selected_bounce_index == 1 ? Theme.accent-cyan : (mb1_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: root.selected_bounce_index == 1 ? Theme.accent-cyan : #334155;
+
+                        mb1_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting;
+                            clicked => { root.selected_bounce_index = 1; }
+                        }
+
+                        Text { text: "8"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: root.selected_bounce_index == 2 ? Theme.accent-cyan : (mb2_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: root.selected_bounce_index == 2 ? Theme.accent-cyan : #334155;
+
+                        mb2_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting;
+                            clicked => { root.selected_bounce_index = 2; }
+                        }
+
+                        Text { text: "12"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 2 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: root.selected_bounce_index == 3 ? Theme.accent-cyan : (mb3_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: root.selected_bounce_index == 3 ? Theme.accent-cyan : #334155;
+
+                        mb3_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting;
+                            clicked => { root.selected_bounce_index = 3; }
+                        }
+
+                        Text { text: "24"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 3 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: root.selected_bounce_index == 4 ? Theme.accent-cyan : (mb4_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: root.selected_bounce_index == 4 ? Theme.accent-cyan : #334155;
+
+                        mb4_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting;
+                            clicked => { root.selected_bounce_index = 4; }
+                        }
+
+                        Text { text: "64"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 4 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: root.selected_bounce_index == 5 ? Theme.accent-cyan : (mb5_touch.has-hover ? #1e293b : #0f172a);
+                        border-width: 1px;
+                        border-color: root.selected_bounce_index == 5 ? Theme.accent-cyan : #334155;
+
+                        mb5_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting;
+                            clicked => { root.selected_bounce_index = 5; }
+                        }
+
+                        Text { text: "128"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 5 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+
+                // Same wording/measurement basis as `settings_dialog.slint`'s own
+                // bounce-ladder hint: flat cost on CPU (the `bounce_cost.rs` benchmark
+                // measured only a 1.3-1.4x spread from a cap of 12 all the way to
+                // 1024), but GPU threads run in lockstep, so the few long paths in the
+                // tail stall the whole workgroup and this rung range costs noticeably
+                // more there than on CPU.
+                if root.selected_bounce_index >= 4: Text {
+                    text: "Cheap on CPU, but noticeably steeper on GPU -- lockstep execution makes long paths expensive there.";
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+            }
+
+            // 3. Sample Count -- a power-of-two slider rather than pills, since the
+            // useful range (8..32768) is now far too wide for a handful of presets.
+            // "higher = slower" is honest at 4096 but understates it badly at 32768,
+            // hence the plain-language cost hint that appears near the top of the range.
+            VerticalLayout {
+                spacing: 6px;
+                Text { text: "Sample Count (higher = slower, smoother)"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text { text: "Samples per pixel:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+                    Text { text: root.effective_samples; font-size: 13px; font-weight: 700; color: Theme.accent-cyan; }
+                }
+
+                Slider {
+                    minimum: 3;
+                    maximum: 15;
+                    step: 1;
+                    value <=> ExportModel.sample_exponent_raw;
+                    enabled: !ExportModel.is_exporting;
+                }
+
+                if root.sample_exponent >= 14: Text {
+                    text: "Very high sample counts can take hours to render, especially at large output sizes.";
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+            }
+
+            // 3b. Preset fan-out (Task 2) -- only shown when at least one preset is
+            // export-usable; an empty list here means nobody has checked "usable for
+            // export" on any preset yet (`settings_dialog.slint`'s own checkbox), so
+            // there is nothing to fan out and showing an empty section would just be
+            // clutter.
+            if ExportModel.fanout_presets.length > 0: VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Also Render With These Presets";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                }
+                Text {
+                    text: "Each checked preset produces an ADDITIONAL file alongside the current view -- export time multiplies linearly with how many are selected.";
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+
+                for preset[idx] in ExportModel.fanout_presets: Rectangle {
+                    height: 26px;
+                    border-radius: Theme.radius-sm;
+                    background: #0f172a;
+                    border-width: 1px;
+                    border-color: preset.selected ? Theme.accent-cyan : #334155;
+
+                    fanout_touch := TouchArea {
+                        enabled: !ExportModel.is_exporting;
+                        clicked => { ExportModel.toggle_preset_selected(idx); }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 8px;
+                        spacing: 6px;
+
+                        Rectangle {
+                            width: 14px;
+                            height: 14px;
+                            border-radius: 3px;
+                            background: preset.selected ? Theme.accent-cyan : transparent;
+                            border-width: 1px;
+                            border-color: preset.selected ? Theme.accent-cyan : #475569;
+                            y: (parent.height - self.height) / 2;
+
+                            if preset.selected: Image {
+                                source: @image-url("../icons/check.svg");
+                                colorize: #0f172a;
+                                width: 9px;
+                                height: 9px;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        Text {
+                            text: preset.name;
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                        }
+
+                        // HDR badge: forces the slower CPU-only path for THIS preset's
+                        // render -- see `fanout_presets`'s own doc comment.
+                        if preset.has_env_map: Text {
+                            text: "HDR · slower";
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: Theme.accent-amber;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: #1e293b; }
+
+            // 4. Progress (visible only while exporting) -- keeps the user informed
+            // during what can be a multi-minute render (Task: "a frozen UI with no
+            // feedback is unacceptable").
+            if ExportModel.is_exporting: VerticalLayout {
+                spacing: 6px;
+
+                // Live preview -- fixed-height reserved slot (present for the whole
+                // "is_exporting" section, not just once a thumbnail exists) so the card
+                // never resizes when the first preview tick lands; `image-fit: contain`
+                // keeps the thumbnail at the export's own aspect ratio inside it rather
+                // than stretching to the box's (usually different) aspect ratio.
+                Rectangle {
+                    height: 200px;
+                    border-radius: Theme.radius-sm;
+                    background: #0f172a;
+                    border-width: 1px;
+                    border-color: #334155;
+                    clip: true;
+
+                    if ExportModel.preview_samples_done > 0: Image {
+                        source: ExportModel.preview_image;
+                        image-fit: contain;
+                        width: 100%;
+                        height: 100%;
+                    }
+
+                    if ExportModel.preview_samples_done <= 0: Text {
+                        width: 100%;
+                        height: 100%;
+                        text: "Preview appears shortly...";
+                        font-size: 10px;
+                        color: Theme.text-muted;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: ExportModel.preview_samples_done > 0
+                        ? "Preview (in progress, not the final file) · " + ExportModel.preview_samples_done + " / " + ExportModel.preview_samples_total + " samples"
+                        : "Preview";
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    horizontal-alignment: center;
+                }
+
+                // Preset-fan-out status: only shown once there's more than one job in
+                // this export's queue (`preset_total > 1`) -- a plain single-render
+                // export shows just "Rendering...", unchanged from before Task 2.
+                if ExportModel.preset_total > 1: Text {
+                    text: "Rendering " + (ExportModel.preset_index + 1) + " of " + ExportModel.preset_total
+                        + (ExportModel.current_preset_label == "" ? "" : ": " + ExportModel.current_preset_label);
+                    font-size: 10px;
+                    font-weight: 600;
+                    color: Theme.accent-cyan;
+                }
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text { text: "Rendering..."; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                    Text { text: Math.round(ExportModel.progress * 100) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+                }
+                Rectangle {
+                    height: 8px;
+                    border-radius: 4px;
+                    background: #0f172a;
+                    border-width: 1px;
+                    border-color: #334155;
+                    clip: true;
+
+                    Rectangle {
+                        x: 0;
+                        y: 0;
+                        width: parent.width * ExportModel.progress;
+                        height: 100%;
+                        background: Theme.accent-cyan;
+                        animate width { duration: 150ms; }
+                    }
+                }
+            }
+
+            // 5. Result / error message, shown once the export finishes
+            if !ExportModel.is_exporting && ExportModel.status_message != "": Text {
+                text: ExportModel.status_message;
+                font-size: 10px;
+                color: ExportModel.has_error ? #f87171 : Theme.accent-emerald;
+                wrap: word-wrap;
+            }
+
+            // 6. Footer Actions
+            HorizontalLayout {
+                spacing: 8px;
+
+                if ExportModel.is_exporting: Rectangle {
+                    horizontal-stretch: 1;
+                    height: 32px;
+                    border-radius: Theme.radius-sm;
+                    background: cancel_touch.has-hover ? #450a0a : #1f1111;
+                    border-width: 1px;
+                    border-color: #7f1d1d;
+
+                    cancel_touch := TouchArea {
+                        clicked => { root.cancel_export(); }
+                    }
+
+                    Text { text: "Cancel Export"; font-size: 11px; font-weight: 600; color: #f87171; horizontal-alignment: center; vertical-alignment: center; }
+                }
+
+                if !ExportModel.is_exporting: Rectangle {
+                    width: 90px;
+                    height: 32px;
+                    border-radius: Theme.radius-sm;
+                    background: close2_touch.has-hover ? #1e293b : #0f172a;
+                    border-width: 1px;
+                    border-color: #334155;
+
+                    close2_touch := TouchArea {
+                        clicked => { root.close(); }
+                    }
+
+                    Text { text: "Close"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                }
+
+                if !ExportModel.is_exporting: Rectangle {
+                    horizontal-stretch: 1;
+                    height: 32px;
+                    border-radius: Theme.radius-sm;
+                    background: start_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
+
+                    start_touch := TouchArea {
+                        clicked => {
+                            root.start_export(root.effective_width, root.effective_height, root.effective_samples, ExportModel.selected_color_space_index, root.compute_target, root.effective_max_bounces);
+                        }
+                    }
+
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        Image { source: @image-url("../icons/save.svg"); colorize: #0f172a; width: 12px; height: 12px; vertical-alignment: center; }
+                        Text { text: "Start Export"; font-size: 12px; font-weight: 700; color: #0f172a; vertical-alignment: center; }
+                    }
+                }
+            }
+        }
+    }
+}

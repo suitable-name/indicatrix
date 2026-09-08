@@ -1,0 +1,864 @@
+import { Button } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { TiltModel } from "../models/tilt.slint";
+import { ViewportModel } from "../models/viewport.slint";
+
+export component PerformanceGraphDialog inherits Rectangle {
+    // Azimuth-0 ("canonical") sweep -- see `graph_*_extra_axes` below for the other
+    // three. Kept as its own flat property (rather than folded into a 4-row array)
+    // because `settings_dialog.slint`'s mini tilt chart also binds to this exact
+    // property; this dialog must not change what it means.
+    in property <[float]> graph_brilliance: TiltModel.graph_brilliance;
+    in property <[float]> graph_extinction: TiltModel.graph_extinction;
+    in property <[float]> graph_windowing: TiltModel.graph_windowing;
+    // SVG path-data strings (`M x y L x y ...`) for the same three curves, built by
+    // `curve_path::tilt_curve_path` in a 0..100 x 0..100 viewbox.
+    in property <string> graph_brilliance_path: TiltModel.graph_brilliance_path;
+    in property <string> graph_extinction_path: TiltModel.graph_extinction_path;
+    in property <string> graph_windowing_path: TiltModel.graph_windowing_path;
+    // All FOUR camera azimuths (0/45/90/135 deg, `PROFILE_AZIMUTHS_DEG`), one row per
+    // azimuth, EACH spanning the full +-90 deg tilt range at 1 deg resolution (181
+    // points, `TILT_ANGLES_DEG`) -- computed lazily off the UI thread by
+    // `gui::tilt_profile` only while this dialog is open (roughly 1.36s for all four
+    // axes together; that module's own cache key avoids repeating it against
+    // unchanged inputs). Empty until that computation finishes; use
+    // `extra_axes_ready` rather than assuming a length of 4. Axis 0 is included here
+    // too since its negative half cannot be supplied by the always-available live
+    // `graph_brilliance`/etc below (positive 0..90 deg only); `active_*` below always
+    // reads from these rows once ready.
+    in property <[[float]]> graph_brilliance_extra_axes: TiltModel.graph_brilliance_extra_axes;
+    in property <[[float]]> graph_extinction_extra_axes: TiltModel.graph_extinction_extra_axes;
+    in property <[[float]]> graph_windowing_extra_axes: TiltModel.graph_windowing_extra_axes;
+    in property <[string]> graph_brilliance_extra_paths: TiltModel.graph_brilliance_extra_paths;
+    in property <[string]> graph_extinction_extra_paths: TiltModel.graph_extinction_extra_paths;
+    in property <[string]> graph_windowing_extra_paths: TiltModel.graph_windowing_extra_paths;
+    in property <bool> extra_axes_loading: TiltModel.extra_axes_loading;
+    in property <float> cam_pitch_deg: TiltModel.cam_pitch_deg;
+    in property <string> material_name: ViewportModel.material_options[ViewportModel.selected_material_index];
+
+    // Stale-cached-curve prompt: the `GemMaterial` name whatever cached curve/image
+    // the catalogue has on file for this design was rendered under -- pushed on every
+    // design selection. Empty string means "no cached data to compare against".
+    in property <string> cached_curve_material: TiltModel.cached_curve_material;
+    // Decision function implemented in Rust (`gui::tilt_profile::
+    // cached_curve_material_is_stale`) so the staleness check lives in exactly ONE
+    // place rather than being re-derived in Slint too.
+    pure callback is_cached_curve_material_stale(string, string) -> bool;
+    is_cached_curve_material_stale(c, m) => { TiltModel.is_cached_curve_material_stale(c, m) }
+    // Re-renders the tilt curve fresh against the CURRENT material rather than the one
+    // the cached curve/image was built with.
+    callback rerender_curve_with_current_material();
+    rerender_curve_with_current_material => { TiltModel.rerender_curve_with_current_material(); }
+
+    // Mini stone preview at the hovered angle: rendered off the UI thread by
+    // `gui::tilt_hover_preview` for whichever point the user is hovering/scrubbing.
+    // Retains its last value while the tooltip isn't hovered (harmless: the preview
+    // panel is only shown while hovering).
+    in property <image> tilt_hover_preview_image: TiltModel.hover_preview_image;
+    // Requests a fresh preview for `(axis_index, tilt_deg)`; `gui::tilt_hover_preview`
+    // debounces on its own end, so firing this on every hovered pixel is safe.
+    callback request_tilt_hover_preview(int, float);
+    request_tilt_hover_preview(a, t) => { TiltModel.request_tilt_hover_preview(a, t); }
+
+    in-out property <bool> show_brilliance: true;
+    in-out property <bool> show_windowing: true;
+    in-out property <bool> show_extinction: true;
+
+    // Which of the four camera azimuths is plotted -- directly indexes
+    // `graph_*_extra_axes`/`graph_*_extra_paths`. Dialog-local UI state, not
+    // forwarded from Rust: nothing outside this dialog needs to know which axis is
+    // on screen.
+    in-out property <int> selected_axis_index: 0;
+    // "All" overlay: draws all four azimuth sweeps of every visible channel at once,
+    // fading every axis except `selected_axis_index`.
+    in-out property <bool> show_all_axes: false;
+    property <[string]> axis_labels: ["0° (length)", "45°", "90° (width)", "135°"];
+    property <string> selected_axis_label: root.axis_labels[root.selected_axis_index];
+    // X-axis tick labels for the chart canvas's +-90 deg (tilt-from-table-up) domain
+    // -- 7 ticks, evenly spaced 30 deg apart.
+    property <[string]> axis_tick_labels: ["-90° (edge-on)", "-60°", "-30°", "0° (table-up)", "30°", "60°", "90° (edge-on)"];
+    // True once all four full-axis sweeps have arrived -- guards the axis pills, the
+    // summary badges, and the chart canvas; nothing here has an always-available
+    // fallback, since even axis 0 needs its negative half swept off-thread.
+    property <bool> extra_axes_ready: root.graph_brilliance_extra_axes.length >= 4
+        && root.graph_extinction_extra_axes.length >= 4
+        && root.graph_windowing_extra_axes.length >= 4;
+
+    // Whether the cached curve's own material differs from the one currently loaded
+    // -- `false` whenever there is nothing cached to compare against yet
+    // (`cached_curve_material == ""`).
+    property <bool> cache_is_stale: root.cached_curve_material != ""
+        && root.is_cached_curve_material_stale(root.cached_curve_material, root.material_name);
+
+    // The currently-selected axis's data, in the flat shape the summary badges and
+    // hover tooltip's interpolation both want. Only meaningful once
+    // `extra_axes_ready` -- callers gate on that themselves.
+    property <[float]> active_brilliance_values: root.graph_brilliance_extra_axes[root.selected_axis_index];
+    property <[float]> active_extinction_values: root.graph_extinction_extra_axes[root.selected_axis_index];
+    property <[float]> active_windowing_values: root.graph_windowing_extra_axes[root.selected_axis_index];
+    property <string> active_brilliance_path: root.graph_brilliance_extra_paths[root.selected_axis_index];
+    property <string> active_extinction_path: root.graph_extinction_extra_paths[root.selected_axis_index];
+    property <string> active_windowing_path: root.graph_windowing_extra_paths[root.selected_axis_index];
+
+    // Linear interpolation between the two 1 deg-spaced measured samples straddling
+    // `tilt_deg`, for reading the curve at finer-than-measured resolution (the hover
+    // tooltip's readout). `values` is indexed like `TILT_ANGLES_DEG`: index 0 is
+    // -90 deg, index 90 is 0 deg, index 180 is +90 deg.
+    // HONESTY: everything this returns between the 181 measured angles is
+    // INTERPOLATED, not traced -- the dialog's subtitle caption says so to the user,
+    // and `copy_curve_data`'s CSV export is the escape hatch to real measured-only
+    // numbers.
+    pure function interpolated_value(values: [float], tilt_deg: float) -> float {
+        if values.length < 181 {
+            return 0.0;
+        }
+        let clamped: float = Math.max(-90.0, Math.min(90.0, tilt_deg));
+        let shifted: float = clamped + 90.0; // 0..180, matching TILT_ANGLES_DEG's index
+        let lower_idx: int = Math.max(0, Math.min(179, Math.floor(shifted)));
+        if lower_idx >= 179 {
+            return values[180];
+        }
+        let frac: float = shifted - lower_idx;
+        return values[lower_idx] * (1.0 - frac) + values[lower_idx + 1] * frac;
+    }
+
+    // Snaps a horizontal pixel offset within the plot to the nearest whole degree
+    // across the full `-90..=+90` tilt range -- the chart's native 1 deg resolution.
+    pure function snap_tilt_deg(mouse_x: length, plot_width: length) -> float {
+        let frac: float = Math.max(0.0, Math.min(1.0, mouse_x / plot_width));
+        return Math.round(frac * 180.0) - 90.0;
+    }
+
+    callback close();
+    callback copy_curve_data();
+
+    // Full Viewport Modal Backdrop
+    background: #00000088;
+
+    TouchArea {
+        clicked => { root.close(); }
+    }
+
+    // Modal Card Container. Sized off the backdrop (`root`, pinned to the full
+    // viewport by `gem_viewport.slint`) rather than a fixed pixel width.
+    Rectangle {
+        width: Math.min(960px, root.width - 80px);
+        // Content-driven height: without this, the default "expand to fill the
+        // parent" sizing would stretch this card to the bottom of the app instead of
+        // sizing to its content.
+        height: content.preferred-height;
+        background: #0f1523;
+        border-radius: Theme.radius-lg;
+        border-width: 1px;
+        border-color: #334155;
+        drop-shadow-blur: 32px;
+        drop-shadow-color: #000000ee;
+        drop-shadow-offset-y: 8px;
+        clip: true;
+
+        // Isolate clicks inside modal card
+        TouchArea {}
+
+        content := VerticalLayout {
+            padding: 18px;
+            spacing: 14px;
+
+            // 1. Header Bar
+            HorizontalLayout {
+                alignment: space-between;
+
+                VerticalLayout {
+                    spacing: 3px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Image { source: @image-url("../icons/trend-up.svg"); colorize: Theme.text-primary; width: 16px; height: 16px; vertical-alignment: center; }
+                        Text {
+                            text: "Tilt Performance Curve Analysis";
+                            font-size: 15px;
+                            font-weight: 700;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Text {
+                        text: "Analytical raytracing across -90° to +90° tilt away from table-up (1° step resolution) for " + root.material_name;
+                        font-size: 11px;
+                        color: Theme.text-muted;
+                    }
+                    // HONESTY: the 181 markers are the only MEASURED points on this
+                    // chart -- everything the curve and hover tooltip show between
+                    // them (`interpolated_value` below) is linearly interpolated, not
+                    // additional raytracing. Said here, not just in a code comment,
+                    // because the tooltip reads like a precise instrument readout.
+                    Text {
+                        text: "Between the 181 measured 1°-step points, the curve and hover readout are linearly interpolated, not additional raytracing.";
+                        font-size: 11px;
+                        font-italic: true;
+                        color: #475569;
+                    }
+                }
+
+                Rectangle {
+                    width: 26px;
+                    height: 26px;
+                    border-radius: 13px;
+                    background: close_touch.has-hover ? #1e293b : transparent;
+
+                    close_touch := TouchArea {
+                        clicked => { root.close(); }
+                    }
+
+                    Image {
+                        source: @image-url("../icons/close.svg");
+                        colorize: Theme.text-muted;
+                        width: 13px;
+                        height: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: #1e293b; }
+
+            // 2. Key Performance Metric Badges.
+            // Read at TILT_ANGLES_DEG[90] (tilt 0 deg, the shared TABLE-UP pose every
+            // axis passes through). Guarded on `extra_axes_ready` since no axis has
+            // an always-available fallback (even axis 0 needs its negative half
+            // swept off-thread), so these show a real loading placeholder rather
+            // than a stale/empty array.
+            HorizontalLayout {
+                spacing: 10px;
+
+                // Face-Up Brilliance
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 52px;
+                    background: #131b2e;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: #1e293b;
+
+                    VerticalLayout {
+                        padding: 8px;
+                        alignment: center;
+                        spacing: 2px;
+                        Text { text: "Face-Up Brilliance (0°, " + root.selected_axis_label + ")"; font-size: 10px; font-weight: 600; color: Theme.text-muted; }
+                        Text {
+                            text: root.extra_axes_ready ? Math.round(root.active_brilliance_values[90]) + "%" : "…";
+                            font-size: 16px;
+                            font-weight: 700;
+                            color: Theme.accent-cyan;
+                        }
+                    }
+                }
+
+                // Face-Up Windowing
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 52px;
+                    background: #131b2e;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: #1e293b;
+
+                    VerticalLayout {
+                        padding: 8px;
+                        alignment: center;
+                        spacing: 2px;
+                        Text { text: "Face-Up Windowing (0°, " + root.selected_axis_label + ")"; font-size: 10px; font-weight: 600; color: Theme.text-muted; }
+                        Text {
+                            text: root.extra_axes_ready ? Math.round(root.active_windowing_values[90]) + "%" : "…";
+                            font-size: 16px;
+                            font-weight: 700;
+                            color: Theme.accent-amber;
+                        }
+                    }
+                }
+
+                // Tilt Extinction
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 52px;
+                    background: #131b2e;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: #1e293b;
+
+                    VerticalLayout {
+                        padding: 8px;
+                        alignment: center;
+                        spacing: 2px;
+                        Text { text: "Extinction Shadow (0°, " + root.selected_axis_label + ")"; font-size: 10px; font-weight: 600; color: Theme.text-muted; }
+                        Text {
+                            text: root.extra_axes_ready ? Math.round(root.active_extinction_values[90]) + "%" : "…";
+                            font-size: 16px;
+                            font-weight: 700;
+                            color: #ef4444;
+                        }
+                    }
+                }
+            }
+
+            // 2.5. Stale-cached-curve prompt. Only appears once this design has a
+            // cached preview material on file AND it differs from the material
+            // currently loaded. Placed right under the badges rather than competing
+            // with the header.
+            if root.cache_is_stale: Rectangle {
+                height: 34px;
+                background: #7c2d1233;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: #ea580c;
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 8px;
+                    alignment: space-between;
+
+                    Text {
+                        text: "This cached curve was rendered with " + root.cached_curve_material
+                            + ", not the current material (" + root.material_name + ").";
+                        font-size: 10px;
+                        font-weight: 600;
+                        color: #fdba74;
+                        vertical-alignment: center;
+                    }
+
+                    Rectangle {
+                        width: 130px;
+                        height: 22px;
+                        border-radius: Theme.radius-sm;
+                        background: rerender_touch.has-hover ? #f97316 : #ea580c;
+
+                        rerender_touch := TouchArea {
+                            clicked => { root.rerender_curve_with_current_material(); }
+                        }
+
+                        Text {
+                            text: "Re-render fresh";
+                            font-size: 10px;
+                            font-weight: 700;
+                            color: #0f172a;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // 3. Channel Toggle Filters
+            HorizontalLayout {
+                alignment: space-between;
+
+                Text {
+                    text: "Optical Channels:";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+
+                    // Brilliance Channel Toggle
+                    Rectangle {
+                        height: 24px;
+                        border-radius: Theme.radius-sm;
+                        background: root.show_brilliance ? #0284c733 : #0f172a;
+                        border-width: 1px;
+                        border-color: root.show_brilliance ? Theme.accent-cyan : #334155;
+
+                        TouchArea {
+                            clicked => { root.show_brilliance = !root.show_brilliance; }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 5px;
+                            alignment: center;
+                            Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.accent-cyan; }
+                            Text { text: "Brilliance % (Light Return)"; font-size: 10px; font-weight: 600; color: root.show_brilliance ? Theme.accent-cyan : Theme.text-muted; }
+                        }
+                    }
+
+                    // Windowing Channel Toggle
+                    Rectangle {
+                        height: 24px;
+                        border-radius: Theme.radius-sm;
+                        background: root.show_windowing ? #d9770633 : #0f172a;
+                        border-width: 1px;
+                        border-color: root.show_windowing ? Theme.accent-amber : #334155;
+
+                        TouchArea {
+                            clicked => { root.show_windowing = !root.show_windowing; }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 5px;
+                            alignment: center;
+                            Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.accent-amber; }
+                            Text { text: "Windowing % (TIR Leakage)"; font-size: 10px; font-weight: 600; color: root.show_windowing ? Theme.accent-amber : Theme.text-muted; }
+                        }
+                    }
+
+                    // Extinction Channel Toggle
+                    Rectangle {
+                        height: 24px;
+                        border-radius: Theme.radius-sm;
+                        background: root.show_extinction ? #b91c1c33 : #0f172a;
+                        border-width: 1px;
+                        border-color: root.show_extinction ? #ef4444 : #334155;
+
+                        TouchArea {
+                            clicked => { root.show_extinction = !root.show_extinction; }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 5px;
+                            alignment: center;
+                            Rectangle { width: 7px; height: 7px; border-radius: 3px; background: #ef4444; }
+                            Text { text: "Extinction % (Shadows)"; font-size: 10px; font-weight: 600; color: root.show_extinction ? #ef4444 : Theme.text-muted; }
+                        }
+                    }
+                }
+            }
+
+            // 3.5. Tilt Axis Switcher. Styled to match the "Optical Channels" pills
+            // above, but in purple rather than per-channel colour so the two rows
+            // read as separate axes of control (WHICH channels vs. WHICH sweep).
+            HorizontalLayout {
+                alignment: space-between;
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text {
+                        text: "Tilt Axis:";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: Theme.text-secondary;
+                        vertical-alignment: center;
+                    }
+                    if root.extra_axes_loading: Text {
+                        // Named explicitly (not a bare "loading...") since ~1.5s is
+                        // long enough that a silent spinner would read as hung.
+                        text: "(sweeping ±90° across all 4 axes, ~1.5s)";
+                        font-size: 10px;
+                        font-italic: true;
+                        color: Theme.text-muted;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Rectangle {
+                    height: axis_pill_row.preferred-height;
+                    Tooltip { text: @markdown("Sweep direction (0°, 45°, 90°, 135°) or overlay all four."); }
+                axis_pill_row := HorizontalLayout {
+                    spacing: 6px;
+
+                    for label[idx] in root.axis_labels : Rectangle {
+                        height: 24px;
+                        border-radius: Theme.radius-sm;
+                        background: root.selected_axis_index == idx ? #a855f733 : #0f172a;
+                        border-width: 1px;
+                        border-color: root.selected_axis_index == idx ? Theme.accent-purple : #334155;
+                        // Every axis (0 included) needs `extra_axes_ready`'s
+                        // background sweep to have landed: axis 0's negative half is
+                        // not something the live render thread can supply.
+                        opacity: root.extra_axes_ready ? 1.0 : 0.4;
+
+                        TouchArea {
+                            clicked => {
+                                if root.extra_axes_ready {
+                                    root.selected_axis_index = idx;
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            alignment: center;
+                            Text {
+                                text: label;
+                                font-size: 10px;
+                                font-weight: 600;
+                                color: root.selected_axis_index == idx ? Theme.accent-purple : Theme.text-muted;
+                            }
+                        }
+                    }
+
+                    // "All" overlay toggle -- draws every axis of every visible
+                    // channel at once.
+                    Rectangle {
+                        height: 24px;
+                        border-radius: Theme.radius-sm;
+                        background: root.show_all_axes ? #a855f733 : #0f172a;
+                        border-width: 1px;
+                        border-color: root.show_all_axes ? Theme.accent-purple : #334155;
+                        opacity: root.extra_axes_ready ? 1.0 : 0.4;
+
+                        TouchArea {
+                            clicked => {
+                                if root.extra_axes_ready {
+                                    root.show_all_axes = !root.show_all_axes;
+                                }
+                            }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            alignment: center;
+                            Text {
+                                text: "All";
+                                font-size: 10px;
+                                font-weight: 600;
+                                color: root.show_all_axes ? Theme.accent-purple : Theme.text-muted;
+                            }
+                        }
+                    }
+                }
+                } // axis_pills_hover wrapper
+            }
+
+            // 4. High-Resolution 181-Point (±90°, 1°-step) Performance Chart Canvas.
+            // Tilt angle is continuous, so this draws each channel as a line (via
+            // `Path`'s SVG `commands`, Slint has no polyline element) rather than
+            // discrete bars -- bars would hide the curve shape a reader is here for.
+            Rectangle {
+                height: 180px;
+                background: #050811;
+                border-radius: Theme.radius-md;
+                border-width: 1px;
+                border-color: #1e293b;
+                clip: true;
+
+                // Real loading state: no partial/fallback data exists to show in the
+                // meantime, since even axis 0 needs its negative half swept
+                // off-thread, so this is a plain wait state, not a partial chart.
+                if !root.extra_axes_ready: VerticalLayout {
+                    alignment: center;
+                    Text {
+                        text: root.extra_axes_loading
+                            ? "Sweeping ±90° across all 4 axes (181 points x 4, ~1.5s)..."
+                            : "Preparing tilt sweep...";
+                        font-size: 11px;
+                        color: Theme.text-muted;
+                        horizontal-alignment: center;
+                    }
+                }
+
+                // Y-Axis Reference Grid Lines. `plot.y`/`plot.height` (10px/140px) are
+                // mirrored here as literals rather than referenced directly: `plot`
+                // is only instantiated `if root.extra_axes_ready`, and Slint disallows
+                // referencing a conditionally-instantiated element's geometry from an
+                // always-present sibling, so these two literals must stay in sync
+                // with `plot`'s own `y: 10px; height: 140px;` by hand.
+                Rectangle { y: 10px + 140px * 0.25; width: 100%; height: 1px; background: #1e293b44; }
+                Rectangle { y: 10px + 140px * 0.50; width: 100%; height: 1px; background: #1e293b66; }
+                Rectangle { y: 10px + 140px * 0.75; width: 100%; height: 1px; background: #1e293b44; }
+
+                Text { x: 6px; y: 10px - 4px; text: "100%"; font-size: 11px; color: #475569; }
+                Text { x: 6px; y: 10px + 140px * 0.25 - 4px; text: "75%"; font-size: 11px; color: #475569; }
+                Text { x: 6px; y: 10px + 140px * 0.50 - 4px; text: "50%"; font-size: 11px; color: #475569; }
+                Text { x: 6px; y: 10px + 140px * 0.75 - 4px; text: "25%"; font-size: 11px; color: #475569; }
+
+                // Plot area the three line series are scaled into.
+                //
+                // Slint's `Path` element defaults `fit` to `contain` -- uniform,
+                // aspect-ratio-preserving, centered scaling of the viewbox into the
+                // element's own box. For a 100x100 viewbox inside this ~900x140 plot,
+                // that scales by min(900/100, 140/100) = 1.4 and centers the result,
+                // marooning a 140px-wide drawing in the middle of a ~900px box.
+                // `fit: fill` on each `Path` below switches to non-uniform
+                // fill-the-box scaling instead, matching what every gridline/label in
+                // this file already assumes.
+                // Single wrapper `if` around BOTH `plot` and the floating tooltip
+                // card below: Slint's `if` only wraps one element, and `tooltip_card`
+                // (a sibling of `plot`, not a child) reads `plot.width`/
+                // `tooltip_area.*` directly, only valid where `plot` is statically in
+                // scope -- so both must be gated together on `root.extra_axes_ready`.
+                if root.extra_axes_ready: chart_content := Rectangle {
+                    width: 100%;
+                    height: 100%;
+
+                plot := Rectangle {
+                    x: 32px;
+                    y: 10px;
+                    width: parent.width - 44px;
+                    height: 140px;
+
+                    // "All axes" overlay: every azimuth's line for a visible channel,
+                    // faded except the selected one. Drawn only when `show_all_axes`
+                    // is on; the single-line case below covers the default view.
+                    // Extinction group first, then Windowing, then Brilliance -- same
+                    // per-channel stacking order as the single-line case, so toggling
+                    // "All" doesn't change which channel reads as "on top".
+                    for path[idx] in root.graph_extinction_extra_paths : Path {
+                        visible: root.show_all_axes && root.show_extinction;
+                        width: 100%; height: 100%; fit: fill;
+                        commands: path;
+                        viewbox-width: 100; viewbox-height: 100;
+                        stroke: #ef4444;
+                        stroke-width: root.selected_axis_index == idx ? 2px : 1.2px;
+                        opacity: root.selected_axis_index == idx ? 1.0 : 0.28;
+                        fill: transparent;
+                    }
+                    for path[idx] in root.graph_windowing_extra_paths : Path {
+                        visible: root.show_all_axes && root.show_windowing;
+                        width: 100%; height: 100%; fit: fill;
+                        commands: path;
+                        viewbox-width: 100; viewbox-height: 100;
+                        stroke: Theme.accent-amber;
+                        stroke-width: root.selected_axis_index == idx ? 2px : 1.2px;
+                        opacity: root.selected_axis_index == idx ? 1.0 : 0.28;
+                        fill: transparent;
+                    }
+                    for path[idx] in root.graph_brilliance_extra_paths : Path {
+                        visible: root.show_all_axes && root.show_brilliance;
+                        width: 100%; height: 100%; fit: fill;
+                        commands: path;
+                        viewbox-width: 100; viewbox-height: 100;
+                        stroke: Theme.accent-cyan;
+                        stroke-width: root.selected_axis_index == idx ? 2px : 1.2px;
+                        opacity: root.selected_axis_index == idx ? 1.0 : 0.28;
+                        fill: transparent;
+                    }
+
+                    // Single-axis view (default): just the selected axis's line per
+                    // visible channel, reading `active_*_path` with `fit: fill`.
+                    if !root.show_all_axes && root.show_extinction: Path {
+                        width: 100%; height: 100%; fit: fill;
+                        commands: root.active_extinction_path;
+                        viewbox-width: 100; viewbox-height: 100;
+                        stroke: #ef4444;
+                        stroke-width: 2px;
+                        fill: transparent;
+                    }
+                    if !root.show_all_axes && root.show_windowing: Path {
+                        width: 100%; height: 100%; fit: fill;
+                        commands: root.active_windowing_path;
+                        viewbox-width: 100; viewbox-height: 100;
+                        stroke: Theme.accent-amber;
+                        stroke-width: 2px;
+                        fill: transparent;
+                    }
+                    if !root.show_all_axes && root.show_brilliance: Path {
+                        width: 100%; height: 100%; fit: fill;
+                        commands: root.active_brilliance_path;
+                        viewbox-width: 100; viewbox-height: 100;
+                        stroke: Theme.accent-cyan;
+                        stroke-width: 2px;
+                        fill: transparent;
+                    }
+
+                    // The shared table-up (tilt 0 deg) point every axis passes
+                    // through, marked with a faint vertical guide so "0°" reads as a
+                    // real landmark on the curve, not just a tick label.
+                    Rectangle {
+                        x: plot.width * 0.5 - 0.5px;
+                        width: 1px;
+                        height: 100%;
+                        background: #33415577;
+                    }
+
+                    // Hover tooltip: a transparent `TouchArea` over the whole plot
+                    // reports `mouse-x`, which `snap_tilt_deg` turns into a
+                    // whole-degree tilt angle and `interpolated_value` turns into a
+                    // reading for each visible channel -- INTERPOLATED, not
+                    // additional raytracing (see the subtitle caption above).
+                    tooltip_area := TouchArea {
+                        width: 100%;
+                        height: 100%;
+                    }
+
+                    if tooltip_area.has-hover: Rectangle {
+                        // -90..+90 domain: (tilt_deg + 90) / 180 is the 0..1 fraction
+                        // across the plot's width.
+                        x: plot.width * ((root.snap_tilt_deg(tooltip_area.mouse-x, plot.width) + 90.0) / 180.0) - 0.5px;
+                        width: 1px;
+                        height: 100%;
+                        background: #94a3b877;
+                    }
+                }
+
+                // Floating tooltip card. Positioned in `plot`'s coordinate space but
+                // drawn as `chart_content`'s own child (a sibling of `plot`, not a
+                // child of it) so it draws on top of every line/crosshair inside
+                // `plot` -- clamped to stay within `plot`'s bounds on both axes
+                // (flipping to the cursor's left once it would overflow the right
+                // edge) rather than relying on the outer chart Rectangle's `clip:
+                // true` to hide an overflow, per the "must not be clipped"
+                // requirement.
+                //
+                // Stacked layout: a tilt-angle heading, then one row per
+                // currently-visible channel (colour swatch + name + value). `card_h`
+                // grows with `visible_channel_count` instead of being fixed, and
+                // `card_w` shrinks accordingly (a stacked row only has to fit ONE
+                // channel's label+value, not all of them end to end).
+                if tooltip_area.has-hover: tooltip_card := Rectangle {
+                    property <float> tilt_deg: root.snap_tilt_deg(tooltip_area.mouse-x, plot.width);
+                    // -90..+90 domain -- same `(tilt_deg + 90) / 180` remapping as
+                    // the crosshair Rectangle just above.
+                    property <length> crosshair_x: plot.width * ((self.tilt_deg + 90.0) / 180.0);
+                    property <int> visible_channel_count:
+                        (root.show_brilliance ? 1 : 0) + (root.show_windowing ? 1 : 0) + (root.show_extinction ? 1 : 0);
+                    property <length> card_w: 132px;
+                    // Heading row + one 15px row per visible channel + the 58px mini
+                    // preview row, plus the VerticalLayout's own padding/spacing --
+                    // generous rather than exact, so a font metrics difference can
+                    // never clip a row.
+                    property <length> card_h: 24px + (self.visible_channel_count * 15px) + 58px;
+                    property <bool> flip: self.crosshair_x > (plot.width - self.card_w - 12px);
+                    x: plot.x + Math.max(0px, Math.min(plot.width - self.card_w,
+                        self.flip ? (self.crosshair_x - self.card_w - 10px) : (self.crosshair_x + 10px)));
+                    y: plot.y + Math.max(0px, Math.min(plot.height - self.card_h, tooltip_area.mouse-y - self.card_h - 8px));
+                    width: self.card_w;
+                    height: self.card_h;
+                    background: #0f1523ee;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: #334155;
+
+                    // Requests a fresh mini preview render for exactly this hovered
+                    // pose whenever the snapped tilt angle changes; `gui::
+                    // tilt_hover_preview` debounces on its own end, so firing this
+                    // per changed pixel does NOT mean one render per pixel.
+                    changed tilt_deg => {
+                        root.request_tilt_hover_preview(root.selected_axis_index, self.tilt_deg);
+                    }
+
+                    VerticalLayout {
+                        padding: 5px;
+                        spacing: 2px;
+
+                        HorizontalLayout {
+                            alignment: center;
+                            Image {
+                                source: root.tilt_hover_preview_image;
+                                width: 48px;
+                                height: 48px;
+                            }
+                        }
+
+                        Text {
+                            text: "Tilt " + (Math.round(tooltip_card.tilt_deg * 10.0) / 10.0) + "°";
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: Theme.text-primary;
+                        }
+                        // Same colours the channel toggle pills above use, so a reader
+                        // can match a tooltip row to its toggle/curve at a glance.
+                        if root.show_brilliance: HorizontalLayout {
+                            spacing: 5px;
+                            Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.accent-cyan; }
+                            Text {
+                                text: "Brilliance " + Math.round(root.interpolated_value(root.active_brilliance_values, tooltip_card.tilt_deg)) + "%";
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: Theme.text-primary;
+                            }
+                        }
+                        if root.show_windowing: HorizontalLayout {
+                            spacing: 5px;
+                            Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.accent-amber; }
+                            Text {
+                                text: "Windowing " + Math.round(root.interpolated_value(root.active_windowing_values, tooltip_card.tilt_deg)) + "%";
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: Theme.text-primary;
+                            }
+                        }
+                        if root.show_extinction: HorizontalLayout {
+                            spacing: 5px;
+                            Rectangle { width: 7px; height: 7px; border-radius: 3px; background: #ef4444; }
+                            Text {
+                                text: "Extinction " + Math.round(root.interpolated_value(root.active_extinction_values, tooltip_card.tilt_deg)) + "%";
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: Theme.text-primary;
+                            }
+                        }
+                    }
+                } // end tooltip_card
+                } // end chart_content
+
+                // X-Axis Angle Labels: -90° to +90° in 30° steps, evenly spaced (7
+                // ticks span the full ±90° width, so a plain `HorizontalLayout` with
+                // per-tick `horizontal-stretch: 1` places them with no position math).
+                // `x`/`width` mirror `plot`'s own `32px`/`parent.width - 44px`
+                // literally since `plot` is conditional on `root.extra_axes_ready`
+                // and this label row is not.
+                //
+                // "0°" is the shared TABLE-UP point every axis's curve passes
+                // through (pitch 90 deg, camera directly overhead -- genuinely
+                // azimuth-independent, unlike edge-on) and is bolded so it reads as
+                // the sweep's center, not an arbitrary tick.
+                HorizontalLayout {
+                    x: 32px;
+                    y: 154px;
+                    width: parent.width - 44px;
+                    spacing: 2px;
+
+                    for val[idx] in root.axis_tick_labels : Text {
+                        horizontal-stretch: 1;
+                        text: val;
+                        font-size: 11px;
+                        color: idx == 3 ? Theme.accent-cyan : #64748b;
+                        font-weight: idx == 3 ? 700 : 400;
+                        horizontal-alignment: center;
+                    }
+                }
+            }
+
+            // 5. Footer Bar Actions
+            HorizontalLayout {
+                alignment: space-between;
+                spacing: 10px;
+
+                Rectangle {
+                    height: 32px;
+                    border-radius: Theme.radius-sm;
+                    background: copy_btn.has-hover ? #1e293b : #0f172a;
+                    border-width: 1px;
+                    border-color: #334155;
+
+                    copy_btn := TouchArea {
+                        clicked => { root.copy_curve_data(); }
+                    }
+                    Tooltip { text: @markdown("Copy the full sweep, four axes × 181 points, to the clipboard."); }
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        spacing: 6px;
+                        alignment: center;
+                        Image { source: @image-url("../icons/clipboard.svg"); colorize: Theme.text-primary; width: 12px; height: 12px; vertical-alignment: center; }
+                        Text { text: "Copy 181-Point Data Table (4 Axes, ±90°)"; font-size: 11px; font-weight: 600; color: Theme.text-primary; vertical-alignment: center; }
+                    }
+                }
+
+                Rectangle {
+                    width: 90px;
+                    height: 32px;
+                    border-radius: Theme.radius-sm;
+                    background: done_btn.has-hover ? #7dd3fc : Theme.accent-cyan;
+
+                    done_btn := TouchArea {
+                        clicked => { root.close(); }
+                    }
+
+                    Text { text: "Close"; font-size: 12px; font-weight: 700; color: #0f172a; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+        }
+    }
+}

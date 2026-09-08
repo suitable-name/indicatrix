@@ -1,0 +1,49 @@
+[package]
+name = "indicatrix-cut-core"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+documentation = "https://docs.rs/indicatrix-cut-core"
+keywords = ["gemstone", "faceting", "cad", "editor", "undo"]
+categories = ["science", "graphics"]
+publish = { workspace = true }
+description = "Editor-core library for a faceting cutting schedule: preform, tiers, undo/redo, and live solid validation. No UI, no database, no rendering -- see the crate's own doc comment."
+
+[dependencies]
+# The public geometry crate -- see its own crate doc comment. This crate reaches it
+# by relative PATH dependency (via the private workspace's `[workspace.dependencies]`
+# entry), never a copy; see `../../Cargo.toml`'s own note on the public/private split.
+indicatrix = { workspace = true }
+glam = { workspace = true }
+# `.asc` cutting-schedule read/write, AND (via `indicatrix_formats::native`) the on-disk schema,
+# TOML encode/decode, sidecar path rules, and paired-`.asc` fingerprint for the
+# `.indicatrix.toml` native design file (`native/` in this crate holds only the half
+# of that format that needs `Design`/`MeetConstraint` in scope: the conversions, and
+# `load_paired`/`save_paired` built on top of them -- see `native/mod.rs`'s own module
+# doc comment). `Design` wraps `indicatrix_formats::asc::AscSchedule` directly rather than
+# defining a second tier/schedule type, so this crate's editable schedule and
+# `indicatrix::geometry::cuts::StandardGemCuts::from_asc_schedule`'s input are the
+# exact same type -- no import/export step, no second parser to keep in sync. Two real
+# dependencies only, same as `lib.rs`'s own doc comment has always framed it: no
+# renderer, no database, no GUI toolkit, and (since Phase 7's native-file split moved
+# the TOML/SHA-256 codec itself into `indicatrix-formats`) no text-file-format or hash-function
+# dependency living directly in this crate either.
+indicatrix-formats = { workspace = true }
+
+[dev-dependencies]
+# For `examples/manufacturability_corpus_probe.rs` only -- reads the user's real
+# `facet_diagrams.sqlite` catalogue read-only to measure Phase 4's four checks at
+# corpus scale, exactly the pattern `crates/indicatrix/examples/meet_solver_validation.rs`
+# already uses (see its own doc comment on why that lives in `examples/`, not the test
+# suite: it needs a real catalogue this repository does not ship, so a `#[test]` cannot
+# depend on it). A dev-dependency only -- never pulled into the library itself, so
+# `indicatrix-cut-core`'s own two-dependency (indicatrix, indicatrix-formats) footprint (see `lib.rs`'s crate doc
+# comment) is unchanged for every normal build.
+rusqlite = { workspace = true }
+
+[lints]
+workspace = true

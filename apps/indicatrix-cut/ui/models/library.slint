@@ -1,0 +1,89 @@
+import { DiagramItem, PerformanceFilterRow, PreviewThumbnails, AngleItem, FileItem, DiagramDetailData } from "../types.slint";
+
+export global LibraryModel {
+    in-out property <string> search_text: "";
+    in property <[string]> shape_options: ["All Shapes"];
+    in-out property <int> selected_shape_index: 0;
+    in property <[string]> gear_options: ["All Gears"];
+    in-out property <int> selected_gear_index: 0;
+    in property <string> status_message: "Database ready.";
+
+    in property <float> ri_bounds_min: 1.0;
+    in property <float> ri_bounds_max: 3.0;
+    in-out property <float> ri_filter_min: 1.0;
+    in-out property <float> ri_filter_max: 3.0;
+    in property <float> lw_bounds_min: 1.0;
+    in property <float> lw_bounds_max: 3.0;
+    in-out property <float> lw_filter_min: 1.0;
+    in-out property <float> lw_filter_max: 3.0;
+    in property <float> volume_bounds_min: 0.0;
+    in property <float> volume_bounds_max: 1.0;
+    in-out property <float> volume_filter_min: 0.0;
+    in-out property <float> volume_filter_max: 1.0;
+    in property <float> facets_bounds_min: 0.0;
+    in property <float> facets_bounds_max: 200.0;
+    in-out property <float> facets_filter_min: 0.0;
+    in-out property <float> facets_filter_max: 200.0;
+
+    in property <float> ri_material_default: 2.417;
+    in-out property <bool> ri_tolerance_enabled: false;
+    in-out property <float> ri_tolerance_center: 2.417;
+    in-out property <float> ri_tolerance_value: 0.02;
+
+    in-out property <bool> show_ignored: false;
+
+    in property <[PerformanceFilterRow]> performance_filters: [];
+    callback performance_filter_add(PerformanceFilterRow);
+    callback performance_filter_remove(int);
+    callback performance_filters_clear();
+
+    in property <int> performance_excluded_count: 0;
+    callback compute_missing_tilt_curves();
+
+    in property <bool> is_busy: false;
+    in property <int> selected_entry_id: -1;
+
+    in property <[DiagramItem]> diagram_list: [];
+    in property <int> total_count: 0;
+    in property <DiagramDetailData> current_detail;
+
+    pure callback get_preview_thumbnails(int, int) -> PreviewThumbnails;
+    in-out property <int> preview_cache_version: 0;
+    callback generate_previews_for_entry(int);
+    callback toggle_ignored(int);
+    callback compute_tilt_curves_for_entry(int);
+
+    in property <[string]> shape_picker_options: [];
+    in property <int> shape_picker_current_index: -1;
+
+    in-out property <bool> metadata_editor_open: false;
+
+    in property <[AngleItem]> current_angles: [];
+    in property <[FileItem]> current_files: [];
+
+    in-out property <bool> panel_collapsed: false;
+    callback panel_collapsed_changed(bool);
+
+    in property <string> import_result_text: "";
+    in property <int> import_done: 0;
+    in property <int> import_total: 0;
+    in property <float> import_progress: 0.0;
+
+    callback search_changed(string);
+    callback filter_shape_changed(string);
+    callback filter_gear_changed(string);
+    callback filters_changed();
+    callback select_diagram(int);
+    callback pick_asc_file();
+    callback pick_asc_folder(bool);
+    callback rename_diagram(string);
+    callback set_shape(string);
+    callback delete_diagram();
+    callback export_asc();
+    callback save_metadata(string, string, string, string, string, string, string, bool, string, string, string, string, string);
+    callback export_file(string);
+    callback open_diagram_url(string);
+    callback copy_text(string);
+    callback copy_cutting_table();
+    callback copy_cutting_row(int);
+}

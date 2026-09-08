@@ -1,0 +1,146 @@
+[workspace]
+resolver = "3"
+members = ["crates/indicatrix", "crates/indicatrix-net", "crates/indicatrix-formats", "crates/indicatrix-vault", "crates/indicatrix-cut-core", "apps/indicatrix-cut", "apps/indicatrix-worker", "apps/indicatrix-web"]
+# indicatrix: a physically-based spectral gemstone renderer and faceting-design
+# library. `indicatrix` is the spectral path tracer at the center; `indicatrix-formats` reads and
+# writes GemCAD-style `.asc` cutting schedules; `indicatrix-vault` is the local
+# SQLite-backed design library; `indicatrix-cut-core` is the editor-core crate (preform, editable
+# cutting schedule, undo/redo); `apps/indicatrix-cut` is the desktop faceting-design
+# editor and `apps/indicatrix-worker` the headless render CLI / remote render server,
+# connected by `indicatrix-net`'s wire protocol.
+
+[workspace.package]
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.95"
+authors = ["Suitable-Name"]
+license = "MIT"
+repository = "https://github.com/suitable-name/indicatrix"
+homepage = "https://github.com/suitable-name/indicatrix"
+documentation = "https://docs.rs/indicatrix"
+publish = true
+
+[workspace.dependencies]
+anyhow = "1.0.104"
+bytemuck = { version = "1.22", features = ["derive"] }
+chull = "0.2.4"                                        # or try parry3d if this fails
+glam = "0.33.7"
+# `default-features = false` MUST live here, not in the members: a member
+# inheriting a workspace dependency may only ADD features, never remove them,
+# and newer Cargo rejects a member that repeats `default-features = false`
+# (older Cargo only warned -- which is why this built on Windows but not Linux).
+# Each member declares the one image format it actually uses.
+image = { version = "0.25", default-features = false }
+pollster = { version = "1.0.1" }
+# Wire-format serializer for indicatrix-net's `SceneState` (sent once per camera change --
+# a few KB, serialisation cost irrelevant, compactness is what matters). NOT used for
+# the per-sample radiance buffer, which goes over the wire as raw `bytemuck` POD bytes
+# instead -- see crates/indicatrix-net's crate docs.
+postcard = { version = "1.1.3", features = ["alloc"] }
+# CA/leaf certificate generation for `indicatrix-worker`'s `cert init`/`issue-server`/
+# `issue-client` subcommands (see apps/indicatrix-worker's `pki` module). Same `ring`
+# provider pin as `rustls` above -- `rcgen`'s "ring" feature implies its "crypto"
+# feature, no separate flag needed for that.
+rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem", "x509-parser"] }
+# Native OS file/folder picker dialogs (Task: file-selection dialogs -- import/HDR/
+# cert-dir/export "Browse..." buttons in `apps/indicatrix-cut`). Default features kept
+# on: the only default is `xdg-portal` (Linux/BSD), which talks to the desktop over
+# D-Bus at runtime and needs no C toolchain/dev-headers at BUILD time, unlike the
+# non-default `gtk3` feature -- so this stays a no-op for the Windows build (native
+# `IFileDialog`, no extra deps either way) while not silently breaking dialogs on a
+# Linux build of this workspace.
+rfd = "0.17.2"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+# Mutual-TLS stack for indicatrix-net/indicatrix-worker (see crates/indicatrix-net's `tls` module
+# and apps/indicatrix-worker's `pki` module). `ring` is pinned explicitly as the crypto
+# provider across rustls/rcgen -- it's already resolved in this workspace's dependency
+# graph (via `ureq`), so this adds no new native-toolchain requirement (no cmake/NASM,
+# unlike `aws-lc-rs`). `tls12` is deliberately left out of rustls's feature list: this
+# workspace has no reason to ever negotiate down from TLS 1.3, so the TLS 1.2 code path
+# is excluded at compile time rather than merely unconfigured at runtime.
+rustls = { version = "0.23.44", default-features = false, features = ["std", "ring", "logging"] }
+rustls-pemfile = "2.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+# N5: `SockRef::set_tcp_keepalive`/`TcpStream::set_nodelay` tuning for `apps/indicatrix-worker`'s
+# accepted connections (see that crate's `serve` module) -- `std::net::TcpStream` has no
+# keepalive API of its own, and `socket2::SockRef::from` borrows an existing standard-library
+# socket rather than requiring one be constructed through `socket2` from the start, so this
+# adds no new socket-creation path, just a way to tune one already opened by `TcpListener`.
+# "all" pulls in the keepalive/nodelay accessors this needs across every supported OS.
+socket2 = { version = "0.6.5", features = ["all"] }
+# `default-features = false` lives here for the same reason `image`'s does above --
+# see that comment. Each member re-declares the feature set it actually wants:
+# `apps/indicatrix-cut` names slint's own defaults verbatim (unchanged behaviour),
+# `apps/indicatrix-web` names the trimmed wasm set.
+slint = { version = "1.17.1", default-features = false }
+slint-build = "1.17.1"
+# `rcgen::CertificateParams::not_before`/`not_after` are `time::OffsetDateTime` --
+# needed directly (not re-exported by `rcgen`) to set certificate validity windows,
+# including the clock-skew backdating in `pki::not_before_with_skew_slack`.
+time = { version = "0.3", default-features = false, features = ["std"] }
+# Phase 7's native design-file format in `indicatrix_cut_core::native` (TOML on-disk encoding) and
+# `apps/indicatrix-cut`'s settings persistence -- see each crate's own comment on its
+# `toml` dependency for why TOML was chosen there.
+toml = "1.1.4"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# `default-features = false` lives here for the same reason `image`'s does above --
+# see that comment. `crates/indicatrix`'s native target arm re-enables wgpu 30.0.1's
+# own default set verbatim; its wasm32 arm names only the browser backend.
+wgpu = { version = "30.0.1", default-features = false }
+# Embeds the Windows .ico resource into each app binary -- see either app's
+# `build.rs`. Build-dependency only, and only for windows targets.
+winresource = "0.1.31"
+
+# Workspace members
+indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.2.0" }
+indicatrix = { path = "crates/indicatrix", version = "0.2.0" }
+indicatrix-net = { path = "crates/indicatrix-net", version = "0.2.0" }
+indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.2.0" }
+indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.2.0" }
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cast_precision_loss = { level = "allow" }
+cast_sign_loss = { level = "allow" }
+cast_possible_wrap = { level = "allow" }
+cast_possible_truncation = { level = "allow" }
+float_cmp = { level = "allow" }
+inline_always = { level = "allow" }
+implicit_hasher = { level = "allow" }
+struct_excessive_bools = { level = "allow" }
+result_large_err = { level = "allow" }
+similar_names = { level = "allow" }
+
+[profile.release]
+codegen-units = 1
+debug = false
+lto = true
+opt-level = 3
+strip = "symbols"
+
+[profile.dev]
+debug-assertions = true
+overflow-checks = true
+debug = 2
+
+[profile.bench]
+debug = true
+lto = false
+strip = false
+
+# For the long-running validation harnesses under `crates/indicatrix/examples/` --
+# `gpu_equivalence_harness` and `meet_solver_validation` -- which are rebuilt often
+# while iterating and need release-level speed to finish in reasonable time.
+# `[profile.release]` above sets lto=true, codegen-units=1, the right trade for a real
+# release but painfully slow to rebuild for no runtime benefit that matters here. This
+# keeps release optimization (opt-level=3, no debug-assertions/overflow-checks) while
+# skipping LTO and parallelizing codegen: a little runtime speed traded for much
+# faster rebuilds.
+[profile.probe]
+inherits = "release"
+lto = false
+codegen-units = 16
