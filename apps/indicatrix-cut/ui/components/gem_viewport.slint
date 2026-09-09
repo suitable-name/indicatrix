@@ -7,13 +7,17 @@ import { PerformanceGraphDialog } from "performance_graph_dialog.slint";
 import { ExportDialog } from "export_dialog.slint";
 import { ExportModel } from "../models/export.slint";
 import { ViewportModel } from "../models/viewport.slint";
+import { SolidPreviewModel } from "../models/solid_preview.slint";
 import { SettingsModel } from "../models/settings.slint";
 import { TiltModel } from "../models/tilt.slint";
 import { EditorModel } from "../models/editor.slint";
 
 export component GemViewportView inherits Rectangle {
     vertical-stretch: 1;
-    min-height: 380px;
+    min-height: 0px;
+    min-width: 0px;
+    preferred-height: 480px;
+    clip: true;
 
     property <length> last_mouse_x;
     property <length> last_mouse_y;
@@ -37,7 +41,17 @@ export component GemViewportView inherits Rectangle {
     border-radius: Theme.radius-md;
     border-width: 1px;
     border-color: Theme.border-subtle;
-    clip: true;
+
+    // Slint has no built-in way to report a widget's rendered size back to Rust -- see
+    // `solid_viewport.slint`'s own identical `changed width`/`changed height` doc
+    // comment. Pushed unconditionally (not just while `live_view_mode == 0`): this
+    // component and `SolidViewportView` are mutually exclusive (only the Live Render
+    // OR the Edit sub-tab is ever mounted at once -- see `app.slint`), so there is
+    // never a competing writer, and pushing on every resize (not just a mode switch)
+    // means the size is already correct the moment the user flips into Solid mode,
+    // rather than stale until the next resize.
+    changed width => { SolidPreviewModel.viewport_width = self.width; }
+    changed height => { SolidPreviewModel.viewport_height = self.height; }
 
     // Viewport TouchArea for Orbit, Pan, Zoom with True Incremental Deltas
     touch_area := TouchArea {
@@ -86,16 +100,51 @@ export component GemViewportView inherits Rectangle {
         }
     }
 
-    // Live Rendered Image
-    if ViewportModel.has_render: Image {
+    // Live Rendered Image -- Path-traced mode only; Solid mode shows the flat-shaded
+    // CPU raster below instead (see `ViewportModel.live_view_mode`'s own doc comment).
+    if ViewportModel.live_view_mode == 1 && ViewportModel.has_render: Image {
         width: 100%;
         height: 100%;
         source: ViewportModel.render_image;
         image-fit: contain;
     }
 
-    // Fallback when initial state
-    if !ViewportModel.has_render: VerticalLayout {
+    // Solid Rendered Image -- Solid mode only. `SolidPreviewModel.image` is the SAME
+    // flat-shaded raster the Edit tab's `SolidViewportView` shows, always forced to
+    // `view_mode` 0 here regardless of the Edit tab's own choice -- see
+    // `gui::render::camera_lighting::resubmit_live_solid`'s own doc comment for why
+    // that must never leak across tabs.
+    if ViewportModel.live_view_mode == 0 && SolidPreviewModel.has_solid: Image {
+        width: 100%;
+        height: 100%;
+        source: SolidPreviewModel.image;
+        image-fit: contain;
+    }
+
+    // Fallback: Solid mode, nothing solved/selected yet.
+    if ViewportModel.live_view_mode == 0 && !SolidPreviewModel.has_solid: VerticalLayout {
+        alignment: center;
+        spacing: 12px;
+
+        Image {
+            source: @image-url("../icons/gem.svg");
+            colorize: Theme.text-muted;
+            width: 56px;
+            height: 56px;
+            horizontal-alignment: center;
+        }
+
+        Text {
+            text: "Select a design to preview";
+            font-size: 16px;
+            font-weight: 700;
+            color: Theme.text-primary;
+            horizontal-alignment: center;
+        }
+    }
+
+    // Fallback: Path-traced mode, initial state (nothing rendered yet).
+    if ViewportModel.live_view_mode == 1 && !ViewportModel.has_render: VerticalLayout {
         alignment: center;
         spacing: 12px;
 
@@ -123,420 +172,512 @@ export component GemViewportView inherits Rectangle {
         }
     }
 
-    // --- TOP CONTROLS OVERLAY (Material, Lighting, Settings & Metrics) ---
+    // --- TOP CONTROLS OVERLAY (Mode Toggle, Material, Lighting, Settings & Metrics) ---
+    // Explicit `x`/`y`/`width`/`height`: this overlay is a stack of fixed-height
+    // rows, and a plain (default-positioned) layout child would hand its small
+    // maximum height and the toolbar's summed width up to the viewport as ITS
+    // constraints, capping the viewport at ~150px tall. An explicitly
+    // positioned child contributes no constraints -- see `app.slint`'s
+    // "Sizing notes".
     VerticalLayout {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
         padding: 12px;
-        alignment: space-between;
+        spacing: 8px;
 
+        // --- Solid / Path-traced mode toggle -- top-left of the viewport image area,
+        // same pill style as `solid_viewport.slint`'s Edit-tab toggle. Lets a user
+        // browse the library with the fast CPU solid rasterizer and only pay for the
+        // spectral path tracer on the design they actually want to inspect -- see
+        // `gui::render::detached_render::render_is_visible`'s own doc comment for how
+        // this gates the tracer itself, not just what's displayed.
         HorizontalLayout {
-            alignment: space-between;
+            spacing: 8px;
 
-            // Material & Lighting Selectors & Action Buttons
-            HorizontalLayout {
-                spacing: 8px;
+            Rectangle {
+                height: 28px;
+                width: 84px;
+                background: ViewportModel.live_view_mode == 0 ? Theme.primary : (live_solid_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: ViewportModel.live_view_mode == 0 ? Theme.accent-cyan : Theme.border-subtle;
 
-                // Render Material Dropdown -- UI/UX review finding 3: renamed from the
-                // bare, unlabelled "Material" this control used to be (a `ComboBox`
-                // with no caption at all), which collided in name with
-                // `editor_view.slint`'s unrelated Yield Material/SG-override control.
-                // This one picks what's simulated for colour/dispersion/birefringence
-                // in the render; it never touches the cut itself.
-                Rectangle {
-                    width: 140px;
-                    height: 32px;
-                    background: #1e293bee;
-                    border-radius: Theme.radius-sm;
-                    border-width: 1px;
-                    border-color: Theme.border-medium;
+                Tooltip { text: @markdown("Flat-shaded software render of the solved solid -- fast, and the spectral tracer stays off while this is showing."); }
 
-                    Tooltip { text: @markdown("Render Material -- material simulated for colour, dispersion and birefringence. Does not change the cut."); }
-
-                    ComboBox {
-                        model: ViewportModel.material_options;
-                        current-index <=> ViewportModel.selected_material_index;
-                        selected(val) => { ViewportModel.material_changed(val); }
-                    }
+                live_solid_pill_touch := TouchArea {
+                    clicked => { ViewportModel.live_view_mode = 0; }
                 }
-
-                // A3: "Linked to design" -- see `viewport_material_linked`'s own doc
-                // comment above. Only shown on an `editor` build; a build with no
-                // Edit tab has nothing for this dropdown to link to.
-                if EditorModel.enabled: Rectangle {
-                    width: link_txt.preferred-width + 44px;
-                    height: 32px;
-                    background: #1e293bee;
-                    border-radius: Theme.radius-sm;
-                    border-width: 1px;
-                    border-color: Theme.border-medium;
-                    Tooltip { text: @markdown("Linked to design -- while on, this dropdown follows the Edit tab's own material instead of an independent choice."); }
-                    HorizontalLayout {
-                        padding-left: 8px;
-                        padding-right: 8px;
-                        spacing: 6px;
-                        Rectangle {
-                            width: 28px;
-                            height: 16px;
-                            border-radius: 8px;
-                            background: ViewportModel.viewport_material_linked ? Theme.accent-cyan : #334155;
-                            TouchArea {
-                                clicked => {
-                                    ViewportModel.viewport_material_linked = !ViewportModel.viewport_material_linked;
-                                    ViewportModel.viewport_material_linked_changed(ViewportModel.viewport_material_linked);
-                                }
-                            }
-                            Rectangle {
-                                width: 12px;
-                                height: 12px;
-                                border-radius: 6px;
-                                background: white;
-                                x: ViewportModel.viewport_material_linked ? parent.width - self.width - 2px : 2px;
-                                y: 2px;
-                                animate x { duration: 120ms; }
-                            }
-                        }
-                        link_txt := Text {
-                            text: "Linked to design";
-                            font-size: 10px;
-                            color: Theme.text-secondary;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-
-                // Edit / Custom Material Button (✎)
-                Rectangle {
-                    width: 32px;
-                    height: 32px;
-                    background: ViewportModel.material_editor_open ? Theme.accent-purple : (edit_mat_touch.has-hover ? Theme.bg-elevated : #1e293bee);
-                    border-radius: Theme.radius-sm;
-                    border-width: 1px;
-                    border-color: ViewportModel.material_editor_open ? Theme.accent-purple : Theme.border-medium;
-
-                    edit_mat_touch := TouchArea {
-                        clicked => { ViewportModel.material_editor_open = !ViewportModel.material_editor_open; }
-                    }
-                    Tooltip { text: @markdown("Define a custom material: R.I., dispersion, birefringence, colour."); }
-
-                    Image {
-                        source: @image-url("../icons/pencil.svg");
-                        colorize: ViewportModel.material_editor_open ? #ffffff : Theme.accent-purple;
-                        width: 15px;
-                        height: 15px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-
-                // Lighting Dropdown
-                Rectangle {
-                    width: 190px;
-                    height: 32px;
-                    background: #1e293bee;
-                    border-radius: Theme.radius-sm;
-                    border-width: 1px;
-                    border-color: Theme.border-medium;
-
-                    Tooltip { text: @markdown("Studio rig: D65 daylight, incandescent, ring lights or spotlight."); }
-
-                    ComboBox {
-                        model: ViewportModel.lighting_options;
-                        current-index <=> ViewportModel.selected_lighting_index;
-                        // Emits the INDEX (already synced into
-                        // `selected_lighting_index` via the two-way binding above by
-                        // the time `selected` fires), not the display string `val`.
-                        selected(val) => { ViewportModel.lighting_changed(ViewportModel.selected_lighting_index); }
-                    }
-                }
-
-                // Performance Curve Graph Trigger Button (📊 Tilt Curve)
-                Rectangle {
-                    height: 32px;
-                    background: TiltModel.dialog_open ? Theme.accent-cyan : (perf_touch.has-hover ? Theme.bg-elevated : #1e293bee);
-                    border-radius: Theme.radius-sm;
-                    border-width: 1px;
-                    border-color: TiltModel.dialog_open ? Theme.accent-cyan : Theme.border-medium;
-
-                    perf_touch := TouchArea {
-                        clicked => { root.toggle_performance_dialog(); }
-                    }
-                    Tooltip { text: @markdown("Open the tilt-performance chart: brilliance, windowing and extinction versus tilt."); }
-
-                    HorizontalLayout {
-                        padding-left: 8px;
-                        padding-right: 8px;
-                        spacing: 5px;
-                        alignment: center;
-                        Image {
-                            source: @image-url("../icons/bar-chart.svg");
-                            colorize: TiltModel.dialog_open ? #0f172a : Theme.text-primary;
-                            width: 13px;
-                            height: 13px;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: "Tilt Curve";
-                            font-size: 11px;
-                            font-weight: 600;
-                            color: TiltModel.dialog_open ? #0f172a : Theme.text-primary;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-
-                // Reset Camera Button
-                Rectangle {
-                    width: 32px;
-                    height: 32px;
-                    background: reset_touch.has-hover ? Theme.bg-elevated : #1e293bee;
-                    border-radius: Theme.radius-sm;
-                    border-width: 1px;
-                    border-color: Theme.border-medium;
-
-                    reset_touch := TouchArea {
-                        clicked => { ViewportModel.reset_camera(); }
-                    }
-                    Tooltip { text: @markdown("Return the camera to its default orbit and distance."); }
-
-                    Image {
-                        source: @image-url("../icons/reset.svg");
-                        colorize: Theme.text-secondary;
-                        width: 16px;
-                        height: 16px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-
-                // "Save as preset" button -- captures the FULL current view (lighting
-                // AND camera pose) as a new named preset, unlike the settings dialog's
-                // own lighting-only save button. See `app.slint`'s `save_view_preset`
-                // doc comment, and `settings::model::LightingPreset`'s for why the
-                // camera is captured here specifically.
-                Rectangle {
-                    width: 32px;
-                    height: 32px;
-                    background: root.saving_view_preset ? Theme.accent-cyan : (save_view_touch.has-hover ? Theme.bg-elevated : #1e293bee);
-                    border-radius: Theme.radius-sm;
-                    border-width: 1px;
-                    border-color: root.saving_view_preset ? Theme.accent-cyan : Theme.border-medium;
-
-                    save_view_touch := TouchArea {
-                        clicked => {
-                            root.saving_view_preset = !root.saving_view_preset;
-                            root.new_view_preset_name = "";
-                        }
-                    }
-                    Tooltip { text: @markdown("Save the current lighting and camera pose as a named preset."); }
-
-                    Image {
-                        source: @image-url("../icons/save.svg");
-                        colorize: root.saving_view_preset ? #0f172a : Theme.text-secondary;
-                        width: 14px;
-                        height: 14px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-
-                // Inline "name this view" popup for the button above -- same
-                // click-to-open, type-and-confirm idiom `SettingsDialog`'s own
-                // "add lighting preset" row uses, just living in the viewport toolbar
-                // instead of the settings dialog.
-                if root.saving_view_preset: Rectangle {
-                    width: 160px;
-                    height: 32px;
-                    background: #1e293bee;
-                    border-radius: Theme.radius-sm;
-                    border-width: 1px;
-                    border-color: Theme.accent-cyan;
-
-                    HorizontalLayout {
-                        padding-left: 8px;
-                        padding-right: 4px;
-                        spacing: 4px;
-
-                        LineEdit {
-                            text <=> root.new_view_preset_name;
-                            placeholder-text: "Name this view...";
-                        }
-
-                        Rectangle {
-                            width: 24px;
-                            height: 24px;
-                            border-radius: Theme.radius-sm;
-                            background: confirm_view_preset_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
-
-                            confirm_view_preset_touch := TouchArea {
-                                clicked => {
-                                    if (root.new_view_preset_name != "") {
-                                        ViewportModel.save_view_preset(root.new_view_preset_name);
-                                        root.saving_view_preset = false;
-                                        root.new_view_preset_name = "";
-                                    }
-                                }
-                            }
-
-                            Image { source: @image-url("../icons/check.svg"); colorize: #0f172a; width: 11px; height: 11px; horizontal-alignment: center; vertical-alignment: center; }
-                        }
-                    }
-                }
-
-                // Pause / Resume Render Button -- explicit user pause control (Task: render pause/stop).
-                // Also reflects `is_exporting` for DISPLAY purposes only, the same amber
-                // "suspended" treatment `render_paused` already gets -- see
-                // `RenderContext::export_active`'s own doc comment for why an export
-                // suspends local tracing without touching `render_paused` itself. The
-                // touch area is disabled while exporting so a click can't flip the
-                // user's real pause state out from under them while its displayed state
-                // is showing something else (it would otherwise toggle `render_paused`
-                // from whatever the user actually left it at, not from what's on screen).
-                Rectangle {
-                    height: 32px;
-                    background: (ViewportModel.render_paused || ExportModel.is_exporting) ? Theme.accent-amber : (pause_touch.has-hover ? Theme.bg-elevated : #1e293bee);
-                    border-radius: Theme.radius-sm;
-                    border-width: 1px;
-                    border-color: (ViewportModel.render_paused || ExportModel.is_exporting) ? Theme.accent-amber : Theme.border-medium;
-
-                    pause_touch := TouchArea {
-                        enabled: !ExportModel.is_exporting;
-                        clicked => {
-                            ViewportModel.render_paused = !ViewportModel.render_paused;
-                            ViewportModel.pause_toggled(ViewportModel.render_paused);
-                        }
-                    }
-
-                    HorizontalLayout {
-                        padding-left: 8px;
-                        padding-right: 8px;
-                        spacing: 5px;
-                        alignment: center;
-                        Image {
-                            source: ViewportModel.render_paused ? @image-url("../icons/play.svg") : @image-url("../icons/pause.svg");
-                            colorize: (ViewportModel.render_paused || ExportModel.is_exporting) ? #0f172a : Theme.text-primary;
-                            width: 13px;
-                            height: 13px;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: ViewportModel.render_paused ? "Paused" : (ExportModel.is_exporting ? "Exporting" : "Live");
-                            font-size: 11px;
-                            font-weight: 600;
-                            color: (ViewportModel.render_paused || ExportModel.is_exporting) ? #0f172a : Theme.text-primary;
-                            vertical-alignment: center;
-                        }
-                    }
-                }
-
-                // Settings Dialog Trigger Button (⚙)
-                Rectangle {
-                    width: 32px;
-                    height: 32px;
-                    background: SettingsModel.is_open ? Theme.accent-cyan : (settings_touch.has-hover ? Theme.bg-elevated : #1e293bee);
-                    border-radius: Theme.radius-sm;
-                    border-width: 1px;
-                    border-color: SettingsModel.is_open ? Theme.accent-cyan : Theme.border-medium;
-
-                    settings_touch := TouchArea {
-                        clicked => { SettingsModel.is_open = !SettingsModel.is_open; }
-                    }
-                    Tooltip { text: @markdown("Rendering quality, resolution, compute target and scene settings."); }
-
-                    Image {
-                        source: @image-url("../icons/gear.svg");
-                        colorize: SettingsModel.is_open ? #0f172a : Theme.text-secondary;
-                        width: 15px;
-                        height: 15px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-
-                // High-Resolution Export Trigger Button
-                Rectangle {
-                    height: 32px;
-                    background: (ExportModel.is_open || ExportModel.is_exporting) ? Theme.accent-emerald : (export_touch.has-hover ? Theme.bg-elevated : #1e293bee);
-                    border-radius: Theme.radius-sm;
-                    border-width: 1px;
-                    border-color: (ExportModel.is_open || ExportModel.is_exporting) ? Theme.accent-emerald : Theme.border-medium;
-
-                    export_touch := TouchArea {
-                        clicked => { ExportModel.is_open = !ExportModel.is_open; }
-                    }
-
-                    HorizontalLayout {
-                        padding-left: 8px;
-                        padding-right: 8px;
-                        spacing: 5px;
-                        alignment: center;
-                        Image {
-                            source: @image-url("../icons/save.svg");
-                            colorize: (ExportModel.is_open || ExportModel.is_exporting) ? #0f172a : Theme.text-primary;
-                            width: 13px;
-                            height: 13px;
-                            vertical-alignment: center;
-                        }
-                        Text {
-                            text: ExportModel.is_exporting ? "Exporting..." : "Export";
-                            font-size: 11px;
-                            font-weight: 600;
-                            color: (ExportModel.is_open || ExportModel.is_exporting) ? #0f172a : Theme.text-primary;
-                            vertical-alignment: center;
-                        }
-                    }
+                Text {
+                    text: "Solid";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: ViewportModel.live_view_mode == 0 ? Theme.text-on-primary : Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
                 }
             }
 
-            // Real-Time 5-Point Gemological Metrics HUD
             Rectangle {
-                background: #0f172aee;
+                height: 28px;
+                width: 110px;
+                background: ViewportModel.live_view_mode == 1 ? Theme.primary : (live_traced_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
-                border-color: Theme.border-medium;
+                border-color: ViewportModel.live_view_mode == 1 ? Theme.accent-cyan : Theme.border-subtle;
 
-                hud_touch := TouchArea {
-                    clicked => { ViewportModel.copy_metrics(); }
+                Tooltip { text: @markdown("Physically based spectral path tracer -- turns the GPU/remote tracer on for this design."); }
+
+                live_traced_pill_touch := TouchArea {
+                    clicked => { ViewportModel.live_view_mode = 1; }
                 }
-                Tooltip { text: @markdown("Click to copy brilliance, fire, scintillation, windowing and extinction."); }
+                Text {
+                    text: "Path-traced";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: ViewportModel.live_view_mode == 1 ? Theme.text-on-primary : Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
 
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        // A layout never shrinks below its children's minimum width; without this
+        // wrapper a toolbar wider than the window inflates the whole render column and
+        // pushes the viewport image off-centre. Overflow is clipped here instead, and
+        // the metrics HUD below is the element that yields space first.
+        Rectangle {
+            min-width: 0px;
+            clip: true;
+            height: toolbar.preferred-height;
+            toolbar := HorizontalLayout {
+                alignment: space-between;
+
+                // Material & Lighting Selectors & Action Buttons
                 HorizontalLayout {
-                    padding-left: 10px;
-                    padding-right: 10px;
-                    padding-top: 6px;
-                    padding-bottom: 6px;
-                    spacing: 12px;
+                    spacing: 8px;
 
-                    HorizontalLayout {
-                        spacing: 4px;
-                        Text { text: "Brilliance:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
-                        Text { text: Math.round(ViewportModel.brilliance_pct) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-emerald; }
+                    // Render Material Dropdown -- UI/UX review finding 3: renamed from the
+                    // bare, unlabelled "Material" this control used to be (a `ComboBox`
+                    // with no caption at all), which collided in name with
+                    // `editor_view.slint`'s unrelated Yield Material/SG-override control.
+                    // This one picks what's simulated for colour/dispersion/birefringence
+                    // in the render; it never touches the cut itself.
+                    Rectangle {
+                        width: 140px;
+                        height: 32px;
+                        background: #1e293bee;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Theme.border-medium;
+
+                        Tooltip { text: @markdown("Render Material -- material simulated for colour, dispersion and birefringence. Does not change the cut."); }
+
+                        ComboBox {
+                            model: ViewportModel.material_options;
+                            current-index <=> ViewportModel.selected_material_index;
+                            selected(val) => { ViewportModel.material_changed(val); }
+                        }
                     }
 
-                    HorizontalLayout {
-                        spacing: 4px;
-                        Text { text: "Fire:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
-                        Text { text: Math.round(ViewportModel.fire_index * 100.0) / 100.0; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+                    // A3: "Linked to design" -- see `viewport_material_linked`'s own doc
+                    // comment above. Only shown on an `editor` build; a build with no
+                    // Edit tab has nothing for this dropdown to link to.
+                    if EditorModel.enabled: Rectangle {
+                        width: link_txt.preferred-width + 44px;
+                        height: 32px;
+                        background: #1e293bee;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Theme.border-medium;
+                        Tooltip { text: @markdown("Linked to design -- while on, this dropdown follows the Edit tab's own material instead of an independent choice."); }
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 6px;
+                            Rectangle {
+                                width: 28px;
+                                height: 16px;
+                                border-radius: 8px;
+                                background: ViewportModel.viewport_material_linked ? Theme.accent-cyan : #334155;
+                                TouchArea {
+                                    clicked => {
+                                        ViewportModel.viewport_material_linked = !ViewportModel.viewport_material_linked;
+                                        ViewportModel.viewport_material_linked_changed(ViewportModel.viewport_material_linked);
+                                    }
+                                }
+                                Rectangle {
+                                    width: 12px;
+                                    height: 12px;
+                                    border-radius: 6px;
+                                    background: white;
+                                    x: ViewportModel.viewport_material_linked ? parent.width - self.width - 2px : 2px;
+                                    y: 2px;
+                                    animate x { duration: 120ms; }
+                                }
+                            }
+                            link_txt := Text {
+                                text: "Linked to design";
+                                font-size: 10px;
+                                color: Theme.text-secondary;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
 
-                    HorizontalLayout {
-                        spacing: 4px;
-                        Text { text: "Scintillation:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
-                        Text { text: Math.round(ViewportModel.scintillation_pct) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-purple; }
+                    // Edit / Custom Material Button (✎)
+                    Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        background: ViewportModel.material_editor_open ? Theme.accent-purple : (edit_mat_touch.has-hover ? Theme.bg-elevated : #1e293bee);
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: ViewportModel.material_editor_open ? Theme.accent-purple : Theme.border-medium;
+
+                        edit_mat_touch := TouchArea {
+                            clicked => { ViewportModel.material_editor_open = !ViewportModel.material_editor_open; }
+                        }
+                        Tooltip { text: @markdown("Define a custom material: R.I., dispersion, birefringence, colour."); }
+
+                        Image {
+                            source: @image-url("../icons/pencil.svg");
+                            colorize: ViewportModel.material_editor_open ? #ffffff : Theme.accent-purple;
+                            width: 15px;
+                            height: 15px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
                     }
 
-                    HorizontalLayout {
-                        spacing: 4px;
-                        Text { text: "Windowing:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
-                        Text { text: Math.round(ViewportModel.windowing_pct) + "%"; font-size: 11px; font-weight: 700; color: ViewportModel.windowing_pct > 10.0 ? Theme.accent-ruby : Theme.text-secondary; }
+                    // Lighting Dropdown
+                    Rectangle {
+                        width: 190px;
+                        height: 32px;
+                        background: #1e293bee;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Theme.border-medium;
+
+                        Tooltip { text: @markdown("Studio rig: D65 daylight, incandescent, ring lights or spotlight."); }
+
+                        ComboBox {
+                            model: ViewportModel.lighting_options;
+                            current-index <=> ViewportModel.selected_lighting_index;
+                            // Emits the INDEX (already synced into
+                            // `selected_lighting_index` via the two-way binding above by
+                            // the time `selected` fires), not the display string `val`.
+                            selected(val) => { ViewportModel.lighting_changed(ViewportModel.selected_lighting_index); }
+                        }
                     }
 
+                    // Performance Curve Graph Trigger Button (📊 Tilt Curve)
+                    Rectangle {
+                        height: 32px;
+                        background: TiltModel.dialog_open ? Theme.accent-cyan : (perf_touch.has-hover ? Theme.bg-elevated : #1e293bee);
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: TiltModel.dialog_open ? Theme.accent-cyan : Theme.border-medium;
+
+                        perf_touch := TouchArea {
+                            clicked => { root.toggle_performance_dialog(); }
+                        }
+                        Tooltip { text: @markdown("Open the tilt-performance chart: brilliance, windowing and extinction versus tilt."); }
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 5px;
+                            alignment: center;
+                            Image {
+                                source: @image-url("../icons/bar-chart.svg");
+                                colorize: TiltModel.dialog_open ? #0f172a : Theme.text-primary;
+                                width: 13px;
+                                height: 13px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Tilt Curve";
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: TiltModel.dialog_open ? #0f172a : Theme.text-primary;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Reset Camera Button
+                    Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        background: reset_touch.has-hover ? Theme.bg-elevated : #1e293bee;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Theme.border-medium;
+
+                        reset_touch := TouchArea {
+                            clicked => { ViewportModel.reset_camera(); }
+                        }
+                        Tooltip { text: @markdown("Return the camera to its default orbit and distance."); }
+
+                        Image {
+                            source: @image-url("../icons/reset.svg");
+                            colorize: Theme.text-secondary;
+                            width: 16px;
+                            height: 16px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // "Save as preset" button -- captures the FULL current view (lighting
+                    // AND camera pose) as a new named preset, unlike the settings dialog's
+                    // own lighting-only save button. See `app.slint`'s `save_view_preset`
+                    // doc comment, and `settings::model::LightingPreset`'s for why the
+                    // camera is captured here specifically.
+                    Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        background: root.saving_view_preset ? Theme.accent-cyan : (save_view_touch.has-hover ? Theme.bg-elevated : #1e293bee);
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: root.saving_view_preset ? Theme.accent-cyan : Theme.border-medium;
+
+                        save_view_touch := TouchArea {
+                            clicked => {
+                                root.saving_view_preset = !root.saving_view_preset;
+                                root.new_view_preset_name = "";
+                            }
+                        }
+                        Tooltip { text: @markdown("Save the current lighting and camera pose as a named preset."); }
+
+                        Image {
+                            source: @image-url("../icons/save.svg");
+                            colorize: root.saving_view_preset ? #0f172a : Theme.text-secondary;
+                            width: 14px;
+                            height: 14px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // Inline "name this view" popup for the button above -- same
+                    // click-to-open, type-and-confirm idiom `SettingsDialog`'s own
+                    // "add lighting preset" row uses, just living in the viewport toolbar
+                    // instead of the settings dialog.
+                    if root.saving_view_preset: Rectangle {
+                        width: 160px;
+                        height: 32px;
+                        background: #1e293bee;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Theme.accent-cyan;
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 4px;
+                            spacing: 4px;
+
+                            LineEdit {
+                                text <=> root.new_view_preset_name;
+                                placeholder-text: "Name this view...";
+                            }
+
+                            Rectangle {
+                                width: 24px;
+                                height: 24px;
+                                border-radius: Theme.radius-sm;
+                                background: confirm_view_preset_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
+
+                                confirm_view_preset_touch := TouchArea {
+                                    clicked => {
+                                        if (root.new_view_preset_name != "") {
+                                            ViewportModel.save_view_preset(root.new_view_preset_name);
+                                            root.saving_view_preset = false;
+                                            root.new_view_preset_name = "";
+                                        }
+                                    }
+                                }
+
+                                Image { source: @image-url("../icons/check.svg"); colorize: #0f172a; width: 11px; height: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                        }
+                    }
+
+                    // Pause / Resume Render Button -- explicit user pause control (Task: render pause/stop).
+                    // Also reflects `is_exporting` for DISPLAY purposes only, the same amber
+                    // "suspended" treatment `render_paused` already gets -- see
+                    // `RenderContext::export_active`'s own doc comment for why an export
+                    // suspends local tracing without touching `render_paused` itself. The
+                    // touch area is disabled while exporting so a click can't flip the
+                    // user's real pause state out from under them while its displayed state
+                    // is showing something else (it would otherwise toggle `render_paused`
+                    // from whatever the user actually left it at, not from what's on screen).
+                    //
+                    // Belongs to the tracer -- only shown in Path-traced mode
+                    // (`live_view_mode == 1`); Solid mode has nothing of the tracer's to
+                    // pause.
+                    if ViewportModel.live_view_mode == 1: Rectangle {
+                        height: 32px;
+                        background: (ViewportModel.render_paused || ExportModel.is_exporting) ? Theme.accent-amber : (pause_touch.has-hover ? Theme.bg-elevated : #1e293bee);
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: (ViewportModel.render_paused || ExportModel.is_exporting) ? Theme.accent-amber : Theme.border-medium;
+
+                        pause_touch := TouchArea {
+                            enabled: !ExportModel.is_exporting;
+                            clicked => {
+                                ViewportModel.render_paused = !ViewportModel.render_paused;
+                                ViewportModel.pause_toggled(ViewportModel.render_paused);
+                            }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 5px;
+                            alignment: center;
+                            Image {
+                                source: ViewportModel.render_paused ? @image-url("../icons/play.svg") : @image-url("../icons/pause.svg");
+                                colorize: (ViewportModel.render_paused || ExportModel.is_exporting) ? #0f172a : Theme.text-primary;
+                                width: 13px;
+                                height: 13px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: ViewportModel.render_paused ? "Paused" : (ExportModel.is_exporting ? "Exporting" : "Live");
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: (ViewportModel.render_paused || ExportModel.is_exporting) ? #0f172a : Theme.text-primary;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    // Settings Dialog Trigger Button (⚙)
+                    Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        background: SettingsModel.is_open ? Theme.accent-cyan : (settings_touch.has-hover ? Theme.bg-elevated : #1e293bee);
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: SettingsModel.is_open ? Theme.accent-cyan : Theme.border-medium;
+
+                        settings_touch := TouchArea {
+                            clicked => { SettingsModel.is_open = !SettingsModel.is_open; }
+                        }
+                        Tooltip { text: @markdown("Rendering quality, resolution, compute target and scene settings."); }
+
+                        Image {
+                            source: @image-url("../icons/gear.svg");
+                            colorize: SettingsModel.is_open ? #0f172a : Theme.text-secondary;
+                            width: 15px;
+                            height: 15px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    // High-Resolution Export Trigger Button
+                    Rectangle {
+                        height: 32px;
+                        background: (ExportModel.is_open || ExportModel.is_exporting) ? Theme.accent-emerald : (export_touch.has-hover ? Theme.bg-elevated : #1e293bee);
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: (ExportModel.is_open || ExportModel.is_exporting) ? Theme.accent-emerald : Theme.border-medium;
+
+                        export_touch := TouchArea {
+                            clicked => { ExportModel.is_open = !ExportModel.is_open; }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-right: 8px;
+                            spacing: 5px;
+                            alignment: center;
+                            Image {
+                                source: @image-url("../icons/save.svg");
+                                colorize: (ExportModel.is_open || ExportModel.is_exporting) ? #0f172a : Theme.text-primary;
+                                width: 13px;
+                                height: 13px;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: ExportModel.is_exporting ? "Exporting..." : "Export";
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: (ExportModel.is_open || ExportModel.is_exporting) ? #0f172a : Theme.text-primary;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                // Real-Time 5-Point Gemological Metrics HUD -- belongs to the tracer:
+                // only shown in Path-traced mode (`live_view_mode == 1`). Solid mode's
+                // flat-shaded raster has no brilliance/fire/scintillation/windowing/
+                // extinction samples to report.
+                if ViewportModel.live_view_mode == 1: Rectangle {
+                    min-width: 0px;
+                    horizontal-stretch: 1;
+                    clip: true;
+                    background: #0f172aee;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-medium;
+
+                    hud_touch := TouchArea {
+                        clicked => { ViewportModel.copy_metrics(); }
+                    }
+                    Tooltip { text: @markdown("Click to copy brilliance, fire, scintillation, windowing and extinction."); }
+
                     HorizontalLayout {
-                        spacing: 4px;
-                        Text { text: "Extinction:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
-                        Text { text: Math.round(ViewportModel.extinction_pct) + "%"; font-size: 11px; font-weight: 700; color: ViewportModel.extinction_pct > 12.0 ? Theme.accent-amber : Theme.text-secondary; }
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        padding-top: 6px;
+                        padding-bottom: 6px;
+                        spacing: 12px;
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text { text: "Brilliance:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                            Text { text: Math.round(ViewportModel.brilliance_pct) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-emerald; }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text { text: "Fire:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                            Text { text: Math.round(ViewportModel.fire_index * 100.0) / 100.0; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text { text: "Scintillation:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                            Text { text: Math.round(ViewportModel.scintillation_pct) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-purple; }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text { text: "Windowing:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                            Text { text: Math.round(ViewportModel.windowing_pct) + "%"; font-size: 11px; font-weight: 700; color: ViewportModel.windowing_pct > 10.0 ? Theme.accent-ruby : Theme.text-secondary; }
+                        }
+
+                        HorizontalLayout {
+                            spacing: 4px;
+                            Text { text: "Extinction:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                            Text { text: Math.round(ViewportModel.extinction_pct) + "%"; font-size: 11px; font-weight: 700; color: ViewportModel.extinction_pct > 12.0 ? Theme.accent-amber : Theme.text-secondary; }
+                        }
                     }
                 }
             }
         }
+
+        // Pushes the hint badges below to the bottom edge -- replaces the outer
+        // VerticalLayout's old `alignment: space-between` (now `spacing: 8px`, to make
+        // room for the mode-toggle row above without shoving it away from the top).
+        Rectangle { vertical-stretch: 1; }
 
         // --- BOTTOM INTERACTION HINT BADGES ---
         HorizontalLayout {
@@ -606,9 +747,12 @@ export component GemViewportView inherits Rectangle {
     }
 
     // --- FLOATING SETTINGS DIALOG CARD ---
+    // `y` pushed down from its old `48px` by the new mode-toggle pill row above the
+    // toolbar (28px tall, plus the 8px `VerticalLayout` spacing now separating it from
+    // the toolbar) -- otherwise this card would open underneath/overlapping that row.
     if SettingsModel.is_open: SettingsDialog {
         x: 12px;
-        y: 48px;
+        y: 84px;
         z: 200;
         available_height: root.height;
     }

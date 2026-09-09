@@ -23,6 +23,19 @@ use std::sync::{Arc, Mutex};
 /// into the shared viewport yet (`active_planes` empty), matching
 /// `gui::editor::view::refresh_viewport`'s own "no design, no planes" contract.
 ///
+/// Picks which viewport's own view-mode to redraw at, and whether to bother at all:
+/// - Live Render tab (`ui.get_render_view_tab() == 0`): always Solid (`view_mode` 0,
+///   forced -- see [`resubmit_live_solid`]'s own doc comment for why this must never
+///   leak the Edit tab's `SolidPreviewModel.view_mode`), and ONLY when that tab's own
+///   `ViewportModel.live_view_mode` is actually `0` (Solid) -- a camera drag while the
+///   Live tab is showing the path-traced image has no solid on screen to redraw, so
+///   this is a no-op rather than wasted background work.
+/// - Edit tab (`render_view_tab != 0`): the Edit tab's own `SolidPreviewModel.
+///   view_mode`, unconditionally -- unchanged from before `live_view_mode` existed
+///   (the Solid viewport's camera-follow always ran regardless of which of its four
+///   modes was showing, so it was already up to date the moment the user switched to
+///   it).
+///
 /// Also forwards `ctx.design_gear` (the currently loaded design's gear tooth
 /// count/reference angle) so a Diagram-mode (`view_mode` 3) camera drag shows THIS
 /// design's gear wheel -- via [`SolidPreviewState::request_redraw_with_gear`],
@@ -32,7 +45,63 @@ use std::sync::{Arc, Mutex};
 /// the library, never replanned through the editor). See
 /// `bridge::render_thread::RenderContext::design_gear`'s doc comment for the full
 /// list of writers that keep it in sync with `active_planes`.
-fn resubmit_at_current_pose(
+pub(in crate::gui) fn resubmit_at_current_pose(
+    ui: &MainWindow,
+    ctx: &RenderContext,
+    preview_state: &SolidPreviewState,
+) {
+    if ctx.active_planes.is_empty() {
+        return;
+    }
+    let on_live_tab = ui.get_render_view_tab() == 0;
+    if on_live_tab && ui.global::<ViewportModel>().get_live_view_mode() != 0 {
+        return;
+    }
+    let view_mode = if on_live_tab {
+        0
+    } else {
+        ui.global::<SolidPreviewModel>().get_view_mode() as u8
+    };
+    let planes = ctx
+        .active_planes
+        .iter()
+        .map(|p| (glam::Vec3::from(p.normal), -p.d))
+        .collect();
+    let size = (
+        ui.global::<SolidPreviewModel>().get_viewport_width() as u32,
+        ui.global::<SolidPreviewModel>().get_viewport_height() as u32,
+    );
+    preview_state.request_redraw_with_gear(
+        planes,
+        CameraPose {
+            yaw: ctx.yaw,
+            pitch: ctx.pitch,
+            distance: ctx.distance,
+        },
+        size,
+        view_mode,
+        ctx.design_gear,
+    );
+}
+
+/// The Live Render tab's own solid-raster redraw: identical to
+/// [`resubmit_at_current_pose`]'s Live-tab branch, except it never checks
+/// `ViewportModel.live_view_mode` first -- every call site here already knows the
+/// solid image is (about to become) visible before calling this (a library
+/// selection while already in Solid mode, or `live_view_mode` itself just flipping to
+/// `0`), so re-checking would be redundant. ALWAYS forces `view_mode` `0` (Solid
+/// raster): the Live Render tab shows only the flat-shaded raster, never the Edit
+/// tab's own Path-traced/Both/Diagram choice (`SolidPreviewModel.view_mode`), which
+/// must not leak across tabs -- two independent viewports sharing one worker/one
+/// `SolidPreviewState`, each entitled to its own mode.
+///
+/// Called from: `gui::library::diagram_list::setup_diagram_selection_and_export_callbacks`/
+/// `gui::library::detail::apply_design_record_to_ui` (a library selection lands while
+/// the Live tab is already in Solid mode -- the planes `apply_reconstructed_planes`
+/// just wrote need an immediate redraw, not a wait for the next camera drag), and
+/// `gui::mod`'s `on_live_view_mode_changed` handler (switching INTO Solid mode itself
+/// must show something immediately, not wait for a drag).
+pub(in crate::gui) fn resubmit_live_solid(
     ui: &MainWindow,
     ctx: &RenderContext,
     preview_state: &SolidPreviewState,
@@ -49,7 +118,6 @@ fn resubmit_at_current_pose(
         ui.global::<SolidPreviewModel>().get_viewport_width() as u32,
         ui.global::<SolidPreviewModel>().get_viewport_height() as u32,
     );
-    let view_mode = ui.global::<SolidPreviewModel>().get_view_mode() as u8;
     preview_state.request_redraw_with_gear(
         planes,
         CameraPose {
@@ -58,7 +126,7 @@ fn resubmit_at_current_pose(
             distance: ctx.distance,
         },
         size,
-        view_mode,
+        0,
         ctx.design_gear,
     );
 }

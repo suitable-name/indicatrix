@@ -13,8 +13,10 @@ import { PreviewBatchDialog } from "components/preview_batch_dialog.slint";
 import { TiltBatchDialog } from "components/tilt_batch_dialog.slint";
 import { DetachedRenderWindow } from "detached_render_window.slint";
 import { EditorView } from "components/editor_view.slint";
+import { EditorStatusStrip } from "components/editor_status_strip.slint";
 import { RetargetDialog, RetargetRowItem } from "components/retarget_dialog.slint";
 import { SolidViewportView } from "components/solid_viewport.slint";
+import { SplitHandle } from "components/split_handle.slint";
 
 import { SolidPreviewModel } from "models/solid_preview.slint";
 import { ViewportModel } from "models/viewport.slint";
@@ -35,12 +37,41 @@ export {
     RemoteWorkerModel, BatchModel, TiltModel, LibraryModel, EditorModel
 }
 
+// --- Sizing notes -----------------------------------------------------------
+// 1. No layout constraint computed anywhere in this file (or anything it
+//    pulls in) may reach `MainWindow` itself. The OS window's minimum AND
+//    maximum size are derived from its content tree's computed layout
+//    constraints: a stray `min-height` deep in a child component used to
+//    force the window bigger than `MainWindow.min-height`, and -- the
+//    subtler failure -- a component whose root is a plain `Rectangle` over a
+//    layout of fixed-size children inherits that layout's small MAXIMUM, a
+//    `HorizontalLayout` takes the smallest maximum of its children as its
+//    own, and the window ends up with max-height == min-height, i.e. not
+//    resizable in height (that was `CollapsedLibraryRail`, 38px). The fix:
+//    the window's whole content is wrapped in a `Rectangle` positioned with
+//    explicit `x`/`y` (see `global_shortcuts` below) -- an explicitly
+//    positioned child is excluded from its parent's constraint computation
+//    entirely -- and content that would have overflowed clips instead of
+//    pushing the window around. Inside that wrapper the same rule still
+//    applies to rows and columns: an overlay layout with only fixed-size
+//    rows must not be a plain constraint-propagating child of a viewport
+//    (`gem_viewport.slint`/`solid_viewport.slint` position theirs with
+//    `x`/`y` for exactly this reason), and a component that is only a
+//    stack of fixed-size children should use `alignment: start` so its
+//    maximum stays unbounded (`CollapsedLibraryRail`).
+// 2. Resizable sections (the Edit sub-tab's viewport|dock split, and its
+//    tier-table|inspector split) are sized by drag handles
+//    (`ui/components/split_handle.slint`) whose clamping lives in plain
+//    Slint expressions, not Rust -- see the `SplitHandle` instances below and
+//    in `editor_view.slint` for the clamp formulas, and `EditorModel.
+//    dock_width`/`inspector_height` for where the clamped result lands.
+// -----------------------------------------------------------------------------
 export component MainWindow inherits Window {
     title: "Facet Diagrams Studio — Physically Based Gem Explorer";
-    preferred-width: 1280px;
-    preferred-height: 800px;
-    min-width: 960px;
-    min-height: 600px;
+    preferred-width: 1600px;
+    preferred-height: 900px;
+    min-width: 640px;
+    min-height: 480px;
     background: Theme.bg-darkest;
     default-font-family: "Segoe UI";
 
@@ -145,6 +176,24 @@ export component MainWindow inherits Window {
             return reject;
         }
 
+        // Wraps the whole window body -- see this file's "Sizing notes"
+        // comment above (rule 1). The explicit `x`/`y` are load-bearing: the
+        // Slint compiler only folds a child's layout constraints (minimum AND
+        // maximum) into its parent when the child has no `x`/`y` binding
+        // (`passes/default_geometry.rs`, `gen_layout_info_prop`). A child
+        // that is positioned explicitly contributes nothing, so no minimum
+        // or maximum computed anywhere below can reach `MainWindow`; the
+        // window is left with only its own `min-*`/`preferred-*` above.
+        // `clip: true` is what makes that safe: content that would have
+        // overflowed at a size below its natural minimum clips instead of
+        // spilling out or forcing the window bigger.
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: 100%;
+            height: 100%;
+            clip: true;
+
         VerticalLayout {
             padding: 12px;
             spacing: 12px;
@@ -166,6 +215,7 @@ export component MainWindow inherits Window {
 
                     DetailHeaderView {
                         active_tab <=> root.active_tab;
+                        compact: root.render_view_tab == 1 && EditorModel.enabled;
                     }
 
                     // Tab 0: 3D Preview
@@ -276,7 +326,7 @@ export component MainWindow inherits Window {
 
                         if root.render_view_tab == 0 && root.live_render_detached: Rectangle {
                             vertical-stretch: 1;
-                            min-height: 380px;
+                            preferred-height: 480px;
                             background: Theme.bg-card;
                             border-radius: Theme.radius-md;
                             border-width: 1px;
@@ -325,14 +375,56 @@ export component MainWindow inherits Window {
                             }
                         }
 
-                        if root.render_view_tab == 1 && EditorModel.enabled: SolidViewportView {
+                        // Edit mode: the solid viewport and the resizable edit
+                        // dock side by side (full column height), with a single
+                        // status strip below spanning both -- see this file's own
+                        // doc comment on the Edit-mode layout split
+                        // (`editor_view.slint`/`editor_command_bar.slint`/
+                        // `editor_design_settings.slint`/`editor_tier_table.slint`/
+                        // `editor_inspector.slint`/`editor_status_strip.slint`).
+                        // The viewport|dock split is dragged via `SplitHandle`
+                        // (`ui/components/split_handle.slint`), bound to
+                        // `EditorModel.dock_width` -- neither side carries a
+                        // `min-width` (see this file's "Sizing notes" above): the
+                        // viewport's own is already 0 (`solid_viewport.slint`),
+                        // and the dock's minimum comes from this clamp instead,
+                        // not from a layout minimum that could reach the window.
+                        if root.render_view_tab == 1 && EditorModel.enabled: VerticalLayout {
+                            spacing: 8px;
                             vertical-stretch: 1;
-                            min-height: 380px;
-                        }
 
-                        if root.render_view_tab == 1 && EditorModel.enabled: EditorView {
-                            vertical-stretch: 1;
-                            min-height: 380px;
+                            HorizontalLayout {
+                                spacing: 12px;
+                                vertical-stretch: 1;
+
+                                SolidViewportView {
+                                    horizontal-stretch: 1;
+                                }
+
+                                editor_split_handle := SplitHandle {
+                                    dragged(d) => {
+                                        // Keeps the viewport itself at least
+                                        // 380px: `max_dock` is the widest the
+                                        // dock may get without pushing the
+                                        // viewport narrower than that, given
+                                        // this row's own current width, the
+                                        // handle's own width, and the two
+                                        // 12px gaps either side of it.
+                                        EditorModel.dock_width = clamp(
+                                            EditorModel.dock_width - d,
+                                            600px,
+                                            min(1000px, max(600px, parent.width - 380px - self.width - 24px))
+                                        );
+                                        EditorModel.layout_changed();
+                                    }
+                                }
+
+                                EditorView {
+                                    width: EditorModel.dock_width;
+                                }
+                            }
+
+                            EditorStatusStrip {}
                         }
                     }
 
@@ -387,5 +479,6 @@ export component MainWindow inherits Window {
                 root.toast_visible = false;
             }
         }
+        } // Rectangle (min-width/min-height: 0px, clip -- see "Sizing notes")
     } // global_shortcuts
 }

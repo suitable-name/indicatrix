@@ -340,12 +340,7 @@ pub(super) fn start_next_export_job(
 /// Resets the export panel's progress/preview UI for the job about to start. Split out
 /// of `start_next_export_job` purely to keep that function under clippy's
 /// function-length lint.
-fn set_starting_job_ui_state(
-    ui: &MainWindow,
-    current_index: usize,
-    total: usize,
-    job: &ExportJob,
-) {
+fn set_starting_job_ui_state(ui: &MainWindow, current_index: usize, total: usize, job: &ExportJob) {
     ui.global::<ExportModel>()
         .set_preset_index(current_index as i32);
     ui.global::<ExportModel>().set_preset_total(total as i32);

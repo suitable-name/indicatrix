@@ -236,6 +236,12 @@ fn apply_loaded_ui_mirrors(
     // to persist the exact value it just loaded anyway.
     ui.global::<SolidPreviewModel>()
         .set_view_mode(i32::from(s.solid_view_mode));
+    // Restore the Live Render tab's own remembered view mode (0 Solid / 1
+    // Path-traced) -- see `AppSettings::live_view_mode`'s own doc comment. Same
+    // harmless-early-`changed`-fire caveat as `solid_view_mode` above: nothing is
+    // connected to `live_view_mode_changed` yet at this point in startup.
+    ui.global::<ViewportModel>()
+        .set_live_view_mode(i32::from(s.live_view_mode));
     // The "Edit" sub-tab's auto-solve budget (`gui::editor::auto_solve`) -- same
     // harmless-early-`changed`-fire caveat as `editor_solid_view_mode` above applies
     // here too.

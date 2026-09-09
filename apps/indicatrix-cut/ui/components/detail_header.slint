@@ -6,6 +6,11 @@ import { LibraryModel } from "../models/library.slint";
 export component DetailHeaderView inherits Rectangle {
     in property <DiagramDetailData> detail: LibraryModel.current_detail;
     in-out property <int> active_tab: 0; // 0 = 3D Gem, 1 = Cutting Schedule, 2 = Attachments
+    // Edit mode's title/chips/tabs collapse into one row (see this component's
+    // `if root.compact` branch below) so the tier table gets the vertical room
+    // the full-height header would otherwise take -- see `app.slint`'s Edit-mode
+    // layout doc comment.
+    in property <bool> compact: false;
     // Shape picker's option list and which entry matches `detail.shape` (-1 for
     // unclassified) -- see `library::build_shape_picker_options`'s doc comment.
     // Local designs only: the pencil below is gated on `detail.is_local`.
@@ -57,403 +62,608 @@ export component DetailHeaderView inherits Rectangle {
     border-color: Theme.border-subtle;
     vertical-stretch: 0;
 
+    // A layout parent for the two conditional branches: `if` children of a plain
+    // `Rectangle` contribute nothing to its layout constraints (the compiler
+    // skips repeated/conditional elements there), so without this the header's
+    // preferred height was 0 and, with `vertical-stretch: 0`, it was given no
+    // room at all. A `VerticalLayout` computes its constraints at runtime from
+    // whichever branch is instantiated.
     VerticalLayout {
-        padding: 16px;
-        spacing: 12px;
+        if root.compact: HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            height: 40px;
+            spacing: 10px;
 
-        // Top Row: Title, Designer & Quick Actions
-        HorizontalLayout {
-            alignment: space-between;
-
-            VerticalLayout {
-                spacing: 4px;
-
-                HorizontalLayout {
-                    spacing: 8px;
-                    alignment: start;
-
-                    if !root.renaming: Text {
-                        text: root.detail.title != "" ? root.detail.title : "Select a diagram from catalog";
-                        font-size: 18px;
-                        font-weight: 700;
-                        color: Theme.text-primary;
-                    }
-
-                    if root.renaming: LineEdit {
-                        width: 220px;
-                        text <=> root.rename_draft;
-                        accepted => {
-                            root.rename_diagram(root.rename_draft);
-                            root.renaming = false;
-                        }
-                    }
-
-                    if root.detail.title != "" && !root.renaming: Rectangle {
-                        width: 22px;
-                        height: 22px;
-                        border-radius: 4px;
-                        background: pencil_touch.has-hover ? Theme.bg-elevated : transparent;
-                        pencil_touch := TouchArea {
-                            clicked => {
-                                root.rename_draft = root.detail.title;
-                                root.renaming = true;
-                            }
-                        }
-                        Tooltip { text: @markdown("Rename this design."); }
-                        Image {
-                            source: @image-url("../icons/pencil.svg");
-                            colorize: Theme.text-secondary;
-                            width: 12px;
-                            height: 12px;
-                        }
-                    }
-
-                    if root.renaming: HorizontalLayout {
-                        spacing: 4px;
-                        Rectangle {
-                            width: 22px; height: 22px;
-                            border-radius: 4px;
-                            background: save_touch.has-hover ? Theme.bg-elevated : transparent;
-                            save_touch := TouchArea {
-                                clicked => {
-                                    root.rename_diagram(root.rename_draft);
-                                    root.renaming = false;
-                                }
-                            }
-                            Image { source: @image-url("../icons/check.svg"); colorize: Theme.accent-emerald; width: 12px; height: 12px; }
-                        }
-                        Rectangle {
-                            width: 22px; height: 22px;
-                            border-radius: 4px;
-                            background: cancel_touch.has-hover ? Theme.bg-elevated : transparent;
-                            cancel_touch := TouchArea { clicked => { root.renaming = false; } }
-                            Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
-                        }
-                    }
-
-                    if root.detail.competition != "" && root.detail.competition != "0": Rectangle {
-                        background: #7c2d12;
-                        border-radius: 4px;
-                        height: 20px;
-                        HorizontalLayout {
-                            padding-left: 6px; padding-right: 6px; spacing: 5px;
-                            Image { source: @image-url("../icons/trophy.svg"); colorize: #fed7aa; width: 11px; height: 11px; vertical-alignment: center; }
-                            Text { text: "Competition Design"; font-size: 10px; font-weight: 700; color: #fed7aa; vertical-alignment: center; }
-                        }
-                    }
-                }
-
-                Text {
-                    text: root.detail.designer != "" ? "Designed by " + root.detail.designer : "Designer: Unspecified";
-                    font-size: 12px;
-                    color: Theme.text-muted;
-                }
+            if root.detail.title != "": Text {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                text: root.detail.title;
+                font-size: 14px;
+                font-weight: 700;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            if root.detail.title == "": Text {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                text: "Select a diagram from catalog";
+                font-size: 14px;
+                font-weight: 700;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+                overflow: elide;
             }
 
-            if root.detail.title != "": HorizontalLayout {
-                spacing: 8px;
-                alignment: center;
-
-                if root.detail.url != "" && !root.detail.is_local: Button {
-                    text: "Open on Web";
-                    icon: @image-url("../icons/globe.svg");
-                    colorize-icon: true;
-                    clicked => { root.open_url(root.detail.url); }
-                }
-
-                if root.detail.url != "" && !root.detail.is_local: Button {
-                    text: "Copy Link";
-                    icon: @image-url("../icons/clipboard.svg");
-                    colorize-icon: true;
-                    clicked => { root.copy_url(root.detail.url); }
-                }
-
-                // UI/UX review finding 1: this exports the ORIGINAL file stored in the
-                // catalogue (not the user's in-editor changes) -- `editor_view.slint`'s
-                // "Export Edited .asc" is the other, unrelated ".asc" export; the two
-                // used to share the exact label "Export .asc" with nothing to tell
-                // them apart. The hint below is the disambiguator this button gets
-                // (the editor one is renamed instead, since it's the one a user is
-                // more likely to reach for repeatedly).
-                Rectangle {
-                    width: export_asc_btn.preferred-width;
-                    height: export_asc_btn.preferred-height;
-                    Tooltip { text: @markdown("Save the original file stored in the catalogue, not your edits."); }
-                    export_asc_btn := Button {
-                        text: "Export .asc";
-                        icon: @image-url("../icons/save.svg");
-                        colorize-icon: true;
-                        clicked => { root.export_asc(); }
-                    }
-                }
-
-                // Metadata editor: title, designer, shape, refractive index, index
-                // gear, facet count, symmetry order, mirror symmetry, and the
-                // proportion ratios -- everything the inline title/shape pencils above
-                // don't already cover. Local designs only, same gate as those two and
-                // as Delete below (see `gui::detail::setup_save_metadata_callback`'s
-                // doc comment for why editing is local-only).
-                if root.detail.is_local: Rectangle {
-                    width: edit_metadata_btn.preferred-width;
-                    height: edit_metadata_btn.preferred-height;
-                    Tooltip { text: @markdown("Edit title, designer, shape, R.I., gear, facets and proportions."); }
-                    edit_metadata_btn := Button {
-                        text: "Edit Metadata";
-                        icon: @image-url("../icons/pencil.svg");
-                        colorize-icon: true;
-                        clicked => { root.edit_metadata(); }
-                    }
-                }
-
-                if !root.confirming_delete: Button {
-                    text: "Delete";
-                    icon: @image-url("../icons/trash.svg");
-                    colorize-icon: true;
-                    clicked => { root.confirming_delete = true; }
-                }
-
-                if root.confirming_delete: Text {
-                    text: "Delete permanently?";
-                    font-size: 11px;
-                    color: Theme.accent-amber;
-                    vertical-alignment: center;
-                }
-                if root.confirming_delete: Button {
-                    text: "Confirm";
-                    clicked => {
-                        root.confirming_delete = false;
-                        root.delete_diagram();
-                    }
-                }
-                if root.confirming_delete: Button {
-                    text: "Cancel";
-                    clicked => { root.confirming_delete = false; }
-                }
-            }
-        }
-
-        // Specs Metric Grid
-        if root.detail.title != "": HorizontalLayout {
-            spacing: 8px;
-            alignment: start;
-
-            if (root.detail.shape != "" || root.detail.is_local) && !root.editing_shape: Rectangle {
+            // Condensed metric chips -- same data as the full metric grid below,
+            // smaller padding/font so the whole row fits in 40px. Each value
+            // `Text` gets `overflow: elide;` so a long shape name/gear/facet
+            // count/ratio never widens this row past the title's own stretch --
+            // see this file's own compact-mode overflow handling.
+            if root.detail.shape != "": Rectangle {
                 background: Theme.bg-input;
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
                 border-color: Theme.border-subtle;
                 HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
-                    Text { text: "Shape:"; font-size: 11px; color: Theme.text-muted; }
-                    Text {
-                        text: root.detail.shape != "" ? root.detail.shape : "Unset";
-                        font-size: 11px;
-                        font-weight: 600;
-                        color: root.detail.shape != "" ? Theme.accent-cyan : Theme.text-muted;
-                    }
-                    // Local designs only -- `import_asc` never classifies a shape it
-                    // isn't sure of (see `library::classify_shape`'s doc comment), so
-                    // this is how the user corrects or fills that in. Same idiom as
-                    // the title pencil above: `set_diagram_shape`'s own doc comment
-                    // covers why editing is local-only.
-                    if root.detail.is_local: Rectangle {
-                        width: 14px;
-                        height: 14px;
-                        shape_pencil_touch := TouchArea {
-                            clicked => { root.editing_shape = true; }
-                        }
-                        Tooltip { text: @markdown("Correct the auto-detected shape classification."); }
-                        Image {
-                            source: @image-url("../icons/pencil.svg");
-                            colorize: shape_pencil_touch.has-hover ? Theme.text-primary : Theme.text-secondary;
-                            width: 10px;
-                            height: 10px;
-                        }
-                    }
+                    padding-left: 6px; padding-right: 6px; padding-top: 3px; padding-bottom: 3px; spacing: 3px;
+                    Text { text: "Shape:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+                    Text { text: root.detail.shape; font-size: 10px; font-weight: 600; color: Theme.accent-cyan; vertical-alignment: center; overflow: elide; }
                 }
             }
-
-            if root.editing_shape: Rectangle {
-                background: Theme.bg-input;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: Theme.accent-cyan;
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
-                    Text { text: "Shape:"; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; }
-                    ComboBox {
-                        width: 120px;
-                        model: root.shape_options;
-                        current-index: root.shape_current_index;
-                        selected(val) => {
-                            root.set_shape(val);
-                            root.editing_shape = false;
-                        }
-                    }
-                    Rectangle {
-                        width: 18px; height: 18px;
-                        border-radius: 4px;
-                        background: shape_cancel_touch.has-hover ? Theme.bg-elevated : transparent;
-                        shape_cancel_touch := TouchArea { clicked => { root.editing_shape = false; } }
-                        Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-secondary; width: 10px; height: 10px; }
-                    }
-                }
-            }
-
             if root.detail.gear != "": Rectangle {
                 background: Theme.bg-input;
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
                 border-color: Theme.border-subtle;
                 HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
-                    Text { text: "Gear:"; font-size: 11px; color: Theme.text-muted; }
-                    Text { text: root.detail.gear; font-size: 11px; font-weight: 600; color: Theme.accent-cyan; }
+                    padding-left: 6px; padding-right: 6px; padding-top: 3px; padding-bottom: 3px; spacing: 3px;
+                    Text { text: "Gear:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+                    Text { text: root.detail.gear; font-size: 10px; font-weight: 600; color: Theme.accent-cyan; vertical-alignment: center; overflow: elide; }
                 }
             }
-
             if root.detail.facets != "": Rectangle {
                 background: Theme.bg-input;
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
                 border-color: Theme.border-subtle;
                 HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
-                    Text { text: "Facets:"; font-size: 11px; color: Theme.text-muted; }
-                    Text { text: root.detail.facets; font-size: 11px; font-weight: 600; color: Theme.accent-amber; }
+                    padding-left: 6px; padding-right: 6px; padding-top: 3px; padding-bottom: 3px; spacing: 3px;
+                    Text { text: "Facets:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+                    Text { text: root.detail.facets; font-size: 10px; font-weight: 600; color: Theme.accent-amber; vertical-alignment: center; overflow: elide; }
                 }
             }
-
             if root.detail.lw_ratio != "": Rectangle {
                 background: Theme.bg-input;
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
                 border-color: Theme.border-subtle;
                 HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
-                    Text { text: "L/W:"; font-size: 11px; color: Theme.text-muted; }
-                    Text { text: root.detail.lw_ratio; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
+                    padding-left: 6px; padding-right: 6px; padding-top: 3px; padding-bottom: 3px; spacing: 3px;
+                    Text { text: "L/W:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+                    Text { text: root.detail.lw_ratio; font-size: 10px; font-weight: 600; color: Theme.text-primary; vertical-alignment: center; overflow: elide; }
                 }
             }
-
-            // H/W, C/W, P/W: derived alongside L/W and Volume (see
-            // `gui::library::apply_measured_metadata`) but previously shown nowhere in
-            // the UI at all. Same "hide the chip when unknown" convention as every
-            // other optional field on this row, and same 3-decimal display formatting
-            // as L/W/Volume (`gui::detail::format_proportion`) -- the stored value
-            // itself is never rounded, only what's shown here.
-            if root.detail.hw_ratio != "": Rectangle {
-                background: Theme.bg-input;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: Theme.border-subtle;
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
-                    Text { text: "H/W:"; font-size: 11px; color: Theme.text-muted; }
-                    Text { text: root.detail.hw_ratio; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
-                }
-            }
-
-            if root.detail.cw_ratio != "": Rectangle {
-                background: Theme.bg-input;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: Theme.border-subtle;
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
-                    Text { text: "C/W:"; font-size: 11px; color: Theme.text-muted; }
-                    Text { text: root.detail.cw_ratio; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
-                }
-            }
-
-            if root.detail.pw_ratio != "": Rectangle {
-                background: Theme.bg-input;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: Theme.border-subtle;
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
-                    Text { text: "P/W:"; font-size: 11px; color: Theme.text-muted; }
-                    Text { text: root.detail.pw_ratio; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
-                }
-            }
-
-            if root.detail.volume != "": Rectangle {
-                background: Theme.bg-input;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: Theme.border-subtle;
-                HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
-                    Text { text: "Vol/W³:"; font-size: 11px; color: Theme.text-muted; }
-                    Text { text: root.detail.volume; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
-                }
-            }
-
             if root.detail.ri != "": Rectangle {
                 background: Theme.bg-input;
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
                 border-color: Theme.border-subtle;
                 HorizontalLayout {
-                    padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
-                    Text { text: "R.I.:"; font-size: 11px; color: Theme.text-muted; }
-                    Text { text: root.detail.ri; font-size: 11px; font-weight: 600; color: Theme.accent-emerald; }
+                    padding-left: 6px; padding-right: 6px; padding-top: 3px; padding-bottom: 3px; spacing: 3px;
+                    Text { text: "R.I.:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+                    Text { text: root.detail.ri; font-size: 10px; font-weight: 600; color: Theme.accent-emerald; vertical-alignment: center; overflow: elide; }
+                }
+            }
+
+            Rectangle { horizontal-stretch: 1; }
+
+            // Tabs, condensed labels so the row fits.
+            Rectangle {
+                height: 32px;
+                background: root.active_tab == 0 ? #2563eb : (ctab0_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: root.active_tab == 0 ? Theme.accent-cyan : Theme.border-subtle;
+                ctab0_touch := TouchArea { clicked => { root.active_tab = 0; root.tab_selected(0); } }
+                HorizontalLayout {
+                    padding-left: 10px; padding-right: 10px;
+                    alignment: center;
+                    Text { text: "3D Preview"; font-size: 11px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
+                }
+            }
+            Rectangle {
+                height: 32px;
+                background: root.active_tab == 1 ? #2563eb : (ctab1_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: root.active_tab == 1 ? Theme.accent-cyan : Theme.border-subtle;
+                ctab1_touch := TouchArea { clicked => { root.active_tab = 1; root.tab_selected(1); } }
+                HorizontalLayout {
+                    padding-left: 10px; padding-right: 10px;
+                    alignment: center;
+                    Text { text: "Cutting"; font-size: 11px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
+                }
+            }
+            Rectangle {
+                height: 32px;
+                background: root.active_tab == 2 ? #2563eb : (ctab2_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: root.active_tab == 2 ? Theme.accent-cyan : Theme.border-subtle;
+                ctab2_touch := TouchArea { clicked => { root.active_tab = 2; root.tab_selected(2); } }
+                HorizontalLayout {
+                    padding-left: 10px; padding-right: 10px;
+                    alignment: center;
+                    Text { text: "Files"; font-size: 11px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
+                }
+            }
+
+            // The right-hand action cluster, compacted into the same row instead of
+            // dropped -- see this component's own `compact` doc comment.
+            if root.detail.title != "": HorizontalLayout {
+                spacing: 4px;
+                if root.detail.url != "" && !root.detail.is_local: Rectangle {
+                    width: 28px; height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: web_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    web_touch := TouchArea { clicked => { root.open_url(root.detail.url); } }
+                    Tooltip { text: @markdown("Open on Web"); }
+                    Image { source: @image-url("../icons/globe.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
+                }
+                if root.detail.url != "" && !root.detail.is_local: Rectangle {
+                    width: 28px; height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: copy_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    copy_touch := TouchArea { clicked => { root.copy_url(root.detail.url); } }
+                    Tooltip { text: @markdown("Copy Link"); }
+                    Image { source: @image-url("../icons/clipboard.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
+                }
+                Rectangle {
+                    width: 28px; height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: cexport_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    cexport_touch := TouchArea { clicked => { root.export_asc(); } }
+                    Tooltip { text: @markdown("Save the original file stored in the catalogue, not your edits."); }
+                    Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
+                }
+                if !root.confirming_delete: Rectangle {
+                    width: 28px; height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: cdelete_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    cdelete_touch := TouchArea { clicked => { root.confirming_delete = true; } }
+                    Tooltip { text: @markdown("Delete"); }
+                    Image { source: @image-url("../icons/trash.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
+                }
+                if root.confirming_delete: Text { text: "Delete?"; font-size: 10px; color: Theme.accent-amber; vertical-alignment: center; }
+                if root.confirming_delete: Rectangle {
+                    width: 44px; height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: cconfirm_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                    border-width: 1px;
+                    border-color: Theme.accent-ruby;
+                    cconfirm_touch := TouchArea { clicked => { root.confirming_delete = false; root.delete_diagram(); } }
+                    Text { text: "Yes"; font-size: 10px; font-weight: 600; color: Theme.accent-ruby; horizontal-alignment: center; vertical-alignment: center; }
+                }
+                if root.confirming_delete: Rectangle {
+                    width: 44px; height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: ccancel_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    ccancel_touch := TouchArea { clicked => { root.confirming_delete = false; } }
+                    Text { text: "No"; font-size: 10px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                 }
             }
         }
 
-        // Navigation Tabs Row (Clean, fixed 34px height)
-        HorizontalLayout {
-            spacing: 8px;
-            alignment: start;
-            height: 34px;
+        if !root.compact: VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
 
-            Rectangle {
-                height: 34px;
-                background: root.active_tab == 0 ? #2563eb : (tab0_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: root.active_tab == 0 ? Theme.accent-cyan : Theme.border-subtle;
-                tab0_touch := TouchArea { clicked => { root.active_tab = 0; root.tab_selected(0); } }
-                HorizontalLayout {
-                    padding-left: 14px; padding-right: 14px;
+            // Top Row: Title, Designer & Quick Actions
+            HorizontalLayout {
+                alignment: space-between;
+
+                VerticalLayout {
+                    spacing: 4px;
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        alignment: start;
+
+                        if !root.renaming: Text {
+                            text: root.detail.title != "" ? root.detail.title : "Select a diagram from catalog";
+                            font-size: 18px;
+                            font-weight: 700;
+                            color: Theme.text-primary;
+                        }
+
+                        if root.renaming: LineEdit {
+                            width: 220px;
+                            text <=> root.rename_draft;
+                            accepted => {
+                                root.rename_diagram(root.rename_draft);
+                                root.renaming = false;
+                            }
+                        }
+
+                        if root.detail.title != "" && !root.renaming: Rectangle {
+                            width: 22px;
+                            height: 22px;
+                            border-radius: 4px;
+                            background: pencil_touch.has-hover ? Theme.bg-elevated : transparent;
+                            pencil_touch := TouchArea {
+                                clicked => {
+                                    root.rename_draft = root.detail.title;
+                                    root.renaming = true;
+                                }
+                            }
+                            Tooltip { text: @markdown("Rename this design."); }
+                            Image {
+                                source: @image-url("../icons/pencil.svg");
+                                colorize: Theme.text-secondary;
+                                width: 12px;
+                                height: 12px;
+                            }
+                        }
+
+                        if root.renaming: HorizontalLayout {
+                            spacing: 4px;
+                            Rectangle {
+                                width: 22px; height: 22px;
+                                border-radius: 4px;
+                                background: save_touch.has-hover ? Theme.bg-elevated : transparent;
+                                save_touch := TouchArea {
+                                    clicked => {
+                                        root.rename_diagram(root.rename_draft);
+                                        root.renaming = false;
+                                    }
+                                }
+                                Image { source: @image-url("../icons/check.svg"); colorize: Theme.accent-emerald; width: 12px; height: 12px; }
+                            }
+                            Rectangle {
+                                width: 22px; height: 22px;
+                                border-radius: 4px;
+                                background: cancel_touch.has-hover ? Theme.bg-elevated : transparent;
+                                cancel_touch := TouchArea { clicked => { root.renaming = false; } }
+                                Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
+                            }
+                        }
+
+                        if root.detail.competition != "" && root.detail.competition != "0": Rectangle {
+                            background: #7c2d12;
+                            border-radius: 4px;
+                            height: 20px;
+                            HorizontalLayout {
+                                padding-left: 6px; padding-right: 6px; spacing: 5px;
+                                Image { source: @image-url("../icons/trophy.svg"); colorize: #fed7aa; width: 11px; height: 11px; vertical-alignment: center; }
+                                Text { text: "Competition Design"; font-size: 10px; font-weight: 700; color: #fed7aa; vertical-alignment: center; }
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: root.detail.designer != "" ? "Designed by " + root.detail.designer : "Designer: Unspecified";
+                        font-size: 12px;
+                        color: Theme.text-muted;
+                    }
+                }
+
+                if root.detail.title != "": HorizontalLayout {
+                    spacing: 8px;
                     alignment: center;
-                    spacing: 6px;
-                    Image { source: @image-url("../icons/gem.svg"); colorize: #ffffff; width: 12px; height: 12px; vertical-alignment: center; }
-                    Text { text: "3D Spectral Preview (1)"; font-size: 12px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
+
+                    if root.detail.url != "" && !root.detail.is_local: Button {
+                        text: "Open on Web";
+                        icon: @image-url("../icons/globe.svg");
+                        colorize-icon: true;
+                        clicked => { root.open_url(root.detail.url); }
+                    }
+
+                    if root.detail.url != "" && !root.detail.is_local: Button {
+                        text: "Copy Link";
+                        icon: @image-url("../icons/clipboard.svg");
+                        colorize-icon: true;
+                        clicked => { root.copy_url(root.detail.url); }
+                    }
+
+                    // UI/UX review finding 1: this exports the ORIGINAL file stored in the
+                    // catalogue (not the user's in-editor changes) -- `editor_view.slint`'s
+                    // "Export Edited .asc" is the other, unrelated ".asc" export; the two
+                    // used to share the exact label "Export .asc" with nothing to tell
+                    // them apart. The hint below is the disambiguator this button gets
+                    // (the editor one is renamed instead, since it's the one a user is
+                    // more likely to reach for repeatedly).
+                    Rectangle {
+                        width: export_asc_btn.preferred-width;
+                        height: export_asc_btn.preferred-height;
+                        Tooltip { text: @markdown("Save the original file stored in the catalogue, not your edits."); }
+                        export_asc_btn := Button {
+                            text: "Export .asc";
+                            icon: @image-url("../icons/save.svg");
+                            colorize-icon: true;
+                            clicked => { root.export_asc(); }
+                        }
+                    }
+
+                    // Metadata editor: title, designer, shape, refractive index, index
+                    // gear, facet count, symmetry order, mirror symmetry, and the
+                    // proportion ratios -- everything the inline title/shape pencils above
+                    // don't already cover. Local designs only, same gate as those two and
+                    // as Delete below (see `gui::detail::setup_save_metadata_callback`'s
+                    // doc comment for why editing is local-only).
+                    if root.detail.is_local: Rectangle {
+                        width: edit_metadata_btn.preferred-width;
+                        height: edit_metadata_btn.preferred-height;
+                        Tooltip { text: @markdown("Edit title, designer, shape, R.I., gear, facets and proportions."); }
+                        edit_metadata_btn := Button {
+                            text: "Edit Metadata";
+                            icon: @image-url("../icons/pencil.svg");
+                            colorize-icon: true;
+                            clicked => { root.edit_metadata(); }
+                        }
+                    }
+
+                    if !root.confirming_delete: Button {
+                        text: "Delete";
+                        icon: @image-url("../icons/trash.svg");
+                        colorize-icon: true;
+                        clicked => { root.confirming_delete = true; }
+                    }
+
+                    if root.confirming_delete: Text {
+                        text: "Delete permanently?";
+                        font-size: 11px;
+                        color: Theme.accent-amber;
+                        vertical-alignment: center;
+                    }
+                    if root.confirming_delete: Button {
+                        text: "Confirm";
+                        clicked => {
+                            root.confirming_delete = false;
+                            root.delete_diagram();
+                        }
+                    }
+                    if root.confirming_delete: Button {
+                        text: "Cancel";
+                        clicked => { root.confirming_delete = false; }
+                    }
                 }
             }
 
-            Rectangle {
-                height: 34px;
-                background: root.active_tab == 1 ? #2563eb : (tab1_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: root.active_tab == 1 ? Theme.accent-cyan : Theme.border-subtle;
-                tab1_touch := TouchArea { clicked => { root.active_tab = 1; root.tab_selected(1); } }
-                HorizontalLayout {
-                    padding-left: 14px; padding-right: 14px;
-                    alignment: center;
-                    spacing: 6px;
-                    Image { source: @image-url("../icons/ruler.svg"); colorize: #ffffff; width: 12px; height: 12px; vertical-alignment: center; }
-                    Text { text: "Cutting Schedule (2)"; font-size: 12px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
+            // Specs Metric Grid
+            if root.detail.title != "": HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+
+                if (root.detail.shape != "" || root.detail.is_local) && !root.editing_shape: Rectangle {
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
+                        Text { text: "Shape:"; font-size: 11px; color: Theme.text-muted; }
+                        Text {
+                            text: root.detail.shape != "" ? root.detail.shape : "Unset";
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: root.detail.shape != "" ? Theme.accent-cyan : Theme.text-muted;
+                        }
+                        // Local designs only -- `import_asc` never classifies a shape it
+                        // isn't sure of (see `library::classify_shape`'s doc comment), so
+                        // this is how the user corrects or fills that in. Same idiom as
+                        // the title pencil above: `set_diagram_shape`'s own doc comment
+                        // covers why editing is local-only.
+                        if root.detail.is_local: Rectangle {
+                            width: 14px;
+                            height: 14px;
+                            shape_pencil_touch := TouchArea {
+                                clicked => { root.editing_shape = true; }
+                            }
+                            Tooltip { text: @markdown("Correct the auto-detected shape classification."); }
+                            Image {
+                                source: @image-url("../icons/pencil.svg");
+                                colorize: shape_pencil_touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                                width: 10px;
+                                height: 10px;
+                            }
+                        }
+                    }
+                }
+
+                if root.editing_shape: Rectangle {
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.accent-cyan;
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
+                        Text { text: "Shape:"; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; }
+                        ComboBox {
+                            width: 120px;
+                            model: root.shape_options;
+                            current-index: root.shape_current_index;
+                            selected(val) => {
+                                root.set_shape(val);
+                                root.editing_shape = false;
+                            }
+                        }
+                        Rectangle {
+                            width: 18px; height: 18px;
+                            border-radius: 4px;
+                            background: shape_cancel_touch.has-hover ? Theme.bg-elevated : transparent;
+                            shape_cancel_touch := TouchArea { clicked => { root.editing_shape = false; } }
+                            Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-secondary; width: 10px; height: 10px; }
+                        }
+                    }
+                }
+
+                if root.detail.gear != "": Rectangle {
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
+                        Text { text: "Gear:"; font-size: 11px; color: Theme.text-muted; }
+                        Text { text: root.detail.gear; font-size: 11px; font-weight: 600; color: Theme.accent-cyan; }
+                    }
+                }
+
+                if root.detail.facets != "": Rectangle {
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
+                        Text { text: "Facets:"; font-size: 11px; color: Theme.text-muted; }
+                        Text { text: root.detail.facets; font-size: 11px; font-weight: 600; color: Theme.accent-amber; }
+                    }
+                }
+
+                if root.detail.lw_ratio != "": Rectangle {
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
+                        Text { text: "L/W:"; font-size: 11px; color: Theme.text-muted; }
+                        Text { text: root.detail.lw_ratio; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
+                    }
+                }
+
+                // H/W, C/W, P/W: derived alongside L/W and Volume (see
+                // `gui::library::apply_measured_metadata`) but previously shown nowhere in
+                // the UI at all. Same "hide the chip when unknown" convention as every
+                // other optional field on this row, and same 3-decimal display formatting
+                // as L/W/Volume (`gui::detail::format_proportion`) -- the stored value
+                // itself is never rounded, only what's shown here.
+                if root.detail.hw_ratio != "": Rectangle {
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
+                        Text { text: "H/W:"; font-size: 11px; color: Theme.text-muted; }
+                        Text { text: root.detail.hw_ratio; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
+                    }
+                }
+
+                if root.detail.cw_ratio != "": Rectangle {
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
+                        Text { text: "C/W:"; font-size: 11px; color: Theme.text-muted; }
+                        Text { text: root.detail.cw_ratio; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
+                    }
+                }
+
+                if root.detail.pw_ratio != "": Rectangle {
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
+                        Text { text: "P/W:"; font-size: 11px; color: Theme.text-muted; }
+                        Text { text: root.detail.pw_ratio; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
+                    }
+                }
+
+                if root.detail.volume != "": Rectangle {
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
+                        Text { text: "Vol/W³:"; font-size: 11px; color: Theme.text-muted; }
+                        Text { text: root.detail.volume; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
+                    }
+                }
+
+                if root.detail.ri != "": Rectangle {
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
+                        Text { text: "R.I.:"; font-size: 11px; color: Theme.text-muted; }
+                        Text { text: root.detail.ri; font-size: 11px; font-weight: 600; color: Theme.accent-emerald; }
+                    }
                 }
             }
 
-            Rectangle {
+            // Navigation Tabs Row (Clean, fixed 34px height)
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
                 height: 34px;
-                background: root.active_tab == 2 ? #2563eb : (tab2_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: root.active_tab == 2 ? Theme.accent-cyan : Theme.border-subtle;
-                tab2_touch := TouchArea { clicked => { root.active_tab = 2; root.tab_selected(2); } }
-                HorizontalLayout {
-                    padding-left: 14px; padding-right: 14px;
-                    alignment: center;
-                    spacing: 6px;
-                    Image { source: @image-url("../icons/folder.svg"); colorize: #ffffff; width: 12px; height: 12px; vertical-alignment: center; }
-                    Text { text: "Files & Downloads (3)"; font-size: 12px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
+
+                Rectangle {
+                    height: 34px;
+                    background: root.active_tab == 0 ? #2563eb : (tab0_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: root.active_tab == 0 ? Theme.accent-cyan : Theme.border-subtle;
+                    tab0_touch := TouchArea { clicked => { root.active_tab = 0; root.tab_selected(0); } }
+                    HorizontalLayout {
+                        padding-left: 14px; padding-right: 14px;
+                        alignment: center;
+                        spacing: 6px;
+                        Image { source: @image-url("../icons/gem.svg"); colorize: #ffffff; width: 12px; height: 12px; vertical-alignment: center; }
+                        Text { text: "3D Spectral Preview (1)"; font-size: 12px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
+                    }
+                }
+
+                Rectangle {
+                    height: 34px;
+                    background: root.active_tab == 1 ? #2563eb : (tab1_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: root.active_tab == 1 ? Theme.accent-cyan : Theme.border-subtle;
+                    tab1_touch := TouchArea { clicked => { root.active_tab = 1; root.tab_selected(1); } }
+                    HorizontalLayout {
+                        padding-left: 14px; padding-right: 14px;
+                        alignment: center;
+                        spacing: 6px;
+                        Image { source: @image-url("../icons/ruler.svg"); colorize: #ffffff; width: 12px; height: 12px; vertical-alignment: center; }
+                        Text { text: "Cutting Schedule (2)"; font-size: 12px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
+                    }
+                }
+
+                Rectangle {
+                    height: 34px;
+                    background: root.active_tab == 2 ? #2563eb : (tab2_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: root.active_tab == 2 ? Theme.accent-cyan : Theme.border-subtle;
+                    tab2_touch := TouchArea { clicked => { root.active_tab = 2; root.tab_selected(2); } }
+                    HorizontalLayout {
+                        padding-left: 14px; padding-right: 14px;
+                        alignment: center;
+                        spacing: 6px;
+                        Image { source: @image-url("../icons/folder.svg"); colorize: #ffffff; width: 12px; height: 12px; vertical-alignment: center; }
+                        Text { text: "Files & Downloads (3)"; font-size: 12px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
+                    }
                 }
             }
         }

@@ -6,7 +6,6 @@ rust-version = { workspace = true }
 authors = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
-homepage = { workspace = true }
 documentation = "https://docs.rs/indicatrix-cut-core"
 keywords = ["gemstone", "faceting", "cad", "editor", "undo"]
 categories = ["science", "graphics"]

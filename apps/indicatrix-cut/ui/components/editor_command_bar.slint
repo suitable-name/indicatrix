@@ -1,0 +1,299 @@
+import { Button, ComboBox } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { EditorModel } from "../models/editor.slint";
+import { RetargetModel } from "../models/retarget.slint";
+
+// `Button`/`ComboBox` in this Slint version expose no `has-hover` of their own
+// (unlike `TouchArea`, used everywhere else in this app for a custom hover
+// treatment), so each control below is wrapped in a plain, passive `TouchArea` --
+// sized explicitly from its child's own preferred size, the same idiom the old
+// `editor_view.slint` already used to place a `Tooltip` next to a `Button`. That
+// wrapper never wires `clicked`/`pointer-event`, so it never consumes the press
+// meant for the real control inside it; it only observes `has-hover` for the hint
+// shown below the row(s) (`EditorModel.hover_hint`, cleared on pointer-exit).
+//
+// New/Load Selected/Undo/Redo travel together (`NewLoadUndoRedoGroup`), as do
+// Solve/Auto-solve/Deep Solve/Optimize/Retarget (`SolveGroup`) and Export/Save
+// Native/Open Native (`FileActionsGroup`) -- each a small `HorizontalLayout`
+// bundling controls that always appear together, so `EditorCommandBar` itself can
+// arrange them into either one row (wide) or two (narrow, see its own doc
+// comment below) without duplicating any button's hover/TouchArea/callback
+// wiring.
+component NewLoadUndoRedoGroup inherits HorizontalLayout {
+    height: 34px;
+    spacing: 8px;
+
+    function set_hint(text: string) {
+        EditorModel.hover_hint = text;
+    }
+    function clear_hint(text: string) {
+        if EditorModel.hover_hint == text {
+            EditorModel.hover_hint = "";
+        }
+    }
+
+    TouchArea {
+        width: new_btn.preferred-width;
+        height: new_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Start a new design from a preform."); } else { root.clear_hint("Start a new design from a preform."); } }
+        new_btn := Button {
+            text: "New";
+            clicked => { EditorModel.new_dialog_open = true; }
+        }
+    }
+    TouchArea {
+        width: load_btn.preferred-width;
+        height: load_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Load the selected catalogue design into the editor."); } else { root.clear_hint("Load the selected catalogue design into the editor."); } }
+        load_btn := Button {
+            text: "Load Selected";
+            clicked => { EditorModel.load_selected(); }
+        }
+    }
+    TouchArea {
+        width: undo_btn.preferred-width;
+        height: undo_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Undo the last edit."); } else { root.clear_hint("Undo the last edit."); } }
+        undo_btn := Button {
+            text: "Undo";
+            enabled: EditorModel.can_undo;
+            clicked => { EditorModel.undo(); }
+        }
+    }
+    TouchArea {
+        width: redo_btn.preferred-width;
+        height: redo_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Redo the last undone edit."); } else { root.clear_hint("Redo the last undone edit."); } }
+        redo_btn := Button {
+            text: "Redo";
+            enabled: EditorModel.can_redo;
+            clicked => { EditorModel.redo(); }
+        }
+    }
+}
+
+// Solve/Auto-solve/Deep Solve/Optimize/Retarget -- see `NewLoadUndoRedoGroup`'s
+// own doc comment above for why these travel together as one sub-component.
+component SolveGroup inherits HorizontalLayout {
+    height: 34px;
+    spacing: 8px;
+
+    function set_hint(text: string) {
+        EditorModel.hover_hint = text;
+    }
+    function clear_hint(text: string) {
+        if EditorModel.hover_hint == text {
+            EditorModel.hover_hint = "";
+        }
+    }
+
+    // Styled with the same "problem" ruby accent the old validation banner
+    // used while stale, so the button that clears staleness stays visually
+    // tied to the status strip announcing it (see `EditorStatusStrip`).
+    TouchArea {
+        width: solve_btn.preferred-width;
+        height: solve_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Recompute every tier's depth and validate the design. Runs in the background above 16 tiers."); } else { root.clear_hint("Recompute every tier's depth and validate the design. Runs in the background above 16 tiers."); } }
+        solve_btn := Button {
+            text: EditorModel.solve_running ? "Solving..." : "Solve";
+            enabled: !EditorModel.solve_running;
+            primary: EditorModel.status_is_problem && !EditorModel.solve_running;
+            clicked => { EditorModel.solve(); }
+        }
+    }
+
+    // Auto-solve budget: after an edit, a background re-solve is scheduled
+    // automatically (debounced) whenever this design's last measured solve
+    // took less than the selected budget. Collapsed from five separate
+    // pill buttons into one combo; the exact five `auto_solve_budget_ms`
+    // values (and "Off" == plain stale-marker behaviour) are unchanged.
+    // Explicit width: a `ComboBox`'s preferred width is not derived from its
+    // model, so sizing this wrapper from it collapsed the cell and the combo
+    // drew over the Solve button next to it.
+    TouchArea {
+        width: 150px;
+        height: auto_solve_combo.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("After an edit, automatically re-solve (debounced) once this design's own last solve took less than the selected budget. \"Off\" only marks the panel stale."); } else { root.clear_hint("After an edit, automatically re-solve (debounced) once this design's own last solve took less than the selected budget. \"Off\" only marks the panel stale."); } }
+        auto_solve_combo := ComboBox {
+            // The style's own minimum width is wider than this cell, so the
+            // combo is pinned to the wrapper instead of overflowing it onto
+            // the Solve button.
+            width: 100%;
+            model: ["Off", "150 ms", "300 ms", "1 s", "3 s"];
+            current-index: EditorModel.auto_solve_budget_ms == 0 ? 0
+                : EditorModel.auto_solve_budget_ms == 150 ? 1
+                : EditorModel.auto_solve_budget_ms == 300 ? 2
+                : EditorModel.auto_solve_budget_ms == 1000 ? 3
+                : 4;
+            selected(val) => {
+                EditorModel.auto_solve_budget_ms = val == "Off" ? 0
+                    : val == "150 ms" ? 150
+                    : val == "300 ms" ? 300
+                    : val == "1 s" ? 1000
+                    : 3000;
+            }
+        }
+    }
+
+}
+
+// Deep Solve / Optimize / Retarget -- the slower analyses, on the command bar's
+// second row (see `EditorCommandBar` below).
+component AnalysisGroup inherits HorizontalLayout {
+    height: 34px;
+    spacing: 8px;
+
+    function set_hint(text: string) {
+        EditorModel.hover_hint = text;
+    }
+    function clear_hint(text: string) {
+        if EditorModel.hover_hint == text {
+            EditorModel.hover_hint = "";
+        }
+    }
+
+    // A separate, slower, externally-verified action from "Solve".
+    // Disabled (with the reason surfaced in `EditorStatusStrip`'s log)
+    // rather than hidden, so a design with nothing to verify against reads
+    // as "not applicable right now," not "missing."
+    if !EditorModel.deep_solve_running: TouchArea {
+        width: deep_solve_btn.preferred-width;
+        height: deep_solve_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Slow check against the catalogue's printed proportions. Never changes the design."); } else { root.clear_hint("Slow check against the catalogue's printed proportions. Never changes the design."); } }
+        deep_solve_btn := Button {
+            text: "Deep Solve";
+            enabled: EditorModel.deep_solve_available;
+            clicked => { EditorModel.deep_solve(); }
+        }
+    }
+    if EditorModel.deep_solve_running: Button {
+        text: "Cancel Deep Solve";
+        clicked => { EditorModel.deep_solve_cancel(); }
+    }
+
+    // Same disabled-with-a-hint treatment as Deep Solve, except genuinely
+    // DISABLED when there is nothing free to move.
+    if !EditorModel.optimize_running: TouchArea {
+        width: optimize_btn.preferred-width;
+        height: optimize_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Search free (unpinned) tiers for better optics. Adopt a tier first if disabled."); } else { root.clear_hint("Search free (unpinned) tiers for better optics. Adopt a tier first if disabled."); } }
+        optimize_btn := Button {
+            text: "Optimize";
+            enabled: EditorModel.optimize_available;
+            clicked => {
+                EditorModel.optimize(EditorModel.optimize_weight_windowing, EditorModel.optimize_weight_extinction, EditorModel.optimize_weight_tilt_brilliance);
+            }
+        }
+    }
+    if EditorModel.optimize_running: Button {
+        text: "Cancel Optimize";
+        clicked => { EditorModel.optimize_cancel(); }
+    }
+
+    // Proposes new facet angles for a different material, reviewed in a
+    // modal dialog before anything is applied.
+    TouchArea {
+        width: retarget_btn.preferred-width;
+        height: retarget_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Propose new facet angles for a different material, reviewed before applying."); } else { root.clear_hint("Propose new facet angles for a different material, reviewed before applying."); } }
+        retarget_btn := Button {
+            text: "Retarget...";
+            clicked => { RetargetModel.open(); }
+        }
+    }
+}
+
+// Export Edited .asc / Save Native / Open Native -- see `NewLoadUndoRedoGroup`'s
+// own doc comment above for why these travel together as one sub-component.
+component FileActionsGroup inherits HorizontalLayout {
+    height: 34px;
+    spacing: 8px;
+
+    function set_hint(text: string) {
+        EditorModel.hover_hint = text;
+    }
+    function clear_hint(text: string) {
+        if EditorModel.hover_hint == text {
+            EditorModel.hover_hint = "";
+        }
+    }
+
+    // The native design-file format. "Save Native" always writes a real
+    // `.asc` alongside its `.indicatrix.toml` sidecar, never the sidecar
+    // alone. "Export Edited" exports the design AS EDITED in this tab,
+    // distinct from `detail_header.slint`'s catalogue-original "Export
+    // .asc" -- kept as a distinguishing label since the two buttons used
+    // to share that exact label with nothing to tell them apart; see
+    // `detail_header.slint`'s own "Export .asc" doc comment.
+    TouchArea {
+        width: export_btn.preferred-width;
+        height: export_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Export the design as edited in this tab."); } else { root.clear_hint("Export the design as edited in this tab."); } }
+        export_btn := Button {
+            text: "Export Edited";
+            clicked => { EditorModel.export_asc(); }
+        }
+    }
+    TouchArea {
+        width: save_native_btn.preferred-width;
+        height: save_native_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Write the native .asc plus its .indicatrix.toml sidecar."); } else { root.clear_hint("Write the native .asc plus its .indicatrix.toml sidecar."); } }
+        save_native_btn := Button {
+            text: "Save Native";
+            clicked => { EditorModel.save_native(); }
+        }
+    }
+    TouchArea {
+        width: open_native_btn.preferred-width;
+        height: open_native_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Open a native design file."); } else { root.clear_hint("Open a native design file."); } }
+        open_native_btn := Button {
+            text: "Open Native";
+            clicked => { EditorModel.open_native(); }
+        }
+    }
+}
+
+// The Edit sub-tab's command bar, two fixed rows sized for the dock's 600px
+// minimum width (`app.slint`'s `dock_width` clamp): row 1 is the editing
+// group (New/Load Selected/Undo/Redo) plus Solve and its auto-solve budget,
+// row 2 the slower analyses (Deep Solve/Optimize/Retarget) plus the native
+// file actions. Each row ends in a stretch spacer so a wider dock leaves the
+// buttons left-aligned instead of spreading them. (`FlexboxLayout`, which
+// would wrap automatically, is not enabled in this Slint build.)
+//
+// No 9px caption text lives under any one button any more: hovering any control
+// in any group sets `EditorModel.hover_hint`, shown as a single line below the
+// row(s) instead -- see `hover_hint`'s own doc comment on `EditorModel`.
+export component EditorCommandBar inherits Rectangle {
+    VerticalLayout {
+        spacing: 2px;
+
+        HorizontalLayout {
+            height: 34px;
+            spacing: 8px;
+            NewLoadUndoRedoGroup {}
+            Rectangle { width: 1px; background: Theme.border-subtle; }
+            SolveGroup {}
+            Rectangle { horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            height: 34px;
+            spacing: 8px;
+            AnalysisGroup {}
+            Rectangle { width: 1px; background: Theme.border-subtle; }
+            FileActionsGroup {}
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        // Fixed height so this line never shifts the tier table below it,
+        // whether or not there is currently a hint to show.
+        Text {
+            text: EditorModel.hover_hint;
+            font-size: 11px;
+            color: Theme.text-muted;
+            height: 14px;
+            overflow: elide;
+        }
+    }
+}

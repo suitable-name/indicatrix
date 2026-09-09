@@ -7,7 +7,6 @@ authors = { workspace = true }
 description = "Browser build of indicatrix: upload a GemCAD .asc cutting schedule, get an interactive rendered stone. No design library, no remote worker, no database."
 license = { workspace = true }
 repository = { workspace = true }
-homepage = { workspace = true }
 documentation = { workspace = true }
 keywords = ["gemstone", "faceting", "wasm", "webgpu", "rendering"]
 categories = ["wasm", "graphics", "rendering"]

@@ -7,7 +7,6 @@ authors = { workspace = true }
 description = "Wire protocol for offloading indicatrix spectral ray samples to a remote render worker: scene-state and radiance-buffer codecs, message framing, and a build-compatibility handshake. Types and framing only -- no networking, no sockets."
 license = { workspace = true }
 repository = { workspace = true }
-homepage = { workspace = true }
 documentation = "https://docs.rs/indicatrix-net"
 keywords = ["gemstone", "raytracer", "spectral", "protocol", "rendering"]
 categories = ["encoding", "rendering", "network-programming"]

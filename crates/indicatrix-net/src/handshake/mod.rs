@@ -12,9 +12,11 @@
 //!
 //! # Where the build identity comes from
 //!
-//! [`indicatrix::BUILD_ID`] is a deterministic content hash of `indicatrix`'s own
-//! `src/**/*.rs` tree, computed in `indicatrix`'s `build.rs`. This module only parses
-//! that hex string into the `[u8; 8]` wire representation and compares it.
+//! [`indicatrix::BUILD_ID`] is a hash of `indicatrix`'s crate version, computed in its
+//! `build.rs`, so builds of the same release pair across platforms and checkouts.
+//! `indicatrix::SOURCE_HASH` (a content hash of the source tree) is a diagnostic for
+//! telling two builds of one version apart and is not compared here. This module only
+//! parses the hex string into the `[u8; 8]` wire representation and compares it.
 //!
 //! # Refusal is the only outcome
 //!
@@ -114,7 +116,7 @@ impl std::fmt::Display for Incompatible {
             Self::BuildHashMismatch { local, remote } => {
                 write!(
                     f,
-                    "indicatrix build hash mismatch: local={local:02x?}, remote={remote:02x?}"
+                    "indicatrix version mismatch (build id local={local:02x?}, remote={remote:02x?}):                      viewer and worker must run the same indicatrix release"
                 )
             }
         }

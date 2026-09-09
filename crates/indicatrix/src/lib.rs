@@ -22,13 +22,23 @@ pub mod simd;
 
 pub use geometry::cuts::FacetSpec;
 
-/// Deterministic content hash of this crate's source, computed at build time.
+/// Build identity used by `indicatrix-net`'s handshake: 16 lowercase hex chars, the
+/// 64-bit FNV-1a hash of this crate's version string.
 ///
-/// Covers `src/**/*.rs` plus `Cargo.toml`; see `build.rs` for the hashing
-/// procedure. 16 lowercase hex chars (64-bit FNV-1a), stable across
-/// OS/toolchain/`.git` state for byte-identical source.
-///
-/// Used by `indicatrix-net`'s handshake: a viewer and remote render worker
-/// must refuse to combine samples unless builds match, since differing
-/// physics summed together silently produces a plausible-looking wrong image.
+/// Keyed on the version so a worker and a viewer built from the same release pair
+/// across platforms and checkouts. The physics-parity guarantee this handshake
+/// exists for (two implementations summed together render a plausible wrong image)
+/// therefore depends on the release rule: bump the version whenever anything under
+/// `src/` that affects a traced sample changes. Compare [`SOURCE_HASH`] when in doubt.
 pub const BUILD_ID: &str = env!("INDICATRIX_BUILD_ID");
+
+/// This crate's version, as the handshake identity is derived from it.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Deterministic content hash of this crate's source tree, a diagnostic only.
+///
+/// Covers `src/**/*.rs`, `src/**/*.wgsl` and `Cargo.toml`; 16 lowercase hex chars,
+/// stable across OS, toolchain, line endings and `.git` state for byte-identical
+/// source. Log it to tell two builds of the same version apart; the handshake does
+/// not compare it.
+pub const SOURCE_HASH: &str = env!("INDICATRIX_SOURCE_HASH");

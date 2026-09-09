@@ -1,0 +1,65 @@
+import { Theme } from "../theme.slint";
+
+// A thin drag handle between two resizable regions -- used for both the Edit
+// sub-tab's viewport|dock split (`vertical: false`, the default: a narrow
+// vertical bar dragged left/right) and its table|inspector split
+// (`vertical: true`: a narrow horizontal bar dragged up/down) -- see
+// `app.slint`'s edit-mode row and `editor_view.slint`'s table/inspector split
+// for the two instantiations.
+//
+// Purely a gesture source -- it never resizes anything itself. `dragged`
+// reports the pointer's INCREMENTAL movement (in the axis that resizes)
+// since the last event, not the cumulative distance from the initial press;
+// the caller is the one that clamps and writes the running total into
+// `EditorModel.dock_width`/`inspector_height` (see those call sites for the
+// clamp formulas).
+//
+// Its 6px thickness is a real layout constraint of the enclosing row/column,
+// which is fine: nothing below the window's positioned wrapper reaches the OS
+// window any more -- see `app.slint`'s sizing notes.
+export component SplitHandle inherits Rectangle {
+    // `true` for a horizontal bar that resizes something vertically (dragged
+    // up/down, cursor `row-resize`); `false` (default) for a vertical bar
+    // that resizes something horizontally (dragged left/right, cursor
+    // `col-resize`).
+    in property <bool> vertical: false;
+    callback dragged(length);
+
+    background: (touch.pressed || touch.has-hover) ? Theme.accent-cyan : Theme.border-subtle;
+    animate background { duration: 100ms; }
+
+    // Only the thickness is pinned (min == max == 6px on the resizing axis);
+    // the other axis is left unconstrained so the enclosing layout stretches
+    // the bar across it. NEVER bind the long axis to `100%` here: a percent
+    // binding on a layout child becomes that child's min AND max, tied to the
+    // parent's current size, and the parent row can then never grow again
+    // (the window enlarged but the content stayed put -- 2026-09-09).
+    min-width: root.vertical ? 0px : 6px;
+    max-width: root.vertical ? 1000000px : 6px;
+    min-height: root.vertical ? 6px : 0px;
+    max-height: root.vertical ? 6px : 1000000px;
+
+    // The pointer's last-seen position along the resizing axis, updated
+    // after every `moved` -- lets each `dragged` call report only the delta
+    // since the previous one rather than the cumulative distance from the
+    // press.
+    property <length> last_pos: 0px;
+
+    touch := TouchArea {
+        mouse-cursor: root.vertical ? MouseCursor.row-resize : MouseCursor.col-resize;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down {
+                root.last_pos = root.vertical ? self.mouse-y : self.mouse-x;
+            }
+        }
+        moved => {
+            if root.vertical {
+                root.dragged(self.mouse-y - root.last_pos);
+                root.last_pos = self.mouse-y;
+            } else {
+                root.dragged(self.mouse-x - root.last_pos);
+                root.last_pos = self.mouse-x;
+            }
+        }
+    }
+}

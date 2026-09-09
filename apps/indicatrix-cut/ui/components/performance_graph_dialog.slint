@@ -130,6 +130,7 @@ export component PerformanceGraphDialog inherits Rectangle {
     }
 
     callback close();
+    close => { TiltModel.dialog_open = false; }
     callback copy_curve_data();
 
     // Full Viewport Modal Backdrop

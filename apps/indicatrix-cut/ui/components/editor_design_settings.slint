@@ -1,0 +1,233 @@
+import { Button, LineEdit, ComboBox } from "std-widgets.slint";
+import { GearRemapRow } from "../types.slint";
+import { Theme } from "../theme.slint";
+import { EditorModel } from "../models/editor.slint";
+import { SectionHeader } from "section_header.slint";
+
+// The Edit sub-tab's schedule-wide settings -- material combo (built-ins, custom
+// catalogue materials, then "Custom RI…"), RI override/effective/critical-angle
+// readouts, gear combo, symmetry order and mirror. Two rows: material/RI on top,
+// gear/symmetry below, each ending in a stretch spacer so nothing here stretches
+// to fill the dock's own width. Collapsible as a whole (`SectionHeader`, title
+// "DESIGN") via `EditorModel.settings_collapsed`; the gear-remap confirmation
+// nested inside is separately collapsible (title "GEAR REMAP") via
+// `EditorModel.remap_collapsed`.
+export component EditorDesignSettings inherits Rectangle {
+    background: Theme.bg-darkest;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    clip: true;
+    // Zero stretch: without this the section is a stretchable cell of the
+    // dock's column (widgets have no maximum height of their own), and spare
+    // dock height inflated the combos, fields and buttons to hundreds of
+    // pixels instead of going to the tier table. NOT `height:
+    // content.preferred-height` -- a layout's preferred height defaults to
+    // 100% of its parent, so that binding is circular and grows unbounded.
+    vertical-stretch: 0;
+
+    content := VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+
+        SectionHeader {
+            title: "DESIGN";
+            collapsed: EditorModel.settings_collapsed;
+            toggled => { EditorModel.settings_collapsed = !EditorModel.settings_collapsed; }
+        }
+
+        if !EditorModel.settings_collapsed: VerticalLayout {
+            spacing: 6px;
+
+        // Row 1: material / RI.
+        HorizontalLayout {
+            spacing: 10px;
+            VerticalLayout {
+                spacing: 3px;
+                Rectangle {
+                    height: mat_combo_lbl.preferred-height;
+                    Tooltip { text: @markdown("Material -- built-ins, then custom catalogue materials, then \"Custom RI…\" for a typed refractive index. Drives the critical angle, the optimizer, the tilt curve, and (when linked) the viewport's Render Material. A custom catalogue material with only a flat RI/dispersion pair renders non-dispersive."); }
+                    mat_combo_lbl := Text { text: "Material"; font-size: 10px; color: Theme.text-muted; }
+                }
+                ComboBox {
+                    max-width: 200px;
+                    model: EditorModel.material_combo_options;
+                    current-index <=> EditorModel.material_combo_index;
+                }
+            }
+            VerticalLayout {
+                spacing: 3px;
+                Rectangle {
+                    height: ri_lbl.preferred-height;
+                    Tooltip { text: @markdown("RI override -- blank uses the selected material's own refractive index."); }
+                    ri_lbl := Text { text: "RI Override"; font-size: 10px; color: Theme.text-muted; }
+                }
+                LineEdit {
+                    width: 90px;
+                    text <=> EditorModel.ri_override_text;
+                    placeholder-text: "auto";
+                    accepted => { EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text); }
+                }
+            }
+            VerticalLayout {
+                spacing: 3px;
+                Text { text: " "; font-size: 10px; }
+                Button {
+                    text: "Apply Material";
+                    clicked => { EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text); }
+                }
+            }
+            // Read-only chips, same small-rounded-rectangle style as
+            // `detail_header.slint`'s metric grid.
+            VerticalLayout {
+                spacing: 3px;
+                Text { text: " "; font-size: 10px; }
+                Rectangle {
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    Tooltip { text: @markdown("Effective refractive index in use, after any override."); }
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
+                        Text { text: "Eff. RI:"; font-size: 11px; color: Theme.text-muted; }
+                        Text { text: EditorModel.effective_ri_text == "" ? "-" : EditorModel.effective_ri_text; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
+                    }
+                }
+            }
+            VerticalLayout {
+                spacing: 3px;
+                Text { text: " "; font-size: 10px; }
+                Rectangle {
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    Tooltip { text: @markdown("Critical angle -- pavilion facets below this window (see the tier list's MARGIN column)."); }
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
+                        Text { text: "Crit.:"; font-size: 11px; color: Theme.text-muted; }
+                        Text { text: EditorModel.critical_angle_text == "" ? "-" : EditorModel.critical_angle_text; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
+                    }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        Rectangle { height: 1px; background: Theme.border-subtle; }
+
+        // Row 2: index gear / symmetry.
+        HorizontalLayout {
+            spacing: 10px;
+            VerticalLayout {
+                spacing: 3px;
+                Rectangle {
+                    height: gear_combo_lbl.preferred-height;
+                    Tooltip { text: @markdown("Index gear tooth count. Changing it opens a remap confirmation -- a non-multiple gear (e.g. 96 to 80) loses precision on some indices, shown in red before you confirm."); }
+                    gear_combo_lbl := Text { text: "Index Gear"; font-size: 10px; color: Theme.text-muted; }
+                }
+                ComboBox {
+                    max-width: 160px;
+                    model: ["96", "80", "77", "72", "64", "120", "Custom"];
+                    current-index <=> EditorModel.gear_index;
+                }
+            }
+            if EditorModel.gear_index == 6: VerticalLayout {
+                spacing: 3px;
+                Text { text: "Custom Teeth"; font-size: 10px; color: Theme.text-muted; }
+                LineEdit { width: 70px; text <=> EditorModel.gear_custom_text; }
+            }
+            VerticalLayout {
+                spacing: 3px;
+                Text { text: " "; font-size: 10px; }
+                Button {
+                    text: "Apply Gear";
+                    clicked => { EditorModel.gear_apply(EditorModel.gear_index, EditorModel.gear_custom_text); }
+                }
+            }
+            VerticalLayout {
+                spacing: 3px;
+                Text { text: "Symmetry Order"; font-size: 10px; color: Theme.text-muted; }
+                LineEdit { width: 60px; text <=> EditorModel.symmetry_order_text; }
+            }
+            VerticalLayout {
+                spacing: 3px;
+                Text { text: "Mirror"; font-size: 10px; color: Theme.text-muted; }
+                HorizontalLayout {
+                    height: 26px;
+                    alignment: start;
+                    Rectangle {
+                        width: 32px;
+                        height: 18px;
+                        border-radius: 9px;
+                        background: EditorModel.mirror ? Theme.accent-cyan : Theme.bg-card-hover;
+                        TouchArea { clicked => { EditorModel.mirror = !EditorModel.mirror; } }
+                        Rectangle {
+                            width: 14px;
+                            height: 14px;
+                            border-radius: 7px;
+                            background: white;
+                            x: EditorModel.mirror ? parent.width - self.width - 2px : 2px;
+                            y: 2px;
+                            animate x { duration: 120ms; }
+                        }
+                    }
+                }
+            }
+            VerticalLayout {
+                spacing: 3px;
+                Text { text: " "; font-size: 10px; }
+                Button {
+                    text: "Apply Symmetry";
+                    clicked => { EditorModel.apply_symmetry(EditorModel.symmetry_order_text, EditorModel.mirror); }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        // --- Gear remap confirmation. Non-integral remaps (a lossy
+        // tooth-count change) are shown in red. Its own collapsible section
+        // (title "GEAR REMAP") nested within "DESIGN" -- collapsing it hides
+        // the remap rows/confirm-cancel buttons but leaves the confirmation
+        // itself pending (`EditorModel.gear_remap_open` untouched), so it is
+        // never silently dismissed, only tucked away.
+        if EditorModel.gear_remap_open: Rectangle {
+            background: Theme.bg-input;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.accent-amber;
+            VerticalLayout {
+                padding: 8px;
+                spacing: 4px;
+
+                SectionHeader {
+                    title: "GEAR REMAP";
+                    collapsed: EditorModel.remap_collapsed;
+                    toggled => { EditorModel.remap_collapsed = !EditorModel.remap_collapsed; }
+                }
+
+                if !EditorModel.remap_collapsed: VerticalLayout {
+                    spacing: 4px;
+                    Text {
+                        text: "Confirm index remap -- every tier's indices are recomputed for the new gear:";
+                        font-size: 11px;
+                        font-weight: 700;
+                        color: Theme.accent-amber;
+                        wrap: word-wrap;
+                    }
+                    for row in EditorModel.gear_remap_rows: HorizontalLayout {
+                        spacing: 6px;
+                        Text { width: 60px; text: row.name; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                        Text { horizontal-stretch: 1; text: row.old_indices + "  ->  " + row.new_indices; font-size: 10px; font-weight: row.non_integral ? 700 : 400; color: row.non_integral ? Theme.accent-ruby : Theme.text-secondary; overflow: elide; }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Button { text: "Confirm Remap"; primary: true; clicked => { EditorModel.gear_remap_confirm(); } }
+                        Button { text: "Cancel"; clicked => { EditorModel.gear_remap_cancel(); } }
+                    }
+                }
+            }
+        }
+        } // if !EditorModel.settings_collapsed
+    }
+}

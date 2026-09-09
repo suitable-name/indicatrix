@@ -1,10 +1,14 @@
 use crate::{
-    AngleItem, DiagramDetailData, FileItem, LibraryModel, MainWindow, TiltModel,
+    AngleItem, DiagramDetailData, FileItem, LibraryModel, MainWindow, TiltModel, ViewportModel,
     bridge::{
         library::source::{self as library_source, LibrarySource},
         render_thread::RenderContext,
     },
-    gui::{library::search::refresh_diagram_list_via_source, show_toast, sync_range_bounds_to_ui},
+    gui::{
+        library::search::refresh_diagram_list_via_source,
+        render::camera_lighting::resubmit_live_solid, show_toast,
+        solid_preview::preview_state::SolidPreviewState, sync_range_bounds_to_ui,
+    },
     settings::WorkerSettings,
 };
 use indicatrix::geometry::{
@@ -26,12 +30,19 @@ use tracing::{error, info};
 /// `bridge::library_mirror`'s module doc comment on identity -- so this dispatch is
 /// what keeps a remote-listed id from ever being looked up against the local database
 /// by mistake).
+///
+/// `preview_state` is only used by the REMOTE branch -- see [`load_diagram_detail_remote`]'s
+/// own doc comment for why: the local branch writes `render_ctx.active_planes`
+/// synchronously, before this function returns, so its own Live-Render-tab Solid-mode
+/// resubmit happens at the call site instead
+/// (`gui::library::diagram_list::setup_diagram_selection_and_export_callbacks`).
 pub fn load_diagram_detail_via_source(
     ui: &MainWindow,
     db_mutex: &Arc<Mutex<Database>>,
     source: &Arc<Mutex<LibrarySource>>,
     render_ctx: &Arc<Mutex<RenderContext>>,
     entry_id: i64,
+    preview_state: &Arc<SolidPreviewState>,
 ) {
     let current = source
         .lock()
@@ -40,7 +51,7 @@ pub fn load_diagram_detail_via_source(
     match current {
         LibrarySource::Local => load_diagram_detail(ui, db_mutex, render_ctx, entry_id),
         LibrarySource::Remote(worker) => {
-            load_diagram_detail_remote(ui, worker, render_ctx, entry_id);
+            load_diagram_detail_remote(ui, worker, render_ctx, entry_id, preview_state);
         }
     }
 }
@@ -187,20 +198,26 @@ pub fn load_diagram_detail(
 /// `indicatrix_net::library`'s module doc comment's "Attachments" section); the actual bytes
 /// are fetched lazily, only if the user exports that specific file (see
 /// `export_diagram_file_via_source`).
+///
+/// `preview_state` is forwarded to [`apply_design_record_to_ui`], not used here
+/// directly -- it's only needed once the design's record (and its planes) actually
+/// arrive, inside the completion closure below.
 fn load_diagram_detail_remote(
     ui: &MainWindow,
     worker: WorkerSettings,
     render_ctx: &Arc<Mutex<RenderContext>>,
     entry_id: i64,
+    preview_state: &Arc<SolidPreviewState>,
 ) {
     let render_ctx = render_ctx.clone();
+    let preview_state = Arc::clone(preview_state);
     library_source::spawn_library_request(
         ui.as_weak(),
         worker,
         LibraryRequest::FetchDesign { entry_id },
         move |ui, result| match result {
             Ok(LibraryResponse::Design(record)) => {
-                apply_design_record_to_ui(ui, &render_ctx, &record);
+                apply_design_record_to_ui(ui, &render_ctx, &record, &preview_state);
             }
             Ok(LibraryResponse::NotFound) => {
                 ui.global::<LibraryModel>()
@@ -223,6 +240,7 @@ fn apply_design_record_to_ui(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
     record: &DesignRecord,
+    preview_state: &Arc<SolidPreviewState>,
 ) {
     let is_local = record.url.starts_with("local://");
     let detail_data = DiagramDetailData {
@@ -311,6 +329,22 @@ fn apply_design_record_to_ui(
         &angle_items,
         record.entry_id,
     );
+
+    // The remote counterpart of the local selection callback's own resubmit
+    // (`gui::library::diagram_list::setup_diagram_selection_and_export_callbacks`) --
+    // needed here specifically because THIS path is async: the local branch's planes
+    // land synchronously before its caller returns, but this closure is where a
+    // remote design's planes actually arrive. Only fires when the Live Render tab is
+    // both showing (`render_view_tab == 0`) and in Solid mode (`live_view_mode == 0`)
+    // -- the same condition the local path's own resubmit checks, so a remote
+    // selection redraws the solid immediately instead of leaving the previous
+    // design's stale raster on screen until the next camera drag.
+    if ui.get_render_view_tab() == 0 && ui.global::<ViewportModel>().get_live_view_mode() == 0 {
+        let ctx = render_ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        resubmit_live_solid(ui, &ctx, preview_state);
+    }
 }
 
 /// Formats a stored proportion string to 3 decimal places for the detail header's

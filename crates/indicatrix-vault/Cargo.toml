@@ -7,7 +7,6 @@ authors = { workspace = true }
 description = "SQLite-backed storage, data models, and local import/export for gemstone faceting design libraries."
 license = { workspace = true }
 repository = { workspace = true }
-homepage = { workspace = true }
 documentation = "https://docs.rs/indicatrix-vault"
 keywords = ["gemstone", "faceting", "sqlite", "catalog", "database"]
 categories = ["database", "database-implementations"]

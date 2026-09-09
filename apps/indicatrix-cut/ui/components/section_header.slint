@@ -1,0 +1,74 @@
+import { Theme } from "../theme.slint";
+
+// Shared collapsible-section header: a 24px row with a chevron, an uppercase
+// muted title, and an optional right-side slot (`@children`) for controls
+// that must stay reachable even while the section is collapsed -- e.g.
+// `EditorInspector`'s Tier/Preform/Optimize pills, so switching tabs is still
+// possible (and re-expands the section, per that component's own wiring)
+// with the body hidden.
+//
+// The chevron is a `Path`, not an image swap: no chevron/arrow asset exists
+// under `ui/icons` (grepped `@image-url` across every other editor
+// component), and `Path`/`Rectangle` don't expose the `rotation-angle`
+// `Text`/`Image` alone have in this Slint version -- so instead of rotating
+// one shape, this swaps between a right- and a down-pointing `commands`
+// string.
+//
+// This component owns no state of its own: `collapsed` is an `in` property
+// the caller drives (`EditorModel.settings_collapsed`/`inspector_collapsed`/
+// `remap_collapsed`), and `toggled` is the only way this ever asks for it to
+// change -- the caller's own `if !collapsed:` around the section's body is
+// what actually hides/shows content (see each caller for that half).
+export component SectionHeader inherits Rectangle {
+    in property <string> title;
+    in property <bool> collapsed: false;
+    callback toggled();
+
+    height: 24px;
+    background: touch.has-hover ? Theme.bg-card-hover : transparent;
+    border-radius: Theme.radius-sm;
+
+    touch := TouchArea {
+        clicked => { root.toggled(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        spacing: 6px;
+
+        Rectangle {
+            width: 10px;
+            VerticalLayout {
+                alignment: center;
+                Path {
+                    width: 8px;
+                    height: 8px;
+                    viewbox-width: 8;
+                    viewbox-height: 8;
+                    stroke: Theme.text-muted;
+                    stroke-width: 1.5px;
+                    // Pointing right while collapsed, down while expanded --
+                    // the same convention a rotated chevron would read as.
+                    commands: root.collapsed
+                        ? "M 2 1.5 L 6 4 L 2 6.5"
+                        : "M 1.5 2.5 L 4 6.5 L 6.5 2.5";
+                }
+            }
+        }
+
+        Text {
+            text: root.title;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+        }
+
+        Rectangle { horizontal-stretch: 1; }
+
+        // Right-side slot -- see this component's own doc comment above.
+        @children
+    }
+}

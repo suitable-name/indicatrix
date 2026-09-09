@@ -1,0 +1,447 @@
+import { ScrollView, LineEdit } from "std-widgets.slint";
+import { EditorTierItem } from "../types.slint";
+import { Theme } from "../theme.slint";
+import { EditorModel } from "../models/editor.slint";
+
+// One tier-list row's angle cell -- click-to-edit rather than always a `LineEdit`
+// (see the manual's "Inline Angle Editing" chapter): a plain, click-through `Text`
+// display normally, so the row's ordinary click-to-select/Ctrl+click/hover behavior
+// around it is completely unaffected, with a small `TouchArea` over just this cell
+// that (a) opens an editable `LineEdit` on a plain click and (b) nudges the value
+// +-0.1deg on every scroll-wheel tick regardless of whether it's currently in edit
+// mode. `EditorTierTable.nudge`/`commit` are the only two ways this component ever
+// reports intent -- it never touches `Design` itself, matching this whole file's
+// "dumb about the design" convention (see `EditorTierTable`'s own top doc comment).
+//
+// Commit path: Enter (`accepted`) or focus loss (`changed has-focus`, since
+// `LineEdit` exposes no separate "blurred" callback -- see the interface in
+// `i-slint-compiler`'s `widgets/interfaces/lineedit.slint`) both call `commit` with
+// the field's current text, then close edit mode. Escape closes edit mode WITHOUT
+// calling `commit` -- the `LineEdit` is destroyed uncommitted and the display
+// reverts to `value` (still whatever `Design` actually holds), no separate "revert"
+// step needed. Up/Down step +-0.1deg (Shift +-1deg, Ctrl +-0.01deg) via the
+// `LineEdit`'s own `key-pressed` -- see `i-slint-compiler`'s `widgets/interfaces/
+// lineedit.slint` for why this, not a wrapping `FocusScope`, is the mechanism: a
+// plain `Rectangle`/`FocusScope` has no `scroll-event` in Slint 1.17 (only
+// `TouchArea`/`Flickable` do, per `builtins.slint`), which is why the wheel-nudge
+// below lives on `area` instead.
+//
+// `focus_target`/`focus_pulse` are how the tier list's F2 shortcut opens THIS
+// specific row's editor from outside (`EditorTierTable`'s own `key-pressed` cannot
+// reach into one `for`-loop iteration's local state directly) -- `focus_pulse` is a
+// monotonically increasing counter, not a plain flag, so pressing F2 on the SAME row
+// twice in a row still fires a fresh `changed focus_pulse` each time (a flag that
+// merely equals the target index again would not fire it a second time).
+component TierAngleCell inherits Rectangle {
+    in property <string> value;
+    in property <int> index;
+    in property <int> focus_target: -1;
+    in property <int> focus_pulse: 0;
+    callback commit(string);
+    // (index, delta_deg)
+    callback nudge(int, float);
+
+    width: 60px;
+    height: 100%;
+    property <bool> editing: false;
+    property <int> seen_pulse: 0;
+
+    changed focus_pulse => {
+        if root.focus_target == root.index && root.focus_pulse != root.seen_pulse {
+            root.seen_pulse = root.focus_pulse;
+            root.editing = true;
+        }
+    }
+
+    function step(shift: bool, ctrl: bool, sign: float) {
+        if shift {
+            root.nudge(root.index, sign * 1.0);
+        } else if ctrl {
+            root.nudge(root.index, sign * 0.01);
+        } else {
+            root.nudge(root.index, sign * 0.1);
+        }
+    }
+
+    area := TouchArea {
+        clicked => { root.editing = true; }
+        scroll-event(event) => {
+            if event.delta-y != 0 {
+                root.nudge(root.index, event.delta-y > 0 ? 0.1 : -0.1);
+                return accept;
+            }
+            reject
+        }
+    }
+
+    if !root.editing: Text {
+        text: root.value;
+        font-size: 11px;
+        font-weight: 600;
+        color: Theme.accent-amber;
+        vertical-alignment: center;
+    }
+
+    if root.editing: edit := LineEdit {
+        width: 100%;
+        height: 100%;
+        text: root.value;
+        font-size: 11px;
+        init => {
+            self.select-all();
+            self.focus();
+        }
+        accepted => {
+            root.commit(self.text);
+            root.editing = false;
+        }
+        changed has-focus => {
+            if !self.has-focus {
+                root.commit(self.text);
+                root.editing = false;
+            }
+        }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.editing = false;
+                return accept;
+            } else if event.text == Key.UpArrow {
+                root.step(event.modifiers.shift, event.modifiers.control, 1.0);
+                return accept;
+            } else if event.text == Key.DownArrow {
+                root.step(event.modifiers.shift, event.modifiers.control, -1.0);
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
+// The Edit sub-tab's tier table -- a working faceting-design editor over
+// `indicatrix_cut_core::Design`/`History`, wired from Rust in `gui::editor`.
+//
+// This component is deliberately "dumb" about the design itself: every genuine
+// piece of design state (the tier list, undo/redo availability, validation status)
+// is an `in` property `EditorModel` owns and `gui::editor` pushes into after every
+// edit, the same convention `GemViewportView`/`CuttingTableView` use for
+// `current_angles`/`render_image`. This component never constructs an `Edit`
+// itself -- it only collects row actions and hands them to Rust via `EditorModel`'s
+// callbacks, keeping `History` the sole mutator of `Design`. The solved mast shown
+// per row and the `SolveStrategy` badge next to it are pure display -- there is no
+// callback that lets this component write a mast anywhere.
+//
+// Selecting a row (click or Enter) does not seed a form directly any more -- that
+// lived on the old combined `EditorView` before the Step A split; this component
+// only reports WHICH tier was selected via `tier_selected`, and `EditorView` wires
+// that to `EditorInspector.load_tier_into_form` (see `app.slint`'s Edit-mode layout
+// doc comment for the overall split).
+export component EditorTierTable inherits Rectangle {
+    vertical-stretch: 1;
+    min-height: 120px;
+    background: Theme.bg-darkest;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    // Fired on row click (plain, non-Ctrl) and on the keyboard list's Enter --
+    // both used to mean "load this tier into the edit form."
+    callback tier_selected(int);
+
+    property <int> keyboard_focus_index: -1;
+    property <int> inline_edit_target: -1;
+    property <int> inline_edit_pulse: 0;
+
+    function scrolled_to_show(idx: int, viewport_y: length, visible_height: length, viewport_height: length) -> length {
+        if idx < 0 {
+            return viewport_y;
+        }
+        if -viewport_y > idx * 30px {
+            return -max(0px, idx * 30px);
+        } else if (-viewport_y + visible_height) < (idx * 30px + 28px) {
+            return -max(0px, min(viewport_height - visible_height, idx * 30px + 28px - visible_height));
+        }
+        return viewport_y;
+    }
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 4px;
+
+        Rectangle {
+            height: 26px;
+            HorizontalLayout {
+                padding-left: 4px;
+                padding-right: 4px;
+                Text { width: 30px; text: "#"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                Text { width: 60px; text: "ANGLE"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                Text { horizontal-stretch: 1; min-width: 0px; overflow: elide; text: "NAME / INDICES"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                Text { width: 60px; text: "MAST"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                Text { width: 96px; text: "SOLVE"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                // Margin over the design's effective critical angle
+                // (pavilion tiers only) and the risk band it falls into
+                // (`EditorTierItem::margin_text`/`risk_level`).
+                Text { width: 70px; text: "MARGIN"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                // Whether this row is one orbit, several folded together,
+                // or partial/inconsistent (`EditorTierItem::orbit_status`)
+                // -- makes "editing this row moves more than one facet"
+                // visible before the user clicks Save.
+                Text { width: 76px; text: "ORBIT"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                // What the source file claims this facet meets, when
+                // import pinned the tier instead of deriving it
+                // (`EditorTierItem::imported_meet_text`).
+                Text { width: 64px; text: "IMPORTED"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                Text { width: 56px; text: ""; }
+                Text { width: 20px; text: ""; }
+                Text { width: 20px; text: ""; }
+            }
+        }
+
+        if EditorModel.tiers.length == 0: Text {
+            text: "No tiers yet -- open the Tier tab below to add one.";
+            font-size: 11px;
+            color: Theme.text-muted;
+            horizontal-alignment: center;
+        }
+
+        // Wrapped in a `FocusScope` for keyboard navigation
+        // (Up/Down/Enter/Delete/Ctrl+D/F2 -- see the manual's "Editing
+        // Tiers" chapter). Every branch below either `return accept`s or
+        // falls through to the trailing `reject`, so the global shortcuts
+        // in `app.slint` (Ctrl+Z/Y/S, F5, 1/2/3) still work while this
+        // list has focus -- none of those keys are handled here, so they
+        // always fall to `reject` and bubble up.
+        if EditorModel.tiers.length > 0: FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.DownArrow {
+                    root.keyboard_focus_index = root.keyboard_focus_index < 0
+                        ? 0
+                        : Math.min(root.keyboard_focus_index + 1, EditorModel.tiers.length - 1);
+                    tier_scroll.viewport-y = root.scrolled_to_show(root.keyboard_focus_index, tier_scroll.viewport-y, tier_scroll.visible-height, tier_scroll.viewport-height);
+                    return accept;
+                } else if event.text == Key.UpArrow {
+                    root.keyboard_focus_index = root.keyboard_focus_index <= 0
+                        ? 0
+                        : root.keyboard_focus_index - 1;
+                    tier_scroll.viewport-y = root.scrolled_to_show(root.keyboard_focus_index, tier_scroll.viewport-y, tier_scroll.visible-height, tier_scroll.viewport-height);
+                    return accept;
+                } else if event.text == Key.Return {
+                    root.tier_selected(root.keyboard_focus_index);
+                    return accept;
+                } else if event.text == Key.Delete || event.text == Key.Backspace {
+                    if root.keyboard_focus_index >= 0 && root.keyboard_focus_index < EditorModel.tiers.length {
+                        EditorModel.remove_tier(root.keyboard_focus_index);
+                        if EditorModel.selected_tier_index == root.keyboard_focus_index {
+                            EditorModel.selected_tier_index = -1;
+                        }
+                    }
+                    return accept;
+                } else if (event.modifiers.control || event.modifiers.meta) && event.text == "d" {
+                    if root.keyboard_focus_index >= 0 && root.keyboard_focus_index < EditorModel.tiers.length {
+                        EditorModel.duplicate_tier(root.keyboard_focus_index);
+                    }
+                    return accept;
+                } else if event.text == Key.F2 {
+                    if root.keyboard_focus_index >= 0 && root.keyboard_focus_index < EditorModel.tiers.length {
+                        root.inline_edit_target = root.keyboard_focus_index;
+                        root.inline_edit_pulse += 1;
+                        tier_scroll.viewport-y = root.scrolled_to_show(root.keyboard_focus_index, tier_scroll.viewport-y, tier_scroll.visible-height, tier_scroll.viewport-height);
+                    }
+                    return accept;
+                }
+                reject
+            }
+
+        tier_scroll := ScrollView {
+            VerticalLayout {
+                spacing: 2px;
+                for row in EditorModel.tiers: Rectangle {
+                    height: 28px;
+                    background: row.index == EditorModel.selected_tier_index
+                        ? Theme.primary-glow
+                        : (row_touch.has-hover ? Theme.bg-card-hover : (Math.mod(row.index, 2) == 0 ? Theme.bg-input : Theme.bg-card));
+                    border-radius: 2px;
+                    // Keyboard-cursor ring and multi-select tint -- both
+                    // additive to the selection background above, never
+                    // replacing it.
+                    border-width: row.index == root.keyboard_focus_index ? 1.5px : (row.multi_selected ? 1px : 0px);
+                    border-color: row.index == root.keyboard_focus_index ? Theme.accent-cyan : (row.multi_selected ? Theme.accent-cyan : transparent);
+
+                    // `ctrl_down` records the LAST press's modifier state
+                    // (from `pointer-event`, the only place `TouchArea`
+                    // exposes `KeyboardModifiers`) so `clicked` -- which
+                    // carries no event/modifier argument of its own -- can
+                    // still tell a plain click from a Ctrl+click.
+                    property <bool> ctrl_down: false;
+                    row_touch := TouchArea {
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down {
+                                parent.ctrl_down = event.modifiers.control || event.modifiers.meta;
+                            }
+                        }
+                        clicked => {
+                            root.keyboard_focus_index = row.index;
+                            if parent.ctrl_down {
+                                EditorModel.toggle_multi_select(row.index);
+                            } else {
+                                root.tier_selected(row.index);
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        padding-left: 4px;
+                        padding-right: 4px;
+                        Text { width: 30px; text: row.index + 1; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; }
+                        TierAngleCell {
+                            value: row.angle_deg;
+                            index: row.index;
+                            focus_target: root.inline_edit_target;
+                            focus_pulse: root.inline_edit_pulse;
+                            commit(text) => { EditorModel.inline_set_angle(row.index, text); }
+                            nudge(idx, delta) => { EditorModel.nudge_angle(idx, delta); }
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: (row.name == "" ? "(unnamed)" : row.name) + "  [" + row.indices + "]";
+                            font-size: 11px;
+                            color: Theme.text-secondary;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            width: 60px;
+                            text: row.mast;
+                            font-size: 11px;
+                            color: Theme.text-secondary;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        // Solve-strategy badge: `DependencyOrder`/`JointGroup`
+                        // (a real vertex-derived mast) reads normally;
+                        // `LeastSquaresFallback`/`Failed`/no-anchor-yet is
+                        // flagged in amber (`EditorTierItem::strategy_is_uncertain`).
+                        Text {
+                            width: 96px;
+                            text: row.strategy;
+                            font-size: 10px;
+                            font-weight: row.strategy_is_uncertain ? 700 : 400;
+                            color: row.strategy_is_uncertain ? Theme.accent-amber : Theme.text-muted;
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        // Margin over the critical angle + risk badge -- ""
+                        // / -1 (crown/girdle, or no material resolved)
+                        // reads as a plain dash, nothing to flag.
+                        Text {
+                            width: 70px;
+                            text: row.margin_text == "" ? "-" : row.margin_text;
+                            font-size: 10px;
+                            font-weight: row.risk_level >= 1 ? 700 : 400;
+                            color: row.risk_level == 2 ? Theme.accent-ruby : (row.risk_level == 1 ? Theme.accent-amber : (row.risk_level == 0 ? Theme.accent-emerald : Theme.text-muted));
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        // This tier's orbit shape (`EditorTierItem::orbit_status`)
+                        // -- emerald for a complete orbit (or several
+                        // folded together), amber for incomplete/
+                        // inconsistent, muted with a trailing "*" once the
+                        // row is detached (still shown, no longer
+                        // auto-followed).
+                        Text {
+                            width: 76px;
+                            text: row.orbit_status == "" ? "" : (row.is_detached ? row.orbit_status + " *" : row.orbit_status);
+                            font-size: 10px;
+                            font-weight: (row.orbit_incomplete && !row.is_detached) ? 700 : 400;
+                            color: row.is_detached ? Theme.text-muted : (row.orbit_incomplete ? Theme.accent-amber : Theme.accent-emerald);
+                            overflow: elide;
+                            vertical-alignment: center;
+                        }
+                        // One-click "Adopt": switches this pinned tier over
+                        // to the meet instruction the file actually stated
+                        // (`Edit::SetConstraint`). Empty when there is
+                        // nothing to adopt (`imported_meet_text == ""`).
+                        Rectangle {
+                            width: 64px;
+                            if row.imported_meet_text != "": Rectangle {
+                                background: adopt_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+                                border-radius: 3px;
+                                Text {
+                                    text: "Adopt";
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                    color: Theme.accent-cyan;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                adopt_touch := TouchArea {
+                                    clicked => { EditorModel.adopt_meet(row.index); }
+                                }
+                                Tooltip { text: @markdown("Switch this pinned tier to the file's meet geometry so the solver and Optimize can move it."); }
+                            }
+                        }
+                        // Explicit, visible detach/reattach act
+                        // (`Design::detach_all_in_tier`/`reattach_all_in_tier`)
+                        // -- hidden for a tier with nothing to link
+                        // (`orbit_status == ""`), like the Adopt column.
+                        Rectangle {
+                            width: 54px;
+                            if row.orbit_status != "": Rectangle {
+                                background: detach_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+                                border-radius: 3px;
+                                Text {
+                                    text: row.is_detached ? "Reattach" : "Detach";
+                                    font-size: 9px;
+                                    font-weight: 600;
+                                    color: row.is_detached ? Theme.accent-cyan : Theme.text-secondary;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                detach_touch := TouchArea {
+                                    clicked => { EditorModel.toggle_detach(row.index); }
+                                }
+                                Tooltip { text: @markdown("Exempt this tier from orbit symmetry handling."); }
+                            }
+                        }
+                        // Duplicate this tier -- the row-button half of
+                        // the tier list's Ctrl+D shortcut.
+                        Rectangle {
+                            width: 20px;
+                            height: 20px;
+                            Text {
+                                text: "\u{29C9}";
+                                color: Theme.accent-cyan;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                clicked => { EditorModel.duplicate_tier(row.index); }
+                            }
+                            Tooltip { text: @markdown("Duplicate this tier (Ctrl+D)."); }
+                        }
+                        Rectangle {
+                            width: 20px;
+                            height: 20px;
+                            Text {
+                                text: "x";
+                                color: Theme.accent-ruby;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            TouchArea {
+                                clicked => {
+                                    EditorModel.remove_tier(row.index);
+                                    if EditorModel.selected_tier_index == row.index {
+                                        EditorModel.selected_tier_index = -1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        } // FocusScope (tier list keyboard navigation)
+    }
+}

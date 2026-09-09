@@ -169,11 +169,13 @@ pub(in crate::gui) fn setup_material_and_quality_callbacks(
             ctx.paused = paused;
         });
 
-    // Automatic render suspend when the rendered image isn't visible anywhere lives in
-    // `gui::detached_render::setup_live_render_visibility_callbacks`, the single place
-    // owning all three signals (outer tab, inner sub-tab, detached window) feeding
-    // `RenderContext::tab_visible`. That path must never touch `ctx.paused`: a manual
-    // pause must survive switching tabs (or docking/undocking) away and back.
+    // Automatic render suspend when the rendered image isn't visible anywhere is driven
+    // by `RenderContext::tab_visible`, recomputed by `gui::detached_render::
+    // recompute_tab_visible` from all five signals `render_is_visible` combines (outer
+    // tab, inner sub-tab, detached window, and each sub-tab's own Solid/Path-traced
+    // view-mode toggle) -- see that function's own doc comment for the full list of
+    // call sites. That path must never touch `ctx.paused`: a manual pause must survive
+    // switching tabs (or docking/undocking, or flipping a view mode) away and back.
 
     let render_ctx_bnc = render_ctx.clone();
     let settings_store_bnc = settings_store.clone();

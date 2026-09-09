@@ -135,6 +135,57 @@ pub fn claim_error_message(err: &ClaimError) -> String {
 /// [`claim_error_message`] applied to whatever [`indicatrix_net::enroll::claim`] returned,
 /// or a message naming `bundle_dir` if creating it or writing one of the three files
 /// fails.
+/// The worker's default `serve --bind` port (`indicatrix-worker`'s `DEFAULT_BIND`);
+/// this crate cannot depend on the worker binary, so the number is repeated here.
+const DEFAULT_WORKER_SERVE_PORT: u16 = 7878;
+
+/// The render address to suggest after a token was redeemed at `enroll_addr`: the
+/// same host on the worker's default serve port. A guess the user can edit, never a
+/// value the protocol guarantees (the enrollment listener and the render listener are
+/// separate binds).
+#[must_use]
+pub fn suggested_serve_address(enroll_addr: &str) -> String {
+    format!(
+        "{}:{DEFAULT_WORKER_SERVE_PORT}",
+        host_part(enroll_addr.trim())
+    )
+}
+
+/// `addr` without its port: a bracketed IPv6 literal keeps its brackets, and a
+/// trailing `:digits` is dropped; anything else is returned unchanged.
+fn host_part(addr: &str) -> &str {
+    if addr.starts_with('[') {
+        return addr.find(']').map_or(addr, |end| &addr[..=end]);
+    }
+    match addr.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.bytes().all(|b| b.is_ascii_digit()) => host,
+        _ => addr,
+    }
+}
+
+#[cfg(test)]
+mod suggested_address_tests {
+    use super::suggested_serve_address;
+
+    #[test]
+    fn replaces_the_enrollment_port_with_the_default_serve_port() {
+        assert_eq!(
+            suggested_serve_address("192.168.1.20:7879"),
+            "192.168.1.20:7878"
+        );
+        assert_eq!(
+            suggested_serve_address(" workstation.local:9001 "),
+            "workstation.local:7878"
+        );
+    }
+
+    #[test]
+    fn keeps_a_bare_host_and_bracketed_ipv6_literals() {
+        assert_eq!(suggested_serve_address("workstation"), "workstation:7878");
+        assert_eq!(suggested_serve_address("[fe80::1]:7879"), "[fe80::1]:7878");
+    }
+}
+
 pub fn claim_and_write_bundle(
     token: &str,
     addr: &str,

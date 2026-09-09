@@ -28,14 +28,17 @@
 //!
 //! `RenderContext::tab_visible` used to be driven by one signal (`active_tab == 0`).
 //! With the render now visible in a separate OS window regardless of which
-//! main-window tab is selected, that became a three-way decision --
-//! [`render_is_visible`] is the pure function encoding it, and
-//! [`setup_live_render_visibility_callbacks`] wires all three Slint signals to
-//! recompute it through that one function, so the three call sites can never drift
-//! into disagreeing formulas.
+//! main-window tab is selected, and with the Live Render/Edit sub-tabs each gaining
+//! their own Solid/Path-traced view-mode toggle, this became a five-way decision --
+//! [`render_is_visible`] is the pure function encoding it, and every writer (three
+//! Slint signals wired inside [`setup_live_render_visibility_callbacks`], plus the two
+//! view-mode toggles' own settings-persistence callbacks in `gui::mod`) recomputes it
+//! through the shared [`recompute_tab_visible`] helper, so no call site's formula can
+//! ever drift out of sync with another's.
 
 use crate::{
-    DetachedRenderWindow, MainWindow, ViewportModel, bridge::render_thread::RenderContext,
+    DetachedRenderWindow, MainWindow, SolidPreviewModel, ViewportModel,
+    bridge::render_thread::RenderContext, gui::solid_preview::preview_state::SolidPreviewState,
 };
 use slint::{
     ComponentHandle, Weak,
@@ -56,26 +59,59 @@ pub(super) type FrameTarget = Arc<Mutex<Option<Weak<DetachedRenderWindow>>>>;
 
 /// Whether the live-rendered image is visible anywhere right now -- the render
 /// thread's `RenderContext::tab_visible` should be `true` exactly when this is. Pure
-/// and unit-tested directly rather than only exercised indirectly through the three
+/// and unit-tested directly rather than only exercised indirectly through the five
 /// Slint callbacks that each recompute it.
 ///
 /// The detached window, once popped out, is visible regardless of which outer tab or
 /// inner sub-tab is selected on the main window, so `detached` alone already answers
-/// the question when `true`; the other two arguments only matter for the docked case.
+/// the question when `true`; the other four arguments only matter for the docked case.
+///
+/// Docked, the tracer only runs where it can actually be seen -- and that now depends
+/// on the Live Render/Edit sub-tab's OWN view-mode toggle, not just which sub-tab is
+/// selected:
+/// - Live Render tab (`render_view_tab == 0`): visible only in Path-traced mode
+///   (`live_view_mode == 1`, `ViewportModel.live_view_mode`). In Solid mode the
+///   viewport shows the flat-shaded CPU rasterizer instead, and the spectral tracer
+///   must not burn GPU/remote compute time on a frame nobody is looking at.
+/// - Edit tab (`render_view_tab == 1`): visible in Path-traced (`1`) or Both (`2`)
+///   mode (`SolidPreviewModel.view_mode`), not Solid (`0`) or Diagram (`3`). Before
+///   this gate existed, `render_view_tab == 1` alone suspended tracing unconditionally
+///   -- so the Edit tab's own "Path-traced"/"Both" pills showed a stale, frozen frame
+///   instead of a live one. This makes them trace live, matching what they claim to
+///   show.
 #[must_use]
-const fn render_is_visible(active_tab: i32, render_view_tab: i32, detached: bool) -> bool {
-    detached || (active_tab == 0 && render_view_tab == 0)
+const fn render_is_visible(
+    active_tab: i32,
+    render_view_tab: i32,
+    detached: bool,
+    live_view_mode: i32,
+    solid_view_mode: i32,
+) -> bool {
+    detached
+        || (active_tab == 0
+            && ((render_view_tab == 0 && live_view_mode == 1)
+                || (render_view_tab == 1 && (solid_view_mode == 1 || solid_view_mode == 2))))
 }
 
-/// Reads the three current signals off `ui` and writes the result into
+/// Reads the current signals off `ui` and writes the result into
 /// `render_ctx.tab_visible`. Called after every one of them changes, rather than each
 /// callback keeping its own partial condition, which is exactly the kind of
 /// duplication that could let one call site's formula silently disagree with another's.
-fn recompute_tab_visible(ui: &MainWindow, render_ctx: &Arc<Mutex<RenderContext>>) {
+///
+/// `pub(in crate::gui)`: also called directly from `gui::mod`'s
+/// `on_live_view_mode_changed` handler and from its `SolidPreviewModel.
+/// on_view_mode_changed` handler -- both view-mode toggles [`render_is_visible`] now
+/// depends on, alongside the three tab/detach signals wired inside this module.
+pub(in crate::gui) fn recompute_tab_visible(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+) {
     let visible = render_is_visible(
         ui.get_active_tab(),
         ui.get_render_view_tab(),
         ui.get_live_render_detached(),
+        ui.global::<ViewportModel>().get_live_view_mode(),
+        ui.global::<SolidPreviewModel>().get_view_mode(),
     );
     render_ctx.lock().unwrap().tab_visible = visible;
 }
@@ -197,13 +233,22 @@ fn open_detached_window(
 
 /// Wires the "Live Render"/"Edit" sub-tab change, the pop-out toggle, and (moved here
 /// from `gui::material_quality`, see that module's own comment at the old call site)
-/// the outer `active_tab_changed` -- the three signals [`render_is_visible`] combines.
-/// Returns the [`FrameTarget`] the render thread's own frame-push closure
+/// the outer `active_tab_changed` -- three of the five signals [`render_is_visible`]
+/// combines (the other two, `ViewportModel.live_view_mode` and `SolidPreviewModel.
+/// view_mode`, are wired in `gui::mod` itself, since both already have their own
+/// settings-persistence callback to hang `recompute_tab_visible` off). Returns the
+/// [`FrameTarget`] the render thread's own frame-push closure
 /// (`gui::mod::build_main_window`) must also write into every frame; see this module's
 /// doc comment's "Frame routing" section.
+///
+/// `preview_state` is B2's solid-inspection preview controller -- the sub-tab change
+/// handler re-issues the last solved plane set at the new tab's own pose/view-mode
+/// (via `camera_lighting::resubmit_at_current_pose`) so switching tabs shows the right
+/// variant immediately rather than whatever the previous tab last rendered.
 pub(in crate::gui) fn setup_live_render_visibility_callbacks(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
 ) -> FrameTarget {
     let frame_target: FrameTarget = Arc::new(Mutex::new(None));
     let window_slot: Rc<RefCell<Option<DetachedRenderWindow>>> = Rc::new(RefCell::new(None));
@@ -217,10 +262,24 @@ pub(in crate::gui) fn setup_live_render_visibility_callbacks(
     });
 
     let render_ctx_rv = render_ctx.clone();
+    let preview_state_rv = Arc::clone(preview_state);
     let ui_weak_rv = ui.as_weak();
     ui.on_render_view_tab_changed(move |_idx| {
         if let Some(ui) = ui_weak_rv.upgrade() {
             recompute_tab_visible(&ui, &render_ctx_rv);
+            // Re-request the right image for the newly selected sub-tab -- e.g.
+            // switching Edit -> Live Render while both are in Solid mode must show the
+            // Live tab's own (possibly differently sized) solid raster immediately,
+            // not whatever the Edit tab last rendered. `resubmit_at_current_pose`
+            // already encodes exactly this "which variant, and is it even visible"
+            // logic (see its own doc comment), so this reuses it rather than
+            // duplicating it.
+            let ctx = render_ctx_rv.lock().unwrap();
+            crate::gui::render::camera_lighting::resubmit_at_current_pose(
+                &ui,
+                &ctx,
+                &preview_state_rv,
+            );
         }
     });
 
@@ -247,35 +306,84 @@ mod tests {
     use super::*;
 
     #[test]
-    fn detached_is_visible_regardless_of_either_tab() {
+    fn detached_is_visible_regardless_of_either_tab_or_either_view_mode() {
         for active_tab in [0, 1, 2] {
             for render_view_tab in [0, 1] {
-                assert!(render_is_visible(active_tab, render_view_tab, true));
+                for live_view_mode in [0, 1] {
+                    for solid_view_mode in [0, 1, 2, 3] {
+                        assert!(render_is_visible(
+                            active_tab,
+                            render_view_tab,
+                            true,
+                            live_view_mode,
+                            solid_view_mode
+                        ));
+                    }
+                }
             }
         }
     }
 
     #[test]
-    fn docked_is_visible_only_on_the_3d_tabs_own_live_render_sub_tab() {
-        assert!(render_is_visible(0, 0, false));
-        assert!(!render_is_visible(0, 1, false), "Edit sub-tab, docked");
-        assert!(!render_is_visible(1, 0, false), "Cutting Schedule tab");
-        assert!(!render_is_visible(2, 0, false), "Files & Downloads tab");
+    fn docked_live_render_sub_tab_traces_only_in_path_traced_mode() {
+        // Solid mode (0): the flat-shaded CPU raster is shown instead -- the spectral
+        // tracer must not burn GPU/remote time on a frame nobody is looking at.
+        assert!(!render_is_visible(0, 0, false, 0, 0));
+        // Path-traced mode (1): visible, matching this tab's sole behaviour before
+        // `live_view_mode` existed.
+        assert!(render_is_visible(0, 0, false, 1, 0));
+    }
+
+    #[test]
+    fn docked_edit_sub_tab_traces_only_in_path_traced_or_both_mode() {
+        // Solid (0) and Diagram (3): no path-traced image is shown there, so tracing
+        // stays suspended -- unchanged from before this gate existed.
+        assert!(!render_is_visible(0, 1, false, 1, 0));
+        assert!(!render_is_visible(0, 1, false, 1, 3));
+        // Path-traced (1) and Both (2): these pills must now trace LIVE rather than
+        // showing whatever frame was last rendered before the Edit tab suspended it.
+        assert!(render_is_visible(0, 1, false, 1, 1));
+        assert!(render_is_visible(0, 1, false, 1, 2));
+    }
+
+    #[test]
+    fn docked_is_never_visible_outside_the_3d_tab() {
+        for render_view_tab in [0, 1] {
+            for live_view_mode in [0, 1] {
+                for solid_view_mode in [0, 1, 2, 3] {
+                    assert!(!render_is_visible(
+                        1,
+                        render_view_tab,
+                        false,
+                        live_view_mode,
+                        solid_view_mode
+                    ));
+                    assert!(!render_is_visible(
+                        2,
+                        render_view_tab,
+                        false,
+                        live_view_mode,
+                        solid_view_mode
+                    ));
+                }
+            }
+        }
     }
 
     #[test]
     fn docking_and_undocking_round_trips_visibility_for_every_outer_tab() {
         // A dock/undock toggle must be able to flip visibility on and off again for
-        // every combination of the other two signals.
+        // every combination of the other signals -- pinned here at the "always
+        // visible when docked" corner of each toggle (Path-traced / Both).
         for active_tab in [0, 1, 2] {
             for render_view_tab in [0, 1] {
                 assert!(
-                    render_is_visible(active_tab, render_view_tab, true),
+                    render_is_visible(active_tab, render_view_tab, true, 1, 1),
                     "popped out must always be visible (active_tab={active_tab}, \
                      render_view_tab={render_view_tab})"
                 );
-                let docked = render_is_visible(active_tab, render_view_tab, false);
-                assert_eq!(docked, active_tab == 0 && render_view_tab == 0);
+                let docked = render_is_visible(active_tab, render_view_tab, false, 1, 1);
+                assert_eq!(docked, active_tab == 0);
             }
         }
     }

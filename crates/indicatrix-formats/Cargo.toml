@@ -7,7 +7,6 @@ authors = { workspace = true }
 description = "Readers and writers for gemstone faceting design file formats."
 license = { workspace = true }
 repository = { workspace = true }
-homepage = { workspace = true }
 documentation = "https://docs.rs/indicatrix-formats"
 keywords = ["gemstone", "faceting", "gemcad", "parser", "cad"]
 categories = ["parser-implementations", "encoding"]

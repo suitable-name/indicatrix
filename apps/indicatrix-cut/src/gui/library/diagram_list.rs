@@ -5,14 +5,16 @@
 //! further -- same reasoning as `gui::detail`/`gui::search`/`gui::remote`.
 
 use crate::{
-    LibraryModel, MainWindow, PerformanceFilterRow,
+    LibraryModel, MainWindow, PerformanceFilterRow, ViewportModel,
     bridge::{library::source::LibrarySource, render_thread::RenderContext},
     gui::{
         library::{
             detail::{export_diagram_file_via_source, load_diagram_detail_via_source},
             search::{refresh_diagram_list, refresh_diagram_list_via_source},
         },
+        render::camera_lighting::resubmit_live_solid,
         show_toast,
+        solid_preview::preview_state::SolidPreviewState,
     },
 };
 use indicatrix_vault::{db::sqlite::Database, model::filter::AttributeRanges};
@@ -355,10 +357,12 @@ pub(in crate::gui) fn setup_diagram_selection_and_export_callbacks(
     db: &Arc<Mutex<Database>>,
     source: &Arc<Mutex<LibrarySource>>,
     render_ctx: &Arc<Mutex<RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
 ) {
     let db_select = Arc::clone(db);
     let source_select = Arc::clone(source);
     let render_ctx_select = render_ctx.clone();
+    let preview_state_select = Arc::clone(preview_state);
     let ui_weak_select = ui.as_weak();
     ui.global::<LibraryModel>()
         .on_select_diagram(move |id: i32| {
@@ -369,7 +373,26 @@ pub(in crate::gui) fn setup_diagram_selection_and_export_callbacks(
                     &source_select,
                     &render_ctx_select,
                     i64::from(id),
+                    &preview_state_select,
                 );
+                // Live Render tab, Solid mode: `load_diagram_detail_via_source`'s LOCAL
+                // branch already wrote fresh planes into `render_ctx` synchronously,
+                // above -- redraw the solid immediately rather than leaving the
+                // previous design on screen until the next camera drag. The REMOTE
+                // branch is async and resubmits itself once its own planes land (see
+                // `gui::library::detail::apply_design_record_to_ui`); this call still
+                // fires for it too, but against whatever planes were already active
+                // (typically the previously selected design), and is simply
+                // superseded a moment later by that async resubmit -- harmless, since
+                // `SolidPreviewState` coalesces to the LAST submitted request.
+                if ui.get_render_view_tab() == 0
+                    && ui.global::<ViewportModel>().get_live_view_mode() == 0
+                {
+                    let ctx = render_ctx_select
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    resubmit_live_solid(&ui, &ctx, &preview_state_select);
+                }
             }
         });
 

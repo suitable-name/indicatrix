@@ -27,6 +27,9 @@ export global RemoteWorkerModel {
     in property <int> claim_result_index: -1;
     in property <bool> claim_result_is_error: false;
     in property <string> claimed_cert_dir: "";
+    // Suggested render address after a successful claim: the enrollment host on the
+    // worker's default serve port (the dialog fills an empty Address field with it).
+    in property <string> claimed_address: "";
 
     callback pick_cert_dir(string) -> string;
     callback denoise_toggled(bool);

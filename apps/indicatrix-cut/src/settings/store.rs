@@ -300,6 +300,50 @@ mod tests {
     }
 
     #[test]
+    fn editor_layout_settings_round_trip_through_save_and_load() {
+        let dir = TempDir::new("editor-layout");
+        let path = dir.path().join("settings.toml");
+
+        let mut custom = SettingsFile::default();
+        custom.settings.editor_dock_width = 620.0;
+        custom.settings.editor_inspector_height = 310.0;
+        custom.settings.editor_settings_collapsed = true;
+        custom.settings.editor_inspector_collapsed = true;
+        custom.settings.editor_remap_collapsed = true;
+        custom.settings.editor_layout_touched = true;
+        save(&path, &custom).unwrap();
+
+        let loaded = load_or_default(&path);
+        assert_eq!(loaded.settings.editor_dock_width, 620.0);
+        assert_eq!(loaded.settings.editor_inspector_height, 310.0);
+        assert!(loaded.settings.editor_settings_collapsed);
+        assert!(loaded.settings.editor_inspector_collapsed);
+        assert!(loaded.settings.editor_remap_collapsed);
+        assert!(loaded.settings.editor_layout_touched);
+    }
+
+    #[test]
+    fn missing_editor_layout_keys_default_to_the_old_fixed_layout() {
+        let dir = TempDir::new("editor-layout-missing-key");
+        let path = dir.path().join("settings.toml");
+        std::fs::write(&path, "[settings]\nexposure = 1.0\n").unwrap();
+
+        let loaded = load_or_default(&path);
+        assert_eq!(
+            loaded.settings.editor_dock_width,
+            AppSettings::default().editor_dock_width
+        );
+        assert_eq!(
+            loaded.settings.editor_inspector_height,
+            AppSettings::default().editor_inspector_height
+        );
+        assert!(!loaded.settings.editor_settings_collapsed);
+        assert!(!loaded.settings.editor_inspector_collapsed);
+        assert!(!loaded.settings.editor_remap_collapsed);
+        assert!(!loaded.settings.editor_layout_touched);
+    }
+
+    #[test]
     fn solid_view_mode_round_trips_through_save_and_load() {
         let dir = TempDir::new("solid-view-mode");
         let path = dir.path().join("settings.toml");
@@ -321,6 +365,30 @@ mod tests {
         let path = dir.path().join("settings.toml");
         std::fs::write(&path, "[settings]\nexposure = 1.0\n").unwrap();
         assert_eq!(load_or_default(&path).settings.solid_view_mode, 0);
+    }
+
+    #[test]
+    fn live_view_mode_round_trips_through_save_and_load() {
+        let dir = TempDir::new("live-view-mode");
+        let path = dir.path().join("settings.toml");
+
+        let mut solid = SettingsFile::default();
+        solid.settings.live_view_mode = 0;
+        save(&path, &solid).unwrap();
+        assert_eq!(load_or_default(&path).settings.live_view_mode, 0);
+
+        let mut traced = SettingsFile::default();
+        traced.settings.live_view_mode = 1;
+        save(&path, &traced).unwrap();
+        assert_eq!(load_or_default(&path).settings.live_view_mode, 1);
+    }
+
+    #[test]
+    fn missing_live_view_mode_key_defaults_to_path_traced() {
+        let dir = TempDir::new("live-view-mode-missing-key");
+        let path = dir.path().join("settings.toml");
+        std::fs::write(&path, "[settings]\nexposure = 1.0\n").unwrap();
+        assert_eq!(load_or_default(&path).settings.live_view_mode, 1);
     }
 
     #[test]

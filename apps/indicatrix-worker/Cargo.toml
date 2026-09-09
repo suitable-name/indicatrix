@@ -7,7 +7,6 @@ authors = { workspace = true }
 description = "Library server for a indicatrix-backed design catalogue (`serve`, default build): serves indicatrix-net's read-only design-library protocol over mutual TLS. The optional `worker` feature adds render capacity on top -- accepting RenderRequests and replying with traced radiance -- and `render` a one-shot scene-to-PNG CLI."
 license = { workspace = true }
 repository = { workspace = true }
-homepage = { workspace = true }
 documentation = { workspace = true }
 keywords = ["gemstone", "raytracer", "server", "rendering", "spectral"]
 categories = ["command-line-utilities", "network-programming", "rendering"]

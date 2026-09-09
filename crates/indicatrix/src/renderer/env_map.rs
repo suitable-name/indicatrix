@@ -41,7 +41,13 @@ mod env_map_spectrum;
 // private submodule nested here (not a sibling `renderer::env_map_distribution`) so
 // there is exactly one module path for these types; `env_map_gpu.rs` reaches them via
 // this re-export, `crate::renderer::env_map::{Distribution1D, Distribution2D}`.
-pub(crate) use env_map_distribution::{Distribution1D, Distribution2D};
+// `Distribution1D` itself is named only by that `feature = "gpu"` consumer (and
+// `renderer::gpu::transport_check::nee`, same feature) -- `Distribution2D` is used
+// unconditionally within this module (the `EnvironmentMap::distribution` field type),
+// so only the former needs gating.
+#[cfg(feature = "gpu")]
+pub(crate) use env_map_distribution::Distribution1D;
+pub(crate) use env_map_distribution::Distribution2D;
 pub use env_map_spectrum::rgb_to_spectral_radiance;
 
 /// Errors constructing an [`EnvironmentMap`].
@@ -195,6 +201,8 @@ impl EnvironmentMap {
     /// `renderer::env_map_gpu::HdrEnvGpuData::upload` (finding G6) can build the
     /// `vec4<f32>`-padded storage buffer `spectral_transport.wgsl`'s `hdr_texels`
     /// binding reads, without duplicating this type's own row-major layout convention.
+    /// `feature = "gpu"`: only that GPU-upload path calls this.
+    #[cfg(feature = "gpu")]
     #[must_use]
     pub(crate) fn pixels(&self) -> &[[f32; 3]] {
         &self.pixels
@@ -207,7 +215,9 @@ impl EnvironmentMap {
     /// arrays into the storage buffers `spectral_transport.wgsl`'s `dist1d_find_bucket`/
     /// `dist2d_sample`/`dist2d_pdf` binary-search, without duplicating this type's own
     /// row-major layout convention. `renderer::gpu::transport_check`'s Tier 2 self-test
-    /// uses the same accessor to upload an independent synthetic map.
+    /// uses the same accessor to upload an independent synthetic map. `feature = "gpu"`:
+    /// both callers only exist under that feature.
+    #[cfg(feature = "gpu")]
     #[must_use]
     pub(crate) const fn distribution(&self) -> &Distribution2D {
         &self.distribution

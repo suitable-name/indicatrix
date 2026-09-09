@@ -109,4 +109,35 @@ export global EditorModel {
     callback optimize_apply();
 
     in property <[string]> manufacturability_warnings: [];
+
+    // The Edit-mode layout split (`editor_view.slint`/`editor_command_bar.slint`/
+    // `editor_inspector.slint`): the command bar's current hover hint (one line,
+    // shown under the button row -- see `EditorCommandBar`'s own doc comment),
+    // and which of the inspector's Tier/Preform/Optimize tabs is showing (see
+    // `EditorInspector`'s own doc comment). Purely Slint-local UI state -- Rust
+    // never reads either.
+    in-out property <string> hover_hint: "";
+    in-out property <int> inspector_tab: 0;
+
+    // The resizable/collapsible dock layout: `dock_width` is the
+    // viewport|dock split (`app.slint`'s edit-mode row, dragged via
+    // `SplitHandle`), `inspector_height` the table|inspector split
+    // (`editor_view.slint`, same handle). The three `*_collapsed` flags gate
+    // `SectionHeader`-wrapped sections in `editor_design_settings.slint`
+    // (`settings_collapsed`/`remap_collapsed`) and `editor_inspector.slint`
+    // (`inspector_collapsed`). Every one of the five is persisted -- see
+    // `gui::editor_layout` (Rust) -- via `layout_changed`, fired after each
+    // one's own value has already been updated, so a listener always reads
+    // the new value, never the old one.
+    in-out property <length> dock_width: 640px;
+    in-out property <length> inspector_height: 260px;
+    in-out property <bool> settings_collapsed: false;
+    in-out property <bool> inspector_collapsed: false;
+    in-out property <bool> remap_collapsed: false;
+    callback layout_changed();
+    changed dock_width => { layout_changed(); }
+    changed inspector_height => { layout_changed(); }
+    changed settings_collapsed => { layout_changed(); }
+    changed inspector_collapsed => { layout_changed(); }
+    changed remap_collapsed => { layout_changed(); }
 }

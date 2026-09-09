@@ -1,6 +1,7 @@
 //! Computes a stable content hash of this crate's own `src/**/*.rs` and `src/**/*.wgsl`
-//! tree (plus `Cargo.toml`) and exposes it to `lib.rs` as the `INDICATRIX_BUILD_ID` env var,
-//! which `lib.rs` re-exports as `indicatrix::BUILD_ID`.
+//! tree (plus `Cargo.toml`) and exposes it to `lib.rs` as `INDICATRIX_SOURCE_HASH`
+//! (`indicatrix::SOURCE_HASH`, a diagnostic), and a hash of the crate version as
+//! `INDICATRIX_BUILD_ID` (`indicatrix::BUILD_ID`, the handshake identity).
 //!
 //! # Why this exists
 //!
@@ -171,6 +172,7 @@ fn main() {
     // UNKNOWN_BUILD_HASH, which verify_compatible refuses unconditionally.
     if rel_paths.is_empty() {
         println!("cargo:rerun-if-changed={}", src_dir.display());
+        println!("cargo:rustc-env=INDICATRIX_SOURCE_HASH=unknown");
         println!("cargo:rustc-env=INDICATRIX_BUILD_ID=unknown");
         return;
     }
@@ -212,6 +214,26 @@ fn main() {
     println!("cargo:rerun-if-changed={}", src_dir.display());
     println!("cargo:rerun-if-changed={}", cargo_toml.display());
 
-    let build_id = format!("{hash:016x}");
+    let source_hash = format!("{hash:016x}");
+    println!("cargo:rustc-env=INDICATRIX_SOURCE_HASH={source_hash}");
+
+    // The handshake identity is keyed on the crate VERSION, not on the source hash: a
+    // worker built on Linux and a viewer built on Windows from the same release must
+    // pair even when their checkouts differ in metadata, docs, or platform-only code.
+    // The physics-parity guarantee therefore rests on the release rule "bump the
+    // version whenever anything under src/ that affects a traced sample changes"; the
+    // source hash above stays available as `indicatrix::SOURCE_HASH` for diagnostics.
+    // `CARGO_PKG_VERSION` is the package's resolved version: cargo substitutes a
+    // `version = { workspace = true }` inheritance before running this script, and
+    // `cargo package` writes the literal version into the published manifest, so a
+    // workspace build and a crates.io build of the same release agree. An empty or
+    // missing value must not hash into a plausible id, so it falls back to the
+    // `unknown` sentinel the handshake refuses.
+    let build_id = match std::env::var("CARGO_PKG_VERSION") {
+        Ok(version) if !version.trim().is_empty() => {
+            format!("{:016x}", fnv1a_update(FNV_OFFSET_BASIS, version.trim().as_bytes()))
+        }
+        _ => "unknown".to_string(),
+    };
     println!("cargo:rustc-env=INDICATRIX_BUILD_ID={build_id}");
 }

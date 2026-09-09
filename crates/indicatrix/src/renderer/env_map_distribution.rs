@@ -136,7 +136,9 @@ impl Distribution1D {
     /// `shaders/spectral_transport.wgsl`'s `dist1d_find_bucket`/`dist1d_sample_continuous`
     /// binary-search the SAME values [`Self::find_bucket`] does, and what
     /// `renderer::gpu::transport_check`'s Tier 2 check uploads for its own standalone
-    /// kernel. `pub(crate)`: GPU-upload/self-test visibility only.
+    /// kernel. `pub(crate)`: GPU-upload/self-test visibility only. `feature = "gpu"`:
+    /// both callers only exist under that feature.
+    #[cfg(feature = "gpu")]
     #[must_use]
     pub(crate) fn cdf(&self) -> &[f32] {
         &self.cdf
@@ -146,6 +148,8 @@ impl Distribution1D {
     /// which is exactly `func[offset].max(0.0) / func_int` (or the uniform-fallback
     /// `1.0`). Uploaded alongside [`Self::cdf`] so the GPU port's `dist1d_pdf` can
     /// reproduce that same division. `pub(crate)`: GPU-upload/self-test visibility only.
+    /// `feature = "gpu"`: only that GPU-upload path calls this.
+    #[cfg(feature = "gpu")]
     #[must_use]
     pub(crate) fn func(&self) -> &[f32] {
         &self.func
@@ -155,7 +159,8 @@ impl Distribution1D {
     /// fallback -- see [`Self::bucket_pdf`]'s own `func_int > 0.0` branch). Uploaded as
     /// part of the GPU dims/integral uniform so `dist1d_pdf` can reproduce
     /// [`Self::bucket_pdf`]'s exact branch and division. `pub(crate)`: GPU-upload/
-    /// self-test visibility only.
+    /// self-test visibility only. `feature = "gpu"`: only that GPU-upload path calls this.
+    #[cfg(feature = "gpu")]
     #[must_use]
     pub(crate) const fn func_int(&self) -> f32 {
         self.func_int
@@ -225,7 +230,9 @@ impl Distribution2D {
     /// [`super::env_map_gpu::HdrEnvGpuData::upload`] and
     /// `renderer::gpu::transport_check`'s Tier 2 self-test both need direct access to the
     /// underlying [`Distribution1D`]s to build the GPU-side flattened cdf/func buffers --
-    /// see that module's own doc comment for the exact layout.
+    /// see that module's own doc comment for the exact layout. `feature = "gpu"`: both
+    /// callers only exist under that feature.
+    #[cfg(feature = "gpu")]
     #[must_use]
     pub(crate) const fn marginal(&self) -> &Distribution1D {
         &self.marginal
@@ -233,6 +240,8 @@ impl Distribution2D {
 
     /// One [`Distribution1D`] per row -- see [`Self::sample`]'s `u` draw, conditioned on
     /// the row `v` picked. `pub(crate)`: same visibility rationale as [`Self::marginal`].
+    /// `feature = "gpu"`: same reason as [`Self::marginal`].
+    #[cfg(feature = "gpu")]
     #[must_use]
     pub(crate) fn conditional(&self) -> &[Distribution1D] {
         &self.conditional
@@ -240,6 +249,8 @@ impl Distribution2D {
 
     /// Row count -- same value passed to [`Self::new`]'s own `height` (after its
     /// `.max(1)` floor). `pub(crate)`: same visibility rationale as [`Self::marginal`].
+    /// `feature = "gpu"`: same reason as [`Self::marginal`].
+    #[cfg(feature = "gpu")]
     #[must_use]
     pub(crate) const fn height(&self) -> usize {
         self.height
@@ -248,6 +259,8 @@ impl Distribution2D {
     /// Column count -- every row shares the same width by construction (`Self::new`
     /// slices `func` into `height` same-`width` chunks), so this reads it off row 0's own
     /// [`Distribution1D::n`]. `pub(crate)`: same visibility rationale as [`Self::marginal`].
+    /// `feature = "gpu"`: same reason as [`Self::marginal`].
+    #[cfg(feature = "gpu")]
     #[must_use]
     pub(crate) fn width(&self) -> usize {
         self.conditional[0].n()

@@ -301,6 +301,8 @@ fn setup_claim_token_callback(ui: &MainWindow) {
                 .set_claim_result_text("".into());
             ui.global::<RemoteWorkerModel>()
                 .set_claimed_cert_dir("".into());
+            ui.global::<RemoteWorkerModel>()
+                .set_claimed_address("".into());
 
             let settings_dir = crate::settings::store::default_settings_path()
                 .parent()
@@ -309,6 +311,8 @@ fn setup_claim_token_callback(ui: &MainWindow) {
             let worker_name = worker_name.to_string();
             let enroll_addr = enroll_addr.to_string();
             let token = token.to_string();
+            let suggested_address =
+                crate::bridge::remote::enroll::suggested_serve_address(&enroll_addr);
             let ui_weak_result = ui.as_weak();
             std::thread::spawn(move || {
                 let bundle_dir =
@@ -329,6 +333,8 @@ fn setup_claim_token_callback(ui: &MainWindow) {
                             );
                             ui.global::<RemoteWorkerModel>()
                                 .set_claimed_cert_dir(dir.display().to_string().into());
+                            ui.global::<RemoteWorkerModel>()
+                                .set_claimed_address(suggested_address.into());
                         }
                         Err(message) => {
                             ui.global::<RemoteWorkerModel>()

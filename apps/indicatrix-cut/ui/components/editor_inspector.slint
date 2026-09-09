@@ -1,0 +1,346 @@
+import { ScrollView, Button, LineEdit, ComboBox } from "std-widgets.slint";
+import { EditorTierItem, OptimizeResultRow } from "../types.slint";
+import { Theme } from "../theme.slint";
+import { EditorModel } from "../models/editor.slint";
+import { SectionHeader } from "section_header.slint";
+
+component InspectorTabPill inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked();
+
+    height: 26px;
+    background: root.active ? Theme.primary : (touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent-cyan : Theme.border-subtle;
+
+    touch := TouchArea { clicked => { root.clicked(); } }
+
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        alignment: center;
+        Text {
+            text: root.label;
+            font-size: 11px;
+            font-weight: 600;
+            color: root.active ? Theme.text-on-primary : Theme.text-secondary;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// The Edit sub-tab's per-tier/preform/optimize inspector -- a resizable dock
+// panel below the tier table, tabbed instead of the old always-visible right
+// column, since the tier table needed the width and vertical room the old layout
+// gave the toolbar/banners/design settings instead (see `app.slint`'s Edit-mode
+// layout doc comment). `EditorModel.inspector_tab` (0 = Tier, 1 = Preform,
+// 2 = Optimize) tracks which tab is showing. Its own `SectionHeader` (title
+// "INSPECTOR") carries the tab pills in its right-side slot, so switching tabs
+// (which also re-expands the section, per each pill's own `clicked` below)
+// stays reachable even while collapsed.
+export component EditorInspector inherits Rectangle {
+    // Header-row-only height while collapsed (the `SectionHeader`'s own 24px
+    // plus this component's 8px top/bottom padding) -- see `EditorModel.
+    // inspector_collapsed`'s own doc comment (`ui/models/editor.slint`).
+    property <length> header_height: 40px;
+    height: EditorModel.inspector_collapsed ? root.header_height : EditorModel.inspector_height;
+    background: Theme.bg-darkest;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    clip: true;
+
+    // Tier-edit form scratch state -- doubles as the current value's display
+    // (seeded from the selection via `load_tier_into_form`, called by
+    // `EditorView` when `EditorTierTable.tier_selected` fires) and the user's
+    // in-progress edit, via a two-way `<=>` alias, the same idiom
+    // `remote_worker_dialog.slint`'s `form_*` fields use. Nothing commits until
+    // "Save Tier"/"Add Tier" below.
+    property <string> tier_angle: "0.0";
+    property <int> tier_constraint_kind: 0;
+    property <string> tier_constraint_text: "";
+    property <string> tier_name: "";
+    property <string> tier_indices: "";
+
+    public function load_tier_into_form(idx: int) {
+        if idx < 0 || idx >= EditorModel.tiers.length {
+            return;
+        }
+        EditorModel.selected_tier_index = idx;
+        root.tier_angle = EditorModel.tiers[idx].angle_deg;
+        root.tier_constraint_kind = EditorModel.tiers[idx].constraint_kind;
+        root.tier_constraint_text = EditorModel.tiers[idx].constraint_text;
+        root.tier_name = EditorModel.tiers[idx].name;
+        root.tier_indices = EditorModel.tiers[idx].indices;
+    }
+
+    // Up/Down/Shift/Ctrl step this scratch buffer the SAME +-0.1/1/0.01deg the
+    // tier table's inline cell uses, but purely as local text here -- this form
+    // is a staging area (nothing commits until "Save Tier"/"Add Tier" below),
+    // unlike the inline cell, which nudges an EXISTING tier immediately and
+    // undoably. Nudging an as-yet-unsaved "Add Tier" draft has no `Design` edit
+    // to apply in the first place.
+    function stepped_angle_text(current: string, shift: bool, ctrl: bool, sign: float) -> string {
+        if shift {
+            return (current.to-float() + sign * 1.0).to-fixed(2);
+        } else if ctrl {
+            return (current.to-float() + sign * 0.01).to-fixed(2);
+        }
+        return (current.to-float() + sign * 0.1).to-fixed(2);
+    }
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+
+        SectionHeader {
+            title: "INSPECTOR";
+            collapsed: EditorModel.inspector_collapsed;
+            toggled => { EditorModel.inspector_collapsed = !EditorModel.inspector_collapsed; }
+
+            HorizontalLayout {
+                spacing: 6px;
+                // Each pill also re-expands the section -- switching tabs
+                // while collapsed must be visibly useful, not just recorded
+                // for whenever the section next opens.
+                InspectorTabPill {
+                    label: "Tier";
+                    active: EditorModel.inspector_tab == 0;
+                    clicked => { EditorModel.inspector_tab = 0; EditorModel.inspector_collapsed = false; }
+                }
+                InspectorTabPill {
+                    label: "Preform";
+                    active: EditorModel.inspector_tab == 1;
+                    clicked => { EditorModel.inspector_tab = 1; EditorModel.inspector_collapsed = false; }
+                }
+                InspectorTabPill {
+                    label: "Optimize";
+                    active: EditorModel.inspector_tab == 2;
+                    clicked => { EditorModel.inspector_tab = 2; EditorModel.inspector_collapsed = false; }
+                }
+            }
+        }
+
+        if !EditorModel.inspector_collapsed: ScrollView {
+            VerticalLayout {
+                spacing: 8px;
+
+                if EditorModel.inspector_tab == 0: VerticalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: EditorModel.selected_tier_index < 0 ? "Add Tier" : "Edit Tier #" + (EditorModel.selected_tier_index + 1);
+                        font-size: 12px;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                    }
+                    Rectangle {
+                        height: angle_lbl.preferred-height;
+                        Tooltip { text: @markdown("Angle from the girdle plane in degrees. Negative is pavilion, zero or positive is crown."); }
+                        angle_lbl := Text { text: "Angle (deg)"; font-size: 10px; color: Theme.text-muted; }
+                    }
+                    LineEdit {
+                        text <=> root.tier_angle;
+                        key-pressed(event) => {
+                            if event.text == Key.UpArrow {
+                                root.tier_angle = root.stepped_angle_text(root.tier_angle, event.modifiers.shift, event.modifiers.control, 1.0);
+                                return accept;
+                            } else if event.text == Key.DownArrow {
+                                root.tier_angle = root.stepped_angle_text(root.tier_angle, event.modifiers.shift, event.modifiers.control, -1.0);
+                                return accept;
+                            }
+                            reject
+                        }
+                    }
+                    // What this facet meets, not a depth number -- the constraint
+                    // is the authored value; the mast (shown read-only in the
+                    // tier table) is only ever solved.
+                    Rectangle {
+                        height: meets_lbl.preferred-height;
+                        Tooltip { text: @markdown("How the depth is derived: an unnamed meet, named facets, or a stated dimension (anchor)."); }
+                        meets_lbl := Text { text: "Meets"; font-size: 10px; color: Theme.text-muted; }
+                    }
+                    ComboBox {
+                        model: ["Unspecified vertex", "Named facet(s)", "Exact scale value"];
+                        current-index <=> root.tier_constraint_kind;
+                    }
+                    if root.tier_constraint_kind == 1: Text { text: "Facet names (comma-separated)"; font-size: 10px; color: Theme.text-muted; }
+                    if root.tier_constraint_kind == 2: Text { text: "Scale value (a real dimension, e.g. girdle half-width)"; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
+                    if root.tier_constraint_kind != 0: LineEdit { text <=> root.tier_constraint_text; }
+                    Rectangle {
+                        height: name_lbl.preferred-height;
+                        Tooltip { text: @markdown("Facet name, referenced by other tiers' named-facet field."); }
+                        name_lbl := Text { text: "Name"; font-size: 10px; color: Theme.text-muted; }
+                    }
+                    LineEdit { text <=> root.tier_name; }
+                    Rectangle {
+                        height: indices_lbl.preferred-height;
+                        Tooltip { text: @markdown("Gear positions this tier occupies, comma-separated. Several values form a symmetric family."); }
+                        indices_lbl := Text { text: "Indices (comma-separated)"; font-size: 10px; color: Theme.text-muted; }
+                    }
+                    LineEdit { text <=> root.tier_indices; }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Button {
+                            text: EditorModel.selected_tier_index < 0 ? "Add Tier" : "Save Tier";
+                            clicked => {
+                                EditorModel.save_tier(EditorModel.selected_tier_index, root.tier_angle, root.tier_constraint_kind, root.tier_constraint_text, root.tier_name, root.tier_indices);
+                            }
+                        }
+                        Button {
+                            text: "New";
+                            clicked => {
+                                EditorModel.selected_tier_index = -1;
+                                root.tier_angle = "0.0";
+                                root.tier_constraint_kind = 0;
+                                root.tier_constraint_text = "";
+                                root.tier_name = "";
+                                root.tier_indices = "";
+                            }
+                        }
+                    }
+                }
+
+                if EditorModel.inspector_tab == 1: VerticalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        height: preform_lbl.preferred-height;
+                        Tooltip { text: @markdown("Starting rough shape and size the design's blank is built from."); }
+                        preform_lbl := Text { text: "Preform"; font-size: 12px; font-weight: 700; color: Theme.text-primary; }
+                    }
+                    ComboBox {
+                        model: ["Block", "Cylinder"];
+                        current-index <=> EditorModel.preform_shape_index;
+                    }
+                    Text { text: "Half-Width"; font-size: 10px; color: Theme.text-muted; }
+                    LineEdit { text <=> EditorModel.preform_half_width; }
+                    Text { text: "Length / Width"; font-size: 10px; color: Theme.text-muted; }
+                    LineEdit { text <=> EditorModel.preform_length_over_width; }
+                    Text { text: "Depth"; font-size: 10px; color: Theme.text-muted; }
+                    LineEdit { text <=> EditorModel.preform_depth; }
+                    Button {
+                        text: "Apply Preform";
+                        clicked => {
+                            EditorModel.apply_preform(EditorModel.preform_shape_index, EditorModel.preform_half_width, EditorModel.preform_length_over_width, EditorModel.preform_depth);
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                    // --- Real units, the rough, and yield.
+                    Text { text: "Yield"; font-size: 12px; font-weight: 700; color: Theme.text-primary; }
+                    Rectangle {
+                        height: girdle_lbl.preferred-height;
+                        Tooltip { text: @markdown("Real girdle diameter in millimetres, used for the carat estimate."); }
+                        girdle_lbl := Text { text: "Girdle Diameter (mm)"; font-size: 10px; color: Theme.text-muted; }
+                    }
+                    LineEdit { text <=> EditorModel.girdle_diameter_mm; placeholder-text: "unset"; }
+                    // Distinct from `gem_viewport.slint`'s unrelated Render
+                    // Material control -- this one is specific gravity only, for
+                    // the carat estimate; it never touches the render.
+                    Rectangle {
+                        height: yield_material_lbl.preferred-height;
+                        Tooltip { text: @markdown("Yield Material -- specific gravity for the carat estimate. Does not affect the render."); }
+                        yield_material_lbl := Text { text: "Yield Material"; font-size: 10px; color: Theme.text-muted; }
+                    }
+                    ComboBox {
+                        // EXACT order of `gui::editor::MATERIAL_PRESET_NAMES` --
+                        // kept in sync by hand.
+                        model: ["(none)", "Diamond", "Sapphire", "Ruby", "Emerald", "Zircon", "Alexandrite", "Topaz", "Spinel", "Quartz", "Tourmaline", "Tanzanite", "Synthetic Moissanite", "Cubic Zirconia"];
+                        current-index <=> EditorModel.material_index;
+                    }
+                    Rectangle {
+                        height: sg_override_lbl.preferred-height;
+                        Tooltip { text: @markdown("Specific gravity for the carat estimate. Does not affect the render."); }
+                        sg_override_lbl := Text { text: "Specific Gravity Override"; font-size: 10px; color: Theme.text-muted; }
+                    }
+                    LineEdit { text <=> EditorModel.specific_gravity_override; placeholder-text: "use material default"; }
+                    Button {
+                        text: "Apply Yield Inputs";
+                        clicked => {
+                            EditorModel.apply_yield_inputs(EditorModel.girdle_diameter_mm, EditorModel.material_index, EditorModel.specific_gravity_override);
+                        }
+                    }
+
+                    // Read-only results; go blank until the next Solve.
+                    Text { text: "Volumetric Yield: " + (EditorModel.volumetric_yield_text == "" ? "-" : EditorModel.volumetric_yield_text); font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                    Text { text: "Est. Carat Weight: " + (EditorModel.carat_weight_text == "" ? "-" : EditorModel.carat_weight_text); font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                    Text { text: "Specific Gravity Used: " + (EditorModel.specific_gravity_used_text == "" ? "-" : EditorModel.specific_gravity_used_text); font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                }
+
+                // --- Optimize -- see `optimize_available` above for the
+                // zero-free-tiers case every freshly imported design starts in
+                // (correct, not broken).
+                if EditorModel.inspector_tab == 2: VerticalLayout {
+                    spacing: 8px;
+                    Text { text: "Optimize"; font-size: 12px; font-weight: 700; color: Theme.text-primary; }
+                    Rectangle {
+                        height: weights_lbl.preferred-height;
+                        Tooltip { text: @markdown("Relative importance, any positive number. 1.0 is neutral."); }
+                        weights_lbl := Text { text: "Weights: windowing / extinction / tilt brilliance"; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        LineEdit { text <=> EditorModel.optimize_weight_windowing; }
+                        LineEdit { text <=> EditorModel.optimize_weight_extinction; }
+                        LineEdit { text <=> EditorModel.optimize_weight_tilt_brilliance; }
+                    }
+                    // Non-numeric/negative input is rejected Rust-side
+                    // (surfaced as an error toast) before it reaches `optimize_design`.
+                    Text {
+                        text: "Relative weight, any positive number. Higher matters more.";
+                        font-size: 9px;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+
+                    // Hint / running status / result -- same problem/all-clear/
+                    // running color convention Deep Solve uses.
+                    if EditorModel.optimize_hint != "" || EditorModel.optimize_status != "": Rectangle {
+                        background: Theme.bg-input;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: EditorModel.optimize_running ? Theme.accent-amber : (EditorModel.optimize_status != "" ? (EditorModel.optimize_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.border-subtle);
+                        VerticalLayout {
+                            padding: 6px;
+                            spacing: 4px;
+                            Text {
+                                text: EditorModel.optimize_running ? EditorModel.optimize_status : (EditorModel.optimize_status != "" ? EditorModel.optimize_status : EditorModel.optimize_hint);
+                                font-size: 10px;
+                                color: EditorModel.optimize_running ? Theme.accent-amber : (EditorModel.optimize_status != "" ? (EditorModel.optimize_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.text-muted);
+                                wrap: word-wrap;
+                            }
+                            // Per-component before/after: windowing/extinction/tilt
+                            // brilliance each get their own row, with the blended
+                            // score as a separate fourth row, rather than one number
+                            // that could hide a trade-off.
+                            if EditorModel.optimize_result_rows.length > 0: VerticalLayout {
+                                spacing: 2px;
+                                for row in EditorModel.optimize_result_rows: HorizontalLayout {
+                                    spacing: 4px;
+                                    Text { horizontal-stretch: 1; text: row.label; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                                    Text { text: row.before; font-size: 10px; color: Theme.text-muted; }
+                                    Text { text: "->"; font-size: 10px; color: Theme.text-muted; }
+                                    Text { text: row.after; font-size: 10px; font-weight: 600; color: Theme.text-primary; }
+                                }
+                            }
+                            // Only shown while there is a real, current (not stale)
+                            // result to commit. Goes through `History::apply`, never
+                            // a direct mutation, so it is undoable like every other edit.
+                            if EditorModel.optimize_can_apply: Rectangle {
+                                height: apply_optimize_btn.preferred-height;
+                                Tooltip { text: @markdown("Commit the Optimize result as an undoable edit."); }
+                                apply_optimize_btn := Button {
+                                    text: "Apply Optimize Result";
+                                    primary: true;
+                                    clicked => { EditorModel.optimize_apply(); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

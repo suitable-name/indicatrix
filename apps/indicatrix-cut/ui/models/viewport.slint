@@ -8,6 +8,20 @@ import { LightingPresetItem } from "../types.slint";
 export global ViewportModel {
     in property <image> render_image;
     in property <bool> has_render: false;
+    // Live Render tab's own Solid/Path-traced toggle -- `0` shows the fast CPU solid
+    // raster (`SolidPreviewModel.image`, forced to `view_mode` 0 regardless of the
+    // Edit tab's own choice -- see `gui::render::camera_lighting::resubmit_live_solid`),
+    // `1` (default) shows the spectral path tracer (`render_image` above), same as
+    // this tab's sole behaviour before this control existed. Hoisted here rather than
+    // local to `GemViewportView` for the same reason as `render_paused` below --
+    // reading a global survives that view being conditionally destroyed/recreated
+    // across tab switches. Gates the tracer itself, not just what's displayed: see
+    // `gui::render::detached_render::render_is_visible`.
+    in-out property <int> live_view_mode: 1;
+    // Persists `live_view_mode` through the debounced settings writer -- same pattern
+    // as `SolidPreviewModel.view_mode_changed`.
+    callback live_view_mode_changed(int);
+    changed live_view_mode => { live_view_mode_changed(live_view_mode); }
     // Hoisted here rather than local to `GemViewportView`: reading a global survives
     // that view being conditionally destroyed/recreated across tab switches, unlike a
     // local property, which would silently reset and desync from the render thread's

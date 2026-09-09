@@ -7,7 +7,6 @@ authors = { workspace = true }
 description = "Desktop faceting-design editor: library browsing, spectral 3D rendering, material retargeting, and a solid inspection view."
 license = { workspace = true }
 repository = { workspace = true }
-homepage = { workspace = true }
 documentation = { workspace = true }
 keywords = ["gemstone", "faceting", "gui", "slint", "rendering"]
 categories = ["gui", "graphics", "rendering"]

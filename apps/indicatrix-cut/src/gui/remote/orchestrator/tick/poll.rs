@@ -117,7 +117,19 @@ fn poll_tick(
             s.last_change_at.elapsed() >= SETTLE_DEBOUNCE,
         )
     };
-    if should_check_settle && elapsed_enough {
+    // The rendered image isn't visible anywhere right now (Solid mode on the Live
+    // Render tab, the Edit tab's own Solid/Diagram mode, or the render column simply
+    // off-screen -- see `RenderContext::tab_visible`'s doc comment) -- a remote worker
+    // would otherwise start spending GPU/cloud time on a frame nobody can see, exactly
+    // what local tracing is already suspended for via this same flag (`frame_helpers::
+    // SuspensionFlags::tracing_suspended`). The handoff machine's own `Previewing`
+    // state and `last_change_at` are left untouched, so a real settle is simply
+    // re-evaluated on the next tick once `tab_visible` goes true again.
+    let tab_visible = render_ctx
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .tab_visible;
+    if should_check_settle && elapsed_enough && tab_visible {
         // `LiveComputeTarget::LocalOnly` means "never hand off to remote at all", so
         // it's treated as no worker being configured right here, at the one place
         // `HandoffMachine` ever learns whether a worker is available; `bridge::handoff`

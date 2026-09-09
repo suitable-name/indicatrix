@@ -1,0 +1,182 @@
+import { Button } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { EditorModel } from "../models/editor.slint";
+
+// The Edit sub-tab's full detail-width status line, replacing the old stack of up
+// to five banners (validation/deep-solve/manufacturability/rough-fit/material
+// suggestion) that used to eat most of `EditorView`'s vertical room -- see
+// `app.slint`'s Edit-mode layout doc comment. Shows only the single
+// highest-priority message as a coloured dot + one line; "Log" opens
+// `EditorLogPopup` with every one of them in full, so nothing the old banners
+// showed is unreachable, only reordered behind one click.
+component EditorLogPopup inherits PopupWindow {
+    close-policy: PopupClosePolicy.no-auto-close;
+    width: 380px;
+    height: content.preferred-height;
+
+    property <bool> has_deep_solve: EditorModel.deep_solve_running || EditorModel.deep_solve_status != "" || !EditorModel.deep_solve_available || EditorModel.deep_solve_hint != "";
+
+    Rectangle {
+        background: #111827ee;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: #334155;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #000000ee;
+        drop-shadow-offset-y: 6px;
+        clip: true;
+
+        content := VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            HorizontalLayout {
+                alignment: space-between;
+                Text { text: "Editor Log"; font-size: 13px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
+                Rectangle {
+                    width: 24px;
+                    height: 24px;
+                    border-radius: 12px;
+                    background: close_touch.has-hover ? #1e293b : transparent;
+                    close_touch := TouchArea { clicked => { root.close(); } }
+                    Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+
+            // Validation status line -- the old green/ruby "Closed solid --
+            // volume …" banner's full text.
+            if EditorModel.status_text != "": HorizontalLayout {
+                spacing: 6px;
+                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: EditorModel.status_is_problem ? Theme.accent-ruby : Theme.accent-emerald; }
+                Text { horizontal-stretch: 1; text: EditorModel.status_text; font-size: 11px; font-weight: 600; color: EditorModel.status_is_problem ? Theme.accent-ruby : Theme.accent-emerald; wrap: word-wrap; }
+            }
+
+            // Deep Solve status/hint line.
+            if root.has_deep_solve: HorizontalLayout {
+                spacing: 6px;
+                Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: EditorModel.deep_solve_running ? Theme.accent-amber : (EditorModel.deep_solve_status != "" ? (EditorModel.deep_solve_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.text-muted);
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: EditorModel.deep_solve_running ? EditorModel.deep_solve_status : (EditorModel.deep_solve_status != "" ? EditorModel.deep_solve_status : EditorModel.deep_solve_hint);
+                    font-size: 11px;
+                    color: EditorModel.deep_solve_running ? Theme.accent-amber : (EditorModel.deep_solve_status != "" ? (EditorModel.deep_solve_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.text-muted);
+                    wrap: word-wrap;
+                }
+            }
+
+            // Manufacturability warnings -- every one, in full. Amber, never
+            // ruby: these are never treated as errors that stop anything, only
+            // things the user should look at.
+            if EditorModel.manufacturability_warnings.length > 0: VerticalLayout {
+                spacing: 3px;
+                Text { text: "Manufacturability (" + EditorModel.manufacturability_warnings.length + ")"; font-size: 11px; font-weight: 700; color: Theme.accent-amber; }
+                for w in EditorModel.manufacturability_warnings: Text { text: "- " + w; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+            }
+
+            // Does the design fit its rough?
+            if EditorModel.preform_fit_warning != "": VerticalLayout {
+                spacing: 3px;
+                Text { text: "Rough Fit"; font-size: 11px; font-weight: 700; color: Theme.accent-amber; }
+                Text { text: EditorModel.preform_fit_warning; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+            }
+
+            // Catalogue-load material suggestion, with its accept/dismiss
+            // actions kept exactly as the old banner offered them.
+            if EditorModel.material_suggestion_text != "": VerticalLayout {
+                spacing: 4px;
+                Text { text: EditorModel.material_suggestion_text; font-size: 11px; color: Theme.accent-cyan; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button { text: "Set Material"; clicked => { EditorModel.material_suggestion_accept(EditorModel.material_suggestion_name); } }
+                    Button { text: "No Thanks"; clicked => { EditorModel.material_suggestion_dismiss(); } }
+                }
+            }
+
+            if EditorModel.status_text == "" && !root.has_deep_solve && EditorModel.manufacturability_warnings.length == 0 && EditorModel.preform_fit_warning == "" && EditorModel.material_suggestion_text == "": Text {
+                text: "Nothing to report.";
+                font-size: 11px;
+                color: Theme.text-muted;
+            }
+        }
+    }
+}
+
+export component EditorStatusStrip inherits Rectangle {
+    height: 26px;
+    background: Theme.bg-input;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    property <bool> has_manuf: EditorModel.manufacturability_warnings.length > 0;
+    property <bool> has_preform_warn: EditorModel.preform_fit_warning != "";
+    property <bool> has_deep_solve: EditorModel.deep_solve_running || EditorModel.deep_solve_status != "" || !EditorModel.deep_solve_available || EditorModel.deep_solve_hint != "";
+    property <bool> has_validation: EditorModel.status_text != "";
+    property <bool> has_material_suggestion: EditorModel.material_suggestion_text != "";
+
+    // Priority order: manufacturability > rough fit > deep solve > validation >
+    // material suggestion -- see this component's own doc comment.
+    property <string> strip_text: root.has_manuf ? (EditorModel.manufacturability_warnings.length + " manufacturability warning(s)")
+        : root.has_preform_warn ? EditorModel.preform_fit_warning
+        : root.has_deep_solve ? (EditorModel.deep_solve_running ? EditorModel.deep_solve_status : (EditorModel.deep_solve_status != "" ? EditorModel.deep_solve_status : EditorModel.deep_solve_hint))
+        : root.has_validation ? EditorModel.status_text
+        : root.has_material_suggestion ? EditorModel.material_suggestion_text
+        : "Nothing to report.";
+
+    property <color> strip_color: root.has_manuf ? Theme.accent-amber
+        : root.has_preform_warn ? Theme.accent-amber
+        : root.has_deep_solve ? (EditorModel.deep_solve_running ? Theme.accent-amber : (EditorModel.deep_solve_status != "" ? (EditorModel.deep_solve_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.text-muted))
+        : root.has_validation ? (EditorModel.status_is_problem ? Theme.accent-ruby : Theme.accent-emerald)
+        : root.has_material_suggestion ? Theme.accent-cyan
+        : Theme.text-muted;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+
+        Rectangle {
+            width: 8px;
+            height: 8px;
+            border-radius: 4px;
+            background: root.strip_color;
+        }
+
+        Text {
+            horizontal-stretch: 1;
+            text: root.strip_text;
+            font-size: 11px;
+            color: root.strip_color;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        Rectangle {
+            width: log_label.preferred-width;
+            height: log_label.preferred-height;
+            log_label := Text { text: "Log \u{25B8}"; font-size: 11px; font-weight: 600; color: Theme.accent-cyan; vertical-alignment: center; }
+            log_touch := TouchArea { clicked => { log_popup.show(); } }
+        }
+    }
+
+    // --- MODAL BACKDROP FOR THE LOG POPUP --- same click-outside-to-close
+    // mechanism `header.slint` uses for its own popups (see `filter_panel.slint`'s
+    // doc comment for why `close-policy: no-auto-close` needs this backdrop).
+    if log_popup.is-open: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: #00000055;
+        z: 150;
+        TouchArea { clicked => { log_popup.close(); } }
+    }
+
+    log_popup := EditorLogPopup {
+        x: parent.width - self.width - 12px;
+        y: -self.height - 6px;
+    }
+}

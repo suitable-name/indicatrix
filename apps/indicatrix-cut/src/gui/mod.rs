@@ -7,6 +7,10 @@ mod batch;
 // makes the `indicatrix-cut-core` dependency itself optional).
 #[cfg(feature = "editor")]
 mod editor;
+// The Edit sub-tab's resizable-dock/collapsible-section layout persistence -- NOT
+// behind the `editor` feature, since `EditorModel` itself is always compiled in; see
+// this module's own doc comment.
+mod editor_layout;
 mod library;
 mod optics;
 mod remote;
@@ -19,6 +23,9 @@ pub mod solid_preview;
 // rather than requiring every caller to spell out `gui::startup_settings::`.
 mod startup_settings;
 mod tilt;
+// Fits the main window to its monitor on first show -- see the module doc for why the
+// .slint preferred size alone is not enough on Full HD displays.
+mod window_sizing;
 
 // `sync_range_bounds_to_ui` is defined in `library::diagram_list` but re-exported here
 // so its public path (`gui::sync_range_bounds_to_ui`) is unchanged for a downstream
@@ -93,21 +100,26 @@ pub fn main() -> anyhow::Result<()> {
 /// needs to keep the whole `MainWindowHandle` alive, never reach into its internals.
 pub struct MainWindowHandle {
     pub ui: MainWindow,
-    // Never read again after construction -- these three exist purely so dropping
-    // `MainWindowHandle` is what stops the render thread/settings autosave/handoff
-    // polling, not so anything downstream can inspect them. `#[expect(dead_code)]`
-    // rather than removing them: removing a field would drop it at the end of
-    // `build_main_window` instead of at the end of the caller's `MainWindowHandle`'s
-    // lifetime, which is the entire point of holding onto them here.
+    // `render_ctx`/`remote_rendering_timer` are never read again after construction --
+    // both exist purely so dropping `MainWindowHandle` is what stops the render thread/
+    // remote-rendering handoff polling, not so anything downstream can inspect them.
+    // `#[expect(dead_code)]` rather than removing them: removing a field would drop it
+    // at the end of `build_main_window` instead of at the end of the caller's
+    // `MainWindowHandle`'s lifetime, which is the entire point of holding onto them
+    // here. `settings_store` is the same kind of RAII guard (keeps the debounced
+    // settings writer alive) but is also read once, by `run_gui` right below, hence no
+    // `#[expect(dead_code)]` on it -- see that field's own comment.
     #[expect(
         dead_code,
         reason = "RAII guard field -- kept alive, never read; see comment above"
     )]
     render_ctx: Arc<Mutex<RenderContext>>,
-    #[expect(
-        dead_code,
-        reason = "RAII guard field -- kept alive, never read; see comment above"
-    )]
+    // Not `#[expect(dead_code)]` like its two siblings above/below: `run_gui` reads
+    // this field directly (`handle.settings_store.snapshot()`) to learn whether the
+    // Edit sub-tab's layout was ever touched, for `window_sizing::
+    // fit_initial_window_size`'s small-screen default. Still exists primarily as the
+    // same kind of RAII guard -- kept alive so the debounced settings writer keeps
+    // running for the life of the window -- but it is no longer *only* that.
     settings_store: Arc<SettingsPersister>,
     #[expect(
         dead_code,
@@ -126,7 +138,24 @@ pub struct MainWindowHandle {
 /// covers.
 pub fn run_gui() -> anyhow::Result<()> {
     let handle = build_main_window()?;
-    handle.ui.run()?;
+    // Spelled out instead of `MainWindow::run` so the monitor fit can be queued
+    // between `show` and the event loop (the winit window only exists once the loop
+    // turns -- see `window_sizing`).
+    handle.ui.show()?;
+    // Whether the user has ever touched the Edit sub-tab's layout -- read from the
+    // settings store's own in-memory snapshot (already seeded from disk by
+    // `editor_layout::apply_editor_layout_from_settings` above) rather than the UI's
+    // `EditorModel.dock_width`/etc. directly, since `fit_initial_window_size` only
+    // needs this one flag, not the whole layout. See `window_sizing`'s own doc
+    // comment for what it does with it.
+    let editor_layout_touched = handle
+        .settings_store
+        .snapshot()
+        .settings
+        .editor_layout_touched;
+    window_sizing::fit_initial_window_size(&handle.ui, editor_layout_touched);
+    slint::run_event_loop()?;
+    handle.ui.hide()?;
     Ok(())
 }
 
@@ -434,6 +463,10 @@ pub fn build_main_window() -> anyhow::Result<MainWindowHandle> {
     settings::store::migrate_legacy_settings_if_needed(&settings_path);
     let loaded_settings = settings::store::load_or_default(&settings_path);
     apply_loaded_settings(&ui, &render_ctx, &loaded_settings);
+    // The Edit sub-tab's resizable dock width / inspector height / collapsed
+    // sections -- see `editor_layout::apply_editor_layout_from_settings`'s own doc
+    // comment for why this runs before `setup_editor_layout_callbacks` below.
+    editor_layout::apply_editor_layout_from_settings(&ui, &loaded_settings.settings);
     refresh_lighting_preset_options(&ui, &loaded_settings.presets);
     // Remote rendering: the worker-list panel's rows, restored from the last saved
     // configuration.
@@ -445,8 +478,20 @@ pub fn build_main_window() -> anyhow::Result<MainWindowHandle> {
     // Detachable Live Render window: sub-tab/detach-toggle wiring, plus the shared
     // frame-routing target the render thread's own frame-push closure below also
     // mirrors into -- see `detached_render`'s module doc comment.
-    let detached_frame_target =
-        render::detached_render::setup_live_render_visibility_callbacks(&ui, &render_ctx);
+    let detached_frame_target = render::detached_render::setup_live_render_visibility_callbacks(
+        &ui,
+        &render_ctx,
+        &solid_preview_state,
+    );
+    // The settings load above (`apply_loaded_settings`/`apply_loaded_ui_mirrors`)
+    // already pushed the restored `ViewportModel.live_view_mode`/`SolidPreviewModel.
+    // view_mode` into the UI, but nothing had recomputed `render_ctx.tab_visible`
+    // against them yet -- it was still sitting at `RenderContext::default()`'s `true`.
+    // Without this, a session restored into Solid mode would keep tracing (wasting
+    // GPU/remote time, the very thing this gate exists to stop) until the user
+    // happened to touch a tab. One-time sync, now that every signal
+    // `detached_render::render_is_visible` reads is in place.
+    render::detached_render::recompute_tab_visible(&ui, &render_ctx);
 
     // Spawn Background Multi-Threaded Physically Based Spectral Raytracer
     let ui_weak_render = ui.as_weak();
@@ -524,6 +569,10 @@ pub fn build_main_window() -> anyhow::Result<MainWindowHandle> {
         .on_panel_collapsed_changed(move |collapsed: bool| {
             settings_store_panel.update(|s| s.settings.library_panel_collapsed = collapsed);
         });
+    // Persist the Edit sub-tab's resizable dock width / inspector height /
+    // collapsed sections the same way -- see `editor_layout::
+    // setup_editor_layout_callbacks`'s own doc comment.
+    editor_layout::setup_editor_layout_callbacks(&ui, &settings_store);
 
     setup_user_manual_callback(&ui);
     render::camera_lighting::setup_camera_and_lighting_callbacks(
@@ -557,6 +606,7 @@ pub fn build_main_window() -> anyhow::Result<MainWindowHandle> {
         &db,
         &library_source,
         &render_ctx,
+        &solid_preview_state,
     );
     // Tilt-performance filter rows (add/remove/clear-all) -- Rust-mediated but
     // UI-owned state.
@@ -589,13 +639,57 @@ pub fn build_main_window() -> anyhow::Result<MainWindowHandle> {
     );
     // Persist the Solid viewport's view mode through the same debounced writer every
     // other durable setting in this file goes through -- see
-    // `AppSettings::solid_view_mode`'s own doc comment.
+    // `AppSettings::solid_view_mode`'s own doc comment. Also recomputes
+    // `render_ctx.tab_visible`: this mode is one of the five signals
+    // `render::detached_render::render_is_visible` reads (the Edit tab traces live
+    // only in Path-traced/Both), so flipping it can turn the tracer on or off.
     let settings_store_solid_view_mode = settings_store.clone();
+    let render_ctx_solid_view_mode = render_ctx.clone();
+    let ui_weak_solid_view_mode = ui.as_weak();
     ui.global::<SolidPreviewModel>()
         .on_view_mode_changed(move |mode: i32| {
             settings_store_solid_view_mode.update(|s| {
                 s.settings.solid_view_mode = u8::try_from(mode).unwrap_or_default();
             });
+            if let Some(ui) = ui_weak_solid_view_mode.upgrade() {
+                render::detached_render::recompute_tab_visible(&ui, &render_ctx_solid_view_mode);
+            }
+        });
+    // Persist the Live Render tab's own view mode the same way -- see
+    // `AppSettings::live_view_mode`'s own doc comment. Same `recompute_tab_visible`
+    // reasoning as `solid_view_mode` above (the Live tab traces live only in
+    // Path-traced mode), plus two effects specific to this toggle:
+    // - Flipping TO Path-traced (`1`) must resume accumulation from the current
+    //   planes rather than showing whatever sample count was left over from the last
+    //   time this mode was visible (`ctx.dirty = true` forces a fresh restart, same as
+    //   every other scene-invalidating write to `RenderContext`).
+    // - Flipping TO Solid (`0`) must show the solid raster immediately, not wait for
+    //   the next camera drag or library selection to trigger a redraw
+    //   (`camera_lighting::resubmit_live_solid`).
+    let settings_store_live_view_mode = settings_store.clone();
+    let render_ctx_live_view_mode = render_ctx.clone();
+    let preview_state_live_view_mode = Arc::clone(&solid_preview_state);
+    let ui_weak_live_view_mode = ui.as_weak();
+    ui.global::<ViewportModel>()
+        .on_live_view_mode_changed(move |mode: i32| {
+            settings_store_live_view_mode.update(|s| {
+                s.settings.live_view_mode = u8::try_from(mode).unwrap_or_default();
+            });
+            let Some(ui) = ui_weak_live_view_mode.upgrade() else {
+                return;
+            };
+            render::detached_render::recompute_tab_visible(&ui, &render_ctx_live_view_mode);
+            let mut ctx = render_ctx_live_view_mode.lock().unwrap();
+            if mode == 1 {
+                ctx.dirty = true;
+            } else if mode == 0 {
+                render::camera_lighting::resubmit_live_solid(
+                    &ui,
+                    &ctx,
+                    &preview_state_live_view_mode,
+                );
+            }
+            drop(ctx);
         });
     // Persist the Edit sub-tab's auto-solve budget the same way -- see
     // `AppSettings::editor_auto_solve_budget_ms`'s own doc comment and

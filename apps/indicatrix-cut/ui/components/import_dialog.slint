@@ -79,11 +79,20 @@ export component ImportDialog inherits PopupWindow {
                     font-weight: 700;
                     color: Theme.text-primary;
                 }
-                Button {
-                    text: "×";
+                Rectangle {
                     width: 26px;
                     height: 26px;
-                    clicked => { root.close(); }
+                    border-radius: Theme.radius-sm;
+                    background: close_touch.has-hover ? Theme.bg-elevated : transparent;
+                    close_touch := TouchArea { clicked => { root.close(); } }
+                    Image {
+                        source: @image-url("../icons/close.svg");
+                        colorize: Theme.text-muted;
+                        width: 12px;
+                        height: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
             }
 

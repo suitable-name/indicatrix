@@ -7,7 +7,6 @@ authors = { workspace = true }
 description = "A physically-based spectral gemstone renderer that turns GemCAD-style cutting schedules into rendered output."
 license = { workspace = true }
 repository = { workspace = true }
-homepage = { workspace = true }
 documentation = "https://docs.rs/indicatrix"
 keywords = ["gemstone", "raytracer", "spectral", "rendering", "faceting"]
 categories = ["rendering", "graphics", "science"]

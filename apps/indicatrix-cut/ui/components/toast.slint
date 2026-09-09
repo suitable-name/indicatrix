@@ -9,6 +9,9 @@ export component Toast inherits Rectangle {
 
     visible: is_visible;
     width: 380px;
+    // A Rectangle outside a layout has no intrinsic size: with no `height` it fills
+    // its parent (the whole window). Size it to the wrapped content instead.
+    height: content.preferred-height;
     background: toast_type == "success" ? #064e3bcc : (toast_type == "error" ? #7f1d1dcc : #0f172acc);
     border-color: toast_type == "success" ? #10b981 : (toast_type == "error" ? #ef4444 : #38bdf8);
     border-width: 1px;
@@ -18,7 +21,7 @@ export component Toast inherits Rectangle {
     drop-shadow-offset-y: 6px;
     clip: true;
 
-    HorizontalLayout {
+    content := HorizontalLayout {
         padding-left: 14px;
         padding-right: 10px;
         padding-top: 10px;

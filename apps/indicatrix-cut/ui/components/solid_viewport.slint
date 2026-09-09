@@ -20,7 +20,10 @@ import { ViewportModel } from "../models/viewport.slint";
 // pixel layout is entirely different from the Solid rasterizer's.
 export component SolidViewportView inherits Rectangle {
     vertical-stretch: 1;
-    min-height: 380px;
+    min-height: 0px;
+    min-width: 0px;
+    preferred-height: 480px;
+    clip: true;
 
     // The "Not solved" banner takes precedence over mesh_cache status when the shown
     // solid is stale.
@@ -37,7 +40,6 @@ export component SolidViewportView inherits Rectangle {
     border-radius: Theme.radius-md;
     border-width: 1px;
     border-color: Theme.border-subtle;
-    clip: true;
 
     // Slint has no built-in way to report a widget's rendered size back to Rust (see
     // `bridge::render_thread::context::RenderContext`'s own `width`/`height` doc
@@ -171,7 +173,15 @@ export component SolidViewportView inherits Rectangle {
 
     // --- Mode toggle: Solid | Path-traced, same pill look as the Live Render/Edit
     // sub-tab buttons in `app.slint`.
+    // Explicit `x`/`y`/`width`/`height`: keeps this overlay's pill row from
+    // becoming the viewport's maximum WIDTH (an overlay child positioned by
+    // default propagates its constraints to the parent) -- see `app.slint`'s
+    // "Sizing notes".
     VerticalLayout {
+        x: 0px;
+        y: 0px;
+        width: 100%;
+        height: 100%;
         padding: 10px;
         alignment: space-between;
 

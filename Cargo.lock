@@ -2680,7 +2680,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "bytemuck",
  "chull",
@@ -2698,7 +2698,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-cut"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2724,7 +2724,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-cut-core"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "glam",
  "indicatrix",
@@ -2734,7 +2734,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-formats"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "serde",
  "sha2",
@@ -2743,7 +2743,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-net"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "bytemuck",
  "glam",
@@ -2758,7 +2758,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-vault"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "indicatrix-formats",
@@ -2769,7 +2769,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-web"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "console_error_panic_hook",
  "glam",
@@ -2786,7 +2786,7 @@ dependencies = [
 
 [[package]]
 name = "indicatrix-worker"
-version = "0.2.0"
+version = "0.2.2"
 dependencies = [
  "anyhow",
  "bytemuck",

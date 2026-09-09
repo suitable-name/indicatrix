@@ -46,6 +46,11 @@ export component RemoteWorkerDialog inherits PopupWindow {
         if (RemoteWorkerModel.claim_result_index == root.editing_index && root.claimed_cert_dir != "") {
             root.form_cert_dir = root.claimed_cert_dir;
             root.form_token = "";
+            // Save needs a render address; suggest the enrollment host on the
+            // worker's default serve port so a redeemed token is one click from saved.
+            if (root.form_address == "") {
+                root.form_address = RemoteWorkerModel.claimed_address;
+            }
         }
     }
 
@@ -400,6 +405,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                 height: enroll_addr_field.preferred-height;
                 Tooltip { text: @markdown("Paste the address and token from \"cert issue-token\" on the worker."); }
                 enroll_addr_field := LineEdit {
+                    width: 100%;
                     placeholder-text: "Enrollment address (host:port, from \"cert issue-token\")";
                     text <=> root.form_enroll_addr;
                 }
@@ -411,6 +417,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                     height: token_field.preferred-height;
                     Tooltip { text: @markdown("Paste the address and token from \"cert issue-token\" on the worker."); }
                     token_field := LineEdit {
+                        width: 100%;
                         placeholder-text: "Token (GW1-...)";
                         text <=> root.form_token;
                     }

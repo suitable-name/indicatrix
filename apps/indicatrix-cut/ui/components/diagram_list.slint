@@ -19,6 +19,11 @@ export component CollapsedLibraryRail inherits Rectangle {
 
     VerticalLayout {
         padding-top: 10px;
+        // `start`, not the default `stretch`: a stretch layout's maximum height
+        // is the sum of its children's, so this 28px icon would otherwise cap the
+        // whole main row (and, through it, the window) at 38px -- see
+        // `app.slint`'s "Sizing notes".
+        alignment: start;
 
         HorizontalLayout {
             alignment: center;

@@ -139,6 +139,10 @@ pub(crate) use scattering::{
     sample_henyey_greenstein_direction,
 };
 
+// Pure re-export shim of `scattering::balance_heuristic` for the pre-split
+// `raytracer::balance_heuristic` path -- only named by `renderer::gpu::transport_check`'s
+// Tier 2 harness (`nee.rs`), which this build may not compile without `feature = "gpu"`.
+#[cfg(feature = "gpu")]
 #[inline]
 #[must_use]
 pub(crate) fn balance_heuristic(pdf_a: f32, pdf_b: f32) -> f32 {

@@ -65,6 +65,13 @@ pub const DEFAULT_PREVIEW_SPP: u32 = 256;
 /// predating this control loads into the same view that already shipped as the sole
 /// mode.
 pub const DEFAULT_SOLID_VIEW_MODE: u8 = 0;
+/// The Live Render tab's own Solid/Path-traced view-mode selector -- see
+/// `ViewportModel.live_view_mode`'s own doc comment (`ui/models/viewport.slint`). `1`
+/// (Path-traced) by default so a settings file predating this control loads into the
+/// same spectral-tracer view that already shipped as the Live Render tab's sole mode --
+/// unlike [`DEFAULT_SOLID_VIEW_MODE`], whose `0` default matches the EDIT tab's
+/// pre-existing sole mode instead.
+pub const DEFAULT_LIVE_VIEW_MODE: u8 = 1;
 /// The "Edit" sub-tab's auto-solve budget, in milliseconds -- see
 /// `gui::editor::auto_solve::should_schedule_auto_solve`. After an edit, a design
 /// whose last measured solve took less than this is re-solved automatically
@@ -72,6 +79,16 @@ pub const DEFAULT_SOLID_VIEW_MODE: u8 = 0;
 /// cost while staying well under what would read as sluggish. `0` disables auto-solve
 /// outright, reproducing this crate's pre-existing (Solve-button-only) behaviour.
 pub const DEFAULT_EDITOR_AUTO_SOLVE_BUDGET_MS: u32 = 300;
+/// The Edit sub-tab's dock width, in logical pixels -- see `EditorModel.dock_width`'s
+/// own doc comment (`ui/models/editor.slint`) and `gui::editor_layout` for the
+/// drag-clamp/persistence wiring. `640.0` is the narrowest width at which the tier table shows every column, so an
+/// existing settings file (predating the resizable viewport|dock split) restores
+/// exactly the width it always rendered at.
+pub const DEFAULT_EDITOR_DOCK_WIDTH: f32 = 640.0;
+/// The Edit sub-tab's inspector height, in logical pixels -- see `EditorModel.
+/// inspector_height`'s own doc comment. `260.0` matches the inspector's old fixed
+/// height, for the same reason as [`DEFAULT_EDITOR_DOCK_WIDTH`].
+pub const DEFAULT_EDITOR_INSPECTOR_HEIGHT: f32 = 260.0;
 
 /// The four originally in-memory-only settings, plus camera pose and the selected
 /// material -- everything migrated into persistent storage.
@@ -199,10 +216,39 @@ pub struct AppSettings {
     /// [`DEFAULT_SOLID_VIEW_MODE`].
     #[serde(default)]
     pub solid_view_mode: u8,
+    /// The Live Render tab's Solid/Path-traced view-mode selector -- see
+    /// [`DEFAULT_LIVE_VIEW_MODE`].
+    #[serde(default = "default_live_view_mode")]
+    pub live_view_mode: u8,
     /// The "Edit" sub-tab's auto-solve budget (milliseconds) -- see
     /// [`DEFAULT_EDITOR_AUTO_SOLVE_BUDGET_MS`].
     #[serde(default = "default_editor_auto_solve_budget_ms")]
     pub editor_auto_solve_budget_ms: u32,
+    /// The Edit sub-tab's dock width -- see [`DEFAULT_EDITOR_DOCK_WIDTH`].
+    #[serde(default = "default_editor_dock_width")]
+    pub editor_dock_width: f32,
+    /// The Edit sub-tab's inspector height -- see [`DEFAULT_EDITOR_INSPECTOR_HEIGHT`].
+    #[serde(default = "default_editor_inspector_height")]
+    pub editor_inspector_height: f32,
+    /// Whether the Edit sub-tab's "DESIGN" section (`editor_design_settings.slint`)
+    /// is collapsed.
+    #[serde(default)]
+    pub editor_settings_collapsed: bool,
+    /// Whether the Edit sub-tab's "INSPECTOR" section (`editor_inspector.slint`) is
+    /// collapsed.
+    #[serde(default)]
+    pub editor_inspector_collapsed: bool,
+    /// Whether the Edit sub-tab's "GEAR REMAP" section (nested inside "DESIGN") is
+    /// collapsed.
+    #[serde(default)]
+    pub editor_remap_collapsed: bool,
+    /// Whether the user has ever changed the Edit sub-tab's layout (dock width,
+    /// inspector height, or any section's collapsed state) -- see
+    /// `gui::window_sizing`'s per-screen inspector-collapse default, which only
+    /// applies while this is still `false`, and `gui::editor_layout::
+    /// setup_editor_layout_callbacks`, the only place that ever sets it `true`.
+    #[serde(default)]
+    pub editor_layout_touched: bool,
 }
 
 const fn default_preview_size() -> u32 {
@@ -219,6 +265,18 @@ const fn default_denoise_enabled() -> bool {
 
 const fn default_editor_auto_solve_budget_ms() -> u32 {
     DEFAULT_EDITOR_AUTO_SOLVE_BUDGET_MS
+}
+
+const fn default_live_view_mode() -> u8 {
+    DEFAULT_LIVE_VIEW_MODE
+}
+
+const fn default_editor_dock_width() -> f32 {
+    DEFAULT_EDITOR_DOCK_WIDTH
+}
+
+const fn default_editor_inspector_height() -> f32 {
+    DEFAULT_EDITOR_INSPECTOR_HEIGHT
 }
 
 fn default_export_filename_template() -> String {
@@ -260,7 +318,14 @@ impl Default for AppSettings {
             export_filename_template: DEFAULT_EXPORT_FILENAME_TEMPLATE.to_string(),
             library_panel_collapsed: false,
             solid_view_mode: DEFAULT_SOLID_VIEW_MODE,
+            live_view_mode: DEFAULT_LIVE_VIEW_MODE,
             editor_auto_solve_budget_ms: DEFAULT_EDITOR_AUTO_SOLVE_BUDGET_MS,
+            editor_dock_width: DEFAULT_EDITOR_DOCK_WIDTH,
+            editor_inspector_height: DEFAULT_EDITOR_INSPECTOR_HEIGHT,
+            editor_settings_collapsed: false,
+            editor_inspector_collapsed: false,
+            editor_remap_collapsed: false,
+            editor_layout_touched: false,
         }
     }
 }
