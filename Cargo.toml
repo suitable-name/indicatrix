@@ -10,7 +10,7 @@ members = ["crates/indicatrix", "crates/indicatrix-net", "crates/indicatrix-form
 # connected by `indicatrix-net`'s wire protocol.
 
 [workspace.package]
-version = "0.2.2"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Suitable-Name"]
