@@ -361,7 +361,7 @@ export component GemViewportView inherits Rectangle {
                         border-width: 1px;
                         border-color: Theme.border-medium;
 
-                        Tooltip { text: @markdown("Studio rig: D65 daylight, incandescent, ring lights or spotlight."); }
+                        Tooltip { text: @markdown("Lighting model: studio rig, ISO hemisphere, soft dome, or daylight dome."); }
 
                         ComboBox {
                             model: ViewportModel.lighting_options;
@@ -427,6 +427,45 @@ export component GemViewportView inherits Rectangle {
                             colorize: Theme.text-secondary;
                             width: 16px;
                             height: 16px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+
+                    // Front / Top view buttons -- canonical poses for the shared camera.
+                    Rectangle {
+                        width: 52px;
+                        height: 32px;
+                        background: front_touch.has-hover ? Theme.bg-elevated : #1e293bee;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Theme.border-medium;
+                        front_touch := TouchArea { clicked => { ViewportModel.set_view(0); } }
+                        Tooltip { text: @markdown("Look at the stone from the front: girdle edge-on, index 0 towards you."); }
+                        Text {
+                            text: "Front";
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: Theme.text-primary;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Rectangle {
+                        width: 44px;
+                        height: 32px;
+                        background: top_touch.has-hover ? Theme.bg-elevated : #1e293bee;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Theme.border-medium;
+                        top_touch := TouchArea { clicked => { ViewportModel.set_view(1); } }
+                        Tooltip { text: @markdown("Look straight down onto the table."); }
+                        Text {
+                            text: "Top";
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: Theme.text-primary;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }

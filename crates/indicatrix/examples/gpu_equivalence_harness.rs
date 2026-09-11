@@ -397,7 +397,7 @@ fn report_furnace_check(ctx: &GpuContext) -> bool {
 
 /// Tier 1: the struct-layout GPU echo test for `GpuTransportParams`.
 fn report_transport_params_layout_check(ctx: &GpuContext) -> bool {
-    print!("[Tier 1] Phase 2 struct-layout echo test (GpuTransportParams, 64 bytes) ... ");
+    print!("[Tier 1] Phase 2 struct-layout echo test (GpuTransportParams, 80 bytes) ... ");
     let result = layout_check::run_transport_params(ctx);
     if result.passed() {
         println!("PASS");
@@ -1111,6 +1111,26 @@ fn run_task2_edge_rounding_checks(ctx: &GpuContext) -> bool {
     shading_normal_passed && furnace_edge_rounding_passed && image_comparison_edge_rounding_passed
 }
 
+/// Tier 3 image comparisons for the lighting models. Pulled out of `main` for the same
+/// function-length reason as [`run_phase2_checks`] -- returns whether every check here passed.
+fn run_lighting_model_checks(ctx: &GpuContext) -> bool {
+    println!();
+    println!("== Lighting models: Tier 3 statistical image comparisons ==");
+    let iso_passed = report_image_comparison_material(
+        "Diamond, ISO hemisphere",
+        &estimator_check::run_image_comparison_iso_hemisphere(ctx),
+    );
+    let soft_dome_passed = report_image_comparison_material(
+        "Diamond, Soft dome + ring lights",
+        &estimator_check::run_image_comparison_soft_dome(ctx),
+    );
+    let daylight_dome_passed = report_image_comparison_material(
+        "Diamond, Daylight dome + sun",
+        &estimator_check::run_image_comparison_daylight_dome(ctx),
+    );
+    iso_passed && soft_dome_passed && daylight_dome_passed
+}
+
 /// The production frame renderer's own check: a chunked dispatch (`pixel_offset != 0`).
 ///
 /// Every other check in this harness dispatches a whole frame at once, so none of them
@@ -1441,6 +1461,7 @@ fn main() {
     let task2_frosted_girdle_passed = run_task2_frosted_girdle_checks(&ctx);
     let task2_edge_rounding_passed = run_task2_edge_rounding_checks(&ctx);
     let p1_absorption_path_scale_passed = run_p1_absorption_path_scale_checks(&ctx);
+    let lighting_models_passed = run_lighting_model_checks(&ctx);
 
     let chunk_passed = run_chunk_check();
     let wavefront_passed = run_wavefront_pipeline_checks();
@@ -1455,6 +1476,7 @@ fn main() {
         && task2_frosted_girdle_passed
         && task2_edge_rounding_passed
         && p1_absorption_path_scale_passed
+        && lighting_models_passed
         && chunk_passed
         && wavefront_passed
         && specialisation_passed

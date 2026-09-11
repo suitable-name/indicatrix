@@ -2300,3 +2300,62 @@ fn narrow_compat(
         }
     }
 }
+
+const RING_CONE_OUTER_COS: f32 = 0.9659258;
+const RING_CONE_INNER_COS: f32 = 0.9961947;
+const SUN_OUTER_COS: f32 = 0.9702957;
+const SUN_INNER_COS: f32 = 0.9975641;
+
+fn smoothstep_f32(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+    return t * t * fma(-2.0, t, 3.0);
+}
+
+fn powi_u(base: f32, exp: u32) -> f32 {
+    var result: f32 = 1.0;
+    var b: f32 = base;
+    var e: u32 = exp;
+    loop {
+        if (e == 0u) {
+            break;
+        }
+        if ((e & 1u) == 1u) {
+            result = result * b;
+        }
+        b = b * b;
+        e = e >> 1u;
+    }
+    return result;
+}
+
+fn sample_iso_hemisphere(d: vec3<f32>, spec_power: f32, exposure: f32, key_dir: vec3<f32>) -> f32 {
+    let obs_dot = dot(d, key_dir);
+    let shadow_factor = 1.0 - smoothstep_f32(0.93, 0.97, obs_dot);
+    var dome: f32;
+    if (d.y > 0.0) {
+        dome = fma(fma(d.y, 0.30, 0.70) - 0.005, shadow_factor, 0.005);
+    } else {
+        dome = 0.005;
+    }
+    let horizon = smoothstep_f32(-0.02, 0.05, d.y);
+    return (dome * horizon) * (spec_power * exposure);
+}
+
+fn sample_daylight_dome(
+    d: vec3<f32>,
+    spec_power: f32,
+    exposure: f32,
+    key_dir: vec3<f32>,
+) -> f32 {
+    var dome: f32;
+    if (d.y >= 0.0) {
+        dome = 0.05 * fma(d.y, 0.4, 0.6);
+    } else {
+        dome = 0.005;
+    }
+    let key_dot = dot(d, key_dir);
+    let sun = smoothstep_f32(SUN_OUTER_COS, SUN_INNER_COS, key_dot) * 16.0;
+    let aureole = powi_u(max(key_dot, 0.0), 16u) * 1.5;
+    return (dome + sun + aureole) * (exposure * spec_power);
+}
+

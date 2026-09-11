@@ -56,11 +56,13 @@ pub use furnace::{
 pub use image_comparison::{
     ImageComparisonResult, run_image_comparison, run_image_comparison_absorption_path_scale,
     run_image_comparison_alexandrite, run_image_comparison_biaxial_scattering,
-    run_image_comparison_edge_rounding, run_image_comparison_frosted_girdle,
-    run_image_comparison_hdr_nee, run_image_comparison_quartz, run_image_comparison_rutile,
-    run_image_comparison_scattering, run_image_comparison_synthetic_moissanite,
-    run_image_comparison_tanzanite, run_image_comparison_topaz, run_image_comparison_tourmaline,
-    run_image_comparison_zircon, run_specialisation_image_comparison,
+    run_image_comparison_daylight_dome, run_image_comparison_edge_rounding,
+    run_image_comparison_frosted_girdle, run_image_comparison_hdr_nee,
+    run_image_comparison_iso_hemisphere, run_image_comparison_quartz, run_image_comparison_rutile,
+    run_image_comparison_scattering, run_image_comparison_soft_dome,
+    run_image_comparison_synthetic_moissanite, run_image_comparison_tanzanite,
+    run_image_comparison_topaz, run_image_comparison_tourmaline, run_image_comparison_zircon,
+    run_specialisation_image_comparison,
 };
 
 pub use spectral_debug::{SpectralDebugResult, run_spectral_debug};

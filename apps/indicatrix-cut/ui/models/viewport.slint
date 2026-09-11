@@ -44,9 +44,9 @@ export global ViewportModel {
 
     // This list is what actually reaches the ComboBox. ORDER is load-bearing: must
     // match `LightingPreset::ALL` (`Daylight`, `Incandescent`, `RingLights`,
-    // `DarkSpotlight`) exactly, since `lighting_changed` below carries the selected
-    // INDEX, not the label text.
-    in property <[string]> lighting_options: ["D65 Daylight (6500K)", "Incandescent (3200K)", "Gem Studio Ring Lights", "Dramatic Dark Spotlight"];
+    // `DarkSpotlight`, `IsoHemisphere`, `SoftDome`, `DaylightDome`) exactly, since
+    // `lighting_changed` below carries the selected INDEX, not the label text.
+    in property <[string]> lighting_options: ["D65 Daylight (6500K)", "Incandescent (3200K)", "Gem Studio Ring Lights", "Dramatic Dark Spotlight", "ISO hemisphere", "Soft dome + ring lights", "Daylight dome + sun"];
     in-out property <int> selected_lighting_index: 0;
     in property <[LightingPresetItem]> lighting_presets: [];
 
@@ -61,6 +61,9 @@ export global ViewportModel {
     callback light_move(float, float);
     callback light_pos_changed(float, float);
     callback reset_camera();
+    // Canonical poses for the shared orbit camera: 0 = Front, 1 = Top. Yaw resets to
+    // index 0; distance and lighting are kept.
+    callback set_view(int);
     callback material_changed(string);
     // Carries the selected preset's INDEX into `lighting_options`/`LightingPreset::ALL`,
     // not its label text.

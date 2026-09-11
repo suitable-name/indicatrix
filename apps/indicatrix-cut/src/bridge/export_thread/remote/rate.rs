@@ -106,9 +106,14 @@ pub(in crate::bridge::export_thread) enum RemoteCalibration {
     /// The probe request itself failed outright -- a connection/protocol error, or a
     /// worker-side `ERROR`. Carries the worker's/transport's message text VERBATIM.
     Failed(String),
-    /// The probe connected and completed part of it, but ended having traced fewer
-    /// than `expected` samples -- too little signal to trust a timing measurement.
+    /// The probe connected but ended before tracing a single sample -- nothing to
+    /// measure a rate from, and no evidence the worker can deliver at this resolution.
     Short { done: u32, expected: u32 },
+    /// The probe ended early but DID complete `done` of `expected` samples, enough to
+    /// measure `rate` (samples/sec) from. Remote is still worth using -- the lane's own
+    /// per-chunk failure handling (`super::dispatch::run_remote_lane`) copes with a
+    /// worker that keeps dropping out -- but the user is told the probe was cut short.
+    Partial { rate: f64, done: u32, expected: u32 },
 }
 
 /// Times a [`REMOTE_CALIBRATION_SAMPLES`]-sample probe against the remote worker and
@@ -176,14 +181,21 @@ pub(in crate::bridge::export_thread) fn calibrate_remote_rate(
     if let Some(message) = error {
         return RemoteCalibration::Failed(message);
     }
-    if done < probe {
+    if done == 0 {
         return RemoteCalibration::Short {
             done,
             expected: probe,
         };
     }
 
-    let rate = measured_rate.unwrap_or_else(|| f64::from(probe) / elapsed);
+    let rate = measured_rate.unwrap_or_else(|| f64::from(done) / elapsed);
+    if done < probe {
+        return RemoteCalibration::Partial {
+            rate,
+            done,
+            expected: probe,
+        };
+    }
     RemoteCalibration::Ready(rate)
 }
 

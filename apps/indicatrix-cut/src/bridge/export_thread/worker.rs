@@ -265,6 +265,21 @@ pub(super) fn run_export(
                     }
                     pending_note = Some(format!("{note} Rendering locally only."));
                 }
+                RemoteCalibration::Partial {
+                    rate,
+                    done,
+                    expected,
+                } => {
+                    // Enough completed to size a first chunk from; the lane's own
+                    // failure handling (pause-and-retry, never a permanent write-off)
+                    // takes it from here.
+                    remote_rate = Some(rate);
+                    pending_note = Some(format!(
+                        "Remote worker's calibration probe completed {done} of {expected} \
+                         samples before ending early -- still using it, and retrying if \
+                         it drops out again."
+                    ));
+                }
             }
         }
     }

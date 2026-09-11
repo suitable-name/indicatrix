@@ -34,6 +34,7 @@ use std::{
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc::{self, RecvTimeoutError},
     },
+    thread,
     time::{Duration, Instant},
 };
 
@@ -67,14 +68,34 @@ const LIVENESS_TIMEOUT: Duration = Duration::from_secs(8);
 /// be reported as "worker silent" while busy.
 const FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The slowest link this watchdog assumes when budgeting time for one full-resolution
+/// `FRAME` to arrive: 4 MiB/s (~34 Mbit/s), well under a congested wireless link.
+/// Only the allowance's SIZE depends on it; a genuinely dead worker is still detected,
+/// just `frame_bytes / this` later at most (~25 s at 4K, ~6 s at 1080p).
+const MIN_ASSUMED_LINK_BYTES_PER_SEC: u64 = 4 * 1024 * 1024;
+
+/// How much longer than the base deadline a wait may legitimately last while one
+/// `frame_bytes`-sized payload is in flight. `run_remote_batch`'s only signal of life
+/// is a complete `RemoteUpdate`, and the connection thread produces one for a `FRAME`
+/// only after the WHOLE payload has been read -- so during a large transfer nothing
+/// reaches `rx` even though bytes are flowing. Without this allowance a 4K frame
+/// (~100 MB) crossing a link slower than ~100 Mbit/s was reported as "worker silent"
+/// mid-transfer.
+const fn transfer_allowance(frame_bytes: u64) -> Duration {
+    Duration::from_secs(frame_bytes.div_ceil(MIN_ASSUMED_LINK_BYTES_PER_SEC))
+}
+
 /// Which deadline currently applies to an idle wait on `rx`: mirrors
-/// `bridge::remote::remote_render::connection::liveness_deadline`.
-const fn liveness_deadline(seen_first_update: bool) -> Duration {
-    if seen_first_update {
+/// `bridge::remote::remote_render::connection::liveness_deadline`, plus the
+/// [`transfer_allowance`] for a payload of `frame_bytes` (one full-resolution `FRAME`
+/// at the request's dimensions), since a wait here can span an entire frame transfer.
+const fn liveness_deadline(seen_first_update: bool, frame_bytes: u64) -> Duration {
+    let base = if seen_first_update {
         LIVENESS_TIMEOUT
     } else {
         FIRST_EVENT_TIMEOUT
-    }
+    };
+    base.saturating_add(transfer_allowance(frame_bytes))
 }
 
 /// How long [`run_remote_batch`] waits for the worker's `DONE { cancelled: true }`
@@ -180,6 +201,10 @@ pub(in crate::bridge::export_thread) fn run_remote_batch(
     // Whether ANY `RemoteUpdate` has arrived yet -- selects `FIRST_EVENT_TIMEOUT`
     // (before) or `LIVENESS_TIMEOUT` (after) via `liveness_deadline`.
     let mut first_update_seen = false;
+    // One full-resolution `FRAME` payload at this request's dimensions -- what a single
+    // idle wait on `rx` may legitimately have in flight (see `transfer_allowance`).
+    let frame_bytes =
+        u64::from(width) * u64::from(height) * indicatrix_net::radiance::BYTES_PER_PIXEL as u64;
     loop {
         if !cancel_sent && cancel.load(Ordering::Relaxed) {
             handle.cancel();
@@ -234,7 +259,9 @@ pub(in crate::bridge::export_thread) fn run_remote_batch(
                     let acc = accumulator.lock().unwrap_or_else(PoisonError::into_inner);
                     return (acc.samples_done(), true, None, None);
                 }
-                None if last_update.elapsed() > liveness_deadline(first_update_seen) => {
+                None if last_update.elapsed()
+                    > liveness_deadline(first_update_seen, frame_bytes) =>
+                {
                     // No update for longer than the applicable deadline, and
                     // cancellation was never requested -- presume the worker dead.
                     let message = format!(
@@ -363,12 +390,46 @@ impl RemoteProgress {
     }
 }
 
-/// Consecutive remote CHUNK failures [`run_remote_lane`] tolerates before it stops
-/// offering remote further work and lets local carry the rest of the export alone
-/// (`ComputeTarget::Both` only). `2`, not `1`: a single dropped connection is common
-/// enough (one network blip) that giving up after just one would waste real remaining
-/// capacity; two in a row is past "transient".
+/// Consecutive remote CHUNK failures [`run_remote_lane`] tolerates before it PAUSES
+/// remote (`ComputeTarget::Both` only) -- see [`remote_retry_backoff`]. `2`, not `1`: a
+/// single dropped connection is common enough (one network blip) that pausing after
+/// just one would waste real remaining capacity; two in a row is past "transient".
 const MAX_CONSECUTIVE_REMOTE_FAILURES: u32 = 2;
+
+/// The first pause [`run_remote_lane`] takes once remote has failed
+/// [`MAX_CONSECUTIVE_REMOTE_FAILURES`] chunks in a row; each further consecutive
+/// failure doubles it, up to [`REMOTE_RETRY_BACKOFF_MAX`].
+const REMOTE_RETRY_BACKOFF_INITIAL: Duration = Duration::from_secs(15);
+const REMOTE_RETRY_BACKOFF_MAX: Duration = Duration::from_secs(120);
+
+/// How long to pause the remote lane after `consecutive_failures` failed chunks in a
+/// row (called only once that count has reached [`MAX_CONSECUTIVE_REMOTE_FAILURES`]):
+/// 15 s, 30 s, 60 s, 120 s, 120 s, ... Remote is never written off for the rest of an
+/// export -- a worker that was unreachable for a minute (a wireless roam, a machine
+/// that was busy with something else, a transient timeout) is offered work again as
+/// soon as the pause ends, and every chunk it then completes counts. Local keeps
+/// claiming from the shared cursor throughout, so a pause costs the export nothing but
+/// remote's own share of throughput while it lasts.
+fn remote_retry_backoff(consecutive_failures: u32) -> Duration {
+    let doublings = consecutive_failures.saturating_sub(MAX_CONSECUTIVE_REMOTE_FAILURES);
+    let scaled = REMOTE_RETRY_BACKOFF_INITIAL.saturating_mul(1u32 << doublings.min(8));
+    scaled.min(REMOTE_RETRY_BACKOFF_MAX)
+}
+
+/// Sleeps for `total`, returning early with `false` the moment `cancel` is raised or
+/// `cursor`'s shared pool runs dry (local has claimed everything that was left -- no
+/// point holding the export open for a pause with nothing to hand remote afterwards).
+/// `true` means the full pause elapsed with work still available.
+fn pause_remote_lane(cursor: &SampleCursor, cancel: &AtomicBool, total: Duration) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < total {
+        if cancel.load(Ordering::Relaxed) || cursor.shared_pool_exhausted() {
+            return false;
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    true
+}
 
 /// [`run_remote_lane`]'s result once its claim loop has permanently ended.
 pub(in crate::bridge::export_thread) struct RemoteLaneOutcome {
@@ -557,16 +618,22 @@ fn run_remote_lane_claim_loop(
             ));
         consecutive_failures += 1;
         if consecutive_failures >= MAX_CONSECUTIVE_REMOTE_FAILURES {
+            let pause = remote_retry_backoff(consecutive_failures);
             progress
                 .notes
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .push_back(
-                    "Remote worker failed repeatedly -- no longer sending it further \
-                     work; finishing the rest of the export locally."
-                        .to_string(),
-                );
-            return RemoteLaneOutcome { fatal: None };
+                .push_back(format!(
+                    "Remote worker failed {consecutive_failures} chunks in a row -- \
+                     pausing it for {}s before offering it more work; rendering \
+                     continues locally in the meantime.",
+                    pause.as_secs()
+                ));
+            if !pause_remote_lane(cursor, cancel, pause) {
+                // Cancelled, or local finished everything during the pause -- either
+                // way there is nothing left for remote to claim.
+                return RemoteLaneOutcome { fatal: None };
+            }
         }
     }
 }
@@ -612,7 +679,7 @@ mod tests {
     #[test]
     fn liveness_deadline_grants_the_first_event_grace_before_any_update_has_arrived() {
         assert_eq!(
-            liveness_deadline(false),
+            liveness_deadline(false, 0),
             FIRST_EVENT_TIMEOUT,
             "the wait for a dispatch's very first RemoteUpdate (even Connected) must \
              use the longer grace, not the steady-state deadline"
@@ -622,7 +689,7 @@ mod tests {
     #[test]
     fn liveness_deadline_switches_to_the_tighter_steady_state_timeout_once_seen() {
         assert_eq!(
-            liveness_deadline(true),
+            liveness_deadline(true, 0),
             LIVENESS_TIMEOUT,
             "once a dispatch has produced at least one update, every wait after it must \
              use the steady-state liveness timeout, not the first-event grace"
@@ -632,5 +699,47 @@ mod tests {
     #[test]
     fn first_event_timeout_is_strictly_longer_than_liveness_timeout() {
         assert!(FIRST_EVENT_TIMEOUT > LIVENESS_TIMEOUT);
+    }
+
+    /// The 4K regression: one FRAME is ~100 MB, which a ~150 Mbit/s wireless link
+    /// drains in 5-8 s -- at or past the bare 8 s steady-state deadline. The allowance
+    /// must lift the deadline well clear of that, and scale with the frame, not a
+    /// resolution-blind constant.
+    #[test]
+    fn liveness_deadline_budgets_a_whole_frame_transfer_on_a_slow_link() {
+        let bytes_4k = 3840 * 2160 * indicatrix_net::radiance::BYTES_PER_PIXEL as u64;
+        let bytes_1080p = 1920 * 1080 * indicatrix_net::radiance::BYTES_PER_PIXEL as u64;
+        let at_4k = liveness_deadline(true, bytes_4k);
+        let at_1080p = liveness_deadline(true, bytes_1080p);
+        assert!(at_4k >= LIVENESS_TIMEOUT + Duration::from_secs(20));
+        assert!(at_4k > at_1080p);
+        assert_eq!(transfer_allowance(0), Duration::ZERO);
+    }
+
+    #[test]
+    fn remote_retry_backoff_doubles_from_the_threshold_and_caps() {
+        assert_eq!(
+            remote_retry_backoff(MAX_CONSECUTIVE_REMOTE_FAILURES),
+            REMOTE_RETRY_BACKOFF_INITIAL
+        );
+        assert_eq!(
+            remote_retry_backoff(MAX_CONSECUTIVE_REMOTE_FAILURES + 1),
+            REMOTE_RETRY_BACKOFF_INITIAL * 2
+        );
+        assert_eq!(remote_retry_backoff(50), REMOTE_RETRY_BACKOFF_MAX);
+    }
+
+    #[test]
+    fn pause_remote_lane_returns_early_once_the_shared_pool_is_dry() {
+        let cursor = SampleCursor::new(0, 4);
+        assert_eq!(cursor.claim(4), Some((0, 4)));
+        let cancel = AtomicBool::new(false);
+        let started = Instant::now();
+        assert!(!pause_remote_lane(
+            &cursor,
+            &cancel,
+            Duration::from_secs(30)
+        ));
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }

@@ -202,11 +202,27 @@ impl WorkerSettings {
         }
     }
 
-    /// The export's own [`StreamConfig`]: identical to [`Self::stream_config`] except
-    /// `preview: None` and a much larger, export-specific cadence floor -- see
-    /// [`EXPORT_CADENCE_MS`]. A separate method rather than a parameter on
+    /// The export's own [`StreamConfig`]: differs from [`Self::stream_config`] in three
+    /// ways -- `preview: None`, a much larger export-specific cadence floor (see
+    /// [`EXPORT_CADENCE_MS`]), and ALWAYS [`TransferMode::FinalOnly`], whatever this
+    /// worker's own `transfer_mode` says. A separate method rather than a parameter on
     /// `stream_config`, since the live viewport legitimately uses a preview stream and
-    /// that caller must stay unchanged.
+    /// progressive frames, and that caller must stay unchanged.
+    ///
+    /// # Why the transfer mode is forced, not inherited
+    ///
+    /// A progressive `FRAME` delta is always the full `width * height * 12` bytes,
+    /// however few samples it carries: ~25 MB at 1080p, ~100 MB at 4K. Under
+    /// `LiveProgressive` the worker emits one every cadence tick, and while a 100 MB
+    /// write is draining over a wireless link (~5-8 s at 150 Mbit/s) the worker can
+    /// neither trace nor heartbeat. The export's chunk watchdog
+    /// (`export_thread::remote::dispatch`) then saw gaps at or past its 8 s steady-state
+    /// deadline, declared the worker silent, and the export finished locally -- while
+    /// 1080p, whose frames drain in ~1.5 s, worked. The export never displays those
+    /// intermediate frames anyway (its thumbnail is built from whatever has been
+    /// MERGED, chunk by chunk), so it only ever needs one `FRAME` per chunk: with
+    /// `FinalOnly` the worker traces continuously, sends the bare `PROGRESS` heartbeat
+    /// on every cadence tick, and transfers each chunk's radiance exactly once.
     ///
     /// The export never reads a preview stream: `export_thread::remote::run_remote_batch`
     /// ignores every `RemoteUpdate::Preview`, building its progress thumbnail from the
@@ -217,7 +233,7 @@ impl WorkerSettings {
     #[must_use]
     pub fn export_stream_config(&self, min_cadence_ms: u32) -> StreamConfig {
         StreamConfig {
-            transfer_mode: self.transfer_mode,
+            transfer_mode: TransferMode::FinalOnly,
             cadence_ms: self
                 .effective_cadence_ms(min_cadence_ms)
                 .max(EXPORT_CADENCE_MS),

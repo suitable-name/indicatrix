@@ -155,7 +155,7 @@ fn apply_loaded_render_context(
     ctx.light_pitch = s.light_pitch_deg.to_radians().clamp(0.15, 1.55);
     ctx.lighting_preset = lighting_preset;
     ctx.yaw = s.camera_yaw;
-    ctx.pitch = s.camera_pitch.clamp(-1.48, 1.48);
+    ctx.pitch = crate::gui::render::camera_lighting::wrap_pitch(s.camera_pitch);
     ctx.distance = s.camera_distance.clamp(1.2, 8.0);
     ctx.material_name.clone_from(&s.selected_material);
     ctx.denoise_enabled = s.denoise_enabled;

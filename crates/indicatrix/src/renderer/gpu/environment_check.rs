@@ -404,12 +404,12 @@ pub struct StudioEnvCase {
     exposure: f32,
     light_yaw: f32,
     light_pitch: f32,
-    _pad0: f32,
+    model: f32,
     _pad1: f32,
-    /// Was `_pad2` -- nonzero for a case built from [`LightingPreset::Daylight`],
-    /// mirroring
+    /// Was `_pad2` -- nonzero for a case built from a preset where [`LightingPreset::uses_d65`]
+    /// is true, mirroring
     /// `optics::raytracer::environment::sample_studio_environment_with_rig`'s own
-    /// `matches!(lighting_preset, LightingPreset::Daylight)` branch. See
+    /// `preset.uses_d65()` branch. See
     /// [`build_studio_env_cases`].
     use_d65: f32,
 }
@@ -470,7 +470,8 @@ pub fn build_studio_env_cases() -> Vec<StudioEnvCase> {
 
     for preset in LightingPreset::ALL {
         let params = preset.params();
-        let use_d65 = f32::from(matches!(preset, LightingPreset::Daylight));
+        let use_d65 = f32::from(preset.uses_d65());
+        let model = preset.model().gpu_id() as f32;
         for &(light_yaw, light_pitch) in &poses {
             for &exposure in &exposures {
                 for &dir in &directions {
@@ -483,7 +484,7 @@ pub fn build_studio_env_cases() -> Vec<StudioEnvCase> {
                             exposure,
                             light_yaw,
                             light_pitch,
-                            _pad0: 0.0,
+                            model,
                             _pad1: 0.0,
                             use_d65,
                         });
@@ -508,7 +509,7 @@ pub fn build_studio_env_cases() -> Vec<StudioEnvCase> {
                 exposure: 1.0,
                 light_yaw,
                 light_pitch,
-                _pad0: 0.0,
+                model: 0.0,
                 _pad1: 0.0,
                 use_d65: 1.0,
             });
@@ -527,7 +528,7 @@ pub fn build_studio_env_cases() -> Vec<StudioEnvCase> {
                 exposure: 1.0,
                 light_yaw,
                 light_pitch,
-                _pad0: 0.0,
+                model: 0.0,
                 _pad1: 0.0,
                 use_d65: 0.0,
             });
@@ -595,7 +596,7 @@ pub fn run_studio_env(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
         let cpu = sample_studio_environment(
             Vec3::from_array(case.dir),
             case.lambda_nm,
-            LightingPreset::from_index(preset_index_for(case.temp_k)),
+            preset_for_case(case),
             case.exposure,
             case.light_yaw,
             case.light_pitch,
@@ -603,6 +604,21 @@ pub fn run_studio_env(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
         acc.record(case, "radiance", cpu, gpu_out[idx]);
     }
     acc.finish()
+}
+
+fn preset_for_case(case: &StudioEnvCase) -> LightingPreset {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "model is a small non-negative integer"
+    )]
+    let model_id = case.model as u32;
+    match model_id {
+        1 => LightingPreset::IsoHemisphere,
+        2 => LightingPreset::SoftDome,
+        3 => LightingPreset::DaylightDome,
+        _ => LightingPreset::from_index(preset_index_for(case.temp_k)),
+    }
 }
 
 /// Recovers which built-in preset a case's `temp_k` came from, so `run_studio_env` can

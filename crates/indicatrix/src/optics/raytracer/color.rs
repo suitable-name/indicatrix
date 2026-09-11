@@ -324,6 +324,9 @@ pub(super) fn illuminant_white_balance(lighting_preset: LightingPreset) -> Vec3 
     static RING_LIGHTS: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
     static DARK_SPOTLIGHT: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
     static DAYLIGHT_DEFAULT: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
+    static ISO_HEMISPHERE: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
+    static SOFT_DOME: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
+    static DAYLIGHT_DOME: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
 
     let temp_k = illuminant_temperature_k(lighting_preset);
     match lighting_preset {
@@ -335,6 +338,15 @@ pub(super) fn illuminant_white_balance(lighting_preset: LightingPreset) -> Vec3 
         }
         LightingPreset::DarkSpotlight => {
             *DARK_SPOTLIGHT.get_or_init(|| compute_illuminant_white_balance(temp_k))
+        }
+        LightingPreset::IsoHemisphere => {
+            *ISO_HEMISPHERE.get_or_init(|| compute_illuminant_white_balance(temp_k))
+        }
+        LightingPreset::SoftDome => {
+            *SOFT_DOME.get_or_init(|| compute_illuminant_white_balance(temp_k))
+        }
+        LightingPreset::DaylightDome => {
+            *DAYLIGHT_DOME.get_or_init(|| compute_illuminant_white_balance(temp_k))
         }
         LightingPreset::Daylight => {
             *DAYLIGHT_DEFAULT.get_or_init(|| compute_illuminant_white_balance(temp_k))

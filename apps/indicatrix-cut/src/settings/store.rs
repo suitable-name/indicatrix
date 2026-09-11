@@ -392,6 +392,19 @@ mod tests {
     }
 
     #[test]
+    fn settings_with_iso_hemisphere_lighting_rig_round_trips() {
+        let dir = TempDir::new("iso-hemisphere");
+        let path = dir.path().join("settings.toml");
+
+        let mut custom = SettingsFile::default();
+        custom.settings.lighting_rig = "ISO hemisphere".to_string();
+        save(&path, &custom).unwrap();
+
+        let loaded = load_or_default(&path);
+        assert_eq!(loaded.settings.lighting_rig, "ISO hemisphere");
+    }
+
+    #[test]
     fn save_then_load_round_trips_settings_and_presets() {
         let dir = TempDir::new("roundtrip");
         let path = dir.path().join("nested").join("settings.toml");

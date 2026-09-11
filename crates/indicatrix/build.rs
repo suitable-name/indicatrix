@@ -231,7 +231,10 @@ fn main() {
     // `unknown` sentinel the handshake refuses.
     let build_id = match std::env::var("CARGO_PKG_VERSION") {
         Ok(version) if !version.trim().is_empty() => {
-            format!("{:016x}", fnv1a_update(FNV_OFFSET_BASIS, version.trim().as_bytes()))
+            format!(
+                "{:016x}",
+                fnv1a_update(FNV_OFFSET_BASIS, version.trim().as_bytes())
+            )
         }
         _ => "unknown".to_string(),
     };

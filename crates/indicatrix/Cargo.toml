@@ -45,16 +45,7 @@ tracing = { workspace = true }
 # declares `default-features = false` (a member may only ADD features to an
 # inherited dependency, never remove them -- see the root manifest's own comment).
 # This list IS wgpu's default, verbatim, so native behaviour is unchanged.
-wgpu = { workspace = true, optional = true, features = [
-    "std",
-    "parking_lot",
-    "dx12",
-    "metal",
-    "gles",
-    "vulkan",
-    "wgsl",
-    "webgpu",
-] }
+wgpu = { workspace = true, optional = true, features = ["std", "parking_lot", "dx12", "metal", "gles", "vulkan", "wgsl", "webgpu"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # wasm32 gets its own `wgpu` feature set: `webgpu` is the only backend a browser
@@ -65,10 +56,7 @@ wgpu = { workspace = true, optional = true, features = [
 # dispatch this crate does needs no on-screen surface/canvas at all, on any target.
 # `wgsl` stays on since `renderer::gpu::frame::SHADER_SRC` is WGSL source text handed
 # to `wgpu::Device::create_shader_module` exactly as on every other target.
-wgpu = { workspace = true, optional = true, features = [
-    "wgsl",
-    "webgpu",
-] }
+wgpu = { workspace = true, optional = true, features = ["wgsl", "webgpu"] }
 # Resolves `wgpu::Buffer::map_async`'s callback into an `.await`-able future for
 # `renderer::gpu::frame`'s wasm32-only `accumulate_async`/`new_async` (see that
 # module's doc comment). Needed only there: native's `renderer::gpu::compute::

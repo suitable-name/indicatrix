@@ -141,6 +141,49 @@ pub(in crate::gui) fn resubmit_live_solid(
 /// camera (yaw/pitch/distance), so both `on_camera_orbit`/`on_camera_zoom` below
 /// re-issue the last solved plane set at the new pose (see
 /// `resubmit_at_current_pose`) while still holding `render_ctx`'s lock.
+/// Wraps an orbit pitch into `[-pi, pi)`: the camera may orbit freely over the poles
+/// (see `Camera::new`'s pole handling), the wrap only keeps the persisted value
+/// bounded.
+pub(in crate::gui) fn wrap_pitch(pitch: f32) -> f32 {
+    use std::f32::consts::PI;
+    (pitch + PI).rem_euclid(2.0 * PI) - PI
+}
+
+/// `ViewportModel.set_view`: 0 = Front (girdle edge-on, index 0 towards the viewer),
+/// 1 = Top (straight down onto the table, the batch previews' own top pose). Yaw
+/// resets to 0; distance and lighting stay. Both viewports' Front/Top buttons call it.
+fn setup_set_view_callback(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    settings_store: &Arc<SettingsPersister>,
+    preview_state: &Arc<SolidPreviewState>,
+) {
+    let render_ctx = render_ctx.clone();
+    let settings_store = settings_store.clone();
+    let preview_state = Arc::clone(preview_state);
+    let ui_weak = ui.as_weak();
+    ui.global::<ViewportModel>().on_set_view(move |kind: i32| {
+        let Some(ui) = ui_weak.upgrade() else {
+            return;
+        };
+        let pitch = if kind == 1 {
+            std::f32::consts::FRAC_PI_2
+        } else {
+            0.0
+        };
+        let mut ctx = render_ctx.lock().unwrap();
+        ctx.yaw = 0.0;
+        ctx.pitch = pitch;
+        ctx.dirty = true;
+        resubmit_at_current_pose(&ui, &ctx, &preview_state);
+        drop(ctx);
+        settings_store.update(|s| {
+            s.settings.camera_yaw = 0.0;
+            s.settings.camera_pitch = pitch;
+        });
+    });
+}
+
 pub(in crate::gui) fn setup_camera_and_lighting_callbacks(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
@@ -164,7 +207,7 @@ pub(in crate::gui) fn setup_camera_and_lighting_callbacks(
                 // reads correctly -- the two axes genuinely want opposite conventions here,
                 // so the asymmetry is deliberate, not a stray sign.
                 ctx.yaw = dx.mul_add(-0.008, ctx.yaw);
-                ctx.pitch = dy.mul_add(0.008, ctx.pitch).clamp(-1.48, 1.48);
+                ctx.pitch = wrap_pitch(dy.mul_add(0.008, ctx.pitch));
                 ctx.dirty = true;
                 resubmit_at_current_pose(&ui, &ctx, &preview_state_orbit);
                 (ctx.yaw, ctx.pitch)
@@ -226,6 +269,8 @@ pub(in crate::gui) fn setup_camera_and_lighting_callbacks(
                 s.settings.light_pitch_deg = pitch_deg;
             });
         });
+
+    setup_set_view_callback(ui, render_ctx, settings_store, preview_state);
 
     let render_ctx_reset = render_ctx.clone();
     let settings_store_reset = settings_store.clone();

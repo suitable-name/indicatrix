@@ -280,6 +280,45 @@ export component SolidViewportView inherits Rectangle {
                 }
             }
 
+            // Front / Top -- canonical poses for the shared orbit camera (the same
+            // `ViewportModel.set_view` the Live Render viewport's buttons call).
+            Rectangle {
+                height: 28px;
+                width: 56px;
+                background: front_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                Tooltip { text: @markdown("Look at the stone from the front: girdle edge-on, index 0 towards you."); }
+                front_pill_touch := TouchArea { clicked => { ViewportModel.set_view(0); } }
+                Text {
+                    text: "Front";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            Rectangle {
+                height: 28px;
+                width: 48px;
+                background: top_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                Tooltip { text: @markdown("Look straight down onto the table."); }
+                top_pill_touch := TouchArea { clicked => { ViewportModel.set_view(1); } }
+                Text {
+                    text: "Top";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
             Rectangle { horizontal-stretch: 1; }
         }
 

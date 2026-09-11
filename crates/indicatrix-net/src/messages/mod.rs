@@ -78,18 +78,17 @@ pub use tilt::{
 /// **`#[serde(default)]` does not help here**: it matters only for self-describing
 /// formats (e.g. `indicatrix-worker`'s local `scene.json`), not postcard's fixed-layout
 /// encoding.
-pub const PROTOCOL_VERSION: u16 = 8;
+///
+/// 9: three lighting models appended to `LightingPreset`.
+pub const PROTOCOL_VERSION: u16 = 9;
 
 #[cfg(test)]
 mod tests {
     #[test]
     /// Pins the constant so a bump is always a deliberate, reviewed edit.
     ///
-    /// v8: `library::LibraryRequest::FetchDesignSource` and
-    /// `library::LibraryResponse::{DesignSource, DesignSourceNotAvailable}` appended --
-    /// fetching a remote design's real `.asc` cutting-schedule text so it can be loaded
-    /// into the local editor (see `library`'s module doc comment).
-    fn protocol_version_is_8() {
-        assert_eq!(super::PROTOCOL_VERSION, 8);
+    /// 9: three lighting models appended to `LightingPreset`.
+    fn protocol_version_matches_constant() {
+        assert_eq!(super::PROTOCOL_VERSION, 9);
     }
 }

@@ -492,9 +492,26 @@ pub struct GpuTransportParams {
     /// Whether `sample_studio_environment_with_rig` should sample the tabulated CIE D65
     /// measured spectrum (nonzero) instead of `blackbody_spectrum` at `studio_temp_k`
     /// (zero, default) -- mirrors that function's own
-    /// `matches!(lighting_preset, LightingPreset::Daylight)` branch. Meaningless when
+    /// `preset.uses_d65()` branch. Meaningless when
     /// `env_mode == transport_env_mode::UNIFORM_FURNACE`.
     pub studio_use_d65: u32,
+    /// Which environment model to sample -- see [`studio_model`].
+    pub studio_model: u32,
+    _pad_model: [u32; 3],
+}
+
+/// `studio_model` discriminants for [`GpuTransportParams`].
+///
+/// Mirrors [`crate::optics::raytracer::LightingModel`]'s `gpu_id` mapping:
+/// - 0: `Studio` (classic analytic rig)
+/// - 1: `IsoHemisphere` (uniform lit upper hemisphere)
+/// - 2: `SoftDome` (dome + ring lights)
+/// - 3: `DaylightDome` (dome + sun)
+pub mod studio_model {
+    pub const STUDIO: u32 = 0;
+    pub const ISO_HEMISPHERE: u32 = 1;
+    pub const SOFT_DOME: u32 = 2;
+    pub const DAYLIGHT_DOME: u32 = 3;
 }
 
 /// `env_mode` discriminants for [`GpuTransportParams`]. Must match
@@ -547,6 +564,8 @@ impl GpuTransportParams {
             write_debug_buffers: 1,
             white_balance,
             studio_use_d65: 0,
+            studio_model: 0,
+            _pad_model: [0; 3],
         }
     }
 
@@ -578,6 +597,13 @@ impl GpuTransportParams {
         self.studio_use_d65 = if use_d65 { 1 } else { 0 };
         self
     }
+
+    /// Returns a copy with the specified studio lighting model (see [`studio_model`]).
+    #[must_use]
+    pub const fn with_studio_model(mut self, model: u32) -> Self {
+        self.studio_model = model;
+        self
+    }
 }
 
 const _: () = {
@@ -593,7 +619,9 @@ const _: () = {
     assert!(offset_of!(GpuTransportParams, studio_light_pitch) == 36);
     assert!(offset_of!(GpuTransportParams, white_balance) == 48);
     assert!(offset_of!(GpuTransportParams, studio_use_d65) == 60);
-    assert!(size_of::<GpuTransportParams>() == 64);
+    assert!(offset_of!(GpuTransportParams, studio_model) == 64);
+    assert!(offset_of!(GpuTransportParams, _pad_model) == 68);
+    assert!(size_of::<GpuTransportParams>() == 80);
 };
 
 /// Encodes a CPU `optics::materials::GemMaterial` into a [`GpuGemMaterial`] for upload.
@@ -859,7 +887,7 @@ mod tests {
         assert_eq!(size_of::<DispersionParams>(), 96);
         assert_eq!(size_of::<GpuAbsorptionBand>(), 16);
         assert_eq!(size_of::<GpuGemMaterial>(), 576);
-        assert_eq!(size_of::<GpuTransportParams>(), 64);
+        assert_eq!(size_of::<GpuTransportParams>(), 80);
         assert_eq!(size_of::<GpuWavefrontParams>(), 16);
     }
 

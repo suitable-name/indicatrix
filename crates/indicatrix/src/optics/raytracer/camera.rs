@@ -74,8 +74,15 @@ impl Camera {
         );
 
         let forward = (-origin).normalize();
+        // Past +/-90 deg of pitch the camera is over the pole and `+Y` would flip
+        // `right`; using `-Y` there keeps `right = (cos_yaw, 0, -sin_yaw)` continuous
+        // through the pole, so a free orbit never mirrors the image. Exactly at the
+        // pole the basis is yaw-independent (the fixed orientation the batch
+        // previews' top view relies on). `cos_p > 0` is bit-identical to before.
         let world_up = if cos_p.abs() < 1e-4 {
             Vec3::new(0.0, 0.0, -1.0)
+        } else if cos_p < 0.0 {
+            Vec3::NEG_Y
         } else {
             Vec3::Y
         };
@@ -111,5 +118,28 @@ impl Camera {
             origin: self.origin,
             dir,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Camera;
+    use std::f32::consts::FRAC_PI_2;
+
+    /// A free orbit crosses the pole without the image mirroring: `right` on either
+    /// side of +90 deg agrees, and the far side's `forward` still looks at the origin.
+    #[test]
+    fn right_vector_is_continuous_through_the_pole() {
+        let yaw = 0.7;
+        let before = Camera::new(yaw, FRAC_PI_2 - 0.01, 2.4, 42.0);
+        let after = Camera::new(yaw, FRAC_PI_2 + 0.01, 2.4, 42.0);
+        assert!(
+            (before.right - after.right).length() < 1e-3,
+            "right flipped through the pole: {:?} vs {:?}",
+            before.right,
+            after.right
+        );
+        assert!((after.forward + after.origin.normalize()).length() < 1e-6);
+        assert!((after.up.dot(after.forward)).abs() < 1e-6);
     }
 }

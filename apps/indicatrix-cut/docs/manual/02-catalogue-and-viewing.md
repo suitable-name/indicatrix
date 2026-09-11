@@ -85,7 +85,8 @@ Open the **3D Spectral Preview** tab's **Live Render** sub-tab.
 
 | Action | Effect |
 |---|---|
-| Left-drag | Orbit the camera around the stone |
+| Left-drag | Orbit the camera around the stone, freely: over the table, under the culet, all the way round |
+| **Front** / **Top** buttons | Snap to the canonical poses: girdle edge-on with index 0 towards you, or straight down onto the table. Distance and lighting stay as they were |
 | Right-drag, or Shift + left-drag | Move the light |
 | Scroll | Zoom |
 | Click the metrics readout | Copy the current metrics to the clipboard |
@@ -110,8 +111,16 @@ genuine right-drag gesture.)
   you can define a fully custom material (name, refractive index,
   dispersion, birefringence, colour swatch, crystal system, and optical
   character) starting from one of the built-in templates.
-- **Lighting** — choose among **D65 Daylight (6500K)**, **Incandescent
-  (3200K)**, **Gem Studio Ring Lights**, and **Dramatic Dark Spotlight**.
+- **Lighting** — choose among seven presets grouped into two lighting models:
+  - **Studio** (the analytic studio rig, unchanged):
+    - **D65 Daylight (6500K)** — standard neutral daylight illuminant across key, fill, and ring lights.
+    - **Incandescent (3200K)** — warm tungsten illuminant with stronger spot multiplier.
+    - **Gem Studio Ring Lights** — classic 16-point ring light rig with dark velvet backdrop.
+    - **Dramatic Dark Spotlight** — high-contrast spotlighting for dramatic sparkle.
+  - **Lit hemisphere** (diffuse hemisphere and outdoor dome models):
+    - **ISO hemisphere** — lit upper hemisphere with a smooth zenith-to-horizon cosine gradient for clear facet contrast and definition.
+    - **Soft dome + ring lights** — subtle sky dome with dark neutral ground, key, fill, and ring lights for crisp presentation renders without clipping.
+    - **Daylight dome + sun** — sky dome with bright directional sun disc (18× peak) and soft penumbra for brilliant outdoor sparkles on a neutral backdrop.
 - **Tilt Curve** — opens the tilt-performance dialog (below).
 - A reset-camera button, a "Save as preset" button (captures your full
   current lighting *and* camera pose as a named preset), a Pause/Live

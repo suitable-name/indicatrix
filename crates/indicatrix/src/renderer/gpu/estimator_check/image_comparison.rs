@@ -63,21 +63,21 @@ impl ImageComparisonResult {
 
 #[must_use]
 pub fn run_image_comparison(ctx: &crate::renderer::gpu::GpuContext) -> ImageComparisonResult {
-    run_image_comparison_for(ctx, &tier3_material(), &[])
+    run_image_comparison_for(ctx, &tier3_material(), &[], LightingPreset::Daylight)
 }
 
 #[must_use]
 pub fn run_image_comparison_zircon(
     ctx: &crate::renderer::gpu::GpuContext,
 ) -> ImageComparisonResult {
-    run_image_comparison_for(ctx, &zircon_material(), &[])
+    run_image_comparison_for(ctx, &zircon_material(), &[], LightingPreset::Daylight)
 }
 
 #[must_use]
 pub fn run_image_comparison_tourmaline(
     ctx: &crate::renderer::gpu::GpuContext,
 ) -> ImageComparisonResult {
-    run_image_comparison_for(ctx, &tourmaline_material(), &[])
+    run_image_comparison_for(ctx, &tourmaline_material(), &[], LightingPreset::Daylight)
 }
 
 /// Quartz: the one built-in whose extraordinary ray disperses with a genuine
@@ -90,7 +90,7 @@ pub fn run_image_comparison_tourmaline(
 pub fn run_image_comparison_quartz(
     ctx: &crate::renderer::gpu::GpuContext,
 ) -> ImageComparisonResult {
-    run_image_comparison_for(ctx, &quartz_material(), &[])
+    run_image_comparison_for(ctx, &quartz_material(), &[], LightingPreset::Daylight)
 }
 
 /// Rutile: full uniaxial Fresnel (Lekner 1991), Tier 3.
@@ -101,7 +101,7 @@ pub fn run_image_comparison_quartz(
 pub fn run_image_comparison_rutile(
     ctx: &crate::renderer::gpu::GpuContext,
 ) -> ImageComparisonResult {
-    run_image_comparison_for(ctx, &rutile_material(), &[])
+    run_image_comparison_for(ctx, &rutile_material(), &[], LightingPreset::Daylight)
 }
 
 /// Exit-event spectral splitting, Tier 3: Synthetic Moissanite.
@@ -123,26 +123,26 @@ pub fn run_image_comparison_synthetic_moissanite(
 ) -> ImageComparisonResult {
     let material = GemMaterial::by_name("Synthetic Moissanite")
         .expect("\"Synthetic Moissanite\" is a built-in material in GemMaterial::all_materials()");
-    run_image_comparison_for(ctx, &material, &[])
+    run_image_comparison_for(ctx, &material, &[], LightingPreset::Daylight)
 }
 
 #[must_use]
 pub fn run_image_comparison_alexandrite(
     ctx: &crate::renderer::gpu::GpuContext,
 ) -> ImageComparisonResult {
-    run_image_comparison_for(ctx, &alexandrite_material(), &[])
+    run_image_comparison_for(ctx, &alexandrite_material(), &[], LightingPreset::Daylight)
 }
 
 #[must_use]
 pub fn run_image_comparison_topaz(ctx: &crate::renderer::gpu::GpuContext) -> ImageComparisonResult {
-    run_image_comparison_for(ctx, &topaz_material(), &[])
+    run_image_comparison_for(ctx, &topaz_material(), &[], LightingPreset::Daylight)
 }
 
 #[must_use]
 pub fn run_image_comparison_tanzanite(
     ctx: &crate::renderer::gpu::GpuContext,
 ) -> ImageComparisonResult {
-    run_image_comparison_for(ctx, &tanzanite_material(), &[])
+    run_image_comparison_for(ctx, &tanzanite_material(), &[], LightingPreset::Daylight)
 }
 
 /// Tier 3 statistical image comparison on a scene with a frosted girdle.
@@ -163,7 +163,7 @@ pub fn run_image_comparison_frosted_girdle(
         .expect("\"Diamond\" is a built-in material in GemMaterial::all_materials()");
     let num_planes = round_brilliant_planes().len();
     let finishes = bruted_girdle_finishes(num_planes);
-    run_image_comparison_for(ctx, &material, &finishes)
+    run_image_comparison_for(ctx, &material, &finishes, LightingPreset::Daylight)
 }
 
 /// Tier 3 statistical image comparison on a scene with
@@ -185,7 +185,7 @@ pub fn run_image_comparison_scattering(
     let material = GemMaterial::by_name("Ruby")
         .expect("\"Ruby\" is a built-in material in GemMaterial::all_materials()")
         .with_scattering(1.5, 0.3);
-    run_image_comparison_for(ctx, &material, &[])
+    run_image_comparison_for(ctx, &material, &[], LightingPreset::Daylight)
 }
 
 /// Tier 3 statistical image comparison covering the inclusion-scattering block's
@@ -204,7 +204,7 @@ pub fn run_image_comparison_biaxial_scattering(
     ctx: &crate::renderer::gpu::GpuContext,
 ) -> ImageComparisonResult {
     let material = super::alexandrite_material().with_scattering(1.5, 0.3);
-    run_image_comparison_for(ctx, &material, &[])
+    run_image_comparison_for(ctx, &material, &[], LightingPreset::Daylight)
 }
 
 /// Tier 3 statistical image comparison on
@@ -225,7 +225,7 @@ pub fn run_image_comparison_edge_rounding(
     let material = GemMaterial::by_name("Diamond")
         .expect("\"Diamond\" is a built-in material in GemMaterial::all_materials()")
         .with_edge_rounding(0.02);
-    run_image_comparison_for(ctx, &material, &[])
+    run_image_comparison_for(ctx, &material, &[], LightingPreset::Daylight)
 }
 
 /// Tier 3 statistical image comparison on a
@@ -246,7 +246,55 @@ pub fn run_image_comparison_absorption_path_scale(
     let material = GemMaterial::by_name("Ruby")
         .expect("\"Ruby\" is a built-in material in GemMaterial::all_materials()")
         .with_absorption_path_scale(3.0);
-    run_image_comparison_for(ctx, &material, &[])
+    run_image_comparison_for(ctx, &material, &[], LightingPreset::Daylight)
+}
+
+/// Tier 3 statistical image comparison under the ISO hemisphere lighting model.
+///
+/// Diamond on the standard 57-facet Round Brilliant.
+///
+/// # Panics
+///
+/// Panics if `"Diamond"` is ever removed from `GemMaterial::all_materials()`.
+#[must_use]
+pub fn run_image_comparison_iso_hemisphere(
+    ctx: &crate::renderer::gpu::GpuContext,
+) -> ImageComparisonResult {
+    let material = GemMaterial::by_name("Diamond")
+        .expect("\"Diamond\" is a built-in material in GemMaterial::all_materials()");
+    run_image_comparison_for(ctx, &material, &[], LightingPreset::IsoHemisphere)
+}
+
+/// Tier 3 statistical image comparison under the Soft dome + ring lights model.
+///
+/// Diamond on the standard 57-facet Round Brilliant.
+///
+/// # Panics
+///
+/// Panics if `"Diamond"` is ever removed from `GemMaterial::all_materials()`.
+#[must_use]
+pub fn run_image_comparison_soft_dome(
+    ctx: &crate::renderer::gpu::GpuContext,
+) -> ImageComparisonResult {
+    let material = GemMaterial::by_name("Diamond")
+        .expect("\"Diamond\" is a built-in material in GemMaterial::all_materials()");
+    run_image_comparison_for(ctx, &material, &[], LightingPreset::SoftDome)
+}
+
+/// Tier 3 statistical image comparison under the Daylight dome + sun model.
+///
+/// Diamond on the standard 57-facet Round Brilliant.
+///
+/// # Panics
+///
+/// Panics if `"Diamond"` is ever removed from `GemMaterial::all_materials()`.
+#[must_use]
+pub fn run_image_comparison_daylight_dome(
+    ctx: &crate::renderer::gpu::GpuContext,
+) -> ImageComparisonResult {
+    let material = GemMaterial::by_name("Diamond")
+        .expect("\"Diamond\" is a built-in material in GemMaterial::all_materials()");
+    run_image_comparison_for(ctx, &material, &[], LightingPreset::DaylightDome)
 }
 
 /// Shared Tier 3 statistical image comparison body -- parameterized on `material` so the
@@ -261,6 +309,7 @@ fn run_image_comparison_for(
     ctx: &crate::renderer::gpu::GpuContext,
     material: &GemMaterial,
     facet_finishes: &[FacetFinish],
+    preset: LightingPreset,
 ) -> ImageComparisonResult {
     let camera = test_camera();
     let (width, height) = (48u32, 48u32);
@@ -268,7 +317,6 @@ fn run_image_comparison_for(
     let gpu_material = GpuGemMaterial::encode(material);
     let gpu_finishes = encode_facet_finishes(facet_finishes, planes.len());
     let max_bounces = 10u32;
-    let preset = LightingPreset::Daylight;
     let (exposure, light_yaw, light_pitch) = (1.0f32, 0.4f32, 0.35f32);
     let temp_k = illuminant_temperature_k(preset);
     let wb = compute_illuminant_white_balance(temp_k);
@@ -305,9 +353,10 @@ fn run_image_comparison_for(
         wb.to_array(),
     )
     // The CPU side (`cpu_sample_xyz` above, via `sample_studio_environment_with_rig`)
-    // already routes the Daylight preset through the tabulated D65 table -- the GPU
+    // already routes presets through uses_d65() / model() -- the GPU
     // dispatch must match or this comparison reintroduces CPU/GPU divergence.
-    .with_studio_use_d65(matches!(preset, LightingPreset::Daylight));
+    .with_studio_use_d65(preset.uses_d65())
+    .with_studio_model(preset.model().gpu_id());
     let total_gpu = (width * height * gpu_samples_per_pixel) as usize;
     // Dispatch through whichever pipeline `GpuFrameRenderer::accumulate` would actually
     // pick for `material` (via `frame::classify_material`), not the GENERIC one every
@@ -546,7 +595,8 @@ pub fn run_specialisation_image_comparison(
             light_pitch,
             wb.to_array(),
         )
-        .with_studio_use_d65(matches!(preset, LightingPreset::Daylight))
+        .with_studio_use_d65(preset.uses_d65())
+        .with_studio_model(preset.model().gpu_id())
     };
 
     // GENERIC pipeline: samples [0, samples_per_pixel).

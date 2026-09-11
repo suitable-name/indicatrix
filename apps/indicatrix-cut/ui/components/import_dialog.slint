@@ -46,6 +46,18 @@ export component ImportDialog inherits PopupWindow {
     // the inherited `close()`.
     close-policy: PopupClosePolicy.no-auto-close;
 
+    // A `PopupWindow` is modal: while it is open, Slint routes every click to the
+    // popup layer, so an in-window overlay such as `preview_batch_dialog.slint`'s
+    // "Generate preview images?" confirm step (opened by the import completion
+    // handler, `z: 400` in `app.slint`) can be seen but not clicked. Closing this
+    // popup the moment the import finishes hands input back to that dialog; the
+    // toast already carries the import summary.
+    changed importing => {
+        if (!self.importing) {
+            root.close();
+        }
+    }
+
     // Neither takes nor returns a path -- there's no field left to seed a starting
     // directory from or to receive a result into. Each just runs a native picker and,
     // if the user didn't cancel it, the import. `pick_asc_folder` additionally

@@ -86,8 +86,8 @@ pub fn material_for_index(index: i32) -> GemMaterial {
 pub const DEFAULT_MATERIAL_INDEX: i32 = 0;
 
 /// `ui/app.slint`'s `lighting-options` combo box, resolved through
-/// [`LightingPreset::from_index`] -- this crate just exposes the four `indicatrix`
-/// already ships.
+/// [`LightingPreset::from_index`] -- this crate exposes the seven presets
+/// `indicatrix` ships.
 pub const fn lighting_for_index(index: i32) -> LightingPreset {
     LightingPreset::from_index(index)
 }

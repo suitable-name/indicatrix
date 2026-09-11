@@ -254,7 +254,7 @@ struct StudioEnvCase {
     exposure: f32,
     light_yaw: f32,
     light_pitch: f32,
-    _pad0: f32,
+    model: f32,
     _pad1: f32,
     // P4 (tabulated D65 GPU port): was `_pad2` -- mirrors
     // `optics::raytracer::LightingPreset::Daylight`'s own D65-vs-Planckian selection;
@@ -281,45 +281,113 @@ fn studio_rig_ring_dir(i: u32, light_yaw: f32, sin_lp: f32) -> vec3<f32> {
     return normalize(vec3<f32>(cos(angle) * 0.75, sin_lp * 0.8, sin(angle) * 0.75));
 }
 
-fn sample_studio_environment(
-    dir_in: vec3<f32>,
-    lambda_nm: f32,
-    temp_k: f32,
+const RING_CONE_OUTER_COS: f32 = 0.9659258;
+const RING_CONE_INNER_COS: f32 = 0.9961947;
+const SUN_OUTER_COS: f32 = 0.9702957;
+const SUN_INNER_COS: f32 = 0.9975641;
+
+fn smoothstep_f32(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+    return t * t * fma(-2.0, t, 3.0);
+}
+
+fn sample_iso_hemisphere(d: vec3<f32>, spec_power: f32, exposure: f32, key_dir: vec3<f32>) -> f32 {
+    let obs_dot = dot(d, key_dir);
+    let shadow_factor = 1.0 - smoothstep_f32(0.93, 0.97, obs_dot);
+    var dome: f32;
+    if (d.y > 0.0) {
+        dome = fma(fma(d.y, 0.30, 0.70) - 0.005, shadow_factor, 0.005);
+    } else {
+        dome = 0.005;
+    }
+    let horizon = smoothstep_f32(-0.02, 0.05, d.y);
+    return (dome * horizon) * (spec_power * exposure);
+}
+
+fn sample_soft_dome(
+    d: vec3<f32>,
+    spec_power: f32,
     spot_mult: f32,
     exposure: f32,
+    key_dir: vec3<f32>,
+    fill_dir: vec3<f32>,
+    sin_lp: f32,
     light_yaw: f32,
-    light_pitch: f32,
-    use_d65: f32,
 ) -> f32 {
-    let d = normalize(dir_in);
-    // P4 (tabulated D65 GPU port): mirrors
-    // `optics::raytracer::environment::sample_studio_environment_with_rig`'s own
-    // `matches!(lighting_preset, LightingPreset::Daylight)` branch.
-    var spec_power: f32;
-    if (use_d65 != 0.0) {
-        spec_power = d65_relative_spectral_power(lambda_nm);
+    var dome: f32;
+    if (d.y >= 0.0) {
+        dome = 0.02 * fma(d.y, 0.5, 0.5);
     } else {
-        spec_power = blackbody_spectrum(lambda_nm, temp_k);
+        dome = 0.005;
+    }
+    var radiance = dome;
+
+    let key_dot = max(dot(d, key_dir), 0.0);
+    if (key_dot > 0.0) {
+        let key = powi_u(key_dot, 16u) * (3.5 * spot_mult);
+        radiance = radiance + key;
     }
 
+    let fill_dot = max(dot(d, fill_dir), 0.0);
+    if (fill_dot > 0.0) {
+        let fill = powi_u(fill_dot, 12u) * 1.0;
+        radiance = radiance + fill;
+    }
+
+    let ring_scale = 0.8 * spot_mult;
+    for (var i: u32 = 0u; i < RING_LIGHT_COUNT; i = i + 1u) {
+        let ring_dir = studio_rig_ring_dir(i, light_yaw, sin_lp);
+        let ring_dot = dot(d, ring_dir);
+        let ring = smoothstep_f32(RING_CONE_OUTER_COS, RING_CONE_INNER_COS, ring_dot) * ring_scale;
+        radiance = radiance + ring;
+    }
+
+    return radiance * (exposure * spec_power);
+}
+
+fn sample_daylight_dome(
+    d: vec3<f32>,
+    spec_power: f32,
+    exposure: f32,
+    key_dir: vec3<f32>,
+) -> f32 {
+    var dome: f32;
+    if (d.y >= 0.0) {
+        dome = 0.05 * fma(d.y, 0.4, 0.6);
+    } else {
+        dome = 0.005;
+    }
+    let key_dot = dot(d, key_dir);
+    let sun = smoothstep_f32(SUN_OUTER_COS, SUN_INNER_COS, key_dot) * 16.0;
+    let aureole = powi_u(max(key_dot, 0.0), 16u) * 1.5;
+    return (dome + sun + aureole) * (exposure * spec_power);
+}
+
+fn sample_studio_rig(
+    d: vec3<f32>,
+    spec_power: f32,
+    spot_mult: f32,
+    exposure: f32,
+    key_dir: vec3<f32>,
+    fill_dir: vec3<f32>,
+    sin_lp: f32,
+    light_yaw: f32,
+) -> f32 {
     let bg_val = max(fma(0.012, fma(d.y, 0.5, 0.5), 0.015), 0.005) * exposure;
     var radiance = bg_val * spec_power;
 
-    let key_dir = studio_rig_key_dir(light_yaw, light_pitch);
     let key_dot = max(dot(d, key_dir), 0.0);
     if (key_dot > 0.0) {
         let softbox = powi_u(key_dot, 28u) * 12.0 * spot_mult * exposure;
         radiance = fma(softbox, spec_power, radiance);
     }
 
-    let fill_dir = studio_rig_fill_dir(light_yaw, light_pitch);
     let fill_dot = max(dot(d, fill_dir), 0.0);
     if (fill_dot > 0.0) {
         let fill = powi_u(fill_dot, 18u) * 4.5 * exposure;
         radiance = fma(fill, spec_power, radiance);
     }
 
-    let sin_lp = sin(light_pitch);
     for (var i: u32 = 0u; i < RING_LIGHT_COUNT; i = i + 1u) {
         let ring_dir = studio_rig_ring_dir(i, light_yaw, sin_lp);
         let ring_dot = max(dot(d, ring_dir), 0.0);
@@ -331,6 +399,69 @@ fn sample_studio_environment(
     }
 
     return radiance;
+}
+
+fn studio_dispatch(
+    model: u32,
+    d: vec3<f32>,
+    spec_power: f32,
+    spot_mult: f32,
+    exposure: f32,
+    key_dir: vec3<f32>,
+    fill_dir: vec3<f32>,
+    sin_lp: f32,
+    light_yaw: f32,
+) -> f32 {
+    switch (model) {
+        case 1u: {
+            return sample_iso_hemisphere(d, spec_power, exposure, key_dir);
+        }
+        case 2u: {
+            return sample_soft_dome(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw);
+        }
+        case 3u: {
+            return sample_daylight_dome(d, spec_power, exposure, key_dir);
+        }
+        default: {
+            return sample_studio_rig(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw);
+        }
+    }
+}
+
+fn sample_studio_environment(
+    dir_in: vec3<f32>,
+    lambda_nm: f32,
+    temp_k: f32,
+    spot_mult: f32,
+    exposure: f32,
+    light_yaw: f32,
+    light_pitch: f32,
+    use_d65: f32,
+    model: f32,
+) -> f32 {
+    let d = normalize(dir_in);
+    var spec_power: f32;
+    if (use_d65 != 0.0) {
+        spec_power = d65_relative_spectral_power(lambda_nm);
+    } else {
+        spec_power = blackbody_spectrum(lambda_nm, temp_k);
+    }
+
+    let key_dir = studio_rig_key_dir(light_yaw, light_pitch);
+    let fill_dir = studio_rig_fill_dir(light_yaw, light_pitch);
+    let sin_lp = sin(light_pitch);
+
+    return studio_dispatch(
+        u32(model),
+        d,
+        spec_power,
+        spot_mult,
+        exposure,
+        key_dir,
+        fill_dir,
+        sin_lp,
+        light_yaw,
+    );
 }
 
 @group(0) @binding(4) var<storage, read> studio_cases: array<StudioEnvCase>;
@@ -352,6 +483,7 @@ fn studio_env_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         c.light_yaw,
         c.light_pitch,
         c.use_d65,
+        c.model,
     );
 }
 

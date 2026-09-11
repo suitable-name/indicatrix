@@ -230,6 +230,10 @@ struct GpuTransportParams {
     // Reused pad field: selects the tabulated CIE D65 measured spectrum over
     // `blackbody_spectrum`.
     studio_use_d65: u32,
+    studio_model: u32,
+    _pad_model_0: u32,
+    _pad_model_1: u32,
+    _pad_model_2: u32,
 }
 
 struct DispersionParams {
@@ -514,22 +518,7 @@ fn cie_1931_cmf(l: f32) -> vec3<f32> {
 // optics::raytracer::sample_studio_environment (+ optics::studio_rig::StudioRig) --
 // ported identically to shaders/environment.wgsl.
 
-fn powi_u(base: f32, exp: u32) -> f32 {
-    var result: f32 = 1.0;
-    var b: f32 = base;
-    var e: u32 = exp;
-    loop {
-        if (e == 0u) {
-            break;
-        }
-        if ((e & 1u) == 1u) {
-            result = result * b;
-        }
-        b = b * b;
-        e = e >> 1u;
-    }
-    return result;
-}
+// powi_u is defined in transport_physics.wgsl.
 
 fn blackbody_spectrum(lambda_nm: f32, temp_k: f32) -> f32 {
     let t_k = max(temp_k, 1000.0);
@@ -594,6 +583,112 @@ fn studio_rig_ring_dir(i: u32, light_yaw: f32, sin_lp: f32) -> vec3<f32> {
     return normalize(vec3<f32>(cos(angle) * 0.75, sin_lp * 0.8, sin(angle) * 0.75));
 }
 
+fn sample_soft_dome(
+    d: vec3<f32>,
+    spec_power: f32,
+    spot_mult: f32,
+    exposure: f32,
+    key_dir: vec3<f32>,
+    fill_dir: vec3<f32>,
+    sin_lp: f32,
+    light_yaw: f32,
+) -> f32 {
+    var dome: f32;
+    if (d.y >= 0.0) {
+        dome = 0.02 * fma(d.y, 0.5, 0.5);
+    } else {
+        dome = 0.005;
+    }
+    var radiance = dome;
+
+    let key_dot = max(dot(d, key_dir), 0.0);
+    if (key_dot > 0.0) {
+        let key = powi_u(key_dot, 16u) * (3.5 * spot_mult);
+        radiance = radiance + key;
+    }
+
+    let fill_dot = max(dot(d, fill_dir), 0.0);
+    if (fill_dot > 0.0) {
+        let fill = powi_u(fill_dot, 12u) * 1.0;
+        radiance = radiance + fill;
+    }
+
+    let ring_scale = 0.8 * spot_mult;
+    for (var i: u32 = 0u; i < RING_LIGHT_COUNT; i = i + 1u) {
+        let ring_dir = studio_rig_ring_dir(i, light_yaw, sin_lp);
+        let ring_dot = dot(d, ring_dir);
+        let ring = smoothstep_f32(RING_CONE_OUTER_COS, RING_CONE_INNER_COS, ring_dot) * ring_scale;
+        radiance = radiance + ring;
+    }
+
+    return radiance * (exposure * spec_power);
+}
+
+fn sample_studio_rig(
+    d: vec3<f32>,
+    spec_power: f32,
+    spot_mult: f32,
+    exposure: f32,
+    key_dir: vec3<f32>,
+    fill_dir: vec3<f32>,
+    sin_lp: f32,
+    light_yaw: f32,
+) -> f32 {
+    let bg_val = max(fma(0.012, fma(d.y, 0.5, 0.5), 0.015), 0.005) * exposure;
+    var radiance = bg_val * spec_power;
+
+    let key_dot = max(dot(d, key_dir), 0.0);
+    if (key_dot > 0.0) {
+        let softbox = powi_u(key_dot, 28u) * 12.0 * spot_mult * exposure;
+        radiance = fma(softbox, spec_power, radiance);
+    }
+
+    let fill_dot = max(dot(d, fill_dir), 0.0);
+    if (fill_dot > 0.0) {
+        let fill = powi_u(fill_dot, 18u) * 4.5 * exposure;
+        radiance = fma(fill, spec_power, radiance);
+    }
+
+    for (var i: u32 = 0u; i < RING_LIGHT_COUNT; i = i + 1u) {
+        let ring_dir = studio_rig_ring_dir(i, light_yaw, sin_lp);
+        let ring_dot = max(dot(d, ring_dir), 0.0);
+        if (ring_dot > 0.96) {
+            let spark = (ring_dot - 0.96) / 0.04;
+            let intensity = powi_u(spark, 6u) * 22.0 * spot_mult * exposure;
+            radiance = fma(intensity, spec_power, radiance);
+        }
+    }
+
+    return radiance;
+}
+
+fn studio_dispatch(
+    model: u32,
+    d: vec3<f32>,
+    spec_power: f32,
+    spot_mult: f32,
+    exposure: f32,
+    key_dir: vec3<f32>,
+    fill_dir: vec3<f32>,
+    sin_lp: f32,
+    light_yaw: f32,
+) -> f32 {
+    switch (model) {
+        case 1u: {
+            return sample_iso_hemisphere(d, spec_power, exposure, key_dir);
+        }
+        case 2u: {
+            return sample_soft_dome(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw);
+        }
+        case 3u: {
+            return sample_daylight_dome(d, spec_power, exposure, key_dir);
+        }
+        default: {
+            return sample_studio_rig(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw);
+        }
+    }
+}
+
 // `key_dir`/`fill_dir`/`sin_lp` (the `StudioRig`-equivalent quantities) are constant
 // across an entire ray, so the caller (`transport_main`'s miss branch) computes them
 // once before its `NUM_CHANNELS` loop and passes them in, rather than this function
@@ -607,7 +702,7 @@ fn sample_studio_environment_with_rig(
     sin_lp: f32,
 ) -> f32 {
     let d = normalize(dir_in);
-    // Mirrors `sample_studio_environment_with_rig`'s `LightingPreset::Daylight` branch.
+    // Mirrors `sample_studio_environment_with_rig`'s `preset.uses_d65()` branch.
     var spec_power: f32;
     if (params.studio_use_d65 != 0u) {
         spec_power = d65_relative_spectral_power(lambda_nm);
@@ -615,32 +710,17 @@ fn sample_studio_environment_with_rig(
         spec_power = blackbody_spectrum(lambda_nm, params.studio_temp_k);
     }
 
-    let bg_val = max(fma(0.012, fma(d.y, 0.5, 0.5), 0.015), 0.005) * params.studio_exposure;
-    var radiance = bg_val * spec_power;
-
-    let key_dot = max(dot(d, key_dir), 0.0);
-    if (key_dot > 0.0) {
-        let softbox = powi_u(key_dot, 28u) * 12.0 * params.studio_spot_mult * params.studio_exposure;
-        radiance = fma(softbox, spec_power, radiance);
-    }
-
-    let fill_dot = max(dot(d, fill_dir), 0.0);
-    if (fill_dot > 0.0) {
-        let fill = powi_u(fill_dot, 18u) * 4.5 * params.studio_exposure;
-        radiance = fma(fill, spec_power, radiance);
-    }
-
-    for (var i: u32 = 0u; i < RING_LIGHT_COUNT; i = i + 1u) {
-        let ring_dir = studio_rig_ring_dir(i, params.studio_light_yaw, sin_lp);
-        let ring_dot = max(dot(d, ring_dir), 0.0);
-        if (ring_dot > 0.96) {
-            let spark = (ring_dot - 0.96) / 0.04;
-            let intensity = powi_u(spark, 6u) * 22.0 * params.studio_spot_mult * params.studio_exposure;
-            radiance = fma(intensity, spec_power, radiance);
-        }
-    }
-
-    return radiance;
+    return studio_dispatch(
+        params.studio_model,
+        d,
+        spec_power,
+        params.studio_spot_mult,
+        params.studio_exposure,
+        key_dir,
+        fill_dir,
+        sin_lp,
+        params.studio_light_yaw,
+    );
 }
 
 // Finding G6: renderer::env_map::EnvironmentMap::{direction_to_uv, sample_bilinear,

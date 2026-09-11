@@ -2,6 +2,15 @@
 //!
 //! The analytic gemological studio rig ([`LightingPreset`], [`sample_studio_environment`])
 //! and the loaded-HDR-panorama alternative ([`EnvironmentSource::HdrMap`]).
+//!
+//! # Lighting models
+//!
+//! Presets map to one of four [`LightingModel`] variants:
+//! - `Studio`: four classic studio setups (`Daylight`, `Incandescent`, `RingLights`, `DarkSpotlight`),
+//!   bit-identical to the original analytic rig.
+//! - `IsoHemisphere`: uniform lit upper hemisphere with zenith cosine gradient (0.70-1.0), observer head shadow, 4° soft horizon, dark below.
+//! - `SoftDome`: soft hemisphere dome (0.02 max, 0.005 ground) with directional key, fill, and ring pinpoints.
+//! - `DaylightDome`: sky hemisphere (0.05 max, 0.005 ground) with sun disc (16.0) and solar aureole (1.5).
 
 use super::color::illuminant_white_balance;
 use crate::renderer::env_map::EnvironmentMap;
@@ -93,16 +102,44 @@ pub enum LightingPreset {
     Incandescent,
     RingLights,
     DarkSpotlight,
+    IsoHemisphere,
+    SoftDome,
+    DaylightDome,
+}
+
+/// Which environment the preset samples -- see this module's "Lighting models" doc.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LightingModel {
+    Studio,
+    IsoHemisphere,
+    SoftDome,
+    DaylightDome,
+}
+
+impl LightingModel {
+    /// The `u32` discriminant bound in `GpuTransportParams::studio_model`.
+    #[must_use]
+    pub const fn gpu_id(self) -> u32 {
+        match self {
+            Self::Studio => 0,
+            Self::IsoHemisphere => 1,
+            Self::SoftDome => 2,
+            Self::DaylightDome => 3,
+        }
+    }
 }
 
 impl LightingPreset {
-    /// All four presets, in the same order as their UI index / the `lighting_options`
+    /// All seven presets, in the same order as their UI index / the `lighting_options`
     /// combo box list (`app.slint`).
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 7] = [
         Self::Daylight,
         Self::Incandescent,
         Self::RingLights,
         Self::DarkSpotlight,
+        Self::IsoHemisphere,
+        Self::SoftDome,
+        Self::DaylightDome,
     ];
 
     /// This preset's colour temperature and rig-intensity multiplier -- the single
@@ -123,7 +160,11 @@ impl LightingPreset {
                 temp_k: 6000.0,
                 spot_mult: 2.4,
             },
-            Self::Daylight => LightingRigParams {
+            Self::SoftDome => LightingRigParams {
+                temp_k: 5000.0,
+                spot_mult: 1.0,
+            },
+            Self::Daylight | Self::IsoHemisphere | Self::DaylightDome => LightingRigParams {
                 temp_k: 6500.0,
                 spot_mult: 1.0,
             },
@@ -140,6 +181,9 @@ impl LightingPreset {
             Self::Incandescent => "Incandescent (3200K)",
             Self::RingLights => "Gem Studio Ring Lights",
             Self::DarkSpotlight => "Dramatic Dark Spotlight",
+            Self::IsoHemisphere => "ISO hemisphere",
+            Self::SoftDome => "Soft dome + ring lights",
+            Self::DaylightDome => "Daylight dome + sun",
         }
     }
 
@@ -153,6 +197,9 @@ impl LightingPreset {
             "Incandescent (3200K)" => Self::Incandescent,
             "Gem Studio Ring Lights" => Self::RingLights,
             "Dramatic Dark Spotlight" => Self::DarkSpotlight,
+            "ISO hemisphere" => Self::IsoHemisphere,
+            "Soft dome + ring lights" => Self::SoftDome,
+            "Daylight dome + sun" => Self::DaylightDome,
             _ => Self::Daylight,
         }
     }
@@ -165,6 +212,9 @@ impl LightingPreset {
             Self::Incandescent => 1,
             Self::RingLights => 2,
             Self::DarkSpotlight => 3,
+            Self::IsoHemisphere => 4,
+            Self::SoftDome => 5,
+            Self::DaylightDome => 6,
         }
     }
 
@@ -176,8 +226,33 @@ impl LightingPreset {
             1 => Self::Incandescent,
             2 => Self::RingLights,
             3 => Self::DarkSpotlight,
+            4 => Self::IsoHemisphere,
+            5 => Self::SoftDome,
+            6 => Self::DaylightDome,
             _ => Self::Daylight,
         }
+    }
+
+    /// Which environment model this preset samples.
+    #[must_use]
+    pub const fn model(self) -> LightingModel {
+        match self {
+            Self::Daylight | Self::Incandescent | Self::RingLights | Self::DarkSpotlight => {
+                LightingModel::Studio
+            }
+            Self::IsoHemisphere => LightingModel::IsoHemisphere,
+            Self::SoftDome => LightingModel::SoftDome,
+            Self::DaylightDome => LightingModel::DaylightDome,
+        }
+    }
+
+    /// Whether the illuminant is the tabulated CIE D65 curve rather than a Planckian fit.
+    #[must_use]
+    pub const fn uses_d65(self) -> bool {
+        matches!(
+            self,
+            Self::Daylight | Self::IsoHemisphere | Self::DaylightDome
+        )
     }
 
     /// Convenience constructor for the common case of tracing against the analytic
@@ -334,37 +409,88 @@ pub fn sample_studio_environment(
     sample_studio_environment_with_rig(dir, lambda_nm, lighting_preset, exposure, &rig)
 }
 
-/// The rig-independent body of [`sample_studio_environment`]: identical arithmetic, in
-/// the identical order, just reading `key_dir`/`fill_dir`/`ring_dirs`/`sin_light_pitch`
-/// off an already-built `rig` instead of constructing one from `(light_yaw,
-/// light_pitch)` itself. A direct extraction -- see that function's doc comment for
-/// why.
-#[must_use]
-fn sample_studio_environment_with_rig(
-    dir: Vec3,
-    lambda_nm: f32,
-    lighting_preset: LightingPreset,
+pub const RING_CONE_OUTER_COS: f32 = 0.965_925_8;
+pub const RING_CONE_INNER_COS: f32 = 0.996_194_7;
+pub const SUN_OUTER_COS: f32 = 0.970_295_7;
+pub const SUN_INNER_COS: f32 = 0.997_564_1;
+
+fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
+    let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
+    t * t * (-2.0f32).mul_add(t, 3.0)
+}
+
+fn sample_iso_hemisphere(d: Vec3, spec_power: f32, exposure: f32, key_dir: Vec3) -> f32 {
+    let obs_dot = d.dot(key_dir);
+    let shadow_factor = 1.0 - smoothstep(0.93, 0.97, obs_dot);
+    let dome = if d.y > 0.0 {
+        (0.30f32.mul_add(d.y, 0.70) - 0.005).mul_add(shadow_factor, 0.005)
+    } else {
+        0.005
+    };
+    let horizon = smoothstep(-0.02, 0.05, d.y);
+    (dome * horizon) * (spec_power * exposure)
+}
+
+fn sample_soft_dome(
+    d: Vec3,
+    spec_power: f32,
+    spot_mult: f32,
     exposure: f32,
     rig: &crate::optics::studio_rig::StudioRig,
 ) -> f32 {
-    let d = dir.normalize();
-
-    let LightingRigParams { temp_k, spot_mult } = lighting_preset.params();
-    // "D65 Daylight" samples the real tabulated CIE D65 spectrum instead of a smooth
-    // Planckian approximation; every other preset keeps the Planckian model.
-    //
-    // Ported to the GPU backend: `shaders/spectral_transport.wgsl`'s own
-    // `d65_relative_spectral_power`, gated by its `studio_use_d65` param, mirrors this
-    // branch exactly (see that shader's own doc comment citing this function), and
-    // `shaders/environment.wgsl`'s `sample_studio_environment` carries the same
-    // `use_d65`-gated branch -- a GPU-routed Daylight render uses the real tabulated
-    // D65 curve, not the old 6500K Planckian fallback.
-    let spec_power = if matches!(lighting_preset, LightingPreset::Daylight) {
-        d65_relative_spectral_power(lambda_nm)
+    let dome = if d.y >= 0.0 {
+        0.02 * 0.5f32.mul_add(d.y, 0.5)
     } else {
-        blackbody_spectrum(lambda_nm, temp_k)
+        0.005
     };
+    let mut radiance = dome;
 
+    let key_dot = d.dot(rig.key_dir).max(0.0);
+    if key_dot > 0.0 {
+        let key = key_dot.powi(16) * (3.5 * spot_mult);
+        radiance += key;
+    }
+
+    let fill_dot = d.dot(rig.fill_dir).max(0.0);
+    if fill_dot > 0.0 {
+        let fill = fill_dot.powi(12) * 1.0;
+        radiance += fill;
+    }
+
+    let ring_scale = 0.8 * spot_mult;
+    for ring_dir in rig.ring_dirs {
+        let ring_dot = d.dot(ring_dir);
+        let ring = smoothstep(RING_CONE_OUTER_COS, RING_CONE_INNER_COS, ring_dot) * ring_scale;
+        radiance += ring;
+    }
+
+    radiance * (exposure * spec_power)
+}
+
+fn sample_daylight_dome(
+    d: Vec3,
+    spec_power: f32,
+    exposure: f32,
+    rig: &crate::optics::studio_rig::StudioRig,
+) -> f32 {
+    let dome = if d.y >= 0.0 {
+        0.05 * 0.4f32.mul_add(d.y, 0.6)
+    } else {
+        0.005
+    };
+    let key_dot = d.dot(rig.key_dir);
+    let sun = smoothstep(SUN_OUTER_COS, SUN_INNER_COS, key_dot) * 16.0;
+    let aureole = key_dot.max(0.0).powi(16) * 1.5;
+    (dome + sun + aureole) * (exposure * spec_power)
+}
+
+fn sample_studio_rig(
+    d: Vec3,
+    spec_power: f32,
+    spot_mult: f32,
+    exposure: f32,
+    rig: &crate::optics::studio_rig::StudioRig,
+) -> f32 {
     // 1. Ambient luxury studio backdrop (pure neutral dark charcoal velvet)
     let bg_val = 0.012f32.mul_add(d.y.mul_add(0.5, 0.5), 0.015).max(0.005) * exposure;
     let mut radiance = bg_val * spec_power;
@@ -394,6 +520,36 @@ fn sample_studio_environment_with_rig(
     }
 
     radiance
+}
+
+/// The rig-independent body of [`sample_studio_environment`]: identical arithmetic, in
+/// the identical order, just reading `key_dir`/`fill_dir`/`ring_dirs`/`sin_light_pitch`
+/// off an already-built `rig` instead of constructing one from `(light_yaw,
+/// light_pitch)` itself. A direct extraction -- see that function's doc comment for
+/// why.
+#[must_use]
+fn sample_studio_environment_with_rig(
+    dir: Vec3,
+    lambda_nm: f32,
+    lighting_preset: LightingPreset,
+    exposure: f32,
+    rig: &crate::optics::studio_rig::StudioRig,
+) -> f32 {
+    let d = dir.normalize();
+
+    let LightingRigParams { temp_k, spot_mult } = lighting_preset.params();
+    let spec_power = if lighting_preset.uses_d65() {
+        d65_relative_spectral_power(lambda_nm)
+    } else {
+        blackbody_spectrum(lambda_nm, temp_k)
+    };
+
+    match lighting_preset.model() {
+        LightingModel::Studio => sample_studio_rig(d, spec_power, spot_mult, exposure, rig),
+        LightingModel::IsoHemisphere => sample_iso_hemisphere(d, spec_power, exposure, rig.key_dir),
+        LightingModel::SoftDome => sample_soft_dome(d, spec_power, spot_mult, exposure, rig),
+        LightingModel::DaylightDome => sample_daylight_dome(d, spec_power, exposure, rig),
+    }
 }
 
 #[cfg(test)]
@@ -467,5 +623,142 @@ mod tests {
             "Daylight preset must reflect D65's own 450nm > 550nm ordering end to \
              end, got 450nm={daylight_450}, 550nm={daylight_550}"
         );
+    }
+
+    #[test]
+    fn label_and_index_round_trip_for_every_preset() {
+        for (pos, &p) in LightingPreset::ALL.iter().enumerate() {
+            assert_eq!(LightingPreset::from_label(p.label()), p);
+            assert_eq!(LightingPreset::from_index(p.index()), p);
+            assert_eq!(p.index(), pos as i32);
+        }
+    }
+
+    #[test]
+    fn iso_hemisphere_is_one_above_and_zero_below() {
+        let val_up =
+            sample_studio_environment(Vec3::Y, 550.0, LightingPreset::IsoHemisphere, 1.0, 0.0, 0.0);
+        let expected = d65_relative_spectral_power(550.0);
+        assert!(
+            (val_up - expected).abs() < 1e-4,
+            "up direction should match d65_relative_spectral_power(550): got {val_up}, expected {expected}"
+        );
+
+        let val_down = sample_studio_environment(
+            -Vec3::Y,
+            550.0,
+            LightingPreset::IsoHemisphere,
+            1.0,
+            0.0,
+            0.0,
+        );
+        assert_eq!(val_down, 0.0, "down direction should be 0");
+    }
+
+    #[test]
+    fn new_models_never_exceed_their_documented_peak() {
+        let mut max_iso = 0.0f32;
+        let mut max_soft = 0.0f32;
+        let mut max_daylight = 0.0f32;
+
+        for i in 0..2000 {
+            let phi = (i as f32 + 0.5) * (std::f32::consts::PI * (3.0 - 5.0f32.sqrt()));
+            let y = (i as f32 + 0.5).mul_add(-(2.0 / 2000.0), 1.0);
+            let r = y.mul_add(-y, 1.0).max(0.0).sqrt();
+            let dir = Vec3::new(r * phi.cos(), y, r * phi.sin());
+
+            let v_iso = sample_studio_environment(
+                dir,
+                560.0,
+                LightingPreset::IsoHemisphere,
+                1.0,
+                0.4,
+                0.35,
+            );
+            let v_soft =
+                sample_studio_environment(dir, 560.0, LightingPreset::SoftDome, 1.0, 0.4, 0.35);
+            let v_daylight =
+                sample_studio_environment(dir, 560.0, LightingPreset::DaylightDome, 1.0, 0.4, 0.35);
+
+            max_iso = max_iso.max(v_iso);
+            max_soft = max_soft.max(v_soft);
+            max_daylight = max_daylight.max(v_daylight);
+        }
+
+        assert!(
+            max_iso <= 1.0 + 1e-5,
+            "ISO peak must not exceed 1.0, got {max_iso}"
+        );
+        // Key (3.5) + fill (1.0) + ring (0.8) + dome (0.02) can overlap along a ring light direction,
+        // peaking around ~5.3.
+        assert!(
+            max_soft <= 6.0,
+            "Soft dome peak must not exceed 6.0, got {max_soft}"
+        );
+        // Sun (16.0) + aureole (1.5) + sky dome (0.05) can overlap at the sun center, peaking around ~17.55.
+        assert!(
+            max_daylight <= 19.0,
+            "Daylight dome peak must not exceed 19.0, got {max_daylight}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unreadable_literal)]
+    fn studio_presets_are_unchanged_by_the_split() {
+        const BASELINE_BITS: [u32; 192] = [
+            1021303258, 1023655294, 1023453223, 1021200980, 1023595102, 1023378703, 1021099049,
+            1023535114, 1023261534, 1020997253, 1023475205, 1023144520, 1021568336, 1023811298,
+            1023605575, 1022776057, 1024522062, 1024299704, 1020689822, 1023178377, 1022791133,
+            1027755127, 1030009411, 1029658622, 1044895793, 1047214420, 1046853619, 1020392899,
+            1022828889, 1022449825, 1020281301, 1022697534, 1022321544, 1020178664, 1022576726,
+            1022203564, 1061137584, 1063361422, 1063015371, 1083905861, 1085705250, 1085425247,
+            1019902579, 1022251765, 1021886209, 1046107587, 1048608372, 1048246560, 1076756649,
+            1078775455, 1078461309, 1093086489, 1095026093, 1094724272, 1100967472, 1102817210,
+            1102529373, 1102501900, 1104623284, 1104293176, 1100418366, 1102170893, 1101898183,
+            1101296236, 1103204175, 1102907281, 1072082398, 1074250299, 1074042064, 1075709089,
+            1077542440, 1077257152, 1081883524, 1083470199, 1083242507, 1084303182, 1086172911,
+            1085881963, 1078120144, 1080380336, 1080028628, 1050792594, 1052670085, 1052377929,
+            1047922901, 1049676716, 1049454620, 1044118990, 1046300096, 1045960695, 1018488179,
+            1020586967, 1020260376, 1018134305, 1020170445, 1019853601, 1018031797, 1020049789,
+            1019735769, 1075090799, 1076814691, 1076546437, 1068234283, 1070229409, 1069918948,
+            1017725102, 1019688798, 1019383227, 1017689159, 1019646492, 1019341912, 1017521023,
+            1019448590, 1019148641, 1028692337, 1031112541, 1030735933, 1017420802, 1019330627,
+            1019033440, 1017213944, 1019087147, 1018795658, 1039204672, 1041094120, 1040876564,
+            1018976767, 1021162052, 1020822000, 1016907249, 1018726157, 1018443117, 1016805017,
+            1018605826, 1018325602, 1016702784, 1018485494, 1018208087, 1026205460, 1028185399,
+            1027877301, 1016519388, 1018269632, 1017997277, 1016396089, 1018124504, 1017855546,
+            1016303883, 1018015974, 1017749556, 1016191626, 1017883843, 1017620518, 1016089640,
+            1017763802, 1017503286, 1015987162, 1017643183, 1017385490, 1015884931, 1017522852,
+            1017267976, 1015807868, 1017432147, 1017179394, 1015680468, 1017282193, 1017032949,
+            1015578235, 1017161861, 1016915434, 1015476004, 1017041531, 1016797920, 1015373773,
+            1016921202, 1016680407, 1015271540, 1016800870, 1016562892, 1015169308, 1016680540,
+            1016445378, 1015067077, 1016560210, 1016327864, 1014908123, 1016439880, 1016210351,
+            1014703658, 1016319549, 1016092836,
+        ];
+        let mut idx = 0;
+        for k in 0..64 {
+            let phi = (k as f32 + 0.5) * (std::f32::consts::PI * (3.0 - 5.0f32.sqrt()));
+            let y = (k as f32 + 0.5).mul_add(-(2.0 / 64.0), 1.0);
+            let r = y.mul_add(-y, 1.0).max(0.0).sqrt();
+            let dir = Vec3::new(r * phi.cos(), y, r * phi.sin());
+            for &lambda in &[450.0f32, 550.0, 650.0] {
+                let val = sample_studio_environment(
+                    dir,
+                    lambda,
+                    LightingPreset::RingLights,
+                    1.2,
+                    0.4,
+                    0.35,
+                );
+                assert_eq!(
+                    val.to_bits(),
+                    BASELINE_BITS[idx],
+                    "divergence at dir {k}, lambda {lambda}: got {val} (bits {}), expected bits {}",
+                    val.to_bits(),
+                    BASELINE_BITS[idx]
+                );
+                idx += 1;
+            }
+        }
     }
 }

@@ -105,6 +105,15 @@ impl SampleCursor {
         self.claim(want)
     }
 
+    /// Whether the SHARED pool has nothing left to claim -- `true` once every sample up
+    /// to `end` has been handed out to some engine. Says nothing about the local-only
+    /// retry pile, which is `claim_local`'s alone. A cheap, lock-free read for callers
+    /// deciding whether waiting around (e.g. `remote::dispatch::pause_remote_lane`)
+    /// could still yield work.
+    pub(super) fn shared_pool_exhausted(&self) -> bool {
+        self.next.load(Ordering::Relaxed) >= self.end
+    }
+
     /// Returns `[start, start + count)` to the queue for GUARANTEED local processing
     /// after a remote chunk failed to finish it -- never re-offered to remote. A `count`
     /// of `0` is a no-op (nothing to retry) rather than an empty queue entry.
