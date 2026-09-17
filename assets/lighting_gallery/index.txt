@@ -1,0 +1,32 @@
+Lighting gallery -- the standard round brilliant on a grey backdrop card,
+rendered on the GPU by crates/indicatrix/tests/lighting_gallery.rs. Look for:
+  * Gem Studio Ring Lights (reference, the old look): black stone with hard white
+    flashes and rainbow speckle, nothing in between.
+  * ISO hemisphere: evenly white facets, black leakage, and the dark
+    head-shadow pattern in the table.
+  * Light tent + black cards: grey-to-white gradation across the facets, black card
+    reflections for contrast, one hard spark; Rutile keeps a saturated yellow body
+    color with dark facets instead of a pale wash; Sapphire stays deep blue.
+  * Daylight sky + sun: grey sky facets, white sun flashes with rainbow fringes,
+    dark head shadow, dark ground.
+The exposure and key-light elevation variants show how far the light tent moves with
+the two controls the editor exposes.
+
+diamond_top_gem-studio-ring-lights_exp1.0_light48-54.png  ->  Diamond on the standard round brilliant, top view (camera yaw 0.00 rad, pitch 1.57 rad), lighting "Gem Studio Ring Lights", exposure 1.0x, key light azimuth 48 deg / elevation 54 deg
+diamond_top_iso-hemisphere_exp1.0_light48-54.png  ->  Diamond on the standard round brilliant, top view (camera yaw 0.00 rad, pitch 1.57 rad), lighting "ISO hemisphere", exposure 1.0x, key light azimuth 48 deg / elevation 54 deg
+diamond_top_light-tent-black-cards_exp1.0_light48-54.png  ->  Diamond on the standard round brilliant, top view (camera yaw 0.00 rad, pitch 1.57 rad), lighting "Light tent + black cards", exposure 1.0x, key light azimuth 48 deg / elevation 54 deg
+diamond_top_daylight-sky-sun_exp1.0_light48-54.png  ->  Diamond on the standard round brilliant, top view (camera yaw 0.00 rad, pitch 1.57 rad), lighting "Daylight sky + sun", exposure 1.0x, key light azimuth 48 deg / elevation 54 deg
+diamond_tilted_gem-studio-ring-lights_exp1.0_light48-54.png  ->  Diamond on the standard round brilliant, tilted view (camera yaw 0.60 rad, pitch 0.45 rad), lighting "Gem Studio Ring Lights", exposure 1.0x, key light azimuth 48 deg / elevation 54 deg
+diamond_tilted_iso-hemisphere_exp1.0_light48-54.png  ->  Diamond on the standard round brilliant, tilted view (camera yaw 0.60 rad, pitch 0.45 rad), lighting "ISO hemisphere", exposure 1.0x, key light azimuth 48 deg / elevation 54 deg
+diamond_tilted_light-tent-black-cards_exp1.0_light48-54.png  ->  Diamond on the standard round brilliant, tilted view (camera yaw 0.60 rad, pitch 0.45 rad), lighting "Light tent + black cards", exposure 1.0x, key light azimuth 48 deg / elevation 54 deg
+diamond_tilted_daylight-sky-sun_exp1.0_light48-54.png  ->  Diamond on the standard round brilliant, tilted view (camera yaw 0.60 rad, pitch 0.45 rad), lighting "Daylight sky + sun", exposure 1.0x, key light azimuth 48 deg / elevation 54 deg
+rutile_top_gem-studio-ring-lights_exp1.0_light48-54.png  ->  Rutile on the standard round brilliant, top view (camera yaw 0.00 rad, pitch 1.57 rad), lighting "Gem Studio Ring Lights", exposure 1.0x, key light azimuth 48 deg / elevation 54 deg
+rutile_top_iso-hemisphere_exp1.0_light48-54.png  ->  Rutile on the standard round brilliant, top view (camera yaw 0.00 rad, pitch 1.57 rad), lighting "ISO hemisphere", exposure 1.0x, key light azimuth 48 deg / elevation 54 deg
+rutile_top_light-tent-black-cards_exp1.0_light48-54.png  ->  Rutile on the standard round brilliant, top view (camera yaw 0.00 rad, pitch 1.57 rad), lighting "Light tent + black cards", exposure 1.0x, key light azimuth 48 deg / elevation 54 deg
+rutile_top_daylight-sky-sun_exp1.0_light48-54.png  ->  Rutile on the standard round brilliant, top view (camera yaw 0.00 rad, pitch 1.57 rad), lighting "Daylight sky + sun", exposure 1.0x, key light azimuth 48 deg / elevation 54 deg
+sapphire_tilted_light-tent-black-cards_exp1.0_light48-54.png  ->  Sapphire on the standard round brilliant, tilted view (camera yaw 0.60 rad, pitch 0.45 rad), lighting "Light tent + black cards", exposure 1.0x, key light azimuth 48 deg / elevation 54 deg
+sapphire_tilted_daylight-sky-sun_exp1.0_light48-54.png  ->  Sapphire on the standard round brilliant, tilted view (camera yaw 0.60 rad, pitch 0.45 rad), lighting "Daylight sky + sun", exposure 1.0x, key light azimuth 48 deg / elevation 54 deg
+diamond_tilted_light-tent-black-cards_exp0.6_light48-54.png  ->  Diamond on the standard round brilliant, tilted view (camera yaw 0.60 rad, pitch 0.45 rad), lighting "Light tent + black cards", exposure 0.6x, key light azimuth 48 deg / elevation 54 deg
+diamond_tilted_light-tent-black-cards_exp1.6_light48-54.png  ->  Diamond on the standard round brilliant, tilted view (camera yaw 0.60 rad, pitch 0.45 rad), lighting "Light tent + black cards", exposure 1.6x, key light azimuth 48 deg / elevation 54 deg
+diamond_tilted_light-tent-black-cards_exp1.0_light48-35.png  ->  Diamond on the standard round brilliant, tilted view (camera yaw 0.60 rad, pitch 0.45 rad), lighting "Light tent + black cards", exposure 1.0x, key light azimuth 48 deg / elevation 35 deg
+diamond_tilted_light-tent-black-cards_exp1.0_light48-75.png  ->  Diamond on the standard round brilliant, tilted view (camera yaw 0.60 rad, pitch 0.45 rad), lighting "Light tent + black cards", exposure 1.0x, key light azimuth 48 deg / elevation 75 deg
