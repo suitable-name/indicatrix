@@ -16,9 +16,9 @@ publish = { workspace = true }
 # `native.rs`'s on-disk encoding: `serde` for the schema types, `toml` for the text
 # format itself, `sha2` for the paired-`.asc` fingerprint. See `native/mod.rs`'s own
 # module doc comment for why TOML (not `serde_json`) and SHA-256 (not a cheaper
-# non-cryptographic hash) are the right choices. `asc` (this crate's other format
-# module) still has none of these -- see this file's own crate doc comment on why
-# each format module only pulls in what it needs.
+# non-cryptographic hash) are the right choices. `asc`, `gcs`, and `gem` (this
+# crate's other format modules) still have none of these -- see this file's own
+# crate doc comment on why each format module only pulls in what it needs.
 serde = { workspace = true }
 sha2 = { workspace = true }
 toml = { workspace = true }

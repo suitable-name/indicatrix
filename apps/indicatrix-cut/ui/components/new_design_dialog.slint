@@ -11,13 +11,65 @@ import { EditorModel } from "../models/editor.slint";
 // Same full-viewport modal backdrop + centered content-sized card convention as
 // metadata_editor_dialog.slint/material_editor_dialog.slint.
 export component NewDesignDialog inherits Rectangle {
+    // CAD audit item 207 -- the owner's decision (cad_todo.md's "Owner
+    // decisions" table has no row for this one directly, but the item's own
+    // note records it): a "Start from" template locks gear/symmetry/mirror to
+    // match the built-in tier table (96/8/mirror-on) rather than trying to
+    // remap the table onto whatever gear/symmetry the cutter already chose --
+    // remapping was explicitly rejected elsewhere in this pass as too costly.
+    // `0` = Empty (today's only behavior), `1` = Standard Round Brilliant.
+    //
+    // IMPORTANT -- this locks the VISIBLE fields (and is genuinely useful on
+    // its own: the resulting design at least starts on the same gear/
+    // symmetry/mirror the template's angles assume), but does NOT yet seed
+    // the actual eight-tier table (`ConstraintTier::standard_round_brilliant`,
+    // `crates/indicatrix-cut-core/src/design/tier.rs:210`) -- doing that needs a
+    // new parameter on `EditorModel.new_design_create` (`ui/models/editor.slint`,
+    // not this lane's file), so today "Create" with this template selected
+    // still yields an EMPTY tier list on the locked gear/symmetry/mirror. See
+    // this task's final report for the exact handoff (the Rust half is a
+    // three-line addition to `tier_actions::do_new_design_create`, already
+    // this lane's file, once the callback signature grows the one parameter).
+    property <bool> template_locks_fields: EditorModel.new_template_index == 1;
+
+    function apply_template_lock() {
+        if root.template_locks_fields {
+            // Index 0 in the Index Gear combo below is "96".
+            EditorModel.new_gear_index = 0;
+            EditorModel.new_symmetry_order_text = "8";
+            EditorModel.new_mirror = true;
+        }
+    }
+
+    // Best-effort, Slint-side validity for the four free-text numeric fields --
+    // full parsing (whole-number symmetry order, unparseable-text distinct from a
+    // legitimate zero) still lives in Rust (`gui::editor::loading::parse_preform_form`/
+    // `parse_new_design_form`) and is surfaced there via a toast on Create; these
+    // mirror that crate's own ">0" rule so a cutter sees the offending field
+    // highlighted before clicking Create, without this dialog needing a new
+    // `EditorModel` property to carry per-field error text back from Rust (that
+    // model is owned by another lane -- see this file's own handoff note).
+    property <bool> half_width_valid: EditorModel.new_preform_half_width.to-float() > 0;
+    property <bool> length_over_width_valid: EditorModel.new_preform_length_over_width.to-float() > 0;
+    property <bool> depth_valid: EditorModel.new_preform_depth.to-float() > 0;
+    property <bool> custom_gear_valid: EditorModel.new_gear_index != 6 || EditorModel.new_gear_custom_text.to-float() > 0;
+    property <bool> symmetry_valid: EditorModel.new_symmetry_order_text.to-float() >= 1;
+    property <bool> form_valid: root.half_width_valid && root.length_over_width_valid && root.depth_valid && root.custom_gear_valid && root.symmetry_valid;
+
     function cancel() {
         EditorModel.new_dialog_open = false;
-        
     }
 
     function do_create() {
-        EditorModel.new_dialog_open = false;
+        if !root.form_valid {
+            return;
+        }
+        // Closes only via the Rust callback's own success path
+        // (`tier_actions::setup_new_design_create_callback`, already unconditional
+        // on success) -- not here -- so a parse error it still catches (a whole-number
+        // symmetry order, for instance) reopens with the typed values intact and the
+        // toast naming the field, rather than a bad field yielding a toast with the
+        // dialog already gone.
         EditorModel.new_design_create(
             EditorModel.new_preform_shape_index,
             EditorModel.new_preform_half_width,
@@ -27,25 +79,50 @@ export component NewDesignDialog inherits Rectangle {
             EditorModel.new_gear_custom_text,
             EditorModel.new_symmetry_order_text,
             EditorModel.new_mirror,
-            EditorModel.new_material_index
+            EditorModel.new_material_index,
+            EditorModel.new_template_index
         );
     }
 
-    background: #00000088;
+    background: Theme.overlay-backdrop;
 
     TouchArea {
         clicked => { root.cancel(); }
     }
 
+    // Enter = Create (while the form validates), Escape = Cancel -- same
+    // `init => { self.focus(); }` + `key-pressed` idiom `ui/app.slint`'s
+    // `global_shortcuts` and `editor_tier_table.slint`'s row editor already use.
+    //
+    // CAD audit item 199: every other key used to `reject`, which let it bubble
+    // past this dialog to `ui/app.slint`'s `global_shortcuts` FocusScope -- so
+    // Ctrl+S while this dialog was open (freshly opened, before any field had
+    // stolen focus) fired Save Native on the design underneath it. `accept` for
+    // everything else swallows the key here instead, exactly like a native modal
+    // would.
+    key_scope := FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Return {
+                root.do_create();
+                return accept;
+            } else if event.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            accept
+        }
+    }
+
     Rectangle {
         width: 380px;
         height: content.preferred-height;
-        background: #11151f;
+        background: Theme.surface-dialog;
         border-radius: Theme.radius-md;
         border-width: 1px;
-        border-color: #334155;
+        border-color: Theme.border-dialog;
         drop-shadow-blur: 24px;
-        drop-shadow-color: #000000bb;
+        drop-shadow-color: Theme.modal-shadow;
         clip: true;
 
         TouchArea {}
@@ -61,11 +138,36 @@ export component NewDesignDialog inherits Rectangle {
                 color: Theme.text-primary;
             }
             Text {
-                text: "Preform, index gear, symmetry, mirror and starting material -- everything Design::fresh_from_spec needs.";
+                // cad_todo.md #241: used to name the Rust entry point
+                // (`Design::fresh_from_spec`) instead of telling a cutter anything
+                // about the fields below -- the preform dimensions are in this
+                // codebase's own "mast unit" scale (see `PreformSpec`'s own doc
+                // comment: the same scale a facet's own angle-table offset uses),
+                // not an arbitrary unitless number.
+                text: "A fresh design starts as a rough preform, cut on an index gear with the given symmetry. Preform dimensions are in mast units -- 1.0 is where the finished girdle will sit, so give it some headroom above that.";
                 font-size: 10px;
                 color: Theme.text-muted;
                 wrap: word-wrap;
             }
+
+            Rectangle {
+                height: template_lbl.preferred-height;
+                Tooltip { text: @markdown("Standard Round Brilliant locks the gear, symmetry and mirror settings below to match its built-in tier table."); }
+                template_lbl := Text { text: "Start From"; font-size: 10px; color: Theme.text-muted; }
+            }
+            ComboBox {
+                model: ["Empty", "Standard Round Brilliant"];
+                current-index <=> EditorModel.new_template_index;
+                selected(choice) => { root.apply_template_lock(); }
+            }
+            if root.template_locks_fields: Text {
+                text: "Locks Index Gear to 96, Symmetry Order to 8 and Mirror on, to match this template's tier table -- facet seeding itself is not wired up yet, so Create still starts with an empty tier list on those settings.";
+                font-size: 8px;
+                color: Theme.accent-amber;
+                wrap: word-wrap;
+            }
+
+            Rectangle { height: 1px; background: Theme.border-subtle; }
 
             Text { text: "Preform Shape"; font-size: 10px; color: Theme.text-muted; }
             ComboBox {
@@ -76,18 +178,33 @@ export component NewDesignDialog inherits Rectangle {
                 spacing: 6px;
                 VerticalLayout {
                     spacing: 2px;
-                    Text { text: "Half-Width"; font-size: 9px; color: Theme.text-muted; }
+                    Rectangle {
+                        height: hw_lbl.preferred-height;
+                        Tooltip { text: @markdown("Half the rough's width, in mast units -- the same scale a facet's own mast offset uses (1.0 = where the finished girdle will sit)."); }
+                        hw_lbl := Text { text: "Half-Width"; font-size: 9px; color: Theme.text-muted; }
+                    }
                     LineEdit { text <=> EditorModel.new_preform_half_width; }
+                    Text { text: root.half_width_valid ? "" : "must be > 0"; font-size: 8px; color: Theme.accent-ruby; }
                 }
                 VerticalLayout {
                     spacing: 2px;
-                    Text { text: "Length / Width"; font-size: 9px; color: Theme.text-muted; }
+                    Rectangle {
+                        height: lw_lbl.preferred-height;
+                        Tooltip { text: @markdown("Ratio of the rough's length to its width -- 1.0 is square/round, higher values give an elongated oval or rectangular rough."); }
+                        lw_lbl := Text { text: "Length / Width"; font-size: 9px; color: Theme.text-muted; }
+                    }
                     LineEdit { text <=> EditorModel.new_preform_length_over_width; }
+                    Text { text: root.length_over_width_valid ? "" : "must be > 0"; font-size: 8px; color: Theme.accent-ruby; }
                 }
                 VerticalLayout {
                     spacing: 2px;
-                    Text { text: "Depth"; font-size: 9px; color: Theme.text-muted; }
+                    Rectangle {
+                        height: depth_lbl.preferred-height;
+                        Tooltip { text: @markdown("The rough's total top-to-bottom extent (table to culet), in the same mast units as Half-Width."); }
+                        depth_lbl := Text { text: "Depth"; font-size: 9px; color: Theme.text-muted; }
+                    }
                     LineEdit { text <=> EditorModel.new_preform_depth; }
+                    Text { text: root.depth_valid ? "" : "must be > 0"; font-size: 8px; color: Theme.accent-ruby; }
                 }
             }
 
@@ -100,18 +217,20 @@ export component NewDesignDialog inherits Rectangle {
                     spacing: 2px;
                     Rectangle {
                         height: gear_lbl.preferred-height;
-                        Tooltip { text: @markdown("The index-gear tooth count -- how many positions the wheel that cuts facets around the stone has."); }
+                        Tooltip { text: root.template_locks_fields ? @markdown("Locked to 96 by the Standard Round Brilliant template.") : @markdown("The index-gear tooth count -- how many positions the wheel that cuts facets around the stone has."); }
                         gear_lbl := Text { text: "Index Gear"; font-size: 9px; color: Theme.text-muted; }
                     }
                     ComboBox {
                         model: ["96", "80", "77", "72", "64", "120", "Custom"];
                         current-index <=> EditorModel.new_gear_index;
+                        enabled: !root.template_locks_fields;
                     }
                 }
-                if EditorModel.new_gear_index == 6: VerticalLayout {
+                if EditorModel.new_gear_index == 6 && !root.template_locks_fields: VerticalLayout {
                     spacing: 2px;
                     Text { text: "Custom Teeth"; font-size: 9px; color: Theme.text-muted; }
                     LineEdit { text <=> EditorModel.new_gear_custom_text; }
+                    Text { text: root.custom_gear_valid ? "" : "must be > 0"; font-size: 8px; color: Theme.accent-ruby; }
                 }
             }
             HorizontalLayout {
@@ -121,16 +240,17 @@ export component NewDesignDialog inherits Rectangle {
                     spacing: 2px;
                     Rectangle {
                         height: sym_lbl.preferred-height;
-                        Tooltip { text: @markdown("How many repeats the design has around the stone -- an 8-fold design repeats every 45 degrees."); }
+                        Tooltip { text: root.template_locks_fields ? @markdown("Locked to 8 by the Standard Round Brilliant template.") : @markdown("How many repeats the design has around the stone -- an 8-fold design repeats every 45 degrees."); }
                         sym_lbl := Text { text: "Symmetry Order"; font-size: 9px; color: Theme.text-muted; }
                     }
-                    LineEdit { text <=> EditorModel.new_symmetry_order_text; }
+                    LineEdit { text <=> EditorModel.new_symmetry_order_text; enabled: !root.template_locks_fields; }
+                    Text { text: root.symmetry_valid ? "" : "must be a positive whole number"; font-size: 8px; color: Theme.accent-ruby; }
                 }
                 VerticalLayout {
                     spacing: 2px;
                     Rectangle {
                         height: mirror_lbl.preferred-height;
-                        Tooltip { text: @markdown("Whether each repeat is also mirrored -- most brilliant-style cuts are."); }
+                        Tooltip { text: root.template_locks_fields ? @markdown("Locked on by the Standard Round Brilliant template.") : @markdown("Whether each repeat is also mirrored -- most brilliant-style cuts are."); }
                         mirror_lbl := Text { text: "Mirror"; font-size: 9px; color: Theme.text-muted; }
                     }
                     HorizontalLayout {
@@ -140,8 +260,10 @@ export component NewDesignDialog inherits Rectangle {
                             width: 36px;
                             height: 20px;
                             border-radius: 10px;
-                            background: EditorModel.new_mirror ? Theme.accent-cyan : #334155;
+                            background: EditorModel.new_mirror ? (root.template_locks_fields ? Theme.border-medium : Theme.accent-cyan) : #334155;
+                            opacity: root.template_locks_fields ? 0.6 : 1.0;
                             TouchArea {
+                                enabled: !root.template_locks_fields;
                                 clicked => { EditorModel.new_mirror = !EditorModel.new_mirror; }
                             }
                             Rectangle {
@@ -190,15 +312,16 @@ export component NewDesignDialog inherits Rectangle {
                     width: create_txt.preferred-width + 20px;
                     height: 30px;
                     border-radius: Theme.radius-sm;
-                    background: Theme.accent-cyan;
+                    background: root.form_valid ? Theme.accent-cyan : Theme.border-medium;
                     create_txt := Text {
                         text: "Create";
                         font-weight: 700;
-                        color: #0b1220;
+                        color: root.form_valid ? #0b1220 : Theme.text-muted;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
                     TouchArea {
+                        enabled: root.form_valid;
                         clicked => {
                             root.do_create();
                         }

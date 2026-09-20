@@ -173,6 +173,33 @@ impl Database {
             .flatten()
             .is_some())
     }
+
+    /// Deletes `entry_id`'s entire `diagram_tilt_curves` row, if one exists.
+    ///
+    /// CAD audit item 97: like `diagram_previews`, this is a side table keyed by
+    /// `entry_id` that survives a `diagram_details` re-sync (see
+    /// [`Self::save_diagram_detail`](Database::save_diagram_detail)'s own doc
+    /// comment) -- so re-importing a `.asc` over an existing row, which changes the
+    /// design's actual geometry, otherwise leaves a stale tilt-performance curve
+    /// computed from the OLD schedule sitting on the row unchanged. Called after a
+    /// re-import collision so the curves are regenerated from the new geometry
+    /// instead of silently kept.
+    ///
+    /// A missing row is not an error -- deleting nothing (a design that never had
+    /// tilt curves computed) is the ordinary, expected outcome for most re-imports.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `DELETE` fails.
+    pub fn delete_tilt_curves(&self, entry_id: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM diagram_tilt_curves WHERE entry_id = ?1",
+                params![entry_id],
+            )
+            .with_context(|| format!("Failed to delete tilt curves for entry_id: {entry_id}"))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

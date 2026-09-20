@@ -7,7 +7,7 @@
 use super::warning::ManufacturabilityWarning;
 use crate::design::Design;
 use indicatrix::geometry::{
-    meet_solver::SolvedTier,
+    meet_solver::{SolveStrategy, SolvedTier},
     stone_metrics::{SolidStatus, build_solid_mesh, measure_solid},
 };
 use std::collections::BTreeMap;
@@ -76,6 +76,7 @@ pub fn check_manufacturability(
                 &boundaries,
                 &ring_by_index,
                 threshold,
+                metrics.width_axis,
             ));
         }
     }
@@ -102,8 +103,15 @@ pub fn check_manufacturability(
 /// `meet_solver::MAX_PLANES = 400` and each pass is well under a millisecond,
 /// negligible next to the solve this module's caller already paid for.
 ///
+/// `pub`, not re-exported crate-wide, since this `mesh_checks` module is
+/// itself private: [`crate::design::Design::tier_for_plane_index`] reaches
+/// this via `crate::manufacturability`'s own `pub(crate)` re-export, turning
+/// an escaping [`SolidStatus::Unbounded`] plane index into a tier index
+/// without re-deriving this same offset itself; nothing outside this crate
+/// needs the raw boundaries directly, only that per-index lookup.
+///
 /// [`StandardGemCuts::from_asc_schedule`]: indicatrix::geometry::cuts::StandardGemCuts::from_asc_schedule
-fn facet_plane_boundaries(schedule: &indicatrix_formats::asc::AscSchedule) -> Vec<usize> {
+pub fn facet_plane_boundaries(schedule: &indicatrix_formats::asc::AscSchedule) -> Vec<usize> {
     (0..schedule.tiers.len())
         .map(|i| {
             let prefix = indicatrix_formats::asc::AscSchedule {
@@ -166,12 +174,19 @@ fn check_vanishing_facets(
 
 /// Check 2: a facet survives but its polygon area is below `threshold` --
 /// see the module docs and [`DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2`].
+///
+/// `width_axis` is passed straight through onto every
+/// [`ManufacturabilityWarning::UndersizedFacet`] this raises, unused for the
+/// threshold comparison itself (already baked into `threshold` by the caller) --
+/// only so that warning's `Display` impl can report a cutter-meaningful
+/// percentage of stone width instead of a raw, design-scale area.
 fn check_undersized_facets(
     design: &Design,
     preform_len: usize,
     boundaries: &[usize],
     ring_by_index: &BTreeMap<usize, &Vec<glam::DVec3>>,
     threshold: f64,
+    width_axis: f64,
 ) -> Vec<ManufacturabilityWarning> {
     let mut warnings = Vec::new();
     let mut prev = 0usize;
@@ -187,6 +202,7 @@ fn check_undersized_facets(
                         facet_plane_index: plane_index,
                         area,
                         threshold,
+                        width_axis,
                     });
                 }
             }
@@ -194,6 +210,36 @@ fn check_undersized_facets(
         prev = end;
     }
     warnings
+}
+
+/// Tier indices whose solved mast came from neither a real authored anchor
+/// nor real vertex-derived structure.
+///
+/// Indices are into `solved`, which lines up 1:1 with `Design::tiers` -- see
+/// [`crate::design::Design::planes_from_solved`]'s alignment contract.
+/// "Neither" means neither [`SolveStrategy::ScaleReference`] nor real
+/// vertex-derived structure ([`SolveStrategy::DependencyOrder`] or
+/// [`SolveStrategy::JointGroup`]) -- i.e. [`SolveStrategy::LeastSquaresFallback`]
+/// or [`SolveStrategy::Failed`].
+///
+/// These are the suspects a [`SolidStatus::Degenerate`] verdict's caller
+/// should point the user at: every other tier's mast came from a real
+/// authored dimension or from where the design's own facets actually meet,
+/// so a tier that could not be placed from any of that real structure is the
+/// more likely cause of a degenerate arrangement.
+#[must_use]
+pub fn degenerate_suspects(solved: &[SolvedTier]) -> Vec<usize> {
+    solved
+        .iter()
+        .enumerate()
+        .filter(|(_, tier)| {
+            matches!(
+                tier.strategy,
+                SolveStrategy::LeastSquaresFallback | SolveStrategy::Failed
+            )
+        })
+        .map(|(index, _)| index)
+        .collect()
 }
 
 /// Area of a planar polygon given as an ordered ring of 3D vertices: the standard

@@ -260,6 +260,11 @@ struct StudioEnvCase {
     // `optics::raytracer::LightingPreset::Daylight`'s own D65-vs-Planckian selection;
     // see `renderer::gpu::environment_check::build_studio_env_cases`.
     use_d65: f32,
+    // Unit direction towards the eye for the lit models' head shadow; zero disables it.
+    observer_x: f32,
+    observer_y: f32,
+    observer_z: f32,
+    _pad2: f32,
 }
 
 fn studio_rig_key_dir(light_yaw: f32, light_pitch: f32) -> vec3<f32> {
@@ -281,30 +286,65 @@ fn studio_rig_ring_dir(i: u32, light_yaw: f32, sin_lp: f32) -> vec3<f32> {
     return normalize(vec3<f32>(cos(angle) * 0.75, sin_lp * 0.8, sin(angle) * 0.75));
 }
 
-const RING_CONE_OUTER_COS: f32 = 0.9659258;
-const RING_CONE_INNER_COS: f32 = 0.9961947;
-const SUN_OUTER_COS: f32 = 0.9702957;
-const SUN_INNER_COS: f32 = 0.9975641;
+// optics::raytracer::environment -- the lit lighting models (`LightingModel::
+// IsoHemisphere` / `LightTent` / `DaylightDome`), transcribed operation for operation
+// (`fma` for `mul_add`, explicit squarings where the CPU squares, the literal
+// `smoothstep`) so Tier 2's `run_studio_env` holds at its ULP budget. The cone cosines
+// are the same decimal literals as the Rust constants.
+const HEAD_SHADOW_OUTER_COS: f32 = 0.9510565;
+const HEAD_SHADOW_INNER_COS: f32 = 0.9702957;
+const SUN_OUTER_COS: f32 = 0.9975641;
+const SUN_INNER_COS: f32 = 0.9993908;
+const TENT_KEY_OUTER_COS: f32 = 0.7660444;
+const TENT_KEY_INNER_COS: f32 = 0.9396926;
+const SPARK_OUTER_COS: f32 = 0.9961947;
+const SPARK_INNER_COS: f32 = 0.9993908;
+const CARD_OUTER_COS: f32 = 0.898794;
+const CARD_INNER_COS: f32 = 0.9612617;
 
 fn smoothstep_f32(e0: f32, e1: f32, x: f32) -> f32 {
     let t = clamp((x - e0) / (e1 - e0), 0.0, 1.0);
     return t * t * fma(-2.0, t, 3.0);
 }
 
-fn sample_iso_hemisphere(d: vec3<f32>, spec_power: f32, exposure: f32, key_dir: vec3<f32>) -> f32 {
-    let obs_dot = dot(d, key_dir);
-    let shadow_factor = 1.0 - smoothstep_f32(0.93, 0.97, obs_dot);
-    var dome: f32;
-    if (d.y > 0.0) {
-        dome = fma(fma(d.y, 0.30, 0.70) - 0.005, shadow_factor, 0.005);
-    } else {
-        dome = 0.005;
-    }
-    let horizon = smoothstep_f32(-0.02, 0.05, d.y);
-    return (dome * horizon) * (spec_power * exposure);
+// 1.0 where `d` sees past the observer, 0.0 inside the head-shadow cone around
+// `observer` (the unit direction towards the eye; a zero vector disables it).
+fn observer_visibility(d: vec3<f32>, observer: vec3<f32>) -> f32 {
+    return 1.0 - smoothstep_f32(HEAD_SHADOW_OUTER_COS, HEAD_SHADOW_INNER_COS, dot(d, observer));
 }
 
-fn sample_soft_dome(
+fn horizon_blend(d: vec3<f32>) -> f32 {
+    return smoothstep_f32(-0.05, 0.05, d.y);
+}
+
+fn sample_iso_hemisphere(d: vec3<f32>, spec_power: f32, exposure: f32, observer: vec3<f32>) -> f32 {
+    return (horizon_blend(d) * observer_visibility(d, observer)) * (spec_power * exposure);
+}
+
+fn sample_daylight_dome(
+    d: vec3<f32>,
+    spec_power: f32,
+    exposure: f32,
+    key_dir: vec3<f32>,
+    observer: vec3<f32>,
+) -> f32 {
+    let horizon = horizon_blend(d);
+    let sun_dot = dot(d, key_dir);
+    let sky = fma(0.08, 1.0 - max(d.y, 0.0), 0.10);
+    let glow = max(sun_dot, 0.0);
+    let glow2 = glow * glow;
+    let glow4 = glow2 * glow2;
+    let aureole = (glow4 * glow4) * 0.30;
+    let sun = smoothstep_f32(SUN_OUTER_COS, SUN_INNER_COS, sun_dot) * 10.0;
+    let above = ((sky + aureole) + sun) * (horizon * observer_visibility(d, observer));
+    let ground = 0.04 * (1.0 - horizon);
+    return (above + ground) * (spec_power * exposure);
+}
+
+// optics::raytracer::environment::sample_light_tent -- needs `studio_rig_ring_dir` for
+// the three black cards on ring slots 4/8/12, so it lives here rather than in the shared
+// prelude with the other lit models.
+fn sample_light_tent(
     d: vec3<f32>,
     spec_power: f32,
     spot_mult: f32,
@@ -313,54 +353,21 @@ fn sample_soft_dome(
     fill_dir: vec3<f32>,
     sin_lp: f32,
     light_yaw: f32,
+    observer: vec3<f32>,
 ) -> f32 {
-    var dome: f32;
-    if (d.y >= 0.0) {
-        dome = 0.02 * fma(d.y, 0.5, 0.5);
-    } else {
-        dome = 0.005;
+    let horizon = horizon_blend(d);
+    var walls = fma(0.08, max(d.y, 0.0), 0.14);
+    var card: f32 = 0.0;
+    for (var slot: u32 = 4u; slot < RING_LIGHT_COUNT; slot = slot + 4u) {
+        let card_dir = studio_rig_ring_dir(slot, light_yaw, sin_lp);
+        card = max(card, smoothstep_f32(CARD_OUTER_COS, CARD_INNER_COS, dot(d, card_dir)));
     }
-    var radiance = dome;
-
-    let key_dot = max(dot(d, key_dir), 0.0);
-    if (key_dot > 0.0) {
-        let key = powi_u(key_dot, 16u) * (3.5 * spot_mult);
-        radiance = radiance + key;
-    }
-
-    let fill_dot = max(dot(d, fill_dir), 0.0);
-    if (fill_dot > 0.0) {
-        let fill = powi_u(fill_dot, 12u) * 1.0;
-        radiance = radiance + fill;
-    }
-
-    let ring_scale = 0.8 * spot_mult;
-    for (var i: u32 = 0u; i < RING_LIGHT_COUNT; i = i + 1u) {
-        let ring_dir = studio_rig_ring_dir(i, light_yaw, sin_lp);
-        let ring_dot = dot(d, ring_dir);
-        let ring = smoothstep_f32(RING_CONE_OUTER_COS, RING_CONE_INNER_COS, ring_dot) * ring_scale;
-        radiance = radiance + ring;
-    }
-
-    return radiance * (exposure * spec_power);
-}
-
-fn sample_daylight_dome(
-    d: vec3<f32>,
-    spec_power: f32,
-    exposure: f32,
-    key_dir: vec3<f32>,
-) -> f32 {
-    var dome: f32;
-    if (d.y >= 0.0) {
-        dome = 0.05 * fma(d.y, 0.4, 0.6);
-    } else {
-        dome = 0.005;
-    }
-    let key_dot = dot(d, key_dir);
-    let sun = smoothstep_f32(SUN_OUTER_COS, SUN_INNER_COS, key_dot) * 16.0;
-    let aureole = powi_u(max(key_dot, 0.0), 16u) * 1.5;
-    return (dome + sun + aureole) * (exposure * spec_power);
+    walls = walls * fma(card, -0.9, 1.0);
+    let key = smoothstep_f32(TENT_KEY_OUTER_COS, TENT_KEY_INNER_COS, dot(d, key_dir)) * (1.4 * spot_mult);
+    let spark = smoothstep_f32(SPARK_OUTER_COS, SPARK_INNER_COS, dot(d, fill_dir)) * (5.0 * spot_mult);
+    let above = ((walls + key) + spark) * (horizon * observer_visibility(d, observer));
+    let ground = 0.02 * (1.0 - horizon);
+    return (above + ground) * (spec_power * exposure);
 }
 
 fn sample_studio_rig(
@@ -411,16 +418,17 @@ fn studio_dispatch(
     fill_dir: vec3<f32>,
     sin_lp: f32,
     light_yaw: f32,
+    observer: vec3<f32>,
 ) -> f32 {
     switch (model) {
         case 1u: {
-            return sample_iso_hemisphere(d, spec_power, exposure, key_dir);
+            return sample_iso_hemisphere(d, spec_power, exposure, observer);
         }
         case 2u: {
-            return sample_soft_dome(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw);
+            return sample_light_tent(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw, observer);
         }
         case 3u: {
-            return sample_daylight_dome(d, spec_power, exposure, key_dir);
+            return sample_daylight_dome(d, spec_power, exposure, key_dir, observer);
         }
         default: {
             return sample_studio_rig(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw);
@@ -438,6 +446,7 @@ fn sample_studio_environment(
     light_pitch: f32,
     use_d65: f32,
     model: f32,
+    observer: vec3<f32>,
 ) -> f32 {
     let d = normalize(dir_in);
     var spec_power: f32;
@@ -461,6 +470,7 @@ fn sample_studio_environment(
         fill_dir,
         sin_lp,
         light_yaw,
+        observer,
     );
 }
 
@@ -484,6 +494,7 @@ fn studio_env_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         c.light_pitch,
         c.use_d65,
         c.model,
+        vec3<f32>(c.observer_x, c.observer_y, c.observer_z),
     );
 }
 

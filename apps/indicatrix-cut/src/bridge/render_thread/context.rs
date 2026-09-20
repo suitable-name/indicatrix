@@ -35,7 +35,23 @@ pub struct RenderContext {
     pub light_yaw: f32,
     pub light_pitch: f32,
     pub material_name: String,
+    /// A fully-resolved material that, when present, takes priority over
+    /// `material_name` in [`resolve_material_with_override`] -- CAD audit items 57
+    /// and 61. `material_name`'s plain by-name lookup (see [`resolve_material`])
+    /// cannot represent "this design's real effective material" for a design with
+    /// no `material.name` set (every `.asc`-imported or brand-new design, per
+    /// `crates/indicatrix-cut-core/src/design/construct.rs`) or with an RI
+    /// override typed against an unlisted material -- both currently fall back to
+    /// silently tracing as Diamond. The intended writer is `gui::editor::view::
+    /// refresh_design_settings`, via `gui::editor::material_lookup::
+    /// resolved_gem_material` (already override-aware) -- `bridge::render_thread`
+    /// sits below `gui::` and resolves materials by value on purpose, so it has no
+    /// way to call that resolver itself. `None` (default) reproduces the
+    /// pre-existing by-name-only resolution exactly.
+    pub material_override: Option<GemMaterial>,
     pub lighting_preset: LightingPreset,
+    /// What the camera sees behind the stone -- `AppSettings::backdrop`.
+    pub backdrop: crate::settings::model::Backdrop,
     /// Progressive-accumulation target; the render loop stops once `accum_samples`
     /// reaches this. Samples-per-frame is derived from it, not chosen directly -- see
     /// `resolve_material_and_quality`.
@@ -99,6 +115,37 @@ pub struct RenderContext {
     /// comment), which is a fine default for callers that have no design of their own
     /// to report (the built-in placeholder cut, a deleted-selection reset).
     pub design_gear: Option<(u32, f32)>,
+    /// Which of `active_planes`'s four writers most recently claimed the slot --
+    /// CAD audit item 58. `active_planes`/`design_gear` have no ownership check
+    /// today: an editor solve, the editor's own background auto-solve, a catalogue
+    /// row selection, and a catalogue-row delete-reset all write them
+    /// unconditionally, so browsing the catalogue while editing a design silently
+    /// swaps out the design every downstream reader (the tracer, the metrics HUD,
+    /// the tilt sweep/hover preview, export, remote render) describes.
+    ///
+    /// This field only RECORDS the claim -- see [`Self::claim_active_planes`], the
+    /// single point meant to set `active_planes`/`design_gear`/`planes_owner`
+    /// together. It does not by itself refuse or arbitrate anything: each of the
+    /// four writers (`gui::editor::view::refresh_viewport`, `gui::editor::
+    /// auto_solve`'s background-solve resubmit, `gui::library::detail::
+    /// apply_reconstructed_planes`, `gui::library::local::organize`'s delete-reset)
+    /// still needs to switch to calling [`Self::claim_active_planes`] instead of
+    /// assigning the three fields directly, and `apply_reconstructed_planes`/the
+    /// delete-reset still need to consult [`Self::planes_owner`] before deciding
+    /// whether to overwrite an `Editor` owner's in-progress work (see that
+    /// method's own doc comment for the exact check).
+    pub planes_owner: PlanesOwner,
+    /// Why the design currently on the bench cannot be traced honestly, as a
+    /// cutter-facing sentence -- `None` when it can (CAD audit item 57).
+    ///
+    /// Set when a design names no material AND its own refractive index matches no
+    /// built-in preset within tolerance. The old behaviour was to silently trace it
+    /// as Diamond, so a quartz design's windowing, extinction and tilt curve were a
+    /// diamond simulation while MARGIN and the critical angle beside them used the
+    /// real RI -- two numbers on screen contradicting each other with no hint why.
+    /// Refusing and saying so is the owner's chosen behaviour over substituting
+    /// something plausible.
+    pub material_unresolved: Option<String>,
     pub custom_materials: Arc<Vec<GemMaterial>>,
     /// Shutdown signal for the render thread. Setting this `false` ends the loop
     /// *permanently* -- never reuse this as a pause mechanism; see `paused`.
@@ -203,6 +250,107 @@ pub struct RenderContext {
     pub env_map: Option<Arc<EnvironmentMap>>,
 }
 
+/// Tags which subsystem last claimed `RenderContext::active_planes`/`design_gear`
+/// -- CAD audit item 58. See [`RenderContext::claim_active_planes`] for the
+/// intended write path and [`RenderContext::planes_owner`] for why this exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PlanesOwner {
+    /// Nobody has claimed the slot since startup -- still the built-in
+    /// placeholder cut [`RenderContext::default`] seeds `active_planes` with.
+    #[default]
+    Builtin,
+    /// The editor's currently loaded/edited design, tagged with `EditorState`'s
+    /// own edit generation counter so a superseded write (e.g. a background
+    /// auto-solve that finished after a newer edit started) can be told apart
+    /// from the current one.
+    Editor {
+        /// `EditorState`'s generation counter at claim time.
+        generation: u64,
+    },
+    /// A catalogue entry, tagged by its row id so a delete-reset (item 145) can
+    /// check whether the row it just deleted is the one that owns the slot before
+    /// resetting it.
+    Catalogue {
+        /// The catalogue row's database id.
+        entry_id: i64,
+    },
+}
+
+impl RenderContext {
+    /// Whether a write tagged `new_owner` may overwrite the slot's CURRENT owner
+    /// -- CAD audit item 58's arbitration rule, factored out so every writer
+    /// applies the same policy instead of five copies of an `if` chain.
+    ///
+    /// An `Editor` owner always wins over anything else: the cutter is actively
+    /// working on a design, and a catalogue glance/delete must never silently
+    /// replace what they are editing. Two `Editor` claims arbitrate by
+    /// generation, so a background auto-solve that was already stale when it
+    /// finished can't clobber a newer edit's planes. Anything else (a fresh
+    /// catalogue selection over `Builtin`/another `Catalogue` row, or the very
+    /// first claim from `Builtin`) is allowed.
+    #[must_use]
+    pub const fn may_claim_active_planes(&self, new_owner: PlanesOwner) -> bool {
+        match (self.planes_owner, new_owner) {
+            (
+                PlanesOwner::Editor {
+                    generation: current,
+                },
+                PlanesOwner::Editor { generation: new },
+            ) => new >= current,
+            (PlanesOwner::Editor { .. }, _) => false,
+            _ => true,
+        }
+    }
+
+    /// The single intended write path for `active_planes`/`design_gear`/
+    /// `planes_owner` together -- CAD audit item 58. Returns `false` (and leaves
+    /// every field untouched) when [`Self::may_claim_active_planes`] refuses the
+    /// claim, so a caller can decide whether to surface that as a toast/prompt.
+    ///
+    /// Does NOT set `dirty` -- callers already do that themselves alongside
+    /// whatever else a plane-set change requires (a `Reproject`/`Replan` request,
+    /// a tilt-sweep re-request per item 147, etc.), and folding it in here would
+    /// make a refused claim's caller have to remember to skip that too.
+    pub fn claim_active_planes(
+        &mut self,
+        planes: Arc<Vec<GpuFacetPlane>>,
+        design_gear: Option<(u32, f32)>,
+        owner: PlanesOwner,
+    ) -> bool {
+        if !self.may_claim_active_planes(owner) {
+            return false;
+        }
+        self.active_planes = planes;
+        self.design_gear = design_gear;
+        self.planes_owner = owner;
+        true
+    }
+
+    /// CAD audit item 59: whether the currently traced/rasterized `active_planes`
+    /// describe an OLDER edit than `current_generation` -- the "render is stale"
+    /// signal that finding's STATUS note says is still missing (no
+    /// `planes_generation`/`trace_stale` property exists anywhere in the app).
+    /// [`PlanesOwner::Editor`] already carries exactly the generation
+    /// `active_planes` was last claimed at (CAD audit item 58), so this is a
+    /// direct comparison against it rather than a new field -- `false` whenever
+    /// the slot is not even owned by the editor (`Builtin`/`Catalogue`), since
+    /// "stale relative to an edit" only means something while the editor owns the
+    /// slot at all.
+    ///
+    /// This alone does not close item 59: a caller still needs to call it with
+    /// `EditorState::generation`'s live value (not this lane's file to read from)
+    /// and push the result into a new Slint property with an amber overlay in the
+    /// Path-traced/Both viewport (`ui/**`, also not this lane's file) -- see this
+    /// fix's own handoff notes for the exact wiring.
+    #[must_use]
+    pub const fn traced_planes_are_stale(&self, current_generation: u64) -> bool {
+        matches!(
+            self.planes_owner,
+            PlanesOwner::Editor { generation } if generation != current_generation
+        )
+    }
+}
+
 impl Default for RenderContext {
     fn default() -> Self {
         Self {
@@ -214,7 +362,9 @@ impl Default for RenderContext {
             light_yaw: 0.85,   // ~48 degrees azimuth
             light_pitch: 0.95, // ~54 degrees elevation
             material_name: "Diamond".to_string(),
+            material_override: None,
             lighting_preset: LightingPreset::RingLights,
+            backdrop: crate::settings::model::Backdrop::default(),
             target_samples: 256,
             max_bounces: 12,
             exposure: 1.0,
@@ -225,6 +375,8 @@ impl Default for RenderContext {
             stone_width_mm: 0.0,
             active_planes: Arc::new(StandardGemCuts::standard_round_brilliant()),
             design_gear: None,
+            planes_owner: PlanesOwner::Builtin,
+            material_unresolved: None,
             custom_materials: Arc::new(Vec::new()),
             running: true,
             dirty: true,
@@ -271,7 +423,11 @@ pub(super) struct FrameInputs {
     pub(super) light_yaw: f32,
     pub(super) light_pitch: f32,
     pub(super) material_name: String,
+    pub(super) material_override: Option<GemMaterial>,
+    /// See [`RenderContext::material_unresolved`] -- CAD audit item 57.
+    pub(super) material_unresolved: Option<String>,
     pub(super) lighting_preset: LightingPreset,
+    pub(super) backdrop: crate::settings::model::Backdrop,
     pub(super) target_samples: u32,
     pub(super) max_bounces: u32,
     pub(super) exposure: f32,
@@ -323,7 +479,10 @@ pub(super) fn snapshot_frame_inputs(ctx: &Arc<Mutex<RenderContext>>) -> FrameInp
         light_yaw: ctx.light_yaw,
         light_pitch: ctx.light_pitch,
         material_name: ctx.material_name.clone(),
+        material_override: ctx.material_override.clone(),
+        material_unresolved: ctx.material_unresolved.clone(),
         lighting_preset: ctx.lighting_preset,
+        backdrop: ctx.backdrop,
         target_samples: ctx.target_samples,
         max_bounces: ctx.max_bounces,
         exposure: ctx.exposure,
@@ -376,6 +535,31 @@ pub fn resolve_material(
         })
         .cloned()
         .unwrap_or_else(|| materials[0].clone())
+}
+
+/// Prefers `material_override` (see [`RenderContext::material_override`]) over the
+/// plain by-name lookup [`resolve_material`] already does -- CAD audit items 57
+/// and 61. Purely additive: [`resolve_material`]'s own signature and every
+/// existing call site are untouched, so a caller that has no override to offer
+/// (or hasn't been updated to look one up yet) keeps its exact prior behaviour by
+/// passing `None`.
+///
+/// Callers outside `bridge::render_thread` that want a design's real effective
+/// material honoured end to end (the tilt sweep, the tilt hover preview, a
+/// high-resolution export) should switch their existing `resolve_material(...)`
+/// call to `resolve_material_with_override(..., ctx.material_override.as_ref(),
+/// ...)` -- see this crate's CAD audit notes for items 57/61 for the specific
+/// call sites still on the old by-name-only path.
+#[must_use]
+pub fn resolve_material_with_override(
+    materials: &[GemMaterial],
+    custom_materials: &[GemMaterial],
+    material_override: Option<&GemMaterial>,
+    material_name: &str,
+) -> GemMaterial {
+    material_override
+        .cloned()
+        .unwrap_or_else(|| resolve_material(materials, custom_materials, material_name))
 }
 
 /// Every opt-in render-time material override bundled into one struct, to keep call
@@ -448,23 +632,38 @@ pub fn apply_material_overrides(
     material
 }
 
-/// Resolves the current gem material (see `resolve_material`), applies every user
-/// material override on top of it (see [`MaterialOverrides`]/[`apply_material_overrides`]),
-/// and derives this frame's samples-per-frame from the user's target sample count.
+/// Resolves the current gem material (see `resolve_material_with_override`, which
+/// prefers `material_override` over `material_name` when present -- CAD audit
+/// items 57/61), applies every user material override on top of it (see
+/// [`MaterialOverrides`]/[`apply_material_overrides`]), and derives this frame's
+/// samples-per-frame from the user's target sample count.
 ///
 /// Bounce count is not resolved here -- the settings dialog's "Max Ray Bounces"
 /// selector is the only thing controlling it; callers use `RenderContext::max_bounces`
 /// directly.
+/// Everything needed to name the material for a frame: the two tables to look a
+/// name up in, the name itself, and the editor's already-resolved override that
+/// beats both when it is set (CAD audit items 57/61).
+pub struct MaterialSources<'a> {
+    pub materials: &'a [GemMaterial],
+    pub custom_materials: &'a [GemMaterial],
+    pub material_override: Option<&'a GemMaterial>,
+    pub material_name: &'a str,
+}
+
 pub(super) fn resolve_material_and_quality(
-    materials: &[GemMaterial],
-    custom_materials: &[GemMaterial],
-    material_name: &str,
+    sources: &MaterialSources<'_>,
     target_samples: u32,
     overrides: &MaterialOverrides,
     active_planes: &[GpuFacetPlane],
     width_cache: &mut StoneWidthCache,
 ) -> (GemMaterial, u32) {
-    let current_mat = resolve_material(materials, custom_materials, material_name);
+    let current_mat = resolve_material_with_override(
+        sources.materials,
+        sources.custom_materials,
+        sources.material_override,
+        sources.material_name,
+    );
     let current_mat = apply_material_overrides(current_mat, overrides, active_planes, width_cache);
 
     // Samples-per-frame is derived from the target, not chosen directly: the render
@@ -475,4 +674,177 @@ pub(super) fn resolve_material_and_quality(
     let spp = (target_samples / 64).clamp(1, 8);
 
     (current_mat, spp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ---- PlanesOwner / claim_active_planes: CAD audit item 58 ------------------------
+
+    #[test]
+    fn builtin_is_the_default_owner_and_anything_may_claim_over_it() {
+        let ctx = RenderContext::default();
+        assert_eq!(ctx.planes_owner, PlanesOwner::Builtin);
+        assert!(ctx.may_claim_active_planes(PlanesOwner::Catalogue { entry_id: 1 }));
+        assert!(ctx.may_claim_active_planes(PlanesOwner::Editor { generation: 0 }));
+    }
+
+    #[test]
+    fn a_catalogue_claim_never_overwrites_an_editor_owner() {
+        let mut ctx = RenderContext::default();
+        assert!(ctx.claim_active_planes(
+            Arc::new(Vec::new()),
+            None,
+            PlanesOwner::Editor { generation: 3 },
+        ));
+        assert!(
+            !ctx.may_claim_active_planes(PlanesOwner::Catalogue { entry_id: 42 }),
+            "a catalogue click must not silently steal the slot from the editor \
+             (the exact scenario CAD audit item 58 describes)"
+        );
+        assert_eq!(ctx.planes_owner, PlanesOwner::Editor { generation: 3 });
+    }
+
+    #[test]
+    fn a_stale_editor_generation_never_overwrites_a_newer_one() {
+        let mut ctx = RenderContext::default();
+        assert!(ctx.claim_active_planes(
+            Arc::new(Vec::new()),
+            None,
+            PlanesOwner::Editor { generation: 5 },
+        ));
+        // A background auto-solve started against generation 2 finishes late,
+        // after a newer edit (generation 5) already landed -- it must not win.
+        assert!(!ctx.claim_active_planes(
+            Arc::new(Vec::new()),
+            None,
+            PlanesOwner::Editor { generation: 2 },
+        ));
+        assert_eq!(ctx.planes_owner, PlanesOwner::Editor { generation: 5 });
+    }
+
+    #[test]
+    fn a_newer_or_equal_editor_generation_may_overwrite_the_current_one() {
+        let mut ctx = RenderContext::default();
+        assert!(ctx.claim_active_planes(
+            Arc::new(Vec::new()),
+            None,
+            PlanesOwner::Editor { generation: 5 },
+        ));
+        assert!(ctx.claim_active_planes(
+            Arc::new(Vec::new()),
+            None,
+            PlanesOwner::Editor { generation: 5 },
+        ));
+        assert!(ctx.claim_active_planes(
+            Arc::new(Vec::new()),
+            None,
+            PlanesOwner::Editor { generation: 6 },
+        ));
+        assert_eq!(ctx.planes_owner, PlanesOwner::Editor { generation: 6 });
+    }
+
+    #[test]
+    fn two_catalogue_claims_freely_replace_each_other() {
+        let mut ctx = RenderContext::default();
+        assert!(ctx.claim_active_planes(
+            Arc::new(Vec::new()),
+            None,
+            PlanesOwner::Catalogue { entry_id: 1 },
+        ));
+        assert!(ctx.claim_active_planes(
+            Arc::new(Vec::new()),
+            None,
+            PlanesOwner::Catalogue { entry_id: 2 },
+        ));
+        assert_eq!(ctx.planes_owner, PlanesOwner::Catalogue { entry_id: 2 });
+    }
+
+    // --- traced_planes_are_stale (CAD audit item 59) ---
+
+    #[test]
+    fn traced_planes_match_the_generation_they_were_claimed_at() {
+        let mut ctx = RenderContext::default();
+        assert!(ctx.claim_active_planes(
+            Arc::new(Vec::new()),
+            None,
+            PlanesOwner::Editor { generation: 7 },
+        ));
+        assert!(!ctx.traced_planes_are_stale(7));
+    }
+
+    #[test]
+    fn traced_planes_are_stale_once_a_newer_edit_has_landed() {
+        let mut ctx = RenderContext::default();
+        assert!(ctx.claim_active_planes(
+            Arc::new(Vec::new()),
+            None,
+            PlanesOwner::Editor { generation: 7 },
+        ));
+        // An edit bumped `EditorState::generation` to 8, but nothing has
+        // re-solved/re-claimed the slot yet -- the trace on screen is now for an
+        // edit that no longer matches the live design.
+        assert!(ctx.traced_planes_are_stale(8));
+    }
+
+    #[test]
+    fn a_slot_the_editor_has_never_owned_is_never_stale() {
+        let ctx = RenderContext::default();
+        assert_eq!(ctx.planes_owner, PlanesOwner::Builtin);
+        assert!(!ctx.traced_planes_are_stale(1));
+
+        let mut ctx = RenderContext::default();
+        assert!(ctx.claim_active_planes(
+            Arc::new(Vec::new()),
+            None,
+            PlanesOwner::Catalogue { entry_id: 3 },
+        ));
+        assert!(!ctx.traced_planes_are_stale(1));
+    }
+
+    #[test]
+    fn a_refused_claim_leaves_every_field_untouched() {
+        let mut ctx = RenderContext::default();
+        let original_planes = Arc::new(StandardGemCuts::emerald_cut());
+        ctx.active_planes = Arc::clone(&original_planes);
+        ctx.design_gear = Some((96, 0.5));
+        ctx.planes_owner = PlanesOwner::Editor { generation: 10 };
+
+        let accepted = ctx.claim_active_planes(
+            Arc::new(StandardGemCuts::standard_round_brilliant()),
+            Some((64, 0.0)),
+            PlanesOwner::Catalogue { entry_id: 7 },
+        );
+
+        assert!(!accepted);
+        assert!(Arc::ptr_eq(&ctx.active_planes, &original_planes));
+        assert_eq!(ctx.design_gear, Some((96, 0.5)));
+        assert_eq!(ctx.planes_owner, PlanesOwner::Editor { generation: 10 });
+    }
+
+    // ---- resolve_material_with_override: CAD audit items 57/61 -----------------------
+
+    #[test]
+    fn no_override_falls_through_to_the_plain_by_name_lookup() {
+        let materials = GemMaterial::all_materials();
+        let by_name = resolve_material(&materials, &[], "Diamond");
+        let via_override_fn = resolve_material_with_override(&materials, &[], None, "Diamond");
+        assert_eq!(by_name.name, via_override_fn.name);
+        assert_eq!(by_name.dispersion, via_override_fn.dispersion);
+    }
+
+    #[test]
+    fn an_override_wins_regardless_of_what_material_name_says() {
+        let materials = GemMaterial::all_materials();
+        let quartz = GemMaterial::new_custom("Quartz-ish", 1.5442, 0.013, 0.0, [0.0, 0.0, 0.0]);
+        let resolved = resolve_material_with_override(
+            &materials,
+            &[],
+            Some(&quartz),
+            "Diamond", // the stale/fallback name a design with no real material carries
+        );
+        assert_eq!(resolved.name, quartz.name);
+        assert_eq!(resolved.dispersion, quartz.dispersion);
+    }
 }

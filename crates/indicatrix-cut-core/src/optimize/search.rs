@@ -20,20 +20,78 @@ use crate::{
 };
 use indicatrix::optics::materials::GemMaterial;
 
+/// Which phase of [`optimize_design`] a [`SearchHooks::on_progress`] call reports on.
+///
+/// CAD audit items 153/161: without this, a caller's progress ticker had no way
+/// to tell "the counter is frozen because nothing is happening" (a real hang)
+/// apart from "the counter is frozen because this stage does not advance it" (the
+/// two fixed [`ObjectiveFidelity::Full`] scorings that bracket every run, and --
+/// before this type existed -- the polish stage too, which never reported at all).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchStage {
+    /// Scoring `design` exactly as given, at [`ObjectiveFidelity::Full`], before
+    /// any candidate is tried -- always exactly one report, evaluations `0`.
+    BaselineFull,
+    /// The coordinate-descent stage (see [`optimize_design`]'s "Algorithm"
+    /// section).
+    Coordinate,
+    /// The Nelder-Mead polish stage (see [`optimize_design`]'s "Two stages"
+    /// section).
+    Polish,
+    /// Scoring the point the search ended on, at [`ObjectiveFidelity::Full`],
+    /// after the last [`Self::Coordinate`]/[`Self::Polish`] report -- always
+    /// exactly one report.
+    FinalFull,
+}
+
+impl SearchStage {
+    /// A small, stable numeric encoding for a caller that needs to carry a
+    /// [`SearchStage`] across a boundary this enum can't cross directly -- e.g. a
+    /// shared [`std::sync::atomic::AtomicU8`] a progress ticker thread polls, the
+    /// same way a caller might already share the running evaluation count.
+    /// Paired with [`Self::from_code`].
+    #[must_use]
+    pub const fn to_code(self) -> u8 {
+        match self {
+            Self::BaselineFull => 0,
+            Self::Coordinate => 1,
+            Self::Polish => 2,
+            Self::FinalFull => 3,
+        }
+    }
+
+    /// The inverse of [`Self::to_code`]. Any value outside `0..=3` (never
+    /// produced by [`Self::to_code`] itself) decodes to [`Self::Coordinate`],
+    /// the stage a progress reader is safest defaulting to before the first real
+    /// report arrives.
+    #[must_use]
+    pub const fn from_code(code: u8) -> Self {
+        match code {
+            0 => Self::BaselineFull,
+            2 => Self::Polish,
+            3 => Self::FinalFull,
+            _ => Self::Coordinate,
+        }
+    }
+}
+
 /// Cooperative cancellation and real progress reporting for [`optimize_design`].
 ///
 /// Unlike `gui::editor::deep_solve` (which calls into an opaque repair search with
 /// no checkpoint to poll, hence its "UI-level abandonment" cancellation model),
 /// this module owns its entire search loop -- so a real mid-search checkpoint is
 /// possible: `cancel` is polled once per tier decision, and `on_progress` is
-/// invoked with the running evaluation count after every tier decision.
+/// invoked with the running evaluation count and the active [`SearchStage`] at
+/// every point this module's own doc comment on [`SearchStage`] names -- including
+/// the polish stage's own evaluations and the two fixed full-fidelity scorings,
+/// neither of which used to report at all (CAD audit items 153/161).
 ///
 /// Both fields default to `None` ([`SearchHooks::default`]) for a caller (e.g. a
 /// test) that wants neither.
 #[derive(Default)]
 pub struct SearchHooks<'a> {
     pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
-    pub on_progress: Option<&'a dyn Fn(usize)>,
+    pub on_progress: Option<&'a dyn Fn(usize, SearchStage)>,
 }
 
 impl SearchHooks<'_> {
@@ -42,9 +100,9 @@ impl SearchHooks<'_> {
             .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
     }
 
-    fn report(&self, evaluations: usize) {
+    fn report(&self, evaluations: usize, stage: SearchStage) {
         if let Some(on_progress) = self.on_progress {
-            on_progress(evaluations);
+            on_progress(evaluations, stage);
         }
     }
 }
@@ -122,6 +180,32 @@ impl Default for OptimizeConfig {
             polish_max_evaluations: None,
         }
     }
+}
+
+/// The inclusive evaluation budget across both search stages for a design with
+/// `free_tier_count` tiers free to move.
+///
+/// [`OptimizeConfig::max_evaluations`] (the coordinate stage) plus the polish
+/// stage's own cap, computed the same way [`optimize_design`] itself would (`0`
+/// when the polish stage is disabled) -- see
+/// [`OptimizeConfig::polish_max_evaluations`]'s own default.
+///
+/// CAD audit item 153: a caller reporting progress via [`SearchHooks::on_progress`]
+/// needs this to show an honest "N of ~M evaluations" once the polish stage's own
+/// evaluations are included in `N` -- `config.max_evaluations` alone silently
+/// excluded the polish stage's budget, reading as the counter blowing past its own
+/// stated maximum.
+#[must_use]
+pub fn inclusive_max_evaluations(config: &OptimizeConfig, free_tier_count: usize) -> usize {
+    let polish_max = config
+        .polish_start_step_deg
+        .filter(|&step| step > 0.0)
+        .map_or(0, |_| {
+            config
+                .polish_max_evaluations
+                .unwrap_or(3 * free_tier_count + 20)
+        });
+    config.max_evaluations + polish_max
 }
 
 /// One accepted change [`optimize_design`] proposes: tier `index`'s angle moves from
@@ -212,7 +296,10 @@ pub struct OptimizeOutcome {
 /// # A freshly-imported design has nothing to optimize
 ///
 /// If [`free_tier_indices`] is empty, this returns immediately with
-/// `evaluations: 0` and `before == after`; `hooks` is never even consulted.
+/// `evaluations: 0` and `before == after` -- `hooks.cancel` is never consulted,
+/// though `hooks.on_progress` still receives [`baseline_report`]'s one
+/// [`SearchStage::BaselineFull`] report, since that scoring happens regardless of
+/// whether there turns out to be anything free to search over.
 ///
 /// # Errors
 ///
@@ -241,7 +328,7 @@ pub fn optimize_design(
     config: &OptimizeConfig,
     hooks: &SearchHooks<'_>,
 ) -> Result<OptimizeOutcome, MissingAnchor> {
-    let baseline = baseline_report(design, material, &config.weights)?;
+    let baseline = baseline_report(design, material, &config.weights, hooks)?;
 
     if baseline.free.is_empty() {
         return Ok(OptimizeOutcome {
@@ -262,26 +349,19 @@ pub fn optimize_design(
         weights: &config.weights,
         baseline_warnings: &baseline.warnings,
     };
-    let (current, current_score, coord_evaluations, coord_cancelled) =
-        run_search(design, config, &ctx, &baseline, hooks);
+    let coord = run_search(design, config, &ctx, &baseline, hooks);
+    let coord_evaluations = coord.evaluations;
+    let coord_cancelled = coord.cancelled;
 
     let polish = if coord_cancelled {
         PolishStageOutcome {
-            current,
+            current: coord.design,
             evaluations: 0,
             improvement: 0.0,
             cancelled: true,
         }
     } else {
-        run_polish_stage(
-            design,
-            &baseline.free,
-            config,
-            &ctx,
-            hooks,
-            current,
-            current_score,
-        )
+        run_polish_stage(design, &baseline.free, config, &ctx, hooks, coord)
     };
 
     let summary = SearchRunSummary {
@@ -296,6 +376,7 @@ pub fn optimize_design(
         &polish.current,
         &ctx,
         &baseline,
+        hooks,
         &summary,
     ))
 }
@@ -313,6 +394,13 @@ struct Baseline {
 
 /// Builds [`optimize_design`]'s [`Baseline`].
 ///
+/// Reports [`SearchStage::BaselineFull`] (evaluations `0`, since none of
+/// `config`'s budget is spent here) through `hooks` before running the one
+/// [`ObjectiveFidelity::Full`] scoring this function performs -- CAD audit item
+/// 161: that scoring alone measures ~1.3s on a small real design (see the parent
+/// module's "Cost first" doc section), and used to report nothing at all, reading
+/// as a frozen counter before the search had even started.
+///
 /// # Errors
 ///
 /// Propagates [`Design::solve`]'s [`MissingAnchor`].
@@ -320,7 +408,9 @@ fn baseline_report(
     design: &Design,
     material: &GemMaterial,
     weights: &ObjectiveWeights,
+    hooks: &SearchHooks<'_>,
 ) -> Result<Baseline, MissingAnchor> {
+    hooks.report(0, SearchStage::BaselineFull);
     let baseline_solved = design.solve()?;
     let baseline_planes = design.planes_from_solved(&baseline_solved);
     let warnings = BaselineWarningCounts::count(&check_manufacturability(
@@ -360,7 +450,7 @@ fn run_search(
     ctx: &SearchContext,
     baseline: &Baseline,
     hooks: &SearchHooks<'_>,
-) -> (Design, f32, usize, bool) {
+) -> CoordinateStageOutcome {
     let free = &baseline.free;
     let before_score = baseline.before_score;
     let mut current = design.clone();
@@ -398,7 +488,7 @@ fn run_search(
                 current_score,
             );
             evaluations += spent;
-            hooks.report(evaluations);
+            hooks.report(evaluations, SearchStage::Coordinate);
 
             if let Some((new_deg, new_score)) = best {
                 current.tiers[tier_index].angle_deg = new_deg;
@@ -422,7 +512,24 @@ fn run_search(
         }
     }
 
-    (current, current_score, evaluations, cancelled)
+    CoordinateStageOutcome {
+        design: current,
+        score: current_score,
+        evaluations,
+        cancelled,
+    }
+}
+
+/// [`run_search`]'s return, bundled into one struct purely to keep
+/// [`run_polish_stage`]'s own argument count under clippy's `too_many_arguments`
+/// lint (see [`optimize_design`]'s "why this is more than one function" note): the
+/// design and score the coordinate stage ended on, how many evaluations it spent,
+/// and whether [`SearchHooks::cancel`] cut it short.
+struct CoordinateStageOutcome {
+    design: Design,
+    score: f32,
+    evaluations: usize,
+    cancelled: bool,
 }
 
 /// [`optimize_design`]'s "best point in, best point out" half for the polish stage:
@@ -435,15 +542,26 @@ fn run_search(
 /// Disabled ([`OptimizeConfig::polish_start_step_deg`] is `None` or non-positive)
 /// short-circuits to a zero-evaluation, unchanged [`PolishStageOutcome`] before ever
 /// building the closure or calling [`polish::run_polish`].
+///
+/// `coord`'s own `evaluations` is only for progress reporting (CAD audit item
+/// 153): each call the `evaluate` closure below makes reports `hooks.report` with
+/// [`SearchStage::Polish`] and a running total that STARTS from
+/// `coord.evaluations` rather than from zero, so a caller's own evaluation
+/// counter keeps climbing smoothly across the coordinate-to-polish hand-off
+/// instead of resetting or (as it did before this reporting existed at all)
+/// freezing for the whole polish stage. Only ever called with `coord.cancelled ==
+/// false` -- see [`optimize_design`]'s own call site.
 fn run_polish_stage(
     design: &Design,
     free: &[usize],
     config: &OptimizeConfig,
     ctx: &SearchContext,
     hooks: &SearchHooks<'_>,
-    current: Design,
-    current_score: f32,
+    coord: CoordinateStageOutcome,
 ) -> PolishStageOutcome {
+    let current = coord.design;
+    let current_score = coord.score;
+    let coord_evaluations = coord.evaluations;
     let Some(start_step) = config.polish_start_step_deg.filter(|&step| step > 0.0) else {
         return PolishStageOutcome {
             current,
@@ -459,8 +577,9 @@ fn run_polish_stage(
         .unwrap_or_else(|| 3 * free.len() + 20);
     let min_spread = config.min_step_deg / 2.0;
 
+    let mut polish_evaluations_done = 0usize;
     let evaluate = |angles: &[f64]| -> f32 {
-        build_free_angle_candidate(design, free, &starting_point, angles).map_or(
+        let score = build_free_angle_candidate(design, free, &starting_point, angles).map_or(
             f32::INFINITY,
             |candidate| match evaluate_candidate(
                 &candidate,
@@ -471,7 +590,13 @@ fn run_polish_stage(
                 CandidateOutcome::Rejected => f32::INFINITY,
                 CandidateOutcome::Accepted { score } => score,
             },
-        )
+        );
+        polish_evaluations_done += 1;
+        hooks.report(
+            coord_evaluations + polish_evaluations_done,
+            SearchStage::Polish,
+        );
+        score
     };
 
     let result = polish::run_polish(
@@ -533,13 +658,24 @@ struct SearchRunSummary {
 /// that function's own `# Panics` section for why the `.expect()` inside this is
 /// safe), scores it at [`ObjectiveFidelity::Full`], and diffs its tier angles against
 /// `design`'s original ones to build the [`AngleChange`] list.
+///
+/// Reports [`SearchStage::FinalFull`] through `hooks` (evaluations
+/// `summary.evaluations`, unchanged by this call -- same reasoning as
+/// [`baseline_report`]'s own report) before running its own
+/// [`ObjectiveFidelity::Full`] scoring -- CAD audit item 161's second bracketing
+/// hang: this call is as expensive as the baseline's, and used to leave a
+/// caller's progress ticker stuck on its last coordinate/polish reading through
+/// the whole final scoring, reading as the run having already finished when it
+/// had not.
 fn build_outcome(
     design: &Design,
     current: &Design,
     ctx: &SearchContext,
     baseline: &Baseline,
+    hooks: &SearchHooks<'_>,
     summary: &SearchRunSummary,
 ) -> OptimizeOutcome {
+    hooks.report(summary.evaluations, SearchStage::FinalFull);
     let final_solved = current
         .solve()
         .expect("current was only ever advanced via evaluate_candidate-accepted, solvable states");

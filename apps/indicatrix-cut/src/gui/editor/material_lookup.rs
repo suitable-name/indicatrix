@@ -78,6 +78,41 @@ pub(super) fn resolved_gem_material(
     gem
 }
 
+/// The [`GemMaterial`] a design is actually RENDERED as, given the material name
+/// `super::view::traced_material_for` already resolved for it -- `None` when nothing
+/// in this catalogue answers to that name.
+///
+/// Differs from [`resolved_gem_material`] in the one way the render path needs: it keys
+/// off the TRACED name rather than `MaterialSelection::name`, and it refuses instead of
+/// substituting. `MaterialSelection::resolve` falls back to `GemMaterial::diamond()` for
+/// a selection with no name -- which is every untouched `.asc` import and every
+/// brand-new design -- so feeding a raw selection in here handed the tracer diamond's
+/// (empty) absorption bands and rendered every such design colourless, no matter what
+/// its refractive index said or what the Render Material dropdown was set to. CAD audit
+/// item 57 exists precisely to stop a quartz design being traced as diamond; item 61's
+/// `RenderContext::material_override` beats the by-name lookup, so it has to honour the
+/// same rule rather than route around it.
+///
+/// `selection` is consulted only for its `refractive_index_override`, applied exactly as
+/// [`resolved_gem_material`] applies it (flat Cauchy at the typed value, everything else
+/// about the material left alone) -- see that function's own doc comment.
+#[must_use]
+pub(super) fn traced_gem_material(
+    traced_name: &str,
+    selection: &MaterialSelection,
+    lookup: &dyn MaterialLookup,
+) -> Option<GemMaterial> {
+    let mut gem = lookup.lookup(traced_name)?;
+    if let Some(n_d) = selection.refractive_index_override {
+        gem.dispersion = DispersionModel::Cauchy {
+            a: n_d as f32,
+            b: 0.0,
+            c: 0.0,
+        };
+    }
+    Some(gem)
+}
+
 /// The built-in preset (from [`super::state::MATERIAL_PRESET_NAMES`]'s thirteen
 /// real materials, index `0` "(none)" excluded) whose own `n_D` sits closest to
 /// `n_d`, when that distance is within `tolerance` -- `None` when nothing built
@@ -130,6 +165,54 @@ mod tests {
         let lookup = EditorMaterialLookup::new(&custom_list);
         assert!(lookup.lookup("Quartz").is_some());
         assert!(lookup.lookup("Not A Real Material").is_none());
+    }
+
+    /// The render path's own regression test: a design that names no material at all
+    /// (every untouched `.asc` import) must trace as the material
+    /// `view::traced_material_for` picked for it -- NOT as diamond, which is what
+    /// `MaterialSelection::resolve`'s own no-name fallback produces and what
+    /// `RenderContext::material_override` used to be filled with. Diamond has no
+    /// absorption bands, so that fallback rendered every imported design colourless.
+    #[test]
+    fn traced_gem_material_honours_the_traced_name_for_an_unnamed_selection() {
+        let custom_list: [GemMaterial; 0] = [];
+        let lookup = EditorMaterialLookup::new(&custom_list);
+        let gem = traced_gem_material("Sapphire", &MaterialSelection::none(), &lookup)
+            .expect("Sapphire is a built-in");
+        let expected = GemMaterial::by_name("Sapphire").expect("Sapphire is a built-in");
+        assert_eq!(gem.name, expected.name);
+        assert_eq!(gem.absorption, expected.absorption);
+        assert!(
+            !gem.absorption.o_ray.is_empty(),
+            "test premise: Sapphire must carry real absorption bands, or this test              cannot tell it apart from diamond"
+        );
+    }
+
+    /// An RI override still flattens the dispersion -- the traced name decides WHICH
+    /// material, the override decides its index, exactly as `resolved_gem_material` does.
+    #[test]
+    fn traced_gem_material_applies_the_refractive_index_override() {
+        let selection = MaterialSelection {
+            name: None,
+            specific_gravity_override: None,
+            refractive_index_override: Some(1.66),
+        };
+        let custom_list: [GemMaterial; 0] = [];
+        let lookup = EditorMaterialLookup::new(&custom_list);
+        let gem = traced_gem_material("Quartz", &selection, &lookup).expect("Quartz is a built-in");
+        assert!((f64::from(gem.dispersion.evaluate(400.0)) - 1.66).abs() < 1e-6);
+        assert!((f64::from(gem.dispersion.evaluate(700.0)) - 1.66).abs() < 1e-6);
+    }
+
+    /// Refuses rather than substituting: an unresolvable name leaves
+    /// `RenderContext::material_override` unset, so the by-name lookup in
+    /// `bridge::render_thread::context::resolve_material` decides on its own instead of
+    /// being overridden by a material nobody asked for.
+    #[test]
+    fn traced_gem_material_refuses_an_unknown_name() {
+        let custom_list: [GemMaterial; 0] = [];
+        let lookup = EditorMaterialLookup::new(&custom_list);
+        assert!(traced_gem_material("Kryptonite", &MaterialSelection::none(), &lookup).is_none());
     }
 
     #[test]

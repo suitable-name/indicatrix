@@ -32,6 +32,39 @@ export global LibraryModel {
 
     in-out property <bool> show_ignored: false;
 
+    // "My designs" toggle (`filter_panel.slint`) -- restricts the catalogue to the
+    // cutter's own locally-imported designs (CAD audit item 189). Setting this and
+    // calling `filters_changed()` is exactly how `show_ignored` above already drives a
+    // re-search; see `gui::library::search::read_local_only`.
+    in-out property <bool> local_only_filter: false;
+
+    // Sort selector (`header.slint`'s toolbar) -- index<->`SortOrder` mapping happens
+    // once, in Rust, at `gui::library::search::read_sort_order` (CAD audit item 190's
+    // sort half): 0 = catalogue order, 1 = title, 2 = newest, 3 = recently edited.
+    in-out property <int> sort_order_index: 0;
+
+    // CAD audit item 190's tag chip filter. `all_tags` is the whole vocabulary,
+    // refreshed by `sync_tag_vocabulary_to_ui`; `active_tag_filter_name` is the one
+    // chip currently narrowing the list ("" for none). Tags are addressed by NAME
+    // rather than id here because the Slint side never sees ids, and a name that no
+    // longer resolves is a silent no-op on the Rust side rather than an error.
+    in property <[string]> all_tags: [];
+    in-out property <string> active_tag_filter_name: "";
+    callback add_tag_to_entry(int, string);
+    callback remove_tag_from_entry(int, string);
+
+    // CAD audit item 187: the ids a batch import just created, so the list can
+    // narrow to "show these N". Set BEFORE the refresh the import triggers, so that
+    // refresh already applies it -- setting it afterwards raced the async reload.
+    // Cleared the moment the cutter makes any real search or filter change.
+    in-out property <[int]> recent_import_filter: [];
+
+    // CAD audit item 98/197: keep the import popup open on completion instead of
+    // auto-closing into a 3.5s toast, when the import either replaced an existing
+    // row by filename or had per-file failures -- the two cases whose report is
+    // worth reading.
+    in property <bool> import_should_stay_open: false;
+
     in property <[PerformanceFilterRow]> performance_filters: [];
     callback performance_filter_add(PerformanceFilterRow);
     callback performance_filter_remove(int);
@@ -45,6 +78,12 @@ export global LibraryModel {
 
     in property <[DiagramItem]> diagram_list: [];
     in property <int> total_count: 0;
+    // The real, uncapped count of designs matching the active search/filters --
+    // distinct from `total_count` (the whole catalogue) and `diagram_list.length`
+    // (capped at `SEARCH_RESULT_CAP`, currently 1000). Fixes "N of M designs match"
+    // comparing the shown page against the whole catalogue instead of the actual match
+    // count (CAD audit item 193). See `gui::library::search::FetchedDiagramList::matched_count`.
+    in property <int> matched_count: 0;
     in property <DiagramDetailData> current_detail;
 
     pure callback get_preview_thumbnails(int, int) -> PreviewThumbnails;

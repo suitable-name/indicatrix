@@ -497,7 +497,10 @@ pub struct GpuTransportParams {
     pub studio_use_d65: u32,
     /// Which environment model to sample -- see [`studio_model`].
     pub studio_model: u32,
-    _pad_model: [u32; 3],
+    /// Radiance of the backdrop card a camera ray sees where it misses the stone
+    /// (`0.0`: none) -- mirrors `EnvironmentSource::Studio::backdrop`.
+    pub backdrop: f32,
+    _pad_backdrop: [u32; 2],
 }
 
 /// `studio_model` discriminants for [`GpuTransportParams`].
@@ -505,12 +508,12 @@ pub struct GpuTransportParams {
 /// Mirrors [`crate::optics::raytracer::LightingModel`]'s `gpu_id` mapping:
 /// - 0: `Studio` (classic analytic rig)
 /// - 1: `IsoHemisphere` (uniform lit upper hemisphere)
-/// - 2: `SoftDome` (dome + ring lights)
-/// - 3: `DaylightDome` (dome + sun)
+/// - 2: `LightTent` (light tent + black cards)
+/// - 3: `DaylightDome` (daylight sky + sun)
 pub mod studio_model {
     pub const STUDIO: u32 = 0;
     pub const ISO_HEMISPHERE: u32 = 1;
-    pub const SOFT_DOME: u32 = 2;
+    pub const LIGHT_TENT: u32 = 2;
     pub const DAYLIGHT_DOME: u32 = 3;
 }
 
@@ -565,7 +568,8 @@ impl GpuTransportParams {
             white_balance,
             studio_use_d65: 0,
             studio_model: 0,
-            _pad_model: [0; 3],
+            backdrop: 0.0,
+            _pad_backdrop: [0; 2],
         }
     }
 
@@ -604,6 +608,13 @@ impl GpuTransportParams {
         self.studio_model = model;
         self
     }
+
+    /// Returns a copy with the specified backdrop radiance (see [`Self::backdrop`]).
+    #[must_use]
+    pub const fn with_backdrop(mut self, backdrop: f32) -> Self {
+        self.backdrop = backdrop;
+        self
+    }
 }
 
 const _: () = {
@@ -620,7 +631,8 @@ const _: () = {
     assert!(offset_of!(GpuTransportParams, white_balance) == 48);
     assert!(offset_of!(GpuTransportParams, studio_use_d65) == 60);
     assert!(offset_of!(GpuTransportParams, studio_model) == 64);
-    assert!(offset_of!(GpuTransportParams, _pad_model) == 68);
+    assert!(offset_of!(GpuTransportParams, backdrop) == 68);
+    assert!(offset_of!(GpuTransportParams, _pad_backdrop) == 72);
     assert!(size_of::<GpuTransportParams>() == 80);
 };
 

@@ -159,6 +159,7 @@ fn apply_loaded_render_context(
     ctx.distance = s.camera_distance.clamp(1.2, 8.0);
     ctx.material_name.clone_from(&s.selected_material);
     ctx.denoise_enabled = s.denoise_enabled;
+    ctx.backdrop = s.backdrop;
     // Local preview-then-settle rendering / remote render sample
     // budget -- both live-update `RenderContext` at startup exactly like every
     // other setting in this block, `camera_moving` deliberately left at its
@@ -195,6 +196,8 @@ fn apply_loaded_ui_mirrors(
     ui.global::<SettingsModel>()
         .set_bounce_index(bounces_index(s.max_bounces));
     ui.global::<SettingsModel>().set_exposure_val(s.exposure);
+    ui.global::<SettingsModel>()
+        .set_backdrop_index(s.backdrop.index());
     ui.global::<SettingsModel>()
         .set_inclusion_sigma_s(s.inclusion_sigma_s);
     ui.global::<SettingsModel>()
@@ -249,6 +252,20 @@ fn apply_loaded_ui_mirrors(
         .set_auto_solve_budget_ms(i32::try_from(s.editor_auto_solve_budget_ms).unwrap_or(i32::MAX));
     ui.global::<ViewportModel>()
         .set_selected_lighting_index(lighting_preset.index());
+    // File > Open Recent (`MainWindow.recent_native_files`, `ui/app.slint`) -- a
+    // root-component property, not an `EditorModel` one. `gui::editor::native_io`'s
+    // `record_recent_native_file` keeps this same property live afterward on every
+    // Save/Open Native (it reads/writes the settings file directly rather than
+    // through this call's own already-loaded `s`, so the two never race each
+    // other); this seeds it once at startup, before that module's own callbacks are
+    // even wired up.
+    ui.set_recent_native_files(ModelRc::new(VecModel::from(
+        s.recent_native_files
+            .iter()
+            .cloned()
+            .map(SharedString::from)
+            .collect::<Vec<_>>(),
+    )));
 }
 
 /// The settings dialog's "Loaded: <file> (`WxH`)" status line for a decoded
@@ -382,7 +399,16 @@ pub(in crate::gui) const fn local_compute_target_from_index(index: i32) -> Local
 /// the current selection untouched) rather than guessing if the name isn't present --
 /// e.g. a lighting rig from an older options list, or a custom material that was
 /// deleted since the settings file was last saved.
-fn find_option_index(options: &ModelRc<SharedString>, needle: &str) -> Option<i32> {
+///
+/// `pub(in crate::gui)` (CAD audit item 140's duplication cleanup) so
+/// `gui::editor::view::refresh_design_settings`'s Render Material dropdown sync --
+/// a different lane's file, needing this exact logic -- can call this directly
+/// instead of keeping its own byte-for-byte copy.
+#[must_use]
+pub(in crate::gui) fn find_option_index(
+    options: &ModelRc<SharedString>,
+    needle: &str,
+) -> Option<i32> {
     (0..options.row_count()).find_map(|i| {
         let matches = options.row_data(i).is_some_and(|s| s.as_str() == needle);
         matches.then_some(i as i32)

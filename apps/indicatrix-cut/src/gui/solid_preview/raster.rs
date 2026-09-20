@@ -51,7 +51,7 @@
 //! on it. [`simplify_ring`] collapses each ring to its true corners first, so
 //! the span fill costs one depth test per covered pixel regardless of ring size.
 
-use super::mesh_cache::CachedMesh;
+use super::{diagram2d, mesh_cache::CachedMesh};
 use glam::{DVec3, Vec3};
 use indicatrix::{geometry::stone_metrics::SolidMesh, optics::raytracer::Camera};
 
@@ -64,6 +64,34 @@ const NEAR_EPS: f32 = 1e-4;
 /// Screen-space period, in pixels, of the diagonal hatch stripes drawn over a
 /// [`SolidStyle::flagged`] facet.
 const HATCH_PERIOD: i32 = 6;
+
+/// Minimum on-screen span (either axis), in pixels, before [`SolidRasterizer::
+/// draw_facet_labels`] (#122) bothers stamping a facet's own label on it --
+/// mirrors `diagram2d::MIN_LABEL_SPAN`'s own threshold and reasoning.
+const MIN_LABEL_SPAN: f32 = 26.0;
+
+/// Which of [`SolidRasterizer::draw_facet_edges`]'s ordered passes an edge segment
+/// belongs to -- see that method's doc comment for why ordinary facets must be
+/// drawn before any highlighted one, and later passes before earlier ones win a
+/// shared edge. Ordered least to most "important to still be visible":
+/// hover is the most transient overlay, `pending`/`selected_facet` the ones a
+/// cutter most needs to keep seeing regardless of what else a facet is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdgePass {
+    /// None of the below: the plain `edge_color`, drawn first.
+    Ordinary,
+    /// The one facet named in `style.hovered` (#20).
+    Hovered,
+    /// A facet listed in `style.multi_selected` (#19), not otherwise highlighted.
+    MultiSelected,
+    /// `selected` (a whole tier) and not otherwise highlighted.
+    Selected,
+    /// The one facet named in `style.selected_facet` (#18) -- a stronger, more
+    /// specific identification than the tier-level `Selected` pass.
+    SelectedFacet,
+    /// `pending`: drawn last, so it wins over every other pass too.
+    Pending,
+}
 
 /// Depth slack (view-space units, same as [`project`]'s `a`) an edge pixel may be
 /// behind the fill depth buffer and still draw. Needed because an edge point lies
@@ -102,19 +130,79 @@ pub struct SolidStyle {
     /// 1px facet-boundary edge color (drawn over the fill).
     pub edge_color: [u8; 3],
     /// Edge color for a facet whose id is set in `pending` (re-solve missed budget).
+    /// Matches `ui/theme.slint`'s `accent-amber` (`#f59e0b`) so the viewport agrees
+    /// with any other amber "not yet resolved" indicator in the app.
     pub pending_color: [u8; 3],
     /// Hatch stripe color for a facet whose id is set in `flagged`
     /// (critical-angle-risk overlay).
     pub hatch_color: [u8; 3],
     /// Edge color for a facet whose id is set in `selected`
     /// (`facet_map::OverlayFlags::selected`); lower precedence than `pending_color`.
+    /// Matches `ui/theme.slint`'s `primary` (`#3b82f6`), the same color the tier
+    /// table paints its own selected row with (`editor_tier_table.slint`'s
+    /// `primary-glow` background), so the two views read as one selection.
     pub selected_color: [u8; 3],
+    /// Outline color for the single facet named in `hovered` (#20) -- a light
+    /// neutral, distinct from every other overlay color so it never gets mistaken
+    /// for a selection.
+    pub hover_color: [u8; 3],
+    /// Outline color for the single facet named in `selected_facet` (#18) --
+    /// `ui/theme.slint`'s `accent-purple`, deliberately different from
+    /// `selected_color` (a whole tier) so "this exact facet" and "this facet's
+    /// tier" read as two different kinds of highlight.
+    pub selected_facet_color: [u8; 3],
+    /// Outline color for every facet id listed in `multi_selected` (#19) --
+    /// `ui/theme.slint`'s `accent-cyan`, the same color `editor_tier_table.slint`
+    /// already outlines a multi-selected row with.
+    pub multi_selected_color: [u8; 3],
     /// Buffer-clear color (RGBA8) before each `render` call.
     pub background: [u8; 4],
     pub fill_mode: FillMode,
     pub flagged: Vec<bool>,
     pub pending: Vec<bool>,
     pub selected: Vec<bool>,
+    /// The one facet under the cursor, or `None` -- set by
+    /// `preview_state::SolidPreviewState::request_facet_overlay`, never by a
+    /// fresh replan (a new plan always starts with no hover; the next mouse-move
+    /// request re-establishes it). See #20.
+    pub hovered: Option<u32>,
+    /// The one facet a click identified within its (possibly multi-facet) tier
+    /// selection, or `None` -- same update path as `hovered`. See #18.
+    pub selected_facet: Option<u32>,
+    /// Every facet id belonging to a multi-selected tier (table checkbox/ctrl-click
+    /// selection) -- same update path as `hovered`. See #19. A `Vec` rather than a
+    /// per-facet `bool` table since the caller already has the small set of ids
+    /// straight from `facet_map::FacetMap::facets_of_tier`, and multi-select sizes
+    /// are small enough that a linear scan per facet is not worth a second buffer.
+    pub multi_selected: Vec<u32>,
+    /// Facet id -> short on-facet label (`facet_map::FacetMap::facet_label`) --
+    /// #122's "no facet labels in the 3D view" fix. Empty string (or a facet id
+    /// past the end) draws nothing; a facet also needs a large enough on-screen
+    /// span (see [`MIN_LABEL_SPAN`]) and must still win the depth test at its own
+    /// centroid before its label is drawn (never labels an occluded facet).
+    pub facet_labels: Vec<String>,
+    /// Draws #119's orientation cue after the ordinary render pass: a tick
+    /// toward world `+X` (the same "index 0" direction `diagram2d`'s index wheel
+    /// uses) at the girdle plane, labeled "0", plus a CROWN/PAVILION caption --
+    /// so a cutter who free-orbited the stone can tell orientation without
+    /// switching to Diagram mode. Defaults to `true`.
+    pub show_orientation_marker: bool,
+    /// #122: facet ids below this are the rough's own bounding (preform)
+    /// planes, in `Design::planes_from_solved`'s order (`facet_map::FacetMap::
+    /// preform_plane_count`). `0` (the default) means "no preform to
+    /// distinguish", matching every caller that never sets it.
+    pub preform_plane_count: usize,
+    /// #122: when `false`, a preform-plane facet is skipped entirely (culled,
+    /// as if back-face-culled) instead of rendered, so a cutter can see through
+    /// the rough's own bounding box to the actual cut. `true` (the default)
+    /// keeps every preform facet visible, tinted by [`Self::preform_tint_color`]
+    /// rather than drawn as an ordinary cut facet.
+    pub show_preform: bool,
+    /// Tint blended into a preform-plane facet's own shaded color (#122) so the
+    /// rough's bounding planes read as visually distinct from an ordinary cut
+    /// facet -- otherwise a preform plane looks and behaves (under hover/click)
+    /// exactly like a real facet with nothing marking it as the uncut rough.
+    pub preform_tint_color: [u8; 3],
 }
 
 impl Default for SolidStyle {
@@ -126,14 +214,25 @@ impl Default for SolidStyle {
             rim_strength: 0.18,
             key_light_dir: Vec3::new(0.4, 0.8, 0.5).normalize(),
             edge_color: [30, 32, 38],
-            pending_color: [235, 170, 40],
+            pending_color: [245, 158, 11],
             hatch_color: [90, 40, 40],
-            selected_color: [70, 160, 235],
+            selected_color: [59, 130, 246],
+            hover_color: [226, 232, 240],
+            selected_facet_color: [168, 85, 247],
+            multi_selected_color: [56, 189, 248],
             background: [0, 0, 0, 0],
             fill_mode: FillMode::Opaque,
             flagged: Vec::new(),
             pending: Vec::new(),
             selected: Vec::new(),
+            hovered: None,
+            selected_facet: None,
+            multi_selected: Vec::new(),
+            facet_labels: Vec::new(),
+            show_orientation_marker: true,
+            preform_plane_count: 0,
+            show_preform: true,
+            preform_tint_color: [80, 90, 140],
         }
     }
 }
@@ -234,6 +333,7 @@ impl SolidRasterizer {
         let mut ring_scratch = std::mem::take(&mut self.ring_scratch);
         let mut dedup_scratch = std::mem::take(&mut self.dedup_scratch);
         let mut screen: Vec<(f32, f32, f32)> = Vec::new();
+        let mut label_spots: Vec<(usize, f32, f32, f32, f32)> = Vec::new();
         for (facet_id, ring) in &mesh.rings {
             let Some(Some(normal)) = facet_normal.get(*facet_id).copied() else {
                 continue;
@@ -268,33 +368,41 @@ impl SolidRasterizer {
                 continue;
             }
 
-            let color = shade(normal, to_vec3(first), camera, style);
+            // #122: a preform (rough-bounding) facet either tints distinctly or,
+            // when hidden, is culled here exactly like a back-face.
+            let is_preform = *facet_id < style.preform_plane_count;
+            if is_preform && !style.show_preform {
+                continue;
+            }
+            let mut color = shade(normal, to_vec3(first), camera, style);
+            if is_preform {
+                color = blend_toward(color, style.preform_tint_color, 0.5);
+            }
             self.fill_convex_polygon(&screen, *facet_id, color, style);
             self.edge_ranges
                 .push((*facet_id, self.edge_points.len(), screen.len()));
             self.edge_points.extend_from_slice(&screen);
+            let (min_x, max_x, min_y, max_y) = screen_bounds(&screen);
+            label_spots.push((
+                *facet_id,
+                min_x.midpoint(max_x),
+                min_y.midpoint(max_y),
+                max_x - min_x,
+                max_y - min_y,
+            ));
         }
         self.ring_scratch = ring_scratch;
         self.dedup_scratch = dedup_scratch;
 
         let edge_ranges = std::mem::take(&mut self.edge_ranges);
         let edge_points = std::mem::take(&mut self.edge_points);
-        for &(facet_id, start, count) in &edge_ranges {
-            let edge_color = if style.pending.get(facet_id).copied().unwrap_or(false) {
-                style.pending_color
-            } else if style.selected.get(facet_id).copied().unwrap_or(false) {
-                style.selected_color
-            } else {
-                style.edge_color
-            };
-            let pts = &edge_points[start..start + count];
-            for (i, &a) in pts.iter().enumerate() {
-                let b = pts[(i + 1) % count];
-                self.draw_edge(a, b, edge_color);
-            }
-        }
+        self.draw_facet_edges(&edge_ranges, &edge_points, style);
         self.edge_ranges = edge_ranges;
         self.edge_points = edge_points;
+        self.draw_facet_labels(&label_spots, style);
+        if style.show_orientation_marker {
+            self.draw_orientation_marker(mesh, camera);
+        }
     }
 
     /// Same output as [`Self::render`], but sources already-[`simplify_ring`]d
@@ -322,6 +430,7 @@ impl SolidRasterizer {
         }
 
         let mut screen: Vec<(f32, f32, f32)> = Vec::new();
+        let mut label_spots: Vec<(usize, f32, f32, f32, f32)> = Vec::new();
         for (facet_id, ring) in &prepared.rings {
             let Some(Some(normal)) = facet_normal.get(*facet_id).copied() else {
                 continue;
@@ -350,31 +459,109 @@ impl SolidRasterizer {
                 continue;
             }
 
-            let color = shade(normal, to_vec3(first), camera, style);
+            let is_preform = *facet_id < style.preform_plane_count;
+            if is_preform && !style.show_preform {
+                continue;
+            }
+            let mut color = shade(normal, to_vec3(first), camera, style);
+            if is_preform {
+                color = blend_toward(color, style.preform_tint_color, 0.5);
+            }
             self.fill_convex_polygon(&screen, *facet_id, color, style);
             self.edge_ranges
                 .push((*facet_id, self.edge_points.len(), screen.len()));
             self.edge_points.extend_from_slice(&screen);
+            let (min_x, max_x, min_y, max_y) = screen_bounds(&screen);
+            label_spots.push((
+                *facet_id,
+                min_x.midpoint(max_x),
+                min_y.midpoint(max_y),
+                max_x - min_x,
+                max_y - min_y,
+            ));
         }
 
         let edge_ranges = std::mem::take(&mut self.edge_ranges);
         let edge_points = std::mem::take(&mut self.edge_points);
-        for &(facet_id, start, count) in &edge_ranges {
-            let edge_color = if style.pending.get(facet_id).copied().unwrap_or(false) {
-                style.pending_color
-            } else if style.selected.get(facet_id).copied().unwrap_or(false) {
-                style.selected_color
-            } else {
-                style.edge_color
-            };
-            let pts = &edge_points[start..start + count];
-            for (i, &a) in pts.iter().enumerate() {
-                let b = pts[(i + 1) % count];
-                self.draw_edge(a, b, edge_color);
-            }
-        }
+        self.draw_facet_edges(&edge_ranges, &edge_points, style);
         self.edge_ranges = edge_ranges;
         self.edge_points = edge_points;
+        self.draw_facet_labels(&label_spots, style);
+        if style.show_orientation_marker {
+            self.draw_orientation_marker(mesh, camera);
+        }
+    }
+
+    /// Draws every visible facet's boundary in [`EdgePass`]'s ordered passes --
+    /// ordinary facets first, then hover/multi-select/tier-select/single-facet-
+    /// select/pending, each pass only overpainting a facet already drawn by an
+    /// earlier one -- so a shared edge between an ordinary facet and a highlighted
+    /// one always ends up in the highlighted color, never the other way around.
+    /// Before this, edges were drawn once per facet in mesh-ring order, so
+    /// whichever of a shared edge's two owning facets happened to be visited LAST
+    /// silently overpainted the other's color (`draw_edge`'s depth test admits a
+    /// coincident edge from either side) -- on roughly half of a highlighted
+    /// facet's boundary the neighbour's plain dark edge would win, making the
+    /// highlight look like a rendering glitch rather than a selection. Every
+    /// highlighted pass also draws with a wider stroke (see [`EdgePass`]'s match
+    /// arms below) so it reads clearly even where it doesn't win the fight.
+    fn draw_facet_edges(
+        &mut self,
+        edge_ranges: &[(usize, usize, usize)],
+        edge_points: &[(f32, f32, f32)],
+        style: &SolidStyle,
+    ) {
+        let is_selected = |facet_id: usize| style.selected.get(facet_id).copied().unwrap_or(false);
+        let is_pending = |facet_id: usize| style.pending.get(facet_id).copied().unwrap_or(false);
+        let is_hovered = |facet_id: usize| style.hovered == Some(facet_id as u32);
+        let is_selected_facet = |facet_id: usize| style.selected_facet == Some(facet_id as u32);
+        let is_multi_selected = |facet_id: usize| style.multi_selected.contains(&(facet_id as u32));
+
+        for pass in [
+            EdgePass::Ordinary,
+            EdgePass::Hovered,
+            EdgePass::MultiSelected,
+            EdgePass::Selected,
+            EdgePass::SelectedFacet,
+            EdgePass::Pending,
+        ] {
+            for &(facet_id, start, count) in edge_ranges {
+                let selected = is_selected(facet_id);
+                let pending = is_pending(facet_id);
+                let hovered = is_hovered(facet_id);
+                let selected_facet = is_selected_facet(facet_id);
+                let multi_selected = is_multi_selected(facet_id);
+                let highlighted = selected || pending || hovered || selected_facet;
+                let (draw_this_pass, color, width) = match pass {
+                    EdgePass::Ordinary => (!highlighted && !multi_selected, style.edge_color, 1),
+                    EdgePass::Hovered => {
+                        (hovered && !pending && !selected_facet, style.hover_color, 2)
+                    }
+                    EdgePass::MultiSelected => (
+                        multi_selected && !selected && !pending && !selected_facet,
+                        style.multi_selected_color,
+                        2,
+                    ),
+                    EdgePass::Selected => (
+                        selected && !pending && !selected_facet,
+                        style.selected_color,
+                        2,
+                    ),
+                    EdgePass::SelectedFacet => {
+                        (selected_facet && !pending, style.selected_facet_color, 3)
+                    }
+                    EdgePass::Pending => (pending, style.pending_color, 2),
+                };
+                if !draw_this_pass {
+                    continue;
+                }
+                let pts = &edge_points[start..start + count];
+                for (i, &a) in pts.iter().enumerate() {
+                    let b = pts[(i + 1) % count];
+                    self.draw_edge(a, b, color, width);
+                }
+            }
+        }
     }
 
     /// Resets every buffer to background/unpainted.
@@ -447,10 +634,13 @@ impl SolidRasterizer {
 
         let flagged = style.flagged.get(facet_id).copied().unwrap_or(false);
         let selected = style.selected.get(facet_id).copied().unwrap_or(false);
-        // A 35% blend toward `selected_color`, so the facet's own lighting still
-        // reads underneath the tint (unlike the flagged hatch, which fully replaces
-        // the pixel).
-        let selected_fill = selected.then(|| blend_toward(color, style.selected_color, 0.35));
+        // A 58% blend toward `selected_color` -- raised from an earlier 35%, which
+        // read as barely distinguishable from an unselected facet on a light-grey
+        // solid, especially one turned away from the key light. Still leaves the
+        // facet's own lighting visible underneath (unlike the flagged hatch, which
+        // fully replaces the pixel), while now reading clearly next to a hatched
+        // facet instead of losing to it for attention.
+        let selected_fill = selected.then(|| blend_toward(color, style.selected_color, 0.58));
         let alpha: u8 = if style.fill_mode == FillMode::Transparent {
             0
         } else {
@@ -509,11 +699,19 @@ impl SolidRasterizer {
         }
     }
 
-    /// Draws one 1px edge segment from `a` to `b` (each a `(screen_x, screen_y,
-    /// view_depth)` triple from [`project`]), depth-tested against the fill pass so
-    /// an edge behind an already-painted facet never draws -- see
-    /// [`EDGE_DEPTH_BIAS`] for the slack needed against the edge's own facet.
-    fn draw_edge(&mut self, from: (f32, f32, f32), to: (f32, f32, f32), color: [u8; 3]) {
+    /// Draws one edge segment from `a` to `b` (each a `(screen_x, screen_y,
+    /// view_depth)` triple from [`project`]), `width` pixels wide (`1` for an
+    /// ordinary facet boundary, `2` for a `selected`/`pending` highlight -- see
+    /// [`Self::draw_facet_edges`]), depth-tested against the fill pass so an edge
+    /// behind an already-painted facet never draws -- see [`EDGE_DEPTH_BIAS`] for
+    /// the slack needed against the edge's own facet.
+    fn draw_edge(
+        &mut self,
+        from: (f32, f32, f32),
+        to: (f32, f32, f32),
+        color: [u8; 3],
+        width: i32,
+    ) {
         let (x0, y0, a0) = (from.0.round() as i32, from.1.round() as i32, from.2);
         let (x1, y1, a1) = (to.0.round() as i32, to.1.round() as i32, to.2);
         let dx = (x1 - x0).abs();
@@ -527,19 +725,18 @@ impl SolidRasterizer {
         let mut err = dx + dy;
         let mut step = 0;
         loop {
-            if cx >= 0 && cy >= 0 && (cx as u32) < self.width && (cy as u32) < self.height {
-                let frac = step as f32 / steps_total as f32;
-                let inv_a = (1.0 - frac).mul_add(inv_a0, frac * inv_a1);
-                if inv_a > 0.0 {
-                    let depth = 1.0 / inv_a;
-                    let idx = (cy as u32 * self.width + cx as u32) as usize;
-                    if depth <= self.depth[idx] + EDGE_DEPTH_BIAS {
-                        let offset = idx * 4;
-                        self.color[offset] = color[0];
-                        self.color[offset + 1] = color[1];
-                        self.color[offset + 2] = color[2];
-                        self.color[offset + 3] = 255;
-                    }
+            let frac = step as f32 / steps_total as f32;
+            let inv_a = (1.0 - frac).mul_add(inv_a0, frac * inv_a1);
+            if inv_a > 0.0 {
+                let depth = 1.0 / inv_a;
+                self.try_paint_edge_pixel(cx, cy, depth, color);
+                // A broadened brush for the priority passes: also paint the pixel
+                // to the right and below, each depth-tested independently against
+                // this same (1px-away-approximate) depth -- cheap and good enough
+                // for a preview stroke, unlike a true perpendicular-offset line.
+                if width >= 2 {
+                    self.try_paint_edge_pixel(cx + 1, cy, depth, color);
+                    self.try_paint_edge_pixel(cx, cy + 1, depth, color);
                 }
             }
             if cx == x1 && cy == y1 {
@@ -557,6 +754,156 @@ impl SolidRasterizer {
             step += 1;
         }
     }
+
+    /// Paints one edge pixel at `(x, y)` with `color` when in bounds and `depth`
+    /// passes [`EDGE_DEPTH_BIAS`]'s slack against the fill pass -- the single-pixel
+    /// primitive [`Self::draw_edge`]'s Bresenham walk (and its width-2 broadening)
+    /// both go through.
+    fn try_paint_edge_pixel(&mut self, x: i32, y: i32, depth: f32, color: [u8; 3]) {
+        if x < 0 || y < 0 || (x as u32) >= self.width || (y as u32) >= self.height {
+            return;
+        }
+        let idx = (y as u32 * self.width + x as u32) as usize;
+        if depth <= self.depth[idx] + EDGE_DEPTH_BIAS {
+            let offset = idx * 4;
+            self.color[offset] = color[0];
+            self.color[offset + 1] = color[1];
+            self.color[offset + 2] = color[2];
+            self.color[offset + 3] = 255;
+        }
+    }
+
+    /// #122: stamps each visible facet's own label (`style.facet_labels`,
+    /// `facet_map::FacetMap::facet_label`'s output) at its screen centroid, but
+    /// only where the facet is big enough to read ([`MIN_LABEL_SPAN`]) and still
+    /// wins the depth test at its own centroid -- the same two guards
+    /// `diagram2d::draw_panel_labels` uses, so a facet occluded by a nearer one
+    /// never gets a floating label drawn on top of whatever DID win that pixel.
+    fn draw_facet_labels(
+        &mut self,
+        label_spots: &[(usize, f32, f32, f32, f32)],
+        style: &SolidStyle,
+    ) {
+        for &(facet_id, cx, cy, w, h) in label_spots {
+            if w < MIN_LABEL_SPAN || h < MIN_LABEL_SPAN {
+                continue;
+            }
+            let Some(label) = style.facet_labels.get(facet_id) else {
+                continue;
+            };
+            if label.is_empty() {
+                continue;
+            }
+            let (px, py) = (cx.round() as i32, cy.round() as i32);
+            if px < 0 || py < 0 || px as u32 >= self.width || py as u32 >= self.height {
+                continue;
+            }
+            let idx = (py as u32 * self.width + px as u32) as usize;
+            if self.pick[idx] != facet_id as u32 + 1 {
+                continue; // Occluded at its own centroid -- another facet won here.
+            }
+            let (label_w, label_h) = diagram2d::text_size(label, 1);
+            let (width, height) = (self.width, self.height);
+            diagram2d::draw_text_into_buffer(
+                diagram2d::TextCanvas {
+                    color_buf: &mut self.color,
+                    width,
+                    height,
+                },
+                cx - label_w as f32 / 2.0,
+                cy - label_h as f32 / 2.0,
+                label,
+                1,
+                style.edge_color,
+                None,
+            );
+        }
+    }
+
+    /// Draws #119's orientation cue directly into the finished color buffer,
+    /// after every facet/edge -- an overlay, not a lit surface, so it is never
+    /// depth-tested against the mesh (it would otherwise vanish behind whatever
+    /// facet happens to be nearest at that screen point). See
+    /// [`SolidStyle::show_orientation_marker`]'s own doc comment for what it
+    /// draws and why.
+    fn draw_orientation_marker(&mut self, mesh: &SolidMesh, camera: &Camera) {
+        if self.width == 0 || self.height == 0 {
+            return;
+        }
+        let (w, h) = (self.width as f32, self.height as f32);
+        // The same world radius `diagram2d::mesh_radii` would give this mesh's
+        // horizontal extent -- a plain re-derivation here rather than a shared
+        // helper, since this module intentionally carries no dependency on
+        // `diagram2d`'s panel-layout types (only its free-standing text helpers).
+        let radius = mesh
+            .positions
+            .iter()
+            .fold(1e-3_f64, |acc, p| acc.max(p.x.hypot(p.z)));
+        let marker_color = [240u8, 240, 245];
+        let origin = DVec3::new(0.0, 0.0, 0.0);
+        let tip = DVec3::new(radius * 1.25, 0.0, 0.0);
+        let (width, height) = (self.width, self.height);
+        if let (Some(from), Some(to)) = (project(camera, origin, w, h), project(camera, tip, w, h))
+        {
+            self.draw_edge(from, to, marker_color, 2);
+            let (label_w, _) = diagram2d::text_size("0", 1);
+            diagram2d::draw_text_into_buffer(
+                diagram2d::TextCanvas {
+                    color_buf: &mut self.color,
+                    width,
+                    height,
+                },
+                to.0 - label_w as f32 / 2.0,
+                to.1 - 10.0,
+                "0",
+                1,
+                marker_color,
+                None,
+            );
+        }
+        // The camera looks FROM `camera.origin` at the stone centered on the
+        // world origin -- a positive `origin.y` means the camera sits above the
+        // girdle plane (`y = 0`, the same crown/pavilion split every facet
+        // normal already uses, see `facet_map.rs`'s candidate-normal
+        // construction), i.e. the crown is the side more toward the camera.
+        let side_label = if camera.origin.y >= 0.0 {
+            "CROWN"
+        } else {
+            "PAVILION"
+        };
+        diagram2d::draw_text_into_buffer(
+            diagram2d::TextCanvas {
+                color_buf: &mut self.color,
+                width,
+                height,
+            },
+            8.0,
+            8.0,
+            side_label,
+            1,
+            marker_color,
+            None,
+        );
+    }
+}
+
+/// Screen-space `(min_x, max_x, min_y, max_y)` bounds of a facet's projected
+/// ring -- shared by [`SolidRasterizer::render`]'s and [`SolidRasterizer::
+/// render_prepared`]'s label-spot collection (#122).
+fn screen_bounds(pts: &[(f32, f32, f32)]) -> (f32, f32, f32, f32) {
+    let (mut min_x, mut max_x, mut min_y, mut max_y) = (
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+    );
+    for &(x, y, _) in pts {
+        min_x = min_x.min(x);
+        max_x = max_x.max(x);
+        min_y = min_y.min(y);
+        max_y = max_y.max(y);
+    }
+    (min_x, max_x, min_y, max_y)
 }
 
 /// Collapses one facet ring to its true corners: consecutive points closer than
@@ -897,6 +1244,132 @@ mod tests {
         assert!(
             found_pending_edge,
             "expected the pending edge color somewhere on screen"
+        );
+    }
+
+    #[test]
+    fn preform_facets_are_tinted_and_can_be_hidden() {
+        // #122: facet 4 (+Z, the only one visible from this camera) counts as a
+        // preform plane under this style (`preform_plane_count: 5`).
+        let mesh = unit_box_mesh();
+        let camera = Camera::new(0.0, 0.0, 5.0, 42.0);
+
+        let mut plain = SolidRasterizer::new(64, 64);
+        plain.render(
+            &mesh,
+            &camera,
+            &SolidStyle {
+                show_orientation_marker: false,
+                ..SolidStyle::default()
+            },
+        );
+
+        let mut tinted = SolidRasterizer::new(64, 64);
+        tinted.render(
+            &mesh,
+            &camera,
+            &SolidStyle {
+                preform_plane_count: 5,
+                show_orientation_marker: false,
+                ..SolidStyle::default()
+            },
+        );
+        assert_eq!(
+            tinted.pick_at(32, 32),
+            Some(4),
+            "a shown preform facet must still render and still be pickable"
+        );
+        assert_ne!(
+            plain.color, tinted.color,
+            "a tinted preform facet must look different from an ordinary one"
+        );
+
+        let mut hidden = SolidRasterizer::new(64, 64);
+        hidden.render(
+            &mesh,
+            &camera,
+            &SolidStyle {
+                preform_plane_count: 5,
+                show_preform: false,
+                show_orientation_marker: false,
+                ..SolidStyle::default()
+            },
+        );
+        assert_eq!(
+            hidden.pick_at(32, 32),
+            None,
+            "a hidden preform facet must be culled entirely, like a back-face"
+        );
+    }
+
+    #[test]
+    fn a_big_enough_facet_label_changes_the_rendered_pixels() {
+        let mesh = unit_box_mesh();
+        // A 128 px frame and a closer camera on purpose: `draw_facet_labels` skips
+        // any facet whose projected span is under `MIN_LABEL_SPAN` (26 px), and in a
+        // 64x64 frame at distance 5 this box lands under it, so the label would be
+        // skipped by design and the assertion below would prove nothing.
+        let camera = Camera::new(0.0, 0.0, 4.0, 42.0);
+        let mut plain = SolidRasterizer::new(128, 128);
+        plain.render(
+            &mesh,
+            &camera,
+            &SolidStyle {
+                show_orientation_marker: false,
+                ..SolidStyle::default()
+            },
+        );
+        // Label whichever facet actually faces the camera at the frame centre. A
+        // hard-coded id is a trap here: on a box at this pose the top face is
+        // edge-on, its projected span falls below `MIN_LABEL_SPAN`, and
+        // `draw_facet_labels` skips it by design -- so the test would fail for a
+        // reason that has nothing to do with labelling.
+        let visible = plain
+            .pick_at(64, 64)
+            .expect("the box must paint the frame centre") as usize;
+        let mut labels = vec![String::new(); 6];
+        labels[visible] = "T".to_string();
+
+        let mut labeled = SolidRasterizer::new(128, 128);
+        labeled.render(
+            &mesh,
+            &camera,
+            &SolidStyle {
+                facet_labels: labels,
+                show_orientation_marker: false,
+                ..SolidStyle::default()
+            },
+        );
+
+        assert_ne!(
+            plain.color, labeled.color,
+            "a facet label on a facet this large (the box fills most of a 64x64 \
+             frame) must change at least one pixel"
+        );
+    }
+
+    #[test]
+    fn orientation_marker_draws_a_crown_pavilion_label_and_can_be_turned_off() {
+        let mesh = unit_box_mesh();
+        // Pitch above the pole: the camera sits above the girdle plane, looking
+        // down onto the crown side.
+        let camera = Camera::new(0.0, 0.6, 5.0, 42.0);
+
+        let mut with_marker = SolidRasterizer::new(64, 64);
+        with_marker.render(&mesh, &camera, &SolidStyle::default());
+        let mut without_marker = SolidRasterizer::new(64, 64);
+        without_marker.render(
+            &mesh,
+            &camera,
+            &SolidStyle {
+                show_orientation_marker: false,
+                ..SolidStyle::default()
+            },
+        );
+
+        assert_ne!(
+            with_marker.color, without_marker.color,
+            "the orientation marker must actually draw something when enabled"
         );
     }
 

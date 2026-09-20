@@ -46,6 +46,12 @@
 //! returns an [`OptimizeOutcome`] with zero evaluations and an unchanged score --
 //! an honest "nothing to do here yet", not an error.
 //!
+//! One further exclusion: a tier already at or beyond `89.5` degrees (a real girdle
+//! facet at `-90.0`) is never free either, because no candidate angle for it can
+//! pass the safety gate in either direction, and one such tier in the free set
+//! would make the polish stage reject every point it proposes. See
+//! [`free_tier_indices`]'s own doc comment.
+//!
 //! A tier's `angle_deg` is the only field this module ever changes on a free tier --
 //! never `indices`/`detached`/`name`/`constraint`. Since all of a
 //! [`crate::design::ConstraintTier`]'s `indices` share one `angle_deg`, moving that
@@ -96,9 +102,9 @@
 //! [`optimize_design`] takes a `&Design` and returns a plain, inert
 //! [`OptimizeOutcome`] describing which tiers it would change and to what angle --
 //! it never mutates a [`Design`] itself. [`apply_optimize_outcome`] turns that
-//! outcome into real edits via [`crate::edit::History::apply`], once per changed
-//! tier, so an applied optimization is undoable one tier at a time like any other
-//! editor action (there is no batched `History` entry point to group them).
+//! outcome into one [`crate::edit::Edit::Batch`] of `ModifyTier` sub-edits applied
+//! via a single [`crate::edit::History::apply`] call, so an applied optimization is
+//! undoable as ONE step regardless of how many tiers it touched (CAD audit item 79).
 //!
 //! # Determinism
 //!
@@ -146,4 +152,7 @@ pub use objective::{
     CANONICAL_LIGHT_PITCH, CANONICAL_LIGHT_YAW, ObjectiveComponents, ObjectiveFidelity,
     ObjectiveWeights, evaluate_objective,
 };
-pub use search::{AngleChange, OptimizeConfig, OptimizeOutcome, SearchHooks, optimize_design};
+pub use search::{
+    AngleChange, OptimizeConfig, OptimizeOutcome, SearchHooks, SearchStage,
+    inclusive_max_evaluations, optimize_design,
+};

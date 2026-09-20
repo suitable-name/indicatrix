@@ -213,10 +213,10 @@ pub fn trace_samples(
     }
 
     let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, VIEWER_FOV_DEG);
-    let environment =
-        scene
-            .lighting_preset
-            .studio(scene.exposure, scene.light_yaw, scene.light_pitch);
+    let environment = scene
+        .lighting_preset
+        .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
+        .with_backdrop(scene.backdrop);
 
     trace_into(
         scene,
@@ -293,10 +293,10 @@ pub fn trace_samples_with_gpu_cancellable(
     }
 
     let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, VIEWER_FOV_DEG);
-    let environment =
-        scene
-            .lighting_preset
-            .studio(scene.exposure, scene.light_yaw, scene.light_pitch);
+    let environment = scene
+        .lighting_preset
+        .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
+        .with_backdrop(scene.backdrop);
 
     // scene.girdle_frosted re-expanded into Vec<FacetFinish> (see
     // resolve_facet_finishes). The CPU fallback below resolves identical finishes from
@@ -482,6 +482,7 @@ mod tests {
             material: GemMaterial::diamond(),
             planes: StandardGemCuts::standard_round_brilliant(),
             girdle_frosted: false,
+            backdrop: 0.0,
         }
     }
 

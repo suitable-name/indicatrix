@@ -17,6 +17,13 @@ use indicatrix::optics::raytracer::Camera;
 /// Identical to [`SolidRasterizer::render_prepared`] with `style.fill_mode` forced
 /// to [`FillMode::Transparent`]. Clones `style` internally so the SAME `SolidStyle`
 /// used for the ordinary opaque Solid-mode render can be reused here unchanged.
+///
+/// The orientation marker and the facet labels are forced OFF as well. Both belong
+/// to the opaque solid render: this layer is composited over the path-traced image,
+/// where the marker would either double up with the solid view's own copy or appear
+/// over a render that never asked for it. Forcing them off keeps this layer's
+/// promise that every pixel it leaves opaque is an edge pixel, which is what the
+/// compositing in `solid_viewport.slint` relies on.
 pub fn render_edges_layer(
     rasterizer: &mut SolidRasterizer,
     prepared: &CachedMesh,
@@ -25,6 +32,8 @@ pub fn render_edges_layer(
 ) {
     let transparent_style = SolidStyle {
         fill_mode: FillMode::Transparent,
+        show_orientation_marker: false,
+        facet_labels: Vec::new(),
         ..style.clone()
     };
     rasterizer.render_prepared(prepared, camera, &transparent_style);
@@ -54,7 +63,13 @@ mod tests {
             .get_or_build(&rbc_planes_f32())
             .expect("RBC-445 must close");
         let camera = Camera::new(0.6, 0.35, 3.0, 42.0);
-        let style = SolidStyle::default();
+        // The orientation marker is drawn over the opaque render's own edges (and
+        // is forced off in the overlay by `render_edges_layer`), so leaving it on
+        // would make a marker pixel differ for a reason this test is not about.
+        let style = SolidStyle {
+            show_orientation_marker: false,
+            ..SolidStyle::default()
+        };
 
         let mut opaque = SolidRasterizer::new(200, 150);
         opaque.render_prepared(prepared, &camera, &style);

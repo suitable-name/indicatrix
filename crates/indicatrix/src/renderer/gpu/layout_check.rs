@@ -405,8 +405,10 @@ pub fn run_transport_params(ctx: &crate::renderer::gpu::GpuContext) -> LayoutChe
     // A distinct, non-zero value for `studio_use_d65`, same rationale as every other
     // field here.
     .with_studio_use_d65(true)
-    // A distinct, non-zero value for `studio_model` (SoftDome).
-    .with_studio_model(crate::renderer::buffers::studio_model::SOFT_DOME);
+    // A distinct, non-zero value for `studio_model` (LightTent).
+    .with_studio_model(crate::renderer::buffers::studio_model::LIGHT_TENT)
+    // A distinct, non-zero backdrop, same rationale.
+    .with_backdrop(0.23);
     let input_bytes = bytemuck::bytes_of(&sample).to_vec();
 
     let pipeline = compute::create_compute_pipeline(

@@ -212,6 +212,15 @@ impl FacetMap {
         self.facets.get(facet_id).and_then(|f| f.tier_index)
     }
 
+    /// The index-wheel tooth this facet sits at (`FacetInfo::index_on_gear`), or
+    /// `0` for a preform plane, an out-of-range id, or a tier with no listed
+    /// indices. Used by `diagram2d`'s index-wheel radial-line pass (#121) to find
+    /// a selected facet's own tooth without exposing [`FacetInfo`] itself.
+    #[must_use]
+    pub fn index_on_gear(&self, facet_id: usize) -> u32 {
+        self.facets.get(facet_id).map_or(0, |f| f.index_on_gear)
+    }
+
     /// Every surviving facet id a tier's orbit produced, in `ConstraintTier::indices`
     /// order; can have fewer entries than `indices.len()` (a dedup collision).
     #[must_use]
@@ -229,17 +238,48 @@ impl FacetMap {
         self.facets.len()
     }
 
-    /// The facet's own tier name (`""` for a preform plane, an unnamed tier, or
-    /// an out-of-range id) -- a short on-diagram label, unlike the fuller
-    /// [`Self::hover_text`] tooltip.
+    /// The facet's own short on-diagram label: `"<tier name> <index>"` (the one
+    /// number a cutter reads off a `GemCad` diagram, per #28), or just the tier name
+    /// for a tier with no listed indices (a table/culet, where the index is always
+    /// `0` and carries no information). `""` for a preform plane, an unnamed tier,
+    /// or an out-of-range id -- unlike the fuller [`Self::hover_text`] tooltip.
+    /// Returns an owned `String` (rather than the old plain tier-name `&str`)
+    /// since the index has to be formatted in; the one caller
+    /// (`preview_state::update_diagram_memory_from_design`) already turned the old
+    /// `&str` into an owned `String` immediately anyway.
     #[must_use]
-    pub fn facet_label(&self, facet_id: usize) -> &str {
-        self.facets.get(facet_id).map_or("", |f| f.name.as_str())
+    pub fn facet_label(&self, facet_id: usize) -> String {
+        let Some(info) = self.facets.get(facet_id) else {
+            return String::new();
+        };
+        let Some(tier_index) = info.tier_index else {
+            return String::new();
+        };
+        if info.name.is_empty() {
+            return String::new();
+        }
+        let has_orbit = self
+            .orbits
+            .get(tier_index)
+            .is_some_and(|orbit| orbit.len() > 1);
+        if has_orbit {
+            format!("{} {}", info.name, info.index_on_gear)
+        } else {
+            info.name.clone()
+        }
     }
 
     /// A short hover tooltip for `facet_id`: `"<tier name>  ·  <angle>°  ·  index
-    /// <i>  ·  <block>  ·  margin <x>° over critical"`, or `"Preform"`. `n_d` is the
-    /// design's effective refractive index the margin is computed against.
+    /// <i>  ·  <block>  ·  margin <x>° over critical"` for a pavilion facet, or the
+    /// same without the margin clause for a crown/girdle facet, or `"Preform"`.
+    /// `n_d` is the design's effective refractive index the margin is computed
+    /// against.
+    ///
+    /// #123: the margin clause used to be printed for every facet, but
+    /// `optics_hints::tier_margin_and_risk` (the table's own path, `state/mod.rs`)
+    /// only has a real windowing answer for `Block::Pavilion` -- a crown or girdle
+    /// facet cannot window, so a margin figure there means nothing and undermines
+    /// the reading of the pavilion facets' real margins.
     #[must_use]
     pub fn hover_text(&self, facet_id: usize, n_d: f64) -> String {
         let Some(info) = self.facets.get(facet_id) else {
@@ -261,10 +301,14 @@ impl FacetMap {
         };
         let angle = info.angle_deg;
         let index = info.index_on_gear;
-        let margin = optics_hints::tier_margin_deg(info.angle_deg, n_d);
-        format!(
-            "{name}  ·  {angle:.1}°  ·  index {index}  ·  {block_text}  ·  margin {margin:.1}° over critical"
-        )
+        if info.block == Some(Block::Pavilion) {
+            let margin = optics_hints::tier_margin_deg(info.angle_deg, n_d);
+            format!(
+                "{name}  ·  {angle:.1}°  ·  index {index}  ·  {block_text}  ·  margin {margin:.1}° over critical"
+            )
+        } else {
+            format!("{name}  ·  {angle:.1}°  ·  index {index}  ·  {block_text}")
+        }
     }
 
     /// The critical-angle-risk (`flagged`), pending-resolve (`pending`) and
@@ -315,6 +359,46 @@ impl FacetMap {
             selected,
         }
     }
+
+    /// Every facet-id pair that should carry a meet-point marker (P1 item 29):
+    /// for every tier pair `Design::facet_meets` names as meeting each other, the
+    /// full cross product of that pair's surviving facet ids.
+    ///
+    /// `Design::facet_meets` is resolved by the same [`indicatrix::geometry::
+    /// meet_solver::MeetNameResolver`] `Design::solve` itself uses (girdle/culet/
+    /// table fallbacks, side-prefix and plural stripping, compound vertex specs),
+    /// not a naive name match -- see that method's own doc comment. It only names
+    /// TIERS, not facets or geometry, so the actual marker POINT is left for
+    /// `diagram2d::render_diagram` to find: the world-space vertex the two
+    /// facets' mesh rings genuinely share (see that module's `meet_marker_points`).
+    /// Cross-producting a tier pair's orbits (rather than trying to line up
+    /// indices here) is deliberately generous -- a facet with no real shared
+    /// vertex with its candidate partner simply contributes no marker once
+    /// `diagram2d` fails to find one, so over-listing costs a few wasted
+    /// ring-vs-ring comparisons, never a wrong marker.
+    #[must_use]
+    pub fn meeting_facet_pairs(&self, design: &Design) -> Vec<(u32, u32)> {
+        // A `BTreeSet` rather than a linear-scan `Vec` dedup: both deterministic
+        // (a sorted key, not iteration order, decides output order) and avoids an
+        // O(pairs^2) scan on a design with many meet-named tiers.
+        let mut pairs: std::collections::BTreeSet<(u32, u32)> = std::collections::BTreeSet::new();
+        for tier_index in 0..design.tiers.len() {
+            let Ok(partners) = design.facet_meets(tier_index) else {
+                continue;
+            };
+            for partner_tier in partners {
+                if partner_tier == tier_index {
+                    continue;
+                }
+                for &facet_a in self.facets_of_tier(tier_index) {
+                    for &facet_b in self.facets_of_tier(partner_tier) {
+                        pairs.insert((facet_a.min(facet_b), facet_a.max(facet_b)));
+                    }
+                }
+            }
+        }
+        pairs.into_iter().collect()
+    }
 }
 
 #[cfg(test)]
@@ -348,6 +432,7 @@ mod tests {
                 indices: indices.to_vec(),
                 constraint: MeetConstraint::ScaleReference(mast),
                 imported_meet: None,
+                original_notes: None,
                 detached: Vec::new(),
             }
         }
@@ -478,6 +563,113 @@ mod tests {
             flags.flagged.iter().all(|&f| !f),
             "diamond RBC must not window"
         );
+    }
+
+    #[test]
+    fn hover_text_omits_the_margin_clause_for_crown_and_girdle_facets() {
+        let design = standard_round_brilliant_design();
+        let solved = design.solve().expect("every tier is pinned");
+        let map = FacetMap::from_design(&design, &solved);
+        let n_d = design.effective_refractive_index();
+
+        // Tier 1 is "Star" (crown), tier 5 is "Pavilion Main" (pavilion) --
+        // see `standard_round_brilliant_design`'s tier list.
+        let crown_facet = map.facets_of_tier(1)[0] as usize;
+        let pavilion_facet = map.facets_of_tier(5)[0] as usize;
+
+        let crown_text = map.hover_text(crown_facet, n_d);
+        let pavilion_text = map.hover_text(pavilion_facet, n_d);
+        assert!(
+            !crown_text.contains("margin"),
+            "a crown facet must not claim a windowing margin: {crown_text}"
+        );
+        assert!(
+            pavilion_text.contains("margin"),
+            "a pavilion facet must still report its margin: {pavilion_text}"
+        );
+    }
+
+    #[test]
+    fn index_on_gear_matches_the_tiers_own_index_and_is_zero_for_preform() {
+        let design = standard_round_brilliant_design();
+        let solved = design.solve().expect("every tier is pinned");
+        let map = FacetMap::from_design(&design, &solved);
+
+        assert_eq!(map.index_on_gear(0), 0, "a preform plane carries no index");
+        // Tier 2 ("Crown Main") lists index 0.0 first; its first surviving facet
+        // must report exactly that tooth.
+        let first_main_facet = map.facets_of_tier(2)[0] as usize;
+        assert_eq!(map.index_on_gear(first_main_facet), 0);
+    }
+
+    #[test]
+    fn meeting_facet_pairs_cross_products_a_meet_nameds_two_orbits() {
+        // A minimal fabricated design -- not solved for real geometry -- purely to
+        // exercise `Design::facet_meets`'s tier-name resolution feeding
+        // `meeting_facet_pairs`'s cross product. `solved` is fabricated too (a
+        // fixed mast per tier): `facet_meets` never reads it, and `FacetMap::
+        // from_design` only reads it for the (here, irrelevant) plane offset.
+        fn tier(
+            name: &str,
+            angle_deg: f64,
+            indices: &[f64],
+            constraint: MeetConstraint,
+        ) -> ConstraintTier {
+            ConstraintTier {
+                angle_deg,
+                name: name.to_string(),
+                indices: indices.to_vec(),
+                constraint,
+                imported_meet: None,
+                original_notes: None,
+                detached: Vec::new(),
+            }
+        }
+        let tiers = vec![
+            tier("Table", 0.0, &[], MeetConstraint::ScaleReference(0.3)),
+            tier(
+                "Star",
+                15.0,
+                &[6.0, 18.0, 30.0, 42.0],
+                MeetConstraint::MeetNamed(vec!["Table".to_string()]),
+            ),
+        ];
+        let design = Design::new(
+            PreformSpec::block(2.0, 1.0, 2.0),
+            ScheduleMeta {
+                gemcad_version: "GemCad 5.0".to_string(),
+                gear_teeth: 96,
+                gear_reference_angle: 0.0,
+                symmetry_order: 8,
+                mirror: true,
+                refractive_index: 1.54,
+                headers: Vec::new(),
+                footnotes: Vec::new(),
+            },
+            tiers,
+        );
+        let fabricated_solved: Vec<SolvedTier> = design
+            .tiers
+            .iter()
+            .map(|_| SolvedTier {
+                mast: 1.0,
+                strategy: indicatrix::geometry::meet_solver::SolveStrategy::ScaleReference,
+                detail: String::new(),
+            })
+            .collect();
+        let map = FacetMap::from_design(&design, &fabricated_solved);
+
+        let pairs = map.meeting_facet_pairs(&design);
+        // Table (orbit size 1) x Star (orbit size 4) = 4 pairs, every one
+        // involving Table's single facet id.
+        assert_eq!(pairs.len(), 4, "got: {pairs:?}");
+        let table_facet = map.facets_of_tier(0)[0];
+        for &(a, b) in &pairs {
+            assert!(
+                a == table_facet || b == table_facet,
+                "every pair must involve Table's facet: {a},{b}"
+            );
+        }
     }
 
     #[test]

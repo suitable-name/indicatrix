@@ -11,6 +11,16 @@ import { SolidPreviewModel } from "../models/solid_preview.slint";
 import { SettingsModel } from "../models/settings.slint";
 import { TiltModel } from "../models/tilt.slint";
 import { EditorModel } from "../models/editor.slint";
+// CAD audit item 149: a running catalogue-wide batch (tilt sweep or preview
+// render) sets `ctx.export_active`, which suspends the live tracer exactly like
+// an explicit pause -- but the pause pill only reflected `render_paused`/
+// `ExportModel.is_exporting`, so a frozen Path-traced image here still read as
+// "Live". `BatchModel.tilt_batch_running`/`preview_batch_running` are already
+// set by the batch dialogs' own wiring (`gui::batch::tilt::wiring`/
+// `gui::batch::preview::wiring`); this file only reads them to fold the same
+// suspended-display treatment into the pause pill below. Mirrors
+// `solid_viewport.slint`'s identical `batch_suspends_tracer` property.
+import { BatchModel } from "../models/batch.slint";
 
 export component GemViewportView inherits Rectangle {
     vertical-stretch: 1;
@@ -25,17 +35,7 @@ export component GemViewportView inherits Rectangle {
     property <bool> is_dragging: false;
     property <bool> saving_view_preset: false;
     property <string> new_view_preset_name: "";
-
-    function toggle_performance_dialog() {
-        TiltModel.dialog_open = !TiltModel.dialog_open;
-        if TiltModel.dialog_open {
-            if TiltModel.cached_curve_material != "" && TiltModel.is_cached_curve_material_stale(TiltModel.cached_curve_material, ViewportModel.material_options[ViewportModel.selected_material_index]) {
-                TiltModel.rerender_curve_with_current_material();
-            } else {
-                TiltModel.request_tilt_profile_axes();
-            }
-        }
-    }
+    property <bool> batch_suspends_tracer: BatchModel.tilt_batch_running || BatchModel.preview_batch_running;
 
     background: #080a0f;
     border-radius: Theme.radius-md;
@@ -50,8 +50,16 @@ export component GemViewportView inherits Rectangle {
     // never a competing writer, and pushing on every resize (not just a mode switch)
     // means the size is already correct the moment the user flips into Solid mode,
     // rather than stale until the next resize.
-    changed width => { SolidPreviewModel.viewport_width = self.width; }
-    changed height => { SolidPreviewModel.viewport_height = self.height; }
+    //
+    // #26: `live_viewport_width`/`live_viewport_height`, NOT `SolidPreviewModel.
+    // viewport_width`/`viewport_height` -- this component and `SolidViewportView`
+    // used to push their layout size into the SAME two properties, so whichever one
+    // resized last silently clobbered the other's pending redraw size (undocking or
+    // resizing the Live Render window while the Edit tab was open left ITS next
+    // redraw sized to the Live tab's viewport, or vice versa). See
+    // `SolidPreviewModel.live_viewport_width`'s own doc comment.
+    changed width => { SolidPreviewModel.live_viewport_width = self.width; }
+    changed height => { SolidPreviewModel.live_viewport_height = self.height; }
 
     // Viewport TouchArea for Orbit, Pan, Zoom with True Incremental Deltas
     touch_area := TouchArea {
@@ -361,7 +369,7 @@ export component GemViewportView inherits Rectangle {
                         border-width: 1px;
                         border-color: Theme.border-medium;
 
-                        Tooltip { text: @markdown("Lighting model: studio rig, ISO hemisphere, soft dome, or daylight dome."); }
+                        Tooltip { text: @markdown("Lighting: the four studio rigs, or the lit models -- ISO hemisphere (GemRay-style), light tent with black cards, daylight sky with sun."); }
 
                         ComboBox {
                             model: ViewportModel.lighting_options;
@@ -382,7 +390,12 @@ export component GemViewportView inherits Rectangle {
                         border-color: TiltModel.dialog_open ? Theme.accent-cyan : Theme.border-medium;
 
                         perf_touch := TouchArea {
-                            clicked => { root.toggle_performance_dialog(); }
+                            // CAD audit item 139: moved onto `TiltModel` itself
+                            // (`ui/models/tilt.slint`) so `SolidViewportView`'s
+                            // own Tilt Curve pill can share the exact same
+                            // open/close + stale-cache-check sequence instead
+                            // of a second copy.
+                            clicked => { TiltModel.toggle_dialog(); }
                         }
                         Tooltip { text: @markdown("Open the tilt-performance chart: brilliance, windowing and extinction versus tilt."); }
 
@@ -558,15 +571,43 @@ export component GemViewportView inherits Rectangle {
                     // Belongs to the tracer -- only shown in Path-traced mode
                     // (`live_view_mode == 1`); Solid mode has nothing of the tracer's to
                     // pause.
+                    // CAD audit item 59: the traced image is only re-rendered on a
+                    // solve, so after an ordinary tier edit it still shows the design
+                    // as it was -- said plainly here rather than left to be noticed.
+                    // Sits beside the pause pill, in the tracer's own mode only, for
+                    // the same reason that pill does: it is a fact about the trace.
+                    if ViewportModel.live_view_mode == 1 && ViewportModel.trace_stale: Rectangle {
+                        height: 32px;
+                        border-radius: Theme.radius-sm;
+                        background: Theme.accent-amber;
+                        stale_layout := HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            Text {
+                                text: "Trace is from an earlier edit -- Solve to refresh";
+                                font-size: 11px;
+                                font-weight: 700;
+                                color: Theme.bg-darkest;
+                                vertical-alignment: center;
+                            }
+                        }
+                        width: stale_layout.preferred-width;
+                    }
+
                     if ViewportModel.live_view_mode == 1: Rectangle {
                         height: 32px;
-                        background: (ViewportModel.render_paused || ExportModel.is_exporting) ? Theme.accent-amber : (pause_touch.has-hover ? Theme.bg-elevated : #1e293bee);
+                        background: (ViewportModel.render_paused || ExportModel.is_exporting || root.batch_suspends_tracer) ? Theme.accent-amber : (pause_touch.has-hover ? Theme.bg-elevated : #1e293bee);
                         border-radius: Theme.radius-sm;
                         border-width: 1px;
-                        border-color: (ViewportModel.render_paused || ExportModel.is_exporting) ? Theme.accent-amber : Theme.border-medium;
+                        border-color: (ViewportModel.render_paused || ExportModel.is_exporting || root.batch_suspends_tracer) ? Theme.accent-amber : Theme.border-medium;
 
                         pause_touch := TouchArea {
-                            enabled: !ExportModel.is_exporting;
+                            // Disabled during a batch too -- same reasoning as the
+                            // exporting case above: a click must not flip the user's
+                            // real pause state out from under them while the pill is
+                            // showing a state that isn't `render_paused` (CAD audit
+                            // item 149).
+                            enabled: !ExportModel.is_exporting && !root.batch_suspends_tracer;
                             clicked => {
                                 ViewportModel.render_paused = !ViewportModel.render_paused;
                                 ViewportModel.pause_toggled(ViewportModel.render_paused);
@@ -580,16 +621,16 @@ export component GemViewportView inherits Rectangle {
                             alignment: center;
                             Image {
                                 source: ViewportModel.render_paused ? @image-url("../icons/play.svg") : @image-url("../icons/pause.svg");
-                                colorize: (ViewportModel.render_paused || ExportModel.is_exporting) ? #0f172a : Theme.text-primary;
+                                colorize: (ViewportModel.render_paused || ExportModel.is_exporting || root.batch_suspends_tracer) ? #0f172a : Theme.text-primary;
                                 width: 13px;
                                 height: 13px;
                                 vertical-alignment: center;
                             }
                             Text {
-                                text: ViewportModel.render_paused ? "Paused" : (ExportModel.is_exporting ? "Exporting" : "Live");
+                                text: ViewportModel.render_paused ? "Paused" : (ExportModel.is_exporting ? "Exporting" : (root.batch_suspends_tracer ? "Paused (batch)" : "Live"));
                                 font-size: 11px;
                                 font-weight: 600;
-                                color: (ViewportModel.render_paused || ExportModel.is_exporting) ? #0f172a : Theme.text-primary;
+                                color: (ViewportModel.render_paused || ExportModel.is_exporting || root.batch_suspends_tracer) ? #0f172a : Theme.text-primary;
                                 vertical-alignment: center;
                             }
                         }

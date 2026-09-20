@@ -31,6 +31,49 @@ export component EditorView inherits Rectangle {
     border-color: Theme.border-subtle;
     clip: true;
 
+    // Selection mirror: a global's own callback/property can only be given a
+    // handler body from Rust or from within the file that declares it (never from
+    // another `.slint` file, unlike a CHILD element's callback, which this file sets
+    // handlers on freely below) -- so this is what lets `EditorView` react when
+    // something OTHER than this file's own `tier_table`/`inspector` wiring moves the
+    // selection: the Solid/Diagram viewport's click and "Duplicate" (both set
+    // `EditorModel.selected_tier_index` straight from Rust), and New/Load Selected/
+    // Open Native/Remove Tier/Undo/Redo (which also bump `form_reset_pulse` -- see
+    // that property's own doc comment -- whenever the right reaction is "blank the
+    // form," not "seed it from a real row"). `tier_table.tier_selected` below feeds
+    // the very same property, so an ordinary in-list click reaches the exact same
+    // two lines instead of a separate direct call.
+    property <int> tracked_selected_tier_index: EditorModel.selected_tier_index;
+    changed tracked_selected_tier_index => {
+        inspector.load_tier_into_form(root.tracked_selected_tier_index);
+        tier_table.focus_row(root.tracked_selected_tier_index);
+    }
+    property <int> tracked_form_reset_pulse: EditorModel.form_reset_pulse;
+    changed tracked_form_reset_pulse => {
+        inspector.clear_form();
+        tier_table.focus_row(-1);
+    }
+
+    // Re-clamps a persisted `EditorModel.inspector_height` against THIS dock's
+    // actual height, not only against the delta the table|inspector `SplitHandle`
+    // below sees on a drag -- see cad_todo.md #108. Without this, a height restored
+    // from settings on a tall monitor is pushed back unclamped on a shorter one (or
+    // after moving a saved layout to a smaller screen) and can clip the inspector's
+    // Save/Add Tier row. Mirrors the drag handler's own clamp formula exactly:
+    // `cmd`/`settings` are this file's own `EditorCommandBar`/`EditorDesignSettings`
+    // instances below, `120px` is the tier table's own `min-height`, `6px` is the
+    // `SplitHandle`'s fixed thickness, and `56px` is this layout's own 12px top/
+    // bottom padding plus its four 8px gaps (cmd, settings, table, handle, inspector).
+    function reclamp_inspector_height() {
+        EditorModel.inspector_height = clamp(
+            EditorModel.inspector_height,
+            160px,
+            max(160px, root.height - cmd.height - settings.height - 120px - 6px - 56px)
+        );
+    }
+    init => { root.reclamp_inspector_height(); }
+    changed height => { root.reclamp_inspector_height(); }
+
     VerticalLayout {
         padding: 12px;
         spacing: 8px;
@@ -41,7 +84,7 @@ export component EditorView inherits Rectangle {
         tier_table := EditorTierTable {
             vertical-stretch: 1;
             min-height: 120px;
-            tier_selected(idx) => { inspector.load_tier_into_form(idx); }
+            tier_selected(idx) => { EditorModel.selected_tier_index = idx; }
         }
 
         // Table|inspector split -- hidden while the inspector is collapsed

@@ -15,8 +15,10 @@ import { DetachedRenderWindow } from "detached_render_window.slint";
 import { EditorView } from "components/editor_view.slint";
 import { EditorStatusStrip } from "components/editor_status_strip.slint";
 import { RetargetDialog, RetargetRowItem } from "components/retarget_dialog.slint";
+import { UndoRedoLabels } from "components/editor_command_bar.slint";
 import { SolidViewportView } from "components/solid_viewport.slint";
 import { SplitHandle } from "components/split_handle.slint";
+import { ConfirmActionDialog } from "components/confirm_action_dialog.slint";
 
 import { SolidPreviewModel } from "models/solid_preview.slint";
 import { ViewportModel } from "models/viewport.slint";
@@ -34,7 +36,7 @@ export {
     LightingPresetItem, WorkerItem, PerformanceFilterRow, EditorTierItem,
     OptimizeResultRow, GearRemapRow, RetargetRowItem, DetachedRenderWindow,
     SolidPreviewModel, ViewportModel, RetargetModel, ExportModel, SettingsModel,
-    RemoteWorkerModel, BatchModel, TiltModel, LibraryModel, EditorModel
+    RemoteWorkerModel, BatchModel, TiltModel, LibraryModel, EditorModel, UndoRedoLabels
 }
 
 // --- Sizing notes -----------------------------------------------------------
@@ -67,10 +69,35 @@ export {
 //    dock_width`/`inspector_height` for where the clamped result lands.
 // -----------------------------------------------------------------------------
 export component MainWindow inherits Window {
-    title: "Facet Diagrams Studio — Physically Based Gem Explorer";
+    /// The currently loaded design's own display name (a bare `.asc` file name, or
+    /// a catalogue diagram's title) -- cad_todo.md #248: with two windows open, the
+    /// old static title gave a cutter no way to tell which design was in which
+    /// window from the taskbar, and named a retired product ("Facet Diagrams
+    /// Studio") that no longer matches this app. Empty (the default) for a
+    /// brand-new, never-saved design. Set from `gui::editor::native_io`'s own
+    /// Save Native/Open Native paths (this lane's file); New Design and Load
+    /// Selected also need to set it, from `gui::editor::callbacks::tier_actions`
+    /// (owned by another lane) -- see this file's own handoff note.
+    in property <string> loaded_design_name: "";
+
+    // Leading "* " marker while the Edit tab has unsaved changes -- see
+    // `EditorModel.is_dirty`'s own doc comment. `EditorModel.enabled` guards this the
+    // same way it guards every other Edit-tab-only affordance in this file: a
+    // non-`editor`-feature build never sets `is_dirty` at all, but this stays
+    // explicit rather than relying on that default.
+    title: (EditorModel.enabled && EditorModel.is_dirty ? "* " : "")
+        + "Indicatrix Cut"
+        + (root.loaded_design_name == "" ? "" : " — " + root.loaded_design_name);
     preferred-width: 1600px;
     preferred-height: 900px;
-    min-width: 640px;
+    // cad_todo.md #204: raised from 640px -- below ~720px even the Edit sub-tab's
+    // OWN narrow (<900px, stacked) layout further down has nothing left to give
+    // (`EditorView`'s own command bar/design settings need real room), so the old
+    // 640px floor let a cutter resize into a state only `clip: true` was saving
+    // from being unreadable. Kept below the 900px stacking threshold so a window
+    // between 720-899px still exercises that stacked layout rather than the
+    // side-by-side split it can no longer fit.
+    min-width: 720px;
     min-height: 480px;
     background: Theme.bg-darkest;
     default-font-family: "Segoe UI";
@@ -84,45 +111,151 @@ export component MainWindow inherits Window {
 
     callback open_user_manual();
 
+    // File > Open Recent (Item 78: up to ten native paths, persisted in the settings
+    // store) -- populated once at startup from `AppSettings.recent_native_files`
+    // (`gui::startup_settings::apply_loaded_ui_mirrors`) and kept live afterward by
+    // `gui::editor::native_io::record_recent_native_file` on every successful Save
+    // Native/Open Native (never written back to from Slint itself).
+    // `open_recent_native_file` fires with the clicked entry's own path text.
+    in property <[string]> recent_native_files: [];
+    callback open_recent_native_file(string);
+
+    // The window-close unsaved-changes guard: `gui::mod::build_main_window`'s
+    // `on_close_requested` sets this instead of closing outright when
+    // `EditorModel.is_dirty` is true, and its own `close_confirm_save`/
+    // `close_confirm_discard` handlers do the actual `render_ctx.running = false` +
+    // settings-flush + `window().hide()` the ordinary close path used to do
+    // unconditionally. Cancel needs no Rust round trip -- it only ever resets this
+    // property, handled inline below.
+    in-out property <bool> close_confirm_open: false;
+    callback close_confirm_save();
+    callback close_confirm_discard();
+
     in property <string> toast_message: "";
     in-out property <bool> toast_visible: false;
     in property <string> toast_type: "info";
     in-out property <int> toast_generation: 0;
 
+    // Re-clamps `EditorModel.dock_width` against `available` (the Edit-mode row's
+    // actual current width), using the exact same bounds the `SplitHandle` drag
+    // handler below computes from an incremental delta -- `600px`/`1000px`/`380px`
+    // must stay in lock-step with that clamp expression. Takes the width as a
+    // parameter rather than reading an id directly, since its only call sites live
+    // inside the `if root.render_view_tab == 1 && EditorModel.enabled` branch further
+    // down and a conditional element's own id cannot be referenced from a function
+    // declared on the root. `6px` is `SplitHandle`'s fixed thickness on this axis.
+    function reclamp_dock_width(available: length) {
+        EditorModel.dock_width = clamp(
+            EditorModel.dock_width,
+            600px,
+            min(1000px, max(600px, available - 380px - 6px - 24px))
+        );
+        EditorModel.layout_changed();
+    }
+
+    // cad_todo.md #204: whether `LibraryModel.panel_collapsed` is currently `true`
+    // because THIS reaction collapsed it for lack of width, as opposed to the user
+    // having collapsed it themselves via `diagram_list.slint`'s own rail toggle.
+    // Only that first case is ever auto-restored below -- a manual collapse must
+    // never be silently reopened just because the window happened to grow again.
+    // Deliberately does NOT call `LibraryModel.panel_collapsed_changed` (the manual
+    // toggle's own persistence hook, `gui::mod::build_main_window`'s
+    // `on_panel_collapsed_changed`): a width-driven collapse is a transient display
+    // adjustment, not a change to the user's saved preference, and firing that
+    // callback here would silently overwrite it on every resize.
+    property <bool> library_auto_collapsed_by_width: false;
+    function sync_library_auto_collapse() {
+        if root.render_view_tab == 1 && EditorModel.enabled && root.active_tab == 0 {
+            if root.width < 1200px && !LibraryModel.panel_collapsed {
+                root.library_auto_collapsed_by_width = true;
+                LibraryModel.panel_collapsed = true;
+            } else if root.width >= 1200px && root.library_auto_collapsed_by_width {
+                root.library_auto_collapsed_by_width = false;
+                LibraryModel.panel_collapsed = false;
+            }
+        } else if root.library_auto_collapsed_by_width {
+            root.library_auto_collapsed_by_width = false;
+            LibraryModel.panel_collapsed = false;
+        }
+    }
+    // Re-evaluated on every trigger that can make the rule above start/stop
+    // applying, not only an actual resize -- switching INTO the Edit sub-tab while
+    // already narrower than 1200px needs the same collapse `changed width` alone
+    // would miss (nothing there changes width itself).
+    changed width => { root.sync_library_auto_collapse(); }
+    changed render_view_tab => { root.sync_library_auto_collapse(); }
+    changed active_tab => { root.sync_library_auto_collapse(); }
+
     // --- MENU BAR ---
     MenuBar {
         Menu {
             title: "File";
+            // cad_todo.md #201: every accelerator text below is a label only -- the
+            // actual key handling lives in `global_shortcuts.key-pressed` further
+            // down, kept in lock-step by hand since a `MenuItem` has no accelerator
+            // property of its own to bind.
             MenuItem {
-                title: "New";
+                // cad_todo.md #220: matches the command bar's own "New Design..."
+                // rename -- both start a brand-new design (discarding the current
+                // one), unlike the inspector's unrelated "New Tier" button.
+                title: "New Design... (Ctrl+N)";
                 enabled: EditorModel.enabled;
                 activated => { EditorModel.new_dialog_open = true; }
             }
             MenuItem {
-                title: "Open Native...";
+                title: "Open Native... (Ctrl+O)";
                 enabled: EditorModel.enabled;
                 activated => { EditorModel.open_native(); }
             }
+            Menu {
+                title: "Open Recent";
+                enabled: EditorModel.enabled && root.recent_native_files.length > 0;
+                for path in root.recent_native_files: MenuItem {
+                    title: path;
+                    activated => { root.open_recent_native_file(path); }
+                }
+            }
             MenuItem {
-                title: "Save Native";
+                title: "Save Native (Ctrl+S)";
                 enabled: EditorModel.enabled;
                 activated => { EditorModel.save_native(); }
+            }
+            MenuItem {
+                title: "Save Native As... (Ctrl+Shift+S)";
+                enabled: EditorModel.enabled;
+                activated => { EditorModel.save_native_as(); }
             }
             MenuItem {
                 title: "Export Edited .asc";
                 enabled: EditorModel.enabled;
                 activated => { EditorModel.export_asc(); }
             }
+            MenuItem {
+                title: "Export Cutting Sheet (HTML)...";
+                enabled: EditorModel.enabled;
+                activated => { EditorModel.export_cutting_sheet(); }
+            }
+            MenuItem {
+                title: "Export Diagram (PNG)...";
+                enabled: EditorModel.enabled;
+                activated => { EditorModel.export_diagram(); }
+            }
         }
         Menu {
             title: "Edit";
+            // `UndoRedoLabels.undo_label`/`redo_label` -- a cutter-facing summary of
+            // what Ctrl+Z/Ctrl+Y will actually do (e.g. "Undo: Set P1 angle to
+            // -41.0 degrees"), from `Edit::describe` via
+            // `History::peek_undo`/`peek_redo` (Item 77). See that global's own doc
+            // comment (`ui/components/editor_command_bar.slint`) for the Rust-side
+            // handoff that still needs to push it -- until then both read "".
             MenuItem {
-                title: "Undo";
+                title: (EditorModel.can_undo && UndoRedoLabels.undo_label != "" ? "Undo: " + UndoRedoLabels.undo_label : "Undo") + " (Ctrl+Z)";
                 enabled: EditorModel.enabled && EditorModel.can_undo;
                 activated => { EditorModel.undo(); }
             }
             MenuItem {
-                title: "Redo";
+                title: (EditorModel.can_redo && UndoRedoLabels.redo_label != "" ? "Redo: " + UndoRedoLabels.redo_label : "Redo") + " (Ctrl+Y)";
                 enabled: EditorModel.enabled && EditorModel.can_redo;
                 activated => { EditorModel.redo(); }
             }
@@ -142,7 +275,15 @@ export component MainWindow inherits Window {
         height: 100%;
         init => { self.focus(); }
         key-pressed(event) => {
-            if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "s" {
+            // Shift-modified first: the plain branch below excludes Shift, so the
+            // order is not load-bearing, but reading them adjacently is. Slint
+            // reports a shifted letter in upper case, hence "S" here and "s" below.
+            if (event.modifiers.control || event.modifiers.meta) && event.modifiers.shift && event.text == "S" {
+                if EditorModel.enabled {
+                    EditorModel.save_native_as();
+                }
+                return accept;
+            } else if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "s" {
                 if EditorModel.enabled {
                     EditorModel.save_native();
                 }
@@ -158,7 +299,35 @@ export component MainWindow inherits Window {
                 }
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && event.text == "f" {
-                header_toolbar.focus_search();
+                // CAD audit item 43: on the Edit tab, Ctrl+F belongs to the tier
+                // filter, not the catalogue search -- the cutter is looking at a
+                // schedule, not a library. Everywhere else it keeps its old target.
+                if root.active_tab == 0 && root.render_view_tab == 1 && EditorModel.enabled {
+                    EditorModel.filter_focus_pulse += 1;
+                } else {
+                    header_toolbar.focus_search();
+                }
+                return accept;
+            } else if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "n" {
+                // cad_todo.md #201.
+                if EditorModel.enabled {
+                    EditorModel.new_dialog_open = true;
+                }
+                return accept;
+            } else if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "o" {
+                // cad_todo.md #201.
+                if EditorModel.enabled {
+                    EditorModel.open_native();
+                }
+                return accept;
+            } else if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "e" {
+                // cad_todo.md #201: toggles the 3D Gem tab's Live Render/Edit pill --
+                // only meaningful (and only offered as a pill at all) while the Edit
+                // sub-tab exists.
+                if EditorModel.enabled {
+                    root.render_view_tab = root.render_view_tab == 0 ? 1 : 0;
+                    root.render_view_tab_changed(root.render_view_tab);
+                }
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && event.text == "1" {
                 root.active_tab = 0;
@@ -171,6 +340,43 @@ export component MainWindow inherits Window {
             } else if (event.modifiers.control || event.modifiers.meta) && event.text == "3" {
                 root.active_tab = 2;
                 root.active_tab_changed(2);
+                return accept;
+            } else if event.text == Key.F5 {
+                // Documented (appendix-b-keyboard-shortcuts.md, 05-solving.md) but never
+                // wired up (cad_todo.md #104) -- gated the same way the command bar's own
+                // Solve button is (`editor_command_bar.slint`) so F5 cannot start a second
+                // solve on top of one already running.
+                if EditorModel.enabled && !EditorModel.solve_running {
+                    EditorModel.solve();
+                }
+                return accept;
+            } else if !event.modifiers.control && !event.modifiers.meta && !event.modifiers.alt
+                    && (event.text == "1" || event.text == "2" || event.text == "3" || event.text == "4")
+                    && root.active_tab == 0 && root.render_view_tab == 1 && EditorModel.enabled {
+                // cad_todo.md #201: Solid/Diagram viewport view-mode shortcuts
+                // (`SolidPreviewModel.view_mode` 0-3). Only bound while the Edit
+                // sub-tab's Solid viewport is actually on screen, so a plain digit
+                // typed anywhere else (the 3D Gem tab, a text field that already
+                // consumed it before this handler ever saw it -- see cad_todo.md
+                // #202's own note on `TextInput` swallowing unmodified printable
+                // keys while focused) is left alone.
+                if event.text == "1" {
+                    SolidPreviewModel.view_mode = 0;
+                } else if event.text == "2" {
+                    SolidPreviewModel.view_mode = 1;
+                } else if event.text == "3" {
+                    SolidPreviewModel.view_mode = 2;
+                } else {
+                    SolidPreviewModel.view_mode = 3;
+                }
+                return accept;
+            } else if event.text == Key.Escape {
+                // Global fallback: clears the tier selection and dismisses whatever toast
+                // is showing. Only fires when nothing more specific (a dialog, the inline
+                // angle editor) already consumed the key first -- see cad_todo.md #102's
+                // "Escape does nothing anywhere except the inline angle cell" finding.
+                EditorModel.selected_tier_index = -1;
+                root.toast_visible = false;
                 return accept;
             }
             return reject;
@@ -393,12 +599,73 @@ export component MainWindow inherits Window {
                             spacing: 8px;
                             vertical-stretch: 1;
 
-                            HorizontalLayout {
+                            // cad_todo.md #204: below ~900px, dock >= 600px + the
+                            // viewport's own 380px + the handle + gaps already exceeds
+                            // the window, so the side-by-side split below always left
+                            // the dock (Detach/Duplicate/delete, first) silently
+                            // clipped with nothing telling the user why. Below that
+                            // width the viewport stacks ABOVE the dock instead (further
+                            // down): `EditorView` then gets the window's own full,
+                            // still-narrow width rather than whatever a side-by-side
+                            // split would have left it -- the 380px reserved for the
+                            // viewport is what was starving it.
+                            if root.width >= 900px: edit_row := HorizontalLayout {
                                 spacing: 12px;
                                 vertical-stretch: 1;
 
-                                SolidViewportView {
+                                // Re-clamps a persisted `EditorModel.dock_width` against
+                                // THIS row's actual width -- not only against the delta
+                                // the drag handler below sees. Without this, a dock width
+                                // saved on a wide monitor is pushed back unclamped on a
+                                // narrower one (cad_todo.md #108) and can leave the
+                                // viewport narrower than its 380px guarantee, or the dock
+                                // wider than the row itself. `6px` is `SplitHandle`'s own
+                                // fixed thickness on this axis (`split_handle.slint`),
+                                // matching the literal the drag handler already uses via
+                                // `self.width` there.
+                                init => { root.reclamp_dock_width(self.width); }
+                                changed width => { root.reclamp_dock_width(self.width); }
+
+                                Rectangle {
                                     horizontal-stretch: 1;
+
+                                    SolidViewportView {
+                                        width: 100%;
+                                        height: 100%;
+                                    }
+
+                                    // cad_todo.md #226: a brand-new (or freshly
+                                    // "New"-ed) zero-tier design left the viewport
+                                    // showing `solid_viewport.slint`'s own "Solve to
+                                    // preview" message underneath -- true of a design
+                                    // that failed to solve, but misleading here: there
+                                    // is nothing to solve yet. `solid_viewport.slint`
+                                    // itself is a different lane's file, so this is an
+                                    // opaque overlay drawn OVER it from the wrapping
+                                    // `Rectangle` this file already owns, rather than
+                                    // a change to that message's own condition.
+                                    if EditorModel.enabled && EditorModel.tiers.length == 0: Rectangle {
+                                        background: Theme.bg-card;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            padding: 24px;
+                                            spacing: 8px;
+                                            Text {
+                                                text: "Nothing to show yet";
+                                                font-size: 14px;
+                                                font-weight: 700;
+                                                color: Theme.text-primary;
+                                                horizontal-alignment: center;
+                                            }
+                                            Text {
+                                                text: "Start with New, Load Selected from the catalogue, or Open Native.";
+                                                font-size: 11px;
+                                                color: Theme.text-muted;
+                                                horizontal-alignment: center;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
                                 }
 
                                 editor_split_handle := SplitHandle {
@@ -424,7 +691,56 @@ export component MainWindow inherits Window {
                                 }
                             }
 
-                            EditorStatusStrip {}
+                            // The narrow (<900px) stack: no drag handle -- there is
+                            // nothing horizontal left to drag -- so a fixed 2:3
+                            // (viewport:dock) `vertical-stretch` ratio takes its place.
+                            if root.width < 900px: VerticalLayout {
+                                spacing: 8px;
+                                vertical-stretch: 1;
+
+                                Rectangle {
+                                    vertical-stretch: 2;
+
+                                    SolidViewportView {
+                                        width: 100%;
+                                        height: 100%;
+                                    }
+
+                                    // cad_todo.md #226: same empty-state overlay as
+                                    // the wide (>=900px) layout's own copy above --
+                                    // see that Rectangle's doc comment for why it is
+                                    // an overlay rather than a `solid_viewport.slint`
+                                    // change.
+                                    if EditorModel.enabled && EditorModel.tiers.length == 0: Rectangle {
+                                        background: Theme.bg-card;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            padding: 24px;
+                                            spacing: 8px;
+                                            Text {
+                                                text: "Nothing to show yet";
+                                                font-size: 14px;
+                                                font-weight: 700;
+                                                color: Theme.text-primary;
+                                                horizontal-alignment: center;
+                                            }
+                                            Text {
+                                                text: "Start with New, Load Selected from the catalogue, or Open Native.";
+                                                font-size: 11px;
+                                                color: Theme.text-muted;
+                                                horizontal-alignment: center;
+                                                wrap: word-wrap;
+                                            }
+                                        }
+                                    }
+                                }
+
+                                EditorView {
+                                    vertical-stretch: 3;
+                                }
+                            }
+
+                            EditorStatusStrip { window_height: root.height; }
                         }
                     }
 
@@ -438,22 +754,107 @@ export component MainWindow inherits Window {
         }
 
         // Dialogs:
-        if EditorModel.new_dialog_open: NewDesignDialog {
+        //
+        // cad_todo.md #199: `NewDesignDialog`/`RetargetDialog`/`MetadataEditorDialog`
+        // are plain Rectangles with no key handling of their own (not this file's
+        // dialog components to edit) -- wrapped here in a `FocusScope` that takes
+        // focus on mount, maps Escape to that dialog's own cancel/close path and
+        // Return to its primary action, and swallows every other key (`return
+        // accept`) so `global_shortcuts` above cannot fire on the design underneath
+        // while one of these is open (e.g. Ctrl+S saving over the New Design form).
+        // `Key.Tab` is let through unhandled so the window's built-in focus-cycling
+        // still moves between the dialog's own fields/buttons. `MaterialEditorDialog`
+        // and `ExportDialog` need the identical treatment but are mounted in
+        // `gem_viewport.slint:808`/`:822`, a file this pass does not own -- see the
+        // handoff in this pass's own final report for the exact wording; the
+        // fingerprint-mismatch/unsaved-changes/window-close guards below already get
+        // it for free from `ConfirmActionDialog` itself (`confirm_action_dialog.slint`).
+        if EditorModel.new_dialog_open: FocusScope {
             width: 100%;
             height: 100%;
             z: 400;
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    EditorModel.new_dialog_open = false;
+                } else if event.text == Key.Return {
+                    EditorModel.new_dialog_open = false;
+                    EditorModel.new_design_create(
+                        EditorModel.new_preform_shape_index,
+                        EditorModel.new_preform_half_width,
+                        EditorModel.new_preform_length_over_width,
+                        EditorModel.new_preform_depth,
+                        EditorModel.new_gear_index,
+                        EditorModel.new_gear_custom_text,
+                        EditorModel.new_symmetry_order_text,
+                        EditorModel.new_mirror,
+                        EditorModel.new_material_index,
+                        EditorModel.new_template_index
+                    );
+                } else if event.text == Key.Tab {
+                    return reject;
+                }
+                return accept;
+            }
+
+            NewDesignDialog {
+                width: 100%;
+                height: 100%;
+            }
         }
 
-        if RetargetModel.is_open: RetargetDialog {
+        if RetargetModel.is_open: FocusScope {
             width: 100%;
             height: 100%;
             z: 400;
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    if !RetargetModel.is_busy {
+                        RetargetModel.is_open = false;
+                        RetargetModel.close();
+                    }
+                } else if event.text == Key.Return {
+                    if RetargetModel.rows.length > 0 && RetargetModel.anchored_tier_errors.length == 0
+                            && RetargetModel.solve_error == "" && !RetargetModel.is_busy {
+                        RetargetModel.apply();
+                    }
+                } else if event.text == Key.Tab {
+                    return reject;
+                }
+                return accept;
+            }
+
+            RetargetDialog {
+                width: 100%;
+                height: 100%;
+            }
         }
 
-        if LibraryModel.metadata_editor_open: MetadataEditorDialog {
+        if LibraryModel.metadata_editor_open: FocusScope {
             width: 100%;
             height: 100%;
             z: 400;
+            init => { self.focus(); }
+            key-pressed(event) => {
+                // Enter-to-save is not wired here: `MetadataEditorDialog::save`
+                // needs its own internal draft properties (title_draft/shape_draft/
+                // .../volume_draft), which the dialog resolves itself
+                // (`selected_shape` there is a plain, not externally readable,
+                // property) -- see this file's own handoff note (cad_todo.md #199)
+                // for why that half stays with the dialog's own file.
+                if event.text == Key.Escape {
+                    LibraryModel.metadata_editor_open = false;
+                } else if event.text == Key.Tab {
+                    return reject;
+                }
+                return accept;
+            }
+
+            MetadataEditorDialog {
+                width: 100%;
+                height: 100%;
+            }
         }
 
         if BatchModel.preview_visible: PreviewBatchDialog {
@@ -468,9 +869,87 @@ export component MainWindow inherits Window {
             z: 400;
         }
 
+        // Unsaved-changes guard for New/Load Selected/Open Native -- see
+        // `EditorModel.unsaved_dialog_*`'s own doc comment.
+        // CAD audit items 95/78. Deliberately last-but-one in this stack: it only
+        // appears at startup, when none of the others can be open.
+        if EditorModel.startup_restore_path != "": ConfirmActionDialog {
+            heading: EditorModel.startup_restore_is_autosave
+                ? "Recover unsaved work?"
+                : "Reopen last design?";
+            message: EditorModel.startup_restore_is_autosave
+                ? "The previous session ended without saving. A recovery file is still on disk:\n" + EditorModel.startup_restore_path
+                : EditorModel.startup_restore_path;
+            primary_label: EditorModel.startup_restore_is_autosave ? "Recover" : "Reopen";
+            secondary_label: "Not now";
+            primary => { EditorModel.startup_restore_accept(); }
+            secondary => { EditorModel.startup_restore_dismiss(); }
+            cancel => { EditorModel.startup_restore_dismiss(); }
+        }
+
+        if EditorModel.unsaved_dialog_open: ConfirmActionDialog {
+            width: 100%;
+            height: 100%;
+            z: 500;
+            heading: "Unsaved Changes";
+            message: EditorModel.unsaved_dialog_message;
+            primary_label: "Save";
+            secondary_label: "Discard";
+            primary => { EditorModel.unsaved_dialog_save(); }
+            secondary => { EditorModel.unsaved_dialog_discard(); }
+            cancel => {
+                EditorModel.unsaved_dialog_open = false;
+                EditorModel.unsaved_dialog_cancel();
+            }
+        }
+
+        // The native-load fingerprint-mismatch choice -- see
+        // `EditorModel.mismatch_dialog_*`'s own doc comment.
+        if EditorModel.mismatch_dialog_open: ConfirmActionDialog {
+            width: 100%;
+            height: 100%;
+            z: 500;
+            heading: "Native Sidecar Out of Sync";
+            message: "The paired .asc file was changed outside the editor since this native file was last saved, so its per-tier meet constraints and detached facets can no longer be trusted to line up by position. Apply them anyway, or continue with the .asc alone?";
+            primary_label: EditorModel.mismatch_dialog_can_apply ? "Apply Sidecar Anyway" : "";
+            secondary_label: "Use .asc Only";
+            primary => { EditorModel.mismatch_dialog_apply_anyway(); }
+            secondary => { EditorModel.mismatch_dialog_asc_only(); }
+            cancel => {
+                EditorModel.mismatch_dialog_open = false;
+                EditorModel.mismatch_dialog_cancel();
+            }
+        }
+
+        // Window-close unsaved-changes guard -- see `close_confirm_open`'s own doc
+        // comment. Its own Save/Discard buttons call straight into `MainWindow`'s own
+        // callbacks (handled in Rust, `gui::mod::build_main_window`) rather than
+        // `EditorModel`'s, since closing the whole window is this file's own concern,
+        // not the Edit tab's.
+        if root.close_confirm_open: ConfirmActionDialog {
+            width: 100%;
+            height: 100%;
+            z: 500;
+            heading: "Unsaved Changes";
+            message: "Closing the window will discard the current design's unsaved changes.";
+            primary_label: "Save";
+            secondary_label: "Discard";
+            primary => { root.close_confirm_save(); }
+            secondary => { root.close_confirm_discard(); }
+            cancel => { root.close_confirm_open = false; }
+        }
+
         Toast {
             x: (parent.width - self.width) / 2;
-            y: parent.height - self.height - 24px;
+            // cad_todo.md #206: offset above the Edit sub-tab's status strip while it
+            // is showing, so a sticky error toast never hides the exact solver/
+            // validation line it tells the user to read. The strip is the LAST child
+            // of the body's own outer `VerticalLayout` (`padding: 12px`, above), so
+            // its top edge sits 12px (that padding) + 26px (the strip's own fixed
+            // height, `editor_status_strip.slint`) == 38px above the window's bottom
+            // edge -- matching cad_todo.md #206's own "roughly 12-38px" figure. Adding
+            // the base case's same 24px breathing margin above THAT edge gives 62px.
+            y: parent.height - self.height - (root.active_tab == 0 && root.render_view_tab == 1 && EditorModel.enabled ? 62px : 24px);
             text: root.toast_message;
             is_visible: root.toast_visible;
             toast_type: root.toast_type;

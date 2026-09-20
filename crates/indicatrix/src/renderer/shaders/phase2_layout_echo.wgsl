@@ -25,9 +25,9 @@ struct GpuTransportParams {
     // Reused from the trailing `_pad2`; echoed explicitly for the same reason as above.
     studio_use_d65: u32,
     studio_model: u32,
-    _pad_model_0: u32,
-    _pad_model_1: u32,
-    _pad_model_2: u32,
+    backdrop: f32,
+    _pad_backdrop_0: u32,
+    _pad_backdrop_1: u32,
 }
 
 @group(0) @binding(0) var<storage, read> in_params: GpuTransportParams;
@@ -50,7 +50,7 @@ fn echo_transport_params() {
     out_params.white_balance = in_params.white_balance;
     out_params.studio_use_d65 = in_params.studio_use_d65;
     out_params.studio_model = in_params.studio_model;
-    out_params._pad_model_0 = in_params._pad_model_0;
-    out_params._pad_model_1 = in_params._pad_model_1;
-    out_params._pad_model_2 = in_params._pad_model_2;
+    out_params.backdrop = in_params.backdrop;
+    out_params._pad_backdrop_0 = in_params._pad_backdrop_0;
+    out_params._pad_backdrop_1 = in_params._pad_backdrop_1;
 }

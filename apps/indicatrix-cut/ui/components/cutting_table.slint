@@ -29,37 +29,37 @@ export component CuttingTableView inherits Rectangle {
                 spacing: 6px;
 
                 Rectangle {
-                    background: root.filter_mode == 0 ? #2563eb : Theme.bg-card;
+                    background: root.filter_mode == 0 ? Theme.primary : Theme.bg-card;
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
                     border-color: root.filter_mode == 0 ? Theme.accent-cyan : Theme.border-subtle;
                     HorizontalLayout {
                         padding-left: 10px; padding-right: 10px; padding-top: 4px; padding-bottom: 4px;
-                        Text { text: "All Steps (" + root.angles.length + ")"; font-size: 11px; font-weight: 600; color: #ffffff; }
+                        Text { text: "All Steps (" + root.angles.length + ")"; font-size: 11px; font-weight: 600; color: Theme.text-on-primary; }
                     }
                     TouchArea { clicked => { root.filter_mode = 0; } }
                 }
 
                 Rectangle {
-                    background: root.filter_mode == 1 ? #2563eb : Theme.bg-card;
+                    background: root.filter_mode == 1 ? Theme.primary : Theme.bg-card;
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
                     border-color: root.filter_mode == 1 ? Theme.accent-cyan : Theme.border-subtle;
                     HorizontalLayout {
                         padding-left: 10px; padding-right: 10px; padding-top: 4px; padding-bottom: 4px;
-                        Text { text: "Pavilion"; font-size: 11px; font-weight: 600; color: #ffffff; }
+                        Text { text: "Pavilion"; font-size: 11px; font-weight: 600; color: Theme.text-on-primary; }
                     }
                     TouchArea { clicked => { root.filter_mode = 1; } }
                 }
 
                 Rectangle {
-                    background: root.filter_mode == 2 ? #2563eb : Theme.bg-card;
+                    background: root.filter_mode == 2 ? Theme.primary : Theme.bg-card;
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
                     border-color: root.filter_mode == 2 ? Theme.accent-cyan : Theme.border-subtle;
                     HorizontalLayout {
                         padding-left: 10px; padding-right: 10px; padding-top: 4px; padding-bottom: 4px;
-                        Text { text: "Crown"; font-size: 11px; font-weight: 600; color: #ffffff; }
+                        Text { text: "Crown"; font-size: 11px; font-weight: 600; color: Theme.text-on-primary; }
                     }
                     TouchArea { clicked => { root.filter_mode = 2; } }
                 }
@@ -109,7 +109,18 @@ export component CuttingTableView inherits Rectangle {
                 spacing: 2px;
 
                 for row in root.angles: Rectangle {
-                    height: 32px;
+                    // Item 133: Pavilion/Crown filtering, driven by `AngleItem.side`
+                    // (-1 pavilion, 1 crown, 0 neither) so the filter never has to
+                    // reparse the formatted angle text. A row that does not match the
+                    // active filter collapses to zero height and `visible: false`
+                    // rather than being excluded from the `for`, since Slint has no
+                    // way to skip a repeater iteration outright.
+                    property <bool> row_shown: root.filter_mode == 0
+                        || (root.filter_mode == 1 && row.side < 0)
+                        || (root.filter_mode == 2 && row.side > 0);
+                    height: self.row_shown ? 32px : 0px;
+                    visible: self.row_shown;
+                    clip: true;
                     background: row_touch.has-hover ? Theme.bg-card-hover : (Math.mod(row.order_idx, 2) == 0 ? Theme.bg-input : Theme.bg-card);
                     border-radius: 2px;
 

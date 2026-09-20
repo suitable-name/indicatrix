@@ -32,9 +32,12 @@
 //! slightly between building it and pressing Apply; a row naming a tier index the
 //! design no longer has is dropped rather than panicking.
 
-use indicatrix::geometry::meet_solver::{Block, MeetConstraint, classify_blocks};
+use indicatrix::{
+    geometry::meet_solver::{Block, MeetConstraint, classify_blocks},
+    optics::materials::GemMaterial,
+};
 use indicatrix_cut_core::{
-    Design, Edit, MissingAnchor, OptimizeConfig, ResolvedMaterial, Risk, SearchHooks,
+    AngleChange, Design, Edit, MissingAnchor, OptimizeConfig, ResolvedMaterial, Risk, SearchHooks,
     critical_angle_deg, optimize_design, retarget_angle_deg, tier_margin_deg, windowing_risk,
 };
 
@@ -187,9 +190,89 @@ fn shifted_angle(
     }
 }
 
+/// Every pavilion/crown tier `build_proposal` operates on (girdle tiers excluded,
+/// see the module doc comment), plus the [`Block`] classification the caller needs
+/// to interpret it -- shared with `callbacks::retarget_actions`'s off-thread
+/// `RetargetMode::Optimize` wiring so that module never reimplements `Block`
+/// classification itself.
+#[must_use]
+pub(super) fn retarget_scope(design: &Design) -> (Vec<usize>, Vec<Block>) {
+    let blocks = classify_blocks(&design.meet_tier_inputs());
+    let scope = (0..design.tiers.len())
+        .filter(|&i| blocks[i] != Block::Girdle)
+        .collect();
+    (scope, blocks)
+}
+
+/// The `scope` tiers (see [`retarget_scope`]) still pinned `ScaleReference` --
+/// [`RetargetMode::Optimize`]'s up-front refusal check, factored out so
+/// `callbacks::retarget_actions` can run this same synchronous check before handing
+/// the actual search off to a worker thread.
+#[must_use]
+pub(super) fn anchored_tiers_in(design: &Design, scope: &[usize]) -> Vec<(usize, String)> {
+    scope
+        .iter()
+        .filter(|&&i| is_scale_reference(&design.tiers[i].constraint))
+        .map(|&i| (i, design.tiers[i].name.clone()))
+        .collect()
+}
+
+/// Clones `design` and seeds every `scope` tier with its critical-angle-shifted
+/// angle (see [`shifted_angle`]) -- the deterministic baseline
+/// [`RetargetMode::Optimize`] starts its search from. Shared with
+/// `callbacks::retarget_actions`'s off-thread wiring so the seeded design handed to
+/// the worker thread is built by the exact same code the synchronous
+/// [`build_optimized_angles`] path uses.
+#[must_use]
+pub(super) fn seed_shift_design(
+    design: &Design,
+    scope: &[usize],
+    blocks: &[Block],
+    n_from: f64,
+    n_to: f64,
+    crown: CrownShift,
+) -> Design {
+    let mut seeded = design.clone();
+    for &i in scope {
+        seeded.tiers[i].angle_deg = shifted_angle(design, i, blocks[i], n_from, n_to, crown);
+    }
+    seeded
+}
+
+/// Turns a finished (or cancelled) Optimize search's [`AngleChange`]s into
+/// [`RetargetRow`]s: `seeded`'s own angle for every `scope` tier, overridden by
+/// whichever tiers `changes` actually touched, with each row's `old_angle` read
+/// from `original` (the design as it stood before any shift/search ran) -- exactly
+/// [`build_optimized_angles`]'s own post-processing, factored out so
+/// `callbacks::retarget_actions`'s off-thread completion handler can build the same
+/// rows a synchronous call would have.
+#[must_use]
+pub(super) fn rows_from_outcome(
+    original: &Design,
+    seeded: &Design,
+    scope: &[usize],
+    blocks: &[Block],
+    n_to: f64,
+    changes: &[AngleChange],
+) -> Vec<RetargetRow> {
+    let mut final_angles: Vec<f64> = scope.iter().map(|&i| seeded.tiers[i].angle_deg).collect();
+    for change in changes {
+        if let Some(slot) = scope.iter().position(|&i| i == change.index) {
+            final_angles[slot] = change.to_deg;
+        }
+    }
+    scope
+        .iter()
+        .zip(&final_angles)
+        .map(|(&index, &new_angle)| row_for(original, index, blocks[index], new_angle, n_to))
+        .collect()
+}
+
 /// A one-line summary of the material move, plus (for `Optimize`) a note that
-/// the search only ever touches free tiers.
-fn build_notes(mode: RetargetMode, n_from: f64, n_to: f64) -> Vec<String> {
+/// the search only ever touches free tiers. `pub(super)` so
+/// `callbacks::retarget_actions`'s off-thread completion handler can build the
+/// identical notes a synchronous [`build_proposal`] call would have.
+pub(super) fn build_notes(mode: RetargetMode, n_from: f64, n_to: f64) -> Vec<String> {
     let delta = critical_angle_deg(n_to) - critical_angle_deg(n_from);
     let mut notes = vec![format!(
         "Retargeting from n_D {n_from:.4} to n_D {n_to:.4}: critical angle moves by {delta:+.3} deg."
@@ -219,8 +302,17 @@ fn row_for(design: &Design, index: usize, block: Block, new_angle: f64, n_to: f6
 /// Builds a retarget proposal for `design` against `target`, per `mode` -- see the
 /// module doc comment for both algorithms.
 ///
-/// `design`'s `effective_refractive_index` is the "from" index; `target.n_d` is
-/// the "to" index.
+/// `target.n_d` is the "to" index. The "from" index resolves through
+/// [`Design::effective_refractive_index_with`] against `custom_materials`, NOT the
+/// built-ins-only [`Design::effective_refractive_index`] (CAD audit item 53): a
+/// design on a custom catalogue material (say "Garnet 1.74") must be retargeted
+/// against its own real recorded index, not whatever the built-ins-only fallback
+/// would silently substitute -- the design's legacy schedule RI, or 1.54. Every
+/// proposed angle is a shift from that number, so getting it wrong moves every
+/// facet on the stone.
+///
+/// Pass `&[]` only when there is genuinely no catalogue in scope -- which, outside
+/// this module's own tests, there never is.
 ///
 /// # Errors
 ///
@@ -236,18 +328,33 @@ pub fn build_proposal(
     target: &ResolvedMaterial,
     crown: CrownShift,
     mode: RetargetMode,
+    custom_materials: &[GemMaterial],
 ) -> Result<RetargetProposal, RetargetError> {
-    let n_from = design.effective_refractive_index();
-    let n_to = target.n_d;
+    build_proposal_impl(
+        design,
+        design.effective_refractive_index_with(custom_materials),
+        target,
+        crown,
+        mode,
+    )
+}
 
-    let inputs = design.meet_tier_inputs();
-    let blocks = classify_blocks(&inputs);
+/// The shared body of [`build_proposal`] --
+/// everything past resolving `n_from`, which is now the caller's job (see
+/// [`build_proposal`]'s own doc comment for why the catalogue is threaded in
+/// callers instead of one taking a `MaterialLookup`).
+fn build_proposal_impl(
+    design: &Design,
+    n_from: f64,
+    target: &ResolvedMaterial,
+    crown: CrownShift,
+    mode: RetargetMode,
+) -> Result<RetargetProposal, RetargetError> {
+    let n_to = target.n_d;
 
     // Every pavilion/crown tier, in schedule order. Girdle tiers are never part
     // of this set -- not filtered out later, never considered in the first place.
-    let scope: Vec<usize> = (0..design.tiers.len())
-        .filter(|&i| blocks[i] != Block::Girdle)
-        .collect();
+    let (scope, blocks) = retarget_scope(design);
 
     let final_angles = match mode {
         RetargetMode::Shift => scope
@@ -255,7 +362,7 @@ pub fn build_proposal(
             .map(|&i| shifted_angle(design, i, blocks[i], n_from, n_to, crown))
             .collect(),
         RetargetMode::Optimize(config) => {
-            build_optimized_angles(design, target, &scope, crown, &config)?
+            build_optimized_angles(design, n_from, target, &scope, crown, &config)?
         }
     };
 
@@ -278,33 +385,31 @@ pub fn build_proposal(
 /// `target.gem`, then reads back the final angle for each `scope` tier (the seeded
 /// angle, overridden by `AngleChange::to_deg` for whichever tiers actually moved).
 ///
+/// `n_from` is the caller's already-resolved (custom-material-aware, CAD audit
+/// item 53) source index -- this used to re-resolve it itself via the plain
+/// built-ins-only `Design::effective_refractive_index()`, which silently seeded
+/// the search from the wrong index whenever `design` was on a custom catalogue
+/// material.
+///
 /// # Errors
 ///
 /// See [`build_proposal`]'s `# Errors` section.
 fn build_optimized_angles(
     design: &Design,
+    n_from: f64,
     target: &ResolvedMaterial,
     scope: &[usize],
     crown: CrownShift,
     config: &OptimizeConfig,
 ) -> Result<Vec<f64>, RetargetError> {
-    let anchored: Vec<(usize, String)> = scope
-        .iter()
-        .filter(|&&i| is_scale_reference(&design.tiers[i].constraint))
-        .map(|&i| (i, design.tiers[i].name.clone()))
-        .collect();
+    let anchored = anchored_tiers_in(design, scope);
     if !anchored.is_empty() {
         return Err(RetargetError::AnchoredTiers(anchored));
     }
 
-    let n_from = design.effective_refractive_index();
     let n_to = target.n_d;
     let blocks = classify_blocks(&design.meet_tier_inputs());
-
-    let mut seeded = design.clone();
-    for &i in scope {
-        seeded.tiers[i].angle_deg = shifted_angle(design, i, blocks[i], n_from, n_to, crown);
-    }
+    let seeded = seed_shift_design(design, scope, &blocks, n_from, n_to, crown);
 
     let outcome = optimize_design(&seeded, &target.gem, config, &SearchHooks::default())
         .map_err(RetargetError::Solve)?;
@@ -393,6 +498,7 @@ mod tests {
                 indices: input.indices,
                 constraint: input.constraint,
                 imported_meet: None,
+                original_notes: None,
                 detached: Vec::new(),
             })
             .collect();
@@ -467,8 +573,14 @@ mod tests {
         assert!((n_from - diamond_n_d()).abs() < 1e-9);
         let n_to = target.n_d;
 
-        let proposal = build_proposal(&design, &target, CrownShift::default(), RetargetMode::Shift)
-            .expect("Shift mode never fails");
+        let proposal = build_proposal(
+            &design,
+            &target,
+            CrownShift::default(),
+            RetargetMode::Shift,
+            &[],
+        )
+        .expect("Shift mode never fails");
 
         for &index in &pavilion_indices {
             let row = proposal
@@ -526,7 +638,7 @@ mod tests {
             fraction: 0.5,
             scale_by_ratio: false,
         };
-        let proposal = build_proposal(&design, &target, crown, RetargetMode::Shift).unwrap();
+        let proposal = build_proposal(&design, &target, crown, RetargetMode::Shift, &[]).unwrap();
 
         for row in proposal.rows.iter().filter(|r| r.block == Block::Crown) {
             let expected = 0.5f64.mul_add(delta, row.old_angle).clamp(-89.5, 89.5);
@@ -550,7 +662,7 @@ mod tests {
             fraction: 0.0,
             scale_by_ratio: true,
         };
-        let proposal = build_proposal(&design, &target, crown, RetargetMode::Shift).unwrap();
+        let proposal = build_proposal(&design, &target, crown, RetargetMode::Shift, &[]).unwrap();
 
         for row in proposal.rows.iter().filter(|r| r.block == Block::Crown) {
             let expected = (row.old_angle * ratio).clamp(-89.5, 89.5);
@@ -570,8 +682,14 @@ mod tests {
         let original = design.clone();
         let target = quartz();
 
-        let proposal =
-            build_proposal(&design, &target, CrownShift::default(), RetargetMode::Shift).unwrap();
+        let proposal = build_proposal(
+            &design,
+            &target,
+            CrownShift::default(),
+            RetargetMode::Shift,
+            &[],
+        )
+        .unwrap();
         assert_ne!(proposal.rows, Vec::new());
 
         let edit = apply(&design, &proposal);
@@ -615,6 +733,7 @@ mod tests {
                 indices: vec![],
                 constraint: MeetConstraint::ScaleReference(1.0),
                 imported_meet: None,
+                original_notes: None,
                 detached: Vec::new(),
             })
             .collect();
@@ -636,8 +755,14 @@ mod tests {
             critical_angle_deg: crit,
         };
 
-        let proposal =
-            build_proposal(&design, &target, CrownShift::default(), RetargetMode::Shift).unwrap();
+        let proposal = build_proposal(
+            &design,
+            &target,
+            CrownShift::default(),
+            RetargetMode::Shift,
+            &[],
+        )
+        .unwrap();
         for (row, &(_, expected_risk)) in proposal.rows.iter().zip(&cases) {
             assert_eq!(
                 row.risk, expected_risk,
@@ -663,6 +788,7 @@ mod tests {
             &target,
             CrownShift::default(),
             RetargetMode::Optimize(config),
+            &[],
         )
         .expect_err("RBC-445's bootstrapped anchors must trigger a refusal");
 
@@ -689,6 +815,7 @@ mod tests {
             indices: vec![],
             constraint: MeetConstraint::ScaleReference(1.0),
             imported_meet: None,
+            original_notes: None,
             detached: Vec::new(),
         }];
         let design = Design::new(
@@ -709,6 +836,7 @@ mod tests {
             &target,
             CrownShift::default(),
             RetargetMode::Optimize(config),
+            &[],
         )
         .expect("no anchored tiers are in scope, so this must succeed");
         assert_eq!(proposal.rows, Vec::new());
@@ -723,8 +851,14 @@ mod tests {
         let n_from = design.effective_refractive_index();
         let n_to = target.n_d;
 
-        let proposal =
-            build_proposal(&design, &target, CrownShift::default(), RetargetMode::Shift).unwrap();
+        let proposal = build_proposal(
+            &design,
+            &target,
+            CrownShift::default(),
+            RetargetMode::Shift,
+            &[],
+        )
+        .unwrap();
         let edit = apply(&design, &proposal);
         let mut history = History::new();
         history
@@ -758,5 +892,78 @@ mod tests {
         }
         // A real, non-empty `.asc` schedule carrying the retargeted design's header.
         assert!(text.contains("RBC-445"));
+    }
+
+    // --- CAD audit item 53: build_proposal resolves a custom
+    //     catalogue material's real RI instead of the built-ins-only fallback ---
+
+    #[test]
+    fn build_proposal_uses_the_custom_materials_own_ri() {
+        let mut design = rbc_445();
+        // A custom catalogue material this design is "currently on" -- not one
+        // of the thirteen built-ins `effective_refractive_index` alone can
+        // resolve, so the plain (non-`_with`) path falls through to the
+        // legacy `ScheduleMeta::refractive_index` (1.54 for this fixture)
+        // instead of this material's real, much higher n_D.
+        let my_garnet = GemMaterial::new_custom("My Garnet", 1.74, 0.024, 0.0, [0.0, 0.0, 0.0]);
+        design.material = MaterialSelection {
+            name: Some("My Garnet".to_string()),
+            specific_gravity_override: None,
+            refractive_index_override: None,
+        };
+        let custom = vec![my_garnet];
+
+        let target = quartz();
+        let n_from_builtins_only = design.effective_refractive_index();
+        let n_from_with_custom = design.effective_refractive_index_with(&custom);
+        // Confirms the fixture actually exercises the bug: the two resolutions
+        // must disagree, or this test would not catch a regression back to
+        // the plain built-ins-only path.
+        assert!((n_from_builtins_only - n_from_with_custom).abs() > 0.1);
+
+        let plain = build_proposal(
+            &design,
+            &target,
+            CrownShift::default(),
+            RetargetMode::Shift,
+            &[],
+        )
+        .expect("Shift mode never fails");
+        let fixed = build_proposal(
+            &design,
+            &target,
+            CrownShift::default(),
+            RetargetMode::Shift,
+            &custom,
+        )
+        .expect("Shift mode never fails");
+
+        // Same tiers, different angles: `build_proposal` (unchanged, still
+        // built-ins-only) must NOT match `build_proposal` once
+        // the custom material's RI actually differs from the legacy fallback.
+        assert_eq!(plain.rows.len(), fixed.rows.len());
+        assert!(
+            plain
+                .rows
+                .iter()
+                .zip(&fixed.rows)
+                .any(|(p, f)| (p.new_angle - f.new_angle).abs() > 1e-6),
+            "build_proposal must retarget from the custom material's own RI"
+        );
+
+        // And the fixed path's angles must match what shifting from the
+        // custom-aware n_from directly would produce.
+        let blocks = classify_blocks(&design.meet_tier_inputs());
+        for row in &fixed.rows {
+            let expected = shifted_angle(
+                &design,
+                row.tier_index,
+                blocks[row.tier_index],
+                n_from_with_custom,
+                target.n_d,
+                CrownShift::default(),
+            );
+            assert!((row.new_angle - expected).abs() < 1e-9);
+        }
     }
 }

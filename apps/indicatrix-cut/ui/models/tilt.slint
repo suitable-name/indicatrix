@@ -1,3 +1,5 @@
+import { ViewportModel } from "viewport.slint";
+
 export global TiltModel {
     in-out property <bool> dialog_open: false;
 
@@ -27,4 +29,26 @@ export global TiltModel {
 
     callback request_tilt_profile_axes();
     callback copy_curve_data();
+
+    // CAD audit item 139: the Tilt Curve button's shared open/close + stale-
+    // cache-check sequence -- used to live only as `GemViewportView`'s own
+    // `toggle_performance_dialog` (`gem_viewport.slint`), so the Edit tab's
+    // `SolidViewportView` (`solid_viewport.slint`) had no way to reach it at
+    // all and would have needed its own second copy. A plain `function`, not a
+    // `callback`, specifically so its body can live right here rather than
+    // needing a `on_toggle_dialog` handler wired up from Rust in a THIRD
+    // place: a global's callback body may only live in Rust or in the file
+    // declaring the global, but an ordinary function has no such restriction,
+    // and this one only ever touches other `TiltModel`/`ViewportModel`
+    // members, nothing Rust needs to supply.
+    public function toggle_dialog() {
+        dialog_open = !dialog_open;
+        if dialog_open {
+            if cached_curve_material != "" && is_cached_curve_material_stale(cached_curve_material, ViewportModel.material_options[ViewportModel.selected_material_index]) {
+                rerender_curve_with_current_material();
+            } else {
+                request_tilt_profile_axes();
+            }
+        }
+    }
 }

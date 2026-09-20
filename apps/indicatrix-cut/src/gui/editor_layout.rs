@@ -19,6 +19,17 @@ use crate::{
 use slint::ComponentHandle;
 use std::sync::Arc;
 
+/// Raised floor for the inspector's height while the user has never touched the Edit
+/// sub-tab's layout -- taller than `AppSettings::DEFAULT_EDITOR_INSPECTOR_HEIGHT`
+/// (260px) so the Tier tab's Save/Add Tier button row lands inside the `ScrollView`'s
+/// initial fold instead of landing roughly 75px below it (`cad_todo.md` #100-108 item
+/// "Default inspector height hides the Save/Add Tier button below the fold"). Applied
+/// in [`apply_editor_layout_from_settings`] only while `editor_layout_touched` is
+/// `false`; once a user has ever dragged the table|inspector split themselves (or a
+/// smaller screen has narrowed it, see `window_sizing`), their own value is trusted
+/// verbatim and never raised.
+const FIRST_RUN_INSPECTOR_HEIGHT: f32 = 340.0;
+
 /// Applies the Edit sub-tab's persisted dock width / inspector height / section
 /// collapsed-states to `EditorModel`. Called once at startup, right after
 /// `startup_settings::apply_loaded_settings` and before
@@ -27,7 +38,12 @@ use std::sync::Arc;
 pub(super) fn apply_editor_layout_from_settings(ui: &MainWindow, s: &AppSettings) {
     let editor = ui.global::<EditorModel>();
     editor.set_dock_width(s.editor_dock_width);
-    editor.set_inspector_height(s.editor_inspector_height);
+    let inspector_height = if s.editor_layout_touched {
+        s.editor_inspector_height
+    } else {
+        s.editor_inspector_height.max(FIRST_RUN_INSPECTOR_HEIGHT)
+    };
+    editor.set_inspector_height(inspector_height);
     editor.set_settings_collapsed(s.editor_settings_collapsed);
     editor.set_inspector_collapsed(s.editor_inspector_collapsed);
     editor.set_remap_collapsed(s.editor_remap_collapsed);

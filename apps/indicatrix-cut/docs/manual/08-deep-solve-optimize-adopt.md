@@ -29,7 +29,7 @@ exact number).
 
 **Adopt re-solves immediately.** Unlike every other tier edit in this app,
 clicking Adopt does not leave the panel stale — it runs a full solve right
-away and keeps the status banner showing the design's real, current state.
+away and keeps the status strip showing the design's real, current state.
 In practice the newly adopted tier's live-solved mast converges to the
 same value it was pinned at, so adopting a tier is safe: it changes *how*
 that facet's depth is described, not, in the ordinary case, the depth
@@ -57,27 +57,29 @@ printed in the catalogue?" rather than "does this design close?"
   computation keeps running to completion regardless; you simply stop
   waiting for its result, which is then discarded rather than shown.
 
-Deep Solve is unavailable — with an explanatory hint in place of the
-button — when the loaded design has no printed proportions to check
-against at all (a brand-new design, or one loaded from a reconstructed
-schedule with no catalogue proportions). It also has "nothing to repair"
-once every tier is already pinned to its recorded mast; adopt at least one
-tier first.
+Deep Solve greys itself out — with the specific reason shown right on the
+button when you hover it — when the loaded design has no printed
+proportions to check against at all (a brand-new design, or one loaded
+from a reconstructed schedule with no catalogue proportions). It also has
+"nothing to repair" once every tier is already pinned to its recorded
+mast; adopt at least one tier first.
 
 ## Optimize
 
 **Optimize** is a coordinate search over the angles of the design's **free**
 tiers (Chapter 3) — it does not touch any tier pinned as an Exact scale
-value. Each candidate is scored on:
+value. Its weight fields, progress, and results all live on the inspector's
+own **Optimize** tab (Chapter 4); the command bar's **Optimize** button is
+what actually starts the search. Each candidate is scored on:
 
 - **Windowing** — lower is better (less see-through washout).
 - **Extinction** — lower is better (less dead, dark area).
 - **Tilt brilliance** — higher is better (how well the stone stays bright
   as it's tilted, not just held dead flat).
 
-The three weight fields (**Weights: windowing / extinction / tilt
-brilliance**) let you decide how much each factor matters relative to the
-others for this run.
+The three weight fields on the Optimize tab (**Weights: windowing /
+extinction / tilt brilliance**) let you decide how much each factor
+matters relative to the others for this run.
 
 **Optimize runs in two stages.** The first is the coordinate search above,
 moving one free tier's angle at a time. Some designs have a ridge where two
@@ -103,12 +105,27 @@ search over.
 Optimize runs off the main thread with real progress and a real Cancel — a
 cancelled run still shows the best partial result found up to that point,
 clearly marked as a partial/cancelled result rather than a finished one.
+While it runs, the status line names whichever phase is actually underway
+rather than a single evaluation count throughout: "scoring the starting
+point at full fidelity" before the search proper begins, "N of ~M
+evaluations" during the coordinate search, "(polish) N of ~M evaluations"
+during the polish pass, and "scoring the result at full fidelity" at the
+very end. The ~M ceiling already covers the coordinate and polish stages
+together, so the count climbing on through the polish stage is expected,
+not a sign the run has gone past its own stated budget.
 
 **A result is only a report until you click Apply.** Optimize's outcome
-sits in the results panel — showing each of the three objective components'
-before/after values separately, plus the combined weighted score — and does
-nothing to the design on its own. If nothing improved, the panel says so
-plainly rather than applying a no-op change.
+sits in the Optimize tab's own results box — showing each of the three
+objective components' before/after values separately, plus the combined
+weighted score — and does nothing to the design on its own. Below that, a
+"Tiers this would change" table lists exactly which tiers would move, by
+name, and their from/to angles, so you know precisely what Apply is about
+to do before you click it. If nothing improved, the box says so plainly
+rather than applying a no-op change.
+
+Retarget's own Optimize mode (Chapter 6) runs this exact same search, seeded
+from a material-shifted starting point, so everything above about staging,
+free tiers, and the two-stage search applies there too.
 
 ## Apply (Optimize's Apply button)
 

@@ -300,6 +300,34 @@ impl Database {
         Ok(())
     }
 
+    /// Creates `tags`/`diagram_tag_links` for a database created before the catalogue
+    /// had a tagging system -- CAD audit item 190's flat-tag half (deliberately NOT
+    /// folders/collections; see [`super::search::SortOrder`]'s own doc comment for the
+    /// sort half this pairs with).
+    ///
+    /// A tag is its own row (`tags.name`, unique case-insensitively so "Competition"
+    /// and "competition" can't silently become two different tags) rather than a free
+    /// column on `diagram_entries`, so many-to-many attachment needs its own join
+    /// table (`diagram_tag_links`) -- this mirrors `diagram_previews`/
+    /// `diagram_tilt_curves`'s own "side table keyed by/cascading off `entry_id`"
+    /// convention rather than growing `diagram_entries`' own column set (which two
+    /// tests in this crate's `tests.rs` pin to an exact list). Both `ON DELETE
+    /// CASCADE`s mean deleting a design or a tag never leaves an orphaned link row to
+    /// clean up by hand.
+    ///
+    /// Naturally idempotent via `CREATE TABLE IF NOT EXISTS`, also created inside
+    /// `create_tables_if_not_exist` so a fresh database already has both tables.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if creating either table fails.
+    pub(super) fn migrate_tag_tables(&self) -> Result<()> {
+        self.conn
+            .execute_batch(TAG_TABLES_SQL)
+            .context("Failed to create tags/diagram_tag_links tables")?;
+        Ok(())
+    }
+
     /// Prunes `diagram_tilt_curves` down from this crate's first-draft 36 derived
     /// aggregate columns (3 metrics x 4 fixed tilt radii x {min, max, mean}) to the 6
     /// that survive (3 metrics x {global min, global max}) -- the tilt radius became
@@ -401,6 +429,97 @@ impl Database {
             )
             .context("Failed to add custom_gem_materials.per_axis_dispersion_json column")?;
         info!("per_axis_dispersion_json column migration complete.");
+        Ok(())
+    }
+
+    /// Adds `custom_gem_materials.specific_gravity`, a nullable REAL column holding
+    /// the material's density relative to water, so a custom material can carry its
+    /// own SG the way the thirteen built-in species already do (see CAD audit item
+    /// 169: without it, Est. Carat Weight stays empty for a custom material unless
+    /// the cutter separately types an SG override for every design).
+    ///
+    /// Purely additive and nullable, same idiom as
+    /// [`Self::migrate_per_axis_dispersion_column`]: `NULL` means "no SG recorded"
+    /// for every pre-existing row, not a guessed value.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if checking for the column or adding it fails.
+    pub(super) fn migrate_custom_material_specific_gravity(&self) -> Result<()> {
+        if Self::column_exists(&self.conn, "custom_gem_materials", "specific_gravity")? {
+            debug!("specific_gravity column already present; skipping the ADD COLUMN step.");
+            return Ok(());
+        }
+
+        info!("Adding custom_gem_materials.specific_gravity column...");
+        self.conn
+            .execute_batch("ALTER TABLE custom_gem_materials ADD COLUMN specific_gravity REAL;")
+            .context("Failed to add custom_gem_materials.specific_gravity column")?;
+        info!("specific_gravity column migration complete.");
+        Ok(())
+    }
+
+    /// Adds `diagram_entries.created_at`/`updated_at` (both nullable `INTEGER` Unix
+    /// seconds) for a database created before this crate recorded when a design was
+    /// added or last changed -- see CAD audit item 191 and
+    /// [`Self::migrate_diagram_entries_provenance`] for the column it's paired with.
+    ///
+    /// Both `NULL`, not backfilled: a pre-existing row's real creation/edit time is
+    /// simply unknown, and a fabricated "now" would be a lie a "recently edited" sort
+    /// could act on. [`crate::db::sqlite::SortOrder::Newest`]/
+    /// [`crate::db::sqlite::SortOrder::RecentlyEdited`] already sort `NULL` last for
+    /// exactly this reason (SQLite's own `DESC` ordering, no extra `CASE` needed).
+    ///
+    /// Idempotent: gated on whether `created_at` already exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if checking for the column or adding either fails.
+    pub(super) fn migrate_diagram_entries_timestamps(&self) -> Result<()> {
+        if Self::column_exists(&self.conn, "diagram_entries", "created_at")? {
+            debug!("diagram_entries timestamp columns already present; skipping.");
+            return Ok(());
+        }
+
+        info!("Adding diagram_entries.created_at/updated_at columns...");
+        self.conn
+            .execute_batch(
+                "ALTER TABLE diagram_entries ADD COLUMN created_at INTEGER;
+                 ALTER TABLE diagram_entries ADD COLUMN updated_at INTEGER;",
+            )
+            .context("Failed to add diagram_entries timestamp columns")?;
+        info!("diagram_entries timestamp column migration complete.");
+        Ok(())
+    }
+
+    /// Adds `diagram_entries.derived_from_entry_id` (nullable `INTEGER`, no
+    /// `FOREIGN KEY`) for a database created before this crate recorded provenance
+    /// between rows -- see CAD audit item 186: an export-then-reimport of an existing
+    /// catalogue design currently lands as an indistinguishable second row, since a
+    /// different `url` means `INSERT`, not `UPDATE` (`Database::save_diagram_entry`).
+    ///
+    /// This migration only adds the column and leaves every row's value `NULL`; it
+    /// does not attempt to backfill provenance for existing rows by guessing from
+    /// titles or any other heuristic (deliberately -- see this column's callers).
+    /// No `FOREIGN KEY`: the row this points at can be renamed, re-synced, or deleted
+    /// independently without this column blocking or cascading that operation.
+    ///
+    /// Idempotent: gated on whether `derived_from_entry_id` already exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if checking for the column or adding it fails.
+    pub(super) fn migrate_diagram_entries_provenance(&self) -> Result<()> {
+        if Self::column_exists(&self.conn, "diagram_entries", "derived_from_entry_id")? {
+            debug!("diagram_entries.derived_from_entry_id already present; skipping.");
+            return Ok(());
+        }
+
+        info!("Adding diagram_entries.derived_from_entry_id column...");
+        self.conn
+            .execute_batch("ALTER TABLE diagram_entries ADD COLUMN derived_from_entry_id INTEGER;")
+            .context("Failed to add diagram_entries.derived_from_entry_id column")?;
+        info!("diagram_entries.derived_from_entry_id column migration complete.");
         Ok(())
     }
 
@@ -546,6 +665,24 @@ pub(super) const DIAGRAM_PREVIEWS_TABLE_SQL: &str = "
         preview_material TEXT,
         preview_generated_at INTEGER,
         FOREIGN KEY (entry_id) REFERENCES diagram_entries (id) ON DELETE CASCADE
+    );
+";
+
+/// `tags`/`diagram_tag_links`' full `CREATE TABLE IF NOT EXISTS` text, shared verbatim
+/// between [`Database::migrate_tag_tables`] and `create_tables_if_not_exist`, same
+/// convention as [`DIAGRAM_PREVIEWS_TABLE_SQL`].
+pub(super) const TAG_TABLES_SQL: &str = "
+    CREATE TABLE IF NOT EXISTS tags (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL UNIQUE COLLATE NOCASE
+    );
+
+    CREATE TABLE IF NOT EXISTS diagram_tag_links (
+        entry_id INTEGER NOT NULL,
+        tag_id INTEGER NOT NULL,
+        PRIMARY KEY (entry_id, tag_id),
+        FOREIGN KEY (entry_id) REFERENCES diagram_entries (id) ON DELETE CASCADE,
+        FOREIGN KEY (tag_id) REFERENCES tags (id) ON DELETE CASCADE
     );
 ";
 

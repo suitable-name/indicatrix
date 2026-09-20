@@ -191,6 +191,14 @@ pub fn save_gem_material(
     dispersion: f32,
     birefringence: f32,
     absorption_rgb: [f32; 3],
+    // CAD audit item 169: the Material Editor dialog already collects this as
+    // `sg_val` (`material_editor_dialog.slint`), but `ViewportModel.save_custom_material`
+    // does not yet carry it as a 10th argument -- that Slint global signature change
+    // is the one remaining link, owned outside `gui/optics`. Until it lands, every
+    // caller passes `None` here; this parameter exists so wiring the real value
+    // through is a one-line change at the (single) call site rather than a new
+    // parameter threaded through this function too.
+    specific_gravity: Option<f32>,
 ) -> anyhow::Result<()> {
     db.save_custom_material(&CustomMaterialParams {
         name: &material.name,
@@ -205,6 +213,7 @@ pub fn save_gem_material(
         // own editor surface, out of scope here) -- `None`, the same "not stored"
         // state every row saved before this column existed already has.
         per_axis_dispersion_json: None,
+        specific_gravity,
     })
 }
 
@@ -290,6 +299,7 @@ mod tests {
             optical_character: None,
             biaxial_delta_beta_alpha: None,
             per_axis_dispersion_json: None,
+            specific_gravity: None,
         };
         let from_row = gem_material_from_row(&row);
         let inferred = GemMaterial::new_custom(
@@ -336,6 +346,7 @@ mod tests {
             optical_character: Some("BiaxialPositive".to_string()),
             biaxial_delta_beta_alpha: Some(0.0070),
             per_axis_dispersion_json: None,
+            specific_gravity: None,
         };
         let material = gem_material_from_row(&row);
         assert_eq!(material.crystal_system, CrystalSystem::Orthorhombic);

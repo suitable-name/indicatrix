@@ -146,6 +146,34 @@ impl Database {
             .with_context(|| format!("Failed to load preview images for entry_id: {entry_id}"))?;
         Ok(row.unwrap_or_default())
     }
+
+    /// Deletes `entry_id`'s entire `diagram_previews` row (images, generation
+    /// timestamp, AND the persisted `preview_material` choice), if one exists.
+    ///
+    /// CAD audit item 97: `diagram_previews` is a side table keyed by `entry_id` (see
+    /// this module's own doc comment), so re-importing a `.asc` over an existing row
+    /// -- which fully replaces `diagram_details` via
+    /// [`Self::save_diagram_detail`](Database::save_diagram_detail) -- leaves whatever
+    /// preview images were generated from the OLD geometry sitting there unchanged,
+    /// now silently describing a design that no longer exists. Called after a
+    /// re-import collision so the next preview-generation pass has a clean slate to
+    /// regenerate into, rather than a thumbnail that looks plausible but is wrong.
+    ///
+    /// A missing row is not an error -- deleting nothing (a design that never had
+    /// previews generated) is the ordinary, expected outcome for most re-imports.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `DELETE` fails.
+    pub fn delete_preview_images(&self, entry_id: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM diagram_previews WHERE entry_id = ?1",
+                params![entry_id],
+            )
+            .with_context(|| format!("Failed to delete preview images for entry_id: {entry_id}"))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -6,8 +6,9 @@ This chapter is about a question every cutter eventually asks: "I like this
 cut, but I want to cut it in a different gem material -- what do I need to
 change?" The Design Settings panel (above the tier list in the Edit tab) gives
 a design a single, editable material, refractive index, index gear and
-symmetry. This chapter explains what each control does and does not
-automate.
+symmetry. This chapter explains what each control does, and then covers
+**Retarget**, the command bar's automated proposal for adapting a design's
+angles to a different material.
 
 ## What refractive index is, briefly
 
@@ -97,25 +98,69 @@ cache) all update to match, so what you render is always what you are
 editing. Turn it off to pick an independent render material without
 touching the design at all, exactly like before this panel existed.
 
-## Loading a design: the material suggestion banner
+## Loading a design: the material suggestion
 
 Loading a catalogue design never changes the schedule's own recorded RI on
 its own. If the schedule's RI is within 0.01 of a built-in preset's own n_D,
-a banner offers **"Set material to X (RI ...)?"** -- accepting it sets the
-design's material to that preset (for the optimizer/tilt-curve/viewport to
-use its real dispersion), but if that preset's own n_D would otherwise move
-the *exported* RI by more than 0.01, the app pins an explicit RI override to
-the schedule's own original value first, so accepting the suggestion never
-silently changes what a subsequent export writes. Dismissing the banner ("No
-Thanks") leaves the design exactly as loaded, with no material name set at
-all.
+the status strip's Log (Chapter 5) offers **"Set material to X (RI ...)?"**
+-- accepting it sets the design's material to that preset (for the
+optimizer/tilt-curve/viewport to use its real dispersion), but if that
+preset's own n_D would otherwise move the *exported* RI by more than 0.01,
+the app pins an explicit RI override to the schedule's own original value
+first, so accepting the suggestion never silently changes what a
+subsequent export writes. Dismissing it ("No Thanks") leaves the design
+exactly as loaded, with no material name set at all.
 
-## Retargeting an existing cut for a different material
+## Retarget: an automated proposal
 
-This app does not (yet, in this chapter's scope) offer an automated
-"retarget for a new material" proposal -- see the manual's appendix for
-what is planned there. Until then, this is standard cutting practice, not a
-feature of the app:
+Click **Retarget...** on the command bar's second row (Chapter 3) to open
+a dialog that proposes new pavilion and crown angles for a different
+material, for you to review before anything is applied.
+
+- **Target Material** -- a combo of built-in and custom materials, plus a
+  **Custom n_D** field for a typed refractive index. It starts on the
+  design's own current material. A readout below shows exactly what the
+  picker resolves to: the material's name, its n_D, and its critical
+  angle.
+- **Mode** --
+  - **Shift** (the default) -- a deterministic move that keeps every
+    pavilion tier's own margin over the critical angle fixed at what it
+    already was. Always available, and fast.
+  - **Optimize** -- seeds from the same shift, then runs the same
+    coordinate search Chapter 8 describes over the design's free tiers, to
+    find the target material's own best score for windowing, extinction,
+    and tilt brilliance. Runs in the background with a progress readout
+    that names its current stage (e.g. "Optimizing... 12 of ~200
+    evaluations, 1.4s elapsed" -- see Chapter 8 for what each stage means);
+    **Cancel** stops the search without closing the dialog.
+- **Crown Handling** -- how much of the pavilion's shift the crown tiers
+  follow: a **Fraction of shift** slider (0% leaves the crown untouched,
+  which is common faceting practice and the default), or a **Scale crown
+  by ratio instead** checkbox, which scales every crown tier's own angle
+  by the ratio of the two materials' critical angles rather than following
+  the pavilion's shift.
+- **The proposal table** -- one row per affected tier: its block, name,
+  old angle, new angle, margin, and risk badge, so you can see exactly
+  what would change and whether it still reads Safe before committing to
+  anything.
+
+Two things stop a proposal from being built at all, shown in place of the
+table: **"Design does not solve: ..."** when the design does not currently
+close, and a list of tiers to **Adopt** first when Optimize mode needs a
+tier that is still pinned as an imported scale reference (Chapter 8) --
+Retarget's Optimize mode can only move free tiers, exactly like the
+standalone Optimize.
+
+Click **Apply** to commit the whole proposal as **one** undoable edit --
+the material change and every tier's angle shift together, so a single
+Undo reverts both at once. Applying re-solves the design; check the status
+strip afterward the same as any other edit.
+
+## Doing it by hand
+
+Retarget's Shift mode already automates the mechanical part of this, but
+understanding the reasoning is worth knowing, and Design Settings' MARGIN
+column is what you would watch either way:
 
 1. Load the design and note its current pavilion main angle(s) and its
    effective RI (the Design Settings panel's own readout).
@@ -125,10 +170,10 @@ feature of the app:
 3. Set the Design Settings panel's Material combo to the target material
    (or type a Custom RI). Watch the tier list's MARGIN column: any pavilion
    tier that turns red now windows at the new RI.
-4. In the tier form (Chapter 4), select each red or amber pavilion tier in
-   turn and edit its **Angle (deg)** field so the MARGIN column reads green
-   again, then **Save Tier**.
-5. Click **Solve** (Chapter 5) and check the status banner still reads
+4. On the inspector's Tier tab (Chapter 4), select each red or amber
+   pavilion tier in turn and edit its **Angle (deg)** field so the MARGIN
+   column reads green again, then **Save Tier**.
+5. Click **Solve** (Chapter 5) and check the status strip still reads
    "Closed solid."
 6. With "Linked to design" on, the Live Render viewport already shows your
    target material -- check the **windowing** and **extinction** readouts
@@ -137,10 +182,10 @@ feature of the app:
 7. Optionally, once at least one tier is a free (meet-based) tier rather
    than a pinned scale reference (see Adopt, Chapter 8), run **Optimize** to
    fine-tune angles for windowing/extinction/tilt-brilliance under the
-   design's own material -- Optimize now resolves the SAME material
-   (built-ins, custom catalogue materials, and any RI override) the
-   viewport and tilt curve use, so there is no separate "which material did
-   Optimize actually score against" question any more.
+   design's own material -- Optimize resolves the SAME material (built-ins,
+   custom catalogue materials, and any RI override) the viewport and tilt
+   curve use, so there is no separate "which material did Optimize actually
+   score against" question.
 
 ## Next steps
 

@@ -427,26 +427,47 @@ fn project_to_srgb_actually_compresses_out_of_gamut_colours() {
 }
 
 // ---------------------------------------------------------------------------------
-// 7. A bright, saturated highlight that compresses under ACES tone mapping must
-//    preserve vibrant saturation without channel overflow or unnatural chalky desaturation.
+// 7. a bright, saturated highlight that clips after ACES tone mapping must
+//    desaturate toward white, not have exactly one channel hard-capped at 1.0 while
+//    the others hold still.
 // ---------------------------------------------------------------------------------
 
-/// A saturated, over-bright stimulus (well beyond what linear scaling alone brings back
-/// under 1.0) must compress smoothly within [0, 255] via per-channel ACES filmic
-/// tone mapping while preserving high spectral saturation (>= 0.95), preventing the
-/// washed-out chalky/pale appearance caused by premature white-point collapse.
+/// A saturated, over-bright stimulus (well beyond what tone mapping alone brings back
+/// under 1.0) exercises exactly the bug this fix targets: the OLD scheme (gamut-project
+/// at the original luminance, scale by the luminance-only ACES ratio, then hard-clamp
+/// each channel to `[0, 1]` independently) reintroduces the per-channel clipping the
+/// luminance-only ACES design was chosen to avoid. The new scheme routes the
+/// tone-mapped colour through [`indicatrix::color::gamut::project_to_gamut_bounded`]
+/// instead, which desaturates toward white -- measurably LOWER max-min saturation than
+/// the old hard-clamped result, for the identical input.
 #[test]
 fn aces_highlight_clipping_desaturates_instead_of_clamping_one_channel() {
     let [x, y, z] = cie_1931_cmf(600.0); // saturated orange-red
-    let xyz = Vec3::new(x, y, z) * 6.0; // bright enough to test filmic compression
+    let xyz = Vec3::new(x, y, z) * 6.0; // bright enough to clip after tone mapping
+
+    // Reference: the OLD behaviour, reimplemented here only as a comparison point (the
+    // production code no longer does this -- see `ColorSpace::encode`'s doc comment).
+    let linear_rgb = project_to_gamut(xyz, ColorSpace::Srgb);
+    let luminance = xyz.y.max(0.0);
+    let y_tm = indicatrix::optics::raytracer::aces_tonemap(luminance);
+    let scale = y_tm / luminance.max(1e-5);
+    let old_toned = linear_rgb * scale;
+    assert!(
+        old_toned.x > 1.0 || old_toned.y > 1.0 || old_toned.z > 1.0,
+        "test setup: chosen stimulus should clip at least one channel under the old \
+         scheme, got {old_toned:?}"
+    );
+    let old_clamped = old_toned.clamp(Vec3::ZERO, Vec3::ONE);
+    let old_sat = (old_clamped.max_element() - old_clamped.min_element())
+        / old_clamped.max_element().max(1e-6);
 
     let new_rgb = ColorSpace::Srgb.encode(xyz, ToneMap::AcesFilmic { exposure: 1.0 });
     let new_sat = u8_saturation(new_rgb);
 
-    assert_eq!(new_rgb[3], 255);
-    assert!(new_rgb[0] > 0);
     assert!(
-        new_sat >= 0.95,
-        "Fix preserves saturated spectral dispersion fire (>= 0.95), got {new_sat:.4} for rgb={new_rgb:?}"
+        new_sat < old_sat - 0.02,
+        "Fix 1 should desaturate a clipped highlight rather than hard-clamp it: old \
+         (per-channel clamp) saturation={old_sat:.4}, new (gamut-projected) \
+         saturation={new_sat:.4} (old_clamped={old_clamped:?}, new={new_rgb:?})"
     );
 }

@@ -5,12 +5,24 @@
 //!
 //! # Lighting models
 //!
-//! Presets map to one of four [`LightingModel`] variants:
-//! - `Studio`: four classic studio setups (`Daylight`, `Incandescent`, `RingLights`, `DarkSpotlight`),
-//!   bit-identical to the original analytic rig.
-//! - `IsoHemisphere`: uniform lit upper hemisphere with zenith cosine gradient (0.70-1.0), observer head shadow, 4° soft horizon, dark below.
-//! - `SoftDome`: soft hemisphere dome (0.02 max, 0.005 ground) with directional key, fill, and ring pinpoints.
-//! - `DaylightDome`: sky hemisphere (0.05 max, 0.005 ground) with sun disc (16.0) and solar aureole (1.5).
+//! Every [`LightingPreset`] samples one [`LightingModel`]:
+//! - `Studio` (`Daylight`, `Incandescent`, `RingLights`, `DarkSpotlight`): the analytic
+//!   studio rig -- a charcoal backdrop, one key softbox, one fill and sixteen ring
+//!   pinpoints. Its arithmetic is pinned by golden images and never changes.
+//! - `IsoHemisphere`: the `GemRay` ISO light model -- the whole upper hemisphere at
+//!   radiance 1, nothing below the girdle plane.
+//! - `LightTent`: a jewellery light tent -- dim tent walls, one broad overhead softbox,
+//!   three black cards on the ring positions away from the key (the contrast
+//!   photographers add so a diamond reads as a facet pattern rather than a white blur),
+//!   one small hard spark light for scintillation, black velvet below the girdle.
+//! - `DaylightDome`: a clear sky, brighter at the horizon than at the zenith with an
+//!   aureole around the sun, a 2 degree sun disc, dark ground.
+//!
+//! The three lit models also darken every exit direction inside the observer's
+//! head-shadow cone (`HEAD_SHADOW_*`), the term that gives a face-up stone its dark
+//! table reflections; `Studio` ignores the observer. Radiances are chosen so that at
+//! exposure 1 the ambient terms land near middle grey after the ACES curve and only a
+//! direct reflection of a light source clips to white.
 
 use super::color::illuminant_white_balance;
 use crate::renderer::env_map::EnvironmentMap;
@@ -103,7 +115,7 @@ pub enum LightingPreset {
     RingLights,
     DarkSpotlight,
     IsoHemisphere,
-    SoftDome,
+    LightTent,
     DaylightDome,
 }
 
@@ -112,7 +124,7 @@ pub enum LightingPreset {
 pub enum LightingModel {
     Studio,
     IsoHemisphere,
-    SoftDome,
+    LightTent,
     DaylightDome,
 }
 
@@ -123,7 +135,7 @@ impl LightingModel {
         match self {
             Self::Studio => 0,
             Self::IsoHemisphere => 1,
-            Self::SoftDome => 2,
+            Self::LightTent => 2,
             Self::DaylightDome => 3,
         }
     }
@@ -138,7 +150,7 @@ impl LightingPreset {
         Self::RingLights,
         Self::DarkSpotlight,
         Self::IsoHemisphere,
-        Self::SoftDome,
+        Self::LightTent,
         Self::DaylightDome,
     ];
 
@@ -160,7 +172,7 @@ impl LightingPreset {
                 temp_k: 6000.0,
                 spot_mult: 2.4,
             },
-            Self::SoftDome => LightingRigParams {
+            Self::LightTent => LightingRigParams {
                 temp_k: 5000.0,
                 spot_mult: 1.0,
             },
@@ -181,25 +193,27 @@ impl LightingPreset {
             Self::Incandescent => "Incandescent (3200K)",
             Self::RingLights => "Gem Studio Ring Lights",
             Self::DarkSpotlight => "Dramatic Dark Spotlight",
-            Self::IsoHemisphere => "ISO hemisphere",
-            Self::SoftDome => "Soft dome + ring lights",
-            Self::DaylightDome => "Daylight dome + sun",
+            Self::IsoHemisphere => "ISO hemisphere (GemRay-style)",
+            Self::LightTent => "Light tent + black cards",
+            Self::DaylightDome => "Daylight sky + sun",
         }
     }
 
     /// Parses a persisted or UI-supplied label back into a preset. Falls back to
     /// [`Self::Daylight`] for anything unrecognised -- including the legacy
     /// `"D65 Daylight (5500K)"` label an older settings file may still contain, which
-    /// already resolved to D65 6500K, so migration is silent.
+    /// already resolved to D65 6500K, so migration is silent. The lit models' first
+    /// labels (`"ISO hemisphere"`, `"Soft dome + ring lights"`, `"Daylight dome + sun"`)
+    /// resolve to their current presets the same way.
     #[must_use]
     pub fn from_label(label: &str) -> Self {
         match label {
             "Incandescent (3200K)" => Self::Incandescent,
             "Gem Studio Ring Lights" => Self::RingLights,
             "Dramatic Dark Spotlight" => Self::DarkSpotlight,
-            "ISO hemisphere" => Self::IsoHemisphere,
-            "Soft dome + ring lights" => Self::SoftDome,
-            "Daylight dome + sun" => Self::DaylightDome,
+            "ISO hemisphere (GemRay-style)" | "ISO hemisphere" => Self::IsoHemisphere,
+            "Light tent + black cards" | "Soft dome + ring lights" => Self::LightTent,
+            "Daylight sky + sun" | "Daylight dome + sun" => Self::DaylightDome,
             _ => Self::Daylight,
         }
     }
@@ -213,7 +227,7 @@ impl LightingPreset {
             Self::RingLights => 2,
             Self::DarkSpotlight => 3,
             Self::IsoHemisphere => 4,
-            Self::SoftDome => 5,
+            Self::LightTent => 5,
             Self::DaylightDome => 6,
         }
     }
@@ -227,7 +241,7 @@ impl LightingPreset {
             2 => Self::RingLights,
             3 => Self::DarkSpotlight,
             4 => Self::IsoHemisphere,
-            5 => Self::SoftDome,
+            5 => Self::LightTent,
             6 => Self::DaylightDome,
             _ => Self::Daylight,
         }
@@ -241,7 +255,7 @@ impl LightingPreset {
                 LightingModel::Studio
             }
             Self::IsoHemisphere => LightingModel::IsoHemisphere,
-            Self::SoftDome => LightingModel::SoftDome,
+            Self::LightTent => LightingModel::LightTent,
             Self::DaylightDome => LightingModel::DaylightDome,
         }
     }
@@ -253,6 +267,18 @@ impl LightingPreset {
             self,
             Self::Daylight | Self::IsoHemisphere | Self::DaylightDome
         )
+    }
+
+    /// Relative spectral power of this preset's illuminant at `lambda_nm`: the
+    /// tabulated CIE D65 curve where [`Self::uses_d65`], else a Planckian fit at the
+    /// preset's colour temperature.
+    #[must_use]
+    pub fn spectral_power(self, lambda_nm: f32) -> f32 {
+        if self.uses_d65() {
+            d65_relative_spectral_power(lambda_nm)
+        } else {
+            blackbody_spectrum(lambda_nm, self.params().temp_k)
+        }
     }
 
     /// Convenience constructor for the common case of tracing against the analytic
@@ -270,6 +296,7 @@ impl LightingPreset {
             exposure,
             light_yaw,
             light_pitch,
+            backdrop: 0.0,
         }
     }
 }
@@ -288,8 +315,44 @@ pub enum EnvironmentSource<'a> {
         exposure: f32,
         light_yaw: f32,
         light_pitch: f32,
+        /// Radiance of the backdrop card a camera ray sees where it misses the stone,
+        /// in the preset's own spectral-power units (so it renders neutral after white
+        /// balance) and independent of `exposure`. `0.0` shows the environment itself.
+        /// The stone's optics never see the card -- only the primary ray does -- so
+        /// leakage and windows stay as dark as the real ground, the way `GemRay`
+        /// paints its grey canvas. See [`BACKDROP_GEMRAY_GREY`].
+        backdrop: f32,
     },
     HdrMap(&'a EnvironmentMap),
+}
+
+/// Backdrop radiance that tone-maps to `GemRay`'s neutral grey canvas (about sRGB 160).
+pub const BACKDROP_GEMRAY_GREY: f32 = 0.23;
+/// Backdrop radiance that tone-maps to white: a light box behind the stone.
+pub const BACKDROP_WHITE: f32 = 8.0;
+
+impl EnvironmentSource<'_> {
+    /// Puts a backdrop card of radiance `backdrop` behind the stone (see the `Studio`
+    /// variant's field); an HDR map is its own backdrop and is returned unchanged.
+    #[must_use]
+    pub const fn with_backdrop(self, backdrop: f32) -> Self {
+        match self {
+            Self::Studio {
+                preset,
+                exposure,
+                light_yaw,
+                light_pitch,
+                ..
+            } => Self::Studio {
+                preset,
+                exposure,
+                light_yaw,
+                light_pitch,
+                backdrop,
+            },
+            hdr @ Self::HdrMap(_) => hdr,
+        }
+    }
 }
 
 /// Looks up channel `lambda_nm`'s spectral radiance, in direction `dir`, for a ray that
@@ -299,14 +362,17 @@ pub enum EnvironmentSource<'a> {
 ///
 /// Takes the `Studio` variant's [`StudioRig`](crate::optics::studio_rig::StudioRig)
 /// pre-built (`studio_rig`) rather than reconstructing it from `light_yaw`/
-/// `light_pitch` on every call -- `accumulate_miss_radiance`, the only caller, builds it
-/// once per ray and reuses it across all `NUM_CHANNELS` channels. Unused for `HdrMap`.
+/// `light_pitch` on every call -- `accumulate_miss_radiance` and the exit-split probe
+/// build it once per ray and reuse it across all `NUM_CHANNELS` channels. `observer` is
+/// the unit direction from the stone towards the eye (see
+/// [`sample_studio_environment_observed`]). Both are unused for `HdrMap`.
 #[inline]
 pub(super) fn sample_environment_channel(
     environment: EnvironmentSource<'_>,
     dir: Vec3,
     lambda_nm: f32,
     studio_rig: Option<&crate::optics::studio_rig::StudioRig>,
+    observer: Vec3,
 ) -> f32 {
     match environment {
         EnvironmentSource::Studio {
@@ -314,9 +380,30 @@ pub(super) fn sample_environment_channel(
         } => {
             let rig = studio_rig
                 .expect("sample_environment_channel: Studio environment needs a pre-built rig");
-            sample_studio_environment_with_rig(dir, lambda_nm, preset, exposure, rig)
+            sample_studio_environment_with_rig(dir, lambda_nm, preset, exposure, rig, observer)
         }
         EnvironmentSource::HdrMap(map) => map.radiance_at(dir, lambda_nm),
+    }
+}
+
+/// Fills every channel of `radiance` with the backdrop card's radiance if the scene
+/// has one, and reports whether it did. For the camera ray only (bounce 0: unit Stokes
+/// intensity, no NEE weight), so the assignment is that ray's whole contribution.
+pub(super) fn fill_backdrop<const N: usize>(
+    environment: EnvironmentSource<'_>,
+    lambdas: &[f32; N],
+    radiance: &mut [f32; N],
+) -> bool {
+    match environment {
+        EnvironmentSource::Studio {
+            preset, backdrop, ..
+        } if backdrop > 0.0 => {
+            for (out, &lambda_nm) in radiance.iter_mut().zip(lambdas) {
+                *out = backdrop * preset.spectral_power(lambda_nm);
+            }
+            true
+        }
+        _ => false,
     }
 }
 
@@ -376,7 +463,7 @@ pub(super) fn environment_nee_pdf(environment: EnvironmentSource<'_>, dir: Vec3)
 /// to neutralize against -- a loaded HDR panorama has no one blackbody temperature
 /// standing in for it, so this applies no correction (`Vec3::ONE`) for `HdrMap`.
 #[inline]
-pub(super) fn environment_white_balance(environment: EnvironmentSource<'_>) -> Vec3 {
+pub(crate) fn environment_white_balance(environment: EnvironmentSource<'_>) -> Vec3 {
     match environment {
         EnvironmentSource::Studio { preset, .. } => illuminant_white_balance(preset),
         EnvironmentSource::HdrMap(_) => Vec3::ONE,
@@ -384,14 +471,16 @@ pub(super) fn environment_white_balance(environment: EnvironmentSource<'_>) -> V
 }
 
 /// Evaluates high-dynamic-range gemological studio lighting at a specific continuous
-/// wavelength `lambda_nm`.
+/// wavelength `lambda_nm`, with no observer in the scene.
 ///
+/// The lit models' head shadow is off here; see
+/// [`sample_studio_environment_observed`].
 /// Builds a fresh [`StudioRig`](crate::optics::studio_rig::StudioRig) every call, right
 /// for a single ad-hoc lookup (this function's public callers, and
 /// `color::metrics::evaluate_gem_optical_metrics`). `trace_spectral_ray`'s per-bounce
-/// environment lookups instead use [`sample_studio_environment_with_rig`] (which this
-/// delegates to) via `accumulate_miss_radiance`, which builds the rig once per ray and
-/// reuses it across all `NUM_CHANNELS` channels.
+/// environment lookups instead use [`sample_studio_environment_with_rig`] via
+/// `accumulate_miss_radiance`, which builds the rig once per ray and reuses it across
+/// all `NUM_CHANNELS` channels.
 #[must_use]
 pub fn sample_studio_environment(
     dir: Vec3,
@@ -401,70 +490,121 @@ pub fn sample_studio_environment(
     light_yaw: f32,
     light_pitch: f32,
 ) -> f32 {
+    sample_studio_environment_observed(
+        dir,
+        lambda_nm,
+        lighting_preset,
+        exposure,
+        light_yaw,
+        light_pitch,
+        Vec3::ZERO,
+    )
+}
+
+/// [`sample_studio_environment`] with an observer in the scene.
+///
+/// `observer` is the unit direction from the stone towards the eye (the reverse of the
+/// pixel's primary ray), and the lit models darken every exit direction inside the
+/// head-shadow cone around it -- the dark table reflections a real face-up stone
+/// shows. `Studio` presets ignore it, and `Vec3::ZERO` disables the shadow for every
+/// model (every dot product is then `0.0`, outside the cone).
+#[must_use]
+pub fn sample_studio_environment_observed(
+    dir: Vec3,
+    lambda_nm: f32,
+    lighting_preset: LightingPreset,
+    exposure: f32,
+    light_yaw: f32,
+    light_pitch: f32,
+    observer: Vec3,
+) -> f32 {
     // Key/fill/ring directions come from the shared `StudioRig` (see its module doc
     // for why this is not recomputed inline here) -- the SAME construction
     // `color::metrics::evaluate_gem_optical_metrics` uses to score the image this
     // function lights, so the two can never silently drift apart.
     let rig = crate::optics::studio_rig::StudioRig::new(light_yaw, light_pitch);
-    sample_studio_environment_with_rig(dir, lambda_nm, lighting_preset, exposure, &rig)
+    sample_studio_environment_with_rig(dir, lambda_nm, lighting_preset, exposure, &rig, observer)
 }
 
-pub const RING_CONE_OUTER_COS: f32 = 0.965_925_8;
-pub const RING_CONE_INNER_COS: f32 = 0.996_194_7;
-pub const SUN_OUTER_COS: f32 = 0.970_295_7;
-pub const SUN_INNER_COS: f32 = 0.997_564_1;
+/// Cosines of the cone half-angles the lit models are built from. Literal values,
+/// never computed, so the CPU and the WGSL twins (`transport_physics.wgsl`,
+/// `transport_bounce.wgsl`, `environment.wgsl`) use identical bits.
+///
+/// Observer head shadow: fully dark within 14 degrees of the eye direction, gone by 18
+/// (the metrics' own 16 degree cone, softened so its edge never aliases).
+const HEAD_SHADOW_OUTER_COS: f32 = 0.951_056_5;
+const HEAD_SHADOW_INNER_COS: f32 = 0.970_295_7;
+/// Sun disc: full radiance within 2 degrees of the key direction, gone by 4.
+const SUN_OUTER_COS: f32 = 0.997_564_1;
+const SUN_INNER_COS: f32 = 0.999_390_8;
+/// Light tent overhead softbox: full within 20 degrees of the key, gone by 40.
+const TENT_KEY_OUTER_COS: f32 = 0.766_044_4;
+const TENT_KEY_INNER_COS: f32 = 0.939_692_6;
+/// Light tent spark light (a bare bulb at the fill position): full within 2 degrees,
+/// gone by 5.
+const SPARK_OUTER_COS: f32 = 0.996_194_7;
+const SPARK_INNER_COS: f32 = 0.999_390_8;
+/// Light tent black cards: fully black within 16 degrees of a card centre, gone by 26.
+const CARD_OUTER_COS: f32 = 0.898_794;
+const CARD_INNER_COS: f32 = 0.961_261_7;
+/// The ring positions (see `StudioRig::ring_dirs`) carrying the three black cards: 90,
+/// 180 and 270 degrees around from the key light, at the ring's own elevation.
+const CARD_RING_SLOTS: [usize; 3] = [4, 8, 12];
 
 fn smoothstep(e0: f32, e1: f32, x: f32) -> f32 {
     let t = ((x - e0) / (e1 - e0)).clamp(0.0, 1.0);
     t * t * (-2.0f32).mul_add(t, 3.0)
 }
 
-fn sample_iso_hemisphere(d: Vec3, spec_power: f32, exposure: f32, key_dir: Vec3) -> f32 {
-    let obs_dot = d.dot(key_dir);
-    let shadow_factor = 1.0 - smoothstep(0.93, 0.97, obs_dot);
-    let dome = if d.y > 0.0 {
-        (0.30f32.mul_add(d.y, 0.70) - 0.005).mul_add(shadow_factor, 0.005)
-    } else {
-        0.005
-    };
-    let horizon = smoothstep(-0.02, 0.05, d.y);
-    (dome * horizon) * (spec_power * exposure)
+/// `1.0` where direction `d` sees past the observer, falling to `0.0` inside the
+/// head-shadow cone around `observer` (see [`sample_studio_environment_observed`]).
+fn observer_visibility(d: Vec3, observer: Vec3) -> f32 {
+    1.0 - smoothstep(
+        HEAD_SHADOW_OUTER_COS,
+        HEAD_SHADOW_INNER_COS,
+        d.dot(observer),
+    )
 }
 
-fn sample_soft_dome(
+/// `0.0` below the girdle plane, `1.0` above, blended over `-0.05..0.05` in `d.y` so
+/// the horizon never aliases.
+fn horizon_blend(d: Vec3) -> f32 {
+    smoothstep(-0.05, 0.05, d.y)
+}
+
+fn sample_iso_hemisphere(d: Vec3, spec_power: f32, exposure: f32, observer: Vec3) -> f32 {
+    (horizon_blend(d) * observer_visibility(d, observer)) * (spec_power * exposure)
+}
+
+fn sample_light_tent(
     d: Vec3,
     spec_power: f32,
     spot_mult: f32,
     exposure: f32,
     rig: &crate::optics::studio_rig::StudioRig,
+    observer: Vec3,
 ) -> f32 {
-    let dome = if d.y >= 0.0 {
-        0.02 * 0.5f32.mul_add(d.y, 0.5)
-    } else {
-        0.005
-    };
-    let mut radiance = dome;
-
-    let key_dot = d.dot(rig.key_dir).max(0.0);
-    if key_dot > 0.0 {
-        let key = key_dot.powi(16) * (3.5 * spot_mult);
-        radiance += key;
+    let horizon = horizon_blend(d);
+    // Tent walls: 0.14 at the girdle plane rising to 0.22 at the zenith -- middle grey
+    // after the ACES curve, so a facet that sees nothing but the tent is grey, not
+    // white. The black cards cut that to a tenth.
+    let mut walls = 0.08f32.mul_add(d.y.max(0.0), 0.14);
+    let mut card = 0.0f32;
+    for slot in CARD_RING_SLOTS {
+        card = card.max(smoothstep(
+            CARD_OUTER_COS,
+            CARD_INNER_COS,
+            d.dot(rig.ring_dirs[slot]),
+        ));
     }
-
-    let fill_dot = d.dot(rig.fill_dir).max(0.0);
-    if fill_dot > 0.0 {
-        let fill = fill_dot.powi(12) * 1.0;
-        radiance += fill;
-    }
-
-    let ring_scale = 0.8 * spot_mult;
-    for ring_dir in rig.ring_dirs {
-        let ring_dot = d.dot(ring_dir);
-        let ring = smoothstep(RING_CONE_OUTER_COS, RING_CONE_INNER_COS, ring_dot) * ring_scale;
-        radiance += ring;
-    }
-
-    radiance * (exposure * spec_power)
+    walls *= card.mul_add(-0.9, 1.0);
+    let key =
+        smoothstep(TENT_KEY_OUTER_COS, TENT_KEY_INNER_COS, d.dot(rig.key_dir)) * (1.4 * spot_mult);
+    let spark =
+        smoothstep(SPARK_OUTER_COS, SPARK_INNER_COS, d.dot(rig.fill_dir)) * (5.0 * spot_mult);
+    let above = ((walls + key) + spark) * (horizon * observer_visibility(d, observer));
+    let ground = 0.02 * (1.0 - horizon);
+    (above + ground) * (spec_power * exposure)
 }
 
 fn sample_daylight_dome(
@@ -472,16 +612,21 @@ fn sample_daylight_dome(
     spec_power: f32,
     exposure: f32,
     rig: &crate::optics::studio_rig::StudioRig,
+    observer: Vec3,
 ) -> f32 {
-    let dome = if d.y >= 0.0 {
-        0.05 * 0.4f32.mul_add(d.y, 0.6)
-    } else {
-        0.005
-    };
-    let key_dot = d.dot(rig.key_dir);
-    let sun = smoothstep(SUN_OUTER_COS, SUN_INNER_COS, key_dot) * 16.0;
-    let aureole = key_dot.max(0.0).powi(16) * 1.5;
-    (dome + sun + aureole) * (exposure * spec_power)
+    let horizon = horizon_blend(d);
+    let sun_dot = d.dot(rig.key_dir);
+    // A clear sky is brightest at the horizon and around the sun, darkest at the zenith.
+    let sky = 0.08f32.mul_add(1.0 - d.y.max(0.0), 0.10);
+    // `sun_dot^8`, written as three squarings so the GPU twin multiplies identically.
+    let glow = sun_dot.max(0.0);
+    let glow2 = glow * glow;
+    let glow4 = glow2 * glow2;
+    let aureole = (glow4 * glow4) * 0.30;
+    let sun = smoothstep(SUN_OUTER_COS, SUN_INNER_COS, sun_dot) * 10.0;
+    let above = ((sky + aureole) + sun) * (horizon * observer_visibility(d, observer));
+    let ground = 0.04 * (1.0 - horizon);
+    (above + ground) * (spec_power * exposure)
 }
 
 fn sample_studio_rig(
@@ -522,11 +667,11 @@ fn sample_studio_rig(
     radiance
 }
 
-/// The rig-independent body of [`sample_studio_environment`]: identical arithmetic, in
-/// the identical order, just reading `key_dir`/`fill_dir`/`ring_dirs`/`sin_light_pitch`
-/// off an already-built `rig` instead of constructing one from `(light_yaw,
-/// light_pitch)` itself. A direct extraction -- see that function's doc comment for
-/// why.
+/// The rig-independent body of [`sample_studio_environment_observed`]: identical
+/// arithmetic, in the identical order, just reading `key_dir`/`fill_dir`/`ring_dirs`/
+/// `sin_light_pitch` off an already-built `rig` instead of constructing one from
+/// `(light_yaw, light_pitch)` itself. Dispatches on the preset's [`LightingModel`];
+/// the `Studio` arm is the original rig body, untouched.
 #[must_use]
 fn sample_studio_environment_with_rig(
     dir: Vec3,
@@ -534,21 +679,20 @@ fn sample_studio_environment_with_rig(
     lighting_preset: LightingPreset,
     exposure: f32,
     rig: &crate::optics::studio_rig::StudioRig,
+    observer: Vec3,
 ) -> f32 {
     let d = dir.normalize();
 
-    let LightingRigParams { temp_k, spot_mult } = lighting_preset.params();
-    let spec_power = if lighting_preset.uses_d65() {
-        d65_relative_spectral_power(lambda_nm)
-    } else {
-        blackbody_spectrum(lambda_nm, temp_k)
-    };
+    let LightingRigParams { spot_mult, .. } = lighting_preset.params();
+    let spec_power = lighting_preset.spectral_power(lambda_nm);
 
     match lighting_preset.model() {
         LightingModel::Studio => sample_studio_rig(d, spec_power, spot_mult, exposure, rig),
-        LightingModel::IsoHemisphere => sample_iso_hemisphere(d, spec_power, exposure, rig.key_dir),
-        LightingModel::SoftDome => sample_soft_dome(d, spec_power, spot_mult, exposure, rig),
-        LightingModel::DaylightDome => sample_daylight_dome(d, spec_power, exposure, rig),
+        LightingModel::IsoHemisphere => sample_iso_hemisphere(d, spec_power, exposure, observer),
+        LightingModel::LightTent => {
+            sample_light_tent(d, spec_power, spot_mult, exposure, rig, observer)
+        }
+        LightingModel::DaylightDome => sample_daylight_dome(d, spec_power, exposure, rig, observer),
     }
 }
 
@@ -626,6 +770,26 @@ mod tests {
     }
 
     #[test]
+    fn backdrop_fills_the_camera_ray_only_when_set() {
+        let lambdas = [450.0f32, 550.0, 650.0];
+        let mut radiance = [0.0f32; 3];
+        let plain = LightingPreset::LightTent.studio(1.0, 0.4, 0.35);
+        assert!(!fill_backdrop(plain, &lambdas, &mut radiance));
+        assert_eq!(radiance, [0.0; 3]);
+
+        let carded = plain.with_backdrop(BACKDROP_GEMRAY_GREY);
+        assert!(fill_backdrop(carded, &lambdas, &mut radiance));
+        for (&value, &lambda_nm) in radiance.iter().zip(&lambdas) {
+            let expected =
+                BACKDROP_GEMRAY_GREY * LightingPreset::LightTent.spectral_power(lambda_nm);
+            assert!(
+                (value - expected).abs() < 1e-6,
+                "backdrop at {lambda_nm} nm: got {value}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
     fn label_and_index_round_trip_for_every_preset() {
         for (pos, &p) in LightingPreset::ALL.iter().enumerate() {
             assert_eq!(LightingPreset::from_label(p.label()), p);
@@ -655,6 +819,77 @@ mod tests {
         assert_eq!(val_down, 0.0, "down direction should be 0");
     }
 
+    /// The `Studio` arm ignores the observer; the lit models go fully dark exactly at
+    /// the eye direction and are untouched 20 degrees away from it.
+    #[test]
+    fn observer_head_shadow_darkens_only_the_lit_models() {
+        let observer = Vec3::new(0.2, 0.9, -0.3).normalize();
+        // 20 degrees away from the observer, outside the 18 degree cone.
+        let perp = observer.cross(Vec3::X).normalize();
+        let (sin_a, cos_a) = 20.0f32.to_radians().sin_cos();
+        let outside = observer.mul_add(Vec3::splat(cos_a), perp * sin_a);
+
+        let ring_with = sample_studio_environment_observed(
+            observer,
+            560.0,
+            LightingPreset::RingLights,
+            1.0,
+            0.4,
+            0.35,
+            observer,
+        );
+        let ring_without =
+            sample_studio_environment(observer, 560.0, LightingPreset::RingLights, 1.0, 0.4, 0.35);
+        assert_eq!(
+            ring_with.to_bits(),
+            ring_without.to_bits(),
+            "the studio rig must ignore the observer"
+        );
+
+        for preset in [
+            LightingPreset::IsoHemisphere,
+            LightingPreset::LightTent,
+            LightingPreset::DaylightDome,
+        ] {
+            let at_eye = sample_studio_environment_observed(
+                observer, 560.0, preset, 1.0, 0.4, 0.35, observer,
+            );
+            assert_eq!(
+                at_eye, 0.0,
+                "{preset:?}: the eye direction must be fully shadowed"
+            );
+            let clear = sample_studio_environment_observed(
+                outside, 560.0, preset, 1.0, 0.4, 0.35, observer,
+            );
+            let unobserved = sample_studio_environment(outside, 560.0, preset, 1.0, 0.4, 0.35);
+            assert_eq!(
+                clear.to_bits(),
+                unobserved.to_bits(),
+                "{preset:?}: outside the cone the observer must not matter"
+            );
+            assert!(
+                unobserved > 0.0,
+                "{preset:?}: a lit direction above the girdle must be lit"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_lit_model_labels_resolve_to_the_renamed_presets() {
+        assert_eq!(
+            LightingPreset::from_label("ISO hemisphere"),
+            LightingPreset::IsoHemisphere
+        );
+        assert_eq!(
+            LightingPreset::from_label("Soft dome + ring lights"),
+            LightingPreset::LightTent
+        );
+        assert_eq!(
+            LightingPreset::from_label("Daylight dome + sun"),
+            LightingPreset::DaylightDome
+        );
+    }
+
     #[test]
     fn new_models_never_exceed_their_documented_peak() {
         let mut max_iso = 0.0f32;
@@ -676,7 +911,7 @@ mod tests {
                 0.35,
             );
             let v_soft =
-                sample_studio_environment(dir, 560.0, LightingPreset::SoftDome, 1.0, 0.4, 0.35);
+                sample_studio_environment(dir, 560.0, LightingPreset::LightTent, 1.0, 0.4, 0.35);
             let v_daylight =
                 sample_studio_environment(dir, 560.0, LightingPreset::DaylightDome, 1.0, 0.4, 0.35);
 
@@ -689,16 +924,16 @@ mod tests {
             max_iso <= 1.0 + 1e-5,
             "ISO peak must not exceed 1.0, got {max_iso}"
         );
-        // Key (3.5) + fill (1.0) + ring (0.8) + dome (0.02) can overlap along a ring light direction,
-        // peaking around ~5.3.
+        // Spark (5.0) on the tent walls (<= 0.22) is the tent's brightest direction; the
+        // key softbox (1.4) never coincides with it.
         assert!(
-            max_soft <= 6.0,
-            "Soft dome peak must not exceed 6.0, got {max_soft}"
+            max_soft <= 5.5,
+            "Light tent peak must not exceed 5.5, got {max_soft}"
         );
-        // Sun (16.0) + aureole (1.5) + sky dome (0.05) can overlap at the sun center, peaking around ~17.55.
+        // Sun (10.0) + aureole (0.30) + sky (<= 0.18) at the sun centre.
         assert!(
-            max_daylight <= 19.0,
-            "Daylight dome peak must not exceed 19.0, got {max_daylight}"
+            max_daylight <= 10.5,
+            "Daylight dome peak must not exceed 10.5, got {max_daylight}"
         );
     }
 

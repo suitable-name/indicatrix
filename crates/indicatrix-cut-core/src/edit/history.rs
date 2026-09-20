@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 /// Holds no copy of the design itself -- only the sequence of edits needed to move it
 /// backward or forward -- so its memory cost is proportional to how much has actually
 /// changed, not to the design's size or the schedule's tier count.
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct History {
     undo: Vec<Edit>,
     redo: Vec<Edit>,
@@ -25,21 +25,49 @@ pub struct History {
     /// `History`, and the handful of direct `History` comparisons are `can_undo`/
     /// `can_redo` checks that don't care about this field either).
     last_coalesce: Option<(u64, Instant)>,
+    /// This instance's own coalescing window -- [`Self::COALESCE_WINDOW`] unless
+    /// built via [`Self::with_coalesce_window`]. CAD audit item 165: a fixed,
+    /// crate-wide 500ms suited one caller (a keyboard/wheel angle nudge) but not
+    /// every possible coalescing caller equally -- e.g. a slower, more deliberate
+    /// interaction might want a longer window -- so this is now a per-`History`
+    /// value rather than a single `const` every caller was stuck with.
+    coalesce_window: Duration,
 }
 
 impl History {
-    /// How long after [`Self::apply_coalescing`] last succeeded with a given key a
-    /// following call with the SAME key still merges into that same undo entry --
-    /// see that method's own doc comment.
+    /// The default coalescing window: how long after [`Self::apply_coalescing`]
+    /// last succeeded with a given key a following call with the SAME key still
+    /// merges into that same undo entry, for a `History` built via [`Self::new`]
+    /// -- see that method's own doc comment. [`Self::with_coalesce_window`] builds
+    /// a `History` with a different window instead.
     const COALESCE_WINDOW: Duration = Duration::from_millis(500);
 
-    /// A fresh, empty history (nothing to undo or redo).
+    /// A fresh, empty history (nothing to undo or redo), coalescing with the
+    /// default [`Self::COALESCE_WINDOW`] (500ms).
     #[must_use]
     pub const fn new() -> Self {
         Self {
             undo: Vec::new(),
             redo: Vec::new(),
             last_coalesce: None,
+            coalesce_window: Self::COALESCE_WINDOW,
+        }
+    }
+
+    /// Like [`Self::new`], but [`Self::apply_coalescing`] uses `window` instead of
+    /// the default [`Self::COALESCE_WINDOW`] -- CAD audit item 165: lets a caller
+    /// with a different natural pace for its own coalesced interaction (or one
+    /// that always ends a run explicitly via [`Self::end_coalesce_run`] and so
+    /// wants a short or even zero window as a pure safety net) pick its own value
+    /// rather than being stuck with the one every other caller in this crate
+    /// shares.
+    #[must_use]
+    pub const fn with_coalesce_window(window: Duration) -> Self {
+        Self {
+            undo: Vec::new(),
+            redo: Vec::new(),
+            last_coalesce: None,
+            coalesce_window: window,
         }
     }
 
@@ -64,8 +92,10 @@ impl History {
     }
 
     /// Like [`Self::apply`], but merges into the MOST RECENT undo entry instead of
-    /// pushing a new one when this same `key` last succeeded here less than
-    /// [`Self::COALESCE_WINDOW`] (500ms) before `now` -- what the editor's angle-nudge
+    /// pushing a new one when this same `key` last succeeded here less than this
+    /// instance's own coalescing window (500ms by default -- see
+    /// [`Self::COALESCE_WINDOW`]/[`Self::with_coalesce_window`]) before `now` --
+    /// what the editor's angle-nudge
     /// keyboard/wheel handlers use so N nudges typed in quick succession collapse
     /// into ONE undo step rather than one per keystroke, while a nudge that starts a
     /// fresh burst (a different tier/selection, or the same one after a pause) still
@@ -96,7 +126,7 @@ impl History {
     ) -> Result<(), EditError> {
         let inverse = design.apply_edit(edit)?;
         let merges = self.last_coalesce.is_some_and(|(last_key, last_time)| {
-            last_key == key && now.saturating_duration_since(last_time) <= Self::COALESCE_WINDOW
+            last_key == key && now.saturating_duration_since(last_time) <= self.coalesce_window
         });
         if merges {
             // The undo entry recorded by the FIRST nudge in this run already reverts
@@ -199,5 +229,37 @@ impl History {
     #[must_use]
     pub fn peek_redo(&self) -> Option<&Edit> {
         self.redo.last()
+    }
+
+    /// Explicitly ends any [`Self::apply_coalescing`] run in progress, without
+    /// making a new edit -- CAD audit item 165: lets a caller with a real
+    /// interaction boundary of its own (pointer release or focus loss on the
+    /// control driving the coalesced edits) name that boundary directly instead
+    /// of only ever discovering a run ended once [`Self::COALESCE_WINDOW`]
+    /// (or a custom [`Self::with_coalesce_window`] value) had silently elapsed.
+    /// A no-op, not an error, when no run is in progress.
+    ///
+    /// # Handoff
+    ///
+    /// Nothing calls this yet: the one caller today
+    /// (`gui::editor::callbacks::tier_actions::setup_nudge_angle_callback`, via
+    /// `gui::editor::state::EditorState`'s own wrapper around
+    /// [`Self::apply_coalescing`]) is outside this crate and outside this group's
+    /// file ownership. Wiring it up means calling this once a `TierAngleCell`'s
+    /// pointer-release or focus-loss fires -- both files that would touch
+    /// (`callbacks/tier_actions.rs`, the `TierAngleCell` component) belong to a
+    /// different lane.
+    pub const fn end_coalesce_run(&mut self) {
+        self.last_coalesce = None;
+    }
+}
+
+impl Default for History {
+    /// Same as [`Self::new`] -- written out by hand (rather than
+    /// `#[derive(Default)]`) because the `coalesce_window` field needs
+    /// [`Self::COALESCE_WINDOW`] as its default, not `Duration`'s own zero
+    /// default a derived impl would give it.
+    fn default() -> Self {
+        Self::new()
     }
 }

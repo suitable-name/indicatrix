@@ -101,12 +101,15 @@ pub fn resolve_after_edit(
     match edit {
         // None of these touch a tier's angle/indices/constraint -- no mast could
         // possibly have changed.
-        Edit::SetPreform { .. } | Edit::SetGirdleDiameterMm { .. } | Edit::SetMaterial { .. } => {
-            Ok(previous.to_vec())
-        }
+        Edit::SetPreform { .. }
+        | Edit::SetGirdleDiameterMm { .. }
+        | Edit::SetMaterial { .. }
+        | Edit::SetMeta { .. }
+        | Edit::SetCheaterOffset { .. } => Ok(previous.to_vec()),
         // Shifts every later tier's index against `previous`, which is keyed by
         // position -- always fully re-solve rather than reason about a moving index space.
-        Edit::AddTier { .. } | Edit::RemoveTier { .. } => design.solve(),
+        // `MoveTier` renumbers every tier strictly between its two positions the same way.
+        Edit::AddTier { .. } | Edit::RemoveTier { .. } | Edit::MoveTier { .. } => design.solve(),
         // All three replace exactly one tier's fields in place; every other tier
         // keeps its index, so `previous` stays aligned.
         Edit::ModifyTier { index, .. }
@@ -126,7 +129,53 @@ pub fn resolve_after_edit(
             let dirty: BTreeSet<usize> = changes.iter().map(|&(index, _, _)| index).collect();
             design.resolve_dirty(previous, &dirty)
         }
+        // A batch's own effect is the union of its sub-edits': full re-solve if ANY
+        // sub-edit would need one on its own, else `resolve_dirty` over the union of
+        // every sub-edit's own dirty tier set -- see `batch_needs_full_resolve`.
+        Edit::Batch(edits) => {
+            let mut dirty = BTreeSet::new();
+            if batch_needs_full_resolve(edits, &mut dirty) {
+                design.solve()
+            } else {
+                design.resolve_dirty(previous, &dirty)
+            }
+        }
     }
+}
+
+/// Whether `edits` (an [`Edit::Batch`]'s payload) needs a full [`Design::solve`]
+/// rather than [`Design::resolve_dirty`] -- generalizes [`resolve_after_edit`]'s own
+/// per-variant reasoning over every sub-edit, recursing into a nested [`Edit::Batch`]
+/// (never constructed today, but handled rather than assumed away). Collects every
+/// directly-dirtied tier index into `dirty` along the way, used by the caller when the
+/// answer turns out to be `false`.
+fn batch_needs_full_resolve(edits: &[Edit], dirty: &mut BTreeSet<usize>) -> bool {
+    let mut needs_full = false;
+    for edit in edits {
+        match edit {
+            Edit::SetPreform { .. }
+            | Edit::SetGirdleDiameterMm { .. }
+            | Edit::SetMaterial { .. }
+            | Edit::SetMeta { .. }
+            | Edit::SetCheaterOffset { .. } => {}
+            Edit::AddTier { .. }
+            | Edit::RemoveTier { .. }
+            | Edit::MoveTier { .. }
+            | Edit::SetSchedule { .. }
+            | Edit::RemapIndices { .. }
+            | Edit::RestoreIndices { .. } => needs_full = true,
+            Edit::ModifyTier { index, .. }
+            | Edit::SetConstraint { index, .. }
+            | Edit::SetIndices { index, .. } => {
+                dirty.insert(*index);
+            }
+            Edit::RetargetAngles { changes } => {
+                dirty.extend(changes.iter().map(|&(index, _, _)| index));
+            }
+            Edit::Batch(inner) => needs_full |= batch_needs_full_resolve(inner, dirty),
+        }
+    }
+    needs_full
 }
 
 #[cfg(test)]
@@ -212,6 +261,7 @@ mod tests {
             indices: vec![0.0, 24.0, 48.0, 72.0],
             constraint: MeetConstraint::ScaleReference(0.5),
             imported_meet: None,
+            original_notes: None,
             detached: Vec::new(),
         });
         design.tiers.push(ConstraintTier {
@@ -220,6 +270,7 @@ mod tests {
             indices: vec![0.0, 24.0, 48.0, 72.0],
             constraint: MeetConstraint::MeetNamed(vec!["A".to_string()]),
             imported_meet: None,
+            original_notes: None,
             detached: Vec::new(),
         });
         let original = design.clone();

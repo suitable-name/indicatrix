@@ -1117,18 +1117,18 @@ fn run_lighting_model_checks(ctx: &GpuContext) -> bool {
     println!();
     println!("== Lighting models: Tier 3 statistical image comparisons ==");
     let iso_passed = report_image_comparison_material(
-        "Diamond, ISO hemisphere",
+        "Diamond, ISO hemisphere (GemRay-style)",
         &estimator_check::run_image_comparison_iso_hemisphere(ctx),
     );
-    let soft_dome_passed = report_image_comparison_material(
-        "Diamond, Soft dome + ring lights",
-        &estimator_check::run_image_comparison_soft_dome(ctx),
+    let light_tent_passed = report_image_comparison_material(
+        "Diamond, Light tent + black cards",
+        &estimator_check::run_image_comparison_light_tent(ctx),
     );
     let daylight_dome_passed = report_image_comparison_material(
-        "Diamond, Daylight dome + sun",
+        "Diamond, Daylight sky + sun",
         &estimator_check::run_image_comparison_daylight_dome(ctx),
     );
-    iso_passed && soft_dome_passed && daylight_dome_passed
+    iso_passed && light_tent_passed && daylight_dome_passed
 }
 
 /// The production frame renderer's own check: a chunked dispatch (`pixel_offset != 0`).

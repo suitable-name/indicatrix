@@ -48,6 +48,11 @@ const VERTEX_DEDUP: f64 = 1e-6;
 /// threshold `meet_solver::classify_blocks` uses.
 const GIRDLE_NY: f64 = 1e-6;
 
+/// `normal.y` at or above this counts as a flat table facet: an outward
+/// normal within this of straight up (`+Y`) -- the horizontal-plane
+/// counterpart to [`GIRDLE_NY`]'s vertical-plane threshold.
+const TABLE_NY: f64 = 1.0 - 1e-6;
+
 /// Everything [`measure_solid`] reports about one solid.
 ///
 /// All figures are in the arrangement's own mast units; callers compare
@@ -329,6 +334,142 @@ pub fn measure_solid(planes: &[(DVec3, f64)]) -> Option<SolidMetrics> {
         girdle_thickness: has_girdle.then_some(girdle_top - girdle_bottom),
         vertex_count: verts.len(),
     })
+}
+
+/// A design's proportion readouts the way a cutter quotes them off a
+/// finished stone.
+///
+/// Table size as a percentage of width, crown height, pavilion depth, total
+/// depth, girdle thickness, and the ratios (L/W, C/W, P/W) every faceting
+/// diagram prints alongside them.
+///
+/// All lengths are in the arrangement's own mast units, the same convention
+/// [`SolidMetrics`] uses -- multiply by a real millimetres-per-unit scale
+/// (e.g. `indicatrix_cut_core::yield_metrics::mm_per_unit`) for a physical
+/// figure, or use [`Self::to_mm`]. `table_percent`, `length_to_width` and the
+/// `_to_width_percent` fields are already scale-invariant ratios/percentages
+/// and never need that conversion.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StoneProportions {
+    /// The table facet's own horizontal extent, as a percentage of the
+    /// stone's [`SolidMetrics::width_axis`] -- the single figure every
+    /// faceting diagram prints for a round or near-round cut. `None` when
+    /// the arrangement has no single facet with an outward normal near
+    /// straight up (e.g. a pointed crown authored with no table at all).
+    pub table_percent: Option<f64>,
+    /// [`SolidMetrics::crown_height`], unchanged.
+    pub crown_height: Option<f64>,
+    /// [`SolidMetrics::pavilion_depth`], unchanged.
+    pub pavilion_depth: Option<f64>,
+    /// [`SolidMetrics::girdle_thickness`], unchanged. `None` under the exact
+    /// same condition as `crown_height`/`pavilion_depth`: no vertical girdle
+    /// plane with a live facet (e.g. the manual's chapter-7 0-degree-"girdle"
+    /// example, which classifies as a second table instead -- see
+    /// `crates/indicatrix-cut-core`'s CAD audit item 115 notes).
+    pub girdle_thickness: Option<f64>,
+    /// [`SolidMetrics::total_height`], under the name a cutter actually uses
+    /// for it ("total depth": table to culet).
+    pub total_depth: f64,
+    /// [`SolidMetrics::length_axis`] over [`SolidMetrics::width_axis`].
+    /// `None` only when `width_axis` is not positive -- a degenerate solid
+    /// that should never reach here in practice, since [`measure_solid`]
+    /// already refuses to return a non-positive-volume arrangement, but the
+    /// ratio is still guarded rather than dividing by zero.
+    pub length_to_width: Option<f64>,
+    /// `crown_height` as a percentage of `width_axis` -- the printed "C/W"
+    /// figure. `None` whenever `crown_height` itself is `None`, or
+    /// `width_axis` is not positive.
+    pub crown_to_width_percent: Option<f64>,
+    /// `pavilion_depth` as a percentage of `width_axis` -- the printed "P/W"
+    /// figure. `None` whenever `pavilion_depth` itself is `None`, or
+    /// `width_axis` is not positive.
+    pub pavilion_to_width_percent: Option<f64>,
+    /// `girdle_thickness` as a percentage of `width_axis` -- the girdle
+    /// thickness figure every faceter checks alongside table/crown/pavilion.
+    /// `None` whenever `girdle_thickness` itself is `None`, or `width_axis`
+    /// is not positive.
+    pub girdle_to_width_percent: Option<f64>,
+}
+
+impl StoneProportions {
+    /// Derives every figure from an already-measured solid: `metrics` for
+    /// the extents, `mesh` and `planes` (the same slice [`build_solid_mesh`]
+    /// was called with, in the same order) for the table facet's own ring,
+    /// which `metrics` alone does not carry.
+    #[must_use]
+    pub fn from_solid(metrics: &SolidMetrics, mesh: &SolidMesh, planes: &[(DVec3, f64)]) -> Self {
+        let width = (metrics.width_axis > 1e-9).then_some(metrics.width_axis);
+        let to_width_percent =
+            |value: Option<f64>| Option::zip(value, width).map(|(v, w)| 100.0 * v / w);
+        Self {
+            table_percent: table_percent(metrics, mesh, planes),
+            crown_height: metrics.crown_height,
+            pavilion_depth: metrics.pavilion_depth,
+            girdle_thickness: metrics.girdle_thickness,
+            total_depth: metrics.total_height,
+            length_to_width: width.map(|w| metrics.length_axis / w),
+            crown_to_width_percent: to_width_percent(metrics.crown_height),
+            pavilion_to_width_percent: to_width_percent(metrics.pavilion_depth),
+            girdle_to_width_percent: to_width_percent(metrics.girdle_thickness),
+        }
+    }
+
+    /// Scales the absolute-length fields (crown height, pavilion depth,
+    /// girdle thickness, total depth) by `mm_per_unit`; every ratio/percentage
+    /// field (`table_percent`, `length_to_width`, the three `_to_width_percent`
+    /// fields) passes through unchanged -- the same linear-factor convention
+    /// `indicatrix_cut_core::yield_metrics::PreformFit::to_mm` uses.
+    #[must_use]
+    pub fn to_mm(&self, mm_per_unit: f64) -> Self {
+        Self {
+            table_percent: self.table_percent,
+            crown_height: self.crown_height.map(|v| v * mm_per_unit),
+            pavilion_depth: self.pavilion_depth.map(|v| v * mm_per_unit),
+            girdle_thickness: self.girdle_thickness.map(|v| v * mm_per_unit),
+            total_depth: self.total_depth * mm_per_unit,
+            length_to_width: self.length_to_width,
+            crown_to_width_percent: self.crown_to_width_percent,
+            pavilion_to_width_percent: self.pavilion_to_width_percent,
+            girdle_to_width_percent: self.girdle_to_width_percent,
+        }
+    }
+}
+
+/// The table facet's own horizontal extent, as a percentage of the solid's
+/// width -- the geometric half of [`StoneProportions::table_percent`].
+///
+/// Finds the ring in `mesh.rings` whose originating plane (looked up in
+/// `planes`) has an outward normal within [`TABLE_NY`] of straight up
+/// (`+Y`); among any that match (there should be exactly one on a normal
+/// faceted stone), picks the one whose vertices sit highest, breaking a tie
+/// by plane order for determinism. Measures that ring's own horizontal
+/// extent with the same axis convention [`measure_solid`] uses for the whole
+/// stone's `width_axis` (the smaller of the two axis-aligned extents), so
+/// `table_percent` and `width_axis` are always directly comparable.
+fn table_percent(metrics: &SolidMetrics, mesh: &SolidMesh, planes: &[(DVec3, f64)]) -> Option<f64> {
+    if metrics.width_axis <= 1e-9 {
+        return None;
+    }
+    let mut best: Option<(f64, &Vec<DVec3>)> = None;
+    for (plane_idx, ring) in &mesh.rings {
+        let Some(&(normal, _)) = planes.get(*plane_idx) else {
+            continue;
+        };
+        if normal.y < TABLE_NY || ring.len() < 3 {
+            continue;
+        }
+        let top = ring.iter().map(|v| v.y).fold(f64::NEG_INFINITY, f64::max);
+        if best.is_none_or(|(best_top, _)| top > best_top) {
+            best = Some((top, ring));
+        }
+    }
+    let (_, ring) = best?;
+    let x_max = ring.iter().map(|v| v.x).fold(f64::NEG_INFINITY, f64::max);
+    let x_min = ring.iter().map(|v| v.x).fold(f64::INFINITY, f64::min);
+    let z_max = ring.iter().map(|v| v.z).fold(f64::NEG_INFINITY, f64::max);
+    let z_min = ring.iter().map(|v| v.z).fold(f64::INFINITY, f64::min);
+    let table_width = (x_max - x_min).min(z_max - z_min);
+    Some(100.0 * table_width / metrics.width_axis)
 }
 
 /// Drops duplicate planes (same normal and offset within tight tolerance) so a
@@ -823,6 +964,91 @@ mod tests {
         assert!((m.pavilion_depth.expect("girdle present")).abs() < 1e-9);
         assert!((m.girdle_thickness.expect("girdle present") - 0.5).abs() < 1e-9);
         assert!((m.width_axis - 2.0).abs() < 1e-9);
+    }
+
+    /// The plain box's flat top IS its table (normal exactly `+Y`), spanning
+    /// the whole width -- `table_percent` must read 100%, and
+    /// `length_to_width` must be 1.0 (a square footprint).
+    #[test]
+    fn stone_proportions_reads_100_percent_table_on_a_plain_box() {
+        let planes = vec![
+            (DVec3::X, 1.0),
+            (DVec3::NEG_X, 1.0),
+            (DVec3::Y, 0.6),
+            (DVec3::NEG_Y, 0.6),
+            (DVec3::Z, 1.0),
+            (DVec3::NEG_Z, 1.0),
+        ];
+        let metrics = measure_solid(&planes).expect("box must measure");
+        let SolidStatus::Closed(mesh) = build_solid_mesh(&planes) else {
+            panic!("box must close");
+        };
+        let proportions = StoneProportions::from_solid(&metrics, &mesh, &planes);
+        assert!((proportions.table_percent.expect("box top is a table") - 100.0).abs() < 1e-6);
+        assert!((proportions.length_to_width.expect("positive width") - 1.0).abs() < 1e-9);
+        assert!((proportions.total_depth - metrics.total_height).abs() < 1e-9);
+        // The box's four side planes are all girdle (normal.y == 0), spanning the
+        // whole height, so crown/pavilion are both zero and the girdle band is the
+        // box's whole 1.2-unit height over a width of 2.0 -- 60%.
+        assert!((proportions.crown_to_width_percent.expect("girdle present")).abs() < 1e-9);
+        assert!(
+            (proportions
+                .pavilion_to_width_percent
+                .expect("girdle present"))
+            .abs()
+                < 1e-9
+        );
+        assert!((proportions.girdle_to_width_percent.expect("girdle present") - 60.0).abs() < 1e-6);
+
+        let mm = proportions.to_mm(2.0);
+        assert!((proportions.total_depth.mul_add(-2.0, mm.total_depth)).abs() < 1e-9);
+        assert_eq!(mm.table_percent, proportions.table_percent);
+        assert!(
+            (proportions
+                .girdle_thickness
+                .expect("girdle present")
+                .mul_add(-2.0, mm.girdle_thickness.expect("girdle present")))
+            .abs()
+                < 1e-9
+        );
+        // Percentages are scale-invariant: `to_mm` must leave them untouched.
+        assert_eq!(
+            mm.crown_to_width_percent,
+            proportions.crown_to_width_percent
+        );
+        assert_eq!(
+            mm.pavilion_to_width_percent,
+            proportions.pavilion_to_width_percent
+        );
+        assert_eq!(
+            mm.girdle_to_width_percent,
+            proportions.girdle_to_width_percent
+        );
+    }
+
+    /// The hip-roofed block has no facet with an outward normal near
+    /// straight up -- its top is a ridge, not a table -- so `table_percent`
+    /// must be `None`.
+    #[test]
+    fn stone_proportions_reports_no_table_on_a_hip_roofed_block() {
+        let s = std::f64::consts::FRAC_1_SQRT_2;
+        let planes = vec![
+            (DVec3::X, 1.0),
+            (DVec3::NEG_X, 1.0),
+            (DVec3::Z, 1.0),
+            (DVec3::NEG_Z, 1.0),
+            (DVec3::NEG_Y, 0.5),
+            (DVec3::new(s, s, 0.0), s),
+            (DVec3::new(-s, s, 0.0), s),
+            (DVec3::new(0.0, s, s), s),
+            (DVec3::new(0.0, s, -s), s),
+        ];
+        let metrics = measure_solid(&planes).expect("roofed block must measure");
+        let SolidStatus::Closed(mesh) = build_solid_mesh(&planes) else {
+            panic!("roofed block must close");
+        };
+        let proportions = StoneProportions::from_solid(&metrics, &mesh, &planes);
+        assert!(proportions.table_percent.is_none());
     }
 
     /// A solid the real planes never close (no floor): must report `None`, not a

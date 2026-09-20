@@ -40,13 +40,23 @@ export global ViewportModel {
     // independent selection (`gui::editor::view::refresh_design_settings`). Off makes
     // it a plain display override again.
     in-out property <bool> viewport_material_linked: true;
+
+    // CAD audit item 59: the path-traced image describes the planes last pushed to
+    // the render thread, which an ordinary tier edit does NOT refresh -- the trace
+    // is expensive and only re-runs on a solve. Without this the picture just
+    // silently went on showing the design as it was several edits ago, with nothing
+    // on screen saying so. Set from `EditorState::generation` against the
+    // generation stamped on the planes the tracer actually holds (see
+    // `RenderContext::traced_planes_are_stale`), so it is true exactly while the
+    // two disagree.
+    in property <bool> trace_stale: false;
     callback viewport_material_linked_changed(bool);
 
     // This list is what actually reaches the ComboBox. ORDER is load-bearing: must
     // match `LightingPreset::ALL` (`Daylight`, `Incandescent`, `RingLights`,
-    // `DarkSpotlight`, `IsoHemisphere`, `SoftDome`, `DaylightDome`) exactly, since
+    // `DarkSpotlight`, `IsoHemisphere`, `LightTent`, `DaylightDome`) exactly, since
     // `lighting_changed` below carries the selected INDEX, not the label text.
-    in property <[string]> lighting_options: ["D65 Daylight (6500K)", "Incandescent (3200K)", "Gem Studio Ring Lights", "Dramatic Dark Spotlight", "ISO hemisphere", "Soft dome + ring lights", "Daylight dome + sun"];
+    in property <[string]> lighting_options: ["D65 Daylight (6500K)", "Incandescent (3200K)", "Gem Studio Ring Lights", "Dramatic Dark Spotlight", "ISO hemisphere (GemRay-style)", "Light tent + black cards", "Daylight sky + sun"];
     in-out property <int> selected_lighting_index: 0;
     in property <[LightingPresetItem]> lighting_presets: [];
 
@@ -79,8 +89,21 @@ export global ViewportModel {
     callback toggle_preset_export_usable(int, bool);
     callback copy_metrics();
     // name, ri, dispersion, birefringence, color_idx, crystal_system_idx,
-    // optical_character_idx, biaxial_delta_beta_alpha -- see
+    // optical_character_idx, biaxial_delta_beta_alpha, apply_to_live_render -- see
     // `MaterialEditorDialog.save_material`'s own callback doc comment.
-    callback save_custom_material(string, float, float, float, int, int, int, float);
+    // CAD audit items 87/88: whether the name currently typed in the material editor
+    // already names an existing CUSTOM material (so saving would overwrite it, and
+    // Delete is a legitimate action) or a BUILT-IN one (so saving is refused
+    // outright). Answered in Rust, where the authoritative lookups already live --
+    // Slint can neither loop over a list inside an expression nor test a string for
+    // a substring, so a Slint-side search is not merely awkward but impossible, and
+    // a second implementation would be free to drift from the real check anyway.
+    in property <bool> material_name_is_existing_custom: false;
+    in property <bool> material_name_collides_with_builtin: false;
+    // Reported on every change to the editor's name field, including the preset
+    // buttons that assign it directly.
+    callback material_name_edited(string);
+
+    callback save_custom_material(string, float, float, float, int, int, int, float, bool);
     callback delete_custom_material(string);
 }

@@ -19,8 +19,8 @@
 use crate::{
     color::cie1931::cie_1931_cmf,
     optics::raytracer::{
-        LightingPreset, blackbody_spectrum, compute_illuminant_white_balance,
-        sample_studio_environment,
+        LightingModel, LightingPreset, blackbody_spectrum, compute_illuminant_white_balance,
+        sample_studio_environment_observed,
     },
     renderer::gpu::{
         compute,
@@ -412,9 +412,13 @@ pub struct StudioEnvCase {
     /// `preset.uses_d65()` branch. See
     /// [`build_studio_env_cases`].
     use_d65: f32,
+    /// Unit direction towards the eye for the lit models' head shadow (`[0.0; 3]`
+    /// disables it) -- mirrors `sample_studio_environment_observed`'s `observer`.
+    observer: [f32; 3],
+    _pad2: f32,
 }
 
-const _: () = assert!(size_of::<StudioEnvCase>() == 48);
+const _: () = assert!(size_of::<StudioEnvCase>() == 64);
 
 /// ULP budget for `sample_studio_environment`.
 ///
@@ -468,29 +472,47 @@ pub fn build_studio_env_cases() -> Vec<StudioEnvCase> {
     let exposures = [0.5f32, 1.0, 2.0];
     let lambdas = [400.0f32, 500.0, 560.0, 650.0, 700.0];
 
+    // The studio rig ignores the observer, so only the lit models get the second,
+    // shadow-casting one (and the in-cone directions below).
+    let lit_observer = Vec3::new(0.2, 0.9, -0.3).normalize();
+    let no_observer = [Vec3::ZERO];
+    let lit_observers = [Vec3::ZERO, lit_observer];
+
     for preset in LightingPreset::ALL {
         let params = preset.params();
         let use_d65 = f32::from(preset.uses_d65());
         let model = preset.model().gpu_id() as f32;
-        for &(light_yaw, light_pitch) in &poses {
-            for &exposure in &exposures {
-                for &dir in &directions {
-                    for &lambda_nm in &lambdas {
-                        cases.push(StudioEnvCase {
-                            dir: dir.to_array(),
-                            lambda_nm,
-                            temp_k: params.temp_k,
-                            spot_mult: params.spot_mult,
-                            exposure,
-                            light_yaw,
-                            light_pitch,
-                            model,
-                            _pad1: 0.0,
-                            use_d65,
-                        });
+        let observers: &[Vec3] = if preset.model() == LightingModel::Studio {
+            &no_observer
+        } else {
+            &lit_observers
+        };
+        for &observer in observers {
+            for &(light_yaw, light_pitch) in &poses {
+                for &exposure in &exposures {
+                    for &dir in &directions {
+                        for &lambda_nm in &lambdas {
+                            cases.push(StudioEnvCase {
+                                dir: dir.to_array(),
+                                lambda_nm,
+                                temp_k: params.temp_k,
+                                spot_mult: params.spot_mult,
+                                exposure,
+                                light_yaw,
+                                light_pitch,
+                                model,
+                                _pad1: 0.0,
+                                use_d65,
+                                observer: observer.to_array(),
+                                _pad2: 0.0,
+                            });
+                        }
                     }
                 }
             }
+        }
+        if preset.model() != LightingModel::Studio {
+            push_head_shadow_cases(&mut cases, preset, lit_observer);
         }
     }
 
@@ -512,6 +534,8 @@ pub fn build_studio_env_cases() -> Vec<StudioEnvCase> {
                 model: 0.0,
                 _pad1: 0.0,
                 use_d65: 1.0,
+                observer: [0.0; 3],
+                _pad2: 0.0,
             });
         }
         // Just inside / just outside the ring spark threshold along the first ring dir.
@@ -531,6 +555,8 @@ pub fn build_studio_env_cases() -> Vec<StudioEnvCase> {
                 model: 0.0,
                 _pad1: 0.0,
                 use_d65: 0.0,
+                observer: [0.0; 3],
+                _pad2: 0.0,
             });
         }
     }
@@ -540,6 +566,31 @@ pub fn build_studio_env_cases() -> Vec<StudioEnvCase> {
 
 const fn preset_temp(index: i32) -> f32 {
     LightingPreset::from_index(index).params().temp_k
+}
+
+/// Adversarial head-shadow cases for one lit preset: exactly at the eye, and at 12 /
+/// 16 / 20 degrees off it -- inside, across and outside the 14..18 degree fade.
+fn push_head_shadow_cases(cases: &mut Vec<StudioEnvCase>, preset: LightingPreset, observer: Vec3) {
+    let params = preset.params();
+    let perp = observer.cross(Vec3::X).normalize();
+    for degrees in [0.0f32, 12.0, 16.0, 20.0] {
+        let (sin_a, cos_a) = degrees.to_radians().sin_cos();
+        let dir = observer.mul_add(Vec3::splat(cos_a), perp * sin_a);
+        cases.push(StudioEnvCase {
+            dir: dir.to_array(),
+            lambda_nm: 560.0,
+            temp_k: params.temp_k,
+            spot_mult: params.spot_mult,
+            exposure: 1.0,
+            light_yaw: 0.3,
+            light_pitch: 0.6,
+            model: preset.model().gpu_id() as f32,
+            _pad1: 0.0,
+            use_d65: f32::from(preset.uses_d65()),
+            observer: observer.to_array(),
+            _pad2: 0.0,
+        });
+    }
 }
 
 /// Runs the `sample_studio_environment` ULP-budget self-test against a live GPU.
@@ -593,13 +644,14 @@ pub fn run_studio_env(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
         STUDIO_ENV_ABS_FLOOR,
     );
     for (idx, case) in cases.iter().enumerate() {
-        let cpu = sample_studio_environment(
+        let cpu = sample_studio_environment_observed(
             Vec3::from_array(case.dir),
             case.lambda_nm,
             preset_for_case(case),
             case.exposure,
             case.light_yaw,
             case.light_pitch,
+            Vec3::from_array(case.observer),
         );
         acc.record(case, "radiance", cpu, gpu_out[idx]);
     }
@@ -615,7 +667,7 @@ fn preset_for_case(case: &StudioEnvCase) -> LightingPreset {
     let model_id = case.model as u32;
     match model_id {
         1 => LightingPreset::IsoHemisphere,
-        2 => LightingPreset::SoftDome,
+        2 => LightingPreset::LightTent,
         3 => LightingPreset::DaylightDome,
         _ => LightingPreset::from_index(preset_index_for(case.temp_k)),
     }

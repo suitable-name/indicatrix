@@ -1,106 +1,300 @@
-import { Button } from "std-widgets.slint";
+import { Button, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
+// CAD audit item 203: the Log popup's own "Copy" button reuses the same
+// generic clipboard callback `performance_graph_dialog.slint`'s copy button
+// already goes through -- `LibraryModel.copy_text` (src/gui/library/
+// clipboard.rs) copies the given string and shows the "Copied to clipboard!"
+// toast; this file only ever calls it, never touches that module.
+import { LibraryModel } from "../models/library.slint";
 
 // The Edit sub-tab's full detail-width status line, replacing the old stack of up
 // to five banners (validation/deep-solve/manufacturability/rough-fit/material
 // suggestion) that used to eat most of `EditorView`'s vertical room -- see
 // `app.slint`'s Edit-mode layout doc comment. Shows only the single
-// highest-priority message as a coloured dot + one line; "Log" opens
-// `EditorLogPopup` with every one of them in full, so nothing the old banners
-// showed is unreachable, only reordered behind one click.
+// highest-priority message as a coloured dot + one line -- the solver's own state
+// (solving/stale/failed/solved) always leads, see `EditorStatusStrip::strip_text`'s
+// own doc comment for the full order; "Details" (renamed from "Log" -- #239, this
+// is a current-state snapshot, not a history a cutter could scroll back through)
+// opens `EditorLogPopup` with every one of them in full, so nothing the old
+// banners showed is unreachable, only reordered behind one click.
 component EditorLogPopup inherits PopupWindow {
-    close-policy: PopupClosePolicy.no-auto-close;
+    // CAD audit item 198: `close-on-click-outside` replaces the old
+    // `no-auto-close` + a manual backdrop `Rectangle` -- that backdrop was a
+    // child of the 26px `EditorStatusStrip`, so its "full-size" fill only ever
+    // covered those 26 pixels no matter its `z`; it could never have dimmed or
+    // click-caught the rest of the window. This close-policy gives the popup a
+    // real click-outside-to-close for free, so the backdrop is not just fixed
+    // but genuinely redundant -- removed below (see `EditorStatusStrip`, which
+    // no longer declares one).
+    close-policy: PopupClosePolicy.close-on-click-outside;
     width: 380px;
-    height: content.preferred-height;
+    height: outer.preferred-height;
+
+    // CAD audit item 198: this popup is anchored above a 26px strip near the
+    // bottom of the window, so an uncapped height (the old `content.
+    // preferred-height`) could grow past the top of the window with enough
+    // warnings, making its own top entries unreachable. There is no way for a
+    // `PopupWindow` to read the enclosing `MainWindow`'s live size directly, so
+    // this defaults to `MainWindow`'s own `preferred-height` (`app.slint`) --
+    // sensible even before the handoff below lands, since a plain default only
+    // ever caps generously, it never clips prematurely.
+    //
+    // Plumbed through from `EditorStatusStrip.window_height` below (bound, in
+    // turn, from `app.slint`'s `root.height` at that component's own call site)
+    // -- the same way `RetargetDialog`/`TiltBatchDialog` already size themselves
+    // off their own `root.height`. `EditorStatusStrip` needs this as its own `in
+    // property` since it does not sit at the window root either.
+    in property <length> window_height: 900px;
+
+    // CAD audit item 203: grabs keyboard focus every time the popup opens (not
+    // just once at startup) so Escape works immediately with no click into the
+    // popup first -- `log_popup` (`EditorStatusStrip`, bottom of this file) is a
+    // single, permanently-instantiated `EditorLogPopup`, shown/hidden via
+    // `show()`/`close()` rather than an `if`-conditional re-instantiation, so
+    // `popup_focus`'s own `init` (below) only ever fires once for the whole
+    // window's lifetime and cannot be what hands it focus back on the second
+    // and later opens.
+    // CAD audit item 203: grabs keyboard focus every time the popup opens (not
+    // just once at startup) so Escape works immediately with no click into the
+    // popup first. `log_popup` (`EditorStatusStrip`, bottom of this file) is a
+    // single, permanently-instantiated `EditorLogPopup`, shown/hidden via
+    // `show()`/`close()` rather than an `if`-conditional re-instantiation, so
+    // `popup_focus`'s own `init` (below) only ever fires once for the whole
+    // window's lifetime and cannot be what hands it focus back on the second
+    // and later opens. A monotonic counter, not a plain flag, for the same
+    // reason `EditorModel.form_reset_pulse`/`TierAngleCell.focus_pulse` are
+    // one (`ui/models/editor.slint`'s own doc comment): bumping it on every
+    // open is what fires `changed` even when the popup is opened twice in a
+    // row with nothing else changing in between.
+    //
+    // A `changed is-open` handler here would be the more obvious place (no
+    // property to plumb through from the caller at all), but it crashes
+    // `i-slint-compiler` 1.17.1's const-propagation pass with an internal
+    // `Type::Invalid` assertion -- `is-open` is not a plain stored property.
+    // A public function the "Log" click handler calls right after `show()`
+    // was the next idea, but a `PopupWindow`'s own functions/callbacks are not
+    // reachable from the enclosing component at all ("Cannot access property
+    // or callback ... inside of a Window from enclosing component") -- only
+    // plain property BINDINGS cross that boundary (`x`/`y` below already do),
+    // hence this being a property, not a function call.
+    in property <int> open_pulse: 0;
+    changed open_pulse => {
+        popup_focus.focus();
+    }
 
     property <bool> has_deep_solve: EditorModel.deep_solve_running || EditorModel.deep_solve_status != "" || !EditorModel.deep_solve_available || EditorModel.deep_solve_hint != "";
 
+    // CAD audit item 203: the line the "Deep Solve" section shows, hoisted into
+    // its own property so both that section's `Text` and `log_text` below read
+    // the exact same value instead of duplicating the ternary.
+    property <string> deep_solve_line: EditorModel.deep_solve_running
+        ? EditorModel.deep_solve_status
+        : (EditorModel.deep_solve_status != "" ? EditorModel.deep_solve_status : EditorModel.deep_solve_hint);
+
+    // CAD audit item 203: everything this popup currently shows, concatenated
+    // for the "Copy" button below -- a cutter can paste a solver failure or a
+    // Deep Solve verdict to ask for help without retyping it by hand. Mirrors
+    // `has_deep_solve`/`deep_solve_line` above section-for-section; the per-tier
+    // Deep Solve table and the manufacturability list are summarized by count
+    // rather than transcribed line-by-line (Slint's function bodies have no
+    // loop construct to walk either array).
+    function log_text() -> string {
+        return "Editor Details\n\n"
+            + (EditorModel.last_saved_path != "" ? ("Last saved to: " + EditorModel.last_saved_path + "\n\n") : "")
+            + (EditorModel.status_text != "" ? (EditorModel.status_text + "\n\n") : "")
+            + (root.has_deep_solve ? (root.deep_solve_line + "\n\n") : "")
+            + (EditorModel.deep_solve_tier_rows.length > 0 ? ("Deep Solve: " + EditorModel.deep_solve_tier_rows.length + " tier(s) disagree with the last solve.\n\n") : "")
+            + (EditorModel.manufacturability_warnings.length > 0 ? ("Manufacturability (" + EditorModel.manufacturability_warnings.length + " warning(s))\n\n") : "")
+            + (EditorModel.preform_fit_warning != "" ? ("Rough Fit: " + EditorModel.preform_fit_warning + "\n\n") : "")
+            + (EditorModel.material_suggestion_text != "" ? EditorModel.material_suggestion_text : "");
+    }
+
     Rectangle {
-        background: #111827ee;
+        // cad_todo.md #245: background/border/shadow were bare hex literals
+        // (`#111827ee`/`#334155`/`#000000ee`) with nothing tying them to the
+        // rest of the app's popup/dialog surfaces. `border-dialog`/`modal-shadow`
+        // (`theme.slint`) already named the exact same border and near-identical
+        // shadow literal every modal dialog in this app shares; `popup-surface`
+        // is a new token for this popup's own translucent card background,
+        // which none of the existing dialog-surface tokens matched.
+        background: Theme.popup-surface;
         border-radius: Theme.radius-md;
         border-width: 1px;
-        border-color: #334155;
+        border-color: Theme.border-dialog;
         drop-shadow-blur: 24px;
-        drop-shadow-color: #000000ee;
+        drop-shadow-color: Theme.modal-shadow;
         drop-shadow-offset-y: 6px;
         clip: true;
 
-        content := VerticalLayout {
-            padding: 16px;
-            spacing: 10px;
-
-            HorizontalLayout {
-                alignment: space-between;
-                Text { text: "Editor Log"; font-size: 13px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
-                Rectangle {
-                    width: 24px;
-                    height: 24px;
-                    border-radius: 12px;
-                    background: close_touch.has-hover ? #1e293b : transparent;
-                    close_touch := TouchArea { clicked => { root.close(); } }
-                    Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; horizontal-alignment: center; vertical-alignment: center; }
+        // CAD audit item 203: Escape closes the popup from the keyboard --
+        // there was previously no `FocusScope`/`key-pressed` here at all, so
+        // dismissing it needed the mouse (the X or an outside click). Takes
+        // focus as soon as the popup opens so Escape works immediately, with
+        // no click into the popup needed first.
+        popup_focus := FocusScope {
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    root.close();
+                    return accept;
                 }
+                reject
             }
 
-            // Validation status line -- the old green/ruby "Closed solid --
-            // volume …" banner's full text.
-            if EditorModel.status_text != "": HorizontalLayout {
-                spacing: 6px;
-                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: EditorModel.status_is_problem ? Theme.accent-ruby : Theme.accent-emerald; }
-                Text { horizontal-stretch: 1; text: EditorModel.status_text; font-size: 11px; font-weight: 600; color: EditorModel.status_is_problem ? Theme.accent-ruby : Theme.accent-emerald; wrap: word-wrap; }
-            }
+            outer := VerticalLayout {
+                padding: 16px;
+                spacing: 10px;
 
-            // Deep Solve status/hint line.
-            if root.has_deep_solve: HorizontalLayout {
-                spacing: 6px;
-                Rectangle {
-                    width: 8px;
-                    height: 8px;
-                    border-radius: 4px;
-                    background: EditorModel.deep_solve_running ? Theme.accent-amber : (EditorModel.deep_solve_status != "" ? (EditorModel.deep_solve_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.text-muted);
-                }
-                Text {
-                    horizontal-stretch: 1;
-                    text: EditorModel.deep_solve_running ? EditorModel.deep_solve_status : (EditorModel.deep_solve_status != "" ? EditorModel.deep_solve_status : EditorModel.deep_solve_hint);
-                    font-size: 11px;
-                    color: EditorModel.deep_solve_running ? Theme.accent-amber : (EditorModel.deep_solve_status != "" ? (EditorModel.deep_solve_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.text-muted);
-                    wrap: word-wrap;
-                }
-            }
-
-            // Manufacturability warnings -- every one, in full. Amber, never
-            // ruby: these are never treated as errors that stop anything, only
-            // things the user should look at.
-            if EditorModel.manufacturability_warnings.length > 0: VerticalLayout {
-                spacing: 3px;
-                Text { text: "Manufacturability (" + EditorModel.manufacturability_warnings.length + ")"; font-size: 11px; font-weight: 700; color: Theme.accent-amber; }
-                for w in EditorModel.manufacturability_warnings: Text { text: "- " + w; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
-            }
-
-            // Does the design fit its rough?
-            if EditorModel.preform_fit_warning != "": VerticalLayout {
-                spacing: 3px;
-                Text { text: "Rough Fit"; font-size: 11px; font-weight: 700; color: Theme.accent-amber; }
-                Text { text: EditorModel.preform_fit_warning; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
-            }
-
-            // Catalogue-load material suggestion, with its accept/dismiss
-            // actions kept exactly as the old banner offered them.
-            if EditorModel.material_suggestion_text != "": VerticalLayout {
-                spacing: 4px;
-                Text { text: EditorModel.material_suggestion_text; font-size: 11px; color: Theme.accent-cyan; wrap: word-wrap; }
                 HorizontalLayout {
-                    spacing: 8px;
-                    Button { text: "Set Material"; clicked => { EditorModel.material_suggestion_accept(EditorModel.material_suggestion_name); } }
-                    Button { text: "No Thanks"; clicked => { EditorModel.material_suggestion_dismiss(); } }
+                    alignment: space-between;
+                    Text { text: "Editor Details"; font-size: 13px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        // CAD audit item 203: copies everything this popup shows
+                        // (`log_text` above) through the same generic clipboard
+                        // callback `performance_graph_dialog.slint`'s own Copy
+                        // button already uses -- `LibraryModel.copy_text` shows
+                        // its own "Copied to clipboard!" toast, so nothing more
+                        // is needed here.
+                        Rectangle {
+                            width: copy_label.preferred-width + 16px;
+                            height: 24px;
+                            border-radius: Theme.radius-sm;
+                            // cad_todo.md #245: `Theme.bg-card-hover` is the exact
+                            // hover treatment this same file already uses a few
+                            // segments below (the "Saved:" chip's own TouchArea) --
+                            // `#1e293b` here was an unrelated one-off value for
+                            // what is the same hover-affordance role.
+                            background: copy_touch.has-hover ? Theme.bg-card-hover : transparent;
+                            border-width: 1px;
+                            border-color: Theme.border-dialog;
+                            copy_touch := TouchArea { clicked => { LibraryModel.copy_text(root.log_text()); } }
+                            copy_label := Text { text: "Copy"; font-size: 10px; font-weight: 600; color: Theme.accent-cyan; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                        Rectangle {
+                            width: 24px;
+                            height: 24px;
+                            border-radius: 12px;
+                            background: close_touch.has-hover ? Theme.bg-card-hover : transparent;
+                            close_touch := TouchArea { clicked => { root.close(); } }
+                            Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
                 }
-            }
 
-            if EditorModel.status_text == "" && !root.has_deep_solve && EditorModel.manufacturability_warnings.length == 0 && EditorModel.preform_fit_warning == "" && EditorModel.material_suggestion_text == "": Text {
-                text: "Nothing to report.";
-                font-size: 11px;
-                color: Theme.text-muted;
+                // CAD audit item 198: the popup's body -- everything below the
+                // header -- now scrolls once it would exceed roughly 60% of the
+                // window, instead of pushing the whole popup past the top of the
+                // window with no way to reach the earlier entries.
+                body_scroll := ScrollView {
+                    height: min(body.preferred-height, root.window_height * 0.6);
+
+                    body := VerticalLayout {
+                        spacing: 10px;
+
+                        // Validation status line -- the old green/ruby "Closed solid --
+                        // volume …" banner's full text.
+                        if EditorModel.status_text != "": HorizontalLayout {
+                            spacing: 6px;
+                            Rectangle { width: 8px; height: 8px; border-radius: 4px; background: EditorModel.status_is_problem ? Theme.accent-ruby : Theme.accent-emerald; }
+                            Text { horizontal-stretch: 1; text: EditorModel.status_text; font-size: 11px; font-weight: 600; color: EditorModel.status_is_problem ? Theme.accent-ruby : Theme.accent-emerald; wrap: word-wrap; }
+                        }
+
+                        // Deep Solve status/hint line.
+                        if root.has_deep_solve: HorizontalLayout {
+                            spacing: 6px;
+                            Rectangle {
+                                width: 8px;
+                                height: 8px;
+                                border-radius: 4px;
+                                background: EditorModel.deep_solve_running ? Theme.accent-amber : (EditorModel.deep_solve_status != "" ? (EditorModel.deep_solve_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.text-muted);
+                            }
+                            Text {
+                                horizontal-stretch: 1;
+                                text: root.deep_solve_line;
+                                font-size: 11px;
+                                color: EditorModel.deep_solve_running ? Theme.accent-amber : (EditorModel.deep_solve_status != "" ? (EditorModel.deep_solve_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.text-muted);
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        // CAD audit item 67: the per-tier table behind the aggregate verdict
+                        // above -- one row per tier Deep Solve's verified repair actually
+                        // disagreed with the plain solve on (`EditorModel.
+                        // deep_solve_tier_rows`, additional to -- never replacing -- the
+                        // status line's own one-sentence "Disagrees with the last solve on:
+                        // ..." suffix). Empty (and so hidden) until the handoff noted on that
+                        // property lands.
+                        if EditorModel.deep_solve_tier_rows.length > 0: VerticalLayout {
+                            spacing: 3px;
+                            Text { text: "Deep Solve: per-tier mast comparison"; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text { width: 32px; text: "TIER"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                                Text { horizontal-stretch: 1; text: "NAME"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                                Text { width: 56px; text: "BEFORE"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                                Text { width: 56px; text: "AFTER"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                                Text { width: 56px; text: "DELTA"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                            }
+                            for r in EditorModel.deep_solve_tier_rows: HorizontalLayout {
+                                spacing: 6px;
+                                Text { width: 32px; text: r.tier_number; font-size: 10px; color: Theme.text-secondary; }
+                                Text { horizontal-stretch: 1; text: r.name == "" ? "(unnamed)" : r.name; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                                Text { width: 56px; text: r.before_mast; font-size: 10px; color: Theme.text-muted; }
+                                Text { width: 56px; text: r.after_mast; font-size: 10px; color: Theme.text-primary; }
+                                Text { width: 56px; text: r.delta; font-size: 10px; font-weight: 700; color: Theme.accent-amber; }
+                            }
+                        }
+
+                        // Manufacturability warnings -- every one, in full. Amber, never
+                        // ruby: these are never treated as errors that stop anything, only
+                        // things the user should look at.
+                        if EditorModel.manufacturability_warnings.length > 0: VerticalLayout {
+                            spacing: 3px;
+                            Text { text: "Manufacturability (" + EditorModel.manufacturability_warnings.length + ")"; font-size: 11px; font-weight: 700; color: Theme.accent-amber; }
+                            for w in EditorModel.manufacturability_warnings: Text { text: "- " + w; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                        }
+
+                        // Does the design fit its rough?
+                        if EditorModel.preform_fit_warning != "": VerticalLayout {
+                            spacing: 3px;
+                            Text { text: "Rough Fit"; font-size: 11px; font-weight: 700; color: Theme.accent-amber; }
+                            Text { text: EditorModel.preform_fit_warning; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                        }
+
+                        // Catalogue-load material suggestion, with its accept/dismiss
+                        // actions kept exactly as the old banner offered them.
+                        if EditorModel.material_suggestion_text != "": VerticalLayout {
+                            spacing: 4px;
+                            Text { text: EditorModel.material_suggestion_text; font-size: 11px; color: Theme.accent-cyan; wrap: word-wrap; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Button { text: "Set Material"; clicked => { EditorModel.material_suggestion_accept(EditorModel.material_suggestion_name); } }
+                                Button { text: "No Thanks"; clicked => { EditorModel.material_suggestion_dismiss(); } }
+                            }
+                        }
+
+                        // CAD audit item 192: the full path, in the one place
+                        // that has room for it -- the strip itself shows only the
+                        // bare file name. Deliberately outside the "Nothing to
+                        // report." condition below: a saved path is a fact about
+                        // the session, not a message competing for the strip's
+                        // single slot, so it stays visible even when there is
+                        // genuinely nothing else to report.
+                        if EditorModel.last_saved_path != "": VerticalLayout {
+                            spacing: 3px;
+                            Text { text: "Last saved to"; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
+                            Text { text: EditorModel.last_saved_path; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                        }
+
+                        if EditorModel.status_text == "" && !root.has_deep_solve && EditorModel.manufacturability_warnings.length == 0 && EditorModel.preform_fit_warning == "" && EditorModel.material_suggestion_text == "": Text {
+                            text: "Nothing to report.";
+                            font-size: 11px;
+                            color: Theme.text-muted;
+                        }
+                    }
+                }
             }
         }
     }
@@ -113,25 +307,72 @@ export component EditorStatusStrip inherits Rectangle {
     border-width: 1px;
     border-color: Theme.border-subtle;
 
+    // CAD audit item 203: bumped by the "Log" click handler below on every
+    // open, bound declaratively into `log_popup.open_pulse` at that
+    // instantiation (bottom of this file) -- a `PopupWindow`'s own properties
+    // cannot be WRITTEN from an enclosing component's imperative code
+    // (`log_popup.open_pulse += 1` inside a `clicked` handler fails to
+    // compile with "Cannot access property or callback ... inside of a
+    // Window from enclosing component"), only bound to declaratively, the way
+    // `log_popup`'s `x`/`y` already are. See `EditorLogPopup.open_pulse`'s own
+    // doc comment for why this needs to be a counter, not a plain flag.
+    property <int> log_open_pulse: 0;
+
+    // Bound from `app.slint`'s `root.height` at this component's own call site,
+    // directly under the window -- forwarded to `log_popup.window_height` below
+    // so `EditorLogPopup`'s body can cap itself against the REAL window height
+    // instead of the 900px placeholder default (see that property's own doc
+    // comment).
+    in property <length> window_height: 900px;
+
     property <bool> has_manuf: EditorModel.manufacturability_warnings.length > 0;
     property <bool> has_preform_warn: EditorModel.preform_fit_warning != "";
-    property <bool> has_deep_solve: EditorModel.deep_solve_running || EditorModel.deep_solve_status != "" || !EditorModel.deep_solve_available || EditorModel.deep_solve_hint != "";
-    property <bool> has_validation: EditorModel.status_text != "";
+    // Deep Solve counts as a strip message only while it is actually doing
+    // something -- NOT merely because `deep_solve_hint` (always non-empty, see
+    // `view::deep_solve_hint`) or `!deep_solve_available` is set, which used to make
+    // this permanently true and starve every other segment below it. The
+    // always-present hint text now lives in a `Tooltip` on the Deep Solve button
+    // itself (`EditorCommandBar`'s `AnalysisGroup`) instead.
+    property <bool> has_deep_solve: EditorModel.deep_solve_running || EditorModel.deep_solve_status != "";
+    property <bool> has_validation_problem: EditorModel.status_text != "" && EditorModel.status_is_problem;
+    property <bool> has_solved_message: EditorModel.status_text != "" && !EditorModel.status_is_problem;
     property <bool> has_material_suggestion: EditorModel.material_suggestion_text != "";
 
-    // Priority order: manufacturability > rough fit > deep solve > validation >
-    // material suggestion -- see this component's own doc comment.
-    property <string> strip_text: root.has_manuf ? (EditorModel.manufacturability_warnings.length + " manufacturability warning(s)")
+    // Priority order: the solver's own state leads -- a running solve, then any real
+    // validation problem (this also covers the "Not solved -- click Solve" stale
+    // marker every edit sets via `view::push_stale_content`, so a cutter can never
+    // read a stale/unsolvable preview as current just because nothing else is
+    // flagged). Advisory findings that never block anything (manufacturability,
+    // rough fit) come next, then the plain "solved" confirmation, then Deep Solve's
+    // own in-progress/verdict message, and finally the catalogue material
+    // suggestion.
+    property <string> strip_text: EditorModel.solve_running ? EditorModel.status_text
+        : root.has_validation_problem ? EditorModel.status_text
+        : root.has_manuf ? (EditorModel.manufacturability_warnings.length + " manufacturability warning(s)")
         : root.has_preform_warn ? EditorModel.preform_fit_warning
-        : root.has_deep_solve ? (EditorModel.deep_solve_running ? EditorModel.deep_solve_status : (EditorModel.deep_solve_status != "" ? EditorModel.deep_solve_status : EditorModel.deep_solve_hint))
-        : root.has_validation ? EditorModel.status_text
+        : root.has_solved_message ? EditorModel.status_text
+        : root.has_deep_solve ? EditorModel.deep_solve_status
         : root.has_material_suggestion ? EditorModel.material_suggestion_text
         : "Nothing to report.";
 
-    property <color> strip_color: root.has_manuf ? Theme.accent-amber
+    // CAD audit item 151: labels/colours the persistent solver-state segment
+    // above, keyed off `EditorModel.solve_state` (set from `gui::editor::view`/
+    // `gui::editor::auto_solve`, per that global's own doc comment).
+    property <string> solver_state_label: EditorModel.solve_state == "solving" ? "Solving"
+        : EditorModel.solve_state == "stale" ? "Stale"
+        : EditorModel.solve_state == "failed" ? "Failed"
+        : "Solved";
+    property <color> solver_state_color: EditorModel.solve_state == "solving" ? Theme.accent-amber
+        : EditorModel.solve_state == "stale" ? Theme.accent-amber
+        : EditorModel.solve_state == "failed" ? Theme.accent-ruby
+        : Theme.accent-emerald;
+
+    property <color> strip_color: EditorModel.solve_running ? Theme.accent-amber
+        : root.has_validation_problem ? Theme.accent-ruby
+        : root.has_manuf ? Theme.accent-amber
         : root.has_preform_warn ? Theme.accent-amber
-        : root.has_deep_solve ? (EditorModel.deep_solve_running ? Theme.accent-amber : (EditorModel.deep_solve_status != "" ? (EditorModel.deep_solve_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.text-muted))
-        : root.has_validation ? (EditorModel.status_is_problem ? Theme.accent-ruby : Theme.accent-emerald)
+        : root.has_solved_message ? Theme.accent-emerald
+        : root.has_deep_solve ? (EditorModel.deep_solve_running ? Theme.accent-amber : (EditorModel.deep_solve_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald))
         : root.has_material_suggestion ? Theme.accent-cyan
         : Theme.text-muted;
 
@@ -140,6 +381,154 @@ export component EditorStatusStrip inherits Rectangle {
         padding-right: 10px;
         spacing: 8px;
 
+        // CAD audit item 62: names the design these readouts describe -- the
+        // paired `.asc`'s file name, or "Untitled design" for a brand-new one
+        // (`gui::editor::state::design_label_text`). Always shown first, so a
+        // cutter never has to guess which design the tier table/status
+        // messages to its right belong to.
+        Text {
+            text: EditorModel.design_label;
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+            overflow: elide;
+            max-width: 160px;
+        }
+
+        // CAD audit item 151: a persistent solver-state segment -- state dot +
+        // Solved/Stale/Solving/Failed, the tier count, and the last solve's
+        // duration -- always visible regardless of the strip's own single-message
+        // priority chain below, so a cutter never has to read a sentence to learn
+        // whether the table/3D view are current. `EditorModel.tiers.length` is
+        // free (an existing array property, no Rust push needed for the count).
+        // `EditorModel.solve_state`/`last_solve_duration_ms` are live (pushed
+        // from `gui::editor::view`/`gui::editor::auto_solve`); this segment and
+        // the Solve button's `primary:` binding (`editor_command_bar.slint`)
+        // both compile and render off them already. A per-design FACET count (as
+        // opposed to the tier count below) is still NOT included: no existing
+        // field carries it (an
+        // `EditorTierItem` describes one schedule row, not the facet count that
+        // row's orbit expands to), so surfacing it needs its own new Rust
+        // computation and property this lane is not adding in this pass.
+        Rectangle {
+            width: solver_state_layout.preferred-width;
+            height: solver_state_layout.preferred-height;
+            solver_state_layout := HorizontalLayout {
+                spacing: 5px;
+                Rectangle { width: 8px; height: 8px; border-radius: 4px; background: root.solver_state_color; }
+                Text { text: root.solver_state_label; font-size: 10px; font-weight: 700; color: root.solver_state_color; vertical-alignment: center; }
+                Text {
+                    text: EditorModel.tiers.length + (EditorModel.tiers.length == 1 ? " tier" : " tiers");
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+                // Item 151: shown only once something has solved -- a facet count
+                // of 0 would read as a claim about the design rather than as "not
+                // solved yet", which the state dot to the left already says.
+                if EditorModel.facet_count > 0: Text {
+                    text: "- " + EditorModel.facet_count + " facets";
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+                if EditorModel.last_solve_duration_ms > 0: Text {
+                    text: "· " + EditorModel.last_solve_duration_ms + " ms";
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        Rectangle { width: 1px; height: 14px; background: Theme.border-subtle; }
+
+        // Always shown while the design has unsaved edits, regardless of which
+        // message above currently has priority -- data loss is worth a permanent
+        // marker, not just the window title's leading "* " (`app.slint`), which is
+        // easy to miss. See `EditorModel.is_dirty`'s own doc comment.
+        if EditorModel.is_dirty: Rectangle {
+            // Explicit width/height bound to the named inner layout's own
+            // preferred size -- same idiom the "Log" segment below uses
+            // (`log_label.preferred-width`/`-height`), needed because a plain
+            // `Rectangle` does not size itself to an unnamed child on its own.
+            width: unsaved_layout.preferred-width;
+            height: unsaved_layout.preferred-height;
+            border-radius: Theme.radius-sm;
+            background: Theme.accent-amber;
+            unsaved_layout := HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 6px;
+                Text {
+                    text: "UNSAVED";
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: Theme.bg-darkest;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // CAD audit item 216: Solve, Deep Solve and Optimize could all be
+        // launched at once with nothing on screen saying so -- this is the
+        // single place a cutter can see which one (if any) is currently
+        // running, alongside the cross-disabling on the launchers themselves
+        // (`EditorCommandBar`). Same "always shown regardless of the priority
+        // chain below" placement as the "UNSAVED" marker above, for the same
+        // reason: which action is running should never be pushed out by
+        // whatever the strip's own single-message priority chain currently
+        // shows.
+        if EditorModel.busy_action != "": Rectangle {
+            width: busy_layout.preferred-width;
+            height: busy_layout.preferred-height;
+            border-radius: Theme.radius-sm;
+            background: Theme.accent-cyan;
+            busy_layout := HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 6px;
+                Text {
+                    text: "RUNNING: " + EditorModel.busy_action;
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: Theme.bg-darkest;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // CAD audit item 192: a persistent record of where the last Save/Export
+        // wrote, click-to-reveal in the OS file manager. Same "always shown,
+        // never subject to the priority chain" placement as the two markers
+        // above -- where a file went is a fact, not a message. The bare file
+        // name only; the full path is one click away in the Details popup (and
+        // is what the reveal itself uses).
+        if EditorModel.last_saved_label != "": Rectangle {
+            width: saved_layout.preferred-width;
+            height: saved_layout.preferred-height;
+            border-radius: Theme.radius-sm;
+            background: saved_touch.has-hover ? Theme.bg-card-hover : transparent;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+            saved_touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { EditorModel.reveal_last_saved_path(); }
+            }
+            saved_layout := HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 6px;
+                Text {
+                    text: "Saved: " + EditorModel.last_saved_label;
+                    font-size: 10px;
+                    font-weight: 600;
+                    color: Theme.accent-cyan;
+                    vertical-alignment: center;
+                    overflow: elide;
+                    max-width: 180px;
+                }
+            }
+        }
+
         Rectangle {
             width: 8px;
             height: 8px;
@@ -147,36 +536,52 @@ export component EditorStatusStrip inherits Rectangle {
             background: root.strip_color;
         }
 
-        Text {
+        // CAD audit item 163: the one line a cutter actually reads used to have no
+        // way to read a long message past its elided first few words, and nothing
+        // indicated text was even cut -- a `Tooltip` (not a child of the enclosing
+        // `HorizontalLayout` -- see this file's own Slint-trap notes elsewhere in
+        // this app -- hence the wrapping plain `Rectangle`) now carries the
+        // message in full, and clicking it opens the same "Details" popup the
+        // link at the end of the strip does, so the full text is always one click
+        // (or one hover) away regardless of how badly it elides.
+        Rectangle {
             horizontal-stretch: 1;
-            text: root.strip_text;
-            font-size: 11px;
-            color: root.strip_color;
-            vertical-alignment: center;
-            overflow: elide;
+            strip_msg_touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { log_popup.show(); root.log_open_pulse += 1; }
+            }
+            Text {
+                text: root.strip_text;
+                font-size: 11px;
+                color: root.strip_color;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Tooltip { text: @markdown("\{root.strip_text}"); }
         }
 
         Rectangle {
             width: log_label.preferred-width;
             height: log_label.preferred-height;
-            log_label := Text { text: "Log \u{25B8}"; font-size: 11px; font-weight: 600; color: Theme.accent-cyan; vertical-alignment: center; }
-            log_touch := TouchArea { clicked => { log_popup.show(); } }
+            // #239: "Log" implied a running history a cutter could scroll back
+            // through to recover a message the strip's own single-slot priority
+            // chain had already replaced -- what actually opens is a snapshot of
+            // the CURRENT state (`EditorLogPopup.log_text`'s own doc comment),
+            // with no memory of anything superseded. Renamed to "Details" so the
+            // label matches what it really is; the popup's content is unchanged.
+            log_label := Text { text: "Details \u{25B8}"; font-size: 11px; font-weight: 600; color: Theme.accent-cyan; vertical-alignment: center; }
+            // CAD audit item 203: bumping `log_open_pulse` (bound into
+            // `log_popup.open_pulse` below) hands keyboard focus into the
+            // popup on every open, not just the first -- see
+            // `EditorLogPopup.open_pulse`'s own doc comment for why.
+            log_touch := TouchArea { clicked => { log_popup.show(); root.log_open_pulse += 1; } }
         }
-    }
-
-    // --- MODAL BACKDROP FOR THE LOG POPUP --- same click-outside-to-close
-    // mechanism `header.slint` uses for its own popups (see `filter_panel.slint`'s
-    // doc comment for why `close-policy: no-auto-close` needs this backdrop).
-    if log_popup.is-open: Rectangle {
-        width: 100%;
-        height: 100%;
-        background: #00000055;
-        z: 150;
-        TouchArea { clicked => { log_popup.close(); } }
     }
 
     log_popup := EditorLogPopup {
         x: parent.width - self.width - 12px;
         y: -self.height - 6px;
+        open_pulse: root.log_open_pulse;
+        window_height: root.window_height;
     }
 }

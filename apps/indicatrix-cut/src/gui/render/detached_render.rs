@@ -274,12 +274,30 @@ pub(in crate::gui) fn setup_live_render_visibility_callbacks(
             // already encodes exactly this "which variant, and is it even visible"
             // logic (see its own doc comment), so this reuses it rather than
             // duplicating it.
-            let ctx = render_ctx_rv.lock().unwrap();
-            crate::gui::render::camera_lighting::resubmit_at_current_pose(
-                &ui,
-                &ctx,
-                &preview_state_rv,
-            );
+            //
+            // #26: deferred by one event-loop turn (`slint::Timer::single_shot`)
+            // rather than called synchronously right here -- this handler used to
+            // resubmit before the newly instantiated `SolidViewportView`/
+            // `GemViewportView` had pushed its own `changed width`/`changed height`
+            // size, so the very first frame after a tab switch was sized to
+            // whichever viewport's size properties happened to be left over from
+            // before.
+            let render_ctx_deferred = render_ctx_rv.clone();
+            let preview_state_deferred = Arc::clone(&preview_state_rv);
+            let ui_weak_deferred = ui.as_weak();
+            slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                let Some(ui) = ui_weak_deferred.upgrade() else {
+                    return;
+                };
+                let ctx = render_ctx_deferred
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                crate::gui::render::camera_lighting::resubmit_at_current_pose(
+                    &ui,
+                    &ctx,
+                    &preview_state_deferred,
+                );
+            });
         }
     });
 

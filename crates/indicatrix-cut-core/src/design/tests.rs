@@ -48,6 +48,7 @@ fn schedule_planes_extend_the_preform() {
         indices: vec![],
         constraint: MeetConstraint::ScaleReference(0.32),
         imported_meet: None,
+        original_notes: None,
         detached: Vec::new(),
     });
     let planes = design.planes().expect("a single anchored tier must solve");
@@ -84,6 +85,7 @@ fn solve_reports_the_missing_anchor_block_rather_than_a_silent_default() {
         indices: vec![0.0, 24.0, 48.0, 72.0],
         constraint: MeetConstraint::MeetExisting,
         imported_meet: None,
+        original_notes: None,
         detached: Vec::new(),
     });
     let err = design.solve().expect_err("crown has no scale reference");
@@ -468,6 +470,7 @@ fn design_with_real_meet_structure(name: &str, text: &str) -> Design {
             indices: input.indices,
             constraint: input.constraint,
             imported_meet: None,
+            original_notes: None,
             detached: Vec::new(),
         })
         .collect();
@@ -622,6 +625,7 @@ fn resolve_dirty_touches_only_the_edited_tier_and_non_anchor_tiers() {
         indices: vec![0.0, 24.0, 48.0, 72.0],
         constraint: MeetConstraint::ScaleReference(0.5),
         imported_meet: None,
+        original_notes: None,
         detached: Vec::new(),
     });
     design.tiers.push(ConstraintTier {
@@ -630,6 +634,7 @@ fn resolve_dirty_touches_only_the_edited_tier_and_non_anchor_tiers() {
         indices: vec![0.0, 24.0, 48.0, 72.0],
         constraint: MeetConstraint::MeetNamed(vec!["A".to_string()]),
         imported_meet: None,
+        original_notes: None,
         detached: Vec::new(),
     });
     design.tiers.push(ConstraintTier {
@@ -638,6 +643,7 @@ fn resolve_dirty_touches_only_the_edited_tier_and_non_anchor_tiers() {
         indices: vec![],
         constraint: MeetConstraint::ScaleReference(0.4),
         imported_meet: None,
+        original_notes: None,
         detached: Vec::new(),
     });
     let baseline = design.solve().expect("hand-built design must solve");
@@ -1040,6 +1046,7 @@ fn to_asc_schedule_writes_the_effective_refractive_index_not_the_legacy_field() 
         indices: vec![],
         constraint: MeetConstraint::ScaleReference(0.5),
         imported_meet: None,
+        original_notes: None,
         detached: Vec::new(),
     });
     design.material.refractive_index_override = Some(1.90);
@@ -1064,6 +1071,7 @@ fn to_asc_schedule_reflects_a_retargeted_angle() {
         indices: vec![],
         constraint: MeetConstraint::ScaleReference(0.5),
         imported_meet: None,
+        original_notes: None,
         detached: Vec::new(),
     });
     design.tiers.push(ConstraintTier {
@@ -1072,6 +1080,7 @@ fn to_asc_schedule_reflects_a_retargeted_angle() {
         indices: vec![],
         constraint: MeetConstraint::ScaleReference(0.9),
         imported_meet: None,
+        original_notes: None,
         detached: Vec::new(),
     });
 

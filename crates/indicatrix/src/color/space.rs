@@ -218,13 +218,12 @@ impl ColorSpace {
     /// Every channel is finite and in `0..=255` for any input, including non-positive,
     /// extreme, or far-out-of-gamut `xyz`; non-finite `xyz` maps to opaque black.
     ///
-    /// # Saturated highlights and dispersion fire preserve full gamut saturation
+    /// # Highlights desaturate instead of clipping a single channel
     ///
-    /// [`ToneMap::AcesFilmic`] projects out-of-gamut spectral XYZ to non-negative linear
-    /// RGB within the target space's gamut ([`gamut::project_to_gamut`]), then applies
-    /// the ACES filmic S-curve per-channel. This preserves pure spectral dispersion fire
-    /// (no premature desaturation into chalky pastels or white), deep extinction blacks
-    /// in shadow facets, and a smooth filmic shoulder in bright specular highlights.
+    /// [`ToneMap::AcesFilmic`] rescales RGB by one luminance-derived factor so hue
+    /// survives; a channel pushed above `1.0` is routed through
+    /// [`gamut::project_to_gamut_bounded`] (`max = 1.0`) instead of a per-channel
+    /// clamp, so it desaturates toward white rather than hue-shifting.
     #[must_use]
     pub fn encode(self, xyz: Vec3, tonemap: ToneMap) -> [u8; 4] {
         let sum = xyz.x + xyz.y + xyz.z;
@@ -235,16 +234,16 @@ impl ColorSpace {
         let toned_rgb = match tonemap {
             ToneMap::None => gamut::project_to_gamut(xyz, self),
             ToneMap::AcesFilmic { exposure } => {
-                let linear_rgb = gamut::project_to_gamut(xyz * exposure, self);
-                let tone_channel = |c: f32| -> f32 {
-                    let c_pos = c.max(0.0);
-                    crate::optics::raytracer::aces_tonemap(c_pos).clamp(0.0, 1.0)
-                };
-                Vec3::new(
-                    tone_channel(linear_rgb.x),
-                    tone_channel(linear_rgb.y),
-                    tone_channel(linear_rgb.z),
-                )
+                let luminance = xyz.y.max(0.0);
+                let exposed_luminance = (luminance * exposure).max(0.0);
+                let y_tm = crate::optics::raytracer::aces_tonemap(exposed_luminance);
+                // Scaling `xyz` before gamut-projecting (rather than scaling the
+                // projected RGB) is equivalent for in-range colours since gamut
+                // projection is linear in luminance -- letting one bounded projection
+                // call handle both compression and desaturation together.
+                let luminance_scale = (y_tm / exposed_luminance.max(1e-5)) * exposure;
+                let toned_xyz = xyz * luminance_scale;
+                gamut::project_to_gamut_bounded(toned_xyz, self, 1.0)
             }
         };
 

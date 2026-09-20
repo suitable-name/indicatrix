@@ -57,4 +57,9 @@ pub struct SceneState {
     /// field still deserializes, defaulting to `false` (all-polished).
     #[serde(default)]
     pub girdle_frosted: bool,
+    /// Radiance of the backdrop card the camera sees where it misses the stone, `0.0`
+    /// for none -- `EnvironmentSource::Studio::backdrop`. `#[serde(default)]` for the
+    /// same on-disk `scene.json` reason as `girdle_frosted`.
+    #[serde(default)]
+    pub backdrop: f32,
 }

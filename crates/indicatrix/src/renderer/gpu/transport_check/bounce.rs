@@ -439,6 +439,7 @@ fn cpu_frosted_bounce(case: &FrostedBounceCase, material: &GemMaterial) -> Frost
             exposure: 1.0,
             light_yaw: 0.0,
             light_pitch: 0.0,
+            backdrop: 0.0,
         },
         plane_soa: &plane_soa,
         enabled: false,

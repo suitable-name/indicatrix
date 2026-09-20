@@ -111,6 +111,25 @@ fn narrow_planes(planes: Vec<(DVec3, f64)>) -> Vec<(Vec3, f32)> {
         .collect()
 }
 
+/// [`plan_preview`]'s single choice of "the full arrangement" vs. "truncated through
+/// a tier cutoff" (CAD audit item 211's "show through tier N" viewport slider) -- every
+/// one of `plan_preview`'s five branches drew the full [`Design::planes_from_solved`]
+/// arrangement unconditionally before this existed; routing all five through here
+/// keeps that truncation decision in exactly one place rather than five.
+///
+/// `tier_cutoff.is_none()` reproduces [`Design::planes_from_solved`] exactly --
+/// the pre-existing behaviour for every caller that has no cutoff to offer.
+fn planes_for_display(
+    design: &Design,
+    solved: &[SolvedTier],
+    tier_cutoff: Option<usize>,
+) -> Vec<(DVec3, f64)> {
+    tier_cutoff.map_or_else(
+        || design.planes_from_solved(solved),
+        |through_tier| design.planes_through_tier(solved, through_tier),
+    )
+}
+
 /// Every tier's mast read directly off its own [`MeetConstraint::ScaleReference`] --
 /// tier 1 of the module doc comment. Panics if any tier is not `ScaleReference`.
 fn masts_from_pinned_tiers(design: &Design) -> Vec<SolvedTier> {
@@ -139,6 +158,12 @@ fn masts_from_pinned_tiers(design: &Design) -> Vec<SolvedTier> {
 /// `dirty` is the set of tier indices the triggering edit touched (see
 /// `indicatrix_cut_core::resolve::affected_tiers`); `last_solved` is the previous call's
 /// [`PreviewPlan::solved`], or `None` after an `AddTier`/`RemoveTier` edit.
+///
+/// `tier_cutoff` is CAD audit item 211's "show through tier N" viewport slider:
+/// `Some(n)` truncates every branch's drawn planes to `design.tiers[..=n]` (the
+/// preform's own planes are always kept) via [`Design::planes_through_tier`] instead
+/// of the full [`Design::planes_from_solved`] arrangement -- see [`planes_for_display`].
+/// `None` reproduces the pre-existing "always the full arrangement" behaviour exactly.
 #[must_use]
 pub fn plan_preview(
     design: &Design,
@@ -146,6 +171,7 @@ pub fn plan_preview(
     dirty: &BTreeSet<usize>,
     budget: Duration,
     solver: &dyn DirtySolver,
+    tier_cutoff: Option<usize>,
 ) -> PreviewPlan {
     if design
         .tiers
@@ -153,7 +179,7 @@ pub fn plan_preview(
         .all(|tier| matches!(tier.constraint, MeetConstraint::ScaleReference(_)))
     {
         let solved = masts_from_pinned_tiers(design);
-        let planes = narrow_planes(design.planes_from_solved(&solved));
+        let planes = narrow_planes(planes_for_display(design, &solved, tier_cutoff));
         return PreviewPlan {
             planes,
             solved: Some(solved),
@@ -168,7 +194,7 @@ pub fn plan_preview(
     let Some(previous) = aligned_previous else {
         return match design.solve() {
             Ok(solved) => {
-                let planes = narrow_planes(design.planes_from_solved(&solved));
+                let planes = narrow_planes(planes_for_display(design, &solved, tier_cutoff));
                 PreviewPlan {
                     planes,
                     solved: Some(solved),
@@ -177,7 +203,7 @@ pub fn plan_preview(
             }
             Err(err) => {
                 let planes = last_solved.map_or_else(Vec::new, |previous| {
-                    narrow_planes(design.planes_from_solved(previous))
+                    narrow_planes(planes_for_display(design, previous, tier_cutoff))
                 });
                 PreviewPlan {
                     planes,
@@ -194,7 +220,7 @@ pub fn plan_preview(
 
     match result {
         Ok(new_solved) if elapsed <= budget => {
-            let planes = narrow_planes(design.planes_from_solved(&new_solved));
+            let planes = narrow_planes(planes_for_display(design, &new_solved, tier_cutoff));
             PreviewPlan {
                 planes,
                 solved: Some(new_solved),
@@ -204,7 +230,7 @@ pub fn plan_preview(
         Ok(new_solved) => {
             // Over budget: show the OLD planes, but chain the fresh (late) result
             // forward as the next call's `last_solved`.
-            let planes = narrow_planes(design.planes_from_solved(previous));
+            let planes = narrow_planes(planes_for_display(design, previous, tier_cutoff));
             PreviewPlan {
                 planes,
                 solved: Some(new_solved),
@@ -214,7 +240,7 @@ pub fn plan_preview(
             }
         }
         Err(err) => {
-            let planes = narrow_planes(design.planes_from_solved(previous));
+            let planes = narrow_planes(planes_for_display(design, previous, tier_cutoff));
             PreviewPlan {
                 planes,
                 solved: None,
@@ -285,6 +311,7 @@ mod tests {
             indices: vec![0.0],
             constraint,
             imported_meet: None,
+            original_notes: None,
             detached: Vec::new(),
         }
     }
@@ -325,6 +352,7 @@ mod tests {
             &BTreeSet::new(),
             DEFAULT_PREVIEW_BUDGET,
             &PanicSolver,
+            None,
         );
         assert_eq!(plan.freshness, Freshness::Pinned);
         assert_ne!(plan.planes, [] as [(Vec3, f32); 0]);
@@ -346,6 +374,7 @@ mod tests {
             &dirty,
             Duration::from_millis(50),
             &solver,
+            None,
         );
         assert_eq!(plan.freshness, Freshness::Fresh);
         assert!(plan.solved.is_some());
@@ -363,7 +392,7 @@ mod tests {
         let dirty = BTreeSet::from([1]);
         let budget = Duration::from_millis(5);
 
-        let plan = plan_preview(&design, Some(&previous), &dirty, budget, &solver);
+        let plan = plan_preview(&design, Some(&previous), &dirty, budget, &solver, None);
         match plan.freshness {
             Freshness::Stale { pending } => assert_eq!(pending, dirty),
             other => panic!("expected Stale, got {other:?}"),
@@ -389,6 +418,7 @@ mod tests {
             &dirty,
             DEFAULT_PREVIEW_BUDGET,
             &PanicSolver,
+            None,
         );
         assert_eq!(plan.freshness, Freshness::Fresh);
         assert_eq!(plan.solved.map(|s| s.len()), Some(design.tiers.len()));
@@ -403,9 +433,71 @@ mod tests {
             &BTreeSet::new(),
             DEFAULT_PREVIEW_BUDGET,
             &PanicSolver,
+            None,
         );
         assert_eq!(plan.freshness, Freshness::Fresh);
         assert!(plan.solved.is_some());
+    }
+
+    /// CAD audit item 211: a `Some` tier cutoff must actually shrink the drawn
+    /// arrangement (via `Design::planes_through_tier`) relative to the same design's
+    /// uncut `plan_preview` result, not just pass through as a no-op.
+    #[test]
+    fn tier_cutoff_truncates_the_drawn_plane_arrangement() {
+        let design = free_design();
+        let full = plan_preview(
+            &design,
+            None,
+            &BTreeSet::new(),
+            DEFAULT_PREVIEW_BUDGET,
+            &PanicSolver,
+            None,
+        );
+        let truncated = plan_preview(
+            &design,
+            None,
+            &BTreeSet::new(),
+            DEFAULT_PREVIEW_BUDGET,
+            &PanicSolver,
+            Some(0),
+        );
+        assert_eq!(full.freshness, Freshness::Fresh);
+        assert_eq!(truncated.freshness, Freshness::Fresh);
+        assert!(
+            truncated.planes.len() < full.planes.len(),
+            "cutting off after tier 0 must drop tier 1's own facet(s) from the drawn \
+             arrangement: full={}, truncated={}",
+            full.planes.len(),
+            truncated.planes.len()
+        );
+    }
+
+    /// A cutoff at or past the last tier index must reproduce the full arrangement
+    /// exactly -- `Design::planes_through_tier`'s own documented "every tier"
+    /// equivalence for `through_tier >= tiers.len()`, but exercised here through
+    /// `plan_preview`'s own entry point rather than the core function directly.
+    /// Uses `design.tiers.len()` itself (not `usize::MAX`) -- `planes_through_tier`
+    /// computes `through_tier + 1` internally, which would overflow for `MAX`.
+    #[test]
+    fn tier_cutoff_past_the_last_tier_matches_the_full_arrangement() {
+        let design = free_design();
+        let full = plan_preview(
+            &design,
+            None,
+            &BTreeSet::new(),
+            DEFAULT_PREVIEW_BUDGET,
+            &PanicSolver,
+            None,
+        );
+        let uncut = plan_preview(
+            &design,
+            None,
+            &BTreeSet::new(),
+            DEFAULT_PREVIEW_BUDGET,
+            &PanicSolver,
+            Some(design.tiers.len()),
+        );
+        assert_eq!(full.planes.len(), uncut.planes.len());
     }
 
     /// `indicatrix-cut-core`'s "CrackOtto-Step" fixture (PC 05.115, 103 tiers), re-authored
@@ -442,6 +534,7 @@ mod tests {
                 indices: input.indices,
                 constraint: input.constraint,
                 imported_meet: None,
+                original_notes: None,
                 detached: Vec::new(),
             })
             .collect();

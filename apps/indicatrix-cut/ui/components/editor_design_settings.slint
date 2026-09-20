@@ -3,6 +3,13 @@ import { GearRemapRow } from "../types.slint";
 import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
 import { SectionHeader } from "section_header.slint";
+// CAD audit items 223/227: `ViewportModel.material_editor_open` and
+// `viewport_material_linked` already exist and are driven from the Live
+// Render tab's `gem_viewport.slint` (owned by another lane) -- this file only
+// reads/writes the same globals so the create path (223) and the "why did my
+// render material change" explanation (227) sit next to the Edit tab's own
+// material combo instead of requiring a tab switch.
+import { ViewportModel } from "../models/viewport.slint";
 
 // The Edit sub-tab's schedule-wide settings -- material combo (built-ins, custom
 // catalogue materials, then "Custom RI…"), RI override/effective/critical-angle
@@ -70,8 +77,13 @@ export component EditorDesignSettings inherits Rectangle {
                 }
             }
             VerticalLayout {
-                spacing: 3px;
-                Text { text: " "; font-size: 10px; }
+                // Item 246: bottom-align the control to the labelled fields'
+                // baseline instead of faking the gap with a blank spacer `Text`
+                // above it (which broke the moment a label wrapped or the font
+                // changed). `alignment: end` sizes this column to its natural
+                // (unstretched) content and pins it to the bottom of the row --
+                // the same height the taller label+field columns fill exactly.
+                alignment: end;
                 Button {
                     text: "Apply Material";
                     clicked => { EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text); }
@@ -80,8 +92,7 @@ export component EditorDesignSettings inherits Rectangle {
             // Read-only chips, same small-rounded-rectangle style as
             // `detail_header.slint`'s metric grid.
             VerticalLayout {
-                spacing: 3px;
-                Text { text: " "; font-size: 10px; }
+                alignment: end;
                 Rectangle {
                     background: Theme.bg-input;
                     border-radius: Theme.radius-sm;
@@ -96,8 +107,7 @@ export component EditorDesignSettings inherits Rectangle {
                 }
             }
             VerticalLayout {
-                spacing: 3px;
-                Text { text: " "; font-size: 10px; }
+                alignment: end;
                 Rectangle {
                     background: Theme.bg-input;
                     border-radius: Theme.radius-sm;
@@ -108,6 +118,69 @@ export component EditorDesignSettings inherits Rectangle {
                         padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px;
                         Text { text: "Crit.:"; font-size: 11px; color: Theme.text-muted; }
                         Text { text: EditorModel.critical_angle_text == "" ? "-" : EditorModel.critical_angle_text; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
+                    }
+                }
+            }
+            // CAD audit item 223: the only other opener of this dialog is the
+            // Live Render tab's viewport overlay button (`gem_viewport.slint`,
+            // owned by another lane) -- this sits next to the consuming combo
+            // above so creating a custom material no longer requires leaving
+            // the Edit tab. `solid_viewport.slint` (also ours) now mounts
+            // `MaterialEditorDialog` so this actually opens something while
+            // the Edit tab is showing.
+            VerticalLayout {
+                alignment: end;
+                Button {
+                    text: "New/Edit material...";
+                    clicked => { ViewportModel.material_editor_open = true; }
+                }
+            }
+            // CAD audit item 227: mirrors the "Linked to design" toggle that
+            // otherwise lives only in the Live Render tab (`gem_viewport.slint`),
+            // right where the design's material is actually set -- so a cutter
+            // who turned the render material off-link elsewhere can see and
+            // undo it without switching tabs.
+            VerticalLayout {
+                alignment: end;
+                Rectangle {
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    Tooltip { text: @markdown("Linked to design -- while on, the Live Render/Solid viewport's Render Material follows this design's own material instead of an independent choice."); }
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 6px;
+                        Rectangle {
+                            width: 24px;
+                            height: 14px;
+                            border-radius: 7px;
+                            // Theme.border-dialog, not a bare literal: the same
+                            // "off" toggle-track shade `filter_panel.slint`'s
+                            // chip toggles already use (cad_todo.md #245).
+                            background: ViewportModel.viewport_material_linked ? Theme.accent-cyan : Theme.border-dialog;
+                            y: (parent.height - self.height) / 2;
+                            TouchArea {
+                                clicked => {
+                                    ViewportModel.viewport_material_linked = !ViewportModel.viewport_material_linked;
+                                    ViewportModel.viewport_material_linked_changed(ViewportModel.viewport_material_linked);
+                                }
+                            }
+                            Rectangle {
+                                width: 10px;
+                                height: 10px;
+                                border-radius: 5px;
+                                background: white;
+                                x: ViewportModel.viewport_material_linked ? parent.width - self.width - 2px : 2px;
+                                y: 2px;
+                                animate x { duration: 120ms; }
+                            }
+                        }
+                        Text {
+                            text: "Linked to design";
+                            font-size: 11px;
+                            color: Theme.text-muted;
+                            vertical-alignment: center;
+                        }
                     }
                 }
             }
@@ -138,8 +211,9 @@ export component EditorDesignSettings inherits Rectangle {
                 LineEdit { width: 70px; text <=> EditorModel.gear_custom_text; }
             }
             VerticalLayout {
-                spacing: 3px;
-                Text { text: " "; font-size: 10px; }
+                // Item 246: see the matching comment on the Apply Material button
+                // above -- bottom-aligned instead of a blank spacer `Text`.
+                alignment: end;
                 Button {
                     text: "Apply Gear";
                     clicked => { EditorModel.gear_apply(EditorModel.gear_index, EditorModel.gear_custom_text); }
@@ -147,8 +221,26 @@ export component EditorDesignSettings inherits Rectangle {
             }
             VerticalLayout {
                 spacing: 3px;
-                Text { text: "Symmetry Order"; font-size: 10px; color: Theme.text-muted; }
-                LineEdit { width: 60px; text <=> EditorModel.symmetry_order_text; }
+                // CAD audit item 135: previews how many tiers the CURRENTLY
+                // typed symmetry order/mirror would leave with an incomplete
+                // orbit, before Apply Symmetry commits anything -- requested
+                // live as the field is edited (below) rather than only shown
+                // after the fact.
+                Rectangle {
+                    height: symmetry_lbl.preferred-height;
+                    Tooltip { text: @markdown("\{EditorModel.symmetry_preview_text}"); }
+                    symmetry_lbl := Text { text: "Symmetry Order"; font-size: 10px; color: Theme.text-muted; }
+                }
+                LineEdit {
+                    width: 60px;
+                    text <=> EditorModel.symmetry_order_text;
+                    edited => { EditorModel.request_symmetry_preview(self.text, EditorModel.mirror); }
+                    // CAD audit item 135: the RI Override field right above
+                    // already commits on Enter (`accepted => apply_design_
+                    // material` near the top of this file) -- this field
+                    // didn't.
+                    accepted => { EditorModel.apply_symmetry(EditorModel.symmetry_order_text, EditorModel.mirror); }
+                }
             }
             VerticalLayout {
                 spacing: 3px;
@@ -161,12 +253,21 @@ export component EditorDesignSettings inherits Rectangle {
                         height: 18px;
                         border-radius: 9px;
                         background: EditorModel.mirror ? Theme.accent-cyan : Theme.bg-card-hover;
-                        TouchArea { clicked => { EditorModel.mirror = !EditorModel.mirror; } }
+                        TouchArea {
+                            clicked => {
+                                EditorModel.mirror = !EditorModel.mirror;
+                                // CAD audit item 135: mirror is the OTHER half
+                                // of the proposed change the preview above
+                                // describes -- refresh it here too, not just
+                                // on the Symmetry Order field's own `edited`.
+                                EditorModel.request_symmetry_preview(EditorModel.symmetry_order_text, EditorModel.mirror);
+                            }
+                        }
                         Rectangle {
                             width: 14px;
                             height: 14px;
                             border-radius: 7px;
-                            background: white;
+                            background: Theme.text-on-primary;
                             x: EditorModel.mirror ? parent.width - self.width - 2px : 2px;
                             y: 2px;
                             animate x { duration: 120ms; }
@@ -175,8 +276,9 @@ export component EditorDesignSettings inherits Rectangle {
                 }
             }
             VerticalLayout {
-                spacing: 3px;
-                Text { text: " "; font-size: 10px; }
+                // Item 246: see the matching comment on the Apply Material button
+                // above -- bottom-aligned instead of a blank spacer `Text`.
+                alignment: end;
                 Button {
                     text: "Apply Symmetry";
                     clicked => { EditorModel.apply_symmetry(EditorModel.symmetry_order_text, EditorModel.mirror); }

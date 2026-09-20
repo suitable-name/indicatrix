@@ -4,7 +4,10 @@
 //! module's doc comment for why membership edits always operate on whole
 //! orbit units while detach/reattach operate per occurrence.
 
-use super::model::{INDEX_TOLERANCE, OrbitUnit, expected_orbit, orbit_units, ring_distance};
+use super::model::{
+    INDEX_TOLERANCE, OrbitUnit, expected_orbit, mirror_indices, orbit_units, ring_distance,
+    rotate_indices,
+};
 use crate::{
     design::Design,
     edit::{Edit, EditError},
@@ -263,6 +266,58 @@ impl Design {
             index: tier_index,
             indices: tier.indices.clone(),
             detached: Vec::new(),
+        })
+    }
+
+    /// Builds the [`Edit`] that rotates every index-wheel position of the
+    /// tier at `tier_index` -- both `indices` and `detached` -- by `k_teeth`
+    /// around the gear (see [`rotate_indices`]). The routine "move this
+    /// break tier half a step" operation a `GemCad`/GCS user expects a single
+    /// button for, rather than sixteen numbers computed by hand.
+    ///
+    /// # Errors
+    ///
+    /// [`EditError`] if `tier_index` is out of range.
+    pub fn rotate_indices(&self, tier_index: usize, k_teeth: f64) -> Result<Edit, EditError> {
+        let tier_count = self.tiers.len();
+        let tier = self.tiers.get(tier_index).ok_or(EditError {
+            index: tier_index,
+            tier_count,
+        })?;
+        let gear_teeth_abs = self.meta.gear_teeth_abs();
+        let mut indices = rotate_indices(&tier.indices, k_teeth, gear_teeth_abs);
+        let mut detached = rotate_indices(&tier.detached, k_teeth, gear_teeth_abs);
+        indices.sort_by(f64::total_cmp);
+        detached.sort_by(f64::total_cmp);
+        Ok(Edit::SetIndices {
+            index: tier_index,
+            indices,
+            detached,
+        })
+    }
+
+    /// Builds the [`Edit`] that mirrors every index-wheel position of the
+    /// tier at `tier_index` -- both `indices` and `detached` -- to the other
+    /// side of the symmetry axis (see [`mirror_indices`]).
+    ///
+    /// # Errors
+    ///
+    /// [`EditError`] if `tier_index` is out of range.
+    pub fn mirror_indices(&self, tier_index: usize) -> Result<Edit, EditError> {
+        let tier_count = self.tiers.len();
+        let tier = self.tiers.get(tier_index).ok_or(EditError {
+            index: tier_index,
+            tier_count,
+        })?;
+        let gear_teeth_abs = self.meta.gear_teeth_abs();
+        let mut indices = mirror_indices(&tier.indices, gear_teeth_abs);
+        let mut detached = mirror_indices(&tier.detached, gear_teeth_abs);
+        indices.sort_by(f64::total_cmp);
+        detached.sort_by(f64::total_cmp);
+        Ok(Edit::SetIndices {
+            index: tier_index,
+            indices,
+            detached,
         })
     }
 }

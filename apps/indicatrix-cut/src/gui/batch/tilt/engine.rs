@@ -217,6 +217,7 @@ fn fetch_tilt_curves_remote(
         material: material.clone(),
         planes: planes.to_vec(),
         girdle_frosted: false,
+        backdrop: 0.0,
     };
     let (mut stream, welcome) = remote_render::connect_and_handshake(worker).ok()?;
     if !welcome.tilt_curves {

@@ -20,16 +20,29 @@ use indicatrix::{
     optics::materials::GemMaterial,
 };
 
-/// Every tier index this optimizer is allowed to move -- see the module doc comment's
-/// "Which tiers are free" section for why this is exactly "not a
-/// [`MeetConstraint::ScaleReference`]" and nothing narrower.
+/// Every tier index this optimizer is allowed to move: not a
+/// [`MeetConstraint::ScaleReference`] (see the module doc comment's "Which tiers are
+/// free" section) and not already vertical.
+///
+/// The vertical exclusion matters more than it looks. A tier authored at or beyond
+/// [`MAX_SAFE_CANDIDATE_ANGLE_DEG`] -- a real girdle facet at `-90.0`, which most
+/// `.asc` files carry -- is one [`candidate_angle_is_safe`] can never accept any
+/// angle for, in either direction. [`build_free_angle_candidate`] is all-or-nothing
+/// across the whole angle vector, so leaving such a tier in `free` made it reject
+/// every simplex point [`super::polish::run_polish`] proposes, silently disabling
+/// the polish stage for the whole design rather than just for that one facet. A
+/// vertical facet is the girdle by definition, so there was never anything to
+/// optimize there.
 #[must_use]
 pub fn free_tier_indices(design: &Design) -> Vec<usize> {
     design
         .tiers
         .iter()
         .enumerate()
-        .filter(|(_, tier)| !matches!(tier.constraint, MeetConstraint::ScaleReference(_)))
+        .filter(|(_, tier)| {
+            !matches!(tier.constraint, MeetConstraint::ScaleReference(_))
+                && tier.angle_deg.abs() <= MAX_SAFE_CANDIDATE_ANGLE_DEG
+        })
         .map(|(i, _)| i)
         .collect()
 }
@@ -41,7 +54,7 @@ pub fn free_tier_indices(design: &Design) -> Vec<usize> {
 /// whatever crown/pavilion anchor it had -- the same class of anchor loss
 /// [`candidate_angle_is_safe`]'s zero-crossing check guards against on the
 /// opposite boundary. `89.5` leaves the same half-degree margin there.
-const MAX_SAFE_CANDIDATE_ANGLE_DEG: f64 = 89.5;
+pub(super) const MAX_SAFE_CANDIDATE_ANGLE_DEG: f64 = 89.5;
 
 /// Whether nudging tier `index`'s angle from `original_deg` to `candidate_deg` is
 /// safe to even attempt solving. Unsafe in either of two ways: the candidate's

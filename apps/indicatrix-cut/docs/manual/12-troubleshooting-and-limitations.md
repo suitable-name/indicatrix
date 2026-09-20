@@ -11,10 +11,10 @@ one place.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Status banner reads `Not solved -- click Solve to compute masts and validate this design.` | The design is **stale**: some edit (Save Tier, Remove, Apply Preform, Undo/Redo, or loading in the first place) happened since the last Solve. This is normal, not an error. | Click **Solve** (Chapter 5). |
-| `Cannot solve: no scale-reference tier for: <block>` | The named block (crown, pavilion, or girdle) has no tier of kind **Exact scale value**. Meet-point geometry alone can never fix a block's overall size. | Add an **Exact scale value** tier to that block (Chapter 4), then Solve again. |
-| `Degenerate: only N distinct vertex(es), volume <value or "non-finite">` | The facets bound a region, but it is not a valid solid -- usually two facets meeting somewhere they should not, or a wrong angle/constraint on a recently edited tier. | Check the tier(s) you edited most recently, especially ones sharing an anchor or a named-facet reference (Chapter 5). |
-| `Unbounded: plane(s) [<indices>] never close the solid.` | One or more facet planes never meet enough neighbours to close the stone in some direction. | Check the facet(s) at the listed plane index/indices for a missing meet partner, or an angle too shallow/steep to intersect its neighbours (Chapter 5). |
+| Status strip reads `Not solved -- click Solve to compute masts and validate this design.` | The design is **stale**: some edit (Save Tier, Remove, Apply Preform, Undo/Redo, or loading in the first place) happened since the last Solve. This is normal, not an error. | Click **Solve** (Chapter 5). |
+| `<Block> has no anchor: add a tier with an exact scale value.` | The named block (crown, pavilion, or girdle) has no tier of kind **Exact scale value**. Meet-point geometry alone can never fix a block's overall size. | Add an **Exact scale value** tier to that block (Chapter 4), or click the tier table's own **Add Anchor** button on one of that block's rows (Chapter 3), then Solve again. |
+| `Degenerate: only N distinct vertex(es), volume <value or "non-finite"> -- check tier 5 (Girdle), tier 8.` | The facets bound a region, but it is not a valid solid -- usually two facets meeting somewhere they should not, or a wrong angle/constraint on a recently edited tier. The trailing "check ..." clause, when present, already names the likeliest tier(s). | Check the named tier(s) first, or otherwise whichever you edited most recently, especially ones sharing an anchor or a named-facet reference (Chapter 5). |
+| `Unbounded: tier 3 (P1) never close the solid.` | One or more facet planes never meet enough neighbours to close the stone in some direction; the message names the tier(s) by number and name. | Check the named tier(s) for a missing meet partner, or an angle too shallow/steep to intersect its neighbours (Chapter 5). |
 | MAST/SOLVE columns show `-`, `?`, or amber **not solved** / **no anchor yet** | Same staleness or missing-anchor causes as above, scoped to one tier. | Solve the whole design; if a single tier still will not resolve, check that its block has an anchor and that its Meets constraint names real, existing facets. |
 | SOLVE column shows bold amber **Least-squares est.** or **FAILED (untrusted)** | The solver could not derive that tier's mast from real geometry and fell back to an estimate or a placeholder. | Treat the design as not actually finished. Review the tier's constraint and its neighbours; re-solve after changes. |
 | Solve is slow on a large design | Solve is a full geometric solve plus a solid-closure check across every tier -- this can take a second or two once a design has over a hundred tiers. This is expected, not a hang. | Wait for it to finish; this is exactly why Solve is a deliberate button press rather than something that reruns on every keystroke (Chapter 5). |
@@ -54,19 +54,26 @@ one place.
   the viewport use for it. Set an explicit RI override matching the custom
   material's own value if you need the exported schedule to agree (Chapter
   6).
-- **No automated "retarget for a new material" proposal yet.** Adapting a
-  design's pavilion angles for a different RI is still a manual, tier-by-
-  tier process guided by the tier list's MARGIN column (Chapter 6) -- gear,
-  symmetry order, mirror and material ARE now editable design properties
-  (Chapter 6), just not yet a one-click retarget.
 - **Deep Solve never modifies the design.** It is a read-only diagnostic
   that reports and suggests; nothing it finds is written back to the tier
   list unless you separately make the same change yourself (Chapter 8).
-- **No 3D solid preview while editing.** The Edit sub-tab is a form and a
-  table over the tier list only -- it does not show a render of the stone.
-  To see the current geometry you switch to the Live Render sub-tab, which
-  always shows the last successfully *solved* state, not a live preview of
-  unsolved edits (Chapters 2-3).
+- **The custom-material editor can only be opened from the Live Render
+  tab.** The Edit tab's Design Settings material combo lists your custom
+  materials and lets you pick one, but there is currently no button next
+  to it to create or edit one -- for that you still have to switch to the
+  Live Render tab and use the pencil button next to Render Material
+  (Chapter 2), then come back.
+- **The "Linked to design" toggle lives only on the Live Render tab.** If
+  you pick a different material there to preview a design in it, then go
+  back to the Edit tab and change anything, the render silently snaps back
+  to the design's own material the next time it refreshes -- the toggle
+  that explains why (Chapter 6) is on the tab you just left, not the one
+  you are editing in.
+- **The Solid and Live Render viewports show a generic placeholder for a
+  brand-new, empty design.** Both read "Solve to preview" / "Select a
+  design to preview" rather than a message that names New Design.../Load
+  Selected/Open Native as the next step -- only the tier table itself got
+  that friendlier empty-state text (Chapter 3).
 - **One well-known gem species is not in the render material list.**
   Sphene (titanite) is deliberately left out of the built-in render
   materials: it needs birefringence and dispersion far outside the range
@@ -101,6 +108,5 @@ one place.
 ## Next steps
 
 Appendix A collects the faceting and optics terms used throughout this
-manual; Appendix B lists keyboard shortcuts (there are none beyond standard
-text-field editing); Appendix C tables every built-in render material's
-optical properties.
+manual; Appendix B lists every keyboard shortcut this app actually has;
+Appendix C tables every built-in render material's optical properties.

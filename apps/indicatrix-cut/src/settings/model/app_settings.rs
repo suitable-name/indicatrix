@@ -43,7 +43,54 @@ pub const DEFAULT_LIVE_COMPUTE_TARGET: LiveComputeTarget = LiveComputeTarget::Bo
 pub const DEFAULT_LOCAL_COMPUTE_TARGET: LocalComputeTarget = LocalComputeTarget::CpuGpu;
 pub const DEFAULT_LIGHT_YAW_DEG: f32 = 48.0;
 pub const DEFAULT_LIGHT_PITCH_DEG: f32 = 54.0;
-pub const DEFAULT_LIGHTING_RIG: &str = "Gem Studio Ring Lights";
+/// The light tent: the lit model whose ambient sits at middle grey with black cards for
+/// facet contrast, so an undialled-in render already reads like a photograph.
+pub const DEFAULT_LIGHTING_RIG: &str = "Light tent + black cards";
+
+/// What the camera sees behind the stone -- `EnvironmentSource::Studio::backdrop`. Only
+/// the camera ray sees it; the stone's optics never do, so leakage stays dark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Backdrop {
+    /// The environment's own ground, as lit.
+    AsLit,
+    /// The neutral grey canvas `GemRay` paints, for like-for-like comparisons.
+    #[default]
+    GemRayGrey,
+    /// A white light box.
+    White,
+}
+
+impl Backdrop {
+    /// Backdrop radiance handed to `EnvironmentSource::with_backdrop`.
+    #[must_use]
+    pub const fn level(self) -> f32 {
+        match self {
+            Self::AsLit => 0.0,
+            Self::GemRayGrey => indicatrix::optics::raytracer::BACKDROP_GEMRAY_GREY,
+            Self::White => indicatrix::optics::raytracer::BACKDROP_WHITE,
+        }
+    }
+
+    /// Index into the settings dialog's pill row (`SettingsModel.backdrop_index`).
+    #[must_use]
+    pub const fn index(self) -> i32 {
+        match self {
+            Self::AsLit => 0,
+            Self::GemRayGrey => 1,
+            Self::White => 2,
+        }
+    }
+
+    /// Inverse of [`Self::index`]; anything else is the default.
+    #[must_use]
+    pub const fn from_index(index: i32) -> Self {
+        match index {
+            0 => Self::AsLit,
+            2 => Self::White,
+            _ => Self::GemRayGrey,
+        }
+    }
+}
 pub const DEFAULT_CAMERA_YAW: f32 = 0.60;
 pub const DEFAULT_CAMERA_PITCH: f32 = 0.45;
 pub const DEFAULT_CAMERA_DISTANCE: f32 = 2.4;
@@ -133,6 +180,9 @@ pub struct AppSettings {
     /// fully merged result.
     #[serde(default = "default_denoise_enabled")]
     pub denoise_enabled: bool,
+    /// What the camera sees behind the stone, in the live view and every export.
+    #[serde(default)]
+    pub backdrop: Backdrop,
     /// Inclusion/subsurface scattering amount: the Henyey-Greenstein `sigma_s`
     /// applied via `GemMaterial::with_scattering_amount` -- see `scattering_sigma_s`
     /// in `crates/indicatrix/src/optics/materials.rs` for the `0.05`-`3.0` useful
@@ -202,6 +252,14 @@ pub struct AppSettings {
     /// one-time picker prompt on the next export.
     #[serde(default)]
     pub export_directory: String,
+    /// The folder the `.asc` file and folder pickers open in, updated to whatever
+    /// the cutter last imported from. Empty means "never imported", which leaves
+    /// the picker at the OS default; importing one file at a time out of a single
+    /// book folder is the common case, so re-navigating there every time was pure
+    /// friction. Not shared with `export_directory`: designs are typically read
+    /// from somewhere quite different from where renders are written.
+    #[serde(default)]
+    pub last_import_directory: String,
     /// The export filename template -- see `export_thread::filename_template` for
     /// the variable list and sanitising/collision behaviour. Defaults to the same
     /// template a fresh install gets (not an empty string, which would sanitise
@@ -249,7 +307,17 @@ pub struct AppSettings {
     /// setup_editor_layout_callbacks`, the only place that ever sets it `true`.
     #[serde(default)]
     pub editor_layout_touched: bool,
+    /// The Edit sub-tab's "Open Recent" list: up to
+    /// [`MAX_RECENT_NATIVE_FILES`] native `.indicatrix.toml` paths, most-recently-used
+    /// first -- Item 78 ("no recent-files list"). Native paths only (never the paired
+    /// `.asc`, and never a row in the read-only catalogue database, which this list
+    /// deliberately has nothing to do with) -- see [`Self::record_recent_native_file`].
+    #[serde(default)]
+    pub recent_native_files: Vec<String>,
 }
+
+/// [`AppSettings::recent_native_files`]'s cap -- "up to ten" per Item 78.
+pub const MAX_RECENT_NATIVE_FILES: usize = 10;
 
 const fn default_preview_size() -> u32 {
     DEFAULT_PREVIEW_SIZE
@@ -300,6 +368,7 @@ impl Default for AppSettings {
             selected_material: DEFAULT_MATERIAL.to_string(),
             remote_workers: Vec::new(),
             denoise_enabled: true,
+            backdrop: Backdrop::default(),
             inclusion_sigma_s: DEFAULT_INCLUSION_SIGMA_S,
             c_axis_override_enabled: DEFAULT_C_AXIS_OVERRIDE_ENABLED,
             c_axis_tilt_deg: DEFAULT_C_AXIS_TILT_DEG,
@@ -315,6 +384,7 @@ impl Default for AppSettings {
             preview_size: DEFAULT_PREVIEW_SIZE,
             preview_spp: DEFAULT_PREVIEW_SPP,
             export_directory: String::new(),
+            last_import_directory: String::new(),
             export_filename_template: DEFAULT_EXPORT_FILENAME_TEMPLATE.to_string(),
             library_panel_collapsed: false,
             solid_view_mode: DEFAULT_SOLID_VIEW_MODE,
@@ -326,6 +396,7 @@ impl Default for AppSettings {
             editor_inspector_collapsed: false,
             editor_remap_collapsed: false,
             editor_layout_touched: false,
+            recent_native_files: Vec::new(),
         }
     }
 }
@@ -361,5 +432,65 @@ impl AppSettings {
         }
         self.remote_workers.remove(index);
         Ok(())
+    }
+
+    /// Records `path` as the most-recently-used native design file: moves it to the
+    /// front if already present (never duplicated), inserts it at the front
+    /// otherwise, and truncates back to [`MAX_RECENT_NATIVE_FILES`] entries. Called on
+    /// every successful Save Native/Open Native -- see this field's own doc comment.
+    pub fn record_recent_native_file(&mut self, path: String) {
+        self.recent_native_files
+            .retain(|existing| existing != &path);
+        self.recent_native_files.insert(0, path);
+        self.recent_native_files.truncate(MAX_RECENT_NATIVE_FILES);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_recent_native_file_inserts_at_the_front() {
+        let mut settings = AppSettings::default();
+        settings.record_recent_native_file("a.indicatrix.toml".to_string());
+        settings.record_recent_native_file("b.indicatrix.toml".to_string());
+        assert_eq!(
+            settings.recent_native_files,
+            vec![
+                "b.indicatrix.toml".to_string(),
+                "a.indicatrix.toml".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn record_recent_native_file_moves_an_existing_entry_to_the_front_without_duplicating() {
+        let mut settings = AppSettings::default();
+        settings.record_recent_native_file("a.indicatrix.toml".to_string());
+        settings.record_recent_native_file("b.indicatrix.toml".to_string());
+        settings.record_recent_native_file("a.indicatrix.toml".to_string());
+        assert_eq!(
+            settings.recent_native_files,
+            vec![
+                "a.indicatrix.toml".to_string(),
+                "b.indicatrix.toml".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn record_recent_native_file_caps_at_max_recent_native_files() {
+        let mut settings = AppSettings::default();
+        for i in 0..(MAX_RECENT_NATIVE_FILES + 3) {
+            settings.record_recent_native_file(format!("design-{i}.indicatrix.toml"));
+        }
+        assert_eq!(settings.recent_native_files.len(), MAX_RECENT_NATIVE_FILES);
+        // Most recent first: the last one recorded is still at the front, and the
+        // oldest entries fell off the back rather than the front.
+        assert_eq!(
+            settings.recent_native_files[0],
+            format!("design-{}.indicatrix.toml", MAX_RECENT_NATIVE_FILES + 2)
+        );
     }
 }

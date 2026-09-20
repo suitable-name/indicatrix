@@ -1,6 +1,7 @@
 import { Theme } from "../theme.slint";
 import { LineEdit, ComboBox } from "std-widgets.slint";
 import { LibraryModel } from "../models/library.slint";
+import { ConfirmActionDialog } from "confirm_action_dialog.slint";
 
 // Metadata editor: title, designer, shape, refractive index, index gear, facet
 // count, symmetry order, mirror symmetry, and the five geometry-derived proportion
@@ -49,12 +50,68 @@ export component MetadataEditorDialog inherits Rectangle {
     property <string> selected_shape: (root.shape_index >= 0 && root.shape_index < root.shape_options.length)
         ? root.shape_options[root.shape_index] : root.shape_draft;
 
+    // Item 168: a stray click on the backdrop used to discard all thirteen typed
+    // values with no confirmation. `is_dirty` compares every field this dialog can
+    // still actually edit (post-Item-167; gear/RI/symmetry/mirror are read-only here
+    // now, so they can never diverge from `current_detail` and are left out) against
+    // the record the dialog opened with; `request_close` asks first when any of them
+    // differ, and only `Discard`/an explicit Save proceed to the real `close()`.
+    property <bool> is_dirty: root.title_draft != LibraryModel.current_detail.title
+        || root.designer_draft != LibraryModel.current_detail.designer
+        || root.selected_shape != LibraryModel.current_detail.shape
+        || root.facets_draft != LibraryModel.current_detail.facets
+        || root.lw_ratio_draft != LibraryModel.current_detail.lw_ratio
+        || root.hw_ratio_draft != LibraryModel.current_detail.hw_ratio
+        || root.cw_ratio_draft != LibraryModel.current_detail.cw_ratio
+        || root.pw_ratio_draft != LibraryModel.current_detail.pw_ratio
+        || root.volume_draft != LibraryModel.current_detail.volume;
+    property <bool> discard_confirm_open: false;
+
+    function request_close() {
+        if root.is_dirty {
+            root.discard_confirm_open = true;
+        } else {
+            root.close();
+        }
+    }
+
+    // A ratio field is valid when left blank (Rust treats an empty string as "not
+    // recorded", not zero -- `library::detail::setup_save_metadata_callback`'s own
+    // `non_empty` filter) or parses as a positive, finite number -- the same rule
+    // `gui::editor::loading::external_proportions_from_full_record` applies when it
+    // later reads these very fields back for Deep Solve.
+    property <bool> lw_ratio_valid: root.lw_ratio_draft == "" || root.lw_ratio_draft.to-float() > 0;
+    property <bool> hw_ratio_valid: root.hw_ratio_draft == "" || root.hw_ratio_draft.to-float() > 0;
+    property <bool> cw_ratio_valid: root.cw_ratio_draft == "" || root.cw_ratio_draft.to-float() > 0;
+    property <bool> pw_ratio_valid: root.pw_ratio_draft == "" || root.pw_ratio_draft.to-float() > 0;
+    property <bool> volume_valid: root.volume_draft == "" || root.volume_draft.to-float() > 0;
+    property <bool> form_valid: root.lw_ratio_valid && root.hw_ratio_valid && root.cw_ratio_valid
+        && root.pw_ratio_valid && root.volume_valid;
+
     // Full viewport modal backdrop -- same idiom as `material_editor_dialog.slint`.
-    background: #00000088;
+    background: Theme.overlay-backdrop;
 
     TouchArea {
-        clicked => { root.close(); }
+        clicked => { root.request_close(); }
     }
+
+    // Escape = ask-then-cancel, matching `new_design_dialog.slint`'s own
+    // `init => { self.focus(); }` + `key-pressed` idiom.
+    //
+    // CAD audit item 199: `accept` (not `reject`) for every other key -- otherwise
+    // an unhandled key bubbles past this dialog to `global_shortcuts` and fires a
+    // shortcut on the design underneath it.
+    key_scope := FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.request_close();
+                return accept;
+            }
+            accept
+        }
+    }
+
 
     Rectangle {
         width: 460px;
@@ -62,12 +119,12 @@ export component MetadataEditorDialog inherits Rectangle {
         // comment on this exact line for why (`settings_dialog.slint`/
         // `import_dialog.slint` share the same idiom).
         height: content.preferred-height;
-        background: #11151f;
+        background: Theme.surface-dialog;
         border-radius: Theme.radius-md;
         border-width: 1px;
-        border-color: #334155;
+        border-color: Theme.border-dialog;
         drop-shadow-blur: 24px;
-        drop-shadow-color: #000000bb;
+        drop-shadow-color: Theme.modal-shadow;
         clip: true;
 
         TouchArea {}
@@ -97,7 +154,7 @@ export component MetadataEditorDialog inherits Rectangle {
                     height: 24px;
                     border-radius: Theme.radius-sm;
                     background: close_touch.has-hover ? #2d3748 : #1a202c;
-                    close_touch := TouchArea { clicked => { root.close(); } }
+                    close_touch := TouchArea { clicked => { root.request_close(); } }
                     Image {
                         source: @image-url("../icons/close.svg");
                         colorize: Theme.text-muted;
@@ -142,7 +199,15 @@ export component MetadataEditorDialog inherits Rectangle {
                 }
             }
 
-            // Shape / Index Gear
+            // Shape / Facet Count -- catalogue-only descriptive fields. Index Gear,
+            // Refractive Index, Symmetry Order and Mirror Symmetry used to be editable
+            // right here too, but that duplicated the Edit tab's own Design Settings
+            // panel (`editor_design_settings.slint`) without ever agreeing with it: a
+            // correction made in one never reached the other (Item 167), so this
+            // dialog no longer offers them at all -- see the note below. Their draft
+            // properties stay declared (still round-tripped verbatim through `save()`
+            // below) since removing them from `LibraryModel.save_metadata`'s signature
+            // is a change to `ui/models/library.slint`, owned by another lane.
             HorizontalLayout {
                 spacing: 10px;
                 VerticalLayout {
@@ -164,37 +229,6 @@ export component MetadataEditorDialog inherits Rectangle {
                 VerticalLayout {
                     horizontal-stretch: 1;
                     spacing: 4px;
-                    Text { text: "Index Gear:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    Rectangle {
-                        height: 30px;
-                        background: #1e293b;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: #334155;
-                        LineEdit { text <=> root.gear_draft; placeholder-text: "96..."; }
-                    }
-                }
-            }
-
-            // Refractive Index / Facet Count
-            HorizontalLayout {
-                spacing: 10px;
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 4px;
-                    Text { text: "Refractive Index:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    Rectangle {
-                        height: 30px;
-                        background: #1e293b;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: #334155;
-                        LineEdit { text <=> root.ri_draft; placeholder-text: "2.417..."; }
-                    }
-                }
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 4px;
                     Text { text: "Facet Count:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
                     Rectangle {
                         height: 30px;
@@ -207,51 +241,11 @@ export component MetadataEditorDialog inherits Rectangle {
                 }
             }
 
-            // Symmetry Order / Mirror Symmetry
-            HorizontalLayout {
-                spacing: 10px;
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 4px;
-                    Text { text: "Symmetry Order:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    Rectangle {
-                        height: 30px;
-                        background: #1e293b;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: #334155;
-                        LineEdit { text <=> root.symmetry_order_draft; placeholder-text: "8..."; }
-                    }
-                }
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 4px;
-                    Text { text: "Mirror Symmetry:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    HorizontalLayout {
-                        height: 30px;
-                        alignment: start;
-                        // Same on/off pill idiom as `settings_dialog.slint`'s "Frosted
-                        // Girdle" toggle.
-                        Rectangle {
-                            width: 36px;
-                            height: 20px;
-                            border-radius: 10px;
-                            background: root.mirror_symmetry_draft ? Theme.accent-cyan : #334155;
-                            TouchArea {
-                                clicked => { root.mirror_symmetry_draft = !root.mirror_symmetry_draft; }
-                            }
-                            Rectangle {
-                                width: 16px;
-                                height: 16px;
-                                border-radius: 8px;
-                                background: white;
-                                x: root.mirror_symmetry_draft ? parent.width - self.width - 2px : 2px;
-                                y: 2px;
-                                animate x { duration: 120ms; }
-                            }
-                        }
-                    }
-                }
+            Text {
+                text: "Index gear, refractive index, symmetry order and mirror symmetry are edited from the Edit tab's Design Settings panel when this design is open, so the two never disagree.";
+                font-size: 9.5px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
             }
 
             Rectangle { height: 1px; background: #1e293b; }
@@ -278,6 +272,7 @@ export component MetadataEditorDialog inherits Rectangle {
                         border-color: #334155;
                         LineEdit { text <=> root.lw_ratio_draft; placeholder-text: "1.052..."; }
                     }
+                    Text { text: root.lw_ratio_valid ? "" : "not a positive number -- ignored"; font-size: 9px; color: Theme.accent-ruby; }
                 }
                 VerticalLayout {
                     horizontal-stretch: 1;
@@ -291,6 +286,7 @@ export component MetadataEditorDialog inherits Rectangle {
                         border-color: #334155;
                         LineEdit { text <=> root.hw_ratio_draft; placeholder-text: "0.612..."; }
                     }
+                    Text { text: root.hw_ratio_valid ? "" : "not a positive number -- ignored"; font-size: 9px; color: Theme.accent-ruby; }
                 }
             }
 
@@ -309,6 +305,7 @@ export component MetadataEditorDialog inherits Rectangle {
                         border-color: #334155;
                         LineEdit { text <=> root.cw_ratio_draft; placeholder-text: "0.172..."; }
                     }
+                    Text { text: root.cw_ratio_valid ? "" : "not a positive number -- ignored"; font-size: 9px; color: Theme.accent-ruby; }
                 }
                 VerticalLayout {
                     horizontal-stretch: 1;
@@ -322,6 +319,7 @@ export component MetadataEditorDialog inherits Rectangle {
                         border-color: #334155;
                         LineEdit { text <=> root.pw_ratio_draft; placeholder-text: "0.440..."; }
                     }
+                    Text { text: root.pw_ratio_valid ? "" : "not a positive number -- ignored"; font-size: 9px; color: Theme.accent-ruby; }
                 }
             }
 
@@ -337,6 +335,7 @@ export component MetadataEditorDialog inherits Rectangle {
                     border-color: #334155;
                     LineEdit { text <=> root.volume_draft; placeholder-text: "0.420..."; }
                 }
+                Text { text: root.volume_valid ? "" : "not a positive number -- ignored"; font-size: 9px; color: Theme.accent-ruby; }
             }
 
             Rectangle { height: 1px; background: #1e293b; }
@@ -352,7 +351,7 @@ export component MetadataEditorDialog inherits Rectangle {
                     background: cancel_touch.has-hover ? #1e293b : #0f172a;
                     border-width: 1px;
                     border-color: #334155;
-                    cancel_touch := TouchArea { clicked => { root.close(); } }
+                    cancel_touch := TouchArea { clicked => { root.request_close(); } }
                     Text { text: "Cancel"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                 }
 
@@ -360,8 +359,9 @@ export component MetadataEditorDialog inherits Rectangle {
                     horizontal-stretch: 1;
                     height: 32px;
                     border-radius: Theme.radius-sm;
-                    background: save_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
+                    background: !root.form_valid ? Theme.border-medium : save_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
                     save_touch := TouchArea {
+                        enabled: root.form_valid;
                         clicked => {
                             root.save(
                                 root.title_draft,
@@ -383,11 +383,23 @@ export component MetadataEditorDialog inherits Rectangle {
                     HorizontalLayout {
                         alignment: center;
                         spacing: 6px;
-                        Image { source: @image-url("../icons/check.svg"); colorize: #0f172a; width: 12px; height: 12px; vertical-alignment: center; }
-                        Text { text: "Save Metadata"; font-size: 12px; font-weight: 700; color: #0f172a; vertical-alignment: center; }
+                        Image { source: @image-url("../icons/check.svg"); colorize: root.form_valid ? #0f172a : Theme.text-muted; width: 12px; height: 12px; vertical-alignment: center; }
+                        Text { text: "Save Metadata"; font-size: 12px; font-weight: 700; color: root.form_valid ? #0f172a : Theme.text-muted; vertical-alignment: center; }
                     }
                 }
             }
+        }
+    }
+
+    if root.discard_confirm_open: ConfirmActionDialog {
+        heading: "Discard Changes?";
+        message: "This design's metadata has unsaved edits. Discard them?";
+        primary_label: "";
+        secondary_label: "Discard";
+        cancel => { root.discard_confirm_open = false; }
+        secondary => {
+            root.discard_confirm_open = false;
+            root.close();
         }
     }
 }

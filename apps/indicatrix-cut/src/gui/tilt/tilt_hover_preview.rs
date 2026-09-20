@@ -33,7 +33,7 @@
 
 use crate::{
     MainWindow, TiltModel,
-    bridge::render_thread::{RenderContext, resolve_material},
+    bridge::render_thread::{RenderContext, resolve_material_with_override},
 };
 use glam::Vec3;
 use indicatrix::{
@@ -114,18 +114,26 @@ struct HoverPreviewScene<'a> {
 /// (background) thread -- callers must not call this from the UI thread.
 ///
 /// Material resolution deliberately mirrors `gui::tilt_profile`'s background sweep
-/// (`resolve_material`, no per-material override machinery applied): this preview
-/// must match what the curve was computed against, not whatever inclusion/c-axis/
-/// edge-rounding overrides happen to be dialed in on the live viewport.
+/// (`resolve_material_with_override`, CAD audit items 57/61): the RI override/named
+/// custom material DOES reach this preview, same as the curve it sits beside. What
+/// still does NOT reach it -- deliberately, not a bug -- is any of the live
+/// viewport's DISPLAY overrides (inclusion/subsurface scattering, c-axis
+/// orientation, edge rounding, physical stone size, frosted girdle): `caller` below
+/// always traces with `&[]` facet finishes (an all-polished stone) against the
+/// bare resolved material, so the curve and this thumbnail describe the design's
+/// real optics under a fixed, comparable presentation rather than whatever display
+/// knobs happen to be dialled in on screen -- CAD audit item 234 asks that this be
+/// stated on screen (see `performance_graph_dialog.slint`'s caption) rather than
+/// left for a cutter to discover by comparing images.
 fn render_hover_preview(scene: &HoverPreviewScene<'_>) -> SharedPixelBuffer<Rgba8Pixel> {
     let width = PREVIEW_SIZE;
     let height = PREVIEW_SIZE;
     // Same FOV convention as every other one-off `Camera::new` call site in this app.
     let camera = Camera::new(scene.cam_yaw, scene.cam_pitch, scene.distance, 42.0);
-    let environment =
-        scene
-            .lighting_preset
-            .studio(scene.exposure, scene.light_yaw, scene.light_pitch);
+    let environment = scene
+        .lighting_preset
+        .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
+        .with_backdrop(indicatrix::optics::raytracer::BACKDROP_GEMRAY_GREY);
 
     let mut accum = vec![Vec3::ZERO; (width * height) as usize];
     for y in 0..height {
@@ -218,6 +226,7 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                 let (
                     planes,
                     material_name,
+                    material_override,
                     custom_materials,
                     distance,
                     lighting_preset,
@@ -230,6 +239,7 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                     (
                         ctx.active_planes.clone(),
                         ctx.material_name.clone(),
+                        ctx.material_override.clone(),
                         ctx.custom_materials.clone(),
                         ctx.distance,
                         ctx.lighting_preset,
@@ -239,9 +249,12 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                         ctx.max_bounces,
                     )
                 };
-                let material = resolve_material(
+                // Same override preference as the sweep itself -- see
+                // `tilt_profile`'s own comment (CAD audit items 57/61).
+                let material = resolve_material_with_override(
                     &GemMaterial::all_materials(),
                     &custom_materials,
+                    material_override.as_ref(),
                     &material_name,
                 );
                 let (cam_yaw, cam_pitch) = camera_pose_for_hover(axis_index, tilt_deg);

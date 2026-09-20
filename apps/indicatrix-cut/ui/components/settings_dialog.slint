@@ -5,6 +5,13 @@ import { SettingsModel } from "../models/settings.slint";
 import { ViewportModel } from "../models/viewport.slint";
 import { RemoteWorkerModel } from "../models/remote_worker.slint";
 import { TiltModel } from "../models/tilt.slint";
+// CAD audit item 146: `gui::editor::view::refresh_design_settings` (owned by
+// another lane) pushes the design's own `girdle_diameter_mm` into
+// `ctx.stone_width_mm`/`SettingsModel.stone_width_mm` under the same
+// Edit-tab/`viewport_material_linked` gate the material sync uses -- this
+// file only reads that same global to say so next to the slider, rather than
+// showing a typed-in-looking number the slider itself did not set.
+import { EditorModel } from "../models/editor.slint";
 
 export component SettingsDialog inherits Rectangle {
     // This popup is positioned by absolute x/y/z in `gem_viewport.slint` rather than
@@ -26,6 +33,15 @@ export component SettingsDialog inherits Rectangle {
     property <bool> confirming_reset: false;
     property <int> renaming_index: -1;
     property <string> rename_text: "";
+    // CAD audit item 146: while linked, `SettingsModel.stone_width_mm` is
+    // overwritten by the design's own girdle diameter on every Edit-tab
+    // refresh (a solve, an edit, a design load) -- dragging the Stone Size
+    // slider would only be clobbered on the next one, so the slider says so
+    // instead of looking like an independent, sticky manual setting.
+    property <bool> stone_size_is_design_driven: EditorModel.enabled && ViewportModel.viewport_material_linked;
+    property <string> stone_size_tooltip: root.stone_size_is_design_driven
+        ? "Girdle width in millimetres for scale-accurate rendering. Currently set from the linked design's own girdle diameter -- turn off \"Linked to design\" to set this manually."
+        : "Girdle width in millimetres for scale-accurate rendering.";
 
     callback close();
     close => { SettingsModel.is_open = false; SettingsModel.close(); }
@@ -47,6 +63,7 @@ export component SettingsDialog inherits Rectangle {
         SettingsModel.local_compute_target_index = 1;
         SettingsModel.bounce_index = 2;
         SettingsModel.exposure_val = 1.0;
+        SettingsModel.backdrop_index = 1;
         SettingsModel.light_yaw_deg = 48.0;
         SettingsModel.light_pitch_deg = 54.0;
         SettingsModel.inclusion_sigma_s = 0.0;
@@ -65,6 +82,7 @@ export component SettingsDialog inherits Rectangle {
         SettingsModel.local_compute_target_changed(1);
         SettingsModel.bounces_changed(12);
         SettingsModel.exposure_changed(1.0);
+        SettingsModel.backdrop_changed(1);
         ViewportModel.light_pos_changed(48.0, 54.0);
         SettingsModel.inclusion_changed(0.0);
         SettingsModel.c_axis_override_changed(false);
@@ -938,8 +956,18 @@ export component SettingsDialog inherits Rectangle {
                 alignment: space-between;
                 Rectangle {
                     height: stone_size_lbl.preferred-height;
-                    Tooltip { text: @markdown("Girdle width in millimetres for scale-accurate rendering."); }
-                    stone_size_lbl := Text { text: "Stone Size"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                    Tooltip { text: @markdown("\{root.stone_size_tooltip}"); }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        stone_size_lbl := Text { text: "Stone Size"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                        if root.stone_size_is_design_driven: Text {
+                            text: "(from design)";
+                            font-size: 10px;
+                            font-italic: true;
+                            color: Theme.text-muted;
+                            vertical-alignment: center;
+                        }
+                    }
                 }
                 Text {
                     text: SettingsModel.stone_width_mm <= 0.0 ? "Off" : Math.round(SettingsModel.stone_width_mm * 100.0) / 100.0 + "mm";
@@ -1056,6 +1084,43 @@ export component SettingsDialog inherits Rectangle {
                 maximum: 2.5;
                 value <=> SettingsModel.exposure_val;
                 changed(val) => { SettingsModel.exposure_changed(val); }
+            }
+        }
+
+        // Backdrop -- the card behind the stone. Only the camera sees it; the stone's
+        // optics never do, so leakage stays dark whatever is picked here.
+        VerticalLayout {
+            spacing: 4px;
+            Rectangle {
+                height: backdrop_lbl.preferred-height;
+                Tooltip { text: @markdown("What the camera sees behind the stone. **As lit**: the environment's own ground. **GemRay grey**: the neutral canvas GemRay paints, for like-for-like comparisons. **White**: a light box. The stone's optics never see the card, so leakage stays dark."); }
+                backdrop_lbl := Text { text: "Backdrop"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+            }
+            HorizontalLayout {
+                spacing: 4px;
+                for label[i] in ["As lit", "GemRay grey", "White"]: Rectangle {
+                    horizontal-stretch: 1;
+                    height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: SettingsModel.backdrop_index == i ? Theme.accent-cyan : (backdrop_touch.has-hover ? #1e293b : #0f172a);
+                    border-width: 1px;
+                    border-color: SettingsModel.backdrop_index == i ? Theme.accent-cyan : #334155;
+
+                    backdrop_touch := TouchArea {
+                        clicked => {
+                            SettingsModel.backdrop_index = i;
+                            SettingsModel.backdrop_changed(i);
+                        }
+                    }
+                    Text {
+                        text: label;
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: SettingsModel.backdrop_index == i ? #0f172a : Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
             }
         }
 

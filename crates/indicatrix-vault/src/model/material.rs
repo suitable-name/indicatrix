@@ -37,4 +37,12 @@ pub struct CustomMaterialRow {
     /// fields do; the caller falls back to the material's ordinary
     /// constant-`birefringence_delta` behaviour.
     pub per_axis_dispersion_json: Option<String>,
+    /// The material's specific gravity (density relative to water), or `None` for
+    /// a row saved before this field existed or an author who never typed one.
+    /// See CAD audit item 169: with this `None`, carat-weight estimates for a
+    /// custom material stay empty unless the cutter separately overrides SG per
+    /// design. A caller wanting a `GemMaterial`-side fallback should treat `None`
+    /// the same way `crystal_system`/`optical_character` do -- infer or leave blank,
+    /// never guess a number.
+    pub specific_gravity: Option<f32>,
 }

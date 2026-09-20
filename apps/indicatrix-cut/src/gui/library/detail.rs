@@ -2,12 +2,16 @@ use crate::{
     AngleItem, DiagramDetailData, FileItem, LibraryModel, MainWindow, TiltModel, ViewportModel,
     bridge::{
         library::source::{self as library_source, LibrarySource},
-        render_thread::RenderContext,
+        render_thread::{PlanesOwner, RenderContext},
     },
     gui::{
-        library::search::refresh_diagram_list_via_source,
-        render::camera_lighting::resubmit_live_solid, show_toast,
-        solid_preview::preview_state::SolidPreviewState, sync_range_bounds_to_ui,
+        library::{
+            diagram_list::sync_range_bounds_to_ui_preserving_filters,
+            search::refresh_diagram_list_via_source,
+        },
+        render::camera_lighting::resubmit_live_solid,
+        show_toast,
+        solid_preview::preview_state::SolidPreviewState,
     },
     settings::WorkerSettings,
 };
@@ -20,6 +24,22 @@ use indicatrix_vault::{db::sqlite::Database, model::metadata_update::MetadataUpd
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::sync::{Arc, Mutex};
 use tracing::{error, info};
+
+/// Which side of the girdle a catalogue row's angle text describes, for
+/// [`AngleItem::side`]: `-1` pavilion, `1` crown, `0` neither.
+///
+/// The catalogue stores each angle as free text and carries no `Design`, so unlike
+/// the editor's own schedule rows (which take the side from the solver's block
+/// classification in `gui::editor::state::cutting_schedule_rows`) this can only read
+/// the sign. A row whose text does not parse, or which sits exactly on the girdle
+/// plane, reports `0` rather than guessing a side.
+fn side_from_angle_text(angle: &str) -> i32 {
+    match angle.trim().parse::<f64>() {
+        Ok(deg) if deg < 0.0 => -1,
+        Ok(deg) if deg > 0.0 => 1,
+        _ => 0,
+    }
+}
 
 /// Dispatches to [`load_diagram_detail`] (the LOCAL database lookup, unchanged -- see
 /// this crate's requirement that local behaviour stay byte-for-byte identical)
@@ -102,6 +122,7 @@ pub fn load_diagram_detail(
                 .into_iter()
                 .map(|a| AngleItem {
                     order_idx: a.order_index as i32,
+                    side: side_from_angle_text(&a.angle),
                     facet: a.facet.into(),
                     angle: a.angle.into(),
                     index_val: a.index.into(),
@@ -166,6 +187,7 @@ pub fn load_diagram_detail(
             drop(db);
 
             apply_reconstructed_planes(
+                ui,
                 render_ctx,
                 full.shape.as_deref(),
                 full.index_gear.as_deref(),
@@ -296,6 +318,7 @@ fn apply_design_record_to_ui(
         .iter()
         .map(|a| AngleItem {
             order_idx: a.order_index as i32,
+            side: side_from_angle_text(&a.angle),
             facet: a.facet.clone().into(),
             angle: a.angle.clone().into(),
             index_val: a.index.clone().into(),
@@ -323,6 +346,7 @@ fn apply_design_record_to_ui(
         .set_selected_entry_id(record.entry_id as i32);
 
     apply_reconstructed_planes(
+        ui,
         render_ctx,
         record.shape.as_deref(),
         record.index_gear.as_deref(),
@@ -493,8 +517,11 @@ pub fn setup_save_metadata_callback(
                     // `library::refresh_after_library_change` does for rename/shape --
                     // that helper is private to `gui::library`, so this repeats its
                     // essential two steps (range bounds, then the list query) rather
-                    // than reaching into another module's private function.
-                    sync_range_bounds_to_ui(&ui, &db_meta);
+                    // than reaching into another module's private function. The
+                    // `_preserving_filters` variant (Item 188): a metadata correction
+                    // is not a request to clear whatever range filters the cutter had
+                    // already narrowed the catalogue to.
+                    sync_range_bounds_to_ui_preserving_filters(&ui, &db_meta);
                     let search = ui.global::<LibraryModel>().get_search_text();
                     let shape_idx = ui.global::<LibraryModel>().get_selected_shape_index() as usize;
                     let shape_filter = ui
@@ -527,7 +554,16 @@ pub fn setup_save_metadata_callback(
 /// rebuilds the 3D viewport's facet planes from a design's shape/gear/angle-settings --
 /// exactly one reconstruction implementation for both sources, so they can never drift
 /// apart.
+///
+/// CAD audit item 147 (remaining half): this claims the shared plane slot exactly
+/// like `gui::editor::view::refresh_viewport` does for an in-editor edit -- if the
+/// Tilt Performance dialog is open over a PREVIOUS design's curves when a cutter
+/// picks a different catalogue entry, those curves and summary badges would
+/// otherwise go on describing geometry that no longer exists. `ui` is only needed
+/// for that re-sweep request (`TiltModel.dialog_open`/
+/// `invoke_request_tilt_profile_axes`), not for anything else this function does.
 fn apply_reconstructed_planes(
+    ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
     shape: Option<&str>,
     index_gear: Option<&str>,
@@ -561,9 +597,34 @@ fn apply_reconstructed_planes(
         .unwrap_or(96);
 
     let mut ctx = render_ctx.lock().unwrap();
-    ctx.active_planes = std::sync::Arc::new(planes);
-    ctx.design_gear = Some((gear_teeth, 0.0));
-    ctx.dirty = true;
+    // CAD audit item 58: a catalogue click must not steal the viewport out from
+    // under a design being edited. `claim_active_planes` refuses when the editor
+    // owns the planes; say so rather than appearing to work and changing nothing.
+    let claimed = ctx.claim_active_planes(
+        std::sync::Arc::new(planes),
+        Some((gear_teeth, 0.0)),
+        PlanesOwner::Catalogue { entry_id },
+    );
+    if claimed {
+        ctx.dirty = true;
+    }
+    drop(ctx);
+    if !claimed {
+        show_toast(
+            ui,
+            "The 3D view is showing the design you are editing -- it was left alone. \
+             Switch to the Library tab's own view to preview this row.",
+            "info",
+        );
+        return;
+    }
+
+    // CAD audit item 147 (remaining half): see this function's own doc comment --
+    // `AxesCacheKey` (`gui::tilt::tilt_profile`) already hashes the planes, so this
+    // is a no-op resweep whenever nothing about them actually moved.
+    if ui.global::<TiltModel>().get_dialog_open() {
+        ui.global::<TiltModel>().invoke_request_tilt_profile_axes();
+    }
 }
 
 /// Rebuilds a design's 3D facet planes from its shape/gear/angle-settings. Pulled out

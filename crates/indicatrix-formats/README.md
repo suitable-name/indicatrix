@@ -4,13 +4,14 @@ Readers and writers for gemstone faceting design file formats.
 
 `indicatrix-formats` is an independent,
 unaffiliated implementation of file formats originating with `GemCAD` (Robert
-Strickland's faceting-design software) and, in future, Gem Cut Studio. It is not
-produced, endorsed, or affiliated with either program or their authors. This crate
-has **zero runtime dependencies** — `crates/indicatrix-formats/Cargo.toml` has an empty
-`[dependencies]` table. A file-format reader should not force a dependency tree
-onto callers who just want to parse text, and keeping it that way means every
-downstream crate that touches `.asc` files (`indicatrix`, `indicatrix-vault`,
-`apps/indicatrix-cut`) pays nothing extra for it.
+Strickland's faceting-design software) and Gem Cut Studio. It is not
+produced, endorsed, or affiliated with either program or their authors. `asc`,
+`gcs`, and `gem` have **zero runtime dependencies** between them — only `native`
+(this crate's own `.indicatrix.toml` sidecar format) pulls in `serde`/`toml`/`sha2`.
+A file-format reader should not force a dependency tree onto callers who just want
+to parse text, and keeping it that way means every downstream crate that touches
+`.asc`/`.gcs`/`.gem` files (`indicatrix`, `indicatrix-vault`, `apps/indicatrix-cut`)
+pays nothing extra for it.
 
 > **Note on this document:** `indicatrix-formats`'s internals (`src/asc.rs`) are under
 > active development. This README describes the format's semantics and the
@@ -23,15 +24,27 @@ downstream crate that touches `.asc` files (`indicatrix`, `indicatrix-vault`,
 - **`indicatrix_formats::asc`** — `GemCAD`'s `.asc` cutting-schedule text format. Read and
   write support, verified against a real-world corpus of 5,759 `.asc` files across
   2,881 distinct designs.
-- **`.gem` / `.gcs`** — not yet implemented. `GemCAD`'s native `.gem` format and Gem
-  Cut Studio's `.gcs` format are natural future additions: some real-world designs
-  exist only as one of those, with no `.asc` counterpart at all.
+- **`indicatrix_formats::gcs`** — Gem Cut Studio's `.gcs` XML design format. Read-only
+  (nothing downstream produces `.gcs`, so there is no writer). Verified against 44 of
+  56 real `.gcs` files with a sibling `.asc` for the same design; see the module's own
+  doc comment for exactly what matches, what does not (`depth` is not `.asc`'s
+  `mast`), and the 12 files that disagree and why.
+- **`indicatrix_formats::gem`** — `GemCAD`'s native `.gem` binary save format.
+  **Partial, by necessity**: this is an unpublished binary format, and only its
+  embedded cutting/meet-instruction text and facet-name labels could be confirmed
+  against real data (a Pascal-style length-prefixed ASCII string scan, cross-checked
+  against a scraped `angle_settings` table and this crate's own catalog metadata).
+  The numeric encoding of facet angle, index position, and depth could not be
+  reverse-engineered despite a systematic search (raw degrees/radians, normal-vector
+  `cos`/`sin`, and literal tooth-number integers, at multiple widths and both
+  `f32`/`f64` precision) and is not guessed at or exposed. See the module's own doc
+  comment for the full account of what is and is not established.
 
-Each format lives in its own module (`indicatrix_formats::asc`, and eventually `indicatrix_formats::gem`
-/ `indicatrix_formats::gcs`) so that reading or writing a design never requires pulling in a
+Each format lives in its own module (`indicatrix_formats::asc`, `indicatrix_formats::gcs`,
+`indicatrix_formats::gem`) so that reading or writing a design never requires pulling in a
 particular renderer, database, or GUI toolkit. Anything genuinely shared across more
 than one format's module would belong at the crate root — nothing has met that bar
-yet, since `asc` is currently the only implemented format.
+yet.
 
 ## Quick start
 
@@ -236,15 +249,18 @@ solid) lives in `indicatrix`, which depends on this crate, not the other way aro
 cargo test -p indicatrix-formats
 ```
 
-There is no `tests/` directory — every test lives inline in `src/asc.rs`'s
-`#[cfg(test)] mod tests`, with fixtures embedded as string constants (several are
+There is no `tests/` directory — every test lives inline in each format module's own
+`#[cfg(test)] mod tests`, with fixtures embedded as string/byte constants (several are
 verbatim excerpts of real corpus files, attributed by their `attached_files` row id
-and filename). Coverage includes field-level parsing, continuation-line handling,
-corpus-quirk tolerance (missing `g` keyword, fractional indices, multi-name tiers),
-negative-input error messages, a no-panic-on-garbage smoke test, `MeetInstruction`
+and filename). `src/asc.rs`'s coverage includes field-level parsing, continuation-line
+handling, corpus-quirk tolerance (missing `g` keyword, fractional indices, multi-name
+tiers), negative-input error messages, a no-panic-on-garbage smoke test, `MeetInstruction`
 parsing against real note text, and round-trip equality (`parse_asc(&to_asc_string(parse_asc(x))) == parse_asc(x)`)
 against five real fixture files spanning different gear counts, symmetry orders,
-name-free designs, and negative-mast tiers.
+name-free designs, and negative-mast tiers. `src/gcs.rs`'s tests parse a real (trimmed)
+`.gcs` excerpt and check its angle-convention conversion against its sibling `.asc`;
+`src/gem.rs`'s tests parse real extracted byte slices from an actual `.gem` file and
+check the recovered note text against that same design's own catalog metadata.
 
 Broader, corpus-scale validation (the "5,759 files / 2,881 designs" figures, and
 cross-checks of `.asc`-derived geometry against independently published

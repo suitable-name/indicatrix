@@ -212,7 +212,7 @@ use crate::{
         materials::{CrystalSystem, GemMaterial},
         raytracer::{
             Camera, EnvironmentSource, FacetFinish, LightingPreset,
-            compute_illuminant_white_balance, illuminant_temperature_k,
+            environment::environment_white_balance, illuminant_temperature_k,
         },
     },
     renderer::{
@@ -1596,6 +1596,7 @@ struct ChunkFrameState<'a> {
     /// See [`environment_params`]'s own doc comment.
     use_d65: bool,
     studio_model: u32,
+    backdrop: f32,
 }
 
 /// Bundles [`GpuFrameRenderer::accumulate_turn`]'s per-REQUEST inputs -- the values that
@@ -1666,6 +1667,7 @@ const fn build_chunk_params(
     .with_debug_buffers_disabled()
     .with_studio_use_d65(state.use_d65)
     .with_studio_model(state.studio_model)
+    .with_backdrop(state.backdrop)
 }
 
 /// The four per-slot GPU resources [`GpuFrameRenderer::dispatch_chunk`] reads for one
@@ -2025,16 +2027,21 @@ impl GpuFrameRenderer {
         let scene = request.scene;
         let num_pixels = scene.width as usize * scene.height as usize;
 
-        let (env_mode, temp_k, spot_mult, exposure, light_yaw, light_pitch, use_d65, studio_model) =
-            environment_params(scene.environment);
-        // `optics::raytracer::environment::environment_white_balance`: only the analytic
-        // studio rig has a single illuminant colour temperature to neutralize against --
-        // an HDR map applies no von-Kries correction (`Vec3::ONE`). See finding G6.
-        let white_balance = if matches!(scene.environment, EnvironmentSource::HdrMap(_)) {
-            Vec3::ONE
-        } else {
-            compute_illuminant_white_balance(temp_k)
-        };
+        let (
+            env_mode,
+            temp_k,
+            spot_mult,
+            exposure,
+            light_yaw,
+            light_pitch,
+            use_d65,
+            studio_model,
+            backdrop,
+        ) = environment_params(scene.environment);
+        // The per-preset adaptation the CPU tracer applies (identity for an HDR map and
+        // for the lit D65 models, Planckian for the rest), so a hybrid frame's CPU and
+        // GPU tiles agree.
+        let white_balance = environment_white_balance(scene.environment);
 
         let gpu_material = GpuGemMaterial::encode(scene.material);
         let gpu_finishes = encode_facet_finishes(scene.facet_finishes, scene.planes.len());
@@ -2104,6 +2111,7 @@ impl GpuFrameRenderer {
             white_balance,
             use_d65,
             studio_model,
+            backdrop,
         };
 
         TurnSetup {
@@ -3002,14 +3010,19 @@ impl GpuFrameRenderer {
             ));
         }
 
-        let (env_mode, temp_k, spot_mult, exposure, light_yaw, light_pitch, use_d65, studio_model) =
-            environment_params(scene.environment);
-        // See `Self::prepare_turn`'s identical branch for why HDR skips white balancing.
-        let white_balance = if matches!(scene.environment, EnvironmentSource::HdrMap(_)) {
-            Vec3::ONE
-        } else {
-            compute_illuminant_white_balance(temp_k)
-        };
+        let (
+            env_mode,
+            temp_k,
+            spot_mult,
+            exposure,
+            light_yaw,
+            light_pitch,
+            use_d65,
+            studio_model,
+            backdrop,
+        ) = environment_params(scene.environment);
+        // See `Self::prepare_turn`.
+        let white_balance = environment_white_balance(scene.environment);
 
         let gpu_material = GpuGemMaterial::encode(scene.material);
         let gpu_finishes = encode_facet_finishes(scene.facet_finishes, scene.planes.len());
@@ -3060,7 +3073,8 @@ impl GpuFrameRenderer {
             .with_pixel_offset(first_pixel as u32)
             .with_debug_buffers_disabled()
             .with_studio_use_d65(use_d65)
-            .with_studio_model(studio_model);
+            .with_studio_model(studio_model)
+            .with_backdrop(backdrop);
 
             let outputs = self.outputs[chunk_index % 2]
                 .as_ref()
@@ -3255,17 +3269,17 @@ fn chunk_pixels_for(budget_bytes: usize, spp: u32, num_pixels: usize) -> usize {
 }
 
 /// [`environment_params`]'s return value: `(env_mode, temp_k, spot_mult, exposure,
-/// light_yaw, light_pitch, use_d65, studio_model)`. `use_d65` mirrors
+/// light_yaw, light_pitch, use_d65, studio_model, backdrop)`. `use_d65` mirrors
 /// `optics::raytracer::environment::sample_studio_environment_with_rig`'s own
 /// `preset.uses_d65()` check -- see
 /// `renderer::buffers::GpuTransportParams::studio_use_d65`'s doc comment.
-type EnvironmentParams = (u32, f32, f32, f32, f32, f32, bool, u32);
+type EnvironmentParams = (u32, f32, f32, f32, f32, f32, bool, u32, f32);
 
 /// Maps an [`EnvironmentSource`] onto the megakernel's `env_mode` and its studio-rig
 /// parameters -- see [`EnvironmentParams`] for the returned tuple's field meanings.
 ///
 /// `HdrMap`'s studio-rig fields (`temp_k`/`spot_mult`/`exposure`/`light_yaw`/`light_pitch`/
-/// `use_d65`/`studio_model`) are unused by the shader's `env_mode == transport_env_mode::HDR_MAP` branch
+/// `use_d65`/`studio_model`/`backdrop`) are unused by the shader's `env_mode == transport_env_mode::HDR_MAP` branch
 /// (see `sample_environment_with_rig` in `spectral_transport.wgsl`) -- zeroed here rather
 /// than left to whatever a caller might otherwise pass, so a stray read of one of them
 /// during future maintenance can't silently pick up a stale studio value.
@@ -3283,6 +3297,7 @@ const fn environment_params(environment: EnvironmentSource<'_>) -> EnvironmentPa
             exposure,
             light_yaw,
             light_pitch,
+            backdrop,
         } => (
             transport_env_mode::STUDIO_RIG,
             illuminant_temperature_k(preset),
@@ -3292,6 +3307,7 @@ const fn environment_params(environment: EnvironmentSource<'_>) -> EnvironmentPa
             light_pitch,
             preset.uses_d65(),
             preset.model().gpu_id(),
+            backdrop,
         ),
         EnvironmentSource::HdrMap(_) => (
             transport_env_mode::HDR_MAP,
@@ -3302,6 +3318,7 @@ const fn environment_params(environment: EnvironmentSource<'_>) -> EnvironmentPa
             0.0,
             false,
             0,
+            0.0,
         ),
     }
 }
@@ -3845,7 +3862,7 @@ mod tests {
 
     #[test]
     fn studio_environments_map_onto_the_studio_rig_mode() {
-        let (mode, temp_k, spot_mult, exposure, yaw, pitch, use_d65, studio_model) =
+        let (mode, temp_k, spot_mult, exposure, yaw, pitch, use_d65, studio_model, backdrop) =
             environment_params(LightingPreset::Daylight.studio(1.5, 0.4, 0.35));
         assert_eq!(mode, transport_env_mode::STUDIO_RIG);
         assert_eq!(temp_k, illuminant_temperature_k(LightingPreset::Daylight));
@@ -3855,6 +3872,7 @@ mod tests {
         // GpuTransportParams::studio_use_d65's doc comment.
         assert!(use_d65);
         assert_eq!(studio_model, 0);
+        assert_eq!(backdrop, 0.0);
     }
 
     /// Finding G6: an HDR map is a SUPPORTED environment (`env_mode ==
@@ -3864,7 +3882,7 @@ mod tests {
     #[test]
     fn hdr_environments_map_onto_the_hdr_map_mode() {
         let map = crate::renderer::env_map::EnvironmentMap::uniform(4, 2, [1.0, 1.0, 1.0]);
-        let (mode, temp_k, spot_mult, exposure, yaw, pitch, use_d65, studio_model) =
+        let (mode, temp_k, spot_mult, exposure, yaw, pitch, use_d65, studio_model, backdrop) =
             environment_params(EnvironmentSource::HdrMap(&map));
         assert_eq!(mode, transport_env_mode::HDR_MAP);
         assert_eq!(
@@ -3873,6 +3891,7 @@ mod tests {
         );
         assert!(!use_d65);
         assert_eq!(studio_model, 0);
+        assert_eq!(backdrop, 0.0);
     }
 
     /// This module must ENFORCE `GemMaterial::gpu_supported`, not merely document it --

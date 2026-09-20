@@ -1,16 +1,132 @@
 import { Theme } from "../theme.slint";
 import { ComboBox, Slider, LineEdit } from "std-widgets.slint";
 import { ViewportModel } from "../models/viewport.slint";
+import { ConfirmActionDialog } from "confirm_action_dialog.slint";
 
 export component MaterialEditorDialog inherits Rectangle {
+    // Delete used to be a single, unconfirmed click that permanently removed a
+    // custom material (with any design referencing it silently falling back to a
+    // built-in of the same name, or Diamond) -- this gates it behind an explicit
+    // "Are you sure" step instead, the same modal idiom `ConfirmActionDialog` is
+    // already used for elsewhere.
+    property <bool> confirm_delete_open: false;
+    // A blank (or whitespace-only) name can never be saved or deleted -- the
+    // authoritative check still lives in Rust (`gui::optics::custom_materials`,
+    // which also refuses a name that collides with a built-in material), but the
+    // empty-string case is cheap to also reject right here so Save/Delete visibly
+    // disable instead of silently no-op-ing against the database.
+    property <bool> name_is_blank: root.mat_name == "";
+    // CAD audit items 87/88: the authoritative built-in/existing-custom name
+    // checks still live in Rust (`gui::optics::custom_materials`) -- a built-in
+    // collision is refused outright there, and an existing-custom collision's own
+    // success toast says "Overwrote" rather than "Saved". These two `in`
+    // properties let THIS dialog also disable/prompt proactively instead of only
+    // reacting after the fact, but neither is wired yet: `gem_viewport.slint`
+    // (owned by another lane) still mounts `MaterialEditorDialog { ... }` with no
+    // property bindings at all (see this file's own handoff note), so both
+    // default to `[]` and every check below against them is vacuously
+    // permissive until that wiring lands.
+    // Both answers come from Rust (`gui::optics::custom_materials`), recomputed
+    // whenever the name field is edited, because Slint has no way to search a list
+    // from inside an expression: a `pure function` admits no loop construct, and
+    // there is no `contains` on an array or a string. Keeping the search on the
+    // Rust side also means these agree with the authoritative checks by
+    // construction rather than by a second implementation that could drift.
+    property <bool> name_is_existing_custom: ViewportModel.material_name_is_existing_custom;
+    property <bool> name_collides_with_builtin: ViewportModel.material_name_collides_with_builtin;
+
+    // Item 87: Delete must only ever be enabled for a name that actually names an
+    // existing custom material -- previously gated on "non-blank" alone, so
+    // typing an arbitrary new name and pressing Delete looked like a legitimate
+    // action right up until the DB layer reported it removed zero rows.
+    // Item 88: a name that already names a BUILT-IN material can never be saved
+    // (the Rust layer refuses it outright) -- disabling Save proactively means
+    // the cutter sees why immediately instead of getting an error toast only
+    // after clicking.
+    property <bool> can_save: root.optics_valid && !root.name_is_blank && !root.name_collides_with_builtin;
+
+    // Item 88: saving over an EXISTING custom name silently overwrites it today
+    // (the Rust layer allows it, only distinguishing "Saved" from "Overwrote" in
+    // its own success toast afterward) -- this intercepts both Save buttons with
+    // an explicit "Overwrite?" step first, the same modal idiom already used for
+    // Delete/discard below. `pending_apply` remembers which of the two Save
+    // buttons was pressed (plain Save vs. Save & Apply) so the confirmation's
+    // own `primary` handler can forward the right `apply` flag.
+    property <bool> confirm_overwrite_open: false;
+    property <bool> pending_apply: false;
+
+    function request_save(apply: bool) {
+        if (!root.can_save) {
+            return;
+        }
+        if (root.name_is_existing_custom) {
+            root.pending_apply = apply;
+            root.confirm_overwrite_open = true;
+        } else {
+            root.save_material(
+                root.mat_name,
+                root.ri_val,
+                root.disp_val,
+                root.biref_val,
+                root.selected_color_preset,
+                root.selected_crystal_system_idx,
+                root.selected_optical_character_idx,
+                root.biaxial_delta_beta_alpha_val,
+                root.sg_val,
+                apply
+            );
+        }
+    }
+
+    // Item 170: a stray click on the backdrop used to silently discard adjustments
+    // to all five sliders/combos. This dialog is recreated fresh (all `in-out`
+    // properties back at their literal defaults below) every time `if
+    // ViewportModel.material_editor_open: MaterialEditorDialog { ... }`
+    // (`gem_viewport.slint`, owned by another lane) turns the condition true again --
+    // it never carries an existing custom material's own values in -- so "the state
+    // the dialog opened with" IS those literal defaults, compared here directly
+    // rather than snapshotted at `init` (there is no earlier value to snapshot from).
+    property <bool> is_dirty: root.mat_name != "Custom Diamond"
+        || Math.abs(root.ri_val - 2.417) > 0.0001
+        || Math.abs(root.disp_val - 0.044) > 0.0001
+        || Math.abs(root.sg_val) > 0.0001
+        || Math.abs(root.biref_val) > 0.0001
+        || root.selected_color_preset != 0
+        || root.selected_template_idx != 0
+        || root.selected_crystal_system_idx != 0
+        || root.selected_optical_character_idx != 0
+        || Math.abs(root.biaxial_delta_beta_alpha_val) > 0.0001;
+    property <bool> discard_confirm_open: false;
+
+    function request_close() {
+        if root.is_dirty {
+            root.discard_confirm_open = true;
+        } else {
+            root.close();
+        }
+    }
+
     in property <[string]> base_templates: [
         "Custom", "Diamond", "Sapphire", "Ruby", "Emerald", 
         "Tanzanite", "Synthetic Moissanite", "Zircon", "Topaz", "Spinel", "Quartz", "Cubic Zirconia"
     ];
     
+    // Every write to this reports the new name to Rust, which answers the two
+    // collision questions above. `changed` rather than the `LineEdit`'s own
+    // `edited` callback so the preset buttons further down, which assign this
+    // directly, are covered too.
     in-out property <string> mat_name: "Custom Diamond";
+    changed mat_name => { ViewportModel.material_name_edited(self.mat_name); }
     in-out property <float> ri_val: 2.417;        // Refractive Index (1.30 - 3.20)
     in-out property <float> disp_val: 0.044;      // Dispersion (0.000 - 0.120)
+    // CAD audit item 169: specific gravity, needed for Est. Carat Weight -- `0.0`
+    // means "not recorded" (this dialog has no preset SG data to seed the "Load
+    // Preset Template" combo above with, so every preset still leaves this blank
+    // rather than guessing a number). Depends on a `specific_gravity` column/
+    // migration in `crates/indicatrix-vault` and a `MaterialLookup::
+    // specific_gravity` addition in `crates/indicatrix-cut-core`, neither of which
+    // this lane owns -- see this file's own handoff note for the exact additions.
+    in-out property <float> sg_val: 0.0;          // Specific Gravity (0 = not recorded)
     in-out property <float> biref_val: 0.000;     // Birefringence (-0.050 - +0.100)
     in-out property <int> selected_color_preset: 0; // 0=Clear, 1=Blue, 2=Red, 3=Green, 4=Violet, 5=Yellow, 6=Pink, 7=Teal, 8=Amber
     in-out property <int> selected_template_idx: 0;
@@ -78,10 +194,23 @@ export component MaterialEditorDialog inherits Rectangle {
     callback close();
     close => { ViewportModel.material_editor_open = false; }
     // name, ri, dispersion, birefringence, color_idx, crystal_system_idx,
-    // optical_character_idx, biaxial_delta_beta_alpha
-    callback save_material(string, float, float, float, int, int, int, float);
-    save_material(name, ri, disp, biref, color_idx, crystal_system_idx, optical_character_idx, biaxial_delta_beta_alpha) => {
-        ViewportModel.save_custom_material(name, ri, disp, biref, color_idx, crystal_system_idx, optical_character_idx, biaxial_delta_beta_alpha);
+    // optical_character_idx, biaxial_delta_beta_alpha, apply_to_live_render --
+    // Item 243: the last argument gates whether the save also switches the live
+    // render's material (`custom_materials.rs`'s `ctx.material_name`/`ctx.dirty`),
+    // so a cutter preparing several custom materials in a row can save each one
+    // without re-rendering the viewport with it.
+    // CAD audit item 169: `sg` (specific gravity from the new slider below, `0.0` =
+    // not recorded) is collected here and threaded through this dialog's own
+    // `save_material` callback, but NOT YET passed on to `ViewportModel.
+    // save_custom_material` below -- that global still only takes nine arguments
+    // (`ui/models/viewport.slint`, not owned by this lane), and calling it with a
+    // tenth would fail the whole crate's Slint build for every lane, not just this
+    // one. See this file's own handoff note for the exact `ViewportModel`/
+    // `gui::optics::custom_materials` additions this is waiting on, and the
+    // one-line change to make here (add `sg` to the call below) once they land.
+    callback save_material(string, float, float, float, int, int, int, float, float, bool);
+    save_material(name, ri, disp, biref, color_idx, crystal_system_idx, optical_character_idx, biaxial_delta_beta_alpha, sg, apply) => {
+        ViewportModel.save_custom_material(name, ri, disp, biref, color_idx, crystal_system_idx, optical_character_idx, biaxial_delta_beta_alpha, apply);
         ViewportModel.material_editor_open = false;
     }
     callback delete_material(string);
@@ -91,10 +220,27 @@ export component MaterialEditorDialog inherits Rectangle {
     }
 
     // Full viewport modal backdrop
-    background: #00000088;
+    background: Theme.overlay-backdrop;
 
     TouchArea {
-        clicked => { root.close(); }
+        clicked => { root.request_close(); }
+    }
+
+    // Escape = ask-then-cancel, same `init => { self.focus(); }` + `key-pressed`
+    // idiom `new_design_dialog.slint`/`ui/app.slint`'s `global_shortcuts` use.
+    //
+    // CAD audit item 199: `accept` (not `reject`) for every other key -- otherwise
+    // an unhandled key bubbles past this dialog to `global_shortcuts` and fires a
+    // shortcut (Ctrl+S, etc.) on the design underneath it.
+    key_scope := FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.request_close();
+                return accept;
+            }
+            accept
+        }
     }
 
     // Modal Card Container
@@ -106,12 +252,12 @@ export component MaterialEditorDialog inherits Rectangle {
         // of the window instead of sizing to its content. Same idiom, and same reason, as
         // `settings_dialog.slint` and `import_dialog.slint`.
         height: content.preferred-height;
-        background: #11151f;
+        background: Theme.surface-dialog;
         border-radius: Theme.radius-md;
         border-width: 1px;
-        border-color: #334155;
+        border-color: Theme.border-dialog;
         drop-shadow-blur: 24px;
-        drop-shadow-color: #000000bb;
+        drop-shadow-color: Theme.modal-shadow;
         clip: true;
 
         // Isolate clicks inside modal
@@ -141,10 +287,10 @@ export component MaterialEditorDialog inherits Rectangle {
                     width: 24px;
                     height: 24px;
                     border-radius: Theme.radius-sm;
-                    background: close_touch.has-hover ? #2d3748 : #1a202c;
+                    background: close_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
 
                     close_touch := TouchArea {
-                        clicked => { root.close(); }
+                        clicked => { root.request_close(); }
                     }
 
                     Image {
@@ -158,7 +304,7 @@ export component MaterialEditorDialog inherits Rectangle {
                 }
             }
 
-            Rectangle { height: 1px; background: #1e293b; }
+            Rectangle { height: 1px; background: Theme.surface-raised; }
 
             // 2. Base Template Selector & Name Input
             HorizontalLayout {
@@ -171,10 +317,10 @@ export component MaterialEditorDialog inherits Rectangle {
                     
                     Rectangle {
                         height: 32px;
-                        background: #1e293b;
+                        background: Theme.surface-raised;
                         border-radius: Theme.radius-sm;
                         border-width: 1px;
-                        border-color: #334155;
+                        border-color: Theme.border-dialog;
 
                         ComboBox {
                             model: root.base_templates;
@@ -302,10 +448,10 @@ export component MaterialEditorDialog inherits Rectangle {
                     
                     Rectangle {
                         height: 32px;
-                        background: #1e293b;
+                        background: Theme.surface-raised;
                         border-radius: Theme.radius-sm;
                         border-width: 1px;
-                        border-color: #334155;
+                        border-color: Theme.border-dialog;
 
                         LineEdit {
                             text <=> root.mat_name;
@@ -357,6 +503,32 @@ export component MaterialEditorDialog inherits Rectangle {
                 }
             }
 
+            // CAD audit item 169: specific gravity -- without this, a custom
+            // material's Est. Carat Weight stays empty unless a cutter separately
+            // types an SG override in the Yield panel for every design that uses it.
+            // `0.0` reads as "not recorded" on the Rust side (see `sg_val`'s own doc
+            // comment) rather than a real zero-density material.
+            VerticalLayout {
+                spacing: 4px;
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Rectangle {
+                        height: sg_lbl.preferred-height;
+                        Tooltip { text: @markdown("Specific gravity (density relative to water) -- used to estimate carat weight. Leave at 0 to leave it unrecorded."); }
+                        sg_lbl := Text { text: "Specific Gravity:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                    }
+                    Text { text: root.sg_val <= 0.0001 ? "not recorded" : Math.round(root.sg_val * 100.0) / 100.0; font-size: 11px; font-weight: 700; color: Theme.accent-amber; }
+                }
+
+                Slider {
+                    minimum: 0.0;
+                    maximum: 7.0;
+                    step: 0.01;
+                    value <=> root.sg_val;
+                }
+            }
+
             // 5. Birefringence (Double Refraction) Slider
             VerticalLayout {
                 spacing: 4px;
@@ -392,10 +564,10 @@ export component MaterialEditorDialog inherits Rectangle {
                     Text { text: "Crystal System:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
                     Rectangle {
                         height: 32px;
-                        background: #1e293b;
+                        background: Theme.surface-raised;
                         border-radius: Theme.radius-sm;
                         border-width: 1px;
-                        border-color: #334155;
+                        border-color: Theme.border-dialog;
                         ComboBox {
                             model: root.crystal_system_options;
                             current-index <=> root.selected_crystal_system_idx;
@@ -409,10 +581,10 @@ export component MaterialEditorDialog inherits Rectangle {
                     Text { text: "Optical Character:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
                     Rectangle {
                         height: 32px;
-                        background: #1e293b;
+                        background: Theme.surface-raised;
                         border-radius: Theme.radius-sm;
                         border-width: 1px;
-                        border-color: #334155;
+                        border-color: Theme.border-dialog;
                         ComboBox {
                             model: root.optical_character_options;
                             current-index <=> root.selected_optical_character_idx;
@@ -455,6 +627,17 @@ export component MaterialEditorDialog inherits Rectangle {
                 wrap: word-wrap;
             }
 
+            // Item 88: proactive collision warning -- disables Save (see `can_save`)
+            // rather than letting the cutter find out only from an error toast
+            // after clicking.
+            if root.name_collides_with_builtin: Text {
+                text: "\u{26a0} \"" + root.mat_name + "\" is a built-in material name and cannot be used for a custom one.";
+                font-size: 9px;
+                font-weight: 600;
+                color: Theme.accent-ruby;
+                wrap: word-wrap;
+            }
+
             // 6. Body Color & Transmission Preset Swatches
             VerticalLayout {
                 spacing: 6px;
@@ -468,9 +651,9 @@ export component MaterialEditorDialog inherits Rectangle {
                         width: 40px; height: 26px; border-radius: Theme.radius-sm;
                         background: root.selected_color_preset == 0 ? #e2e8f0 : #94a3b844;
                         border-width: root.selected_color_preset == 0 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 0 ? #38bdf8 : #475569;
+                        border-color: root.selected_color_preset == 0 ? Theme.accent-cyan : #475569;
                         TouchArea { clicked => { root.selected_color_preset = 0; } }
-                        Text { text: "Clear"; font-size: 9px; font-weight: 700; color: root.selected_color_preset == 0 ? #0f172a : #94a3b8; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "Clear"; font-size: 9px; font-weight: 700; color: root.selected_color_preset == 0 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     // 1: Sapphire Blue
@@ -478,9 +661,9 @@ export component MaterialEditorDialog inherits Rectangle {
                         width: 40px; height: 26px; border-radius: Theme.radius-sm;
                         background: #1e40af;
                         border-width: root.selected_color_preset == 1 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 1 ? #38bdf8 : #1d4ed8;
+                        border-color: root.selected_color_preset == 1 ? Theme.accent-cyan : #1d4ed8;
                         TouchArea { clicked => { root.selected_color_preset = 1; } }
-                        Text { text: "Blue"; font-size: 9px; font-weight: 700; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "Blue"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     // 2: Ruby Red
@@ -488,9 +671,9 @@ export component MaterialEditorDialog inherits Rectangle {
                         width: 40px; height: 26px; border-radius: Theme.radius-sm;
                         background: #be123c;
                         border-width: root.selected_color_preset == 2 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 2 ? #38bdf8 : #e11d48;
+                        border-color: root.selected_color_preset == 2 ? Theme.accent-cyan : #e11d48;
                         TouchArea { clicked => { root.selected_color_preset = 2; } }
-                        Text { text: "Red"; font-size: 9px; font-weight: 700; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "Red"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     // 3: Emerald Green
@@ -498,9 +681,9 @@ export component MaterialEditorDialog inherits Rectangle {
                         width: 40px; height: 26px; border-radius: Theme.radius-sm;
                         background: #047857;
                         border-width: root.selected_color_preset == 3 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 3 ? #38bdf8 : #059669;
+                        border-color: root.selected_color_preset == 3 ? Theme.accent-cyan : #059669;
                         TouchArea { clicked => { root.selected_color_preset = 3; } }
-                        Text { text: "Green"; font-size: 9px; font-weight: 700; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "Green"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     // 4: Tanzanite Violet
@@ -508,9 +691,9 @@ export component MaterialEditorDialog inherits Rectangle {
                         width: 40px; height: 26px; border-radius: Theme.radius-sm;
                         background: #6b21a8;
                         border-width: root.selected_color_preset == 4 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 4 ? #38bdf8 : #7c3aed;
+                        border-color: root.selected_color_preset == 4 ? Theme.accent-cyan : #7c3aed;
                         TouchArea { clicked => { root.selected_color_preset = 4; } }
-                        Text { text: "Violet"; font-size: 9px; font-weight: 700; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "Violet"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     // 5: Canary Yellow
@@ -518,9 +701,9 @@ export component MaterialEditorDialog inherits Rectangle {
                         width: 40px; height: 26px; border-radius: Theme.radius-sm;
                         background: #b45309;
                         border-width: root.selected_color_preset == 5 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 5 ? #38bdf8 : #d97706;
+                        border-color: root.selected_color_preset == 5 ? Theme.accent-cyan : #d97706;
                         TouchArea { clicked => { root.selected_color_preset = 5; } }
-                        Text { text: "Yellow"; font-size: 9px; font-weight: 700; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "Yellow"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     // 6: Pink Spinel
@@ -528,9 +711,9 @@ export component MaterialEditorDialog inherits Rectangle {
                         width: 40px; height: 26px; border-radius: Theme.radius-sm;
                         background: #be185d;
                         border-width: root.selected_color_preset == 6 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 6 ? #38bdf8 : #db2777;
+                        border-color: root.selected_color_preset == 6 ? Theme.accent-cyan : #db2777;
                         TouchArea { clicked => { root.selected_color_preset = 6; } }
-                        Text { text: "Pink"; font-size: 9px; font-weight: 700; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "Pink"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     // 7: Teal / Zircon
@@ -538,9 +721,9 @@ export component MaterialEditorDialog inherits Rectangle {
                         width: 40px; height: 26px; border-radius: Theme.radius-sm;
                         background: #0f766e;
                         border-width: root.selected_color_preset == 7 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 7 ? #38bdf8 : #0d9488;
+                        border-color: root.selected_color_preset == 7 ? Theme.accent-cyan : #0d9488;
                         TouchArea { clicked => { root.selected_color_preset = 7; } }
-                        Text { text: "Teal"; font-size: 9px; font-weight: 700; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "Teal"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     // 8: Amber Topaz
@@ -548,40 +731,43 @@ export component MaterialEditorDialog inherits Rectangle {
                         width: 40px; height: 26px; border-radius: Theme.radius-sm;
                         background: #9a3412;
                         border-width: root.selected_color_preset == 8 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 8 ? #38bdf8 : #c2410c;
+                        border-color: root.selected_color_preset == 8 ? Theme.accent-cyan : #c2410c;
                         TouchArea { clicked => { root.selected_color_preset = 8; } }
-                        Text { text: "Amber"; font-size: 9px; font-weight: 700; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "Amber"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
                     }
                 }
             }
 
-            Rectangle { height: 1px; background: #1e293b; }
+            Rectangle { height: 1px; background: Theme.surface-raised; }
 
             // 7. Action Buttons Bar
             HorizontalLayout {
                 spacing: 8px;
 
-                // Delete Button
+                // Delete Button -- opens the confirmation overlay below rather than
+                // deleting immediately (see `confirm_delete_open`'s own doc comment).
                 Rectangle {
                     width: 70px;
                     height: 32px;
                     border-radius: Theme.radius-sm;
-                    background: del_touch.has-hover ? #450a0a : #1f1111;
+                    background: root.name_is_existing_custom ? (del_touch.has-hover ? Theme.danger-surface-hover : Theme.danger-surface) : Theme.danger-surface;
+                    opacity: root.name_is_existing_custom ? 1.0 : 0.5;
                     border-width: 1px;
-                    border-color: #7f1d1d;
+                    border-color: Theme.danger-border;
 
+                    // Item 87: only enabled for a name that actually names an
+                    // existing custom material -- see `name_is_existing_custom`'s
+                    // own doc comment.
                     del_touch := TouchArea {
-                        clicked => {
-                            root.delete_material(root.mat_name);
-                            root.close();
-                        }
+                        enabled: root.name_is_existing_custom;
+                        clicked => { root.confirm_delete_open = true; }
                     }
 
                     HorizontalLayout {
                         alignment: center;
                         spacing: 5px;
-                        Image { source: @image-url("../icons/trash.svg"); colorize: #f87171; width: 11px; height: 11px; vertical-alignment: center; }
-                        Text { text: "Delete"; font-size: 11px; font-weight: 600; color: #f87171; vertical-alignment: center; }
+                        Image { source: @image-url("../icons/trash.svg"); colorize: Theme.danger; width: 11px; height: 11px; vertical-alignment: center; }
+                        Text { text: "Delete"; font-size: 11px; font-weight: 600; color: Theme.danger; vertical-alignment: center; }
                     }
                 }
 
@@ -590,56 +776,130 @@ export component MaterialEditorDialog inherits Rectangle {
                     width: 70px;
                     height: 32px;
                     border-radius: Theme.radius-sm;
-                    background: cancel_touch.has-hover ? #1e293b : #0f172a;
+                    background: cancel_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken;
                     border-width: 1px;
-                    border-color: #334155;
+                    border-color: Theme.border-dialog;
 
                     cancel_touch := TouchArea {
-                        clicked => { root.close(); }
+                        clicked => { root.request_close(); }
                     }
 
                     Text { text: "Cancel"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                 }
 
-                // Save & Apply Button. Disabled (and visibly dimmed) while
-                // `!optics_valid`: a contradictory optical-character/birefringence
-                // combination simply cannot be saved rather than being silently
-                // accepted or having its sign silently rewritten. See `optics_valid`'s
-                // own doc comment for exactly which combinations that covers.
+                // Save Button (Item 243): saves/overwrites the custom material in the
+                // database and the in-memory material list WITHOUT touching the live
+                // render's selected material -- lets a cutter prepare several custom
+                // materials in a row without re-rendering the viewport with each one.
+                // Disabled (and visibly dimmed) while `!root.can_save`: either a
+                // contradictory optical-character/birefringence combination (see
+                // `optics_valid`'s own doc comment) or a blank name.
                 Rectangle {
                     horizontal-stretch: 1;
                     height: 32px;
                     border-radius: Theme.radius-sm;
-                    background: root.optics_valid ? (save_touch.has-hover ? #7dd3fc : Theme.accent-cyan) : #334155;
-                    opacity: root.optics_valid ? 1.0 : 0.6;
+                    background: root.can_save ? (save_only_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken) : Theme.surface-sunken;
+                    opacity: root.can_save ? 1.0 : 0.6;
+                    border-width: 1px;
+                    border-color: Theme.border-dialog;
 
-                    save_touch := TouchArea {
-                        enabled: root.optics_valid;
-                        clicked => {
-                            if (root.optics_valid) {
-                                root.save_material(
-                                    root.mat_name,
-                                    root.ri_val,
-                                    root.disp_val,
-                                    root.biref_val,
-                                    root.selected_color_preset,
-                                    root.selected_crystal_system_idx,
-                                    root.selected_optical_character_idx,
-                                    root.biaxial_delta_beta_alpha_val
-                                );
-                                root.close();
-                            }
-                        }
+                    save_only_touch := TouchArea {
+                        enabled: root.can_save;
+                        clicked => { root.request_save(false); }
+                    }
+
+                    Text { text: "Save"; font-size: 12px; font-weight: 700; color: root.can_save ? Theme.text-primary : Theme.text-muted; horizontal-alignment: center; vertical-alignment: center; }
+                }
+
+                // Save & Apply Button: saves, then also switches the live render's
+                // material (see `save_material`'s own doc comment above). Same
+                // enablement rule as the plain Save button.
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 32px;
+                    border-radius: Theme.radius-sm;
+                    background: root.can_save ? (save_apply_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan) : Theme.surface-disabled;
+                    opacity: root.can_save ? 1.0 : 0.6;
+
+                    save_apply_touch := TouchArea {
+                        enabled: root.can_save;
+                        // `save_material`'s own handler (above) already sets
+                        // `ViewportModel.material_editor_open = false` -- Item 170: a
+                        // second `root.close()` here was a no-op that happened to
+                        // work only because both write the same property to the
+                        // same value. Item 88: routed through `request_save`, which
+                        // interposes an "Overwrite?" confirmation when `mat_name`
+                        // already names an existing custom material.
+                        clicked => { root.request_save(true); }
                     }
 
                     HorizontalLayout {
                         alignment: center;
                         spacing: 6px;
-                        Image { source: @image-url("../icons/check.svg"); colorize: root.optics_valid ? #0f172a : Theme.text-muted; width: 12px; height: 12px; vertical-alignment: center; }
-                        Text { text: "Save & Apply Material"; font-size: 12px; font-weight: 700; color: root.optics_valid ? #0f172a : Theme.text-muted; vertical-alignment: center; }
+                        Image { source: @image-url("../icons/check.svg"); colorize: root.can_save ? Theme.text-on-accent : Theme.text-muted; width: 12px; height: 12px; vertical-alignment: center; }
+                        Text { text: "Save & Apply"; font-size: 12px; font-weight: 700; color: root.can_save ? Theme.text-on-accent : Theme.text-muted; vertical-alignment: center; }
                     }
                 }
             }
+        }
+    }
+
+    // Delete confirmation -- a full-viewport overlay ON TOP of the card above (same
+    // stacking idiom as the modal card itself), since one click here permanently
+    // removes the row from the database.
+    if root.confirm_delete_open: ConfirmActionDialog {
+        heading: "Delete Material";
+        message: "Permanently delete the custom material \"" + root.mat_name
+            + "\"? This cannot be undone. Any design currently selecting it will fall back to a built-in material of the same name, or Diamond.";
+        primary_label: "Delete";
+        secondary_label: "";
+        primary => {
+            // `delete_material`'s own handler (above) already sets
+            // `ViewportModel.material_editor_open = false` -- see the matching
+            // comment on the Save button's handler for why the extra `root.close()`
+            // this replaced was redundant, not merely harmless.
+            root.delete_material(root.mat_name);
+            root.confirm_delete_open = false;
+        }
+        cancel => { root.confirm_delete_open = false; }
+    }
+
+    // Item 88: confirms before overwriting an EXISTING custom material -- see
+    // `request_save`'s own doc comment for when this opens instead of saving
+    // straight away.
+    if root.confirm_overwrite_open: ConfirmActionDialog {
+        heading: "Overwrite Material";
+        message: "A custom material named \"" + root.mat_name
+            + "\" already exists. Overwrite it with these values? Any design currently using it will pick up the change.";
+        primary_label: "Overwrite";
+        secondary_label: "";
+        primary => {
+            root.confirm_overwrite_open = false;
+            root.save_material(
+                root.mat_name,
+                root.ri_val,
+                root.disp_val,
+                root.biref_val,
+                root.selected_color_preset,
+                root.selected_crystal_system_idx,
+                root.selected_optical_character_idx,
+                root.biaxial_delta_beta_alpha_val,
+                root.sg_val,
+                root.pending_apply
+            );
+        }
+        cancel => { root.confirm_overwrite_open = false; }
+    }
+
+    if root.discard_confirm_open: ConfirmActionDialog {
+        heading: "Discard Changes?";
+        message: "This custom material has unsaved edits. Discard them?";
+        primary_label: "";
+        secondary_label: "Discard";
+        cancel => { root.discard_confirm_open = false; }
+        secondary => {
+            root.discard_confirm_open = false;
+            root.close();
         }
     }
 }

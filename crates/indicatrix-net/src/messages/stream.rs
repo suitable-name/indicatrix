@@ -570,6 +570,7 @@ mod tests {
             material: GemMaterial::diamond(),
             planes: StandardGemCuts::standard_round_brilliant(),
             girdle_frosted: false,
+            backdrop: 0.0,
         };
         let msg = ClientMessage::RenderRequest(Box::new(super::super::render::RenderRequest {
             request_id: 8,
@@ -611,6 +612,7 @@ mod tests {
             material: GemMaterial::diamond(),
             planes: StandardGemCuts::standard_round_brilliant(),
             girdle_frosted: false,
+            backdrop: 0.0,
         };
         let msg =
             ClientMessage::TiltCurvesRequest(Box::new(super::super::tilt::TiltCurvesRequest {
@@ -668,6 +670,7 @@ mod tests {
             material: GemMaterial::diamond(),
             planes: StandardGemCuts::standard_round_brilliant(),
             girdle_frosted: false,
+            backdrop: 0.0,
         };
 
         let render_request =

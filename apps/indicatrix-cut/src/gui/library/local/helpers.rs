@@ -11,11 +11,14 @@ use crate::{
     LibraryModel, MainWindow,
     bridge::library::source::LibrarySource,
     gui::library::{
-        diagram_list::{apply_attribute_ranges_to_ui, fetch_attribute_ranges},
-        search::{apply_diagram_list_to_ui, fetch_diagram_list, read_range_filter},
+        diagram_list::{apply_attribute_range_bounds_preserving_filters, fetch_attribute_ranges},
+        search::{
+            DisplaySearchOptions, apply_diagram_list_to_ui, fetch_diagram_list_with_options,
+            read_id_filter, read_local_only, read_range_filter, read_sort_order, read_tag_filter,
+        },
     },
 };
-use indicatrix_vault::db::sqlite::Database;
+use indicatrix_vault::db::sqlite::{Database, SortOrder};
 use slint::{ComponentHandle, Model, Weak};
 use std::{
     sync::{Arc, Mutex},
@@ -50,7 +53,7 @@ use tracing::warn;
 /// `get_attribute_ranges` + an unfiltered `search_diagrams` at tens of milliseconds
 /// combined, long enough on the UI thread to read as a second freeze right after a big
 /// import finishes (see this task's BUG 1 write-up).
-pub(super) fn refresh_after_library_change(
+pub fn refresh_after_library_change(
     ui: &MainWindow,
     db: &Arc<Mutex<Database>>,
     source: &Arc<Mutex<LibrarySource>>,
@@ -61,6 +64,11 @@ pub(super) fn refresh_after_library_change(
         .clone();
     match current {
         LibrarySource::Local => {
+            // CAD audit item 190: a write that can create/empty a tag (add/remove
+            // tag) needs the chip filter row's own vocabulary refreshed alongside
+            // the list -- cheap enough (one query) to run synchronously here rather
+            // than threading it through `spawn_local_refresh`'s worker thread.
+            crate::gui::library::diagram_list::sync_tag_vocabulary_to_ui(ui, db);
             let search = ui.global::<LibraryModel>().get_search_text().to_string();
             let shape_idx = ui.global::<LibraryModel>().get_selected_shape_index() as usize;
             let shape = ui
@@ -76,8 +84,23 @@ pub(super) fn refresh_after_library_change(
                 .row_data(gear_idx)
                 .unwrap_or_default()
                 .to_string();
-            let range = read_range_filter(ui);
-            spawn_local_refresh(ui.as_weak(), Arc::clone(db), search, shape, gear, range);
+            // Same reasoning as item 188's filter preservation just below: this
+            // refresh follows a WRITE, not a request to go back to the default
+            // view, so the cutter's own range filters, sort and "My designs"
+            // choices all have to survive it. Every one is read here, on the UI
+            // thread, since the fetch itself runs on a worker that has no
+            // `MainWindow` to read them from.
+            let query = DiagramListQuery {
+                search,
+                shape,
+                gear,
+                range: read_range_filter(ui),
+                order: read_sort_order(ui),
+                local_only: read_local_only(ui),
+                tag_filter: read_tag_filter(ui),
+                id_filter: read_id_filter(ui),
+            };
+            spawn_local_refresh(ui.as_weak(), Arc::clone(db), query);
         }
         LibrarySource::Remote(_) => {
             let search = ui.global::<LibraryModel>().get_search_text();
@@ -105,20 +128,48 @@ pub(super) fn refresh_after_library_change(
 /// background half of [`refresh_after_library_change`]'s `LibrarySource::Local`
 /// branch; see that function's own doc comment for why this one call site needs to be
 /// async where `sync_range_bounds_to_ui`/`refresh_diagram_list`'s other callers don't.
-fn spawn_local_refresh(
-    ui_weak: Weak<MainWindow>,
-    db: Arc<Mutex<Database>>,
+/// Everything the catalogue list is currently filtered and ordered by, as it was
+/// on screen at the moment of the write this refresh follows -- see
+/// [`spawn_local_refresh`]'s own call site for why it has to be snapshotted on the
+/// UI thread rather than re-read (it cannot be) on the worker.
+struct DiagramListQuery {
     search: String,
     shape: String,
     gear: String,
     range: indicatrix_vault::model::filter::RangeFilter,
+    order: SortOrder,
+    local_only: bool,
+    tag_filter: Option<String>,
+    id_filter: Option<Vec<i64>>,
+}
+
+fn spawn_local_refresh(
+    ui_weak: Weak<MainWindow>,
+    db: Arc<Mutex<Database>>,
+    query: DiagramListQuery,
 ) {
     thread::spawn(move || {
         let ranges = fetch_attribute_ranges(&db);
-        let list_result = fetch_diagram_list(&db, &search, &shape, &gear, &range);
+        let list_result = fetch_diagram_list_with_options(
+            &db,
+            &query.search,
+            &query.shape,
+            &query.gear,
+            &query.range,
+            DisplaySearchOptions {
+                order: query.order,
+                local_only: query.local_only,
+                tag_filter: query.tag_filter.as_deref(),
+                id_filter: query.id_filter.as_deref(),
+            },
+        );
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
             if let Some(ranges) = ranges {
-                apply_attribute_ranges_to_ui(&ui, &ranges);
+                // Item 188: this refresh follows a WRITE (import/rename/delete/
+                // shape-change), not a request to clear the cutter's own range
+                // filters -- see `apply_attribute_range_bounds_preserving_filters`'s
+                // own doc comment for why this is no longer the reset variant.
+                apply_attribute_range_bounds_preserving_filters(&ui, &ranges);
             }
             match list_result {
                 Ok(fetched) => apply_diagram_list_to_ui(&ui, fetched),

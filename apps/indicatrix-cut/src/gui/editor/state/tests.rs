@@ -21,27 +21,55 @@ fn material_index_from_name_falls_back_to_zero_for_an_unknown_name() {
 
 #[test]
 fn parse_yield_form_blank_fields_mean_unset() {
-    let (girdle_diameter_mm, material) = parse_yield_form("", 0, "").unwrap();
+    let (girdle_diameter_mm, material) =
+        parse_yield_form("", 0, "", &MaterialSelection::none()).unwrap();
     assert_eq!(girdle_diameter_mm, None);
     assert_eq!(material, MaterialSelection::none());
 }
 
 #[test]
-fn parse_yield_form_reads_girdle_diameter_and_material_selection() {
-    let (girdle_diameter_mm, material) = parse_yield_form("8.2", 1, "3.515").unwrap();
+fn parse_yield_form_reads_girdle_diameter_and_specific_gravity_override() {
+    let current = MaterialSelection {
+        name: Some("Diamond".to_string()),
+        ..MaterialSelection::none()
+    };
+    let (girdle_diameter_mm, material) = parse_yield_form("8.2", 1, "3.515", &current).unwrap();
     assert_eq!(girdle_diameter_mm, Some(8.2));
     assert_eq!(material.name.as_deref(), Some("Diamond"));
     assert_eq!(material.specific_gravity_override, Some(3.515));
 }
 
+// CAD audit item 55: `parse_yield_form` used to rebuild `MaterialSelection` from
+// scratch, deriving `name` from `material_index` against `MATERIAL_PRESET_NAMES`
+// (built-ins only) and always clearing `refractive_index_override` to `None`. The
+// Yield tab's own Material combo has no way to represent a custom catalogue
+// material or an RI override, so applying the form with either set on the design
+// silently cleared them. `material_index` is now ignored entirely -- `name` and
+// `refractive_index_override` always carry through from `current` unchanged,
+// regardless of what the combo (still passed as `material_index`, here `0`) shows.
+#[test]
+fn parse_yield_form_preserves_the_current_material_name_and_ri_override_regardless_of_material_index()
+ {
+    let current = MaterialSelection {
+        name: Some("My Custom Garnet".to_string()),
+        specific_gravity_override: None,
+        refractive_index_override: Some(1.74),
+    };
+    let (_, material) = parse_yield_form("", 0, "4.1", &current).unwrap();
+    assert_eq!(material.name.as_deref(), Some("My Custom Garnet"));
+    assert_eq!(material.refractive_index_override, Some(1.74));
+    assert_eq!(material.specific_gravity_override, Some(4.1));
+}
+
 #[test]
 fn parse_yield_form_rejects_zero_or_negative_or_unparseable_values() {
-    assert!(parse_yield_form("0.0", 0, "").is_err());
-    assert!(parse_yield_form("-1.0", 0, "").is_err());
-    assert!(parse_yield_form("wide", 0, "").is_err());
-    assert!(parse_yield_form("", 0, "0.0").is_err());
-    assert!(parse_yield_form("", 0, "-1.0").is_err());
-    assert!(parse_yield_form("", 0, "heavy").is_err());
+    let none = MaterialSelection::none();
+    assert!(parse_yield_form("0.0", 0, "", &none).is_err());
+    assert!(parse_yield_form("-1.0", 0, "", &none).is_err());
+    assert!(parse_yield_form("wide", 0, "", &none).is_err());
+    assert!(parse_yield_form("", 0, "0.0", &none).is_err());
+    assert!(parse_yield_form("", 0, "-1.0", &none).is_err());
+    assert!(parse_yield_form("", 0, "heavy", &none).is_err());
 }
 
 #[test]
@@ -88,6 +116,7 @@ fn editor_state_add_tier_then_undo_then_redo_round_trips() {
                 indices: vec![],
                 constraint: MeetConstraint::ScaleReference(0.32),
                 imported_meet: None,
+                original_notes: None,
                 detached: Vec::new(),
             },
         })
@@ -132,6 +161,7 @@ fn status_text_reports_degenerate_once_pinched_flat() {
                 indices: vec![],
                 constraint: MeetConstraint::ScaleReference(0.0),
                 imported_meet: None,
+                original_notes: None,
                 detached: Vec::new(),
             },
         })
@@ -145,6 +175,7 @@ fn status_text_reports_degenerate_once_pinched_flat() {
                 indices: vec![],
                 constraint: MeetConstraint::ScaleReference(0.0),
                 imported_meet: None,
+                original_notes: None,
                 detached: Vec::new(),
             },
         })
@@ -166,6 +197,7 @@ fn tier_items_reflects_position_and_fields_in_order() {
                 indices: vec![0.0, 24.0],
                 constraint: MeetConstraint::ScaleReference(0.65),
                 imported_meet: None,
+                original_notes: None,
                 detached: Vec::new(),
             },
         })
@@ -173,8 +205,8 @@ fn tier_items_reflects_position_and_fields_in_order() {
     let items = tier_items(&state.design, state.design.effective_refractive_index());
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].index, 0);
-    assert_eq!(items[0].angle_deg.as_str(), "-41");
-    assert_eq!(items[0].mast.as_str(), "0.65");
+    assert_eq!(items[0].angle_deg.as_str(), "-41.00");
+    assert_eq!(items[0].mast.as_str(), "0.6500");
     assert_eq!(items[0].name.as_str(), "P1");
     assert_eq!(items[0].indices.as_str(), "0, 24");
 }
@@ -193,6 +225,7 @@ fn tier_items_reports_orbit_status_and_detached_state() {
                 indices: vec![0.0, 12.0, 24.0, 36.0, 48.0, 60.0, 72.0, 84.0],
                 constraint: MeetConstraint::ScaleReference(0.65),
                 imported_meet: None,
+                original_notes: None,
                 detached: Vec::new(),
             },
         })
@@ -229,6 +262,7 @@ fn tier_items_stale_reflects_authored_fields_without_solving() {
                 indices: vec![0.0, 24.0],
                 constraint: MeetConstraint::ScaleReference(0.65),
                 imported_meet: None,
+                original_notes: None,
                 detached: Vec::new(),
             },
         })
@@ -236,7 +270,7 @@ fn tier_items_stale_reflects_authored_fields_without_solving() {
     let items = tier_items_stale(&state.design, state.design.effective_refractive_index());
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].index, 0);
-    assert_eq!(items[0].angle_deg.as_str(), "-41");
+    assert_eq!(items[0].angle_deg.as_str(), "-41.00");
     assert_eq!(items[0].name.as_str(), "P1");
     assert_eq!(items[0].indices.as_str(), "0, 24");
     // Never a real mast, always flagged uncertain, even though this exact tier is a
@@ -274,6 +308,7 @@ fn adopting_a_suggested_meet_keeps_the_design_solved_at_the_same_mast() {
                 indices: vec![0.0, 24.0, 48.0, 72.0],
                 constraint: MeetConstraint::ScaleReference(0.5),
                 imported_meet: None,
+                original_notes: None,
                 detached: Vec::new(),
             },
         })
@@ -289,6 +324,7 @@ fn adopting_a_suggested_meet_keeps_the_design_solved_at_the_same_mast() {
         indices: vec![0.0, 24.0, 48.0, 72.0],
         constraint: MeetConstraint::MeetNamed(vec!["A".to_string()]),
         imported_meet: None,
+        original_notes: None,
         detached: Vec::new(),
     });
     let derived_mast = derived
@@ -307,6 +343,7 @@ fn adopting_a_suggested_meet_keeps_the_design_solved_at_the_same_mast() {
                 indices: vec![0.0, 24.0, 48.0, 72.0],
                 constraint: MeetConstraint::ScaleReference(derived_mast),
                 imported_meet: Some(MeetConstraint::MeetNamed(vec!["A".to_string()])),
+                original_notes: None,
                 detached: Vec::new(),
             },
         })
@@ -315,7 +352,7 @@ fn adopting_a_suggested_meet_keeps_the_design_solved_at_the_same_mast() {
     // The explicit "Solve" action's own path: already solved, already reporting B's
     // real (pinned) mast.
     let items = tier_items(&state.design, state.design.effective_refractive_index());
-    assert_eq!(items[1].mast.as_str(), derived_mast.to_string());
+    assert_eq!(items[1].mast.as_str(), format!("{derived_mast:.4}"));
     let (status, is_problem) = status_text_and_is_problem(&state.design);
     assert!(
         !is_problem,
@@ -343,11 +380,20 @@ fn adopting_a_suggested_meet_keeps_the_design_solved_at_the_same_mast() {
     );
     // And it must converge to the SAME mast Adopt was suggesting in the first place --
     // not silently move the geometry.
-    let adopted_mast: f64 = items[1].mast.parse().unwrap();
+    let adopted_mast = state
+        .design
+        .solve()
+        .expect("the adopted design must still solve")[1]
+        .mast;
     assert!(
         (adopted_mast - derived_mast).abs() < 1e-9,
         "adopting should reproduce the exact same mast the suggestion was showing: \
          {adopted_mast} vs {derived_mast}"
+    );
+    assert_eq!(
+        items[1].mast.as_str(),
+        format!("{derived_mast:.4}"),
+        "and the row must display that same mast, rounded for the table"
     );
 }
 
@@ -521,6 +567,7 @@ fn gear_remap_preview_flags_non_integral_positions_independently_of_rounding() {
         indices: vec![0.0, 12.0, 24.0], // multiples of 12: land cleanly at 80/96 * 12 = 10
         constraint: MeetConstraint::ScaleReference(0.5),
         imported_meet: None,
+        original_notes: None,
         detached: Vec::new(),
     });
     let rows = gear_remap_preview(&design, 96, 80, RemapRounding::Nearest);
@@ -549,6 +596,7 @@ fn gear_remap_preview_flags_a_lossy_remap_as_non_integral() {
         indices: vec![1.0], // 1 * 80/96 = 0.8333... -- not a whole tooth
         constraint: MeetConstraint::ScaleReference(0.5),
         imported_meet: None,
+        original_notes: None,
         detached: Vec::new(),
     });
     let rows = gear_remap_preview(&design, 96, 80, RemapRounding::Nearest);
@@ -569,6 +617,7 @@ fn gear_remap_preview_does_not_mutate_the_original_design() {
         indices: vec![0.0, 12.0],
         constraint: MeetConstraint::ScaleReference(0.5),
         imported_meet: None,
+        original_notes: None,
         detached: Vec::new(),
     });
     let before = design.clone();
@@ -617,6 +666,7 @@ fn set_material_edit_leaves_every_tier_untouched_but_bumps_generation() {
                 indices: vec![0.0, 12.0],
                 constraint: MeetConstraint::ScaleReference(0.5),
                 imported_meet: None,
+                original_notes: None,
                 detached: Vec::new(),
             },
         })
@@ -681,6 +731,7 @@ fn pavilion_tier(name: &str, angle_deg: f64) -> ConstraintTier {
         indices: vec![],
         constraint: MeetConstraint::ScaleReference(0.5),
         imported_meet: None,
+        original_notes: None,
         detached: Vec::new(),
     }
 }
@@ -788,5 +839,211 @@ fn inline_set_angle_accepts_a_well_formed_value() {
     assert_eq!(
         super::super::loading::parse_angle_only(" -41.5 ").unwrap(),
         -41.5
+    );
+}
+
+// --- index_chip_items (CAD audit item 45) ---
+
+#[test]
+fn index_chip_items_builds_one_chip_per_index_flagging_only_the_detached_ones() {
+    let indices = vec![0.0, 24.0, 48.0, 72.0];
+    let detached = vec![24.0];
+    let chips = index_chip_items(&indices, &detached);
+    assert_eq!(chips.len(), 4);
+    assert_eq!(chips[0].position, 0.0);
+    assert_eq!(chips[0].label.as_str(), "0");
+    assert!(!chips[0].detached);
+    assert_eq!(chips[1].position, 24.0);
+    assert!(chips[1].detached);
+    assert!(!chips[2].detached);
+    assert!(!chips[3].detached);
+}
+
+#[test]
+fn index_chip_items_formats_a_fractional_position_with_two_decimals() {
+    let chips = index_chip_items(&[12.5], &[]);
+    assert_eq!(chips[0].label.as_str(), "12.50");
+}
+
+#[test]
+fn index_chip_items_is_empty_for_an_empty_tier() {
+    assert_eq!(index_chip_items(&[], &[]).len(), 0);
+}
+
+// --- tier_matches_filter (CAD audit item 43) ---
+
+#[test]
+fn tier_matches_filter_is_case_insensitive_and_matches_a_substring_anywhere() {
+    assert!(tier_matches_filter("Girdle Facet G1", "girdle"));
+    assert!(tier_matches_filter("Girdle Facet G1", "FACET"));
+    assert!(tier_matches_filter("Girdle Facet G1", "g1"));
+    assert!(!tier_matches_filter("Girdle Facet G1", "pavilion"));
+}
+
+#[test]
+fn tier_matches_filter_treats_a_blank_or_whitespace_only_filter_as_matching_everything() {
+    assert!(tier_matches_filter("anything", ""));
+    assert!(tier_matches_filter("anything", "   "));
+    assert!(tier_matches_filter("", ""));
+}
+
+// --- ri_source_text (CAD audit item 53) ---
+
+#[test]
+fn ri_source_text_reports_a_typed_override_first_regardless_of_material() {
+    let material = MaterialSelection {
+        name: Some("Quartz".to_string()),
+        specific_gravity_override: None,
+        refractive_index_override: Some(1.62),
+    };
+    let text = ri_source_text(&material, &[]);
+    assert!(text.contains("override"));
+    assert!(text.contains("1.6200"));
+}
+
+#[test]
+fn ri_source_text_names_a_custom_catalogue_material_before_a_same_named_built_in_would_apply() {
+    // `Design::effective_refractive_index_with` resolves a custom material by name
+    // BEFORE falling back to a built-in -- this must report exactly that source,
+    // never silently claim "built-in" for a name a custom entry also matches.
+    let mut custom = GemMaterial::diamond();
+    custom.name = "My Custom Garnet".to_string();
+    let material = MaterialSelection {
+        name: Some("My Custom Garnet".to_string()),
+        specific_gravity_override: None,
+        refractive_index_override: None,
+    };
+    let text = ri_source_text(&material, std::slice::from_ref(&custom));
+    assert!(text.contains("custom catalogue material"));
+    assert!(text.contains("My Custom Garnet"));
+}
+
+#[test]
+fn ri_source_text_names_a_built_in_when_no_custom_entry_matches() {
+    let material = MaterialSelection {
+        name: Some("Quartz".to_string()),
+        specific_gravity_override: None,
+        refractive_index_override: None,
+    };
+    let text = ri_source_text(&material, &[]);
+    assert!(text.contains("built-in material"));
+    assert!(text.contains("Quartz"));
+}
+
+#[test]
+fn ri_source_text_flags_an_unrecognized_name_and_no_selection_as_the_legacy_fallback() {
+    let unrecognized = MaterialSelection {
+        name: Some("Not A Real Material".to_string()),
+        specific_gravity_override: None,
+        refractive_index_override: None,
+    };
+    assert!(ri_source_text(&unrecognized, &[]).contains("legacy imported value"));
+    assert!(ri_source_text(&MaterialSelection::none(), &[]).contains("legacy imported value"));
+}
+
+// --- design_epoch: telling an edit apart from a wholesale replacement ---
+//
+// A background Deep Solve/Optimize can only distinguish "the cutter edited this
+// design" from "the cutter loaded a different one" if these two counters move
+// independently -- see `EditorState::design_epoch`'s own doc comment and
+// `callbacks::solve_actions::RunProvenance`.
+
+fn a_tier() -> ConstraintTier {
+    ConstraintTier {
+        angle_deg: -40.0,
+        name: "P1".to_string(),
+        indices: vec![0.0, 12.0],
+        constraint: MeetConstraint::ScaleReference(0.5),
+        imported_meet: None,
+        original_notes: None,
+        detached: Vec::new(),
+    }
+}
+
+#[test]
+fn an_ordinary_edit_bumps_generation_but_never_the_design_epoch() {
+    let mut state = EditorState::fresh();
+    let epoch_before = state
+        .design_epoch
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let generation_before = state.generation.load(std::sync::atomic::Ordering::Relaxed);
+
+    state
+        .apply(Edit::AddTier {
+            index: 0,
+            tier: a_tier(),
+        })
+        .unwrap();
+
+    assert_ne!(
+        state.generation.load(std::sync::atomic::Ordering::Relaxed),
+        generation_before,
+        "an edit must still look stale to a run in flight"
+    );
+    assert_eq!(
+        state
+            .design_epoch
+            .load(std::sync::atomic::Ordering::Relaxed),
+        epoch_before,
+        "an edit is not a new design -- a finished run's verdict is still about this \
+         one, and is shown with a caveat rather than discarded"
+    );
+}
+
+#[test]
+fn replace_wholesale_bumps_the_design_epoch_too() {
+    let mut state = EditorState::fresh();
+    let epoch_before = state
+        .design_epoch
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let generation_before = state.generation.load(std::sync::atomic::Ordering::Relaxed);
+
+    state.replace_wholesale(EditorState::fresh());
+
+    assert_ne!(
+        state.generation.load(std::sync::atomic::Ordering::Relaxed),
+        generation_before
+    );
+    assert_ne!(
+        state
+            .design_epoch
+            .load(std::sync::atomic::Ordering::Relaxed),
+        epoch_before,
+        "New/Load must be distinguishable from an edit"
+    );
+}
+
+#[test]
+fn a_clone_captured_before_a_replacement_still_observes_the_epoch_bump() {
+    // The whole point of carrying the `Arc` across the replacement instead of
+    // adopting the replacement's own fresh one: a completion closure captured its
+    // clone minutes ago and is the only thing that will ever read it.
+    let mut state = EditorState::fresh();
+    let captured = std::sync::Arc::clone(&state.design_epoch);
+    let started = captured.load(std::sync::atomic::Ordering::Relaxed);
+
+    state.replace_wholesale(EditorState::fresh());
+
+    assert_ne!(
+        captured.load(std::sync::atomic::Ordering::Relaxed),
+        started,
+        "a fresh Arc here would silently defeat the check for exactly the runs it \
+         exists to catch"
+    );
+}
+
+#[test]
+fn the_epoch_keeps_counting_across_several_replacements() {
+    let mut state = EditorState::fresh();
+    let captured = std::sync::Arc::clone(&state.design_epoch);
+    let started = captured.load(std::sync::atomic::Ordering::Relaxed);
+
+    state.replace_wholesale(EditorState::fresh());
+    state.replace_wholesale(EditorState::fresh());
+
+    assert_eq!(
+        captured.load(std::sync::atomic::Ordering::Relaxed),
+        started + 2,
+        "loading design B then design C must not land back on A's own epoch"
     );
 }

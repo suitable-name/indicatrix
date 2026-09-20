@@ -42,6 +42,7 @@ fn sample_scene() -> SceneState {
         material,
         planes,
         girdle_frosted: false,
+        backdrop: 0.0,
     }
 }
 

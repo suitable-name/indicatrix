@@ -47,6 +47,53 @@ mod mesh_checks;
 mod tests;
 mod warning;
 
+use crate::design::Design;
+use indicatrix::geometry::meet_solver::SolvedTier;
+
 pub use authored_checks::{check_cut_order, check_gear_quantization};
-pub use mesh_checks::{DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, check_manufacturability};
+pub use mesh_checks::{
+    DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, check_manufacturability, degenerate_suspects,
+};
 pub use warning::ManufacturabilityWarning;
+
+/// Cumulative facet-plane count per tier prefix -- see
+/// [`mesh_checks::facet_plane_boundaries`]'s own doc comment. `pub(crate)`
+/// only: [`crate::design::Design::tier_for_plane_index`] is the public way to
+/// use this (turning a combined-arrangement plane index into a tier index),
+/// so the raw boundaries never need to leave this crate.
+pub(crate) use mesh_checks::facet_plane_boundaries;
+
+/// Runs every check this crate can given whatever solve state is actually
+/// available, rather than requiring a full solve up front the way
+/// [`check_manufacturability`] itself does.
+///
+/// The two mast-free checks ([`check_gear_quantization`]/[`check_cut_order`]) need
+/// no mast at all and always run; the two mesh-based checks (reached through
+/// [`check_manufacturability`]) run only when `solved` is `Some`.
+///
+/// Exists for a caller like the editor's own manufacturability panel that must
+/// still report the mast-free checks (a fractional index, an out-of-order meet) on
+/// a design that has not solved yet -- e.g. one with a
+/// [`crate::design::MissingAnchor`], where calling
+/// [`Design::solve`](crate::design::Design::solve) itself fails. A caller that
+/// early-returns an empty list on that failure drops every check, mast-free ones
+/// included, rather than only the two that actually need a mast -- see the
+/// "mast-free manufacturability checks are dropped entirely on `MissingAnchor`"
+/// finding, whose fix this is the core-side half of (the editor's own
+/// `manufacturability_warning_lines` should call this instead of returning
+/// `Vec::new()` on a solve error).
+#[must_use]
+pub fn check_manufacturability_available(
+    design: &Design,
+    solved: Option<&[SolvedTier]>,
+    min_facet_area_fraction_of_w2: f64,
+) -> Vec<ManufacturabilityWarning> {
+    solved.map_or_else(
+        || {
+            let mut warnings = check_gear_quantization(design);
+            warnings.extend(check_cut_order(design));
+            warnings
+        },
+        |solved| check_manufacturability(design, solved, min_facet_area_fraction_of_w2),
+    )
+}

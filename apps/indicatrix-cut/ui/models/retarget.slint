@@ -20,11 +20,29 @@ export global RetargetModel {
     in-out property <float> crown_fraction: 0.0;
     in-out property <bool> scale_crown_by_ratio: false;
 
-    // Target material readout (`ResolvedMaterial`, already resolved by whatever
-    // material picker opened this dialog) -- display only.
+    // The target material picker: owned by THIS dialog (not borrowed from the
+    // design settings panel's own combo/RI-override fields any more -- see
+    // `gui::editor::callbacks::retarget_actions`'s module doc comment). `open()`
+    // seeds `target_material_index` from the design's own current material;
+    // changing either fires `proposal_changed()` to rebuild against the new target.
+    in-out property <int> target_material_index: 0;
+    in-out property <string> target_ri_override_text: "";
+    // The combo's own option list (built-ins, then custom catalogue materials, then
+    // the trailing "Custom RI…" sentinel) -- pushed fresh by Rust every `open()`
+    // since custom materials can change between dialog sessions.
+    in property <[string]> material_options: [];
+
+    // Target material readout (`ResolvedMaterial`, already resolved from the two
+    // properties above) -- display only.
     in property <string> target_material_name: "";
     in property <string> target_material_ri: "";
     in property <string> target_critical_angle: "";
+    // Item 183: `target_ri_override_text` failed to parse (not a number, or not a
+    // valid refractive index) -- non-empty means the readout/rows above are stale
+    // (frozen at whatever the last valid target was) and `rows`/`notes` were left
+    // empty rather than silently rebuilt against the OLD material. Cleared the
+    // moment the field parses again.
+    in property <string> target_material_error: "";
 
     // The proposal itself: one row per pavilion/crown tier, plus the notes
     // `RetargetProposal::notes` carries. Rebuilt by Rust every time the mode/crown
@@ -39,12 +57,25 @@ export global RetargetModel {
     // `RetargetError::Solve`'s message, or "" -- the OTHER way Optimize mode can fail
     // to produce a proposal at all.
     in property <string> solve_error: "";
-    in property <bool> is_busy: false; // Optimize mode's search is running.
+    // Optimize mode's search is running, off the UI thread (see
+    // `gui::editor::optimize_solve::spawn_optimize_solve`) -- the dialog stays
+    // interactive while this is true; only the mode/crown/target controls and the
+    // Apply button disable, and the footer's Cancel button switches to actually
+    // cancelling the search instead of closing the dialog.
+    in property <bool> is_busy: false;
+    // Real running progress while `is_busy`, from `SearchHooks::on_progress` --
+    // both `0` before the first tick arrives.
+    in property <int> optimize_evaluations: 0;
+    in property <int> optimize_max_evaluations: 0;
 
     // Opens the dialog and builds the first (Shift-mode) proposal.
     callback open();
     callback close();
-    // The dialog's mode/crown controls changed -- rebuild the proposal.
+    // The dialog's mode/crown/target controls changed -- rebuild the proposal.
     callback proposal_changed();
+    // The footer's Cancel button, while `is_busy`: cancels the running Optimize
+    // search (a real mid-search checkpoint, see `OptimizeSolveHandle::cancel`'s own
+    // doc comment) without closing the dialog.
+    callback cancel_optimize();
     callback apply();
 }

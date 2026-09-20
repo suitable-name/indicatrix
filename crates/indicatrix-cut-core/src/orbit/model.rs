@@ -36,6 +36,49 @@ pub fn ring_distance(a: f64, b: f64, ring: f64) -> f64 {
     d.min(ring - d)
 }
 
+/// Rotates every index-wheel position in `indices` by `k_teeth` whole (or
+/// fractional) teeth around the gear, wrapping modulo `gear_teeth_abs`.
+///
+/// The index-only half of "rotate this tier by k teeth" (see
+/// [`crate::design::Design::rotate_indices`], which applies this to both a
+/// tier's `indices` and its `detached` subset with the same `k_teeth` so the
+/// two stay in step).
+///
+/// Pure and total: works on the values alone, never panics.
+/// `gear_teeth_abs == 0` (no usable index wheel) returns `indices` unchanged,
+/// matching [`orbit_units`]/[`expected_orbit`]'s own degenerate-schedule
+/// convention.
+#[must_use]
+pub fn rotate_indices(indices: &[f64], k_teeth: f64, gear_teeth_abs: u32) -> Vec<f64> {
+    if gear_teeth_abs == 0 {
+        return indices.to_vec();
+    }
+    let gear = f64::from(gear_teeth_abs);
+    indices
+        .iter()
+        .map(|&idx| (idx + k_teeth).rem_euclid(gear))
+        .collect()
+}
+
+/// Mirrors every index-wheel position in `indices` about the wheel's zero
+/// tooth, wrapping modulo `gear_teeth_abs`.
+///
+/// The index-only half of "mirror this tier to the other side of the
+/// symmetry axis" (see [`crate::design::Design::mirror_indices`]). Negates
+/// each position, the same reflection [`expected_orbit`]'s own
+/// `mirrored_base` computes for one position.
+///
+/// Pure and total like [`rotate_indices`]; `gear_teeth_abs == 0` returns
+/// `indices` unchanged.
+#[must_use]
+pub fn mirror_indices(indices: &[f64], gear_teeth_abs: u32) -> Vec<f64> {
+    if gear_teeth_abs == 0 {
+        return indices.to_vec();
+    }
+    let gear = f64::from(gear_teeth_abs);
+    indices.iter().map(|&idx| (-idx).rem_euclid(gear)).collect()
+}
+
 /// One physical facet's occurrence set under the schedule's stated
 /// symmetry -- see the module docs for the model and the corpus-measured
 /// shape distribution.

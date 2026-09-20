@@ -59,13 +59,15 @@ use super::material_lookup::{EditorMaterialLookup, resolved_gem_material};
 use indicatrix::optics::materials::GemMaterial;
 use indicatrix_cut_core::{
     Design, MaterialSelection, MissingAnchor, OptimizeConfig, OptimizeOutcome, SearchHooks,
+    free_tier_indices,
+    optimize::{SearchStage, inclusive_max_evaluations},
     optimize_design,
 };
 use slint::{ComponentHandle, Weak};
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -92,10 +94,20 @@ impl OptimizeSolveHandle {
 
 /// One progress tick posted while an optimize run is in progress -- see the module doc
 /// comment's "Real progress, not just elapsed time" section.
+///
+/// `max_evaluations` is [`inclusive_max_evaluations`]'s figure (coordinate stage
+/// PLUS the polish stage's own cap), not [`OptimizeConfig::max_evaluations`] alone
+/// -- CAD audit item 153: the coordinate-only figure meant `evaluations` could sail
+/// past `max_evaluations` the moment the polish stage started, reading as the
+/// counter having broken past its own stated budget. `stage` is CAD audit item
+/// 161's fix for the two hangs bracketing every run: a caller shows a stage name
+/// instead of a stalled fraction while [`SearchStage::BaselineFull`]/
+/// [`SearchStage::FinalFull`] are the active stage.
 #[derive(Debug, Clone, Copy)]
 pub struct OptimizeSolveProgress {
     pub evaluations: usize,
     pub max_evaluations: usize,
+    pub stage: SearchStage,
     pub elapsed: Duration,
 }
 
@@ -159,8 +171,15 @@ where
     let done_ticker = Arc::clone(&done_flag);
     let evaluations_done = Arc::new(AtomicUsize::new(0));
     let evaluations_ticker = Arc::clone(&evaluations_done);
+    // `SearchStage::BaselineFull` (`0`) is also the correct stage to show before
+    // the worker thread's first real report ever lands.
+    let stage_done = Arc::new(AtomicU8::new(SearchStage::BaselineFull.to_code()));
+    let stage_ticker = Arc::clone(&stage_done);
     let ticker_ui = ui_weak.clone();
-    let max_evaluations = config.max_evaluations;
+    // CAD audit item 153: the coordinate stage's own budget alone used to be
+    // reported as `max_evaluations`, understating the true cap the moment the
+    // polish stage's evaluations started counting toward the same running total.
+    let max_evaluations = inclusive_max_evaluations(&config, free_tier_indices(&design).len());
 
     // Ticker: throttles how often the UI thread is asked to redraw progress -- see the
     // module doc comment's "Real progress, not just elapsed time" section for why this
@@ -175,6 +194,7 @@ where
             let progress = OptimizeSolveProgress {
                 evaluations: evaluations_ticker.load(Ordering::Relaxed),
                 max_evaluations,
+                stage: SearchStage::from_code(stage_ticker.load(Ordering::Relaxed)),
                 elapsed: start.elapsed(),
             };
             let on_progress = on_progress.clone();
@@ -196,8 +216,9 @@ where
         let material = resolved_gem_material(&job.material_selection, &lookup);
         let hooks = SearchHooks {
             cancel: Some(&cancel_worker),
-            on_progress: Some(&|evaluations: usize| {
+            on_progress: Some(&|evaluations: usize, stage: SearchStage| {
                 evaluations_done.store(evaluations, Ordering::Relaxed);
+                stage_done.store(stage.to_code(), Ordering::Relaxed);
             }),
         };
         let result = optimize_design(&job.design, &material, &job.config, &hooks);
@@ -318,6 +339,7 @@ mod tests {
         let progress = OptimizeSolveProgress {
             evaluations: 12,
             max_evaluations: 200,
+            stage: SearchStage::Coordinate,
             elapsed: Duration::from_secs(1),
         };
         let copied = progress;

@@ -24,6 +24,7 @@ fn tier_with(indices: &[f64], detached: &[f64]) -> ConstraintTier {
         indices: indices.to_vec(),
         constraint: MeetConstraint::ScaleReference(0.5),
         imported_meet: None,
+        original_notes: None,
         detached: detached.to_vec(),
     }
 }
@@ -395,4 +396,57 @@ fn out_of_range_tier_is_rejected() {
     assert!(design.detach_all_in_tier(0).is_err());
     assert!(design.reattach_all_in_tier(0).is_err());
     assert!(design.orbit_units(0).is_err());
+}
+
+/// `rotate_indices`/`mirror_indices` (the pure functions) must wrap modulo
+/// the gear and leave a `gear_teeth_abs == 0` schedule's values untouched.
+#[test]
+fn rotate_and_mirror_indices_wrap_modulo_the_gear() {
+    assert_eq!(rotate_indices(&[0.0, 90.0], 6.0, 96), vec![6.0, 0.0]);
+    assert_eq!(mirror_indices(&[0.0, 6.0, 90.0], 96), vec![0.0, 90.0, 6.0]);
+    // No usable gear: values pass through unchanged.
+    assert_eq!(rotate_indices(&[1.0, 2.0], 6.0, 0), vec![1.0, 2.0]);
+    assert_eq!(mirror_indices(&[1.0, 2.0], 0), vec![1.0, 2.0]);
+}
+
+/// `Design::rotate_indices` must rotate both `indices` and `detached` by the
+/// same `k_teeth`, wrapping and re-sorting, and reject an out-of-range tier.
+#[test]
+fn design_rotate_indices_rotates_indices_and_detached_together() {
+    let design = Design::new(
+        PreformSpec::block(1.0, 1.0, 2.0),
+        meta(96, 4, false),
+        vec![tier_with(&[0.0, 24.0, 48.0, 72.0], &[0.0])],
+    );
+    let edit = design.rotate_indices(0, 6.0).expect("tier 0 exists");
+    let Edit::SetIndices {
+        indices, detached, ..
+    } = edit
+    else {
+        panic!("expected SetIndices");
+    };
+    assert_eq!(indices, vec![6.0, 30.0, 54.0, 78.0]);
+    assert_eq!(detached, vec![6.0]);
+    assert!(design.rotate_indices(1, 6.0).is_err());
+}
+
+/// `Design::mirror_indices` must negate (mod gear) both `indices` and
+/// `detached`, and reject an out-of-range tier.
+#[test]
+fn design_mirror_indices_mirrors_indices_and_detached_together() {
+    let design = Design::new(
+        PreformSpec::block(1.0, 1.0, 2.0),
+        meta(96, 4, false),
+        vec![tier_with(&[6.0, 30.0], &[6.0])],
+    );
+    let edit = design.mirror_indices(0).expect("tier 0 exists");
+    let Edit::SetIndices {
+        indices, detached, ..
+    } = edit
+    else {
+        panic!("expected SetIndices");
+    };
+    assert_eq!(indices, vec![66.0, 90.0]);
+    assert_eq!(detached, vec![90.0]);
+    assert!(design.mirror_indices(1).is_err());
 }

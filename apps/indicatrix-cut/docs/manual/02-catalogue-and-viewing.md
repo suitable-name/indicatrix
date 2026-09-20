@@ -13,8 +13,10 @@ search and filters, and its header reads "Catalog (N of M)" — how many
 match versus how many exist in total. If nothing matches, it shows "No
 diagrams found / Try adjusting your search terms or filters."
 
-- **Search box** (top toolbar): searches title, designer, and notes. A
-  small "×" appears once you've typed something, to clear it in one click.
+- **Search box** (top toolbar): matches against a design's title and
+  designer. Its own hint text also mentions notes, but a note is not
+  actually part of the match yet — see Chapter 12. A small "×" appears once
+  you've typed something, to clear it in one click.
 - **Shape** and **Gear** drop-downs: filter to a specific shape
   classification or index-gear size.
 - **Filters** button: opens the Advanced Filters panel (below). It turns
@@ -111,16 +113,31 @@ genuine right-drag gesture.)
   you can define a fully custom material (name, refractive index,
   dispersion, birefringence, colour swatch, crystal system, and optical
   character) starting from one of the built-in templates.
-- **Lighting** — choose among seven presets grouped into two lighting models:
-  - **Studio** (the analytic studio rig, unchanged):
-    - **D65 Daylight (6500K)** — standard neutral daylight illuminant across key, fill, and ring lights.
-    - **Incandescent (3200K)** — warm tungsten illuminant with stronger spot multiplier.
-    - **Gem Studio Ring Lights** — classic 16-point ring light rig with dark velvet backdrop.
-    - **Dramatic Dark Spotlight** — high-contrast spotlighting for dramatic sparkle.
-  - **Lit hemisphere** (diffuse hemisphere and outdoor dome models):
-    - **ISO hemisphere** — lit upper hemisphere with a smooth zenith-to-horizon cosine gradient for clear facet contrast and definition.
-    - **Soft dome + ring lights** — subtle sky dome with dark neutral ground, key, fill, and ring lights for crisp presentation renders without clipping.
-    - **Daylight dome + sun** — sky dome with bright directional sun disc (18× peak) and soft penumbra for brilliant outdoor sparkles on a neutral backdrop.
+- **Lighting** — seven presets in two families:
+  - **Studio** (the analytic studio rig): **D65 Daylight (6500K)**, **Incandescent
+    (3200K)**, **Gem Studio Ring Lights** and **Dramatic Dark Spotlight**. A dark velvet
+    backdrop with a key softbox, a fill and sixteen ring pinpoints: hard sparkle,
+    clipped highlights, black everywhere else.
+  - **Lit models** — what a stone looks like in a real scene. All three darken the
+    facets that would reflect your own head, the way a face-up stone really shows a
+    dark table:
+    - **ISO hemisphere (GemRay-style)** — the whole sky above the girdle evenly lit,
+      black below. The classic GemRay/GCS light model for comparing light-return
+      patterns.
+    - **Light tent + black cards** — the default. A jewellery light tent: grey walls,
+      one broad overhead softbox, three black cards for facet contrast and a small hard
+      spark light for scintillation. The softbox follows the light azimuth/elevation
+      controls; the cards sit 90°, 180° and 270° around from it.
+    - **Daylight sky + sun** — a clear sky, brighter towards the horizon and around the
+      sun, a 2° sun for fire, dark ground.
+
+  At exposure 1× the lit models put their ambient light near middle grey, so only a
+  direct reflection of a light source clips to white; use Studio Exposure to go darker
+  or brighter.
+- **Backdrop** (Settings gear, under Studio Exposure) — what the camera sees behind
+  the stone: **As lit** (the environment's own ground), **GemRay grey** (the default:
+  the neutral canvas GemRay paints, for like-for-like comparisons) or **White**. Only
+  the camera sees it; the stone's optics never do, so leakage and windows stay dark.
 - **Tilt Curve** — opens the tilt-performance dialog (below).
 - A reset-camera button, a "Save as preset" button (captures your full
   current lighting *and* camera pose as a named preset), a Pause/Live

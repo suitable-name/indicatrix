@@ -72,6 +72,9 @@ pub fn wrapped_hero_wavelengths<const N: usize>(hero_rand: f32) -> [f32; N] {
 /// built once here, before the `NUM_CHANNELS` loop, rather than once per channel
 /// (measured: 204ns per `StudioRig::new`, x8 redundant rebuilds per ray ~= 1373ns/ray).
 ///
+/// `observer` is the unit direction from the stone towards the eye, for the lit
+/// lighting models' head shadow (see `environment::sample_studio_environment_observed`).
+///
 /// `mis_weight` scales every channel's contribution uniformly -- `1.0`
 /// (exactly, so `stokes[k].intensity() * 1.0` is bit-identical to the bare value)
 /// reproduces this function's behaviour with NEE absent precisely; every call site with
@@ -81,6 +84,7 @@ pub fn wrapped_hero_wavelengths<const N: usize>(hero_rand: f32) -> [f32; N] {
 fn accumulate_miss_radiance(
     environment: EnvironmentSource<'_>,
     ray_dir: Vec3,
+    observer: Vec3,
     lambdas: &[f32; NUM_CHANNELS],
     stokes: &[StokesVector; NUM_CHANNELS],
     mis_weight: f32,
@@ -98,8 +102,13 @@ fn accumulate_miss_radiance(
         EnvironmentSource::HdrMap(_) => None,
     };
     for k in 0..NUM_CHANNELS {
-        let env_spectral =
-            sample_environment_channel(environment, ray_dir, lambdas[k], studio_rig.as_ref());
+        let env_spectral = sample_environment_channel(
+            environment,
+            ray_dir,
+            lambdas[k],
+            studio_rig.as_ref(),
+            observer,
+        );
         // `StokesVector::intensity` clamps `I` to >= 0 before it reaches the
         // environment sample, matching `spectral_transport.wgsl`'s equivalent clamp at
         // its miss/environment-lookup site -- negative `I` is unphysical either side.
@@ -810,6 +819,11 @@ fn trace_spectral_ray_inner(
     let mut path_pdf = [1.0f32; NUM_CHANNELS];
 
     let mut current_ray = initial_ray;
+    // Unit direction from the stone back towards the eye: the lit lighting models darken
+    // exit directions inside the head-shadow cone around it (see
+    // `environment::sample_studio_environment_observed`). Per pixel rather than the
+    // camera axis, so the cone is centred exactly where this pixel's eye sits.
+    let observer = -initial_ray.dir;
     // The wave normal `k`, tracked alongside `current_ray.dir` (the Poynting/energy
     // direction `S`) -- see `refraction`'s "wave normal vs Poynting direction" note.
     // Starts equal to the initial ray direction (k == S in isotropic air).
@@ -856,6 +870,7 @@ fn trace_spectral_ray_inner(
         plane_soa,
         environment,
         studio_rig: exit_split_studio_rig,
+        observer,
         split_radiance: &mut split_radiance,
         enabled: enable_exit_splitting,
         compat: [u8::MAX; NUM_CHANNELS],
@@ -892,6 +907,15 @@ fn trace_spectral_ray_inner(
         capture_primary_hit(&mut primary_hit_out, bounce, hit);
 
         let Some(hit_rec) = hit else {
+            // The camera ray sees the backdrop card, if the scene has one -- only the
+            // stone's own light reaches the environment lookup below.
+            if bounce == 0
+                && super::environment::fill_backdrop(environment, &lambdas, &mut radiance)
+            {
+                path_escaped = true;
+                record_termination(&mut termination_out, bounce, PathTermination::Escaped);
+                break;
+            }
             // Ray exited or missed the gemstone -> sample the environment source.
             // If the immediately preceding bounce was an NEE-eligible
             // scatter event, this escape is the SAME light-sampling technique's
@@ -908,6 +932,7 @@ fn trace_spectral_ray_inner(
             accumulate_miss_radiance(
                 environment,
                 current_ray.dir,
+                observer,
                 &lambdas,
                 &stokes,
                 mis_weight,
@@ -1822,8 +1847,10 @@ mod p2_wave_normal_tests {
                 exposure: 1.0,
                 light_yaw: 0.0,
                 light_pitch: 0.85,
+                backdrop: 0.0,
             },
             studio_rig: None,
+            observer: Vec3::ZERO,
             split_radiance: &mut split_radiance,
             enabled: false,
             compat: [u8::MAX; NUM_CHANNELS],

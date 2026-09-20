@@ -39,14 +39,18 @@
 //! [`scale`] is the mm-per-unit anchor and the figures downstream of it/of geometry
 //! alone; [`fit`] is [`exceeds_preform`]/[`PreformFit`]; [`report`] is
 //! [`YieldReport`] and [`crate::design::Design::yield_report`] itself, built on
-//! both.
+//! both; [`proportions`] is [`crate::design::Design::stone_proportions`], the
+//! same design-context wrapper shape over
+//! [`indicatrix::geometry::stone_metrics::StoneProportions`].
 
 mod fit;
+mod proportions;
 mod report;
 mod scale;
 #[cfg(test)]
 mod tests;
 
 pub use fit::{PreformFit, exceeds_preform};
+pub use indicatrix::geometry::stone_metrics::StoneProportions;
 pub use report::YieldReport;
 pub use scale::{carat_weight, mm_per_unit, volume_mm3, volumetric_yield};

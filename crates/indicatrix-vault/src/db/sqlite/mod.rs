@@ -60,12 +60,13 @@ mod migrations;
 mod mirror_state;
 mod previews;
 mod search;
+mod tags;
 #[cfg(test)]
 mod tests;
 mod tilt_curves;
 
 pub use materials::CustomMaterialParams;
-pub use search::SEARCH_RESULT_CAP;
+pub use search::{DisplayFilters, SEARCH_RESULT_CAP, SortOrder};
 
 // The following imports have no production use *in this file* -- they exist solely so
 // that `tests`' `use super::*;` (see `tests.rs`, moved unaltered) resolves. Every name
@@ -270,11 +271,15 @@ impl Database {
         db.migrate_designer_and_attachment_columns()?;
         db.migrate_crystal_optics_columns()?;
         db.migrate_per_axis_dispersion_column()?;
+        db.migrate_custom_material_specific_gravity()?;
         db.migrate_shape_vocabulary()?;
         db.migrate_ignored_column()?;
+        db.migrate_diagram_entries_timestamps()?;
+        db.migrate_diagram_entries_provenance()?;
         db.migrate_diagram_previews_table()?;
         db.migrate_diagram_tilt_curves_table()?;
         db.migrate_prune_tilt_curve_aggregate_columns()?;
+        db.migrate_tag_tables()?;
         Ok(db)
     }
 
@@ -397,6 +402,7 @@ impl Database {
         // derived-aggregate columns are not something to safely hand-transcribe twice).
         let diagram_previews_sql = migrations::DIAGRAM_PREVIEWS_TABLE_SQL;
         let diagram_tilt_curves_sql = migrations::diagram_tilt_curves_table_sql();
+        let tag_tables_sql = migrations::TAG_TABLES_SQL;
         let sql = format!(
             "BEGIN;
 
@@ -410,7 +416,19 @@ impl Database {
                 -- migrate_ignored_column's doc comment for why NOT NULL DEFAULT 0 is
                 -- safe here even though every other purely-additive migration in this
                 -- crate adds a nullable column.
-                ignored BOOLEAN NOT NULL DEFAULT 0
+                ignored BOOLEAN NOT NULL DEFAULT 0,
+                -- Provenance: the entry this row was derived from (e.g. an
+                -- export-then-reimport of an existing catalogue design), NULL when
+                -- unknown/not applicable -- see migrate_diagram_entries_provenance's
+                -- doc comment. No FOREIGN KEY: the source row can be deleted
+                -- independently without this column blocking or cascading that delete.
+                derived_from_entry_id INTEGER,
+                -- When this row was first created / last had its title or detail
+                -- metadata changed, in Unix seconds. Both NULL for a design that
+                -- predates this column -- never backfilled with a fabricated time, see
+                -- migrate_diagram_entries_timestamps's doc comment.
+                created_at INTEGER,
+                updated_at INTEGER
             );
 
             CREATE TABLE IF NOT EXISTS diagram_details (
@@ -478,7 +496,11 @@ impl Database {
                 -- migrations::Database::migrate_per_axis_dispersion_column's doc
                 -- comment for why this is one JSON column rather than several new
                 -- REAL ones.
-                per_axis_dispersion_json TEXT
+                per_axis_dispersion_json TEXT,
+                -- Nullable specific gravity (density relative to water); see
+                -- migrations::Database::migrate_custom_material_specific_gravity's
+                -- doc comment (CAD audit item 169).
+                specific_gravity REAL
             );
 
             -- Pull-mirror sync (see `crate::model::mirror`): the last remote
@@ -514,6 +536,11 @@ impl Database {
             {diagram_previews_sql}
 
             {diagram_tilt_curves_sql}
+
+            -- Flat tag set plus its many-to-many join table (CAD audit item 190;
+            -- see migrate_tag_tables's own doc comment for why this is a side table
+            -- pair, not a column on diagram_entries).
+            {tag_tables_sql}
 
             COMMIT;"
         );

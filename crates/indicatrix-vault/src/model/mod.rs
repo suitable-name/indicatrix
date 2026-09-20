@@ -11,4 +11,5 @@ pub mod metadata_update;
 pub mod mirror;
 pub mod performance;
 pub mod preview;
+pub mod tag;
 pub mod tilt_curves;

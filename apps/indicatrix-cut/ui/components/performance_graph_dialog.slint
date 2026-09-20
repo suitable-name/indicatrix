@@ -197,6 +197,37 @@ export component PerformanceGraphDialog inherits Rectangle {
                         font-italic: true;
                         color: #475569;
                     }
+                    // CAD audit item 143: `crates/indicatrix-cut-core/src/optimize/
+                    // objective.rs` scores every fixed-pose measurement (including
+                    // Optimize's own before/after tilt-brilliance figures) under a
+                    // fixed CANONICAL light pose, while this curve is swept under
+                    // whatever light pose is CURRENTLY dialled into the viewport
+                    // (`RenderContext::light_yaw`/`light_pitch`, dragged with a
+                    // right/Shift-drag) -- the two agree only until the light is
+                    // moved. Stated here (the honest half of the fix this lane's
+                    // file ownership can reach; Optimize's own result panel is
+                    // `gui::editor::view`, outside it) rather than left for a
+                    // cutter to notice as two "tilt brilliance" numbers disagreeing
+                    // with no stated reason.
+                    Text {
+                        text: "Optimize scores brilliance under a fixed light pose; this curve uses your current light -- if you've moved it, the two figures may disagree.";
+                        font-size: 11px;
+                        font-italic: true;
+                        color: #475569;
+                    }
+                    // CAD audit item 234: the sweep and the hover-preview thumbnail
+                    // both trace an all-polished stone against the bare resolved
+                    // material (see `gui::tilt_hover_preview::render_hover_preview`'s
+                    // own doc comment) -- none of the live viewport's display
+                    // overrides apply here, so this curve/preview can look and
+                    // measure differently from the Live Render tab's image of the
+                    // SAME design. Stated here rather than left to read as a bug.
+                    Text {
+                        text: "Excludes display overrides: inclusions, c-axis orientation, edge rounding, physical size and frosted girdle are not applied -- this shows " + root.material_name + " as an all-polished stone.";
+                        font-size: 11px;
+                        font-italic: true;
+                        color: #475569;
+                    }
                 }
 
                 Rectangle {
@@ -736,6 +767,14 @@ export component PerformanceGraphDialog inherits Rectangle {
                     changed tilt_deg => {
                         root.request_tilt_hover_preview(root.selected_axis_index, self.tilt_deg);
                     }
+
+                    // CAD audit item 234: this mini preview is an all-polished
+                    // trace of the bare resolved material -- the same honesty this
+                    // dialog's own header caption states, repeated here since a
+                    // reader hovering the card may never scroll up to the header.
+                    // Not a layout child (Tooltip's own requirement) -- a sibling of
+                    // the VerticalLayout below, inside this Rectangle.
+                    Tooltip { text: @markdown("All-polished preview: inclusions, c-axis orientation, edge rounding, physical size and frosted girdle are excluded."); }
 
                     VerticalLayout {
                         padding: 5px;

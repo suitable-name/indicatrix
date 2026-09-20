@@ -196,6 +196,10 @@ pub(super) struct ExitSplitCtx<'a> {
     /// redundant rebuild per split channel. `None` for [`EnvironmentSource::HdrMap`],
     /// which [`sample_environment_channel`] ignores.
     pub(super) studio_rig: Option<StudioRig>,
+    /// Unit direction from the stone towards the eye -- the reverse of the pixel's
+    /// primary ray -- for the lit lighting models' head shadow; see
+    /// `environment::sample_studio_environment_observed`.
+    pub(super) observer: Vec3,
     /// A staging accumulator, separate from `trace_spectral_ray_inner`'s own
     /// `radiance`: every split channel's contribution lands here first, and
     /// `trace_spectral_ray_inner` folds it into `radiance` only if the shared/hero path
@@ -430,8 +434,13 @@ pub(super) fn try_split_exit_channel(
         // Bounded re-entry: decline to trace further (energy-loss truncation only).
         return;
     }
-    let env_spectral =
-        sample_environment_channel(exit.environment, dir_k, lambda_k, exit.studio_rig.as_ref());
+    let env_spectral = sample_environment_channel(
+        exit.environment,
+        dir_k,
+        lambda_k,
+        exit.studio_rig.as_ref(),
+        exit.observer,
+    );
     exit.split_radiance[k] = f32::mul_add(
         transmitted_intensity.max(0.0),
         env_spectral,
@@ -2917,8 +2926,10 @@ mod p2_uniaxial_internal_wiring_energy_conservation_tests {
                             exposure: 1.0,
                             light_yaw: 0.0,
                             light_pitch: 0.85,
+                            backdrop: 0.0,
                         },
                         studio_rig: None,
+                        observer: Vec3::ZERO,
                         split_radiance: &mut split_radiance_t,
                         enabled: false,
                         compat: [u8::MAX; NUM_CHANNELS],

@@ -130,10 +130,13 @@ const PREVIEW_EXPOSURE: f32 = 1.0;
 /// one field of view for every still render this app produces, live viewport included
 /// (`RenderContext::default`'s camera setup uses the same figure).
 const PREVIEW_FOV_DEG: f32 = 42.0;
-/// The lighting rig every preview renders under -- `RingLights` is this app's own
+/// The lighting rig every preview renders under -- `LightTent` is this app's own
 /// default lighting-preset label (`DEFAULT_LIGHTING_RIG`), matching `PREVIEW_YAW`'s own
 /// "look like an undialled-in render" reasoning above.
-const PREVIEW_LIGHTING_PRESET: LightingPreset = LightingPreset::RingLights;
+const PREVIEW_LIGHTING_PRESET: LightingPreset = LightingPreset::LightTent;
+/// The backdrop every preview renders against -- `GemRay`'s grey, the live view's own
+/// default, so a catalogue thumbnail matches the Live Render tab.
+const PREVIEW_BACKDROP: f32 = indicatrix::optics::raytracer::BACKDROP_GEMRAY_GREY;
 
 /// Which of the two cached preview images a [`render_view`] call produces -- see this
 /// module's doc comment for the pitch each maps to.
@@ -215,6 +218,7 @@ pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) ->
         lighting_preset: PREVIEW_LIGHTING_PRESET,
         max_bounces: job.max_bounces,
         exposure: PREVIEW_EXPOSURE,
+        backdrop: PREVIEW_BACKDROP,
         active_planes: job.planes.to_vec(),
         // No frosted-girdle finish for a catalogue thumbnail -- matches the export's
         // own "empty means every facet Polished" convention
@@ -230,10 +234,10 @@ pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) ->
         env_map: None,
     };
     let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, PREVIEW_FOV_DEG);
-    let environment =
-        scene
-            .lighting_preset
-            .studio(scene.exposure, scene.light_yaw, scene.light_pitch);
+    let environment = scene
+        .lighting_preset
+        .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
+        .with_backdrop(scene.backdrop);
     let gpu_scene = GpuSceneRef {
         camera: &camera,
         width: job.size,
@@ -301,6 +305,7 @@ pub fn render_view_remote(
         material: job.material.clone(),
         planes: job.planes.to_vec(),
         girdle_frosted: false,
+        backdrop: PREVIEW_BACKDROP,
     };
     let accumulator = Arc::new(Mutex::new(Accumulator::new(job.size, job.size)));
     let (tx, rx) = mpsc::channel::<RemoteUpdate>();

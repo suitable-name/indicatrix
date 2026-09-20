@@ -4,9 +4,10 @@
 
 This chapter covers the Edit tab's Solid viewport: a second, independent
 view of your design's actual solved shape, shown alongside the ordinary
-spectral render. You will learn the three view modes, how to orbit and
-pick facets, what hover and click do, the hatched and outlined overlays,
-and what the "Not solved" banner means here versus in Chapter 5.
+spectral render. You will learn the four view modes, how to orbit, zoom,
+and pick facets, what hover and click do, the hatched and outlined
+overlays, and what the "Not solved" banner means here versus in Chapter 5
+— including the case where an edit genuinely does not solve at all.
 
 ## Why a second viewport
 
@@ -23,9 +24,11 @@ almost every change — not just after Solve.
 Four buttons sit above the Solid viewport:
 
 - **Solid** — the flat-shaded software render, independent of the spectral
-  path tracer. This is where hover and click picking work.
+  path tracer.
 - **Path-traced** — the same image the Live Render tab shows, forwarded
-  here so you can compare without switching tabs.
+  here so you can compare without switching tabs. Hover and click picking
+  still work here (see "Hovering and clicking a facet" below); you just
+  won't see the facet tint or edges the Solid render draws underneath.
 - **Both** — the path-traced image with the solid's own facet edges drawn
   on top of it, so you can see exactly which facet boundaries line up with
   which highlights in the rendered image.
@@ -37,12 +40,19 @@ settings are stored generally).
 
 ## Orbiting
 
-Drag inside the Solid viewport to orbit. The camera is shared with the
-Live Render viewport — dragging in one moves the other, so the two views
-always show the stone from the same angle. Diagram mode is the one
-exception: its three panels are fixed orthographic projections, not tied to
-this camera, so dragging inside the viewport does nothing while Diagram is
-selected.
+Drag inside the Solid viewport (in Solid, Path-traced, or Both mode) to
+orbit, and scroll to zoom. Both are shared with the Live Render viewport —
+orbiting or zooming in one moves the other, so the two views always show
+the stone from the same pose. **Front** and **Top** buttons above the
+viewport snap that shared camera to the same canonical poses Chapter 2
+describes. A drag that barely moves before you release the mouse is still
+treated as a click, not a drag — see "Hovering and clicking a facet" below.
+
+Diagram mode does not share this camera — its three panels are fixed
+orthographic projections — but dragging and scrolling still do something
+there: they pan and zoom the diagram image itself (clamped so you can't
+drag it entirely off screen), and a **Reset View** button appears in
+Diagram mode to snap both back to their defaults.
 
 ## Diagram view
 
@@ -75,12 +85,16 @@ outlined in the pending colour.
 Hovering and clicking work exactly like the Solid view (see above), just
 resolved against the diagram's own layout — click a facet in any of the
 three panels and its tier is selected in the Cutting Schedule list below,
-the same as clicking the Solid render.
+the same as clicking the Solid render. This click-to-select mapping is
+built the moment the diagram is (re)drawn in Diagram mode, so if you switch
+into Diagram mode and click immediately, before the panels have redrawn
+for the current design, the click does nothing; give it a moment (or make
+any edit, which redraws it) and clicking will work as described.
 
 ## Hovering and clicking a facet
 
-Move the mouse over the Solid image (mode **Solid** or **Both**) and a
-small tooltip panel appears in the lower-left corner, naming:
+Move the mouse over the viewport in **Solid**, **Path-traced**, or **Both**
+mode and a small tooltip panel appears in the lower-left corner, naming:
 
 - the tier the facet belongs to,
 - its angle,
@@ -93,9 +107,12 @@ small tooltip panel appears in the lower-left corner, naming:
 **Click** a facet to select its whole tier in the Cutting Schedule list
 below — the row highlights, and every facet belonging to that tier (its
 whole symmetric orbit, not just the one you clicked) is tinted in the
-viewport. This works in reverse too: click a row in the tier list, and its
-facets tint in the Solid viewport, so you can always see exactly what a
-row in the list corresponds to on the actual stone.
+viewport. This also works in Path-traced mode, even though the tint itself
+is harder to see without the Solid render's own facet edges under it;
+switch to Both if you want to see exactly which facet you picked. This
+works in reverse too: click a row in the tier list, and its facets tint in
+the Solid viewport, so you can always see exactly what a row in the list
+corresponds to on the actual stone.
 
 ## The two overlays
 
@@ -130,8 +147,9 @@ happen after an edit:
    background resolve can occasionally take longer than the preview's
    short budget. When that happens, the Solid viewport keeps showing the
    **last solved** solid rather than waiting, with the edited tier's own
-   facets outlined (see the overlay above) and this banner underneath the
-   viewport:
+   facets outlined (see the overlay above — if your edit touched several
+   tiers at once, only the first of them is outlined this way, not all of
+   them) and this banner underneath the viewport:
 
    > Not solved -- showing the last solved solid. Click Solve to refresh.
 
@@ -148,8 +166,20 @@ a wrong mast value flash by; it is simply slightly more likely to show the
 "Not solved" banner briefly on a large design until that background solve
 finishes.
 
+## When an edit genuinely does not solve
+
+The case above is about a background resolve simply taking a moment. A
+different case is an edit that does not solve at all right now — a missing
+anchor, or one that makes the design Degenerate or Unbounded (Chapter 5).
+Rather than blanking the viewport or leaving a stale image on screen with
+no visual sign anything is wrong, the Solid viewport keeps showing the
+**last solid that did close, dimmed**, so you can still see the stone's
+last good shape while you fix the edit that broke it. The banner
+underneath names the actual problem (the same wording Chapter 5's status
+strip shows), not the generic "showing the last solved solid" text above.
+
 ## Next steps
 
-Chapter 5 covers the ordinary (Live Render-facing) Solve action and its
-own status banner in full; Chapter 6 covers the refractive-index margin
-the hatched-facet overlay is built on.
+Chapter 5 covers the ordinary Solve action and its own status strip in
+full; Chapter 6 covers the refractive-index margin the hatched-facet
+overlay is built on.

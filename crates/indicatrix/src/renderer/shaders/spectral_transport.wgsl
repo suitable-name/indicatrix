@@ -90,6 +90,9 @@ fn transport_main(
 
     var current_origin = gen.origin;
     var current_dir = gen.dir;
+    // Unit direction from the stone back towards the eye, for the lit lighting models'
+    // head shadow -- `trace_spectral_ray_inner`'s own `observer = -initial_ray.dir`.
+    let observer = -gen.dir;
     // The wave normal `k`, tracked alongside `current_dir` (the Poynting/energy
     // direction `S`). Starts equal to the ray's direction: outside the gem (air)
     // `k == S` always (isotropic medium, no walk-off).
@@ -125,7 +128,7 @@ fn transport_main(
             bounce, seed0, &lambdas, rc.c_axis, rc.birefringence_delta, rc.is_anisotropic, rc.is_biaxial,
             rc.biax_ax0, rc.biax_ax1, rc.biax_ax2, rc.n_o_hero_seed, rc.n_beta_hero, rc.n_alpha_hero, rc.n_gamma_hero,
             rc.n_e_hero_seed, rc.n_o_hoisted, rc.alpha_o_hoisted, rc.alpha_e_hoisted, rc.alpha_beta_hoisted,
-            rc.studio_key_dir, rc.studio_fill_dir, rc.studio_sin_lp,
+            rc.studio_key_dir, rc.studio_fill_dir, rc.studio_sin_lp, observer,
             &stokes, &radiance, &path_pdf, &current_origin, &current_dir, &current_k,
             &inside_gem, &is_extraordinary, &prev_plane_normal, &have_prev_plane_normal,
             &split_radiance, &compat, &path_escaped, &pending_light_mis,

@@ -29,11 +29,16 @@ to a small gem icon.
 ## The main window
 
 A **menu bar** (File / Edit / Help) runs above everything else. File
-mirrors the editor's New / Open Native / Save Native / Export Edited .asc
+mirrors the editor's New / Open Native / Save Native / Export Edited .asc,
+plus an **Open Recent** submenu of native files you have saved or opened
 (Chapters 3 and 11; greyed out on a build without the editor — see the
-Limitation note below), Edit mirrors Undo/Redo, and Help → User Manual
+Limitation note below); Edit mirrors Undo/Redo, each now saying what it
+will actually do once there is something to act on; and Help → User Manual
 opens this manual's own `README.md` in your system's default viewer.
-Appendix B lists the keyboard shortcuts that work alongside it.
+Appendix B lists the keyboard shortcuts that work alongside it. While the
+Edit tab has unsaved changes, the window title carries a leading "* " so
+you always know at a glance whether the file on disk matches what's on
+screen (Chapter 11).
 
 Below the menu bar, the window is divided into three areas:
 

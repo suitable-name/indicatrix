@@ -56,11 +56,45 @@ pub(in crate::gui) fn load_filter_options_and_initial_list(
     }
 
     sync_range_bounds_to_ui(ui, db);
+    sync_tag_vocabulary_to_ui(ui, db);
     refresh_diagram_list(ui, db, "", "All Shapes", "All Gears");
 
     let total_count = db.lock().unwrap().get_total_count().unwrap_or(0);
     ui.global::<LibraryModel>()
         .set_status_message(format!("Database loaded: {total_count} diagrams available.").into());
+}
+
+/// Pushes the full catalogue tag vocabulary (names only, alphabetical) into
+/// `LibraryModel.all_tags` -- CAD audit item 190's chip filter row and the "Add
+/// tag..." picker both read this rather than each running their own
+/// `Database::list_tags` query. Called at startup and after any write that could
+/// have created or emptied a tag (see
+/// `gui::library::local::organize::setup_add_tag_callback`/
+/// `setup_remove_tag_callback`).
+///
+/// Plain tag names, not `{id, name}` pairs: every Rust entry point that acts on a
+/// tag (`add_tag_to_entry`/`remove_tag_from_entry`/the chip filter) takes the name
+/// and resolves it server-side (`Database::tag_id_by_name`/`add_tag_to_entry`'s own
+/// create-or-reuse lookup) -- see `read_tag_filter`'s own doc comment for why. That
+/// keeps the Slint side needing no new struct type at all, just one more `[string]`
+/// property alongside `shape_options`/`gear_options`.
+///
+/// # Note on `LibraryModel.all_tags`/`active_tag_filter_name`
+///
+/// These are hub properties this crate's owning session must add to
+/// `ui/models/library.slint` -- see this campaign's handoff notes. Until they land,
+/// this call (and every other `all_tags`/`active_tag_filter_name` reference in
+/// `gui::library`) fails to compile; that is the expected, documented state for
+/// this item.
+pub(in crate::gui) fn sync_tag_vocabulary_to_ui(ui: &MainWindow, db: &Arc<Mutex<Database>>) {
+    let tags = db
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .list_tags()
+        .unwrap_or_default();
+    let names: Vec<SharedString> = tags.into_iter().map(|t| t.name.into()).collect();
+    ui.global::<LibraryModel>()
+        .set_all_tags(ModelRc::new(VecModel::from(names)));
 }
 
 /// Pushes the catalogue's actual min/max (RI, L/W, volume, facet count) into the
@@ -98,6 +132,17 @@ pub fn sync_range_bounds_to_ui(ui: &MainWindow, db: &Arc<Mutex<Database>>) {
     apply_attribute_ranges_to_ui(ui, &ranges);
 }
 
+/// [`sync_range_bounds_to_ui`]'s Item 188 counterpart -- fetches then applies via
+/// [`apply_attribute_range_bounds_preserving_filters`] instead of the reset variant.
+/// The right call after a write a cutter did not ask to have their range filters
+/// cleared for (e.g. `gui::library::detail`'s own metadata-save refresh).
+pub fn sync_range_bounds_to_ui_preserving_filters(ui: &MainWindow, db: &Arc<Mutex<Database>>) {
+    let Some(ranges) = fetch_attribute_ranges(db) else {
+        return;
+    };
+    apply_attribute_range_bounds_preserving_filters(ui, &ranges);
+}
+
 /// The `Database` read half of [`sync_range_bounds_to_ui`], with no `ui` dependency --
 /// split out so `gui::library`'s post-import/rename/delete refresh can run this on a
 /// background thread (see that module's own doc comment on `refresh_after_library_change`
@@ -115,6 +160,12 @@ pub fn fetch_attribute_ranges(db: &Arc<Mutex<Database>>) -> Option<AttributeRang
 /// doc comment for why these are split. Sets both the `*_bounds_*` properties (the
 /// sliders' scale) and the `*_filter_*` properties (reset to the full range, i.e.
 /// unfiltered) from an already-fetched [`AttributeRanges`].
+///
+/// Only ever called where a full reset is actually wanted: the initial load (nothing
+/// to preserve yet) and, until Item 188's own audit finding, every post-write refresh
+/// too -- see [`apply_attribute_range_bounds_preserving_filters`] for the version that
+/// updates the sliders' scale WITHOUT silently discarding whatever a cutter had
+/// already narrowed them to.
 pub fn apply_attribute_ranges_to_ui(ui: &MainWindow, ranges: &AttributeRanges) {
     ui.global::<LibraryModel>()
         .set_ri_bounds_min(ranges.ri.0 as f32);
@@ -153,6 +204,76 @@ pub fn apply_attribute_ranges_to_ui(ui: &MainWindow, ranges: &AttributeRanges) {
         .set_facets_filter_max(ranges.facets.1 as f32);
 }
 
+/// Clamps `current` (a filter's current `(min, max)`) into `bounds` (that attribute's
+/// new `(min, max)`) -- shared by every attribute
+/// [`apply_attribute_range_bounds_preserving_filters`] updates. A bounds widening (the
+/// common case: an import added a design outside the previous min/max) leaves an
+/// already-inside filter value untouched; only a bounds NARROWING (a delete, or a
+/// metadata edit that moved the catalogue's own extreme value) ever moves a filter
+/// value at all, and then only just enough to stay valid.
+fn clamp_filter_range(current: (f32, f32), bounds: (f32, f32)) -> (f32, f32) {
+    let (bounds_min, bounds_max) = bounds;
+    let min = current.0.clamp(bounds_min, bounds_max);
+    let max = current.1.clamp(bounds_min, bounds_max);
+    // `min` must never exceed `max` after independently clamping each -- only
+    // reachable when `bounds` narrowed past a filter that had already been widened to
+    // (or past) the old bounds on one side only, an edge case worth handling exactly
+    // rather than leaving an inverted slider.
+    if min > max { (max, max) } else { (min, max) }
+}
+
+/// [`apply_attribute_ranges_to_ui`]'s Item 188 counterpart: updates the `*_bounds_*`
+/// properties (the sliders' scale) from a freshly re-queried [`AttributeRanges`] the
+/// same way, but CLAMPS the existing `*_filter_*` values into the new bounds instead
+/// of resetting them to the full range. Used by every refresh that follows a write a
+/// cutter did not ask to have their filters cleared for (an import, a rename/delete/
+/// shape-change, a metadata save) -- [`apply_attribute_ranges_to_ui`] itself stays the
+/// right call for the one-time initial load, where there is no prior filter to
+/// preserve, and for the range panel's own explicit Reset button.
+pub fn apply_attribute_range_bounds_preserving_filters(ui: &MainWindow, ranges: &AttributeRanges) {
+    let model = ui.global::<LibraryModel>();
+
+    let ri_bounds = (ranges.ri.0 as f32, ranges.ri.1 as f32);
+    model.set_ri_bounds_min(ri_bounds.0);
+    model.set_ri_bounds_max(ri_bounds.1);
+    let (ri_min, ri_max) = clamp_filter_range(
+        (model.get_ri_filter_min(), model.get_ri_filter_max()),
+        ri_bounds,
+    );
+    model.set_ri_filter_min(ri_min);
+    model.set_ri_filter_max(ri_max);
+
+    let lw_bounds = (ranges.lw_ratio.0 as f32, ranges.lw_ratio.1 as f32);
+    model.set_lw_bounds_min(lw_bounds.0);
+    model.set_lw_bounds_max(lw_bounds.1);
+    let (lw_min, lw_max) = clamp_filter_range(
+        (model.get_lw_filter_min(), model.get_lw_filter_max()),
+        lw_bounds,
+    );
+    model.set_lw_filter_min(lw_min);
+    model.set_lw_filter_max(lw_max);
+
+    let volume_bounds = (ranges.volume.0 as f32, ranges.volume.1 as f32);
+    model.set_volume_bounds_min(volume_bounds.0);
+    model.set_volume_bounds_max(volume_bounds.1);
+    let (volume_min, volume_max) = clamp_filter_range(
+        (model.get_volume_filter_min(), model.get_volume_filter_max()),
+        volume_bounds,
+    );
+    model.set_volume_filter_min(volume_min);
+    model.set_volume_filter_max(volume_max);
+
+    let facets_bounds = (ranges.facets.0 as f32, ranges.facets.1 as f32);
+    model.set_facets_bounds_min(facets_bounds.0);
+    model.set_facets_bounds_max(facets_bounds.1);
+    let (facets_min, facets_max) = clamp_filter_range(
+        (model.get_facets_filter_min(), model.get_facets_filter_max()),
+        facets_bounds,
+    );
+    model.set_facets_filter_min(facets_min);
+    model.set_facets_filter_max(facets_max);
+}
+
 /// Wires up the search-text, shape-filter, and gear-filter callbacks that re-run the
 /// diagram list query. Split out of `run_gui` purely to keep that function under
 /// clippy's function-length lint.
@@ -162,6 +283,17 @@ pub fn apply_attribute_ranges_to_ui(ui: &MainWindow, ranges: &AttributeRanges) {
 /// see that type's own doc comment), the dispatcher calls the exact same
 /// `refresh_diagram_list` these handlers called before this dispatch existed, so nothing
 /// changes here until a user actually switches sources.
+/// Clears the "show these N just-imported designs" restriction a batch import can
+/// leave on `LibraryModel.recent_import_filter` (CAD audit item 187's batch case) --
+/// called from the top of every real search/filter-change handler below so that
+/// view never outlives the one refresh it was created for. A no-op (cheap: setting
+/// an already-empty model) when no batch view is active, so every handler can call
+/// it unconditionally rather than checking first.
+fn clear_recent_import_filter(ui: &MainWindow) {
+    ui.global::<LibraryModel>()
+        .set_recent_import_filter(ModelRc::new(VecModel::from(Vec::<i32>::new())));
+}
+
 pub(in crate::gui) fn setup_search_and_filter_callbacks(
     ui: &MainWindow,
     db: &Arc<Mutex<Database>>,
@@ -173,6 +305,7 @@ pub(in crate::gui) fn setup_search_and_filter_callbacks(
     ui.global::<LibraryModel>()
         .on_search_changed(move |text: SharedString| {
             if let Some(ui) = ui_weak_search.upgrade() {
+                clear_recent_import_filter(&ui);
                 let shape_idx = ui.global::<LibraryModel>().get_selected_shape_index() as usize;
                 let shape = ui
                     .global::<LibraryModel>()
@@ -203,6 +336,7 @@ pub(in crate::gui) fn setup_search_and_filter_callbacks(
     ui.global::<LibraryModel>()
         .on_filter_shape_changed(move |shape: SharedString| {
             if let Some(ui) = ui_weak_shape.upgrade() {
+                clear_recent_import_filter(&ui);
                 let search = ui.global::<LibraryModel>().get_search_text();
                 let gear_idx = ui.global::<LibraryModel>().get_selected_gear_index() as usize;
                 let gear = ui
@@ -228,6 +362,7 @@ pub(in crate::gui) fn setup_search_and_filter_callbacks(
     ui.global::<LibraryModel>()
         .on_filter_gear_changed(move |gear: SharedString| {
             if let Some(ui) = ui_weak_gear.upgrade() {
+                clear_recent_import_filter(&ui);
                 let search = ui.global::<LibraryModel>().get_search_text();
                 let shape_idx = ui.global::<LibraryModel>().get_selected_shape_index() as usize;
                 let shape = ui
@@ -256,6 +391,7 @@ pub(in crate::gui) fn setup_search_and_filter_callbacks(
     let ui_weak_range = ui.as_weak();
     ui.global::<LibraryModel>().on_filters_changed(move || {
         if let Some(ui) = ui_weak_range.upgrade() {
+            clear_recent_import_filter(&ui);
             let search = ui.global::<LibraryModel>().get_search_text();
             let shape_idx = ui.global::<LibraryModel>().get_selected_shape_index() as usize;
             let shape = ui
@@ -430,4 +566,30 @@ pub(in crate::gui) fn setup_diagram_selection_and_export_callbacks(
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp_filter_range;
+
+    #[test]
+    fn clamp_filter_range_leaves_an_already_inside_filter_untouched() {
+        // The common Item 188 case: an import widened the catalogue's own bounds,
+        // but the cutter's existing filter is still inside them and must not move.
+        assert_eq!(clamp_filter_range((1.5, 2.0), (1.3, 2.9)), (1.5, 2.0));
+    }
+
+    #[test]
+    fn clamp_filter_range_pulls_an_out_of_range_bound_back_in() {
+        assert_eq!(clamp_filter_range((1.0, 3.5), (1.3, 2.9)), (1.3, 2.9));
+    }
+
+    #[test]
+    fn clamp_filter_range_never_produces_an_inverted_min_max() {
+        // Both `min` and `max` sit above the new (narrowed) bounds -- clamping each
+        // independently would otherwise leave `min == max == bounds_max`, which is
+        // still valid, not inverted; this exercises the one case that COULD invert
+        // (`min` clamped up past an already-clamped `max`).
+        assert_eq!(clamp_filter_range((5.0, 6.0), (1.0, 2.0)), (2.0, 2.0));
+    }
 }

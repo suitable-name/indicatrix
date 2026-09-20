@@ -267,11 +267,9 @@ pub async fn accumulate_chunk(
     };
 
     let camera = Camera::new(view.yaw, view.pitch, view.distance, FOV_DEG);
-    let environment = crate::scene::lighting_for_index(view.lighting_index).studio(
-        view.exposure,
-        LIGHT_YAW,
-        LIGHT_PITCH,
-    );
+    let environment = crate::scene::lighting_for_index(view.lighting_index)
+        .studio(view.exposure, LIGHT_YAW, LIGHT_PITCH)
+        .with_backdrop(indicatrix::optics::raytracer::BACKDROP_GEMRAY_GREY);
 
     let gpu_scene = GpuFrameScene {
         camera: &camera,

@@ -2,6 +2,7 @@ import { Button, LineEdit, ComboBox } from "std-widgets.slint";
 import { DiagramDetailData } from "../types.slint";
 import { Theme } from "../theme.slint";
 import { LibraryModel } from "../models/library.slint";
+import { EditorModel } from "../models/editor.slint";
 
 export component DetailHeaderView inherits Rectangle {
     in property <DiagramDetailData> detail: LibraryModel.current_detail;
@@ -85,10 +86,16 @@ export component DetailHeaderView inherits Rectangle {
                 vertical-alignment: center;
                 overflow: elide;
             }
+            // Compact mode only ever runs while a design is being edited (see
+            // `app.slint`'s `compact: root.render_view_tab == 1 && EditorModel.enabled`
+            // binding), so an empty catalogue title here means "an unsaved or
+            // not-yet-catalogued design", not "nothing selected" -- the editor's own
+            // label (falling back to its own "Untitled design" default) is the
+            // accurate wording, not the catalogue's browsing prompt (CAD audit item 259).
             if root.detail.title == "": Text {
                 horizontal-stretch: 1;
                 min-width: 0px;
-                text: "Select a diagram from catalog";
+                text: EditorModel.enabled ? EditorModel.design_label : "Select a diagram from catalog";
                 font-size: 14px;
                 font-weight: 700;
                 color: Theme.text-primary;
@@ -162,7 +169,7 @@ export component DetailHeaderView inherits Rectangle {
             // Tabs, condensed labels so the row fits.
             Rectangle {
                 height: 32px;
-                background: root.active_tab == 0 ? #2563eb : (ctab0_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                background: root.active_tab == 0 ? Theme.primary : (ctab0_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
                 border-color: root.active_tab == 0 ? Theme.accent-cyan : Theme.border-subtle;
@@ -170,12 +177,12 @@ export component DetailHeaderView inherits Rectangle {
                 HorizontalLayout {
                     padding-left: 10px; padding-right: 10px;
                     alignment: center;
-                    Text { text: "3D Preview"; font-size: 11px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
+                    Text { text: "3D Preview"; font-size: 11px; font-weight: 600; color: Theme.text-on-primary; vertical-alignment: center; }
                 }
             }
             Rectangle {
                 height: 32px;
-                background: root.active_tab == 1 ? #2563eb : (ctab1_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                background: root.active_tab == 1 ? Theme.primary : (ctab1_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
                 border-color: root.active_tab == 1 ? Theme.accent-cyan : Theme.border-subtle;
@@ -183,12 +190,12 @@ export component DetailHeaderView inherits Rectangle {
                 HorizontalLayout {
                     padding-left: 10px; padding-right: 10px;
                     alignment: center;
-                    Text { text: "Cutting"; font-size: 11px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
+                    Text { text: "Cutting"; font-size: 11px; font-weight: 600; color: Theme.text-on-primary; vertical-alignment: center; }
                 }
             }
             Rectangle {
                 height: 32px;
-                background: root.active_tab == 2 ? #2563eb : (ctab2_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                background: root.active_tab == 2 ? Theme.primary : (ctab2_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
                 border-color: root.active_tab == 2 ? Theme.accent-cyan : Theme.border-subtle;
@@ -196,7 +203,7 @@ export component DetailHeaderView inherits Rectangle {
                 HorizontalLayout {
                     padding-left: 10px; padding-right: 10px;
                     alignment: center;
-                    Text { text: "Files"; font-size: 11px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
+                    Text { text: "Files"; font-size: 11px; font-weight: 600; color: Theme.text-on-primary; vertical-alignment: center; }
                 }
             }
 
@@ -282,7 +289,12 @@ export component DetailHeaderView inherits Rectangle {
                         alignment: start;
 
                         if !root.renaming: Text {
-                            text: root.detail.title != "" ? root.detail.title : "Select a diagram from catalog";
+                            // A design can be under edit (Live Render/Diagram tab, so
+                            // this full-height header still shows) with no catalogue
+                            // row of its own -- show the editor's own label rather
+                            // than a "go pick something" prompt that no longer applies
+                            // (CAD audit item 259).
+                            text: root.detail.title != "" ? root.detail.title : (EditorModel.enabled ? EditorModel.design_label : "Select a diagram from catalog");
                             font-size: 18px;
                             font-weight: 700;
                             color: Theme.text-primary;
@@ -620,7 +632,7 @@ export component DetailHeaderView inherits Rectangle {
 
                 Rectangle {
                     height: 34px;
-                    background: root.active_tab == 0 ? #2563eb : (tab0_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                    background: root.active_tab == 0 ? Theme.primary : (tab0_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
                     border-color: root.active_tab == 0 ? Theme.accent-cyan : Theme.border-subtle;
@@ -629,14 +641,14 @@ export component DetailHeaderView inherits Rectangle {
                         padding-left: 14px; padding-right: 14px;
                         alignment: center;
                         spacing: 6px;
-                        Image { source: @image-url("../icons/gem.svg"); colorize: #ffffff; width: 12px; height: 12px; vertical-alignment: center; }
-                        Text { text: "3D Spectral Preview (1)"; font-size: 12px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
+                        Image { source: @image-url("../icons/gem.svg"); colorize: Theme.text-on-primary; width: 12px; height: 12px; vertical-alignment: center; }
+                        Text { text: "3D Spectral Preview (1)"; font-size: 12px; font-weight: 600; color: Theme.text-on-primary; vertical-alignment: center; }
                     }
                 }
 
                 Rectangle {
                     height: 34px;
-                    background: root.active_tab == 1 ? #2563eb : (tab1_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                    background: root.active_tab == 1 ? Theme.primary : (tab1_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
                     border-color: root.active_tab == 1 ? Theme.accent-cyan : Theme.border-subtle;
@@ -645,14 +657,14 @@ export component DetailHeaderView inherits Rectangle {
                         padding-left: 14px; padding-right: 14px;
                         alignment: center;
                         spacing: 6px;
-                        Image { source: @image-url("../icons/ruler.svg"); colorize: #ffffff; width: 12px; height: 12px; vertical-alignment: center; }
-                        Text { text: "Cutting Schedule (2)"; font-size: 12px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
+                        Image { source: @image-url("../icons/ruler.svg"); colorize: Theme.text-on-primary; width: 12px; height: 12px; vertical-alignment: center; }
+                        Text { text: "Cutting Schedule (2)"; font-size: 12px; font-weight: 600; color: Theme.text-on-primary; vertical-alignment: center; }
                     }
                 }
 
                 Rectangle {
                     height: 34px;
-                    background: root.active_tab == 2 ? #2563eb : (tab2_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                    background: root.active_tab == 2 ? Theme.primary : (tab2_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
                     border-color: root.active_tab == 2 ? Theme.accent-cyan : Theme.border-subtle;
@@ -661,8 +673,8 @@ export component DetailHeaderView inherits Rectangle {
                         padding-left: 14px; padding-right: 14px;
                         alignment: center;
                         spacing: 6px;
-                        Image { source: @image-url("../icons/folder.svg"); colorize: #ffffff; width: 12px; height: 12px; vertical-alignment: center; }
-                        Text { text: "Files & Downloads (3)"; font-size: 12px; font-weight: 600; color: #ffffff; vertical-alignment: center; }
+                        Image { source: @image-url("../icons/folder.svg"); colorize: Theme.text-on-primary; width: 12px; height: 12px; vertical-alignment: center; }
+                        Text { text: "Files & Downloads (3)"; font-size: 12px; font-weight: 600; color: Theme.text-on-primary; vertical-alignment: center; }
                     }
                 }
             }

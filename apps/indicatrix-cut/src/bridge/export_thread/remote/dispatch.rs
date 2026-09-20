@@ -128,6 +128,7 @@ pub(in crate::bridge::export_thread) fn scene_state_from_snapshot(
         material: snapshot.material.clone(),
         planes: snapshot.active_planes.clone(),
         girdle_frosted: !snapshot.facet_finishes.is_empty(),
+        backdrop: snapshot.backdrop,
     }
 }
 
@@ -660,6 +661,7 @@ mod tests {
             lighting_preset: indicatrix::optics::raytracer::LightingPreset::RingLights,
             max_bounces: 64, // deliberately NOT `RenderContext::default().max_bounces` (12)
             exposure: 1.0,
+            backdrop: 0.0,
             active_planes: StandardGemCuts::standard_round_brilliant(),
             facet_finishes: Vec::new(),
             env_map: None,

@@ -138,7 +138,7 @@ export component TiltBatchDialog inherits Rectangle {
                                     wrap: word-wrap;
                                 }
                                 Text {
-                                    text: "This is much slower than generating previews -- roughly 1.4 seconds per design on one CPU core, more over the whole catalogue -- but a configured remote worker is used automatically when available. It renders in the background: you can keep browsing while it runs, and cancel at any time without losing what's already been computed.";
+                                    text: "This is much slower than generating previews -- roughly 1.4 seconds per design on one CPU core, more over the whole catalogue -- but a configured remote worker is used automatically when available. It renders in the background, but the live 3D tracer pauses for the duration -- the viewport says so while it runs, and cancel at any time without losing what's already been computed.";
                                     font-size: 11px;
                                     color: Theme.text-muted;
                                     wrap: word-wrap;

@@ -1,4 +1,4 @@
-import { ScrollView } from "std-widgets.slint";
+import { ComboBox, LineEdit, ScrollView, Slider } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { RetargetRowItem } from "../types.slint";
 import { RetargetModel } from "../models/retarget.slint";
@@ -12,21 +12,57 @@ export component RetargetDialog inherits Rectangle {
     property <bool> can_apply: RetargetModel.rows.length > 0 && RetargetModel.anchored_tier_errors.length == 0 && RetargetModel.solve_error == "" && !RetargetModel.is_busy;
 
     visible: RetargetModel.is_open;
-    background: #00000088;
+    background: Theme.overlay-backdrop;
 
     TouchArea {
         clicked => { if (!RetargetModel.is_busy) { root.close(); } }
     }
 
+    // CAD audit item 199: this dialog had no Escape/Enter/focus handling at all --
+    // this component stays instantiated the whole time (`visible: RetargetModel.
+    // is_open`, never wrapped in an `if`), so `init => { self.focus(); }` alone
+    // (the idiom `new_design_dialog.slint`/`material_editor_dialog.slint` use)
+    // would only ever fire once, the first time the dialog is ever opened. Mirrors
+    // `RetargetModel.is_open` into a local property instead and watches THAT with
+    // `changed`, so this re-focuses every time the dialog reopens -- `self.…`,
+    // not `root.…`, in the handler, matching this codebase's own
+    // `changed`-handler trap (a global's own property can't be watched directly).
+    // Escape closes (unless a search is running, matching the header X/backdrop's
+    // own busy guard); Return applies when the proposal is ready. Every other key
+    // is swallowed (`accept`) so it cannot bubble to `global_shortcuts` and fire a
+    // shortcut on the design underneath.
+    key_scope := FocusScope {
+        property <bool> open_mirror: RetargetModel.is_open;
+        changed open_mirror => {
+            if (self.open_mirror) {
+                self.focus();
+            }
+        }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                if (!RetargetModel.is_busy) {
+                    root.close();
+                }
+                return accept;
+            } else if event.text == Key.Return {
+                if (root.can_apply) {
+                    RetargetModel.apply();
+                }
+                return accept;
+            }
+            accept
+        }
+    }
+
     Rectangle {
         width: 560px;
         height: min(680px, root.height - 40px);
-        background: #11151f;
+        background: Theme.surface-dialog;
         border-radius: Theme.radius-md;
         border-width: 1px;
-        border-color: #334155;
+        border-color: Theme.border-dialog;
         drop-shadow-blur: 24px;
-        drop-shadow-color: #000000bb;
+        drop-shadow-color: Theme.modal-shadow;
         clip: true;
 
         TouchArea {} // Isolate clicks inside the modal.
@@ -40,7 +76,10 @@ export component RetargetDialog inherits Rectangle {
                 alignment: space-between;
                 HorizontalLayout {
                     spacing: 8px;
-                    Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
+                    // cad_todo.md #242: was `save.svg`, which reads as "this dialog
+                    // saves something" -- Retarget previews a material swap, applied
+                    // only via the footer's own explicit "Apply" button below.
+                    Image { source: @image-url("../icons/gem.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
                     Text { text: "Retarget for Material"; font-size: 14px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
                 }
                 Rectangle {
@@ -57,7 +96,56 @@ export component RetargetDialog inherits Rectangle {
 
             Rectangle { height: 1px; background: #1e293b; }
 
-            // 2. Target material readout
+            // 2. Target material picker -- owned by this dialog (see
+            // `RetargetModel.target_material_index`'s own doc comment), not the
+            // design settings panel's combo.
+            VerticalLayout {
+                spacing: 6px;
+                Rectangle {
+                    height: target_picker_lbl.preferred-height;
+                    Tooltip { text: @markdown("The material this proposal retargets TO. Starts at the design's own current material when the dialog opens; pick another to preview retargeting onto it."); }
+                    target_picker_lbl := Text { text: "Target Material"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: 30px;
+                        background: #1e293b;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: #334155;
+                        ComboBox {
+                            model: RetargetModel.material_options;
+                            current-index <=> RetargetModel.target_material_index;
+                            enabled: !RetargetModel.is_busy;
+                            selected(val) => { RetargetModel.proposal_changed(); }
+                        }
+                    }
+                    Rectangle {
+                        width: 96px;
+                        height: 30px;
+                        background: #1e293b;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: #334155;
+                        LineEdit {
+                            text <=> RetargetModel.target_ri_override_text;
+                            placeholder-text: "Custom n_D";
+                            enabled: !RetargetModel.is_busy;
+                            edited => { RetargetModel.proposal_changed(); }
+                        }
+                    }
+                }
+            }
+
+            // 3. Target material readout -- the RESOLVED result of the picker above.
+            // Item 174: the name shown is derived from the picker's own
+            // `MaterialSelection` (Rust side, `retarget_actions::target_display_name`),
+            // not the resolved `GemMaterial`, so "(none)"/a typed custom RI never show
+            // as "Diamond". Item 183: an RI override that fails to parse is surfaced
+            // below as its own error line rather than silently falling back to the
+            // design's OLD material with no sign anything was typed wrong.
             Rectangle {
                 height: target_row.preferred-height + 12px;
                 border-radius: Theme.radius-sm;
@@ -65,7 +153,7 @@ export component RetargetDialog inherits Rectangle {
                 border-width: 1px;
                 border-color: #334155;
 
-                Tooltip { text: @markdown("The material this proposal retargets TO -- chosen in the design settings panel before opening this dialog."); }
+                Tooltip { text: @markdown("The material the picker above resolves to -- what this proposal actually retargets TO."); }
 
                 target_row := HorizontalLayout {
                     padding: 8px;
@@ -77,7 +165,15 @@ export component RetargetDialog inherits Rectangle {
                 }
             }
 
-            // 3. Mode selector
+            if RetargetModel.target_material_error != "": Text {
+                text: "\u{26a0} " + RetargetModel.target_material_error + " Showing the last valid target; nothing below reflects this text.";
+                font-size: 10px;
+                font-weight: 600;
+                color: Theme.accent-ruby;
+                wrap: word-wrap;
+            }
+
+            // 4. Mode selector
             VerticalLayout {
                 spacing: 6px;
                 Rectangle {
@@ -123,7 +219,7 @@ export component RetargetDialog inherits Rectangle {
                 }
             }
 
-            // 4. Crown handling
+            // 5. Crown handling
             VerticalLayout {
                 spacing: 6px;
                 Rectangle {
@@ -135,38 +231,43 @@ export component RetargetDialog inherits Rectangle {
                 HorizontalLayout {
                     spacing: 8px;
                     Text { text: "Fraction of shift:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-                    Rectangle {
+                    // cad_todo.md #242: was a hand-rolled drag bar (mouse-x / width),
+                    // which makes hitting an exact value pixel-hunting. A std-widgets
+                    // `Slider` gets keyboard/drag/click support for free; `step` lands
+                    // on round 5% increments the way the mouse-drag version never did.
+                    crown_slider := Slider {
                         horizontal-stretch: 1;
-                        height: 18px;
+                        minimum: 0.0;
+                        maximum: 1.0;
+                        step: 0.05;
+                        value <=> RetargetModel.crown_fraction;
+                        enabled: !RetargetModel.is_busy && !RetargetModel.scale_crown_by_ratio;
+                        changed(val) => { RetargetModel.proposal_changed(); }
+                    }
+                    Rectangle {
+                        width: 40px;
+                        height: 22px;
                         y: (parent.height - self.height) / 2;
-                        border-radius: 9px;
+                        border-radius: Theme.radius-sm;
                         background: #0f172a;
                         border-width: 1px;
                         border-color: #334155;
-                        clip: true;
-
-                        Rectangle {
-                            x: 0;
-                            width: parent.width * RetargetModel.crown_fraction;
-                            height: 100%;
-                            background: RetargetModel.scale_crown_by_ratio ? #334155 : Theme.accent-cyan;
-                        }
-
-                        crown_touch := TouchArea {
+                        crown_pct_edit := LineEdit {
                             enabled: !RetargetModel.is_busy && !RetargetModel.scale_crown_by_ratio;
-                            moved => {
-                                if (self.pressed) {
-                                    RetargetModel.crown_fraction = max(0.0, min(1.0, self.mouse-x / self.width));
-                                    RetargetModel.proposal_changed();
-                                }
-                            }
-                            clicked => {
-                                RetargetModel.crown_fraction = max(0.0, min(1.0, self.mouse-x / self.width));
+                            horizontal-alignment: center;
+                            // Bare digits, no "%" -- `to-float()` below needs the
+                            // whole string to be a number. Reflects the slider/model
+                            // whenever this field isn't the one being typed into --
+                            // `accepted` is the only path that writes the model, so
+                            // there is no binding fight while a cutter is mid-edit.
+                            text: Math.round(RetargetModel.crown_fraction * 100);
+                            accepted => {
+                                RetargetModel.crown_fraction = max(0.0, min(1.0, self.text.to-float() / 100));
                                 RetargetModel.proposal_changed();
                             }
                         }
                     }
-                    Text { text: Math.round(RetargetModel.crown_fraction * 100) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; vertical-alignment: center; }
+                    Text { text: "%"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; vertical-alignment: center; }
                 }
 
                 Rectangle {
@@ -208,13 +309,13 @@ export component RetargetDialog inherits Rectangle {
 
             Rectangle { height: 1px; background: #1e293b; }
 
-            // 5. Errors: shown instead of the table whenever the current mode/crown
+            // 6. Errors: shown instead of the table whenever the current mode/crown
             // combination cannot produce a valid proposal.
             if RetargetModel.solve_error != "": Text {
                 text: "Design does not solve: " + RetargetModel.solve_error;
                 font-size: 11px;
                 font-weight: 600;
-                color: #f87171;
+                color: Theme.danger;
                 wrap: word-wrap;
             }
             if RetargetModel.anchored_tier_errors.length > 0: VerticalLayout {
@@ -233,7 +334,7 @@ export component RetargetDialog inherits Rectangle {
                 }
             }
 
-            // 6. The proposal table -- one row per pavilion/crown tier.
+            // 7. The proposal table -- one row per pavilion/crown tier.
             if RetargetModel.solve_error == "" && RetargetModel.anchored_tier_errors.length == 0: VerticalLayout {
                 vertical-stretch: 1;
                 spacing: 4px;
@@ -276,7 +377,7 @@ export component RetargetDialog inherits Rectangle {
                 }
             }
 
-            // 7. Notes
+            // 8. Notes
             if RetargetModel.notes.length > 0: VerticalLayout {
                 spacing: 2px;
                 for line in RetargetModel.notes: Text {
@@ -288,11 +389,18 @@ export component RetargetDialog inherits Rectangle {
                 }
             }
 
-            if RetargetModel.is_busy: Text { text: "Optimizing..."; font-size: 11px; font-weight: 600; color: Theme.accent-cyan; }
+            if RetargetModel.is_busy: Text {
+                text: RetargetModel.optimize_max_evaluations > 0
+                    ? "Optimizing... " + RetargetModel.optimize_evaluations + " / " + RetargetModel.optimize_max_evaluations + " evaluations"
+                    : "Optimizing...";
+                font-size: 11px;
+                font-weight: 600;
+                color: Theme.accent-cyan;
+            }
 
             Rectangle { height: 1px; background: #1e293b; }
 
-            // 8. Footer
+            // 9. Footer
             HorizontalLayout {
                 spacing: 8px;
 
@@ -304,9 +412,19 @@ export component RetargetDialog inherits Rectangle {
                     border-width: 1px;
                     border-color: #334155;
 
+                    // While busy this cancels the running Optimize search instead of
+                    // closing the dialog -- see `RetargetModel.cancel_optimize`'s own
+                    // doc comment. Always enabled (unlike the header's X and the
+                    // backdrop click, which stay disabled while busy): this is the
+                    // one control that can actually stop a running search.
                     cancel_touch := TouchArea {
-                        enabled: !RetargetModel.is_busy;
-                        clicked => { root.close(); }
+                        clicked => {
+                            if (RetargetModel.is_busy) {
+                                RetargetModel.cancel_optimize();
+                            } else {
+                                root.close();
+                            }
+                        }
                     }
 
                     Text { text: "Cancel"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }

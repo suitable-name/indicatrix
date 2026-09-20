@@ -86,6 +86,43 @@ pub(super) fn push_frame_to_ui<T, F, M>(
     });
 }
 
+/// Pushes just this iteration's gemological metrics to the UI thread, with no
+/// image -- the metrics-while-suspended path (CAD audit item 60) takes this
+/// instead of [`push_frame_to_ui`] so an invisible 3D tab never pays for a
+/// denoise+tonemap+framebuffer-copy cycle nobody can see just to keep the HUD/
+/// tilt-dialog numbers current. No `RedrawGate` here: this only runs on the
+/// suspended path's own ~100ms cadence (see `spawn_render_thread`'s suspension
+/// branch), which is already far below the rate a burst-coalescing gate exists to
+/// protect against.
+pub(super) fn push_metrics_to_ui<T, M>(
+    ui_weak: &Weak<T>,
+    update_metrics: &M,
+    metrics_snapshot: FrameMetricsSnapshot,
+) where
+    T: ComponentHandle + 'static,
+    M: Fn(&T, f32, f32, f32, f32, f32, [f32; 19], [f32; 19], [f32; 19], f32)
+        + Send
+        + 'static
+        + Clone,
+{
+    let update_metrics = update_metrics.clone();
+    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+        let metrics = metrics_snapshot.metrics;
+        update_metrics(
+            &ui,
+            metrics.brilliance_pct,
+            metrics.fire_index,
+            metrics.scintillation_pct,
+            metrics.windowing_pct,
+            metrics.extinction_pct,
+            metrics_snapshot.graph_brilliance,
+            metrics_snapshot.graph_extinction,
+            metrics_snapshot.graph_windowing,
+            metrics_snapshot.cam_pitch_deg,
+        );
+    });
+}
+
 /// Resets the progressive-accumulation state (buffer, sample count, and the three
 /// first-hit guide buffers) whenever the output dimensions change, and separately
 /// whenever the frame is marked `dirty` (camera/material/etc. moved). The guide
@@ -152,11 +189,37 @@ pub(super) struct SuspensionFlags {
     /// mean local must stay off", not "is remote active at all".
     pub(super) remote_suspends: bool,
     pub(super) export_active: bool,
+    /// `RenderContext::material_unresolved.is_some()` -- CAD audit item 57. Unlike
+    /// every other flag here this is not about who owns the buffer; it is about
+    /// whether any result computed now would mean anything.
+    pub(super) material_unresolved: bool,
 }
 
 impl SuspensionFlags {
     pub(super) const fn tracing_suspended(self) -> bool {
-        self.paused || !self.tab_visible || self.remote_suspends || self.export_active
+        self.paused
+            || !self.tab_visible
+            || self.remote_suspends
+            || self.export_active
+            || self.material_unresolved
+    }
+
+    /// Whether gemological METRICS evaluation (as opposed to full path-tracing)
+    /// should also be skipped this iteration -- CAD audit item 60. Deliberately
+    /// narrower than [`Self::tracing_suspended`]: an invisible 3D tab (the Edit
+    /// tab's default Solid view mode) must not, on its own, freeze brilliance/
+    /// fire/windowing/extinction and the tilt-dialog graphs at whatever was last
+    /// traced while the cutter keeps editing the design. Only a hard suspend --
+    /// an explicit pause, a remote/export handoff owning the buffer -- blocks
+    /// metrics too, since those genuinely mean "nothing here should be computed
+    /// right now" rather than "nothing here is currently on screen".
+    pub(super) const fn metrics_suspended(self) -> bool {
+        // `material_unresolved` belongs here as well as in `tracing_suspended`, and
+        // is the only flag that does: the others mean "not now", this one means
+        // "there is no honest answer to compute" (CAD audit item 57). Scoring
+        // brilliance against a substituted material is exactly the contradiction
+        // that item is about.
+        self.paused || self.remote_suspends || self.export_active || self.material_unresolved
     }
 }
 
@@ -250,7 +313,8 @@ mod tests {
                 paused: false,
                 tab_visible: true,
                 remote_suspends: false,
-                export_active: false
+                export_active: false,
+                material_unresolved: false
             }
             .tracing_suspended()
         );
@@ -263,7 +327,8 @@ mod tests {
                 paused: true,
                 tab_visible: true,
                 remote_suspends: false,
-                export_active: false
+                export_active: false,
+                material_unresolved: false
             }
             .tracing_suspended(),
             "paused"
@@ -273,7 +338,8 @@ mod tests {
                 paused: false,
                 tab_visible: false,
                 remote_suspends: false,
-                export_active: false
+                export_active: false,
+                material_unresolved: false
             }
             .tracing_suspended(),
             "!tab_visible"
@@ -283,7 +349,8 @@ mod tests {
                 paused: false,
                 tab_visible: true,
                 remote_suspends: true,
-                export_active: false
+                export_active: false,
+                material_unresolved: false
             }
             .tracing_suspended(),
             "remote_suspends"
@@ -293,7 +360,8 @@ mod tests {
                 paused: false,
                 tab_visible: true,
                 remote_suspends: false,
-                export_active: true
+                export_active: true,
+                material_unresolved: false
             }
             .tracing_suspended(),
             "export_active"
@@ -313,12 +381,96 @@ mod tests {
                                 tab_visible,
                                 remote_suspends,
                                 export_active,
+                                material_unresolved: false,
                             }
                             .tracing_suspended(),
                             expected,
                             "paused={paused} tab_visible={tab_visible} \
                              remote_suspends={remote_suspends} export_active={export_active}"
                         );
+                    }
+                }
+            }
+        }
+    }
+
+    // ---- metrics_suspended: narrower than tracing_suspended -- CAD audit item 60 ----
+
+    #[test]
+    fn an_invisible_tab_alone_does_not_suspend_metrics() {
+        assert!(
+            !SuspensionFlags {
+                paused: false,
+                tab_visible: false,
+                remote_suspends: false,
+                export_active: false,
+                material_unresolved: false,
+            }
+            .metrics_suspended(),
+            "an invisible 3D tab must not freeze the HUD/tilt-dialog metrics -- \
+             only tracing_suspended (the full trace) should see !tab_visible"
+        );
+    }
+
+    #[test]
+    fn every_hard_suspend_reason_still_suspends_metrics() {
+        assert!(
+            SuspensionFlags {
+                paused: true,
+                tab_visible: true,
+                remote_suspends: false,
+                export_active: false,
+                material_unresolved: false,
+            }
+            .metrics_suspended(),
+            "paused"
+        );
+        assert!(
+            SuspensionFlags {
+                paused: false,
+                tab_visible: true,
+                remote_suspends: true,
+                export_active: false,
+                material_unresolved: false,
+            }
+            .metrics_suspended(),
+            "remote_suspends"
+        );
+        assert!(
+            SuspensionFlags {
+                paused: false,
+                tab_visible: true,
+                remote_suspends: false,
+                export_active: true,
+                material_unresolved: false,
+            }
+            .metrics_suspended(),
+            "export_active"
+        );
+    }
+
+    #[test]
+    fn metrics_suspended_is_never_stricter_than_tracing_suspended() {
+        // metrics_suspended must be a subset of tracing_suspended's reasons: it
+        // would make no sense for metrics to be blocked while full tracing (a
+        // strictly more expensive computation) is allowed to run.
+        for paused in [false, true] {
+            for tab_visible in [false, true] {
+                for remote_suspends in [false, true] {
+                    for export_active in [false, true] {
+                        let flags = SuspensionFlags {
+                            paused,
+                            tab_visible,
+                            remote_suspends,
+                            export_active,
+                            material_unresolved: false,
+                        };
+                        if flags.metrics_suspended() {
+                            assert!(
+                                flags.tracing_suspended(),
+                                "metrics_suspended implies tracing_suspended: {flags:?}"
+                            );
+                        }
                     }
                 }
             }

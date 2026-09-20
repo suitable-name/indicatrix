@@ -1,4 +1,4 @@
-import { ScrollView } from "std-widgets.slint";
+import { LineEdit, ScrollView } from "std-widgets.slint";
 import { DiagramItem, PreviewThumbnails } from "../types.slint";
 import { Theme } from "../theme.slint";
 import { LibraryModel } from "../models/library.slint";
@@ -83,7 +83,11 @@ export component DiagramListView inherits Rectangle {
             alignment: space-between;
 
             Text {
-                text: "Catalog (" + LibraryModel.diagram_list.length + " of " + LibraryModel.total_count + ")";
+                // Shown page vs. the real match count, not the whole-catalogue total
+                // (CAD audit item 193 -- see `LibraryModel.matched_count`'s doc
+                // comment, and `filter_panel.slint`'s `match_summary` for the fuller
+                // wording of the same fix).
+                text: "Catalog (" + LibraryModel.diagram_list.length + " of " + LibraryModel.matched_count + ")";
                 font-size: 12px;
                 font-weight: 700;
                 color: Theme.text-primary;
@@ -115,6 +119,41 @@ export component DiagramListView inherits Rectangle {
                         height: 10px;
                         horizontal-alignment: center;
                         vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // CAD audit item 187's batch case: while `recent_import_filter` restricts
+        // the list to a just-completed multi-file import, say so explicitly and
+        // offer an obvious way back to the full catalogue -- otherwise a cutter who
+        // doesn't immediately notice the (N of M) count shrank would have no idea
+        // why their other designs seem to have vanished.
+        if LibraryModel.recent_import_filter.length > 0: Rectangle {
+            background: Theme.surface-info;
+            border-radius: Theme.radius-sm;
+            height: 26px;
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                alignment: space-between;
+                Text {
+                    text: "Showing " + LibraryModel.recent_import_filter.length + " just-imported design(s).";
+                    font-size: 10px;
+                    color: Theme.accent-cyan;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "Clear";
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: Theme.accent-cyan;
+                    vertical-alignment: center;
+                    TouchArea {
+                        clicked => {
+                            LibraryModel.recent_import_filter = [];
+                            LibraryModel.filters_changed();
+                        }
                     }
                 }
             }
@@ -191,7 +230,7 @@ export component DiagramListView inherits Rectangle {
                     // distinct from a normal row: a dimmed background/opacity plus a
                     // dashed-looking amber border, so they never look like an ordinary
                     // catalogue entry that just happens to be selected or hovered.
-                    background: LibraryModel.selected_entry_id == item.id ? #1e3a8a : (item_touch.has-hover ? Theme.bg-card-hover : Theme.bg-input);
+                    background: LibraryModel.selected_entry_id == item.id ? Theme.surface-selected : (item_touch.has-hover ? Theme.bg-card-hover : Theme.bg-input);
                     opacity: item.ignored ? 0.55 : 1.0;
                     border-radius: Theme.radius-sm;
                     // Keyboard focus ring: takes priority over the plain-hover border
@@ -211,6 +250,13 @@ export component DiagramListView inherits Rectangle {
                     // previews yet from ever showing a broken/stretched image or
                     // shifting this card's layout relative to a row that has them.
                     property <PreviewThumbnails> preview: LibraryModel.get_preview_thumbnails(item.id, LibraryModel.preview_cache_version);
+
+                    // CAD audit item 190: the "Add tag..." context-menu entry opens
+                    // this inline text field rather than a modal dialog -- same
+                    // idiom as `detail_header.slint`'s inline rename
+                    // (`renaming`/`rename_draft`).
+                    property <bool> adding_tag: false;
+                    property <string> tag_draft: "";
 
                     item_touch := TouchArea {
                         clicked => {
@@ -245,6 +291,13 @@ export component DiagramListView inherits Rectangle {
                                 title: item.ignored ? "Un-ignore" : "Ignore";
                                 activated => {
                                     LibraryModel.toggle_ignored(item.id);
+                                }
+                            }
+                            MenuItem {
+                                title: "Add tag...";
+                                activated => {
+                                    card.tag_draft = "";
+                                    card.adding_tag = true;
                                 }
                             }
                         }
@@ -353,7 +406,7 @@ export component DiagramListView inherits Rectangle {
                             }
 
                             if item.shape != "": Rectangle {
-                                background: #2563eb;
+                                background: Theme.primary;
                                 border-radius: 3px;
                                 height: 18px;
                                 HorizontalLayout {
@@ -363,7 +416,7 @@ export component DiagramListView inherits Rectangle {
                                         text: item.shape;
                                         font-size: 10px;
                                         font-weight: 600;
-                                        color: #eff6ff;
+                                        color: Theme.text-on-primary;
                                         vertical-alignment: center;
                                     }
                                 }
@@ -383,6 +436,81 @@ export component DiagramListView inherits Rectangle {
                                         color: Theme.accent-amber;
                                         vertical-alignment: center;
                                     }
+                                }
+                            }
+
+                            // Source badge (CAD audit item 189): distinguishes the
+                            // cutter's own locally-imported designs from the wider
+                            // scraped corpus, the same way the shape/Ignored badges
+                            // above already flag their own conditions.
+                            if item.is_local: Rectangle {
+                                background: #065f46;
+                                border-radius: 3px;
+                                height: 18px;
+                                HorizontalLayout {
+                                    padding-left: 5px;
+                                    padding-right: 5px;
+                                    Text {
+                                        text: "Mine";
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        color: Theme.accent-emerald;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        // Tag chips (CAD audit item 190) -- the whole chip is the
+                        // "remove" target (a `TouchArea` sibling covering the chip
+                        // Rectangle, same idiom as `item_touch` covering the whole
+                        // card two levels up), not just its "x" glyph, so the hit
+                        // target is comfortably larger than the 9px text. Hidden
+                        // entirely for a row with no tags and the inline entry not
+                        // open, so an untagged catalogue (the common case today)
+                        // shows no empty row.
+                        if item.tags.length > 0 || card.adding_tag: HorizontalLayout {
+                            spacing: 4px;
+                            alignment: start;
+                            for tag_name in item.tags: Rectangle {
+                                background: #4c1d95;
+                                border-radius: 3px;
+                                height: 16px;
+                                HorizontalLayout {
+                                    padding-left: 5px;
+                                    padding-right: 3px;
+                                    spacing: 3px;
+                                    Text {
+                                        text: tag_name;
+                                        font-size: 9px;
+                                        font-weight: 600;
+                                        color: Theme.accent-purple;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: "x";
+                                        font-size: 9px;
+                                        font-weight: 700;
+                                        color: Theme.accent-purple;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                TouchArea {
+                                    clicked => {
+                                        LibraryModel.remove_tag_from_entry(item.id, tag_name);
+                                    }
+                                }
+                            }
+                            if card.adding_tag: LineEdit {
+                                width: 90px;
+                                height: 16px;
+                                font-size: 9px;
+                                text <=> card.tag_draft;
+                                accepted => {
+                                    if card.tag_draft != "" {
+                                        LibraryModel.add_tag_to_entry(item.id, card.tag_draft);
+                                    }
+                                    card.adding_tag = false;
                                 }
                             }
                         }

@@ -19,6 +19,13 @@ import { LibraryModel } from "../models/library.slint";
 export component ImportDialog inherits PopupWindow {
     in property <string> result_text: LibraryModel.import_result_text;
     in property <bool> importing: LibraryModel.is_busy;
+    // CAD audit items 197 and 98: whether this import produced something worth
+    // reading -- it replaced an existing catalogue row by filename-only dedup, or
+    // some files failed. `result_text` already carried that sentence, but
+    // `changed importing` below used to close this popup the instant `importing`
+    // went false regardless, so it was never actually reachable. Now driven by the
+    // real signal the import completion handler sets.
+    in property <bool> had_collision: LibraryModel.import_should_stay_open;
     // Overall progress for the import currently running -- 0.0..1.0, only meaningful
     // while `importing` is true. `import_done`/`import_total` are the raw file counts
     // behind it (`import_total` is 0 before the first file finishes), shown as
@@ -54,7 +61,16 @@ export component ImportDialog inherits PopupWindow {
     // toast already carries the import summary.
     changed importing => {
         if (!self.importing) {
-            root.close();
+            // CAD audit item 197: stay open when this import replaced an existing
+            // row, so `result_text`'s warning about it is actually reachable
+            // instead of vanishing with the popup the same instant it appears.
+            // Every other outcome still auto-closes, so the import completion
+            // handler's own preview-generation confirm step (see this component's
+            // doc comment above) still gets the popup layer handed back to it
+            // immediately, unchanged from today.
+            if (!root.had_collision) {
+                root.close();
+            }
         }
     }
 

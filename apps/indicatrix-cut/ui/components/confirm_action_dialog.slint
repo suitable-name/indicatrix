@@ -1,0 +1,133 @@
+import { Button } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+
+// A generic modal Save/Discard/Cancel-shaped confirmation, reused by every
+// destructive-action guard this app needs a blocking choice for -- the
+// unsaved-changes guard in front of New/Load Selected/Open Native
+// (`EditorModel.unsaved_dialog_*`) and Close (`MainWindow.close_confirm_*`), and the
+// native-load fingerprint-mismatch choice (`EditorModel.mismatch_dialog_*`). Deliberately
+// bound to NOTHING but its own properties/callbacks -- not `EditorModel` or any other
+// global -- so every call site can drive it from whichever model actually owns that
+// particular decision, without this component needing to know which one that is.
+//
+// Full-viewport backdrop + centered content-sized card, the same modal idiom
+// `metadata_editor_dialog.slint`/`material_editor_dialog.slint` already use. Clicking
+// the backdrop counts as Cancel -- these are all "stop and ask" dialogs a stray click
+// outside them should never silently escalate into the destructive option.
+//
+// `primary_label`/`secondary_label` empty ("") hides that button entirely -- the
+// fingerprint-mismatch dialog uses this to withhold "Apply Anyway" when the native
+// file's own tier count no longer agrees with the freshly imported `.asc` (see
+// `EditorModel.mismatch_dialog_can_apply`'s own doc comment).
+export component ConfirmActionDialog inherits Rectangle {
+    in property <string> heading: "Unsaved Changes";
+    in property <string> message: "";
+    in property <string> primary_label: "Save";
+    in property <string> secondary_label: "Discard";
+
+    callback primary();
+    callback secondary();
+    callback cancel();
+
+    background: Theme.overlay-backdrop;
+
+    // cad_todo.md #199: takes focus the moment this dialog is mounted so Escape/
+    // Return work without a prior click, and -- since every key not explicitly
+    // handled below is still swallowed (`return accept`) -- so `app.slint`'s global
+    // shortcuts (Ctrl+S/Z/Y/F5/...) cannot fire on the design underneath while this
+    // is the modal on screen. `Key.Tab` is deliberately let through unhandled
+    // (`return reject`) so the window's own built-in Tab/Shift+Tab focus-cycling
+    // (there is nothing else in this dialog to Tab between besides its buttons)
+    // still works -- swallowing it here would silently break that.
+    FocusScope {
+        width: 100%;
+        height: 100%;
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancel();
+            } else if event.text == Key.Return && root.primary_label != "" {
+                root.primary();
+            } else if event.text == Key.Tab {
+                return reject;
+            }
+            return accept;
+        }
+
+        TouchArea {
+            clicked => { root.cancel(); }
+        }
+
+        Rectangle {
+            width: 420px;
+            height: content.preferred-height;
+            background: Theme.surface-dialog;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-dialog;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Theme.modal-shadow;
+            clip: true;
+
+            // Swallows clicks so they never fall through to the backdrop's TouchArea
+            // above (same idiom `metadata_editor_dialog.slint` uses for its own card).
+            TouchArea {}
+
+            content := VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text {
+                        text: root.heading;
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                    }
+                    Rectangle {
+                        width: 26px;
+                        height: 26px;
+                        border-radius: Theme.radius-sm;
+                        background: close_touch.has-hover ? Theme.bg-elevated : transparent;
+                        close_touch := TouchArea { clicked => { root.cancel(); } }
+                        Image {
+                            source: @image-url("../icons/close.svg");
+                            colorize: Theme.text-muted;
+                            width: 12px;
+                            height: 12px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+
+                Text {
+                    text: root.message;
+                    font-size: 12px;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+
+                    Button {
+                        text: "Cancel";
+                        clicked => { root.cancel(); }
+                    }
+                    if root.secondary_label != "": Button {
+                        text: root.secondary_label;
+                        clicked => { root.secondary(); }
+                    }
+                    if root.primary_label != "": Button {
+                        text: root.primary_label;
+                        primary: true;
+                        clicked => { root.primary(); }
+                    }
+                }
+            }
+        }
+    }
+}

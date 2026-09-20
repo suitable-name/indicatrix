@@ -392,16 +392,19 @@ mod tests {
     }
 
     #[test]
-    fn settings_with_iso_hemisphere_lighting_rig_round_trips() {
-        let dir = TempDir::new("iso-hemisphere");
+    fn settings_with_a_lit_model_lighting_rig_round_trip() {
+        let dir = TempDir::new("lit-model");
         let path = dir.path().join("settings.toml");
 
         let mut custom = SettingsFile::default();
-        custom.settings.lighting_rig = "ISO hemisphere".to_string();
+        custom.settings.lighting_rig = "ISO hemisphere (GemRay-style)".to_string();
         save(&path, &custom).unwrap();
 
         let loaded = load_or_default(&path);
-        assert_eq!(loaded.settings.lighting_rig, "ISO hemisphere");
+        assert_eq!(
+            loaded.settings.lighting_rig,
+            "ISO hemisphere (GemRay-style)"
+        );
     }
 
     #[test]

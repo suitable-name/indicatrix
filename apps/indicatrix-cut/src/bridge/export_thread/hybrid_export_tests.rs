@@ -26,6 +26,7 @@ fn export_completes_via_hybrid_or_cpu_path() {
         lighting_preset: LightingPreset::RingLights,
         max_bounces: 12,
         exposure: 1.0,
+        backdrop: 0.0,
         active_planes: StandardGemCuts::standard_round_brilliant(),
         facet_finishes: Vec::new(),
         env_map: None,

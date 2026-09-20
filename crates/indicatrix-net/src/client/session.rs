@@ -287,6 +287,7 @@ mod tests {
             material: GemMaterial::diamond(),
             planes: StandardGemCuts::standard_round_brilliant(),
             girdle_frosted: false,
+            backdrop: 0.0,
         }
     }
 

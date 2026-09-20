@@ -147,9 +147,26 @@ impl MaterialSelection {
         }
     }
 
+    /// Returns a copy of this selection with only `specific_gravity_override`
+    /// replaced -- `name` and `refractive_index_override` carry through unchanged.
+    /// Exists so a caller that owns just the SG field (e.g. the Yield form parser,
+    /// which has no RI-override field of its own) never has to reconstruct this
+    /// whole struct by hand and risk silently dropping `refractive_index_override`
+    /// to `None` in the process, exactly the bug this method closes.
+    #[must_use]
+    pub fn with_specific_gravity_override(&self, specific_gravity_override: Option<f64>) -> Self {
+        Self {
+            specific_gravity_override,
+            ..self.clone()
+        }
+    }
+
     /// The specific gravity actually in effect: the override when present, else the
     /// selected preset's own representative figure, else `None` (nothing to estimate
     /// a carat weight from -- see [`crate::yield_metrics::YieldReport`]).
+    ///
+    /// Built-ins only -- see [`Self::effective_specific_gravity_with`] for a
+    /// catalogue-aware version that also resolves a CUSTOM material's own SG.
     #[must_use]
     pub fn effective_specific_gravity(&self) -> Option<f64> {
         self.specific_gravity_override.or_else(|| {
@@ -157,6 +174,20 @@ impl MaterialSelection {
                 .as_deref()
                 .and_then(built_in_specific_gravity)
                 .map(|sg| sg.representative)
+        })
+    }
+
+    /// Like [`Self::effective_specific_gravity`], but resolves `name` through
+    /// `catalogue` (see [`MaterialLookup::specific_gravity`]) instead of only this
+    /// crate's own built-in table, so a CUSTOM catalogue material's authored SG
+    /// reaches the carat-weight estimate too (CAD audit item 169). The per-design
+    /// override still wins over everything, exactly as in the built-ins-only path.
+    #[must_use]
+    pub fn effective_specific_gravity_with(&self, catalogue: &dyn MaterialLookup) -> Option<f64> {
+        self.specific_gravity_override.or_else(|| {
+            self.name
+                .as_deref()
+                .and_then(|name| catalogue.specific_gravity(name))
         })
     }
 
@@ -214,6 +245,17 @@ pub trait MaterialLookup {
     /// Looks up `name` (exactly a `GemMaterial::name`-style string), or `None` if
     /// this catalogue has nothing by that name.
     fn lookup(&self, name: &str) -> Option<GemMaterial>;
+
+    /// Looks up `name`'s specific gravity (CAD audit item 169), or `None` if this
+    /// catalogue has no SG on file for it. Defaults to `None` so an existing
+    /// implementor keeps compiling unchanged; a catalogue that actually stores
+    /// custom-material SG (e.g. the app's `EditorMaterialLookup`) overrides this to
+    /// read it back, the same way [`BuiltinMaterials`] overrides it for the
+    /// built-in table via [`built_in_specific_gravity`].
+    fn specific_gravity(&self, name: &str) -> Option<f64> {
+        let _ = name;
+        None
+    }
 }
 
 /// A [`MaterialLookup`] over exactly `indicatrix::optics::materials::GemMaterial`'s
@@ -228,6 +270,10 @@ pub struct BuiltinMaterials;
 impl MaterialLookup for BuiltinMaterials {
     fn lookup(&self, name: &str) -> Option<GemMaterial> {
         GemMaterial::by_name(name)
+    }
+
+    fn specific_gravity(&self, name: &str) -> Option<f64> {
+        built_in_specific_gravity(name).map(|sg| sg.representative)
     }
 }
 
@@ -326,6 +372,43 @@ mod tests {
         assert_eq!(m.effective_specific_gravity(), Some(3.90));
     }
 
+    // --- MaterialSelection::with_specific_gravity_override ---
+
+    /// The one field named in the call must change; `name` and
+    /// `refractive_index_override` must carry through untouched -- the exact
+    /// property that makes this safe for a caller (the Yield form parser) that
+    /// owns only the SG field to use without reconstructing the whole struct.
+    #[test]
+    fn with_specific_gravity_override_replaces_only_that_field() {
+        let original = MaterialSelection {
+            name: Some("Diamond".to_string()),
+            specific_gravity_override: Some(3.50),
+            refractive_index_override: Some(2.42),
+        };
+        let updated = original.with_specific_gravity_override(Some(3.55));
+        assert_eq!(updated.specific_gravity_override, Some(3.55));
+        assert_eq!(updated.name, original.name);
+        assert_eq!(
+            updated.refractive_index_override,
+            original.refractive_index_override
+        );
+    }
+
+    /// Passing `None` clears the override (back to "use the preset's own figure")
+    /// while still leaving `name`/`refractive_index_override` alone.
+    #[test]
+    fn with_specific_gravity_override_can_clear_the_override() {
+        let original = MaterialSelection {
+            name: Some("Quartz".to_string()),
+            specific_gravity_override: Some(2.70),
+            refractive_index_override: Some(1.55),
+        };
+        let updated = original.with_specific_gravity_override(None);
+        assert_eq!(updated.specific_gravity_override, None);
+        assert_eq!(updated.name, Some("Quartz".to_string()));
+        assert_eq!(updated.refractive_index_override, Some(1.55));
+    }
+
     // --- MaterialSelection::resolve / built_in_refractive_index ---
 
     #[test]
@@ -389,5 +472,84 @@ mod tests {
         assert!((built_in_refractive_index("Diamond").unwrap() - expected).abs() < 1e-9);
         assert_eq!(built_in_refractive_index("Garnet"), None);
         assert_eq!(built_in_refractive_index("Not A Real Material"), None);
+    }
+
+    // --- MaterialLookup::specific_gravity / effective_specific_gravity_with ---
+
+    /// [`BuiltinMaterials::specific_gravity`] must agree with
+    /// [`built_in_specific_gravity`] for every known preset.
+    #[test]
+    fn builtin_materials_specific_gravity_matches_the_table() {
+        assert_eq!(BuiltinMaterials.specific_gravity("Diamond"), Some(3.52));
+        assert_eq!(BuiltinMaterials.specific_gravity("Garnet"), None);
+    }
+
+    /// A [`MaterialLookup`] that never overrides [`MaterialLookup::specific_gravity`]
+    /// keeps compiling and simply reports `None` -- the default-method contract
+    /// [`MaterialLookup::specific_gravity`]'s own doc comment promises.
+    #[test]
+    fn a_lookup_with_no_sg_override_reports_none() {
+        struct LookupWithNoSg;
+        impl MaterialLookup for LookupWithNoSg {
+            fn lookup(&self, name: &str) -> Option<GemMaterial> {
+                GemMaterial::by_name(name)
+            }
+        }
+        assert_eq!(LookupWithNoSg.specific_gravity("Diamond"), None);
+    }
+
+    /// [`MaterialSelection::effective_specific_gravity_with`] must match the
+    /// built-ins-only [`MaterialSelection::effective_specific_gravity`] when the
+    /// catalogue is [`BuiltinMaterials`].
+    #[test]
+    fn effective_specific_gravity_with_matches_built_ins_only_path() {
+        let m = MaterialSelection {
+            name: Some("Quartz".to_string()),
+            specific_gravity_override: None,
+            refractive_index_override: None,
+        };
+        assert_eq!(
+            m.effective_specific_gravity_with(&BuiltinMaterials),
+            m.effective_specific_gravity()
+        );
+    }
+
+    /// The per-design override still wins over whatever the catalogue reports.
+    #[test]
+    fn effective_specific_gravity_with_override_wins_over_the_catalogue() {
+        let m = MaterialSelection {
+            name: Some("Diamond".to_string()),
+            specific_gravity_override: Some(3.515),
+            refractive_index_override: None,
+        };
+        assert_eq!(
+            m.effective_specific_gravity_with(&BuiltinMaterials),
+            Some(3.515)
+        );
+    }
+
+    /// A catalogue that DOES know a custom material's SG (unlike the built-ins-only
+    /// path, which has no such entry) must have it reach the effective figure.
+    #[test]
+    fn effective_specific_gravity_with_resolves_a_custom_material_the_built_in_table_cannot() {
+        struct CustomOnlyLookup;
+        impl MaterialLookup for CustomOnlyLookup {
+            fn lookup(&self, name: &str) -> Option<GemMaterial> {
+                GemMaterial::by_name(name)
+            }
+            fn specific_gravity(&self, name: &str) -> Option<f64> {
+                (name == "My Garnet").then_some(3.90)
+            }
+        }
+        let m = MaterialSelection {
+            name: Some("My Garnet".to_string()),
+            specific_gravity_override: None,
+            refractive_index_override: None,
+        };
+        assert_eq!(m.effective_specific_gravity(), None);
+        assert_eq!(
+            m.effective_specific_gravity_with(&CustomOnlyLookup),
+            Some(3.90)
+        );
     }
 }

@@ -47,7 +47,7 @@ pub fn exceeds_preform(design: &Design, solved: &[SolvedTier]) -> Option<Preform
         return None;
     };
     let facets_alone = measure_solid(&facet_planes)?;
-    let preform_planes = design.preform.planes();
+    let preform_planes = design.preform.planes_offset(design.preform_y_offset);
     let preform = measure_solid(&preform_planes)?;
 
     let fit = PreformFit {

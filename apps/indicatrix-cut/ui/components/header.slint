@@ -92,7 +92,7 @@ export component HeaderToolbar inherits Rectangle {
                 Rectangle {
                     height: 20px;
                     border-radius: 10px;
-                    background: RemoteWorkerModel.library_is_remote ? #164e63 : Theme.bg-elevated;
+                    background: RemoteWorkerModel.library_is_remote ? Theme.accent-cyan-surface : Theme.bg-elevated;
                     border-width: 1px;
                     border-color: RemoteWorkerModel.library_is_remote ? Theme.accent-cyan : Theme.border-subtle;
                     HorizontalLayout {
@@ -205,6 +205,24 @@ export component HeaderToolbar inherits Rectangle {
                 }
             }
 
+            // Sort Selector (CAD audit item 190's sort half -- the tag/collection half
+            // is deliberately out of scope). Index<->order mapping happens once, in
+            // Rust, at `gui::library::search::read_sort_order`, the same convention
+            // the Shape/Gear selectors above and the tilt-performance combo boxes in
+            // `filter_panel.slint` already use for their own index-coded fields.
+            Rectangle {
+                width: 140px;
+                height: 38px;
+
+                Tooltip { text: @markdown("Sort the catalogue by title, or by when a design was added or last edited."); }
+
+                ComboBox {
+                    model: ["Catalogue order", "Title", "Newest", "Recently edited"];
+                    current-index <=> LibraryModel.sort_order_index;
+                    selected(val) => { LibraryModel.filters_changed(); }
+                }
+            }
+
             // Advanced Range Filters Toggle
             Rectangle {
                 width: 84px;
@@ -230,7 +248,7 @@ export component HeaderToolbar inherits Rectangle {
                     alignment: center;
                     Image {
                         source: @image-url("../icons/ruler.svg");
-                        colorize: root.filters_open ? #0f172a : (root.filters_active ? Theme.accent-amber : Theme.text-secondary);
+                        colorize: root.filters_open ? Theme.text-on-amber : (root.filters_active ? Theme.accent-amber : Theme.text-secondary);
                         width: 12px;
                         height: 12px;
                         vertical-alignment: center;
@@ -239,14 +257,14 @@ export component HeaderToolbar inherits Rectangle {
                         text: "Filters";
                         font-size: 12px;
                         font-weight: 600;
-                        color: root.filters_open ? #0f172a : (root.filters_active ? Theme.accent-amber : Theme.text-secondary);
+                        color: root.filters_open ? Theme.text-on-amber : (root.filters_active ? Theme.accent-amber : Theme.text-secondary);
                         vertical-alignment: center;
                     }
                     if root.filters_active: Rectangle {
                         width: 6px;
                         height: 6px;
                         border-radius: 3px;
-                        background: root.filters_open ? #0f172a : Theme.accent-amber;
+                        background: root.filters_open ? Theme.text-on-amber : Theme.accent-amber;
                     }
                 }
             }
@@ -297,7 +315,7 @@ export component HeaderToolbar inherits Rectangle {
     if root.filters_open: Rectangle {
         width: 100%;
         height: 100%;
-        background: #00000055;
+        background: Theme.overlay-backdrop;
         z: 150;
 
         TouchArea {
@@ -321,7 +339,7 @@ export component HeaderToolbar inherits Rectangle {
     if root.remote_open: Rectangle {
         width: 100%;
         height: 100%;
-        background: #00000055;
+        background: Theme.overlay-backdrop;
         z: 150;
 
         TouchArea {

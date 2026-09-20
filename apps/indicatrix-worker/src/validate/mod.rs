@@ -73,6 +73,7 @@ pub fn validate_scene(scene: &SceneState) -> Result<(), String> {
         ("light_yaw", scene.light_yaw),
         ("light_pitch", scene.light_pitch),
         ("exposure", scene.exposure),
+        ("backdrop", scene.backdrop),
     ] {
         if !v.is_finite() {
             return Err(format!("scene.{name} must be finite (got {v})"));
@@ -279,6 +280,7 @@ mod tests {
             material: GemMaterial::diamond(),
             planes: StandardGemCuts::standard_round_brilliant(),
             girdle_frosted: false,
+            backdrop: 0.0,
         }
     }
 

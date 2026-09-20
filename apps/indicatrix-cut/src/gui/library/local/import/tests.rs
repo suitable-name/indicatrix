@@ -146,6 +146,160 @@ fn import_path_recurses_into_subfolders_only_when_requested() {
     let _ = std::fs::remove_file(&deep_db_path);
 }
 
+/// CAD audit item 93: a `.asc` saved by Save Native has a `<stem>.indicatrix.toml`
+/// sidecar sitting right beside it on disk. Importing that pair must attach the
+/// sidecar as a second file on the saved row, not just the bare `.asc`, so
+/// `gui::editor::loading::design_from_full_record`'s existing `load_paired`
+/// preference actually has a sidecar to find on Load Selected.
+#[test]
+fn import_path_attaches_a_sibling_native_sidecar_found_beside_the_asc() {
+    let dir = temp_dir_for_test("sidecar");
+    std::fs::write(dir.join("paired.asc"), VALID_ASC).expect("write paired.asc");
+    std::fs::write(dir.join("paired.indicatrix.toml"), "format_version = 1\n")
+        .expect("write paired.indicatrix.toml");
+    // A lone `.asc` with no sidecar must still import with just the one attachment.
+    std::fs::write(dir.join("lonely.asc"), VALID_ASC).expect("write lonely.asc");
+
+    let db_path = temp_db_path_for_test("sidecar");
+    let db = open_temp_db(&db_path);
+    let outcome = import_path(&db, &dir, false, |_, _| {});
+    assert!(
+        outcome.summary.contains("Imported 2"),
+        "summary was: {}",
+        outcome.summary
+    );
+
+    let conn = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut paired_files = None;
+    let mut lonely_files = None;
+    for id in &outcome.imported_ids {
+        let full = conn
+            .get_diagram_full(*id)
+            .expect("query must succeed")
+            .expect("row must exist");
+        if full.url.contains("paired.asc") {
+            paired_files = Some(full.attached_files.len());
+        } else if full.url.contains("lonely.asc") {
+            lonely_files = Some(full.attached_files.len());
+        }
+    }
+    assert_eq!(
+        paired_files,
+        Some(2),
+        "the .asc plus its native sidecar must both be attached"
+    );
+    assert_eq!(
+        lonely_files,
+        Some(1),
+        "a .asc with no sidecar on disk must attach only itself"
+    );
+    drop(conn);
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+/// The legacy `.gemcut.toml` suffix must be found too, when there is no current
+/// `.indicatrix.toml` sidecar beside the `.asc`.
+#[test]
+fn find_native_sidecar_falls_back_to_the_legacy_suffix() {
+    let dir = temp_dir_for_test("sidecar_legacy");
+    std::fs::create_dir_all(&dir).expect("create dir");
+    let asc_path = dir.join("legacy.asc");
+    std::fs::write(&asc_path, VALID_ASC).expect("write legacy.asc");
+    std::fs::write(dir.join("legacy.gemcut.toml"), "format_version = 1\n")
+        .expect("write legacy.gemcut.toml");
+
+    let sidecar = find_native_sidecar(&asc_path).expect("legacy sidecar must be found");
+    assert_eq!(sidecar.0, "legacy.gemcut.toml");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// CAD audit item 97: re-importing a `.asc` over an existing row (a filename
+/// collision) used to silently wipe hand-entered metadata `local::import_asc` never
+/// produces (`designer_info`, here) and leave a stale preview image describing the
+/// old geometry. Both must survive/clear correctly across the collision.
+#[test]
+fn import_path_merges_hand_entered_metadata_and_invalidates_stale_preview_on_collision() {
+    let dir = temp_dir_for_test("reimport_merge");
+    std::fs::write(dir.join("reimport.asc"), VALID_ASC).expect("write reimport.asc");
+
+    let db_path = temp_db_path_for_test("reimport_merge");
+    let db = open_temp_db(&db_path);
+
+    let first = import_path(&db, &dir, false, |_, _| {});
+    assert_eq!(
+        first.imported_ids.len(),
+        1,
+        "first import must create one row"
+    );
+    let id = first.imported_ids[0];
+
+    {
+        let conn = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Simulate a cutter hand-typing a designer name in the metadata editor, and a
+        // preview batch having already generated an image for the old geometry.
+        let full = conn
+            .get_diagram_full(id)
+            .expect("query must succeed")
+            .expect("row must exist");
+        let update = indicatrix_vault::model::metadata_update::MetadataUpdate {
+            designer_info: Some("Test Designer".to_string()),
+            shape: full.shape,
+            refractive_index: full.refractive_index,
+            index_gear: full.index_gear,
+            facets_count: full.facets_count,
+            symmetry_order: full.symmetry_order,
+            mirror_symmetry: full.mirror_symmetry,
+            lw_ratio: full.lw_ratio,
+            hw_ratio: full.hw_ratio,
+            cw_ratio: full.cw_ratio,
+            pw_ratio: full.pw_ratio,
+            volume: full.volume,
+        };
+        conn.update_diagram_metadata(id, &update)
+            .expect("metadata update must succeed");
+        conn.save_preview_images(id, Some(b"stale-front-png"), None, 111_111)
+            .expect("preview save must succeed");
+    }
+
+    let second = import_path(&db, &dir, false, |_, _| {});
+    assert!(
+        second.summary.contains("replaced"),
+        "summary must report the collision: {}",
+        second.summary
+    );
+    assert_eq!(
+        second.imported_ids,
+        vec![id],
+        "re-importing the same file must update the SAME row, not create a new one"
+    );
+
+    let conn = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let full = conn
+        .get_diagram_full(id)
+        .expect("query must succeed")
+        .expect("row must exist");
+    assert_eq!(
+        full.designer_info.as_deref(),
+        Some("Test Designer"),
+        "hand-typed designer_info must survive a re-import collision"
+    );
+
+    let preview = conn
+        .get_preview_images(id)
+        .expect("preview query must succeed");
+    assert!(
+        preview.front.is_none() && preview.generated_at.is_none(),
+        "the stale preview must be invalidated by a re-import collision"
+    );
+    drop(conn);
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&db_path);
+}
+
 /// The depth backstop in [`collect_asc_files_recursive`], exercised directly with
 /// a small `max_depth` rather than building 32 real nested folders to hit
 /// [`MAX_RECURSE_DEPTH`].
@@ -228,7 +382,7 @@ fn perf_probe_single_file_parse_and_measure_cost() {
     const ITERATIONS: u32 = 500;
     let t0 = std::time::Instant::now();
     for _ in 0..ITERATIONS {
-        let mut parsed = local::import_asc("trichecker.asc", VALID_ASC).expect("valid .asc");
+        let mut parsed = local::import_asc("trichecker.asc", VALID_ASC, None).expect("valid .asc");
         apply_measured_metadata(&mut parsed.detail);
     }
     let elapsed = t0.elapsed();

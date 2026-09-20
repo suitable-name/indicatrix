@@ -1,6 +1,34 @@
+import { Slider } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { SolidPreviewModel } from "../models/solid_preview.slint";
 import { ViewportModel } from "../models/viewport.slint";
+import { EditorModel } from "../models/editor.slint";
+// CAD audit item 139: the Tilt Curve pill/dialog, previously reachable only
+// from the Live Render tab's `GemViewportView` -- `PerformanceGraphDialog`
+// (a different lane's file, `components/performance_graph_dialog.slint`) is
+// bound entirely through globals (`TiltModel`/`ViewportModel`), so mounting
+// it here too is safe: it carries no dependency on `GemViewportView`'s own
+// local state.
+import { TiltModel } from "../models/tilt.slint";
+import { PerformanceGraphDialog } from "performance_graph_dialog.slint";
+// CAD audit item 223: the custom-material editor was reachable only from the
+// Live Render tab's `GemViewportView` (the sole place that mounted
+// `MaterialEditorDialog`), so a cutter working the Edit tab had to switch tabs
+// to create/edit a custom material. Mounted here too, mirroring the item 139
+// precedent right above for `PerformanceGraphDialog`: `SolidViewportView` and
+// `GemViewportView` are mutually exclusive (only the Edit tab OR the Live
+// Render tab is ever mounted at once, see `app.slint`), so there is never a
+// second copy of this dialog on screen despite both files mounting it
+// conditionally on the same `ViewportModel.material_editor_open`.
+import { MaterialEditorDialog } from "material_editor_dialog.slint";
+// CAD audit item 149: a running catalogue-wide batch (tilt sweep or preview
+// render) sets `ctx.export_active`, which suspends the live tracer exactly like
+// an explicit pause -- but nothing in either viewport said so, so a frozen
+// Path-traced/Both image here read as current. `BatchModel.tilt_batch_running`/
+// `preview_batch_running` are already set by the batch dialogs' own wiring
+// (`gui::batch::tilt::wiring`/`gui::batch::preview::wiring`); this file only
+// reads them to fold a banner into the status strip below.
+import { BatchModel } from "../models/batch.slint";
 
 // The Edit tab's solid-inspection viewport: a flat-shaded software render of the
 // current design's solid, shown as a static image after Solve. Reads
@@ -14,8 +42,9 @@ import { ViewportModel } from "../models/viewport.slint";
 // `gui::solid_preview::edges_layer`) composited on top. `3` (Diagram) shows
 // `diagram_image` -- a GemCAD-style three-panel (crown/pavilion/profile) 2D facet
 // diagram (`gui::solid_preview::diagram2d`), fixed/orthographic rather than tied to
-// the shared orbit camera, so dragging is disabled in this mode (see `drag_area`
-// below) and hover/click route through their OWN `diagram_facet_hover`/
+// the shared orbit camera. Dragging/scrolling in this mode pans/zooms the diagram
+// image itself (`diagram_pan_x`/`diagram_pan_y`/`diagram_zoom`, #29) rather than
+// the shared camera, and hover/click route through their OWN `diagram_facet_hover`/
 // `diagram_facet_click` callbacks against the diagram's own pick buffer, since its
 // pixel layout is entirely different from the Solid rasterizer's.
 export component SolidViewportView inherits Rectangle {
@@ -26,8 +55,12 @@ export component SolidViewportView inherits Rectangle {
     clip: true;
 
     // The "Not solved" banner takes precedence over mesh_cache status when the shown
-    // solid is stale.
-    property <string> status_text: SolidPreviewModel.stale ? "Not solved -- showing the last solved solid. Click Solve to refresh." : SolidPreviewModel.status;
+    // solid is stale. A running catalogue-wide batch (item 149) outranks both: while
+    // it holds `ctx.export_active`, the Path-traced/Both image is frozen at whatever
+    // it showed when the batch started, and the cutter needs to know that before
+    // anything else this strip could say.
+    property <bool> batch_suspends_tracer: BatchModel.tilt_batch_running || BatchModel.preview_batch_running;
+    property <string> status_text: root.batch_suspends_tracer ? "Live render paused -- a catalogue batch is running in the background." : (SolidPreviewModel.stale ? "Not solved -- showing the last solved solid. Click Solve to refresh." : SolidPreviewModel.status);
     // Diagram mode (view_mode 3) shows its own hover text; every other mode keeps the
     // Solid rasterizer's.
     property <string> hover_text: SolidPreviewModel.view_mode == 3 ? SolidPreviewModel.diagram_hover_text : SolidPreviewModel.hover_text;
@@ -35,6 +68,39 @@ export component SolidViewportView inherits Rectangle {
     property <bool> is_dragging: false;
     property <length> last_mouse_x;
     property <length> last_mouse_y;
+    // Accumulated |dx| + |dy| since the last pointer-down, in logical pixels --
+    // reset on `down` and grown on every `moved` while dragging. `clicked` only
+    // forwards to `facet_click`/`diagram_facet_click` below this threshold, so an
+    // orbit drag that happens to release over a facet doesn't also re-select it.
+    property <float> drag_distance: 0;
+
+    // #29: Diagram mode's own zoom/pan -- the fixed orthographic 2D facet diagram
+    // has no shared orbit camera to reuse (unlike Solid/Path-traced/Both), so this
+    // is a plain scale + translate applied to the whole three-panel image, entirely
+    // presentational (the underlying `diagram_image` raster is unchanged). `1.0`/
+    // `0px` is "no zoom, no pan" -- the diagram fills the viewport exactly as
+    // before. Reset by the "Reset View" pill, shown only in Diagram mode.
+    property <float> diagram_zoom: 1.0;
+    property <length> diagram_pan_x: 0px;
+    property <length> diagram_pan_y: 0px;
+    // Maps a viewport-local mouse coordinate back to the SAME logical-pixel space
+    // `diagram_facet_hover`/`diagram_facet_click` already expected before zoom/pan
+    // existed (that is, "where this point would be if `diagram_zoom` were `1.0`
+    // and both pans were `0px`") -- `gui::solid_preview::diagram_wiring`'s hover/
+    // click callbacks, and the HiDPI scale-factor multiplication they already do,
+    // are unaffected by this component ever zooming or panning.
+    function diagram_unzoomed_x(mouse_x: length) -> length {
+        return (mouse_x - root.diagram_pan_x) / root.diagram_zoom;
+    }
+    function diagram_unzoomed_y(mouse_y: length) -> length {
+        return (mouse_y - root.diagram_pan_y) / root.diagram_zoom;
+    }
+    // Keeps a zoomed-in diagram from being dragged entirely off-screen -- clamps
+    // to the extra width/height `diagram_zoom` adds beyond the viewport's own
+    // size, on each side.
+    function clamp_diagram_pan(value: length, extent: length, zoom: float) -> length {
+        return max(-(extent * (zoom - 1)), min(extent * (zoom - 1), value));
+    }
 
     background: #080a0f;
     border-radius: Theme.radius-md;
@@ -47,33 +113,123 @@ export component SolidViewportView inherits Rectangle {
     // component's own layout size straight into the global on every change so
     // `gui::editor::view::refresh_viewport` sizes the rasterizer to exactly the
     // logical size, never the render resolution.
-    changed width => { SolidPreviewModel.viewport_width = self.width; }
-    changed height => { SolidPreviewModel.viewport_height = self.height; }
+    //
+    // #26: nothing used to OBSERVE this size push -- dragging the dock splitter or
+    // maximising the window left the shown image simply rescaled/letterboxed to
+    // the new size, with the pick buffer (still sized to the OLD frame) misaligned
+    // from the cursor until the next orbit/zoom redraw. `resize_pulse` bumps on
+    // every width/height change; a 50ms poll timer fires `viewport_resized()` once
+    // that pulse has stopped moving for a tick, so a drag-resize coalesces to one
+    // redraw request rather than one per intermediate layout pass. Handled in
+    // `gui::mod::build_main_window` (`on_viewport_resized`), which calls
+    // `render::camera_lighting::resubmit_at_current_pose`.
+    property <int> resize_pulse: 0;
+    property <int> resize_pulse_seen: 0;
+    changed width => { SolidPreviewModel.viewport_width = self.width; root.resize_pulse += 1; }
+    changed height => { SolidPreviewModel.viewport_height = self.height; root.resize_pulse += 1; }
+
+    // #116: a global's own property can't get a `changed` handler outside the
+    // file that declares it -- mirrored into this plain local property so a
+    // view-mode switch can clear whichever tooltip belonged to the OLD mode
+    // (Diagram's `diagram_hover_text` vs every other mode's `hover_text`)
+    // instead of leaving it on screen, naming a facet that may not even exist
+    // in the new mode's own facet space.
+    property <int> hover_view_mode: SolidPreviewModel.view_mode;
+    changed hover_view_mode => {
+        SolidPreviewModel.hover_text = "";
+        SolidPreviewModel.diagram_hover_text = "";
+    }
+    Timer {
+        interval: 50ms;
+        running: true;
+        triggered => {
+            if (root.resize_pulse != root.resize_pulse_seen) {
+                root.resize_pulse_seen = root.resize_pulse;
+                SolidPreviewModel.viewport_resized();
+            }
+        }
+    }
+
+    // #229: wraps `drag_area` so the viewport can take keyboard focus (on a
+    // left-`down`, alongside the existing drag bookkeeping) and clear the tier
+    // selection with Escape -- the same "back to nothing selected" effect a
+    // click that misses the silhouette now has (see `diagram_facet_click`'s own
+    // doc comment in `solid_preview::diagram_wiring`, and `tier_actions.rs`'s
+    // `setup_solid_facet_click_callback` for the Solid-view half, which is not
+    // this pass's file to touch). Setting `EditorModel.selected_tier_index`
+    // directly, exactly like `editor_inspector.slint`'s "New" button and
+    // `editor_tier_table.slint`'s delete path already do, is enough: `changed
+    // selected_tier_index` in `models/editor.slint` fires `selected_tier_changed`
+    // on its own, which re-seeds/clears the inspector form and the 3D
+    // highlight.
+    viewport_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                EditorModel.selected_tier_index = -1;
+                return accept;
+            }
+            reject
+        }
 
     drag_area := TouchArea {
+        // CAD audit item 139: matches `GemViewportView`'s own `touch_area.
+        // enabled` guard -- without this, an orbit-drag or scroll-to-zoom
+        // could still reach the viewport underneath the (fully covering)
+        // Tilt Curve dialog.
+        enabled: !TiltModel.dialog_open;
         pointer-event(event) => {
-            // Diagram mode's three panels are fixed orthographic projections, not
-            // tied to the orbit camera -- dragging has nothing to move, so a drag
-            // gesture there is simply never started.
-            if (SolidPreviewModel.view_mode == 3) {
-                return;
-            }
-            if (event.kind == PointerEventKind.down) {
+            // #29: Diagram mode now drags too -- panning the zoomed-in diagram --
+            // so `down`/`up` are tracked exactly like every other view mode.
+            //
+            // #124: only the LEFT button starts an orbit/pan drag. Muscle memory
+            // from the Live tab's Gem viewport (right-drag moves the light, see
+            // `gem_viewport.slint`'s own `is_right_drag`) used to rotate the
+            // stone here instead, since this handler never read `event.button`
+            // at all -- there is no light to move in this viewport, so a right
+            // or middle drag now does nothing rather than surprise-orbiting.
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
                 root.last_mouse_x = drag_area.mouse-x;
                 root.last_mouse_y = drag_area.mouse-y;
+                root.drag_distance = 0;
                 root.is_dragging = true;
+                // #229: grabs keyboard focus so Escape (handled by the wrapping
+                // `viewport_focus` FocusScope above) works right after a click,
+                // without requiring a separate Tab into the viewport.
+                viewport_focus.focus();
+                // #116: an orbit/pan drag is about to start -- the tooltip's own
+                // guard below already hides it once `is_dragging` is true, but
+                // clearing the text too means a MID-drag `moved` (which never
+                // reaches the `else` branch below that would refresh it) can't
+                // leave a stale value sitting there for the instant between
+                // `down` and the drag threshold, nor for a click that lands
+                // exactly on `down`+`up` with no `moved` at all.
+                SolidPreviewModel.hover_text = "";
+                SolidPreviewModel.diagram_hover_text = "";
             } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
                 root.is_dragging = false;
             }
         }
         moved => {
             if (SolidPreviewModel.view_mode == 3) {
-                SolidPreviewModel.diagram_facet_hover(drag_area.mouse-x, drag_area.mouse-y);
+                if (root.is_dragging) {
+                    // #29: pan, clamped so the zoomed diagram can't be dragged
+                    // entirely off-screen.
+                    let dx = drag_area.mouse-x - root.last_mouse_x;
+                    let dy = drag_area.mouse-y - root.last_mouse_y;
+                    root.last_mouse_x = drag_area.mouse-x;
+                    root.last_mouse_y = drag_area.mouse-y;
+                    root.drag_distance += Math.abs(dx / 1px) + Math.abs(dy / 1px);
+                    root.diagram_pan_x = root.clamp_diagram_pan(root.diagram_pan_x + dx, root.width, root.diagram_zoom);
+                    root.diagram_pan_y = root.clamp_diagram_pan(root.diagram_pan_y + dy, root.height, root.diagram_zoom);
+                } else {
+                    SolidPreviewModel.diagram_facet_hover(root.diagram_unzoomed_x(drag_area.mouse-x), root.diagram_unzoomed_y(drag_area.mouse-y));
+                }
             } else if (root.is_dragging) {
                 let dx = (drag_area.mouse-x - root.last_mouse_x) / 1px;
                 let dy = (drag_area.mouse-y - root.last_mouse_y) / 1px;
                 root.last_mouse_x = drag_area.mouse-x;
                 root.last_mouse_y = drag_area.mouse-y;
+                root.drag_distance += Math.abs(dx) + Math.abs(dy);
                 ViewportModel.camera_orbit(dx, dy);
             } else {
                 // Only picking, not dragging -- the hover tooltip.
@@ -82,12 +238,38 @@ export component SolidViewportView inherits Rectangle {
         }
         clicked => {
             if (SolidPreviewModel.view_mode == 3) {
-                SolidPreviewModel.diagram_facet_click(drag_area.mouse-x, drag_area.mouse-y);
-            } else {
+                // #29: a pan drag ends in a `clicked` too, exactly like an orbit
+                // drag in every other mode -- only forward it as a real pick when
+                // the pointer barely moved between down and up (previously this
+                // branch always forwarded, since dragging never existed here).
+                if (root.drag_distance < 3) {
+                    SolidPreviewModel.diagram_facet_click(root.diagram_unzoomed_x(drag_area.mouse-x), root.diagram_unzoomed_y(drag_area.mouse-y));
+                }
+            } else if (root.drag_distance < 3) {
+                // An orbit drag ends in a `clicked` too -- only forward it as a real
+                // pick when the pointer barely moved between down and up, so
+                // rotating the stone never also re-selects whatever facet ends up
+                // under the cursor.
                 SolidPreviewModel.facet_click(drag_area.mouse-x, drag_area.mouse-y);
             }
         }
+        // Scroll-to-zoom (#27, and #29 for Diagram mode): the same shared orbit
+        // camera `gem_viewport.slint`'s Live Render viewport already zooms with
+        // `ViewportModel.camera_zoom` -- this viewport had no wheel handler at all,
+        // so inspecting a small facet (a girdle break, the culet) meant switching
+        // tabs, scrolling there, and switching back. Diagram mode has no shared
+        // camera to zoom (see this component's own doc comment), so it zooms its
+        // own `diagram_zoom` instead, clamped to `[1.0, 6.0]`.
+        scroll-event(event) => {
+            if (SolidPreviewModel.view_mode != 3) {
+                ViewportModel.camera_zoom(event.delta-y / 1px);
+                return accept;
+            }
+            root.diagram_zoom = max(1.0, min(6.0, root.diagram_zoom - (event.delta-y / 1px) * 0.003));
+            accept
+        }
     }
+    } // FocusScope (viewport_focus)
 
     if SolidPreviewModel.view_mode == 0 && SolidPreviewModel.has_solid: Image {
         width: 100%;
@@ -106,24 +288,49 @@ export component SolidViewportView inherits Rectangle {
     // "Both" mode: the path-traced image as a base layer, with the solid's
     // transparent-fill/opaque-edges layer composited on top -- see
     // `gui::solid_preview::edges_layer`'s own doc comment.
+    //
+    // #32: `edges_image` rebuilds from the CURRENT (possibly just-edited) design on
+    // every edit, while `render_image` only changes when the path tracer's own
+    // planes are resubmitted -- nothing here used to reconcile the two layers'
+    // provenance, so a misaligned edge overlay after an edit read as a solver
+    // error rather than the render simply being one edit behind. Gated on
+    // `trace_matches_solid` (defaults to `true`, so this composites exactly as
+    // before until something actually sets it `false`); when mismatched, the base
+    // dims and a small note explains why, rather than silently overlaying stale
+    // edges.
     if SolidPreviewModel.view_mode == 2 && ViewportModel.has_render: Image {
         width: 100%;
         height: 100%;
         source: ViewportModel.render_image;
         image-fit: contain;
+        opacity: SolidPreviewModel.trace_matches_solid ? 1.0 : 0.5;
     }
-    if SolidPreviewModel.view_mode == 2 && SolidPreviewModel.has_solid_edges: Image {
+    if SolidPreviewModel.view_mode == 2 && SolidPreviewModel.has_solid_edges && SolidPreviewModel.trace_matches_solid: Image {
         width: 100%;
         height: 100%;
         source: SolidPreviewModel.edges_image;
         image-fit: contain;
     }
+    if SolidPreviewModel.view_mode == 2 && ViewportModel.has_render && !SolidPreviewModel.trace_matches_solid: Text {
+        text: "Render is behind the current edit -- edges hidden until it catches up";
+        font-size: 12px;
+        color: Theme.text-primary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: 100%;
+        wrap: word-wrap;
+    }
 
     // Diagram mode: the three-panel 2D facet diagram (`gui::solid_preview::diagram2d`)
-    // -- see this component's own doc comment.
+    // -- see this component's own doc comment. #29: scaled/translated by
+    // `diagram_zoom`/`diagram_pan_x`/`diagram_pan_y` -- `root`'s own `clip: true`
+    // (set above) is what keeps a zoomed-in image from spilling outside the
+    // viewport.
     if SolidPreviewModel.view_mode == 3 && SolidPreviewModel.has_diagram: Image {
-        width: 100%;
-        height: 100%;
+        x: root.diagram_pan_x;
+        y: root.diagram_pan_y;
+        width: root.width * root.diagram_zoom;
+        height: root.height * root.diagram_zoom;
         source: SolidPreviewModel.diagram_image;
         image-fit: contain;
     }
@@ -152,7 +359,14 @@ export component SolidViewportView inherits Rectangle {
 
     // A small hover tooltip panel, bottom-left of the image -- see `hover_text`'s own
     // doc comment above.
-    if root.hover_text != "": Rectangle {
+    //
+    // #116: gated on `drag_area.has-hover && !root.is_dragging` too, not just a
+    // non-empty string -- the pointer-event handler above cleared the text on
+    // `down` and on a view-mode switch, but the mouse leaving for the tier
+    // table (no `has-hover`) or an orbit drag in progress (`is_dragging`) used
+    // to leave the LAST hover's text on screen since nothing else re-ran
+    // `facet_hover`/`diagram_facet_hover` to refresh or clear it.
+    if root.hover_text != "" && drag_area.has-hover && !root.is_dragging: Rectangle {
         x: 10px;
         y: parent.height - self.height - 46px;
         width: hover_label.preferred-width + 16px;
@@ -187,6 +401,54 @@ export component SolidViewportView inherits Rectangle {
 
         HorizontalLayout {
             spacing: 8px;
+
+            // CAD audit item 211: how far through the cutting schedule to draw, so
+            // a cutter can see what the next course actually lands on. Only when
+            // there is a solved solid to truncate, and only in the two modes that
+            // draw one -- there is nothing to cut back in a path-traced render of
+            // the finished stone. `-1` is the whole design.
+            if (SolidPreviewModel.view_mode == 0 || SolidPreviewModel.view_mode == 2) && SolidPreviewModel.has_solid && EditorModel.tiers.length > 1: Rectangle {
+                height: 28px;
+                width: cut_layout.preferred-width;
+                background: Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: SolidPreviewModel.tier_cutoff >= 0 ? Theme.accent-amber : Theme.border-subtle;
+
+                Tooltip { text: @markdown("Draw the stone as it stands after this many tiers of the schedule. Drag fully right for the finished design."); }
+
+                cut_layout := HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 6px;
+
+                    Text {
+                        text: SolidPreviewModel.tier_cutoff < 0
+                            ? "Cut: all"
+                            : "Cut: " + SolidPreviewModel.tier_cutoff + "/" + EditorModel.tiers.length;
+                        font-size: 10px;
+                        font-weight: 600;
+                        color: SolidPreviewModel.tier_cutoff >= 0 ? Theme.accent-amber : Theme.text-secondary;
+                        vertical-alignment: center;
+                    }
+                    cut_slider := Slider {
+                        width: 90px;
+                        minimum: 1;
+                        // One past the last tier is the "all" position, so the
+                        // control has a natural home for "no cutoff" at its far
+                        // right rather than a separate reset button.
+                        maximum: EditorModel.tiers.length;
+                        value: SolidPreviewModel.tier_cutoff < 0
+                            ? EditorModel.tiers.length
+                            : SolidPreviewModel.tier_cutoff;
+                        changed value => {
+                            SolidPreviewModel.tier_cutoff =
+                                self.value >= EditorModel.tiers.length ? -1 : Math.round(self.value);
+                            SolidPreviewModel.tier_cutoff_changed();
+                        }
+                    }
+                }
+            }
 
             Rectangle {
                 height: 28px;
@@ -319,6 +581,262 @@ export component SolidViewportView inherits Rectangle {
                 }
             }
 
+            // #118 (`cad_todo.md` item 118): Bottom/Left/Right -- there used to be
+            // no one-click pavilion view at all, the commonest inspection for
+            // windowing, and no way to look at either side without a free-drag
+            // orbit. Same `ViewportModel.set_view` as Front/Top above, new kinds
+            // (`render::camera_lighting::setup_set_view_callback`'s own doc
+            // comment has the full kind -> pose mapping).
+            Rectangle {
+                height: 28px;
+                width: 66px;
+                background: bottom_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                Tooltip { text: @markdown("Look straight up at the culet/pavilion tip."); }
+                bottom_pill_touch := TouchArea { clicked => { ViewportModel.set_view(2); } }
+                Text {
+                    text: "Bottom";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            Rectangle {
+                height: 28px;
+                width: 52px;
+                background: left_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                Tooltip { text: @markdown("Look at the stone's left side."); }
+                left_pill_touch := TouchArea { clicked => { ViewportModel.set_view(3); } }
+                Text {
+                    text: "Left";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            Rectangle {
+                height: 28px;
+                width: 58px;
+                background: right_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                Tooltip { text: @markdown("Look at the stone's right side."); }
+                right_pill_touch := TouchArea { clicked => { ViewportModel.set_view(4); } }
+                Text {
+                    text: "Right";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            // #118: recovers a usable framing after a free-drag orbit ends up
+            // pointed at empty space or edge-on to every facet -- unlike
+            // Front/Top/Bottom/Left/Right, Fit (`set_view` kind `5`) leaves the
+            // CURRENT orbit angle alone and only recomputes distance from the
+            // live mesh's own bounding radius.
+            Rectangle {
+                height: 28px;
+                width: 44px;
+                background: fit_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                Tooltip { text: @markdown("Keep the current angle, but recompute distance to frame the whole stone."); }
+                fit_pill_touch := TouchArea { clicked => { ViewportModel.set_view(5); } }
+                Text {
+                    text: "Fit";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            // #118: `ViewportModel.reset_camera` -- the same canonical pose/light
+            // reset `gem_viewport.slint`'s own Reset button already calls for the
+            // Live Render tab; `render::camera_lighting::setup_camera_and_lighting_
+            // callbacks`'s `on_reset_camera` now also re-requests a redraw at the
+            // new pose (it used to leave both viewports showing the OLD one).
+            Rectangle {
+                height: 28px;
+                width: 56px;
+                background: reset_camera_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                Tooltip { text: @markdown("Reset the camera angle, distance and light to their defaults."); }
+                reset_camera_pill_touch := TouchArea { clicked => { ViewportModel.reset_camera(); } }
+                Text {
+                    text: "Reset";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            // CAD audit item 139: the Edit tab's own route to the tilt-
+            // performance chart -- previously the ONLY way to reach it was the
+            // Live Render tab's "Tilt Curve" button, which meant leaving the
+            // Edit tab (and, to change what it showed, using the catalogue
+            // list, which overwrites the design being edited). Same
+            // open/close + stale-cache-check sequence as `GemViewportView`'s
+            // own button, now shared via `TiltModel.toggle_dialog()`.
+            Rectangle {
+                height: 28px;
+                width: 82px;
+                background: TiltModel.dialog_open ? Theme.primary : (tilt_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: TiltModel.dialog_open ? Theme.accent-cyan : Theme.border-subtle;
+                Tooltip { text: @markdown("Open the tilt-performance chart: brilliance, windowing and extinction versus tilt."); }
+                tilt_pill_touch := TouchArea { clicked => { TiltModel.toggle_dialog(); } }
+                Text {
+                    text: "Tilt Curve";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: TiltModel.dialog_open ? Theme.text-on-primary : Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            // #122: toggles the rough's own bounding (preform) planes on/off in
+            // the Solid view -- shown only there, since Path-traced/Both/Diagram
+            // either don't draw the preform at all (the path tracer) or handle
+            // it separately (Diagram's own facet labels).
+            if SolidPreviewModel.view_mode == 0: Rectangle {
+                height: 28px;
+                width: 96px;
+                background: SolidPreviewModel.show_preform_planes ? Theme.primary : (preform_pill_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: SolidPreviewModel.show_preform_planes ? Theme.accent-cyan : Theme.border-subtle;
+                Tooltip { text: @markdown("Show or hide the rough's own bounding (preform) planes."); }
+                preform_pill_touch := TouchArea {
+                    clicked => { SolidPreviewModel.show_preform_planes = !SolidPreviewModel.show_preform_planes; }
+                }
+                Text {
+                    text: "Preform";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: SolidPreviewModel.show_preform_planes ? Theme.text-on-primary : Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            // #29: Diagram mode's own zoom/pan reset -- shown only in Diagram mode,
+            // where Front/Top (the shared orbit camera's poses) don't apply.
+            if SolidPreviewModel.view_mode == 3: Rectangle {
+                height: 28px;
+                width: 76px;
+                background: reset_diagram_view_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                Tooltip { text: @markdown("Reset the diagram's zoom and pan."); }
+                reset_diagram_view_touch := TouchArea {
+                    clicked => {
+                        root.diagram_zoom = 1.0;
+                        root.diagram_pan_x = 0px;
+                        root.diagram_pan_y = 0px;
+                    }
+                }
+                Text {
+                    text: "Reset View";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            // #29 (P1 item 29, "a single-panel enlarged view"): lets a cutter
+            // enlarge one of the diagram's three panels to fill the whole
+            // image, rather than reading it at one-third width. Re-clicking the
+            // already-enlarged panel's own pill returns to the three-column
+            // layout. Three explicit pills (matching every other pill in this
+            // file, e.g. Front/Top above) rather than a generated `for` loop,
+            // since `diagram_enlarged_panel`'s three values (0/1/2) each need
+            // their own label anyway. See `ui/models/solid_preview.slint`'s
+            // `diagram_enlarged_panel` doc comment for the Rust-side handoff
+            // this still needs (this pass owns only the Slint side).
+            if SolidPreviewModel.view_mode == 3: Rectangle {
+                height: 28px;
+                width: 58px;
+                background: SolidPreviewModel.diagram_enlarged_panel == 0 ? Theme.primary : (enlarge_crown_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: SolidPreviewModel.diagram_enlarged_panel == 0 ? Theme.accent-cyan : Theme.border-subtle;
+                Tooltip { text: @markdown("Enlarge the Crown panel to fill the view -- click again to go back to all three."); }
+                enlarge_crown_touch := TouchArea {
+                    clicked => { SolidPreviewModel.diagram_enlarged_panel = SolidPreviewModel.diagram_enlarged_panel == 0 ? -1 : 0; }
+                }
+                Text {
+                    text: "Crown";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: SolidPreviewModel.diagram_enlarged_panel == 0 ? Theme.text-on-primary : Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            if SolidPreviewModel.view_mode == 3: Rectangle {
+                height: 28px;
+                width: 68px;
+                background: SolidPreviewModel.diagram_enlarged_panel == 1 ? Theme.primary : (enlarge_pavilion_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: SolidPreviewModel.diagram_enlarged_panel == 1 ? Theme.accent-cyan : Theme.border-subtle;
+                Tooltip { text: @markdown("Enlarge the Pavilion panel to fill the view -- click again to go back to all three."); }
+                enlarge_pavilion_touch := TouchArea {
+                    clicked => { SolidPreviewModel.diagram_enlarged_panel = SolidPreviewModel.diagram_enlarged_panel == 1 ? -1 : 1; }
+                }
+                Text {
+                    text: "Pavilion";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: SolidPreviewModel.diagram_enlarged_panel == 1 ? Theme.text-on-primary : Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            if SolidPreviewModel.view_mode == 3: Rectangle {
+                height: 28px;
+                width: 62px;
+                background: SolidPreviewModel.diagram_enlarged_panel == 2 ? Theme.primary : (enlarge_profile_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: SolidPreviewModel.diagram_enlarged_panel == 2 ? Theme.accent-cyan : Theme.border-subtle;
+                Tooltip { text: @markdown("Enlarge the Profile panel to fill the view -- click again to go back to all three."); }
+                enlarge_profile_touch := TouchArea {
+                    clicked => { SolidPreviewModel.diagram_enlarged_panel = SolidPreviewModel.diagram_enlarged_panel == 2 ? -1 : 2; }
+                }
+                Text {
+                    text: "Profile";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: SolidPreviewModel.diagram_enlarged_panel == 2 ? Theme.text-on-primary : Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
             Rectangle { horizontal-stretch: 1; }
         }
 
@@ -338,5 +856,28 @@ export component SolidViewportView inherits Rectangle {
                 x: 8px;
             }
         }
+    }
+
+    // CAD audit item 139: mounted here too (mirroring `GemViewportView`'s own
+    // identical mount) so the Tilt Curve pill above has a dialog to open --
+    // `SolidViewportView` and `GemViewportView` are mutually exclusive (only
+    // the Edit tab OR the Live Render tab is ever mounted at once, see
+    // `app.slint`), so there is never a second copy of this dialog on screen
+    // at once despite both files mounting it conditionally on the same
+    // `TiltModel.dialog_open`.
+    if TiltModel.dialog_open: PerformanceGraphDialog {
+        width: 100%;
+        height: 100%;
+        z: 350;
+    }
+
+    // CAD audit item 223: mounted here too (mirroring `GemViewportView`'s own
+    // identical mount, same `z` value) so the "New/Edit material..." button
+    // `editor_design_settings.slint` adds next to the Design Settings material
+    // combo has a dialog to open without leaving the Edit tab.
+    if ViewportModel.material_editor_open: MaterialEditorDialog {
+        width: 100%;
+        height: 100%;
+        z: 300;
     }
 }

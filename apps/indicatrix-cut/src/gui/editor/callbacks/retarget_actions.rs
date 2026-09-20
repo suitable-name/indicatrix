@@ -1,27 +1,37 @@
 //! Wires `super::super::retarget` (the "Retarget for material" proposal
 //! builder/applier) and `ui/components/retarget_dialog.slint` into the Edit tab --
-//! four `setup_*` functions, one per `RetargetDialog`/`EditorView` callback, mirroring
+//! `setup_*` functions, one per `RetargetDialog`/`EditorView` callback, mirroring
 //! `solve_actions.rs`'s Optimize callbacks in shape.
 //!
 //! # Where the target material comes from
 //!
-//! [`resolve_target_material`] resolves the proposal's TARGET from whatever the
-//! design settings panel's material combo/RI-override fields currently show, NOT
-//! from `state.design.material` directly: the design's current material is unchanged
-//! by this dialog (`retarget::apply` only ever produces `Edit::RetargetAngles`), while
-//! the combo can show a different, not-yet-applied selection. Opening Retarget without
-//! changing the combo first resolves target == current material (a no-op Shift
-//! proposal) -- expected, not a bug: the interesting case is picking a different
-//! material first, then opening Retarget to preview the angle changes before
-//! committing it via the design settings panel's own "Apply".
+//! [`resolve_target_material`] resolves the proposal's TARGET from `RetargetModel`'s
+//! OWN `target_material_index`/`target_ri_override_text` properties, NOT from
+//! `state.design.material` or the design settings panel's combo: this dialog owns its
+//! target end to end, seeded from the design's current material on `open()` (see
+//! [`setup_retarget_open_callback`]) and changed only by this dialog's own picker.
+//! `retarget::apply` still only ever produces `Edit::RetargetAngles` -- see
+//! [`setup_retarget_apply_callback`] for how a target material change actually reaches
+//! `design.material`.
 //!
-//! # Synchronous, like `deep_solve`/`optimize_solve` were on their first pass
+//! # `RetargetMode::Optimize` runs off the UI thread
 //!
-//! `RetargetMode::Optimize` runs a real `optimize_design` search, but this first
-//! wiring pass calls it synchronously on the UI thread inside
-//! [`setup_retarget_proposal_changed_callback`] rather than spawning a worker thread --
-//! `editor_retarget_busy` is still toggled around the call so a later pass can move
-//! it off-thread without any Slint-side change.
+//! Shift mode is pure angle arithmetic and stays synchronous. `RetargetMode::Optimize`
+//! runs a real `optimize_design` search, so [`setup_retarget_proposal_changed_callback`]
+//! hands it to [`super::super::optimize_solve::spawn_optimize_solve`] -- the exact same
+//! worker/cancel/progress machinery the standalone Optimize panel uses
+//! (`solve_actions::setup_optimize_callback`) -- rather than blocking the UI thread for
+//! however long the search takes. [`RETARGET_ASYNC`] is this dialog's own
+//! module-local run tracker: deliberately NOT a new `EditorState` field (that group is
+//! owned elsewhere) and NOT threaded through any `setup_retarget_*` call site (`gui::
+//! editor::mod`'s wiring is likewise owned elsewhere) -- a `thread_local!` is sound
+//! here because Slint's event loop is single-threaded, exactly like `EditorState`'s own
+//! `RefCell`. The worker's completion handler is `Send` (a hard requirement of
+//! [`super::super::optimize_solve::spawn_optimize_solve`]'s own signature) so it cannot
+//! capture `Rc<RefCell<EditorState>>` directly; it stashes the finished proposal into
+//! [`RETARGET_ASYNC`] instead, and [`setup_retarget_apply_callback`] reads it back out
+//! on the main thread exactly like it already reads `EditorState::pending_retarget` for
+//! a Shift-mode proposal.
 //!
 //! # Slint-free view-model split, for testability
 //!
@@ -32,8 +42,12 @@
 
 use super::super::{
     material_lookup::{EditorMaterialLookup, resolved_gem_material},
+    optimize_solve::{self, OptimizeSolveHandle, OptimizeSolveOutcome},
     retarget::{self, CrownShift, RetargetError, RetargetMode, RetargetProposal, RetargetRow},
-    state::{EditorState, design_material_options, parse_design_material_form},
+    state::{
+        EditorState, design_material_index_from_name, design_material_options,
+        parse_design_material_form,
+    },
     view::{self, parse_optimize_weights},
 };
 use crate::{
@@ -43,7 +57,8 @@ use crate::{
 };
 use indicatrix::{geometry::meet_solver::Block, optics::materials::GemMaterial};
 use indicatrix_cut_core::{
-    Design, EditError, ObjectiveWeights, OptimizeConfig, ResolvedMaterial, Risk,
+    Design, Edit, EditError, MaterialSelection, ObjectiveWeights, OptimizeConfig, ResolvedMaterial,
+    Risk,
 };
 use slint::{Color, ComponentHandle, ModelRc, SharedString, VecModel};
 use std::{
@@ -52,30 +67,92 @@ use std::{
     sync::{Arc, Mutex, atomic::Ordering as AtomicOrdering},
 };
 
-/// Resolves the retarget target material from `design`'s current material (used for
-/// `specific_gravity_override` passthrough and as the fallback) plus whatever the
-/// design settings panel's material combo and RI-override text field currently show
-/// -- see this module's doc comment ("Where the target material comes from"). An
-/// unparseable `ri_override_text` falls back to `design.material` unchanged rather
-/// than surfacing a second error path: the design settings panel's own "Apply"
-/// already validates that text before it reaches `Design`.
+thread_local! {
+    /// This dialog's own async `RetargetMode::Optimize` run tracker -- see this
+    /// module's doc comment ("`RetargetMode::Optimize` runs off the UI thread") for
+    /// why this is a module-local `thread_local!` rather than a new `EditorState`
+    /// field.
+    static RETARGET_ASYNC: RefCell<RetargetAsyncRun> = RefCell::new(RetargetAsyncRun::default());
+}
+
+/// [`RETARGET_ASYNC`]'s payload.
+#[derive(Default)]
+struct RetargetAsyncRun {
+    /// Cancels the in-flight worker -- `None` whenever nothing is running.
+    handle: Option<OptimizeSolveHandle>,
+    /// Bumped every time a run starts, is cancelled, or is superseded by a newer
+    /// one, so a worker that finishes after being superseded can tell (by comparing
+    /// the `run_id` it was launched with) and discard its own result instead of
+    /// overwriting a newer run's.
+    run_id: u64,
+    /// The finished proposal an async Optimize run produced, paired with the design
+    /// generation it ran against -- exactly [`EditorState::pending_retarget`]'s own
+    /// shape, read back by [`setup_retarget_apply_callback`] the same way.
+    pending: Option<(RetargetProposal, u64)>,
+}
+
+impl RetargetAsyncRun {
+    /// Cancels whatever is running (if anything) and bumps `run_id`, so any result
+    /// still in flight is discarded on arrival -- shared by every place that starts
+    /// a new run, cancels one outright, or closes the dialog.
+    fn cancel_and_supersede(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            handle.cancel();
+        }
+        self.run_id = self.run_id.wrapping_add(1);
+        self.pending = None;
+    }
+}
+
+/// Just the [`MaterialSelection`] half of [`resolve_target_material`], split out so
+/// the async `RetargetMode::Optimize` wiring (which needs a real
+/// [`MaterialSelection`] to hand [`optimize_solve::spawn_optimize_solve`], not a
+/// pre-resolved [`ResolvedMaterial`]) doesn't reimplement this parsing.
 ///
-/// [`resolved_gem_material`] (not plain `MaterialSelection::resolve`) is used for the
-/// returned `gem`, so an RI override shows up in the target's own dispersion (matters
-/// for `RetargetMode::Optimize`'s objective).
-fn resolve_target_material(
+/// # Errors
+///
+/// [`parse_design_material_form`]'s own message when `ri_override_text` is non-empty
+/// and does not parse as a finite refractive index greater than 1.0 -- see
+/// [`target_material_selection`] for the lenient wrapper most callers actually want.
+fn resolve_target_selection(
     design: &Design,
     custom: &[GemMaterial],
     combo_index: i32,
     ri_override_text: &str,
-) -> ResolvedMaterial {
+) -> Result<MaterialSelection, String> {
     let options = design_material_options(custom);
-    let selection =
-        parse_design_material_form(combo_index, ri_override_text, &options, &design.material)
-            .unwrap_or_else(|_| design.material.clone());
+    parse_design_material_form(combo_index, ri_override_text, &options, &design.material)
+}
+
+/// [`resolve_target_selection`], falling back to `design.material` unchanged on a
+/// parse error rather than surfacing it -- used wherever a caller needs SOME target
+/// selection unconditionally (`start_optimize_run`'s own search input). The two
+/// dialog-readout call sites ([`rebuild_and_push`]/[`start_optimize_run`]'s own
+/// up-front check) call [`resolve_target_selection`] directly instead, so Item 183's
+/// error actually reaches the cutter -- see [`push_target_error`].
+fn target_material_selection(
+    design: &Design,
+    custom: &[GemMaterial],
+    combo_index: i32,
+    ri_override_text: &str,
+) -> MaterialSelection {
+    resolve_target_selection(design, custom, combo_index, ri_override_text)
+        .unwrap_or_else(|_| design.material.clone())
+}
+
+/// Resolves an already-known [`MaterialSelection`] into a [`ResolvedMaterial`]
+/// against `custom`. [`resolved_gem_material`] (not plain `MaterialSelection::resolve`)
+/// is used for the returned `gem`, so an RI override shows up in the target's own
+/// dispersion (matters for `RetargetMode::Optimize`'s objective) -- shared by every
+/// caller here that already has a `MaterialSelection` in hand, so this one three-line
+/// pattern isn't repeated per call site.
+fn resolved_material_from_selection(
+    selection: &MaterialSelection,
+    custom: &[GemMaterial],
+) -> ResolvedMaterial {
     let lookup = EditorMaterialLookup::new(custom);
     let resolved = selection.resolve(&lookup);
-    let gem = resolved_gem_material(&selection, &lookup);
+    let gem = resolved_gem_material(selection, &lookup);
     ResolvedMaterial { gem, ..resolved }
 }
 
@@ -135,8 +212,14 @@ fn retarget_view(
     target: &ResolvedMaterial,
     crown: CrownShift,
     mode: RetargetMode,
+    // The catalogue's custom materials, so the design's CURRENT refractive index
+    // resolves through the same lookup the rest of the editor uses (CAD audit item
+    // 53). Without it a design whose material is a custom catalogue entry had its
+    // source RI read from the built-in table alone, which silently fell back to a
+    // different number -- and every proposed angle is a shift from that number.
+    custom_materials: &[GemMaterial],
 ) -> (RetargetView, Option<RetargetProposal>) {
-    match retarget::build_proposal(design, target, crown, mode) {
+    match retarget::build_proposal(design, target, crown, mode, custom_materials) {
         Ok(proposal) => {
             let rows = proposal.rows.iter().map(row_view).collect();
             let view = RetargetView {
@@ -217,15 +300,58 @@ fn push_retarget_view(ui: &MainWindow, view: RetargetView) {
         .set_solve_error(view.solve_error.into());
 }
 
+/// The readout label for a retarget target -- Item 174: `target.gem.name` is
+/// [`resolved_gem_material`]'s pick of an actual [`GemMaterial`] to render/compute
+/// dispersion against, which falls back to Diamond (`material.rs`'s own default) for
+/// both "(none)" and a typed custom RI -- neither of which the cutter ever asked to
+/// move toward Diamond. Derived from the [`MaterialSelection`] that was actually
+/// resolved instead: the name when one was picked, `"Custom RI"` for a typed
+/// override with no name, `"(none)"` for neither.
+fn target_display_name(selection: &MaterialSelection) -> String {
+    selection.name.clone().unwrap_or_else(|| {
+        if selection.refractive_index_override.is_some() {
+            "Custom RI".to_string()
+        } else {
+            "(none)".to_string()
+        }
+    })
+}
+
 /// Pushes the target material readout -- fixed for the lifetime of one dialog
-/// session, but re-pushed on every rebuild anyway since it costs nothing.
-fn push_target_readout(ui: &MainWindow, target: &ResolvedMaterial) {
+/// session, but re-pushed on every rebuild anyway since it costs nothing. Also clears
+/// `RetargetModel.target_material_error` (see [`push_target_error`]): reaching this
+/// function at all means [`resolve_target_selection`] just succeeded, so any earlier
+/// parse error no longer applies.
+fn push_target_readout(ui: &MainWindow, selection: &MaterialSelection, target: &ResolvedMaterial) {
     ui.global::<RetargetModel>()
-        .set_target_material_name(target.gem.name.clone().into());
+        .set_target_material_name(target_display_name(selection).into());
     ui.global::<RetargetModel>()
         .set_target_material_ri(format!("{:.4}", target.n_d).into());
     ui.global::<RetargetModel>()
         .set_target_critical_angle(format!("{:.2}\u{b0}", target.critical_angle_deg).into());
+    ui.global::<RetargetModel>()
+        .set_target_material_error("".into());
+}
+
+/// Item 183: `ri_override_text` failed to parse -- pushes `message` into
+/// `RetargetModel.target_material_error` (shown above the proposal table,
+/// `retarget_dialog.slint`) and clears `rows`/`notes` so nothing on screen implies a
+/// proposal was actually built against this text. The readout above the error
+/// (`target_material_name`/`_ri`/`_critical_angle`) is deliberately left as-is --
+/// whatever the last valid target was -- rather than reset, matching the error
+/// banner's own "showing the last valid target" wording.
+fn push_target_error(ui: &MainWindow, message: &str) {
+    ui.global::<RetargetModel>()
+        .set_target_material_error(message.into());
+    push_retarget_view(
+        ui,
+        RetargetView {
+            rows: Vec::new(),
+            notes: Vec::new(),
+            anchored_errors: Vec::new(),
+            solve_error: String::new(),
+        },
+    );
 }
 
 /// `RetargetMode::Optimize`'s config, reusing the standalone Optimize panel's own
@@ -247,9 +373,11 @@ fn optimize_config_from_ui(ui: &MainWindow) -> OptimizeConfig {
 }
 
 /// Reads `render_ctx`'s current custom materials, resolves the target against them
-/// plus `ui`'s current combo/RI-override fields, then rebuilds and pushes a full
-/// [`RetargetView`] -- the common body [`setup_retarget_open_callback`]/
-/// [`setup_retarget_proposal_changed_callback`] both need.
+/// plus `RetargetModel`'s own target picker fields, then rebuilds and pushes a full
+/// [`RetargetView`] -- the common body [`setup_retarget_open_callback`] and Shift
+/// mode's branch of [`setup_retarget_proposal_changed_callback`] both need. Only
+/// ever called with [`RetargetMode::Shift`] since `RetargetMode::Optimize` moved
+/// off-thread -- see this module's doc comment.
 fn rebuild_and_push(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
@@ -257,26 +385,56 @@ fn rebuild_and_push(
     crown: CrownShift,
     mode: RetargetMode,
 ) -> Option<RetargetProposal> {
-    let target = {
+    let combo_index = ui.global::<RetargetModel>().get_target_material_index();
+    let ri_text = ui.global::<RetargetModel>().get_target_ri_override_text();
+    // Cloned out of the lock alongside the resolution below, rather than re-locking
+    // for the proposal: `retarget_view` needs the same catalogue the target was
+    // resolved against (CAD audit item 53), and re-locking could observe a different
+    // one if a custom material were saved in between.
+    let (selection, target, custom_materials) = {
         let ctx = render_ctx
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        resolve_target_material(
-            design,
-            &ctx.custom_materials,
-            ui.global::<EditorModel>().get_material_combo_index(),
-            &ui.global::<EditorModel>().get_ri_override_text(),
-        )
+        // Item 183: checked with the Result-returning resolver FIRST, so an
+        // unparseable override is reported instead of silently resolved against
+        // `design.material` -- see `push_target_error`'s own doc comment.
+        match resolve_target_selection(design, &ctx.custom_materials, combo_index, &ri_text) {
+            Ok(selection) => {
+                let target = resolved_material_from_selection(&selection, &ctx.custom_materials);
+                let custom_materials = ctx.custom_materials.as_ref().clone();
+                (selection, target, custom_materials)
+            }
+            Err(message) => {
+                drop(ctx);
+                push_target_error(ui, &message);
+                return None;
+            }
+        }
     };
-    push_target_readout(ui, &target);
-    let (view, proposal) = retarget_view(design, &target, crown, mode);
+    push_target_readout(ui, &selection, &target);
+    let (view, proposal) = retarget_view(design, &target, crown, mode, &custom_materials);
     push_retarget_view(ui, view);
     proposal
 }
 
+/// The target combo's initial index for `material` -- the design's own current
+/// material by name, except a name-less selection carrying an RI override (the
+/// "Custom RI…" case, see [`design_material_name_from_index`]'s own doc comment)
+/// which has no name to look up at all and must instead seed the trailing sentinel
+/// entry [`design_material_options`] always appends.
+fn initial_target_index(material: &MaterialSelection, options: &[String]) -> i32 {
+    if material.name.is_none() && material.refractive_index_override.is_some() {
+        return i32::try_from(options.len()).unwrap_or(i32::MAX) - 1;
+    }
+    design_material_index_from_name(material.name.as_deref(), options)
+}
+
 /// "Retarget for material...": opens the dialog and builds the first proposal
 /// (Shift mode, default crown settings -- reset here even if a previous session left
-/// the dialog's `in-out` properties on Optimize/a nonzero crown fraction).
+/// the dialog's `in-out` properties on Optimize/a nonzero crown fraction). Also
+/// seeds the target picker (see this module's doc comment, "Where the target
+/// material comes from") from `design`'s own current material, and drops whatever a
+/// previous session's async Optimize run left in [`RETARGET_ASYNC`].
 pub(in crate::gui::editor) fn setup_retarget_open_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -289,10 +447,40 @@ pub(in crate::gui::editor) fn setup_retarget_open_callback(
         let Some(ui) = ui_weak.upgrade() else {
             return;
         };
+        RETARGET_ASYNC.with(|cell| cell.borrow_mut().cancel_and_supersede());
+
         let mut st = state.borrow_mut();
         ui.global::<RetargetModel>().set_mode_index(0);
         ui.global::<RetargetModel>().set_crown_fraction(0.0);
         ui.global::<RetargetModel>().set_scale_crown_by_ratio(false);
+        ui.global::<RetargetModel>().set_is_busy(false);
+        ui.global::<RetargetModel>().set_optimize_evaluations(0);
+        ui.global::<RetargetModel>().set_optimize_max_evaluations(0);
+
+        let options = {
+            let ctx = render_ctx
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            design_material_options(&ctx.custom_materials)
+        };
+        ui.global::<RetargetModel>()
+            .set_target_material_index(initial_target_index(&st.design.material, &options));
+        ui.global::<RetargetModel>().set_target_ri_override_text(
+            st.design
+                .material
+                .refractive_index_override
+                .map(|v| format!("{v}"))
+                .unwrap_or_default()
+                .into(),
+        );
+        ui.global::<RetargetModel>()
+            .set_material_options(ModelRc::new(VecModel::from(
+                options
+                    .into_iter()
+                    .map(SharedString::from)
+                    .collect::<Vec<_>>(),
+            )));
+
         let generation = st.generation.load(AtomicOrdering::Relaxed);
         let proposal = rebuild_and_push(
             &ui,
@@ -306,37 +494,300 @@ pub(in crate::gui::editor) fn setup_retarget_open_callback(
     });
 }
 
-/// The mode/crown-handling controls changed: rebuilds the proposal from their
-/// current values. See this module's doc comment ("Synchronous...") for why
-/// `RetargetMode::Optimize` still runs inline here rather than on a worker thread.
+/// The mode/crown/target controls changed: rebuilds the proposal from their current
+/// values. Shift mode stays synchronous (pure angle arithmetic); `RetargetMode::
+/// Optimize` hands off to [`start_optimize_run`] instead -- see this module's doc
+/// comment ("`RetargetMode::Optimize` runs off the UI thread").
+///
+/// Also registers [`RetargetModel::cancel_optimize`]'s handler: both callbacks are
+/// wired from this one `setup_*` function (rather than a separate one) so this
+/// group's async run tracking stays entirely inside this function's own closures,
+/// with no new `setup_retarget_*` call site needed in `gui::editor::mod` (owned
+/// elsewhere) to wire it up.
 pub(in crate::gui::editor) fn setup_retarget_proposal_changed_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
     render_ctx: &Arc<Mutex<RenderContext>>,
 ) {
-    let state = Rc::clone(state);
-    let render_ctx = Arc::clone(render_ctx);
-    let ui_weak = ui.as_weak();
-    ui.global::<RetargetModel>().on_proposal_changed(move || {
-        let Some(ui) = ui_weak.upgrade() else {
+    {
+        let state = Rc::clone(state);
+        let render_ctx = Arc::clone(render_ctx);
+        let ui_weak = ui.as_weak();
+        ui.global::<RetargetModel>().on_proposal_changed(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            // A new request always supersedes whatever Optimize run was in flight.
+            RETARGET_ASYNC.with(|cell| cell.borrow_mut().cancel_and_supersede());
+
+            let mut st = state.borrow_mut();
+            let crown = CrownShift {
+                fraction: f64::from(ui.global::<RetargetModel>().get_crown_fraction()),
+                scale_by_ratio: ui.global::<RetargetModel>().get_scale_crown_by_ratio(),
+            };
+            if ui.global::<RetargetModel>().get_mode_index() == 1 {
+                start_optimize_run(&ui, &render_ctx, &mut st, crown);
+            } else {
+                ui.global::<RetargetModel>().set_is_busy(false);
+                let generation = st.generation.load(AtomicOrdering::Relaxed);
+                let proposal =
+                    rebuild_and_push(&ui, &render_ctx, &st.design, crown, RetargetMode::Shift);
+                st.pending_retarget = proposal.map(|p| (p, generation));
+            }
+        });
+    }
+
+    {
+        let state = Rc::clone(state);
+        let ui_weak = ui.as_weak();
+        ui.global::<RetargetModel>().on_cancel_optimize(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            RETARGET_ASYNC.with(|cell| cell.borrow_mut().cancel_and_supersede());
+            state.borrow_mut().pending_retarget = None;
+            ui.global::<RetargetModel>().set_is_busy(false);
+            push_retarget_view(
+                &ui,
+                RetargetView {
+                    rows: Vec::new(),
+                    notes: vec!["Optimize cancelled.".to_string()],
+                    anchored_errors: Vec::new(),
+                    solve_error: String::new(),
+                },
+            );
+        });
+    }
+}
+
+/// Pushes an `anchored_tier_errors` view (see `RetargetError::AnchoredTiers`'s own
+/// doc comment) and clears any pending proposal -- [`start_optimize_run`]'s up-front
+/// refusal path, pulled out to keep that function under clippy's function-length
+/// lint.
+fn push_anchored_refusal(ui: &MainWindow, st: &mut EditorState, anchored: &[(usize, String)]) {
+    let anchored_errors = anchored
+        .iter()
+        .map(|(index, name)| format!("#{index} \"{name}\""))
+        .collect();
+    push_retarget_view(
+        ui,
+        RetargetView {
+            rows: Vec::new(),
+            notes: Vec::new(),
+            anchored_errors,
+            solve_error: String::new(),
+        },
+    );
+    st.pending_retarget = None;
+    ui.global::<RetargetModel>().set_is_busy(false);
+}
+
+/// Pushes `RetargetModel.optimize_evaluations`/`optimize_max_evaluations`, clamping
+/// each to `i32`'s range (real evaluation counts never come close) -- shared by
+/// [`start_optimize_run`]'s own initial `0`/`max_evaluations` push and the running
+/// search's own progress ticks.
+fn set_optimize_progress(ui: &MainWindow, evaluations: usize, max_evaluations: usize) {
+    ui.global::<RetargetModel>()
+        .set_optimize_evaluations(i32::try_from(evaluations).unwrap_or(i32::MAX));
+    ui.global::<RetargetModel>()
+        .set_optimize_max_evaluations(i32::try_from(max_evaluations).unwrap_or(i32::MAX));
+}
+
+/// [`setup_retarget_proposal_changed_callback`]'s `RetargetMode::Optimize` branch:
+/// runs the cheap, synchronous part of `retarget::build_proposal`'s Optimize path
+/// (target resolution, scope, the up-front anchored-tier check, the shift seed)
+/// here on the UI thread, then hands the actual `optimize_design` search off to
+/// [`optimize_solve::spawn_optimize_solve`]. `st` is the already-borrowed
+/// `EditorState` (borrowed by the caller so the anchored-tier/no-op cases can update
+/// `pending_retarget` without a second borrow).
+fn start_optimize_run(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    st: &mut EditorState,
+    crown: CrownShift,
+) {
+    let custom = render_ctx
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .custom_materials
+        .as_ref()
+        .clone();
+    let combo_index = ui.global::<RetargetModel>().get_target_material_index();
+    let ri_text = ui.global::<RetargetModel>().get_target_ri_override_text();
+    // Item 183: checked up front so an unparseable override refuses the run with an
+    // explicit error, matching `rebuild_and_push`'s own guard, instead of silently
+    // searching against `st.design.material` unchanged.
+    let selection = match resolve_target_selection(&st.design, &custom, combo_index, &ri_text) {
+        Ok(selection) => selection,
+        Err(message) => {
+            push_target_error(ui, &message);
+            // Matches `push_anchored_refusal`'s own clearing: `RETARGET_ASYNC.pending`
+            // is already `None` (the caller cancelled/superseded before calling this
+            // function), but `st.pending_retarget` could still hold an earlier,
+            // genuinely valid Optimize proposal -- Apply must not offer THAT one up
+            // as if it answered this now-unparseable text.
+            st.pending_retarget = None;
+            ui.global::<RetargetModel>().set_is_busy(false);
             return;
-        };
-        let mut st = state.borrow_mut();
-        let crown = CrownShift {
-            fraction: f64::from(ui.global::<RetargetModel>().get_crown_fraction()),
-            scale_by_ratio: ui.global::<RetargetModel>().get_scale_crown_by_ratio(),
-        };
-        let mode = if ui.global::<RetargetModel>().get_mode_index() == 1 {
-            RetargetMode::Optimize(optimize_config_from_ui(&ui))
-        } else {
-            RetargetMode::Shift
-        };
-        ui.global::<RetargetModel>().set_is_busy(true);
-        let generation = st.generation.load(AtomicOrdering::Relaxed);
-        let proposal = rebuild_and_push(&ui, &render_ctx, &st.design, crown, mode);
-        st.pending_retarget = proposal.map(|p| (p, generation));
-        ui.global::<RetargetModel>().set_is_busy(false);
+        }
+    };
+    let target = resolved_material_from_selection(&selection, &custom);
+    push_target_readout(ui, &selection, &target);
+
+    let (scope, blocks) = retarget::retarget_scope(&st.design);
+    let anchored = retarget::anchored_tiers_in(&st.design, &scope);
+    if !anchored.is_empty() {
+        push_anchored_refusal(ui, st, &anchored);
+        return;
+    }
+
+    // `_with(&custom)`, not the bare (built-ins-and-override-only) accessor: `st.
+    // design.material.name` may name a CUSTOM catalogue material this session
+    // defined, which the bare accessor cannot see at all and would silently score
+    // against the wrong index for -- see `Design::effective_refractive_index_with`'s
+    // own doc comment.
+    let n_from = st.design.effective_refractive_index_with(&custom);
+    let n_to = target.n_d;
+    let seeded = retarget::seed_shift_design(&st.design, &scope, &blocks, n_from, n_to, crown);
+    let ctx = OptimizeRunContext {
+        original: st.design.clone(),
+        seeded: seeded.clone(),
+        scope,
+        blocks,
+        n_to,
+        target,
+        custom: custom.clone(),
+    };
+    let config = optimize_config_from_ui(ui);
+    let max_evaluations = config.max_evaluations;
+
+    ui.global::<RetargetModel>().set_is_busy(true);
+    set_optimize_progress(ui, 0, max_evaluations);
+
+    let run_id = RETARGET_ASYNC.with(|cell| {
+        let mut run = cell.borrow_mut();
+        run.run_id = run.run_id.wrapping_add(1);
+        run.run_id
     });
+    let started_generation = st.generation.load(AtomicOrdering::Relaxed);
+
+    // `on_done` below must be `Send` (`spawn_optimize_solve`'s own bound, since it
+    // crosses into the worker thread before hopping back to the UI thread) --
+    // everything it captures is therefore plain owned data (bundled into `ctx`),
+    // never `Rc<RefCell<EditorState>>`. See this module's doc comment.
+    let handle = optimize_solve::spawn_optimize_solve(
+        ui.as_weak(),
+        seeded,
+        selection,
+        custom,
+        config,
+        |ui: &MainWindow, progress: optimize_solve::OptimizeSolveProgress| {
+            set_optimize_progress(ui, progress.evaluations, progress.max_evaluations);
+        },
+        move |ui: &MainWindow, outcome: OptimizeSolveOutcome| {
+            finish_optimize_run(ui, outcome, run_id, started_generation, &ctx);
+        },
+    );
+    RETARGET_ASYNC.with(|cell| cell.borrow_mut().handle = Some(handle));
+    // `st` (the caller's already-borrowed `EditorState`) intentionally receives no
+    // further update here: the async result reaches `EditorState::pending_retarget`
+    // only through `setup_retarget_apply_callback` reading `RETARGET_ASYNC::pending`
+    // back out on the main thread once the worker finishes, never from this
+    // function's own return.
+}
+
+/// Everything [`finish_optimize_run`] needs about the run it is completing, bundled
+/// purely to keep that function's own signature short -- the same reasoning
+/// `optimize_solve::OptimizeJob` documents on itself. Built once by
+/// [`start_optimize_run`] and moved, whole, into the `Send`-bound completion closure.
+struct OptimizeRunContext {
+    /// The design as it stood before the shift seed/search ran -- every row's
+    /// `old_angle` reads from this, per [`retarget::rows_from_outcome`].
+    original: Design,
+    /// `original` with every `scope` tier's angle already shifted -- the baseline
+    /// [`optimize_solve::spawn_optimize_solve`]'s own worker searched from.
+    seeded: Design,
+    /// The pavilion/crown tier indices this run retargets (see
+    /// [`retarget::retarget_scope`]).
+    scope: Vec<usize>,
+    /// `scope`'s own [`Block`] classification, same order.
+    blocks: Vec<Block>,
+    /// The target material's refractive index -- `retarget::build_notes`/
+    /// `retarget::rows_from_outcome` both need it.
+    n_to: f64,
+    /// The resolved target material this run searched against.
+    target: ResolvedMaterial,
+    /// The custom catalogue materials in scope when this run started -- carried
+    /// through so [`finish_optimize_run`] can also resolve `original`'s effective RI
+    /// via `Design::effective_refractive_index_with` rather than the bare,
+    /// custom-catalogue-blind accessor (see [`start_optimize_run`]'s matching
+    /// comment on `n_from`).
+    custom: Vec<GemMaterial>,
+}
+
+/// [`start_optimize_run`]'s completion handler. Runs on the UI thread (via
+/// [`optimize_solve::spawn_optimize_solve`]'s own `upgrade_in_event_loop` hop), but
+/// reached through a `Send`-bound closure (see this module's doc comment) that
+/// cannot capture `Rc<RefCell<EditorState>>` -- so the finished proposal goes into
+/// [`RETARGET_ASYNC`], not straight into `EditorState`.
+///
+/// Discards the result (leaving `RetargetModel`/`RETARGET_ASYNC` exactly as whatever
+/// superseded this run already left them) when `run_id` no longer matches
+/// [`RETARGET_ASYNC`]'s current one -- this run was cancelled or superseded before it
+/// finished.
+fn finish_optimize_run(
+    ui: &MainWindow,
+    outcome: OptimizeSolveOutcome,
+    run_id: u64,
+    started_generation: u64,
+    ctx: &OptimizeRunContext,
+) {
+    let still_current = RETARGET_ASYNC.with(|cell| cell.borrow().run_id == run_id);
+    if !still_current {
+        return;
+    }
+    RETARGET_ASYNC.with(|cell| cell.borrow_mut().handle = None);
+
+    let (rows, notes, solve_error) = match outcome {
+        OptimizeSolveOutcome::Completed { outcome }
+        | OptimizeSolveOutcome::Cancelled { outcome } => {
+            let rows = retarget::rows_from_outcome(
+                &ctx.original,
+                &ctx.seeded,
+                &ctx.scope,
+                &ctx.blocks,
+                ctx.n_to,
+                &outcome.changes,
+            );
+            let n_from = ctx.original.effective_refractive_index_with(&ctx.custom);
+            let notes = retarget::build_notes(
+                RetargetMode::Optimize(OptimizeConfig::default()),
+                n_from,
+                ctx.n_to,
+            );
+            (rows, notes, String::new())
+        }
+        OptimizeSolveOutcome::Failed { error } => (Vec::new(), Vec::new(), error.to_string()),
+    };
+
+    let row_views: Vec<RetargetRowView> = rows.iter().map(row_view).collect();
+    let proposal = (!rows.is_empty()).then(|| RetargetProposal {
+        rows,
+        target: ctx.target.clone(),
+        notes: notes.clone(),
+    });
+    RETARGET_ASYNC.with(|cell| {
+        cell.borrow_mut().pending = proposal.map(|p| (p, started_generation));
+    });
+
+    let view = RetargetView {
+        rows: row_views,
+        notes,
+        anchored_errors: Vec::new(),
+        solve_error,
+    };
+    push_retarget_view(ui, view);
+    ui.global::<RetargetModel>().set_is_busy(false);
 }
 
 /// Why [`apply_pending_retarget`] applied nothing.
@@ -349,29 +800,57 @@ enum RetargetApplyError {
 }
 
 /// Applies `pending`'s [`RetargetProposal`] through `state` iff its generation still
-/// matches, via one [`retarget::apply`]/[`EditorState::apply`] call (one
-/// `Edit::RetargetAngles` through `History`, the ONLY way this module mutates
-/// `design`). Returns the number of tiers the pushed edit named on success.
+/// matches, via exactly one [`EditorState::apply`] call -- the ONLY way this module
+/// mutates `design`. When `material_change` is `Some`, the angle retarget and the
+/// material change are combined into one `Edit::Batch` (see that variant's own doc
+/// comment: it validates both sub-edits before writing anything back, so a stale
+/// tier index can never leave the design half-retargeted), so the whole "Retarget for
+/// material" action is ONE undo step; `None` (the target already matches
+/// `state.design.material`, e.g. a Shift-mode preview the user never actually
+/// retargeted) pushes the plain `Edit::RetargetAngles` alone, exactly as before.
+/// Returns the number of tiers the retarget named on success.
 fn apply_pending_retarget(
     state: &mut EditorState,
     pending: (RetargetProposal, u64),
+    material_change: Option<MaterialSelection>,
 ) -> Result<usize, RetargetApplyError> {
     let (proposal, started_generation) = pending;
     if state.generation.load(AtomicOrdering::Relaxed) != started_generation {
         return Err(RetargetApplyError::Stale);
     }
-    let edit = retarget::apply(&state.design, &proposal);
+    let angle_edit = retarget::apply(&state.design, &proposal);
     let applied = proposal.rows.len();
+    let edit = match material_change {
+        Some(material) => Edit::Batch(vec![angle_edit, Edit::SetMaterial { material }]),
+        None => angle_edit,
+    };
     state
         .apply(edit)
         .map(|()| applied)
         .map_err(RetargetApplyError::Edit)
 }
 
-/// "Apply": commits the held proposal, then re-solves and refreshes the shared
-/// viewport via [`view::refresh_all`] -- the same Solve path `setup_solve_callback`
-/// uses, NOT `refresh_editor_panel_stale`: every pavilion/crown angle just moved, so
-/// the design needs a real re-solve shown immediately, not left marked stale.
+/// "Apply": commits the target material (see below) together with the held
+/// proposal, then re-solves and refreshes the shared viewport via
+/// [`view::refresh_all`] -- the same Solve path `setup_solve_callback` uses, NOT
+/// `refresh_editor_panel_stale`: every pavilion/crown angle just moved, so the design
+/// needs a real re-solve shown immediately, not left marked stale.
+///
+/// # Also commits the target material, as ONE undo step
+///
+/// A retarget used to move every tier's angle without ever touching
+/// `design.material` -- Diamond-critical-angle-shifted tiers would show as
+/// "Windows" the moment Quartz's own, much shallower critical angle applied, until
+/// the cutter separately pressed "Apply" on the design settings panel's own material
+/// combo. The target material is resolved from `RetargetModel`'s own picker fields
+/// BEFORE calling [`apply_pending_retarget`] (its own stale-generation check still
+/// runs first inside that call, against the generation the proposal was actually
+/// built against), then handed to it as `material_change` -- `Some` only when it
+/// actually differs from `state.design.material` (e.g. never for a Shift-mode
+/// preview the cutter didn't retarget). `apply_pending_retarget` combines the angle
+/// retarget and the material change into one `Edit::Batch` (see that variant's own
+/// doc comment), so pressing Undo once fully reverts a retarget that also changed
+/// material, not twice.
 pub(in crate::gui::editor) fn setup_retarget_apply_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -389,11 +868,41 @@ pub(in crate::gui::editor) fn setup_retarget_apply_callback(
             return;
         };
         let mut st = state.borrow_mut();
-        let Some(pending) = st.pending_retarget.take() else {
+        // A Shift-mode proposal lives in `EditorState::pending_retarget`; an
+        // Optimize-mode one (built off-thread) lives in `RETARGET_ASYNC::pending`
+        // instead -- see this module's doc comment.
+        let pending = st
+            .pending_retarget
+            .take()
+            .or_else(|| RETARGET_ASYNC.with(|cell| cell.borrow_mut().pending.take()));
+        let Some(pending) = pending else {
             return;
         };
-        let target_name = pending.0.target.gem.name.clone();
-        match apply_pending_retarget(&mut st, pending) {
+
+        // Resolved BEFORE `apply_pending_retarget` -- see this function's own doc
+        // comment ("Also commits the target material, as ONE undo step"). Reading
+        // `st.design.material` here (rather than after the retarget applies) is safe:
+        // a retarget's own `Edit::RetargetAngles`/`Edit::Batch` never touches
+        // `design.material` itself, only tier angles.
+        let custom = render_ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .custom_materials
+            .as_ref()
+            .clone();
+        let combo_index = ui.global::<RetargetModel>().get_target_material_index();
+        let ri_text = ui.global::<RetargetModel>().get_target_ri_override_text();
+        let material_selection =
+            target_material_selection(&st.design, &custom, combo_index, &ri_text);
+        // Item 174, same fix as the dialog's own live readout: named from the
+        // `MaterialSelection` the cutter actually picked, not `pending.0.target.gem.
+        // name` (which falls back to Diamond for "(none)"/a typed custom RI -- see
+        // `target_display_name`'s own doc comment).
+        let target_name = target_display_name(&material_selection);
+        let material_change =
+            (material_selection != st.design.material).then_some(material_selection);
+
+        match apply_pending_retarget(&mut st, pending, material_change) {
             Ok(applied) => {
                 view::refresh_all(&ui, &render_ctx, &preview_state, &solid_last_solved, &st);
                 ui.global::<RetargetModel>().set_is_open(false);
@@ -430,6 +939,10 @@ pub(in crate::gui::editor) fn setup_retarget_close_callback(
         let Some(ui) = ui_weak.upgrade() else {
             return;
         };
+        // Also abandons any in-flight `RetargetMode::Optimize` worker -- closing the
+        // dialog must not leave a search running (and later overwriting
+        // `RETARGET_ASYNC::pending`) behind an already-dismissed proposal.
+        RETARGET_ASYNC.with(|cell| cell.borrow_mut().cancel_and_supersede());
         state.borrow_mut().pending_retarget = None;
         ui.global::<RetargetModel>().set_is_open(false);
     });
@@ -443,6 +956,22 @@ mod tests {
         ConstraintTier, History, MaterialSelection, PreformSpec, ScheduleMeta,
     };
 
+    /// Test-only convenience composing [`target_material_selection`] (the lenient,
+    /// production wrapper) with [`resolved_material_from_selection`] -- these tests
+    /// exercise the RESOLVED material, not the [`MaterialSelection`] on its own, and
+    /// production code no longer has a use for that exact composition (both real call
+    /// sites need the `Result`-returning [`resolve_target_selection`] instead, for
+    /// Item 183's error surfacing).
+    fn resolve_target_material(
+        design: &Design,
+        custom: &[GemMaterial],
+        combo_index: i32,
+        ri_override_text: &str,
+    ) -> ResolvedMaterial {
+        let selection = target_material_selection(design, custom, combo_index, ri_override_text);
+        resolved_material_from_selection(&selection, custom)
+    }
+
     fn diamond_design() -> Design {
         let mut design = Design::new(
             PreformSpec::block(2.0, 1.0, 2.0),
@@ -453,6 +982,7 @@ mod tests {
                 indices: vec![0.0, 24.0],
                 constraint: MeetConstraint::ScaleReference(0.5),
                 imported_meet: None,
+                original_notes: None,
                 detached: Vec::new(),
             }],
         );
@@ -507,8 +1037,13 @@ mod tests {
         let options = design_material_options(&custom);
         let quartz_index = design_material_index_from_name(Some("Quartz"), &options);
         let target = resolve_target_material(&design, &custom, quartz_index, "");
-        let (view, proposal) =
-            retarget_view(&design, &target, CrownShift::default(), RetargetMode::Shift);
+        let (view, proposal) = retarget_view(
+            &design,
+            &target,
+            CrownShift::default(),
+            RetargetMode::Shift,
+            &[],
+        );
         assert!(!view.rows.is_empty());
         assert_eq!(view.anchored_errors, Vec::<String>::new());
         assert_eq!(view.solve_error, "");
@@ -533,6 +1068,7 @@ mod tests {
             &target,
             CrownShift::default(),
             RetargetMode::Optimize(config),
+            &[],
         );
         assert!(view.rows.is_empty());
         assert_ne!(view.anchored_errors, Vec::<String>::new());
@@ -556,13 +1092,18 @@ mod tests {
         let options = design_material_options(&custom);
         let quartz_index = design_material_index_from_name(Some("Quartz"), &options);
         let target = resolve_target_material(&design, &custom, quartz_index, "");
-        let (_, proposal) =
-            retarget_view(&design, &target, CrownShift::default(), RetargetMode::Shift);
+        let (_, proposal) = retarget_view(
+            &design,
+            &target,
+            CrownShift::default(),
+            RetargetMode::Shift,
+            &[],
+        );
         let proposal = proposal.expect("shift mode never fails");
 
         let mut state = fresh_state_with(design);
         let generation = state.generation.load(AtomicOrdering::Relaxed);
-        let applied = apply_pending_retarget(&mut state, (proposal, generation))
+        let applied = apply_pending_retarget(&mut state, (proposal, generation), None)
             .unwrap_or_else(|_| panic!("a fresh, matching-generation proposal must apply"));
         assert_eq!(applied, 1);
         assert!(state.history.can_undo());
@@ -573,23 +1114,173 @@ mod tests {
     }
 
     #[test]
+    fn apply_pending_retarget_combines_a_material_change_into_one_undo_step() {
+        let design = diamond_design();
+        let custom: [GemMaterial; 0] = [];
+        let options = design_material_options(&custom);
+        let quartz_index = design_material_index_from_name(Some("Quartz"), &options);
+        let target = resolve_target_material(&design, &custom, quartz_index, "");
+        let (_, proposal) = retarget_view(
+            &design,
+            &target,
+            CrownShift::default(),
+            RetargetMode::Shift,
+            &[],
+        );
+        let proposal = proposal.expect("shift mode never fails");
+
+        let mut state = fresh_state_with(design);
+        let generation = state.generation.load(AtomicOrdering::Relaxed);
+        let material_change = MaterialSelection {
+            name: Some("Quartz".to_string()),
+            specific_gravity_override: None,
+            refractive_index_override: None,
+        };
+        apply_pending_retarget(&mut state, (proposal, generation), Some(material_change))
+            .unwrap_or_else(|_| panic!("a fresh, matching-generation proposal must apply"));
+        assert_eq!(state.design.material.name.as_deref(), Some("Quartz"));
+
+        // ONE undo step reverts both the angle retarget and the material change.
+        assert!(state.undo().unwrap());
+        assert_eq!(state.design.material.name.as_deref(), Some("Diamond"));
+        assert!(!state.history.can_undo());
+    }
+
+    #[test]
     fn apply_pending_retarget_refuses_a_stale_generation() {
         let design = diamond_design();
         let custom: [GemMaterial; 0] = [];
         let options = design_material_options(&custom);
         let quartz_index = design_material_index_from_name(Some("Quartz"), &options);
         let target = resolve_target_material(&design, &custom, quartz_index, "");
-        let (_, proposal) =
-            retarget_view(&design, &target, CrownShift::default(), RetargetMode::Shift);
+        let (_, proposal) = retarget_view(
+            &design,
+            &target,
+            CrownShift::default(),
+            RetargetMode::Shift,
+            &[],
+        );
         let proposal = proposal.expect("shift mode never fails");
 
         let mut state = fresh_state_with(design);
         let stale_generation = state.generation.load(AtomicOrdering::Relaxed) + 1;
-        let result = apply_pending_retarget(&mut state, (proposal, stale_generation));
+        let result = apply_pending_retarget(&mut state, (proposal, stale_generation), None);
         assert!(matches!(result, Err(RetargetApplyError::Stale)));
         assert!(
             !state.history.can_undo(),
             "nothing should have been applied"
         );
+    }
+
+    // --- initial_target_index ---
+
+    #[test]
+    fn initial_target_index_finds_the_designs_own_named_material() {
+        let custom: [GemMaterial; 0] = [];
+        let options = design_material_options(&custom);
+        let material = MaterialSelection {
+            name: Some("Quartz".to_string()),
+            specific_gravity_override: None,
+            refractive_index_override: None,
+        };
+        let quartz_index = design_material_index_from_name(Some("Quartz"), &options);
+        assert_eq!(initial_target_index(&material, &options), quartz_index);
+    }
+
+    #[test]
+    fn initial_target_index_seeds_the_custom_ri_sentinel_for_a_nameless_override() {
+        let custom: [GemMaterial; 0] = [];
+        let options = design_material_options(&custom);
+        let material = MaterialSelection {
+            name: None,
+            specific_gravity_override: None,
+            refractive_index_override: Some(1.6),
+        };
+        assert_eq!(
+            initial_target_index(&material, &options),
+            i32::try_from(options.len()).unwrap() - 1
+        );
+        assert_eq!(
+            options.last().map(String::as_str),
+            Some("Custom RI\u{2026}")
+        );
+    }
+
+    #[test]
+    fn initial_target_index_falls_back_to_none_for_a_plain_nameless_material() {
+        let custom: [GemMaterial; 0] = [];
+        let options = design_material_options(&custom);
+        let material = MaterialSelection::default();
+        assert_eq!(initial_target_index(&material, &options), 0);
+    }
+
+    // --- target_material_selection ---
+
+    #[test]
+    fn target_material_selection_falls_back_to_the_current_material_on_unparseable_ri() {
+        let design = diamond_design();
+        let custom: [GemMaterial; 0] = [];
+        let selection = target_material_selection(&design, &custom, 0, "not-a-number");
+        assert_eq!(selection, design.material);
+    }
+
+    // --- resolve_target_selection (Item 183) ---
+
+    #[test]
+    fn resolve_target_selection_reports_an_unparseable_ri_override_instead_of_falling_back() {
+        let design = diamond_design();
+        let custom: [GemMaterial; 0] = [];
+        let err = resolve_target_selection(&design, &custom, 0, "1,74")
+            .expect_err("a comma-separated RI override must not silently parse");
+        assert!(
+            err.contains("1,74"),
+            "error should name the bad text: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_target_selection_reports_a_non_positive_ri_override() {
+        let design = diamond_design();
+        let custom: [GemMaterial; 0] = [];
+        let err = resolve_target_selection(&design, &custom, 0, "0.5")
+            .expect_err("an RI override of 0.5 is not physically valid");
+        assert!(err.contains("greater than 1.0"), "got: {err}");
+    }
+
+    #[test]
+    fn resolve_target_selection_accepts_a_valid_ri_override() {
+        let design = diamond_design();
+        let custom: [GemMaterial; 0] = [];
+        let selection = resolve_target_selection(&design, &custom, 0, "1.74")
+            .expect("a well-formed RI override must parse");
+        assert_eq!(selection.refractive_index_override, Some(1.74));
+    }
+
+    // --- target_display_name (Item 174) ---
+
+    #[test]
+    fn target_display_name_shows_none_for_a_nameless_uncustomized_selection() {
+        let selection = MaterialSelection::default();
+        assert_eq!(target_display_name(&selection), "(none)");
+    }
+
+    #[test]
+    fn target_display_name_shows_custom_ri_for_a_nameless_override() {
+        let selection = MaterialSelection {
+            name: None,
+            specific_gravity_override: None,
+            refractive_index_override: Some(1.74),
+        };
+        assert_eq!(target_display_name(&selection), "Custom RI");
+    }
+
+    #[test]
+    fn target_display_name_shows_the_picked_material_name() {
+        let selection = MaterialSelection {
+            name: Some("Quartz".to_string()),
+            specific_gravity_override: None,
+            refractive_index_override: None,
+        };
+        assert_eq!(target_display_name(&selection), "Quartz");
     }
 }

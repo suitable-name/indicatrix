@@ -7,6 +7,7 @@ use super::{ConstraintTier, Design, ScheduleMeta};
 use crate::{material::MaterialSelection, preform::PreformSpec};
 use indicatrix::geometry::meet_solver::{MeetConstraint, meet_tier_inputs_from_asc};
 use indicatrix_formats::asc::AscSchedule;
+use std::collections::BTreeMap;
 
 /// Everything [`Design::fresh_from_spec`] needs to build a brand-new design.
 ///
@@ -43,6 +44,8 @@ impl Design {
             meta,
             tiers,
             girdle_diameter_mm: None,
+            preform_y_offset: 0.0,
+            cheater_offsets_deg: BTreeMap::new(),
             material: MaterialSelection::none(),
         }
     }
@@ -68,6 +71,8 @@ impl Design {
             },
             tiers: Vec::new(),
             girdle_diameter_mm: None,
+            preform_y_offset: 0.0,
+            cheater_offsets_deg: BTreeMap::new(),
             material: spec.material,
         }
     }
@@ -124,6 +129,11 @@ impl Design {
     /// that tier over to it with one click (`Edit::SetConstraint`) like any other
     /// edit. A tier with an explicit scale-reference instruction has nothing to
     /// adopt, so `imported_meet` is `None` there.
+    ///
+    /// [`ConstraintTier::original_notes`] separately preserves the file's raw `G`
+    /// text verbatim (whatever it said, not just the three instructions this crate
+    /// classifies), so exporting an untouched design writes back the same notes a
+    /// human reads while cutting rather than a synthesized stand-in.
     #[must_use]
     pub fn from_asc_schedule(preform: PreformSpec, schedule: &AscSchedule) -> Self {
         let inputs = meet_tier_inputs_from_asc(schedule);
@@ -145,6 +155,10 @@ impl Design {
                     indices: input.indices,
                     constraint: MeetConstraint::ScaleReference(original.mast),
                     imported_meet,
+                    // Verbatim, even when empty -- see `ConstraintTier::original_notes`'s
+                    // own doc comment for why export needs this to undo the "every tier
+                    // pinned to ScaleReference" policy's flattening effect on `G` text.
+                    original_notes: Some(original.notes.clone()),
                     detached: Vec::new(),
                 }
             })
@@ -166,6 +180,8 @@ impl Design {
             // `.asc` has no field for either -- see `Self::girdle_diameter_mm`'s own
             // doc comment ("This does NOT round-trip through `.asc`").
             girdle_diameter_mm: None,
+            preform_y_offset: 0.0,
+            cheater_offsets_deg: BTreeMap::new(),
             material: MaterialSelection::none(),
         }
     }

@@ -224,6 +224,7 @@ fn scene_state_from_snapshot(snapshot: &SceneSnapshot, width: u32, height: u32) 
         material: snapshot.material.clone(),
         planes: snapshot.active_planes.clone(),
         girdle_frosted: !snapshot.facet_finishes.is_empty(),
+        backdrop: snapshot.backdrop,
     }
 }
 

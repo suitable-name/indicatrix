@@ -134,6 +134,63 @@ impl PreformTable {
     }
 }
 
+/// The `[material.custom]` snapshot: everything needed to reconstruct a custom
+/// catalogue material this design was on, if that name does not resolve on the
+/// machine that opens the file (CAD audit item 83 -- "Native file references a
+/// custom material by name only; elsewhere it becomes Diamond").
+///
+/// Sharing a `.indicatrix.toml` + `.asc` pair naming a custom material (or simply
+/// reinstalling and losing the local database row) used to silently resolve that
+/// name to Diamond, with no warning. Every field here is a plain primitive, not
+/// `indicatrix`'s own `GemMaterial` type: this crate has no dependency on
+/// `indicatrix` at all (see the module doc comment's "only pulls in what it
+/// needs" rule), so building this snapshot from a real `GemMaterial` -- and
+/// registering it back as a session-local custom material when the name fails to
+/// resolve -- is `indicatrix-cut-core`'s job, same split as every other table
+/// here. `crystal_system`/`optical_character` are carried as their `Debug`-style
+/// names (e.g. `"Trigonal"`, `"UniaxialNegative"`) purely for a human reading the
+/// raw TOML; `GemMaterial::new_custom` re-derives both from the sign of
+/// `birefringence_delta` on load; and `specific_gravity` is `None` when the
+/// material carried no SG at save time.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct CustomMaterialSnapshot {
+    pub mean_ri: f64,
+    pub dispersion_delta: f64,
+    pub birefringence_delta: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub specific_gravity: Option<f64>,
+    pub crystal_system: String,
+    pub optical_character: String,
+    /// See [`PreformTable::unknown`]'s doc comment.
+    #[serde(flatten, default)]
+    pub unknown: toml::Table,
+}
+
+impl CustomMaterialSnapshot {
+    /// Builds a fresh snapshot with no unknown/future fields carried over -- see
+    /// [`PreformTable::new`]'s own doc comment for why this lives here rather than
+    /// in `indicatrix-cut-core`.
+    #[must_use]
+    pub fn new(
+        mean_ri: f64,
+        dispersion_delta: f64,
+        birefringence_delta: f64,
+        specific_gravity: Option<f64>,
+        crystal_system: impl Into<String>,
+        optical_character: impl Into<String>,
+    ) -> Self {
+        Self {
+            mean_ri,
+            dispersion_delta,
+            birefringence_delta,
+            specific_gravity,
+            crystal_system: crystal_system.into(),
+            optical_character: optical_character.into(),
+            unknown: toml::Table::new(),
+        }
+    }
+}
+
 /// The `[material]` table: a TOML mirror of the editor's own material selection.
 ///
 /// Building one from -- or reading one back into -- an actual material selection is
@@ -148,6 +205,12 @@ pub struct MaterialTable {
     /// `None` rather than an error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refractive_index_override: Option<f64>,
+    /// See [`CustomMaterialSnapshot`]'s own doc comment (CAD audit item 83).
+    /// `#[serde(default)]` so a file written before this field existed loads with
+    /// `None` rather than an error -- and so a design on a built-in material never
+    /// grows one at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub custom: Option<CustomMaterialSnapshot>,
     /// See [`PreformTable::unknown`]'s doc comment.
     #[serde(flatten, default)]
     pub unknown: toml::Table,
@@ -167,36 +230,169 @@ impl MaterialTable {
             name,
             specific_gravity_override,
             refractive_index_override,
+            custom: None,
             unknown: toml::Table::new(),
         }
     }
+
+    /// Attaches [`Self::custom`] -- see that field's own doc comment.
+    #[must_use]
+    pub fn with_custom(mut self, custom: Option<CustomMaterialSnapshot>) -> Self {
+        self.custom = custom;
+        self
+    }
 }
 
-/// One `[[tiers]]` entry: this native file's per-tier overlay.
+/// The `[source]` table: the printed/measured proportions a catalogue row supplied
+/// when this design was loaded, if any.
 ///
-/// Deliberately NOT a full mirror of the editor's own tier type -- `angle_deg`/
-/// `indices` stay canonical in the paired `.asc`; this only carries what `.asc`
-/// cannot express (the authored [`NativeMeetConstraint`] and which orbit members are
-/// detached). `name` is purely a human-readable label for raw-TOML readers (e.g.
-/// `git diff`); loading a paired file never reads it back into a design. Tiers
-/// correlate to the paired `.asc`'s tier list by ARRAY POSITION alone -- see the
-/// parent module's "The fingerprint" section for why a fingerprint mismatch disables
-/// re-applying this overlay.
+/// Item 178 ("Open Native resets `printed_proportions`, disabling Deep Solve for
+/// catalogue designs"). Every field mirrors one
+/// `indicatrix::geometry::stone_metrics::ExternalProportions` figure one-to-one;
+/// building/reading the actual type is `indicatrix-cut-core`'s job (this crate has no
+/// dependency on `indicatrix` at all -- see the crate doc comment's "only pulls in
+/// what it needs" rule), same split as [`PreformTable`]/[`MaterialTable`]. Entirely
+/// optional at the top level ([`NativeDesignFile::source`]): a design that was never
+/// loaded from a catalogue row (a brand-new "New Design", or a directly opened
+/// `.asc`) has nothing to record here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct SourceTable {
+    /// Printed `Vol/W^3`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vol_w3: Option<f64>,
+    /// Printed `L/W`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lw: Option<f64>,
+    /// Printed `C/W`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cw: Option<f64>,
+    /// Printed `P/W`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pw: Option<f64>,
+    /// Printed `H/W`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hw: Option<f64>,
+}
+
+impl SourceTable {
+    /// `true` iff every field is `None` -- a table with nothing worth writing at all
+    /// (see [`NativeDesignFile::with_source`]'s own doc comment for why this is
+    /// checked before attaching one).
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.vol_w3.is_none()
+            && self.lw.is_none()
+            && self.cw.is_none()
+            && self.pw.is_none()
+            && self.hw.is_none()
+    }
+}
+
+/// The `[history]` table: a bounded, human-readable trail of edits made to this
+/// design since it was first saved natively (CAD audit item 172).
+///
+/// Each entry is one already-formatted description (oldest first) -- building and
+/// bounding the list from the editor's own `History` stack of `Edit`s is
+/// `indicatrix-cut-core`'s job, same split as every other table in this file; this
+/// schema only needs to round-trip strings. There is deliberately no per-entry
+/// timestamp or structured `Edit` payload: the list exists for a cutter (or
+/// support conversation) to read, not to be replayed.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct HistoryTable {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<String>,
+    /// See [`PreformTable::unknown`]'s doc comment.
+    #[serde(flatten, default)]
+    pub unknown: toml::Table,
+}
+
+impl HistoryTable {
+    /// Builds a fresh table from `entries`, with no unknown/future fields carried
+    /// over -- see [`PreformTable::new`]'s own doc comment for why this lives here
+    /// rather than in `indicatrix-cut-core`.
+    #[must_use]
+    pub fn new(entries: Vec<String>) -> Self {
+        Self {
+            entries,
+            unknown: toml::Table::new(),
+        }
+    }
+
+    /// `true` iff there is nothing worth writing at all -- see
+    /// [`NativeDesignFile::with_history`]'s own doc comment for why this is checked
+    /// before attaching one.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// One `[[tiers]]` entry: this native file's per-tier overlay -- or, for a
+/// [`NativeDesignFile::draft`] save, the sole record of that tier at all.
+///
+/// Ordinarily NOT a full mirror of the editor's own tier type -- `angle_deg`/
+/// `indices` stay canonical in the paired `.asc`; this otherwise only carries what
+/// `.asc` cannot express (the authored [`NativeMeetConstraint`], which orbit members
+/// are detached, and -- since the "gap this closes" module docs -- the meet
+/// instruction and raw notes text a real `.asc` file's `G` field stated at import
+/// time). `name` is purely a human-readable label for raw-TOML readers (e.g. `git
+/// diff`); loading a paired (non-draft) file never reads it back into a design.
+/// Tiers correlate to the paired `.asc`'s tier list by ARRAY POSITION alone -- see
+/// the parent module's "The fingerprint" section for why a fingerprint mismatch
+/// disables re-applying this overlay, and [`NativeDesignFile::draft`]'s own doc
+/// comment for the one case where `angle_deg`/`indices` here ARE read back (a design
+/// that does not currently solve has no reliable paired `.asc` to read them from at
+/// all).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TierTable {
     pub name: String,
     pub constraint: NativeMeetConstraint,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub detached: Vec<f64>,
+    /// Mirrors `indicatrix_cut_core::design::ConstraintTier::angle_deg`. `#[serde(default)]`
+    /// so an ordinary (non-draft) file saved before this field existed, or one whose
+    /// tiers are only ever an overlay on a solvable paired `.asc`, still loads --
+    /// `None` there is never read back into a design; see this type's own doc
+    /// comment for the one caller (a draft reload) that does read it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub angle_deg: Option<f64>,
+    /// Mirrors `indicatrix_cut_core::design::ConstraintTier::indices`. See
+    /// [`Self::angle_deg`]'s own doc comment -- same rule, same one reader.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub indices: Option<Vec<f64>>,
+    /// Mirrors `indicatrix_cut_core::design::ConstraintTier::imported_meet`: the meet
+    /// instruction a real `.asc` file's `G` field actually stated for this tier at
+    /// import time, preserved so a native reload can restore the editor's one-click
+    /// "Adopt" action without needing to re-derive it from `.asc` text that (for a
+    /// draft save) may not even be trustworthy. `#[serde(default)]` so a file saved
+    /// before this field existed still loads, as `None` (nothing to adopt on
+    /// reload from such a file, same as a tier `indicatrix_cut_core` never imported).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub imported_meet: Option<NativeMeetConstraint>,
+    /// Mirrors `indicatrix_cut_core::design::ConstraintTier::original_notes`: the raw
+    /// `.asc` `G`-field text this tier's file actually carried at import time,
+    /// verbatim. `#[serde(default)]` for the same before-this-field-existed reason as
+    /// [`Self::imported_meet`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_notes: Option<String>,
+    /// A cutter-authored free-text note for this tier (CAD audit item 172) --
+    /// unlike [`Self::original_notes`] (read-only imported `.asc` `G`-field text),
+    /// this is a new authoring surface with no `.asc` counterpart to round-trip
+    /// through, so it lives only here. `#[serde(default)]` so a file saved before
+    /// this field existed still loads, as `None` (no note yet).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
     /// See [`PreformTable::unknown`]'s doc comment -- the same rule, per tier.
     #[serde(flatten, default)]
     pub unknown: toml::Table,
 }
 
 impl TierTable {
-    /// Builds a fresh entry with no unknown/future fields carried over -- see
-    /// [`PreformTable::new`]'s own doc comment for why this lives here rather than
-    /// in `indicatrix-cut-core`.
+    /// Builds a fresh entry with no unknown/future fields, and no `angle_deg`/
+    /// `indices`/`imported_meet`/`original_notes` (all `None`) carried over -- see
+    /// [`PreformTable::new`]'s own doc comment for why this lives here rather than in
+    /// `indicatrix-cut-core`. A caller with one of those four to attach uses the
+    /// matching `with_*` method afterward.
     #[must_use]
     pub fn new(
         name: impl Into<String>,
@@ -207,8 +403,48 @@ impl TierTable {
             name: name.into(),
             constraint,
             detached,
+            angle_deg: None,
+            indices: None,
+            imported_meet: None,
+            original_notes: None,
+            note: None,
             unknown: toml::Table::new(),
         }
+    }
+
+    /// Attaches [`Self::angle_deg`] -- see that field's own doc comment.
+    #[must_use]
+    pub const fn with_angle_deg(mut self, angle_deg: Option<f64>) -> Self {
+        self.angle_deg = angle_deg;
+        self
+    }
+
+    /// Attaches [`Self::indices`] -- see that field's own doc comment.
+    #[must_use]
+    pub fn with_indices(mut self, indices: Option<Vec<f64>>) -> Self {
+        self.indices = indices;
+        self
+    }
+
+    /// Attaches [`Self::imported_meet`] -- see that field's own doc comment.
+    #[must_use]
+    pub fn with_imported_meet(mut self, imported_meet: Option<NativeMeetConstraint>) -> Self {
+        self.imported_meet = imported_meet;
+        self
+    }
+
+    /// Attaches [`Self::original_notes`] -- see that field's own doc comment.
+    #[must_use]
+    pub fn with_original_notes(mut self, original_notes: Option<String>) -> Self {
+        self.original_notes = original_notes;
+        self
+    }
+
+    /// Attaches [`Self::note`] -- see that field's own doc comment.
+    #[must_use]
+    pub fn with_note(mut self, note: Option<String>) -> Self {
+        self.note = note;
+        self
     }
 }
 
@@ -235,6 +471,46 @@ pub struct NativeDesignFile {
     pub girdle_diameter_mm: Option<f64>,
     pub material: MaterialTable,
     pub tiers: Vec<TierTable>,
+    /// `true` iff `design` did not currently solve when this file was saved (see
+    /// `indicatrix_cut_core::native::save_paired`'s own doc comment): `tiers` here then
+    /// carries the FULL tier list (`angle_deg`/`indices` included, not left `None`)
+    /// rather than an overlay on the paired `.asc`, and the paired `.asc` itself is a
+    /// placeholder -- every mast in it is a made-up number, never a real cut
+    /// instruction, and must never be shown to a cutter as one. A loader is expected
+    /// to rebuild its design entirely from `tiers` when this is `true`, ignoring the
+    /// paired `.asc`'s own tier list (its `angle_deg`/`gear`/`symmetry`/`refractive_index`
+    /// header fields are still real, only its per-tier masts are not).
+    /// `#[serde(default)]` so a file saved before this field existed loads as `false`
+    /// (never a draft) -- the only meaning an absent flag could have, since a draft
+    /// save did not exist yet either.
+    #[serde(default)]
+    pub draft: bool,
+    /// See [`SourceTable`]'s own doc comment. `#[serde(default)]` so a file saved
+    /// before this field existed still loads, as `None` -- exactly what it should
+    /// mean for a design this build never associated with a catalogue row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<SourceTable>,
+    /// See [`HistoryTable`]'s own doc comment. `#[serde(default)]` so a file saved
+    /// before this field existed still loads, as `None` -- exactly what it should
+    /// mean for a design this build never recorded a history trail for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history: Option<HistoryTable>,
+    /// The catalogue row this design was loaded from (or has since saved back to),
+    /// if any -- CAD audit item 178's still-open half: `[source]` carries a
+    /// catalogue row's PRINTED proportions, but not which row they came from, so a
+    /// reopen can only ever replay the numbers as they were at save time, never
+    /// notice that the row's own figures have since changed. A plain top-level
+    /// field, not nested inside [`SourceTable`]: that struct is built from a raw
+    /// field literal in `indicatrix-cut-core::native::convert` (see this crate's own
+    /// "only pulls in what it needs" boundary note), so adding a field there would
+    /// break that unrelated call site; a new top-level field, defaulted inside
+    /// [`Self::new`] and attached via [`Self::with_catalogue_entry_id`], costs that
+    /// file nothing until it opts in. `#[serde(default)]` so a file saved before
+    /// this field existed loads as `None` -- exactly what it should mean for a
+    /// design never associated with a catalogue row, or saved by a build before this
+    /// one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalogue_entry_id: Option<i64>,
     /// Top-level keys a future build wrote that none of the named fields above claim
     /// -- see [`PreformTable::unknown`]'s doc comment.
     #[serde(flatten, default)]
@@ -242,13 +518,15 @@ pub struct NativeDesignFile {
 }
 
 impl NativeDesignFile {
-    /// Builds a fresh document -- `format_version` pinned to [`FORMAT_VERSION`], no
-    /// unknown/future fields at this level or any nested table's, the shape every
-    /// freshly-authored (never parsed) document has. `indicatrix-cut-core`'s
-    /// `to_native_file` is the higher-level function that actually builds `preform`/
-    /// `material`/`tiers` from a real editor design and calls this with the result --
-    /// see [`PreformTable::new`]'s own doc comment for why building the mirror types
-    /// themselves is split out that way.
+    /// Builds a fresh document -- `format_version` pinned to [`FORMAT_VERSION`],
+    /// [`Self::draft`] `false`, no unknown/future fields at this level or any nested
+    /// table's, the shape every freshly-authored (never parsed), ordinarily-solvable
+    /// document has. `indicatrix-cut-core`'s `to_native_file` is the higher-level
+    /// function that actually builds `preform`/`material`/`tiers` from a real editor
+    /// design and calls this with the result -- see [`PreformTable::new`]'s own doc
+    /// comment for why building the mirror types themselves is split out that way. A
+    /// caller saving a design that does not currently solve calls [`Self::with_draft`]
+    /// afterward.
     #[must_use]
     pub fn new(
         asc_filename: impl Into<String>,
@@ -266,8 +544,46 @@ impl NativeDesignFile {
             girdle_diameter_mm,
             material,
             tiers,
+            draft: false,
+            source: None,
+            history: None,
+            catalogue_entry_id: None,
             unknown: toml::Table::new(),
         }
+    }
+
+    /// Attaches [`Self::draft`] -- see that field's own doc comment.
+    #[must_use]
+    pub const fn with_draft(mut self, draft: bool) -> Self {
+        self.draft = draft;
+        self
+    }
+
+    /// Attaches [`Self::source`] -- `None` when `source.is_empty()` (nothing worth
+    /// writing at all), so an ordinary design with no catalogue provenance never
+    /// grows an all-`None` `[source]` table it would just have to skip reading back.
+    #[must_use]
+    pub fn with_source(mut self, source: SourceTable) -> Self {
+        self.source = (!source.is_empty()).then_some(source);
+        self
+    }
+
+    /// Attaches [`Self::history`] -- `None` when `history.is_empty()` (nothing
+    /// worth writing at all), so a design with no recorded trail never grows an
+    /// empty `[history]` table it would just have to skip reading back. The
+    /// caller (`indicatrix-cut-core`) is responsible for bounding `entries`'
+    /// length before calling this -- this schema does not enforce a bound itself.
+    #[must_use]
+    pub fn with_history(mut self, history: HistoryTable) -> Self {
+        self.history = (!history.is_empty()).then_some(history);
+        self
+    }
+
+    /// Attaches [`Self::catalogue_entry_id`] -- see that field's own doc comment.
+    #[must_use]
+    pub const fn with_catalogue_entry_id(mut self, catalogue_entry_id: Option<i64>) -> Self {
+        self.catalogue_entry_id = catalogue_entry_id;
+        self
     }
 }
 

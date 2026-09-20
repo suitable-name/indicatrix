@@ -6,8 +6,10 @@
 use super::state::material_name_from_index;
 use indicatrix::geometry::{meet_solver::MeetConstraint, stone_metrics::ExternalProportions};
 use indicatrix_cut_core::{
-    ConstraintTier, Design, FreshDesignSpec, MaterialSelection, PreformSpec,
+    ConstraintTier, Design, FreshDesignSpec, MaterialSelection, PreformSpec, load_paired,
+    native::{LEGACY_NATIVE_EXTENSION_SUFFIX, NATIVE_EXTENSION_SUFFIX},
 };
+use indicatrix_vault::model::file::AttachedFile;
 use tracing::warn;
 
 /// A preform sized to bound a design that may already fully specify its own closed
@@ -84,6 +86,58 @@ pub(super) fn design_from_asc_text(
     })
 }
 
+/// A sibling native sidecar (current `.indicatrix.toml`, or the legacy
+/// `.gemcut.toml`) among `files`, if the catalogue entry has one attached alongside
+/// its `.asc` -- see [`design_from_asc_and_native`]'s own doc comment for why that
+/// combination is worth preferring over the bare `.asc` alone.
+///
+/// Nothing in this app's importer attaches a second file today (`gui::library::
+/// local::import` collects only `.asc`), so this currently only ever matches when a
+/// FUTURE import (or a remote source) starts doing so -- see this crate's own
+/// handoff notes for that other half.
+fn native_sidecar_attachment(files: &[AttachedFile]) -> Option<&AttachedFile> {
+    files.iter().find(|f| {
+        let lower = f.name.to_lowercase();
+        lower.ends_with(NATIVE_EXTENSION_SUFFIX) || lower.ends_with(LEGACY_NATIVE_EXTENSION_SUFFIX)
+    })
+}
+
+/// [`design_from_full_record`]'s preferred path when a catalogue entry carries BOTH
+/// a real `.asc` attachment and a native sidecar paired with it: [`load_paired`]
+/// restores the sidecar's own preform/material/girdle-diameter unconditionally, and
+/// (when the fingerprint still matches) every tier's authored meet constraint and
+/// detached-facet set too -- all of which a bare `.asc` re-import otherwise
+/// reconstructs as fresh `ScaleReference` anchors with no detached facets at all
+/// (see `indicatrix_cut_core::native`'s own module doc comment for the full list of
+/// what only the sidecar carries).
+///
+/// Falls back to [`design_from_asc_text`] (logging a warning) when the sidecar text
+/// itself fails to parse -- a real `.asc` schedule is still strictly better than
+/// refusing to load the design at all.
+fn design_from_asc_and_native(
+    asc_name: &str,
+    asc_text: &str,
+    native_text: &str,
+    lw_ratio: Option<&str>,
+    entry_id: i64,
+) -> Result<LoadedDesign, String> {
+    match load_paired(asc_text, native_text, false) {
+        Ok(result) => Ok(LoadedDesign {
+            design: result.design,
+            used_placeholder: false,
+            asc_filename: Some(asc_name.to_string()),
+            original_asc_text: Some(asc_text.to_string()),
+        }),
+        Err(e) => {
+            warn!(
+                "Native sidecar paired with '{asc_name}' on diagram #{entry_id} failed to \
+                 load ({e}); falling back to the plain .asc schedule."
+            );
+            design_from_asc_text(asc_name, asc_text, lw_ratio)
+        }
+    }
+}
+
 /// Builds the design that should be loaded for one catalogue entry's full record.
 ///
 /// Prefers a real attached `.asc` file's own schedule -- its mast values are the
@@ -96,6 +150,11 @@ pub(super) fn design_from_asc_text(
 /// tells the caller which path was taken, so it can warn exactly the way that existing
 /// export path already does, rather than silently handing the user a schedule whose
 /// masts are all zero.
+///
+/// When a native sidecar is attached alongside the `.asc` (see
+/// [`native_sidecar_attachment`]), [`design_from_asc_and_native`] is preferred over
+/// the plain `.asc` path so an imported design does not lose the sidecar-only fields
+/// a re-import would otherwise silently discard.
 ///
 /// # Errors
 ///
@@ -111,7 +170,20 @@ pub(super) fn design_from_full_record(
         .find(|f| f.name.to_lowercase().ends_with(".asc"))
     {
         let text = String::from_utf8_lossy(&attached.content);
-        match design_from_asc_text(&attached.name, &text, full.lw_ratio.as_deref()) {
+        let loaded = native_sidecar_attachment(&full.attached_files).map_or_else(
+            || design_from_asc_text(&attached.name, &text, full.lw_ratio.as_deref()),
+            |sidecar| {
+                let native_text = String::from_utf8_lossy(&sidecar.content);
+                design_from_asc_and_native(
+                    &attached.name,
+                    &text,
+                    &native_text,
+                    full.lw_ratio.as_deref(),
+                    full.entry_id,
+                )
+            },
+        );
+        match loaded {
             Ok(loaded) => return Ok(loaded),
             Err(e) => warn!(
                 "Attached .asc '{}' on diagram #{} failed to parse ({e}); falling back to the \
@@ -200,7 +272,26 @@ pub(super) fn external_proportions_from_full_record(
 /// Indices split on comma/space/semicolon, matching
 /// `indicatrix_vault::local::reconstruct_asc_schedule`'s own splitting convention for
 /// the same kind of field, so a value copied out of that reconstruction's own indices
-/// column round-trips straight back in.
+/// column round-trips straight back in. CAD audit item 34: two shorthand forms are
+/// recognized before that plain split-and-parse -- `"start:step:stop"` (a colon-
+/// separated arithmetic sequence, exclusive of `stop`, see [`parse_colon_sequence`])
+/// and `"base xN"` (a base index followed by an `xN` fold count, expanded the same
+/// way the ORBIT column's own `orbit x8` label already describes a complete family,
+/// see [`parse_orbit_suffix`]/[`expand_orbit_shorthand`]); either form's generated
+/// values are wrapped modulo the gear and fed through the exact same per-value
+/// validation below as a hand-typed index. Each parsed value is then validated
+/// against `gear_teeth_abs` (the design's own index-wheel tooth count, from
+/// [`indicatrix_cut_core::design::tier::ScheduleMeta::gear_teeth_abs`]): it must be
+/// finite, within `0.0..gear_teeth_abs as f64` (an index the gear physically has no
+/// tooth for is never silently accepted), and not a repeat of an earlier value in the
+/// same list (a duplicate names the same facet occurrence twice, which is never a
+/// meaningful tier). The first entry that fails any of these is reported by its own
+/// text, matching every other field's own "name the offending value" convention here.
+/// A non-integral value (from either a hand-typed fraction or a fold count that does
+/// not evenly divide the gear) is still ACCEPTED here -- warning about it without
+/// rejecting it is the caller's job (`callbacks::tier_actions::setup_save_tier_callback`),
+/// since it is real GemCad-file behavior (`indicatrix_formats::asc`'s own module docs
+/// measure roughly 0.2% of real index tokens as fractional), not necessarily a mistake.
 ///
 /// `imported_meet` is threaded straight through to the built [`ConstraintTier`]
 /// unchanged -- this function never inspects or clears it. The caller
@@ -223,17 +314,236 @@ pub(super) fn parse_angle_only(angle: &str) -> Result<f64, String> {
     if !angle_deg.is_finite() {
         return Err("Angle must be a finite number.".to_string());
     }
+    reject_angle_over_90(angle_deg)?;
     Ok(angle_deg)
 }
 
-pub(super) fn parse_tier_form(
-    angle: &str,
-    constraint_kind: i32,
-    constraint_text: &str,
-    name: &str,
-    indices: &str,
-    imported_meet: Option<MeetConstraint>,
-) -> Result<ConstraintTier, String> {
+/// CAD audit item 34: parses `token` as the colon-separated arithmetic
+/// sequence shorthand `start:step:stop` (e.g. `"0:12:96"`) for the Indices
+/// field -- generates every `start + k*step` strictly before `stop`
+/// (exclusive, the same half-open convention every other "count up to N" in
+/// this codebase uses), wrapped modulo `gear_teeth_abs` so a sequence that
+/// runs past the gear's own tooth count still lands on real positions
+/// instead of failing outright. Each generated value still goes through the
+/// caller's own finite/range/duplicate checks, so a wrap that lands out of
+/// range or repeats an earlier value is still caught and reported.
+///
+/// Returns `None` when `token` does not split into exactly three colon-
+/// separated parts or any of them fails to parse as a plain `f64` (or `step`
+/// is exactly zero, which would loop forever) -- the caller then falls
+/// through to treating `token` as an ordinary single index, which reports
+/// its own "not a number" error the normal way.
+fn parse_colon_sequence(token: &str, gear_teeth_abs_f64: f64) -> Option<Vec<f64>> {
+    let parts: Vec<&str> = token.split(':').collect();
+    let [start, step, stop] = parts.as_slice() else {
+        return None;
+    };
+    let start: f64 = start.trim().parse().ok()?;
+    let step: f64 = step.trim().parse().ok()?;
+    let stop: f64 = stop.trim().parse().ok()?;
+    if step == 0.0 || !(start.is_finite() && step.is_finite() && stop.is_finite()) {
+        return None;
+    }
+    let mut values = Vec::new();
+    let mut current = start;
+    // Bounded rather than a `while` run to `stop`: a pathological step (say
+    // `1e-9`) must still terminate rather than hang the UI thread. No real
+    // index gear has anywhere near this many teeth, so the bound is never
+    // reached by a legitimate sequence.
+    for _ in 0..10_000 {
+        if (step > 0.0 && current >= stop) || (step < 0.0 && current <= stop) {
+            break;
+        }
+        values.push(if gear_teeth_abs_f64 > 0.0 {
+            current.rem_euclid(gear_teeth_abs_f64)
+        } else {
+            current
+        });
+        current += step;
+    }
+    Some(values)
+}
+
+/// CAD audit item 34: parses `suffix` as the "xN" fold-count half of the
+/// "N xM" orbit shorthand (e.g. `"12 x8"`) -- the same `x`-prefixed notation
+/// the ORBIT column already displays for a complete family (see
+/// `docs/manual/03-loading-and-tier-list.md`'s "Orbits" section: `orbit x8`).
+/// Returns the fold count when `suffix` is exactly `x`/`X` followed by one or
+/// more digits naming a positive count, `None` otherwise -- the caller then
+/// treats the two tokens as two ordinary (and, for the second, almost
+/// certainly invalid) indices, which still reports a normal "not a number"
+/// error rather than silently doing nothing.
+fn parse_orbit_suffix(suffix: &str) -> Option<u32> {
+    let digits = suffix.strip_prefix(['x', 'X'])?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse::<u32>().ok().filter(|&n| n > 0)
+}
+
+/// CAD audit item 34: expands `base` into `fold_count` evenly spaced index-
+/// wheel positions -- `base + k * (gear_teeth_abs / fold_count)` for `k` in
+/// `0..fold_count`, wrapped modulo `gear_teeth_abs`. The other half of
+/// [`parse_orbit_suffix`]'s "12 x8" shorthand. A `fold_count` that does not
+/// evenly divide the gear still produces values (landing on fractional
+/// teeth) rather than being rejected here -- the caller's own non-integral-
+/// index warning is what flags that, exactly as it would for a hand-typed
+/// fractional index.
+fn expand_orbit_shorthand(base: f64, fold_count: u32, gear_teeth_abs_f64: f64) -> Vec<f64> {
+    if gear_teeth_abs_f64 <= 0.0 {
+        return vec![base];
+    }
+    let step = gear_teeth_abs_f64 / f64::from(fold_count);
+    (0..fold_count)
+        .map(|k| f64::mul_add(f64::from(k), step, base).rem_euclid(gear_teeth_abs_f64))
+        .collect()
+}
+
+/// CAD audit item 134: a magnitude beyond 90 degrees is never a real facet --
+/// every angle in this app is measured from the girdle plane (crown/pavilion
+/// tiers) or is the girdle itself (`0.0`), so nothing legitimately authored ever
+/// needs to exceed a right angle either side of it. Left unchecked, a mistyped
+/// extra digit (e.g. `410` for `41.0`) used to sail through both the inline cell
+/// and the tier form and only surface later as a cryptic "Degenerate: only N
+/// distinct vertex(es)" message, with no hint the ANGLE was the actual mistake.
+fn reject_angle_over_90(angle_deg: f64) -> Result<(), String> {
+    if angle_deg.abs() > 90.0 {
+        return Err(format!(
+            "Angle {angle_deg:.2}\u{b0} exceeds 90\u{b0} -- angles are measured from the girdle \
+             plane, so no crown or pavilion facet can be steeper than that."
+        ));
+    }
+    Ok(())
+}
+
+/// [`parse_tier_form`]'s bundled input -- the tier-edit form's five text/enum
+/// fields (`angle`/`constraint_kind`/`constraint_text`/`name`/`indices`), the
+/// design's own `gear_teeth_abs` needed to validate `indices` against it, and the
+/// two carry-through values (`imported_meet`/`original_notes`) an existing row
+/// keeps across a save (see [`parse_tier_form`]'s own doc comment for both).
+/// Bundled into its own struct purely to keep [`parse_tier_form`] under clippy's
+/// argument-count lint -- every one of these eight fields is still required, none
+/// dropped.
+pub(super) struct TierFormFields<'a> {
+    /// The angle text field; must parse as a finite `f64`.
+    pub(super) angle: &'a str,
+    /// `EditorTierItem`'s three-way constraint-kind encoding -- see
+    /// [`parse_tier_form`]'s own doc comment for the `0`/`1`/`2` mapping.
+    pub(super) constraint_kind: i32,
+    /// The constraint text field, meaning depending on `constraint_kind`.
+    pub(super) constraint_text: &'a str,
+    /// The tier's name field.
+    pub(super) name: &'a str,
+    /// The comma/space/semicolon-separated index list text field.
+    pub(super) indices: &'a str,
+    /// The design's own index-wheel tooth count, used to validate `indices`.
+    pub(super) gear_teeth_abs: u32,
+    /// The tier's current `imported_meet`, threaded straight through unchanged.
+    pub(super) imported_meet: Option<MeetConstraint>,
+    /// The tier's current `original_notes`, threaded straight through unchanged.
+    pub(super) original_notes: Option<String>,
+    /// Every OTHER tier's own name token (`ConstraintTier::names()`, i.e. already
+    /// split on `/` -- see that method's own doc comment for the multi-name join
+    /// convention), gathered by the caller with the tier being saved itself
+    /// excluded. Checked case-insensitively against this form's own name (CAD
+    /// audit items 129/132/232) so two tiers can never silently share a name --
+    /// `MeetNameResolver::name_match` (`indicatrix::geometry::meet_solver::names`)
+    /// binds a `MeetNamed` reference to the FIRST tier bearing a given name, so an
+    /// undetected collision does not error, it just silently redirects some OTHER
+    /// tier's constraint to the wrong facet.
+    pub(super) other_tier_names: Vec<String>,
+}
+
+/// Parses a tier form's index field into validated index-wheel positions.
+///
+/// Accepts a comma/space/semicolon separated list whose tokens may each be a plain
+/// number, a `start:step:stop` arithmetic sequence, or a `base xN` orbit shorthand
+/// (CAD audit item 34 -- see [`parse_colon_sequence`] and [`expand_orbit_shorthand`]
+/// for each form's own rules). Every produced value is checked for finiteness, for
+/// being inside the design's own gear, and for not repeating.
+///
+/// # Errors
+///
+/// A message naming the offending token, ready to show the cutter. A value produced
+/// by a shorthand names the shorthand it came from as well as the value itself, so
+/// a range or duplicate error is traceable back to what was actually typed.
+fn parse_index_list(indices: &str, gear_teeth_abs: u32) -> Result<Vec<f64>, String> {
+    let gear_teeth_abs_f64 = f64::from(gear_teeth_abs);
+    let mut parsed_indices: Vec<f64> = Vec::new();
+    let push_index =
+        |value: f64, label: &str, parsed_indices: &mut Vec<f64>| -> Result<(), String> {
+            if !value.is_finite() {
+                return Err(format!("Index '{label}' must be a finite number."));
+            }
+            if value < 0.0 || value >= gear_teeth_abs_f64 {
+                return Err(format!(
+                    "Index '{label}' is outside this design's {gear_teeth_abs}-tooth gear."
+                ));
+            }
+            if parsed_indices.contains(&value) {
+                return Err(format!("Index '{label}' is listed more than once."));
+            }
+            parsed_indices.push(value);
+            Ok(())
+        };
+
+    let raw_tokens: Vec<&str> = indices
+        .split([',', ' ', ';'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    let mut i = 0;
+    while i < raw_tokens.len() {
+        let token = raw_tokens[i];
+        // "0:12:96" -- a colon-separated arithmetic sequence.
+        if let Some(values) = parse_colon_sequence(token, gear_teeth_abs_f64) {
+            for value in values {
+                push_index(
+                    value,
+                    &format!("{value} (from '{token}')"),
+                    &mut parsed_indices,
+                )?;
+            }
+            i += 1;
+            continue;
+        }
+        // "12 x8" -- a base index followed by an "xN" fold-count token.
+        if let Ok(base) = token.parse::<f64>()
+            && let Some(next) = raw_tokens.get(i + 1)
+            && let Some(fold_count) = parse_orbit_suffix(next)
+        {
+            let shorthand = format!("{token} {next}");
+            for value in expand_orbit_shorthand(base, fold_count, gear_teeth_abs_f64) {
+                push_index(
+                    value,
+                    &format!("{value} (from '{shorthand}')"),
+                    &mut parsed_indices,
+                )?;
+            }
+            i += 2;
+            continue;
+        }
+        let value: f64 = token
+            .parse()
+            .map_err(|_| format!("Index '{token}' is not a number."))?;
+        push_index(value, token, &mut parsed_indices)?;
+        i += 1;
+    }
+    Ok(parsed_indices)
+}
+
+pub(super) fn parse_tier_form(form: TierFormFields<'_>) -> Result<ConstraintTier, String> {
+    let TierFormFields {
+        angle,
+        constraint_kind,
+        constraint_text,
+        name,
+        indices,
+        gear_teeth_abs,
+        imported_meet,
+        original_notes,
+        other_tier_names,
+    } = form;
     let angle_deg: f64 = angle
         .trim()
         .parse()
@@ -241,18 +551,26 @@ pub(super) fn parse_tier_form(
     if !angle_deg.is_finite() {
         return Err("Angle must be a finite number.".to_string());
     }
+    reject_angle_over_90(angle_deg)?;
 
-    let mut parsed_indices = Vec::new();
-    for token in indices.split([',', ' ', ';']) {
-        let token = token.trim();
-        if token.is_empty() {
-            continue;
+    let name = name.trim();
+    // CAD audit items 129/132/232: reject a name (or, for a `/`-joined multi-name
+    // tier, any ONE of its names) another tier already holds -- see
+    // `TierFormFields::other_tier_names`'s own doc comment for why an undetected
+    // collision is worse than merely confusing.
+    for token in name.split('/').map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(existing) = other_tier_names
+            .iter()
+            .find(|other| other.eq_ignore_ascii_case(token))
+        {
+            return Err(format!(
+                "Another tier is already named '{existing}' -- facet names must be unique so \
+                 meet constraints resolve to the right tier."
+            ));
         }
-        let value: f64 = token
-            .parse()
-            .map_err(|_| format!("Index '{token}' is not a number."))?;
-        parsed_indices.push(value);
     }
+
+    let parsed_indices = parse_index_list(indices, gear_teeth_abs)?;
 
     let constraint = match constraint_kind {
         0 => MeetConstraint::MeetExisting,
@@ -285,10 +603,11 @@ pub(super) fn parse_tier_form(
 
     Ok(ConstraintTier {
         angle_deg,
-        name: name.trim().to_string(),
+        name: name.to_string(),
         indices: parsed_indices,
         constraint,
         imported_meet,
+        original_notes,
         detached: Vec::new(),
     })
 }
@@ -297,9 +616,14 @@ pub(super) fn parse_tier_form(
 /// [`PreformSpec`]. Pure and unit tested directly, same reasoning as
 /// [`parse_tier_form`]. `cylinder_sides` is passed in (rather than read from a
 /// `Design` inside this function) so it stays decoupled from `indicatrix-cut-core` state and easy
-/// to test in isolation -- the caller resolves it from the active design's own
-/// `schedule.gear_teeth_abs()`, matching [`indicatrix_cut_core::PreformSpec::cylinder_for_schedule`]'s
-/// own "fold count matches the index gear" reasoning.
+/// to test in isolation -- CAD audit item 137: every caller
+/// (`callbacks::tier_actions`) now always passes a FIXED side count,
+/// independent of the active design's own index gear. Unlike
+/// [`indicatrix_cut_core::PreformSpec::cylinder_for_schedule`]'s "fold count matches the
+/// index gear" reasoning -- correct only for a preform reconstructed ONCE from
+/// an already-authored schedule (`default_preform_for_schedule` below), never
+/// for one the cutter can re-Apply after changing gear, which used to leave a
+/// stale side count behind.
 pub(super) fn parse_preform_form(
     shape_index: i32,
     half_width: &str,
@@ -427,6 +751,31 @@ mod tests {
     use indicatrix_cut_core::PreformShape;
     use indicatrix_vault::model::entry::FullDiagramRecord;
 
+    /// Builds a [`TierFormFields`] for the tests below that only care about the
+    /// five text/enum fields -- `gear_teeth_abs` fixed at 96 (every test index
+    /// here is well within that range) and no imported meet/original notes to
+    /// carry through, keeping each call site down to the fields it actually
+    /// varies.
+    fn tier_form<'a>(
+        angle: &'a str,
+        constraint_kind: i32,
+        constraint_text: &'a str,
+        name: &'a str,
+        indices: &'a str,
+    ) -> TierFormFields<'a> {
+        TierFormFields {
+            angle,
+            constraint_kind,
+            constraint_text,
+            name,
+            indices,
+            gear_teeth_abs: 96,
+            imported_meet: None,
+            original_notes: None,
+            other_tier_names: Vec::new(),
+        }
+    }
+
     #[test]
     fn parse_angle_only_accepts_a_well_formed_number() {
         assert_eq!(parse_angle_only(" -41.0 ").unwrap(), -41.0);
@@ -442,8 +791,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_angle_only_accepts_exactly_90_either_sign() {
+        assert_eq!(parse_angle_only("90").unwrap(), 90.0);
+        assert_eq!(parse_angle_only("-90").unwrap(), -90.0);
+    }
+
+    #[test]
+    fn parse_angle_only_rejects_a_magnitude_over_90() {
+        let err = parse_angle_only("90.01").unwrap_err();
+        assert!(err.contains("90"));
+        let err = parse_angle_only("-410").unwrap_err();
+        assert!(err.contains("90"));
+    }
+
+    #[test]
     fn parse_tier_form_accepts_a_well_formed_scale_reference_row() {
-        let tier = parse_tier_form("-41.0", 2, "0.65", " P1 ", "0, 24, 48, 72", None).unwrap();
+        let tier = parse_tier_form(TierFormFields {
+            angle: "-41.0",
+            constraint_kind: 2,
+            constraint_text: "0.65",
+            name: " P1 ",
+            indices: "0, 24, 48, 72",
+            gear_teeth_abs: 96,
+            imported_meet: None,
+            original_notes: None,
+            other_tier_names: Vec::new(),
+        })
+        .unwrap();
         assert_eq!(tier.angle_deg, -41.0);
         assert_eq!(tier.constraint, MeetConstraint::ScaleReference(0.65));
         assert_eq!(tier.name, "P1");
@@ -451,44 +825,196 @@ mod tests {
     }
 
     #[test]
+    fn parse_tier_form_carries_the_files_original_note_through_an_edit() {
+        let tier = parse_tier_form(TierFormFields {
+            angle: "-41.0",
+            constraint_kind: 2,
+            constraint_text: "0.65",
+            name: "P1",
+            indices: "0, 24",
+            gear_teeth_abs: 96,
+            imported_meet: None,
+            original_notes: Some("Cut to TCP".to_string()),
+            other_tier_names: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(tier.original_notes.as_deref(), Some("Cut to TCP"));
+    }
+
+    #[test]
     fn parse_tier_form_accepts_an_empty_index_list() {
-        let tier = parse_tier_form("0.0", 2, "0.32", "T", "", None).unwrap();
+        let tier = parse_tier_form(tier_form("0.0", 2, "0.32", "T", "")).unwrap();
         assert_eq!(tier.indices, [] as [f64; 0]);
     }
 
     #[test]
     fn parse_tier_form_splits_on_comma_space_and_semicolon() {
-        let tier = parse_tier_form("10", 2, "0.5", "G", "1, 2 3;4", None).unwrap();
+        let tier = parse_tier_form(tier_form("10", 2, "0.5", "G", "1, 2 3;4")).unwrap();
         assert_eq!(tier.indices, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    // --- CAD audit item 34: shorthand index entry ---
+
+    #[test]
+    fn parse_tier_form_expands_a_colon_sequence() {
+        let tier = parse_tier_form(tier_form("10", 2, "0.5", "G", "0:12:96")).unwrap();
+        assert_eq!(
+            tier.indices,
+            vec![0.0, 12.0, 24.0, 36.0, 48.0, 60.0, 72.0, 84.0]
+        );
+    }
+
+    #[test]
+    fn parse_tier_form_colon_sequence_can_be_combined_with_other_tokens() {
+        let tier = parse_tier_form(tier_form("10", 2, "0.5", "G", "0:24:96, 6")).unwrap();
+        assert_eq!(tier.indices, vec![0.0, 24.0, 48.0, 72.0, 6.0]);
+    }
+
+    #[test]
+    fn parse_tier_form_colon_sequence_out_of_range_is_still_reported() {
+        // step 200 on a 96-tooth gear wraps every generated value modulo 96,
+        // so this never actually goes out of range -- confirm the wrap lands
+        // on real teeth rather than raw (unwrapped) 200/400/etc.
+        let tier = parse_tier_form(tier_form("10", 2, "0.5", "G", "0:200:500")).unwrap();
+        assert!(tier.indices.iter().all(|&v| (0.0..96.0).contains(&v)));
+    }
+
+    #[test]
+    fn parse_tier_form_expands_the_orbit_shorthand() {
+        let tier = parse_tier_form(tier_form("10", 2, "0.5", "G", "12 x8")).unwrap();
+        assert_eq!(
+            tier.indices,
+            vec![12.0, 24.0, 36.0, 48.0, 60.0, 72.0, 84.0, 0.0]
+        );
+    }
+
+    #[test]
+    fn parse_tier_form_orbit_shorthand_accepts_uppercase_x() {
+        let tier = parse_tier_form(tier_form("10", 2, "0.5", "G", "0 X4")).unwrap();
+        assert_eq!(tier.indices, vec![0.0, 24.0, 48.0, 72.0]);
+    }
+
+    #[test]
+    fn parse_tier_form_orbit_shorthand_can_be_combined_with_other_tokens() {
+        let tier = parse_tier_form(tier_form("10", 2, "0.5", "G", "6, 0 x4")).unwrap();
+        assert_eq!(tier.indices, vec![6.0, 0.0, 24.0, 48.0, 72.0]);
+    }
+
+    #[test]
+    fn parse_tier_form_orbit_shorthand_duplicate_with_a_prior_token_is_rejected() {
+        let err = parse_tier_form(tier_form("10", 2, "0.5", "G", "0, 0 x4")).unwrap_err();
+        assert!(err.contains("more than once"));
+    }
+
+    #[test]
+    fn parse_tier_form_a_lone_x_token_is_not_mistaken_for_shorthand() {
+        // No preceding numeric token -- "x8" alone must fall through to the
+        // ordinary "not a number" error, not panic or silently vanish.
+        let err = parse_tier_form(tier_form("10", 2, "0.5", "G", "x8")).unwrap_err();
+        assert!(err.contains("Index 'x8' is not a number."));
+    }
+
+    #[test]
+    fn parse_tier_form_negative_index_is_not_mistaken_for_a_colon_sequence() {
+        let err = parse_tier_form(tier_form("0.0", 2, "0.5", "T", "-1")).unwrap_err();
+        assert!(err.contains("-1"));
     }
 
     #[test]
     fn parse_tier_form_rejects_a_non_numeric_angle() {
-        let err = parse_tier_form("not-a-number", 2, "0.5", "T", "", None).unwrap_err();
+        let err = parse_tier_form(tier_form("not-a-number", 2, "0.5", "T", "")).unwrap_err();
         assert!(err.contains("Angle"));
     }
 
     #[test]
+    fn parse_tier_form_rejects_a_magnitude_over_90() {
+        let err = parse_tier_form(tier_form("95.0", 2, "0.5", "T", "")).unwrap_err();
+        assert!(err.contains("exceeds 90"));
+    }
+
+    #[test]
+    fn parse_tier_form_accepts_exactly_90() {
+        assert!(parse_tier_form(tier_form("90.0", 2, "0.5", "T", "")).is_ok());
+        assert!(parse_tier_form(tier_form("-90.0", 2, "0.5", "T", "")).is_ok());
+    }
+
+    #[test]
+    fn parse_tier_form_rejects_a_name_another_tier_already_holds() {
+        let mut form = tier_form("30.0", 2, "0.5", "P1", "");
+        form.other_tier_names = vec!["P1".to_string()];
+        let err = parse_tier_form(form).unwrap_err();
+        assert!(err.contains("P1"));
+    }
+
+    #[test]
+    fn parse_tier_form_name_collision_check_is_case_insensitive() {
+        let mut form = tier_form("30.0", 2, "0.5", "p1", "");
+        form.other_tier_names = vec!["P1".to_string()];
+        assert!(parse_tier_form(form).is_err());
+    }
+
+    #[test]
+    fn parse_tier_form_checks_each_slash_joined_name_for_a_collision() {
+        let mut form = tier_form("30.0", 2, "0.5", "P1/P2", "");
+        form.other_tier_names = vec!["P2".to_string()];
+        let err = parse_tier_form(form).unwrap_err();
+        assert!(err.contains("P2"));
+    }
+
+    #[test]
+    fn parse_tier_form_allows_a_name_no_other_tier_holds() {
+        let mut form = tier_form("30.0", 2, "0.5", "P1", "");
+        form.other_tier_names = vec!["G1".to_string(), "C1".to_string()];
+        assert!(parse_tier_form(form).is_ok());
+    }
+
+    #[test]
     fn parse_tier_form_rejects_a_non_numeric_index() {
-        let err = parse_tier_form("0.0", 2, "0.5", "T", "1, x, 3", None).unwrap_err();
+        let err = parse_tier_form(tier_form("0.0", 2, "0.5", "T", "1, x, 3")).unwrap_err();
         assert!(err.contains("Index"));
     }
 
     #[test]
     fn parse_tier_form_rejects_non_finite_values() {
-        assert!(parse_tier_form("NaN", 2, "0.5", "T", "", None).is_err());
-        assert!(parse_tier_form("0.0", 2, "inf", "T", "", None).is_err());
+        assert!(parse_tier_form(tier_form("NaN", 2, "0.5", "T", "")).is_err());
+        assert!(parse_tier_form(tier_form("0.0", 2, "inf", "T", "")).is_err());
+    }
+
+    #[test]
+    fn parse_tier_form_rejects_a_non_finite_index() {
+        let err = parse_tier_form(tier_form("0.0", 2, "0.5", "T", "1, NaN, 3")).unwrap_err();
+        assert!(err.contains("Index"));
+        assert!(err.contains("finite"));
+    }
+
+    #[test]
+    fn parse_tier_form_rejects_an_index_outside_the_gears_tooth_count() {
+        let err = parse_tier_form(tier_form("0.0", 2, "0.5", "T", "1, 96")).unwrap_err();
+        assert!(err.contains("96"));
+    }
+
+    #[test]
+    fn parse_tier_form_rejects_a_negative_index() {
+        let err = parse_tier_form(tier_form("0.0", 2, "0.5", "T", "-1")).unwrap_err();
+        assert!(err.contains("-1"));
+    }
+
+    #[test]
+    fn parse_tier_form_rejects_a_duplicate_index() {
+        let err = parse_tier_form(tier_form("0.0", 2, "0.5", "T", "24, 48, 24")).unwrap_err();
+        assert!(err.contains("24"));
+        assert!(err.contains("more than once"));
     }
 
     #[test]
     fn parse_tier_form_kind_zero_is_meet_existing_and_ignores_the_text_field() {
-        let tier = parse_tier_form("30.0", 0, "this text is ignored", "C1", "", None).unwrap();
+        let tier = parse_tier_form(tier_form("30.0", 0, "this text is ignored", "C1", "")).unwrap();
         assert_eq!(tier.constraint, MeetConstraint::MeetExisting);
     }
 
     #[test]
     fn parse_tier_form_kind_one_splits_named_facets_on_comma() {
-        let tier = parse_tier_form("30.0", 1, "P1, P2 , G1", "C1", "", None).unwrap();
+        let tier = parse_tier_form(tier_form("30.0", 1, "P1, P2 , G1", "C1", "")).unwrap();
         assert_eq!(
             tier.constraint,
             MeetConstraint::MeetNamed(vec!["P1".to_string(), "P2".to_string(), "G1".to_string()])
@@ -497,13 +1023,13 @@ mod tests {
 
     #[test]
     fn parse_tier_form_kind_one_rejects_an_empty_name_list() {
-        let err = parse_tier_form("30.0", 1, "  , ", "C1", "", None).unwrap_err();
+        let err = parse_tier_form(tier_form("30.0", 1, "  , ", "C1", "")).unwrap_err();
         assert!(err.contains("Meet named"));
     }
 
     #[test]
     fn parse_tier_form_rejects_an_unknown_constraint_kind() {
-        let err = parse_tier_form("30.0", 3, "", "C1", "", None).unwrap_err();
+        let err = parse_tier_form(tier_form("30.0", 3, "", "C1", "")).unwrap_err();
         assert!(err.contains('3'));
     }
 
@@ -606,6 +1132,57 @@ mod tests {
             MeetConstraint::ScaleReference(v) => assert!((v - 0.649_912_34).abs() < 1e-9),
             ref other => panic!("expected a borrowed ScaleReference anchor, got {other:?}"),
         }
+    }
+
+    // --- native_sidecar_attachment / design_from_asc_and_native ---
+
+    #[test]
+    fn native_sidecar_attachment_finds_the_indicatrix_toml_sibling() {
+        let files = vec![
+            AttachedFile {
+                name: "design.asc".to_string(),
+                url: String::new(),
+                content: Vec::new(),
+            },
+            AttachedFile {
+                name: "design.indicatrix.toml".to_string(),
+                url: String::new(),
+                content: b"native".to_vec(),
+            },
+        ];
+        let sidecar = native_sidecar_attachment(&files).expect("sidecar must be found");
+        assert_eq!(sidecar.name, "design.indicatrix.toml");
+    }
+
+    #[test]
+    fn native_sidecar_attachment_also_finds_the_legacy_gemcut_toml_sibling() {
+        let files = vec![AttachedFile {
+            name: "design.gemcut.toml".to_string(),
+            url: String::new(),
+            content: b"native".to_vec(),
+        }];
+        assert!(native_sidecar_attachment(&files).is_some());
+    }
+
+    #[test]
+    fn native_sidecar_attachment_is_none_without_a_sidecar() {
+        let files = vec![AttachedFile {
+            name: "design.asc".to_string(),
+            url: String::new(),
+            content: Vec::new(),
+        }];
+        assert!(native_sidecar_attachment(&files).is_none());
+    }
+
+    #[test]
+    fn design_from_asc_and_native_falls_back_to_the_plain_asc_when_the_sidecar_does_not_parse() {
+        let asc_text = "GemCad 5.0\ng 96 0.0\ny 4 y\nI 1.54\na -41.000000 0.64991234 92 n 1 84\n";
+        let loaded =
+            design_from_asc_and_native("design.asc", asc_text, "not valid toml [[[", None, 1)
+                .expect("must fall back to the plain .asc path rather than erroring");
+        assert!(!loaded.used_placeholder);
+        assert_eq!(loaded.asc_filename.as_deref(), Some("design.asc"));
+        assert_eq!(loaded.design.tiers.len(), 1);
     }
 
     #[test]

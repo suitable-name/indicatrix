@@ -142,7 +142,15 @@ pub fn setup_export_asc_callback(
 
 /// Strips characters Windows (and, incidentally, every other common filesystem)
 /// disallows in a file name, so an arbitrary design title is always a safe file name.
-fn sanitize_filename(title: &str) -> String {
+///
+/// `pub`, not private (`export` is itself a private module, so this stays
+/// crate-internal regardless -- `clippy::redundant_pub_crate` prefers plain `pub`
+/// here over `pub(crate)` for exactly that reason): `gui::editor::native_io`'s own
+/// Export/Save-Native dialogs reuse this exact rule (Item 176) for a slugged-first-
+/// header default file name, so a title with a `:` or `/` in it (a real `GemCad`
+/// header, e.g. "Round Brilliant: 57 facets") sanitizes identically whichever dialog
+/// offered it.
+pub fn sanitize_filename(title: &str) -> String {
     let cleaned: String = title
         .chars()
         .map(|c| {

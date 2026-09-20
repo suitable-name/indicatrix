@@ -14,6 +14,8 @@ export global SettingsModel {
     // 12 Bounces default -- see `settings_dialog.slint`'s pill ladder (4/8/12/24/64/128).
     in-out property <int> bounce_index: 2;
     in-out property <float> exposure_val: 1.0;
+    // Backdrop pill index: 0 = as lit, 1 = GemRay grey (default), 2 = white.
+    in-out property <int> backdrop_index: 1;
     in-out property <float> light_yaw_deg: 48.0;
     in-out property <float> light_pitch_deg: 54.0;
     // Inclusion/subsurface scattering amount, off by default -- range and endpoint
@@ -92,6 +94,8 @@ export global SettingsModel {
     callback local_compute_target_changed(int);
     callback bounces_changed(int);
     callback exposure_changed(float);
+    // Carries the pill's clicked index directly (`Backdrop::from_index`).
+    callback backdrop_changed(int);
     // Carries the raw value directly (linear).
     callback inclusion_changed(float);
     callback c_axis_override_changed(bool);

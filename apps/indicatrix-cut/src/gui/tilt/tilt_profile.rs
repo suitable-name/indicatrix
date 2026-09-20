@@ -40,7 +40,7 @@
 
 use crate::{
     MainWindow, TiltModel,
-    bridge::render_thread::{RenderContext, hash_planes, resolve_material},
+    bridge::render_thread::{RenderContext, hash_planes, resolve_material_with_override},
     gui::optics::curve_path::full_axis_curve_path,
 };
 use indicatrix::{
@@ -132,11 +132,12 @@ fn handle_request_tilt_profile_axes(
     launched_key: &Arc<Mutex<Option<AxesCacheKey>>>,
     generation: &Arc<AtomicU64>,
 ) {
-    let (planes, material_name, custom_materials, light_yaw, light_pitch) = {
+    let (planes, material_name, material_override, custom_materials, light_yaw, light_pitch) = {
         let ctx = render_ctx.lock().unwrap();
         (
             ctx.active_planes.clone(),
             ctx.material_name.clone(),
+            ctx.material_override.clone(),
             ctx.custom_materials.clone(),
             ctx.light_yaw,
             ctx.light_pitch,
@@ -146,9 +147,14 @@ fn handle_request_tilt_profile_axes(
     // identity and to hand the same resolved value to the worker thread below
     // rather than re-resolving it there from a name that could resolve to
     // something else by the time the thread runs.
-    let material = resolve_material(
+    // Prefers the editor's fully resolved material over a name lookup (CAD audit
+    // items 57/61): a catalogue custom material or a typed RI override has no
+    // built-in name to find, so the sweep used to run against whatever the name
+    // happened to resolve to -- silently a different stone from the one being edited.
+    let material = resolve_material_with_override(
         &GemMaterial::all_materials(),
         &custom_materials,
+        material_override.as_ref(),
         &material_name,
     );
 

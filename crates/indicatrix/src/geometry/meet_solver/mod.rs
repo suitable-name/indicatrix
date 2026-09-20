@@ -328,6 +328,11 @@ pub enum SolveStrategy {
 pub struct SolvedTier {
     pub mast: f64,
     pub strategy: SolveStrategy,
-    /// Human-readable detail about how the value was obtained.
+    /// Free-form prose naming how `mast` was actually obtained -- e.g. "given
+    /// (scale reference)", "vertex incidence", or which candidate vertex level
+    /// and named references a constructive/refinement pass settled on. Meant
+    /// to be shown verbatim as a per-tier-row tooltip (the detail behind
+    /// `strategy`'s coarse category); it is prose for a human, not a stable
+    /// format -- never parse it back out, match on [`SolveStrategy`] instead.
     pub detail: String,
 }

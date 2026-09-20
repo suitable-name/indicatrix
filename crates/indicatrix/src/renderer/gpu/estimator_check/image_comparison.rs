@@ -7,7 +7,8 @@ use crate::{
     optics::{
         materials::GemMaterial,
         raytracer::{
-            FacetFinish, LightingPreset, compute_illuminant_white_balance, illuminant_temperature_k,
+            BACKDROP_GEMRAY_GREY, FacetFinish, LightingPreset,
+            environment::environment_white_balance, illuminant_temperature_k,
         },
     },
     renderer::{
@@ -262,10 +263,16 @@ pub fn run_image_comparison_iso_hemisphere(
 ) -> ImageComparisonResult {
     let material = GemMaterial::by_name("Diamond")
         .expect("\"Diamond\" is a built-in material in GemMaterial::all_materials()");
-    run_image_comparison_for(ctx, &material, &[], LightingPreset::IsoHemisphere)
+    run_image_comparison_with_backdrop(
+        ctx,
+        &material,
+        &[],
+        LightingPreset::IsoHemisphere,
+        BACKDROP_GEMRAY_GREY,
+    )
 }
 
-/// Tier 3 statistical image comparison under the Soft dome + ring lights model.
+/// Tier 3 statistical image comparison under the Light tent + black cards model.
 ///
 /// Diamond on the standard 57-facet Round Brilliant.
 ///
@@ -273,15 +280,21 @@ pub fn run_image_comparison_iso_hemisphere(
 ///
 /// Panics if `"Diamond"` is ever removed from `GemMaterial::all_materials()`.
 #[must_use]
-pub fn run_image_comparison_soft_dome(
+pub fn run_image_comparison_light_tent(
     ctx: &crate::renderer::gpu::GpuContext,
 ) -> ImageComparisonResult {
     let material = GemMaterial::by_name("Diamond")
         .expect("\"Diamond\" is a built-in material in GemMaterial::all_materials()");
-    run_image_comparison_for(ctx, &material, &[], LightingPreset::SoftDome)
+    run_image_comparison_with_backdrop(
+        ctx,
+        &material,
+        &[],
+        LightingPreset::LightTent,
+        BACKDROP_GEMRAY_GREY,
+    )
 }
 
-/// Tier 3 statistical image comparison under the Daylight dome + sun model.
+/// Tier 3 statistical image comparison under the Daylight sky + sun model.
 ///
 /// Diamond on the standard 57-facet Round Brilliant.
 ///
@@ -294,7 +307,13 @@ pub fn run_image_comparison_daylight_dome(
 ) -> ImageComparisonResult {
     let material = GemMaterial::by_name("Diamond")
         .expect("\"Diamond\" is a built-in material in GemMaterial::all_materials()");
-    run_image_comparison_for(ctx, &material, &[], LightingPreset::DaylightDome)
+    run_image_comparison_with_backdrop(
+        ctx,
+        &material,
+        &[],
+        LightingPreset::DaylightDome,
+        BACKDROP_GEMRAY_GREY,
+    )
 }
 
 /// Shared Tier 3 statistical image comparison body -- parameterized on `material` so the
@@ -311,6 +330,19 @@ fn run_image_comparison_for(
     facet_finishes: &[FacetFinish],
     preset: LightingPreset,
 ) -> ImageComparisonResult {
+    run_image_comparison_with_backdrop(ctx, material, facet_finishes, preset, 0.0)
+}
+
+/// [`run_image_comparison_for`] with a backdrop card behind the stone (see
+/// `EnvironmentSource::Studio::backdrop`), so the camera-ray miss branch is compared
+/// too; `0.0` is the plain environment.
+fn run_image_comparison_with_backdrop(
+    ctx: &crate::renderer::gpu::GpuContext,
+    material: &GemMaterial,
+    facet_finishes: &[FacetFinish],
+    preset: LightingPreset,
+    backdrop: f32,
+) -> ImageComparisonResult {
     let camera = test_camera();
     let (width, height) = (48u32, 48u32);
     let planes = round_brilliant_planes();
@@ -319,12 +351,14 @@ fn run_image_comparison_for(
     let max_bounces = 10u32;
     let (exposure, light_yaw, light_pitch) = (1.0f32, 0.4f32, 0.35f32);
     let temp_k = illuminant_temperature_k(preset);
-    let wb = compute_illuminant_white_balance(temp_k);
+    let environment = preset
+        .studio(exposure, light_yaw, light_pitch)
+        .with_backdrop(backdrop);
+    let wb = environment_white_balance(environment);
 
     let cpu_samples_per_pixel = 500u32;
     let gpu_samples_per_pixel = 500u32;
 
-    let environment = preset.studio(exposure, light_yaw, light_pitch);
     let scene = CpuScene {
         camera: &camera,
         width,
@@ -356,7 +390,8 @@ fn run_image_comparison_for(
     // already routes presets through uses_d65() / model() -- the GPU
     // dispatch must match or this comparison reintroduces CPU/GPU divergence.
     .with_studio_use_d65(preset.uses_d65())
-    .with_studio_model(preset.model().gpu_id());
+    .with_studio_model(preset.model().gpu_id())
+    .with_backdrop(backdrop);
     let total_gpu = (width * height * gpu_samples_per_pixel) as usize;
     // Dispatch through whichever pipeline `GpuFrameRenderer::accumulate` would actually
     // pick for `material` (via `frame::classify_material`), not the GENERIC one every
@@ -572,7 +607,7 @@ pub fn run_specialisation_image_comparison(
     let preset = LightingPreset::Daylight;
     let (exposure, light_yaw, light_pitch) = (1.0f32, 0.4f32, 0.35f32);
     let temp_k = illuminant_temperature_k(preset);
-    let wb = compute_illuminant_white_balance(temp_k);
+    let wb = environment_white_balance(preset.studio(exposure, light_yaw, light_pitch));
 
     let samples_per_pixel = 500u32;
     let camera_params = camera_params_for(&camera, width, height, samples_per_pixel);

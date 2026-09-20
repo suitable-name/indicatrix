@@ -37,8 +37,8 @@ mod save;
 mod tests;
 
 pub use convert::to_native_file;
-pub use load::{LoadPairedError, LoadPairedResult, TierOverlay, load_paired};
-pub use save::{PairedSave, SaveError, save_paired};
+pub use load::{LoadPairedError, LoadPairedResult, MaterialResolution, TierOverlay, load_paired};
+pub use save::{DraftReason, PairedSave, SaveError, save_paired};
 
 /// Kept under its historic name -- `apps/indicatrix-cut` calls this as
 /// `indicatrix_cut_core::native::parse_toml_string`.
@@ -46,6 +46,6 @@ pub use indicatrix_formats::native::from_toml_str as parse_toml_string;
 pub use indicatrix_formats::native::{
     FORMAT_VERSION, FingerprintCheck, LEGACY_NATIVE_EXTENSION_SUFFIX, MaterialTable,
     NATIVE_EXTENSION_SUFFIX, NativeDesignFile, NativeFormatError, NativeMeetConstraint,
-    NativePreformShape, PreformTable, TierTable, asc_path_for_native, check_fingerprint,
-    native_path_for_asc, sha256_hex, to_toml_string,
+    NativePreformShape, PreformTable, SourceTable, TierTable, asc_path_for_native,
+    check_fingerprint, native_path_for_asc, sha256_hex, to_toml_string,
 };

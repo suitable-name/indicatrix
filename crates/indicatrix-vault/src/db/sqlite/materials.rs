@@ -23,6 +23,9 @@ pub struct CustomMaterialParams<'a> {
     /// comment. Borrowed (`&str`) for the same reason every other field here is, per
     /// this struct's own doc comment.
     pub per_axis_dispersion_json: Option<&'a str>,
+    /// See `crate::model::material::CustomMaterialRow::specific_gravity`'s doc
+    /// comment (CAD audit item 169).
+    pub specific_gravity: Option<f32>,
 }
 
 impl Database {
@@ -36,7 +39,8 @@ impl Database {
     pub fn get_custom_materials(&self) -> Result<Vec<crate::model::material::CustomMaterialRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT name, refractive_index, dispersion, birefringence, absorption_r, absorption_g, absorption_b,
-                    crystal_system, optical_character, biaxial_delta_beta_alpha, per_axis_dispersion_json
+                    crystal_system, optical_character, biaxial_delta_beta_alpha, per_axis_dispersion_json,
+                    specific_gravity
              FROM custom_gem_materials
              ORDER BY name ASC"
         )?;
@@ -53,6 +57,7 @@ impl Database {
             let optical_character: Option<String> = row.get(8)?;
             let biaxial_delta_beta_alpha: Option<f64> = row.get(9)?;
             let per_axis_dispersion_json: Option<String> = row.get(10)?;
+            let specific_gravity: Option<f64> = row.get(11)?;
 
             Ok(crate::model::material::CustomMaterialRow {
                 name,
@@ -64,6 +69,7 @@ impl Database {
                 optical_character,
                 biaxial_delta_beta_alpha: biaxial_delta_beta_alpha.map(|v| v as f32),
                 per_axis_dispersion_json,
+                specific_gravity: specific_gravity.map(|v| v as f32),
             })
         })?;
 
@@ -93,8 +99,8 @@ impl Database {
     pub fn save_custom_material(&self, material: &CustomMaterialParams<'_>) -> Result<()> {
         let mut stmt = self.conn.prepare(
             "INSERT INTO custom_gem_materials (name, refractive_index, dispersion, birefringence, absorption_r, absorption_g, absorption_b,
-                crystal_system, optical_character, biaxial_delta_beta_alpha, per_axis_dispersion_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                crystal_system, optical_character, biaxial_delta_beta_alpha, per_axis_dispersion_json, specific_gravity)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(name) DO UPDATE SET
                 refractive_index = excluded.refractive_index,
                 dispersion = excluded.dispersion,
@@ -105,7 +111,8 @@ impl Database {
                 crystal_system = excluded.crystal_system,
                 optical_character = excluded.optical_character,
                 biaxial_delta_beta_alpha = excluded.biaxial_delta_beta_alpha,
-                per_axis_dispersion_json = excluded.per_axis_dispersion_json"
+                per_axis_dispersion_json = excluded.per_axis_dispersion_json,
+                specific_gravity = excluded.specific_gravity"
         )?;
 
         stmt.execute(params![
@@ -120,6 +127,7 @@ impl Database {
             material.optical_character,
             material.biaxial_delta_beta_alpha.map(f64::from),
             material.per_axis_dispersion_json,
+            material.specific_gravity.map(f64::from),
         ])?;
         Ok(())
     }

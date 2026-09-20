@@ -27,12 +27,21 @@ impl Database {
     ///
     /// Returns an error if the `INSERT`, `UPDATE`, or follow-up ID `SELECT` fails.
     pub fn save_diagram_entry(&self, entry: &FacetDiagramEntry, source_id: &str) -> Result<i64> {
+        let now = unix_now();
         // `INSERT OR IGNORE` won't update on conflict, so update is handled explicitly below.
         let mut stmt_insert = self.conn.prepare_cached(
-            "INSERT OR IGNORE INTO diagram_entries (title, url, design_id, source_id) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT OR IGNORE INTO diagram_entries (title, url, design_id, source_id, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
         let changes = stmt_insert
-            .execute(params![entry.title, entry.url, entry.design_id, source_id])
+            .execute(params![
+                entry.title,
+                entry.url,
+                entry.design_id,
+                source_id,
+                now,
+                now
+            ])
             .context(format!(
                 "Failed to INSERT OR IGNORE diagram entry with URL: {}",
                 entry.url
@@ -50,11 +59,19 @@ impl Database {
                 "Diagram entry with URL '{}' already exists. Updating title, design_id, and source_id.",
                 entry.url
             );
+            // `created_at` is deliberately left untouched -- this branch is a re-sync
+            // of an existing row, not a new design.
             let mut stmt_update = self.conn.prepare_cached(
-                "UPDATE diagram_entries SET title = ?1, design_id = ?2, source_id = ?3 WHERE url = ?4",
+                "UPDATE diagram_entries SET title = ?1, design_id = ?2, source_id = ?3, updated_at = ?4 WHERE url = ?5",
             )?;
             stmt_update
-                .execute(params![entry.title, entry.design_id, source_id, entry.url])
+                .execute(params![
+                    entry.title,
+                    entry.design_id,
+                    source_id,
+                    now,
+                    entry.url
+                ])
                 .context(format!(
                     "Failed to UPDATE existing diagram entry with URL: {}",
                     entry.url
@@ -697,6 +714,127 @@ impl Database {
                 "No diagram detail row for entry_id {entry_id}."
             ));
         }
+
+        // Bumps `diagram_entries.updated_at` for the "recently edited" sort (CAD audit
+        // item 191) -- best-effort: a hand-correction to metadata having gone through
+        // above is the change that matters, so a failure here is logged rather than
+        // rolled back into an error the caller would otherwise treat as "nothing was
+        // saved."
+        if let Err(e) = self.conn.execute(
+            "UPDATE diagram_entries SET updated_at = ?1 WHERE id = ?2",
+            params![unix_now(), entry_id],
+        ) {
+            debug!("Failed to bump updated_at for entry_id {entry_id}: {e}");
+        }
+        Ok(())
+    }
+
+    /// Updates `entry_id`'s own `url` directly, by id, and bumps `updated_at` -- for a
+    /// caller (CAD audit items 92/96: Save Native's catalogue write-back) that already
+    /// knows exactly which row to update and must not risk [`Self::save_diagram_entry`]'s
+    /// url-keyed upsert silently creating a SECOND row when the design's file name (and
+    /// so its synthetic `local://` url) changed since this row was created -- e.g. "Save
+    /// Native As..." to a new file name for a design that already has a catalogue row.
+    /// `title`/`design_id`/`source_id`/`created_at` are all left untouched: title in
+    /// particular is a field a cutter hand-corrects (`rename_diagram_entry`), same
+    /// precedent as [`Self::update_diagram_metadata`]'s own doc comment, never silently
+    /// overwritten by a geometry write-back that merely changed where the file lives.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `UPDATE` fails, or if `entry_id` does not
+    /// match any row (zero rows affected).
+    pub fn update_diagram_entry_url(&self, entry_id: i64, url: &str) -> Result<()> {
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE diagram_entries SET url = ?1, updated_at = ?2 WHERE id = ?3",
+                params![url, unix_now(), entry_id],
+            )
+            .context(format!("Failed to update url for diagram entry {entry_id}"))?;
+        if changed == 0 {
+            return Err(anyhow::anyhow!("No diagram entry with id {entry_id}."));
+        }
+        Ok(())
+    }
+
+    /// The `derived_from_entry_id` of `entry_id`'s row -- the entry it was recorded as
+    /// derived from at import time (CAD audit item 186), or `None` when unknown/not
+    /// applicable. `None` is also returned for a nonexistent `entry_id` rather than an
+    /// error, matching this column's own "unknown provenance" meaning.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `SELECT` fails.
+    pub fn get_derived_from_entry_id(&self, entry_id: i64) -> Result<Option<i64>> {
+        self.conn
+            .query_row(
+                "SELECT derived_from_entry_id FROM diagram_entries WHERE id = ?1",
+                params![entry_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+            .map(Option::flatten)
+            .context(format!(
+                "Failed to read derived_from_entry_id for entry_id: {entry_id}"
+            ))
+    }
+
+    /// `entry_id`'s recorded source row's own id and title -- the one query a
+    /// "Derived from: <title>" badge/link needs (CAD audit item 186's
+    /// remaining half: `set_derived_from_entry_id` already records provenance
+    /// at import time, but nothing yet reads it back for display). `None`
+    /// when `entry_id` has no recorded source, or when the recorded source
+    /// row no longer exists (e.g. it was since deleted) -- a caller renders
+    /// nothing rather than a dangling reference either way.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `SELECT` fails.
+    pub fn get_derived_from_title(&self, entry_id: i64) -> Result<Option<(i64, String)>> {
+        self.conn
+            .query_row(
+                "SELECT source.id, source.title \
+                 FROM diagram_entries AS entry \
+                 JOIN diagram_entries AS source ON source.id = entry.derived_from_entry_id \
+                 WHERE entry.id = ?1",
+                params![entry_id],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .context(format!(
+                "Failed to read derived-from title for entry_id: {entry_id}"
+            ))
+    }
+
+    /// Records that `entry_id` was derived from `derived_from`, e.g. an
+    /// export-then-reimport of an existing catalogue design (CAD audit item 186). Pass
+    /// `None` to clear a previously recorded value. Deliberately takes an explicit,
+    /// already-known source id rather than inferring one -- see
+    /// `migrate_diagram_entries_provenance`'s doc comment for why this crate never
+    /// guesses provenance from titles or other heuristics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `UPDATE` fails, or if `entry_id` does not
+    /// match any row (zero rows affected).
+    pub fn set_derived_from_entry_id(
+        &self,
+        entry_id: i64,
+        derived_from: Option<i64>,
+    ) -> Result<()> {
+        let changed = self
+            .conn
+            .execute(
+                "UPDATE diagram_entries SET derived_from_entry_id = ?1 WHERE id = ?2",
+                params![derived_from, entry_id],
+            )
+            .context(format!(
+                "Failed to set derived_from_entry_id for diagram entry {entry_id}"
+            ))?;
+        if changed == 0 {
+            return Err(anyhow::anyhow!("No diagram entry with id {entry_id}."));
+        }
         Ok(())
     }
 
@@ -745,4 +883,20 @@ impl Database {
         }
         Ok(())
     }
+}
+
+/// The current wall-clock time as Unix seconds, for `diagram_entries.created_at`/
+/// `updated_at` (CAD audit item 191). Same `SystemTime`-based approach this crate
+/// already uses for `diagram_tilt_curves.generated_at`/`diagram_previews.preview_generated_at`
+/// (see those tables' save methods), just computed here instead of taken as a caller
+/// parameter -- `save_diagram_entry`/`update_diagram_metadata` are existing public
+/// signatures with call sites across the workspace, so stamping the time internally
+/// keeps every one of them compiling unchanged.
+///
+/// Falls back to `0` on a system clock set before the Unix epoch, which never happens
+/// on a real machine -- this only avoids a panic on `duration_since`'s `Result`.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }

@@ -23,6 +23,56 @@ pub const LOCAL_SOURCE_ID: &str = "local-import";
 pub struct ImportedAsc {
     pub entry: FacetDiagramEntry,
     pub detail: FacetDiagramDetail,
+    /// The catalogue row this file's own text says it was derived from -- recovered
+    /// from a [`SOURCE_ENTRY_FOOTNOTE_PREFIX`] footnote line, when the `.asc` was
+    /// written by `gui::editor::native_io`'s Save Native/Export .asc (CAD audit item
+    /// 186: "an export-then-reimport matches its source row and becomes a version
+    /// rather than a second same-titled duplicate"). `None` for a `.asc` with no such
+    /// footnote -- an original hand-authored file, one scraped from another source, or
+    /// one exported before this stamp existed. The caller is responsible for verifying
+    /// the id still names a real row (it may have been deleted since) before recording
+    /// it via `db::sqlite::Database::set_derived_from_entry_id` -- this crate's own
+    /// hard rule against inventing provenance from anything OTHER than a recorded id
+    /// (never a title/filename match) stops at parsing the id out; it never guesses
+    /// one.
+    pub derived_from_entry_id: Option<i64>,
+}
+
+/// The footnote-line prefix a `.asc`'s recorded source-catalogue-row marker starts with.
+///
+/// `gui::editor::native_io` (the `apps/indicatrix-cut` editor) writes it into an
+/// exported/saved `.asc`'s footnotes when the design in the editor has a known
+/// catalogue source row -- see [`ImportedAsc::derived_from_entry_id`]'s own doc
+/// comment for why this exists and [`format_source_entry_footnote`]/
+/// [`parse_source_entry_footnote`] for the two halves of the round trip. A plain `.asc`
+/// footnote (`indicatrix_formats::asc`'s `F` record) rather than a native-sidecar field:
+/// it survives a bare "Export .asc" with no sidecar at all, which is exactly the case
+/// this item's own "export-then-reimport" scenario describes, and needs no schema
+/// change to the native TOML format (a different crate this one does not own).
+pub const SOURCE_ENTRY_FOOTNOTE_PREFIX: &str = "Indicatrix-Source-Entry-Id: ";
+
+/// Builds the one footnote line [`parse_source_entry_footnote`] reads back.
+///
+/// `gui::editor::native_io` pushes this into `Design::meta.footnotes` (replacing any
+/// previous stamp; see that module's own doc comment) before writing a `.asc` for a
+/// design with a known `entry_id`.
+#[must_use]
+pub fn format_source_entry_footnote(entry_id: i64) -> String {
+    format!("{SOURCE_ENTRY_FOOTNOTE_PREFIX}{entry_id}")
+}
+
+/// The first [`SOURCE_ENTRY_FOOTNOTE_PREFIX`]-prefixed footnote in `footnotes`, parsed
+/// back into the `diagram_entries.id` it names.
+///
+/// `None` when no such footnote is present, or its remainder doesn't parse as a plain
+/// integer (a hand-edited or corrupted file, treated as "no recorded provenance"
+/// rather than an error: there is nothing to import over this).
+#[must_use]
+pub fn parse_source_entry_footnote(footnotes: &[String]) -> Option<i64> {
+    footnotes
+        .iter()
+        .find_map(|f| f.strip_prefix(SOURCE_ENTRY_FOOTNOTE_PREFIX))
+        .and_then(|rest| rest.trim().parse().ok())
 }
 
 /// Parses one `.asc` file's `content` (already read from disk by the caller -- this
@@ -37,11 +87,24 @@ pub struct ImportedAsc {
 /// updates that design in place -- mirroring how a remote source's real page URL
 /// dedupes a re-sync there.
 ///
+/// `native_sidecar`, when the caller found a `<stem>.indicatrix.toml`/`.gemcut.toml`
+/// file sitting beside the `.asc` on disk, is attached as a SECOND [`AttachedFile`]
+/// alongside the `.asc` itself -- CAD audit item 93: without it, a design that went
+/// out through Save Native and back in through Import lost every sidecar-only field
+/// (authored meet constraints, preform, detached facets, material/RI override), since
+/// only the `.asc` was ever stored. `gui::editor::loading::design_from_full_record`
+/// already prefers `indicatrix_cut_core::load_paired` whenever both attachments are
+/// present, so attaching it here is the only piece this crate needs to add.
+///
 /// # Errors
 ///
 /// Returns a human-readable message if `indicatrix_formats::asc::parse_asc` fails to parse
 /// `content` (e.g. empty input, or a malformed required header field).
-pub fn import_asc(file_name: &str, content: &str) -> Result<ImportedAsc, String> {
+pub fn import_asc(
+    file_name: &str,
+    content: &str,
+    native_sidecar: Option<(&str, &[u8])>,
+) -> Result<ImportedAsc, String> {
     let schedule = asc::parse_asc(content).map_err(|e| e.to_string())?;
 
     let title = schedule
@@ -57,13 +120,22 @@ pub fn import_asc(file_name: &str, content: &str) -> Result<ImportedAsc, String>
         design_id: String::new(),
     };
 
+    let mut attached_files = vec![AttachedFile {
+        name: file_name.to_string(),
+        url: String::new(),
+        content: content.as_bytes().to_vec(),
+    }];
+    if let Some((sidecar_name, sidecar_content)) = native_sidecar {
+        attached_files.push(AttachedFile {
+            name: sidecar_name.to_string(),
+            url: String::new(),
+            content: sidecar_content.to_vec(),
+        });
+    }
+
     let detail = FacetDiagramDetail {
         angle_settings_table: angle_settings_from_tiers(&schedule.tiers),
-        attached_files: vec![AttachedFile {
-            name: file_name.to_string(),
-            url: String::new(),
-            content: content.as_bytes().to_vec(),
-        }],
+        attached_files,
         refractive_index: Some(schedule.refractive_index.to_string()),
         index_gear: Some(schedule.gear_teeth_abs().to_string()),
         facets_count: Some(schedule.facet_plane_count().to_string()),
@@ -71,8 +143,13 @@ pub fn import_asc(file_name: &str, content: &str) -> Result<ImportedAsc, String>
         mirror_symmetry: Some(schedule.mirror),
         ..FacetDiagramDetail::default()
     };
+    let derived_from_entry_id = parse_source_entry_footnote(&schedule.footnotes);
 
-    Ok(ImportedAsc { entry, detail })
+    Ok(ImportedAsc {
+        entry,
+        detail,
+        derived_from_entry_id,
+    })
 }
 
 fn strip_asc_extension(file_name: &str) -> &str {
@@ -179,7 +256,7 @@ a 41.000000 0.5 92 n T\n";
 
     #[test]
     fn import_asc_parses_headers_into_title_and_tiers_into_angle_settings() {
-        let imported = import_asc("trichecker.asc", SAMPLE_ASC).expect("valid .asc");
+        let imported = import_asc("trichecker.asc", SAMPLE_ASC, None).expect("valid .asc");
         assert_eq!(imported.entry.title, "Round Trichecker-12");
         assert_eq!(imported.entry.url, "local://trichecker.asc");
         assert_eq!(imported.detail.angle_settings_table.len(), 2);
@@ -193,7 +270,54 @@ a 41.000000 0.5 92 n T\n";
 
     #[test]
     fn import_asc_rejects_invalid_content() {
-        assert!(import_asc("bad.asc", "not an asc file").is_err());
+        assert!(import_asc("bad.asc", "not an asc file", None).is_err());
+    }
+
+    #[test]
+    fn import_asc_has_no_provenance_without_a_source_entry_footnote() {
+        let imported = import_asc("trichecker.asc", SAMPLE_ASC, None).expect("valid .asc");
+        assert_eq!(imported.derived_from_entry_id, None);
+    }
+
+    #[test]
+    fn import_asc_recovers_provenance_from_a_source_entry_footnote() {
+        let text = format!("{SAMPLE_ASC}F {}\n", format_source_entry_footnote(42));
+        let imported = import_asc("trichecker.asc", &text, None).expect("valid .asc");
+        assert_eq!(imported.derived_from_entry_id, Some(42));
+    }
+
+    #[test]
+    fn parse_source_entry_footnote_ignores_unrelated_footnotes_and_garbage() {
+        assert_eq!(
+            parse_source_entry_footnote(&["Cut to TCP".to_string()]),
+            None
+        );
+        assert_eq!(
+            parse_source_entry_footnote(&[format!("{SOURCE_ENTRY_FOOTNOTE_PREFIX}not-a-number")]),
+            None
+        );
+        assert_eq!(
+            parse_source_entry_footnote(&[format_source_entry_footnote(7)]),
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn import_asc_attaches_a_native_sidecar_as_a_second_attached_file() {
+        let sidecar_bytes = b"format_version = 1\n";
+        let imported = import_asc(
+            "trichecker.asc",
+            SAMPLE_ASC,
+            Some(("trichecker.indicatrix.toml", sidecar_bytes)),
+        )
+        .expect("valid .asc");
+        assert_eq!(imported.detail.attached_files.len(), 2);
+        assert_eq!(imported.detail.attached_files[0].name, "trichecker.asc");
+        assert_eq!(
+            imported.detail.attached_files[1].name,
+            "trichecker.indicatrix.toml"
+        );
+        assert_eq!(imported.detail.attached_files[1].content, sidecar_bytes);
     }
 
     #[test]

@@ -131,10 +131,10 @@ pub fn calibrate(
         return CalibrationOutcome::Cancelled { consumed: 0 };
     }
     let (camera, facet_finishes) = scene_pieces(scene);
-    let environment =
-        scene
-            .lighting_preset
-            .studio(scene.exposure, scene.light_yaw, scene.light_pitch);
+    let environment = scene
+        .lighting_preset
+        .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
+        .with_backdrop(scene.backdrop);
     let gpu_scene = GpuSceneRef {
         camera: &camera,
         width: scene.width,
@@ -251,10 +251,10 @@ pub fn hybrid_trace(
     let cpu_share = samples - gpu_share;
 
     let (camera, facet_finishes) = scene_pieces(scene);
-    let environment =
-        scene
-            .lighting_preset
-            .studio(scene.exposure, scene.light_yaw, scene.light_pitch);
+    let environment = scene
+        .lighting_preset
+        .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
+        .with_backdrop(scene.backdrop);
 
     if gpu_share == 0 {
         trace_into(
@@ -455,6 +455,7 @@ mod tests {
             material: GemMaterial::diamond(),
             planes: StandardGemCuts::standard_round_brilliant(),
             girdle_frosted: false,
+            backdrop: 0.0,
         }
     }
 
@@ -610,11 +611,10 @@ mod tests {
                 facet_finishes: &[],
                 material: &scene.material,
                 max_bounces: scene.max_bounces,
-                environment: scene.lighting_preset.studio(
-                    scene.exposure,
-                    scene.light_yaw,
-                    scene.light_pitch,
-                ),
+                environment: scene
+                    .lighting_preset
+                    .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
+                    .with_backdrop(scene.backdrop),
             },
             0,
             1,

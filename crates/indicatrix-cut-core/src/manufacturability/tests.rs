@@ -17,6 +17,7 @@ fn tier(
         indices: indices.to_vec(),
         constraint,
         imported_meet: None,
+        original_notes: None,
         detached: Vec::new(),
     }
 }
@@ -274,4 +275,168 @@ fn a_freshly_imported_design_has_nothing_to_flag_for_cut_order() {
     .expect("must parse");
     let design = Design::from_asc_schedule(PreformSpec::block(2.0, 1.0, 2.0), &schedule);
     assert_eq!(check_cut_order(&design), Vec::new());
+}
+
+// --- check_manufacturability_available ---
+
+/// A design with no `ScaleReference` anchor at all (so `Design::solve` itself
+/// returns `MissingAnchor`) must still report its mast-free warnings -- the exact
+/// case the "mast-free checks are dropped entirely on `MissingAnchor`" finding is
+/// about. `solved: None` must not fall back to an empty `Vec` the way an editor
+/// early-returning on `design.solve().is_err()` used to.
+#[test]
+fn reports_mast_free_warnings_even_with_no_anchor_to_solve() {
+    let mut design = Design::fresh(PreformSpec::block(1.0, 1.0, 2.0), 96, 4, 1.62);
+    design.tiers.push(tier(
+        "P1",
+        -41.0,
+        MeetConstraint::MeetExisting,
+        &[0.0, 24.5],
+    ));
+    assert!(
+        design.solve().is_err(),
+        "test design must have no anchor for this to test the right thing"
+    );
+    let warnings =
+        check_manufacturability_available(&design, None, DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(matches!(
+        warnings[0],
+        ManufacturabilityWarning::FractionalIndex { .. }
+    ));
+}
+
+/// `solved: Some(..)` must delegate to exactly [`check_manufacturability`] --
+/// same warnings, mesh checks included.
+#[test]
+fn delegates_to_check_manufacturability_when_solved_masts_are_available() {
+    let mut design = Design::fresh(PreformSpec::block(1.0, 1.0, 2.0), 96, 4, 1.62);
+    design
+        .tiers
+        .push(tier("T", 0.0, MeetConstraint::ScaleReference(0.3), &[]));
+    let solved = solved(&design);
+    let available = check_manufacturability_available(
+        &design,
+        Some(&solved),
+        DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
+    );
+    let direct = check_manufacturability(&design, &solved, DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2);
+    assert_eq!(available, direct);
+}
+
+// --- ManufacturabilityWarning::tier_index / facet_plane_index ---
+
+/// Every variant's `tier_index()` must return exactly the field it was built
+/// with -- the accessor a caller uses instead of matching on the variant itself.
+#[test]
+fn tier_index_reads_back_every_variants_own_field() {
+    let vanishing = ManufacturabilityWarning::VanishingFacet {
+        tier_index: 3,
+        tier_name: "V".to_string(),
+        vanished: 1,
+        total: 2,
+    };
+    let undersized = ManufacturabilityWarning::UndersizedFacet {
+        tier_index: 4,
+        tier_name: "U".to_string(),
+        facet_plane_index: 7,
+        area: 0.001,
+        threshold: 0.01,
+        width_axis: 1.0,
+    };
+    let fractional = ManufacturabilityWarning::FractionalIndex {
+        tier_index: 5,
+        tier_name: "F".to_string(),
+        requested: 24.5,
+        achievable: 25.0,
+        azimuth_error_deg: 1.0,
+    };
+    let out_of_order = ManufacturabilityWarning::OutOfOrderMeet {
+        tier_index: 6,
+        tier_name: "O".to_string(),
+        target_tier_index: 9,
+        target_tier_name: "T".to_string(),
+    };
+    assert_eq!(vanishing.tier_index(), 3);
+    assert_eq!(undersized.tier_index(), 4);
+    assert_eq!(fractional.tier_index(), 5);
+    assert_eq!(out_of_order.tier_index(), 6);
+}
+
+/// Only `UndersizedFacet` names a facet plane to highlight -- every other variant
+/// is about a tier as a whole.
+#[test]
+fn facet_plane_index_is_only_some_for_undersized_facet() {
+    let undersized = ManufacturabilityWarning::UndersizedFacet {
+        tier_index: 0,
+        tier_name: "U".to_string(),
+        facet_plane_index: 7,
+        area: 0.001,
+        threshold: 0.01,
+        width_axis: 1.0,
+    };
+    assert_eq!(undersized.facet_plane_index(), Some(7));
+
+    let out_of_order = ManufacturabilityWarning::OutOfOrderMeet {
+        tier_index: 0,
+        tier_name: "O".to_string(),
+        target_tier_index: 1,
+        target_tier_name: "T".to_string(),
+    };
+    assert_eq!(out_of_order.facet_plane_index(), None);
+}
+
+// --- Display: 1-based tier numbers (CAD audit item 159) ---
+
+/// `tier_index()` (used to attribute a warning to a row) must stay 0-based, but
+/// the `Display` text a cutter actually reads must match the tier table's own
+/// 1-based row numbers -- previously off by one against every other on-screen
+/// reference to the same tier.
+#[test]
+fn display_numbers_tiers_1_based_while_tier_index_stays_0_based() {
+    let vanishing = ManufacturabilityWarning::VanishingFacet {
+        tier_index: 0,
+        tier_name: "Table".to_string(),
+        vanished: 1,
+        total: 2,
+    };
+    assert_eq!(vanishing.tier_index(), 0);
+    assert!(
+        vanishing.to_string().starts_with("tier 1 (Table)"),
+        "got {vanishing}"
+    );
+
+    let out_of_order = ManufacturabilityWarning::OutOfOrderMeet {
+        tier_index: 2,
+        tier_name: "Crown Main".to_string(),
+        target_tier_index: 5,
+        target_tier_name: "Pavilion Main".to_string(),
+    };
+    let text = out_of_order.to_string();
+    assert!(text.starts_with("tier 3 (Crown Main)"), "got {text}");
+    assert!(text.contains("meets tier 6 (Pavilion Main)"), "got {text}");
+}
+
+/// `UndersizedFacet`'s `Display` reports a percentage of stone width
+/// (`sqrt(area) / width_axis`), not the raw design-scale area/threshold numbers
+/// that meant nothing to a cutter -- a facet at exactly the module's own
+/// `DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2` (`1e-4`, i.e. `(1%)^2`) reads back as
+/// (approximately) a 1% threshold.
+#[test]
+fn undersized_facet_display_reports_a_percentage_of_stone_width() {
+    let width_axis = 2.0;
+    let threshold = DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2 * width_axis * width_axis;
+    let half_threshold_area = threshold / 4.0; // sqrt(area) is half of sqrt(threshold)
+    let undersized = ManufacturabilityWarning::UndersizedFacet {
+        tier_index: 1,
+        tier_name: "Girdle Facet".to_string(),
+        facet_plane_index: 3,
+        area: half_threshold_area,
+        threshold,
+        width_axis,
+    };
+    let text = undersized.to_string();
+    assert!(text.starts_with("tier 2 (Girdle Facet)"), "got {text}");
+    assert!(text.contains("0.50%"), "got {text}");
+    assert!(text.contains("1.00% minimum"), "got {text}");
 }

@@ -122,6 +122,7 @@ pub(super) fn run_export(
             scene
                 .lighting_preset
                 .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
+                .with_backdrop(scene.backdrop)
         },
         EnvironmentSource::HdrMap,
     );

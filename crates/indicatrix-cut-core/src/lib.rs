@@ -52,6 +52,12 @@
 //!   [`optimize::optimize_design`], a deterministic coordinate search over a
 //!   design's free facet angles that never moves a pinned tier, never proposes
 //!   geometry that fails to close, and never regresses a manufacturability warning.
+//! - [`cutting_sheet`]: [`design::Design::cutting_sheet`] builds a
+//!   [`cutting_sheet::CuttingSheet`] (every tier in cutting order, with angle,
+//!   indices, solved mast and a printable meet instruction) from a design and
+//!   its already-solved masts; [`design::Design::facet_meets`] and
+//!   [`cutting_sheet::diff_tiers`] are the companion per-facet and
+//!   before/after reads built alongside it.
 //!
 //! # Determinism
 //!
@@ -62,6 +68,7 @@
 //! takes a seed at all -- identical seed, identical result, always caller-supplied,
 //! never derived from wall-clock time.
 
+pub mod cutting_sheet;
 pub mod design;
 pub mod edit;
 pub mod manufacturability;
@@ -74,10 +81,12 @@ pub mod preform;
 pub mod resolve;
 pub mod yield_metrics;
 
+pub use cutting_sheet::{CutSheetRow, CuttingSheet, TierDelta, diff_tiers};
 pub use design::{ConstraintTier, Design, FreshDesignSpec, MissingAnchor, ScheduleMeta};
-pub use edit::{Edit, EditError, History, RemapRounding};
+pub use edit::{Edit, EditError, History, RemapRounding, remap_ratio};
 pub use manufacturability::{
     DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, ManufacturabilityWarning, check_manufacturability,
+    degenerate_suspects,
 };
 pub use material::{
     BuiltinMaterials, MaterialLookup, MaterialSelection, ResolvedMaterial, SpecificGravity,
@@ -96,10 +105,10 @@ pub use optimize::{
     OptimizeOutcome, SearchHooks, apply_optimize_outcome, evaluate_objective, free_tier_indices,
     optimize_design,
 };
-pub use orbit::{OrbitUnit, orbit_units};
+pub use orbit::{OrbitUnit, mirror_indices, orbit_units, rotate_indices};
 pub use preform::{PreformShape, PreformSpec};
 pub use resolve::resolve_after_edit;
 pub use yield_metrics::{
-    PreformFit, YieldReport, carat_weight, exceeds_preform, mm_per_unit, volume_mm3,
-    volumetric_yield,
+    PreformFit, StoneProportions, YieldReport, carat_weight, exceeds_preform, mm_per_unit,
+    volume_mm3, volumetric_yield,
 };

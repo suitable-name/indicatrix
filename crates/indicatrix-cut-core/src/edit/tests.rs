@@ -14,6 +14,7 @@ fn tier(name: &str, angle_deg: f64, constraint: MeetConstraint, indices: &[f64])
         indices: indices.to_vec(),
         constraint,
         imported_meet: None,
+        original_notes: None,
         detached: Vec::new(),
     }
 }
@@ -227,6 +228,196 @@ fn set_material_then_undo_restores_the_old_selection() {
 
     assert!(history.undo(&mut design).unwrap());
     assert_eq!(design, before);
+}
+
+/// `SetMeta` then undo must restore the previous headers/footnotes/gear
+/// reference angle wholesale, and applying it must not force a re-solve --
+/// none of those three fields feed `solve_meet_points`.
+#[test]
+fn set_meta_then_undo_restores_the_old_value() {
+    let mut design = fresh_design();
+    assert_eq!(design.meta.headers, Vec::<String>::new());
+    assert_eq!(design.meta.footnotes, Vec::<String>::new());
+    assert_eq!(design.meta.gear_reference_angle, 0.0);
+    let before = design.clone();
+    let before_solved = design.solve().expect("fresh design must solve");
+    let mut history = History::new();
+
+    history
+        .apply(
+            &mut design,
+            Edit::SetMeta {
+                headers: vec!["My Design".to_string()],
+                footnotes: vec!["Cut for a client".to_string()],
+                gear_reference_angle: 1.5,
+            },
+        )
+        .expect("set meta must apply");
+    assert_eq!(design.meta.headers, vec!["My Design".to_string()]);
+    assert_eq!(design.meta.footnotes, vec!["Cut for a client".to_string()]);
+    assert_eq!(design.meta.gear_reference_angle, 1.5);
+    // Purely metadata: the solved masts are untouched by the edit.
+    let after_solved = design.solve().expect("design must still solve");
+    let before_masts: Vec<f64> = before_solved.iter().map(|t| t.mast).collect();
+    let after_masts: Vec<f64> = after_solved.iter().map(|t| t.mast).collect();
+    assert_eq!(before_masts, after_masts);
+
+    assert!(history.undo(&mut design).unwrap());
+    assert_eq!(design, before);
+}
+
+/// `SetCheaterOffset` then undo must set/restore exactly one tier's own
+/// offset, leaving every other tier's `None` untouched, and clearing it
+/// (`offset_deg: None`) must undo back to a real previous value when one was
+/// set.
+#[test]
+fn set_cheater_offset_then_undo_restores_the_previous_value() {
+    let mut design = fresh_design();
+    design
+        .tiers
+        .push(tier("A", 10.0, MeetConstraint::ScaleReference(0.5), &[1.0]));
+    design
+        .tiers
+        .push(tier("B", 20.0, MeetConstraint::MeetExisting, &[2.0]));
+    let before = design.clone();
+    let mut history = History::new();
+
+    history
+        .apply(
+            &mut design,
+            Edit::SetCheaterOffset {
+                index: 1,
+                offset_deg: Some(2.5),
+            },
+        )
+        .expect("set cheater offset must apply");
+    assert_eq!(design.cheater_offset_deg(0), None);
+    assert_eq!(design.cheater_offset_deg(1), Some(2.5));
+
+    assert!(history.undo(&mut design).unwrap());
+    assert_eq!(design, before);
+    assert_eq!(design.cheater_offset_deg(1), None);
+
+    // Clearing a real value, then undoing, must restore it.
+    history
+        .apply(
+            &mut design,
+            Edit::SetCheaterOffset {
+                index: 1,
+                offset_deg: Some(2.5),
+            },
+        )
+        .expect("set cheater offset must apply");
+    history
+        .apply(
+            &mut design,
+            Edit::SetCheaterOffset {
+                index: 1,
+                offset_deg: None,
+            },
+        )
+        .expect("clear cheater offset must apply");
+    assert_eq!(design.cheater_offset_deg(1), None);
+    assert!(history.undo(&mut design).unwrap());
+    assert_eq!(design.cheater_offset_deg(1), Some(2.5));
+}
+
+/// `AddTier` before a tier with a recorded cheater offset must shift that
+/// offset's key along with the tier itself, and `RemoveTier` on the OFFSET
+/// tier must both remove the offset and restore it on undo (a `Batch` inverse
+/// under the hood -- see `Design::apply_edit`'s own `RemoveTier` arm).
+#[test]
+fn add_and_remove_tier_renumber_cheater_offsets() {
+    let mut design = fresh_design();
+    for name in ["A", "B", "C"] {
+        design
+            .tiers
+            .push(tier(name, 0.0, MeetConstraint::MeetExisting, &[]));
+    }
+    let mut history = History::new();
+    history
+        .apply(
+            &mut design,
+            Edit::SetCheaterOffset {
+                index: 1, // "B"
+                offset_deg: Some(4.0),
+            },
+        )
+        .expect("set cheater offset must apply");
+    let after_set = design.clone();
+
+    // Insert a new tier before "A": "B"'s offset (and "B" itself) must both
+    // move from index 1 to index 2.
+    history
+        .apply(
+            &mut design,
+            Edit::AddTier {
+                index: 0,
+                tier: tier("Z", 0.0, MeetConstraint::MeetExisting, &[]),
+            },
+        )
+        .expect("add must apply");
+    assert_eq!(design.tiers[2].name, "B");
+    assert_eq!(design.cheater_offset_deg(1), None);
+    assert_eq!(design.cheater_offset_deg(2), Some(4.0));
+
+    assert!(history.undo(&mut design).unwrap());
+    assert_eq!(design, after_set);
+    assert_eq!(design.cheater_offset_deg(1), Some(4.0));
+
+    // Removing "B" itself (the offset tier) must drop the offset, and
+    // undoing that removal must restore both the tier AND its own offset.
+    history
+        .apply(&mut design, Edit::RemoveTier { index: 1 })
+        .expect("remove must apply");
+    assert_eq!(design.cheater_offset_deg(1), None);
+    assert!(history.undo(&mut design).unwrap());
+    assert_eq!(design, after_set);
+    assert_eq!(design.cheater_offset_deg(1), Some(4.0));
+}
+
+/// `MoveTier` must relocate the moved tier's OWN cheater offset along with
+/// it, not just shift everyone else's -- and undo (the exact inverse move)
+/// must put it back.
+#[test]
+fn move_tier_relocates_its_own_cheater_offset() {
+    let mut design = fresh_design();
+    for name in ["A", "B", "C", "D"] {
+        design
+            .tiers
+            .push(tier(name, 0.0, MeetConstraint::MeetExisting, &[]));
+    }
+    let mut history = History::new();
+    history
+        .apply(
+            &mut design,
+            Edit::SetCheaterOffset {
+                index: 1, // "B"
+                offset_deg: Some(3.0),
+            },
+        )
+        .expect("set cheater offset must apply");
+    let after_set = design.clone();
+
+    // Move "B" (index 1) to the end (index 3): "C"/"D" shift down to fill the
+    // gap, and "B"'s own offset must follow it to index 3.
+    history
+        .apply(&mut design, Edit::MoveTier { from: 1, to: 3 })
+        .expect("move must apply");
+    assert_eq!(
+        design
+            .tiers
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["A", "C", "D", "B"]
+    );
+    assert_eq!(design.cheater_offset_deg(1), None);
+    assert_eq!(design.cheater_offset_deg(3), Some(3.0));
+
+    assert!(history.undo(&mut design).unwrap());
+    assert_eq!(design, after_set);
+    assert_eq!(design.cheater_offset_deg(1), Some(3.0));
 }
 
 /// A multi-step edit sequence, undone all the way back and redone all
@@ -516,6 +707,46 @@ fn remap_indices_with_equal_gears_is_a_no_op_and_still_undoes_cleanly() {
     assert_eq!(design, before);
 }
 
+/// A negative `g` header (a reversed index wheel, which real `.asc` files carry)
+/// must remap by MAGNITUDE. Scaling by the signed ratio moved every position to a
+/// negative index no wheel has, silently ruining the whole schedule.
+#[test]
+fn remap_indices_ignores_the_sign_of_either_gear() {
+    let mut design = fresh_design();
+    design.tiers.push(tier(
+        "P1",
+        -41.0,
+        MeetConstraint::ScaleReference(0.5),
+        &[0.0, 24.0, 48.0, 72.0],
+    ));
+    let mut from_negative = design.clone();
+    let mut both_positive = design.clone();
+
+    for (target, from_gear) in [(&mut from_negative, -96), (&mut both_positive, 96)] {
+        target
+            .apply_edit(Edit::RemapIndices {
+                from_gear,
+                to_gear: 48,
+                rounding: RemapRounding::Nearest,
+            })
+            .expect("remap must apply");
+    }
+
+    assert_eq!(from_negative, both_positive);
+    assert_eq!(from_negative.tiers[0].indices, vec![0.0, 12.0, 24.0, 36.0]);
+}
+
+/// The ratio itself, at the boundaries the tier-table preview shares with the edit.
+#[test]
+fn remap_ratio_is_magnitude_only_and_finite_at_zero() {
+    assert!((remap_ratio(96, 48) - 0.5).abs() < f64::EPSILON);
+    assert!((remap_ratio(-96, 48) - 0.5).abs() < f64::EPSILON);
+    assert!((remap_ratio(96, -48) - 0.5).abs() < f64::EPSILON);
+    assert!((remap_ratio(-96, -48) - 0.5).abs() < f64::EPSILON);
+    // Not a real gear, but reachable through this crate's own types.
+    assert!((remap_ratio(0, 48) - 1.0).abs() < f64::EPSILON);
+}
+
 // --- RetargetAngles ---
 
 #[test]
@@ -771,6 +1002,98 @@ fn an_ordinary_apply_between_two_coalescing_calls_breaks_the_merge() {
     assert!(!history.can_undo());
 }
 
+/// CAD audit item 165: [`History::with_coalesce_window`] lets a caller pick a
+/// window other than the crate-wide 500ms default -- here, one short enough that
+/// two calls 100ms apart (which the default-window test above merges) do NOT
+/// merge.
+#[test]
+fn with_coalesce_window_uses_the_given_window_instead_of_the_default() {
+    let mut design = fresh_design();
+    design
+        .tiers
+        .push(tier("P1", -40.0, MeetConstraint::ScaleReference(0.5), &[]));
+    let mut history = History::with_coalesce_window(Duration::from_millis(50));
+    let t0 = Instant::now();
+
+    history
+        .apply_coalescing(
+            &mut design,
+            Edit::ModifyTier {
+                index: 0,
+                tier: tier("P1", -40.1, MeetConstraint::ScaleReference(0.5), &[]),
+            },
+            1,
+            t0,
+        )
+        .expect("first nudge must apply");
+    // 100ms > this history's own 50ms window -- must NOT merge.
+    history
+        .apply_coalescing(
+            &mut design,
+            Edit::ModifyTier {
+                index: 0,
+                tier: tier("P1", -40.2, MeetConstraint::ScaleReference(0.5), &[]),
+            },
+            1,
+            t0 + Duration::from_millis(100),
+        )
+        .expect("second nudge must apply");
+
+    assert!(history.undo(&mut design).unwrap());
+    assert_eq!(
+        design.tiers[0].angle_deg, -40.1,
+        "only the second nudge undoes"
+    );
+    assert!(history.can_undo());
+}
+
+/// CAD audit item 165: [`History::end_coalesce_run`] ends a coalescing run
+/// explicitly, so a call with the SAME key that would otherwise merge (well
+/// inside the window) starts a fresh undo step instead once a caller has named
+/// its own interaction boundary (e.g. pointer release).
+#[test]
+fn end_coalesce_run_stops_the_next_same_key_call_from_merging() {
+    let mut design = fresh_design();
+    design
+        .tiers
+        .push(tier("P1", -40.0, MeetConstraint::ScaleReference(0.5), &[]));
+    let mut history = History::new();
+    let t0 = Instant::now();
+
+    history
+        .apply_coalescing(
+            &mut design,
+            Edit::ModifyTier {
+                index: 0,
+                tier: tier("P1", -40.1, MeetConstraint::ScaleReference(0.5), &[]),
+            },
+            1,
+            t0,
+        )
+        .expect("first nudge must apply");
+    history.end_coalesce_run();
+    // Same key, well inside the 500ms window -- would merge without the explicit
+    // end_coalesce_run above.
+    history
+        .apply_coalescing(
+            &mut design,
+            Edit::ModifyTier {
+                index: 0,
+                tier: tier("P1", -40.2, MeetConstraint::ScaleReference(0.5), &[]),
+            },
+            1,
+            t0 + Duration::from_millis(10),
+        )
+        .expect("second nudge must apply");
+
+    assert!(history.undo(&mut design).unwrap());
+    assert_eq!(
+        design.tiers[0].angle_deg, -40.1,
+        "only the second nudge undoes"
+    );
+    assert!(history.can_undo());
+}
+
 // --- property test: edits apply and invert exactly over generated tier lists ---
 
 /// A tiny deterministic splitmix64-seeded generator for a handful of synthetic
@@ -872,4 +1195,251 @@ fn new_a2_edit_variants_apply_and_invert_exactly_over_generated_tier_lists() {
             "seed {seed}: redoing all the way forward must reproduce the fully-edited design exactly"
         );
     }
+}
+
+// --- Edit::MoveTier ---
+
+fn four_tier_design() -> Design {
+    let mut design = fresh_design();
+    for name in ["A", "B", "C", "D"] {
+        design
+            .tiers
+            .push(tier(name, 0.0, MeetConstraint::ScaleReference(0.5), &[]));
+    }
+    design
+}
+
+fn tier_names(design: &Design) -> Vec<&str> {
+    design.tiers.iter().map(|t| t.name.as_str()).collect()
+}
+
+/// Moving a tier toward the front (`to < from`) must renumber every tier strictly
+/// between the two positions, and undo must restore the original order exactly.
+#[test]
+fn move_tier_up_reorders_and_undoes_cleanly() {
+    let mut design = four_tier_design();
+    let before = design.clone();
+    let mut history = History::new();
+
+    history
+        .apply(&mut design, Edit::MoveTier { from: 2, to: 0 })
+        .expect("move must apply");
+    assert_eq!(tier_names(&design), vec!["C", "A", "B", "D"]);
+
+    assert!(history.undo(&mut design).unwrap());
+    assert_eq!(design, before);
+    assert_eq!(tier_names(&design), vec!["A", "B", "C", "D"]);
+}
+
+/// Moving a tier toward the back (`to > from`) is the same operation in the other
+/// direction -- checked separately since `apply_move_tier`'s remove-then-insert
+/// shifts indices differently depending on which side `to` sits on relative to
+/// `from`.
+#[test]
+fn move_tier_down_reorders_and_undoes_cleanly() {
+    let mut design = four_tier_design();
+    let before = design.clone();
+    let mut history = History::new();
+
+    history
+        .apply(&mut design, Edit::MoveTier { from: 0, to: 2 })
+        .expect("move must apply");
+    assert_eq!(tier_names(&design), vec!["B", "C", "A", "D"]);
+
+    assert!(history.undo(&mut design).unwrap());
+    assert_eq!(design, before);
+    assert_eq!(tier_names(&design), vec!["A", "B", "C", "D"]);
+}
+
+/// Moving a tier to its own current position must be a true no-op -- the design is
+/// byte-identical afterward, and it still undoes cleanly (as itself).
+#[test]
+fn move_tier_to_its_own_position_is_a_no_op() {
+    let mut design = four_tier_design();
+    let before = design.clone();
+    let mut history = History::new();
+
+    history
+        .apply(&mut design, Edit::MoveTier { from: 1, to: 1 })
+        .expect("no-op move must apply");
+    assert_eq!(design, before);
+
+    assert!(history.undo(&mut design).unwrap());
+    assert_eq!(design, before);
+}
+
+/// A `from`/`to` naming a tier index the design doesn't have must be rejected
+/// without mutating the design, exactly like every other index-bearing `Edit`.
+#[test]
+fn move_tier_out_of_range_is_rejected_without_mutating_the_design() {
+    let mut design = four_tier_design();
+    let before = design.clone();
+
+    let err = design
+        .apply_edit(Edit::MoveTier { from: 1, to: 9 })
+        .expect_err("to=9 is out of range for a 4-tier design");
+    assert_eq!(
+        err,
+        EditError {
+            index: 9,
+            tier_count: 4
+        }
+    );
+    assert_eq!(design, before);
+
+    let err = design
+        .apply_edit(Edit::MoveTier { from: 9, to: 1 })
+        .expect_err("from=9 is out of range for a 4-tier design");
+    assert_eq!(
+        err,
+        EditError {
+            index: 9,
+            tier_count: 4
+        }
+    );
+    assert_eq!(design, before);
+}
+
+/// `describe` must read as a cutter's sentence for a move in each direction.
+#[test]
+fn describe_move_tier_names_the_tier_and_direction() {
+    let design = four_tier_design();
+    assert_eq!(
+        Edit::MoveTier { from: 2, to: 0 }.describe(&design),
+        "Move tier C up"
+    );
+    assert_eq!(
+        Edit::MoveTier { from: 0, to: 2 }.describe(&design),
+        "Move tier A down"
+    );
+}
+
+// --- Edit::Batch ---
+
+#[test]
+fn batch_applies_every_sub_edit_and_undoes_them_all_in_one_step() {
+    let mut design = fresh_design();
+    design
+        .tiers
+        .push(tier("P1", -40.0, MeetConstraint::ScaleReference(0.5), &[]));
+    let before = design.clone();
+    let mut history = History::new();
+
+    history
+        .apply(
+            &mut design,
+            Edit::Batch(vec![
+                Edit::RetargetAngles {
+                    changes: vec![(0, -40.0, -42.0)],
+                },
+                Edit::SetMaterial {
+                    material: MaterialSelection {
+                        name: Some("Quartz".to_string()),
+                        specific_gravity_override: None,
+                        refractive_index_override: None,
+                    },
+                },
+            ]),
+        )
+        .expect("batch must apply");
+    assert_eq!(design.tiers[0].angle_deg, -42.0);
+    assert_eq!(design.material.name.as_deref(), Some("Quartz"));
+    assert!(history.can_undo());
+
+    // One atomic undo step reverts BOTH sub-edits at once.
+    assert!(history.undo(&mut design).unwrap());
+    assert_eq!(design, before);
+    assert!(!history.can_undo());
+
+    assert!(history.redo(&mut design).unwrap());
+    assert_eq!(design.tiers[0].angle_deg, -42.0);
+    assert_eq!(design.material.name.as_deref(), Some("Quartz"));
+}
+
+#[test]
+fn batch_rejects_a_partially_invalid_batch_without_mutating_the_design() {
+    let mut design = fresh_design();
+    design
+        .tiers
+        .push(tier("P1", -40.0, MeetConstraint::ScaleReference(0.5), &[]));
+    let before = design.clone();
+
+    // The first sub-edit is valid on its own; the second names a tier index the
+    // design doesn't have. A naive "apply each in turn against `self`" implementation
+    // would leave the first sub-edit's effect in place -- this must not happen.
+    let err = design
+        .apply_edit(Edit::Batch(vec![
+            Edit::RetargetAngles {
+                changes: vec![(0, -40.0, -42.0)],
+            },
+            Edit::RemoveTier { index: 5 },
+        ]))
+        .expect_err("index 5 is out of range");
+    assert_eq!(
+        err,
+        EditError {
+            index: 5,
+            tier_count: 1
+        }
+    );
+    assert_eq!(
+        design, before,
+        "a batch that fails partway must not leave the design half-applied"
+    );
+}
+
+#[test]
+fn describe_reads_as_a_cutters_sentence_for_representative_variants() {
+    let mut design = fresh_design();
+    design
+        .tiers
+        .push(tier("P1", -40.0, MeetConstraint::ScaleReference(0.5), &[]));
+    design
+        .tiers
+        .push(tier("C1", 30.0, MeetConstraint::ScaleReference(0.5), &[]));
+
+    assert_eq!(
+        Edit::RetargetAngles {
+            changes: vec![(0, -40.0, -41.0)],
+        }
+        .describe(&design),
+        "Set P1 angle to -41.0 degrees"
+    );
+    assert_eq!(
+        Edit::RemapIndices {
+            from_gear: 96,
+            to_gear: 80,
+            rounding: RemapRounding::Nearest,
+        }
+        .describe(&design),
+        "Remap gear 96 to 80"
+    );
+    assert_eq!(
+        Edit::RemoveTier { index: 1 }.describe(&design),
+        "Remove tier C1"
+    );
+    let optimize_changes: Vec<(usize, f64, f64)> = (0..12).map(|i| (i, 0.0, 1.0)).collect();
+    assert_eq!(
+        Edit::RetargetAngles {
+            changes: optimize_changes,
+        }
+        .describe(&design),
+        "Optimize 12 tiers"
+    );
+    assert_eq!(
+        Edit::Batch(vec![
+            Edit::RetargetAngles {
+                changes: vec![(0, -40.0, -41.0)],
+            },
+            Edit::SetMaterial {
+                material: MaterialSelection {
+                    name: Some("Quartz".to_string()),
+                    specific_gravity_override: None,
+                    refractive_index_override: None,
+                },
+            },
+        ])
+        .describe(&design),
+        "Retarget for Quartz"
+    );
 }

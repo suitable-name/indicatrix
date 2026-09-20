@@ -72,6 +72,35 @@ export component ExportDialog inherits Rectangle {
         clicked => { if (!ExportModel.is_exporting) { root.close(); } }
     }
 
+    // CAD audit item 199: this dialog had no Escape/Enter/focus handling at all --
+    // the last of the five editor dialogs to get it. Mounted with `if ExportModel.
+    // is_open: ExportDialog { ... }` (`gem_viewport.slint`), i.e. freshly
+    // instantiated every time it opens (unlike `RetargetDialog`, which stays
+    // instantiated and toggles `visible`), so the plain `init => { self.focus(); }`
+    // idiom `material_editor_dialog.slint`/`new_design_dialog.slint` already use is
+    // enough here -- no `changed`-on-a-mirrored-property re-focus trick needed.
+    // Escape closes (unless an export is running, matching the header X/backdrop's
+    // own guard); Return starts the export, same guard. Every other key is
+    // swallowed (`accept`) so it cannot bubble to `global_shortcuts` and fire a
+    // shortcut (Ctrl+S, etc.) on the design underneath.
+    key_scope := FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                if (!ExportModel.is_exporting) {
+                    root.close();
+                }
+                return accept;
+            } else if event.text == Key.Return {
+                if (!ExportModel.is_exporting) {
+                    root.start_export(root.effective_width, root.effective_height, root.effective_samples, ExportModel.selected_color_space_index, root.compute_target, root.effective_max_bounces);
+                }
+                return accept;
+            }
+            accept
+        }
+    }
+
     // Modal Card Container
     Rectangle {
         width: 420px;

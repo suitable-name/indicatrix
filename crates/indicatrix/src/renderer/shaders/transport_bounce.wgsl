@@ -231,9 +231,11 @@ struct GpuTransportParams {
     // `blackbody_spectrum`.
     studio_use_d65: u32,
     studio_model: u32,
-    _pad_model_0: u32,
-    _pad_model_1: u32,
-    _pad_model_2: u32,
+    // `EnvironmentSource::Studio::backdrop`: the card the camera ray sees where it
+    // misses the stone, 0.0 for none.
+    backdrop: f32,
+    _pad_backdrop_0: u32,
+    _pad_backdrop_1: u32,
 }
 
 struct DispersionParams {
@@ -518,7 +520,22 @@ fn cie_1931_cmf(l: f32) -> vec3<f32> {
 // optics::raytracer::sample_studio_environment (+ optics::studio_rig::StudioRig) --
 // ported identically to shaders/environment.wgsl.
 
-// powi_u is defined in transport_physics.wgsl.
+fn powi_u(base: f32, exp: u32) -> f32 {
+    var result: f32 = 1.0;
+    var b: f32 = base;
+    var e: u32 = exp;
+    loop {
+        if (e == 0u) {
+            break;
+        }
+        if ((e & 1u) == 1u) {
+            result = result * b;
+        }
+        b = b * b;
+        e = e >> 1u;
+    }
+    return result;
+}
 
 fn blackbody_spectrum(lambda_nm: f32, temp_k: f32) -> f32 {
     let t_k = max(temp_k, 1000.0);
@@ -583,7 +600,10 @@ fn studio_rig_ring_dir(i: u32, light_yaw: f32, sin_lp: f32) -> vec3<f32> {
     return normalize(vec3<f32>(cos(angle) * 0.75, sin_lp * 0.8, sin(angle) * 0.75));
 }
 
-fn sample_soft_dome(
+// optics::raytracer::environment::sample_light_tent -- needs `studio_rig_ring_dir` for
+// the three black cards on ring slots 4/8/12, so it lives here rather than in the shared
+// prelude with the other lit models.
+fn sample_light_tent(
     d: vec3<f32>,
     spec_power: f32,
     spot_mult: f32,
@@ -592,36 +612,21 @@ fn sample_soft_dome(
     fill_dir: vec3<f32>,
     sin_lp: f32,
     light_yaw: f32,
+    observer: vec3<f32>,
 ) -> f32 {
-    var dome: f32;
-    if (d.y >= 0.0) {
-        dome = 0.02 * fma(d.y, 0.5, 0.5);
-    } else {
-        dome = 0.005;
+    let horizon = horizon_blend(d);
+    var walls = fma(0.08, max(d.y, 0.0), 0.14);
+    var card: f32 = 0.0;
+    for (var slot: u32 = 4u; slot < RING_LIGHT_COUNT; slot = slot + 4u) {
+        let card_dir = studio_rig_ring_dir(slot, light_yaw, sin_lp);
+        card = max(card, smoothstep_f32(CARD_OUTER_COS, CARD_INNER_COS, dot(d, card_dir)));
     }
-    var radiance = dome;
-
-    let key_dot = max(dot(d, key_dir), 0.0);
-    if (key_dot > 0.0) {
-        let key = powi_u(key_dot, 16u) * (3.5 * spot_mult);
-        radiance = radiance + key;
-    }
-
-    let fill_dot = max(dot(d, fill_dir), 0.0);
-    if (fill_dot > 0.0) {
-        let fill = powi_u(fill_dot, 12u) * 1.0;
-        radiance = radiance + fill;
-    }
-
-    let ring_scale = 0.8 * spot_mult;
-    for (var i: u32 = 0u; i < RING_LIGHT_COUNT; i = i + 1u) {
-        let ring_dir = studio_rig_ring_dir(i, light_yaw, sin_lp);
-        let ring_dot = dot(d, ring_dir);
-        let ring = smoothstep_f32(RING_CONE_OUTER_COS, RING_CONE_INNER_COS, ring_dot) * ring_scale;
-        radiance = radiance + ring;
-    }
-
-    return radiance * (exposure * spec_power);
+    walls = walls * fma(card, -0.9, 1.0);
+    let key = smoothstep_f32(TENT_KEY_OUTER_COS, TENT_KEY_INNER_COS, dot(d, key_dir)) * (1.4 * spot_mult);
+    let spark = smoothstep_f32(SPARK_OUTER_COS, SPARK_INNER_COS, dot(d, fill_dir)) * (5.0 * spot_mult);
+    let above = ((walls + key) + spark) * (horizon * observer_visibility(d, observer));
+    let ground = 0.02 * (1.0 - horizon);
+    return (above + ground) * (spec_power * exposure);
 }
 
 fn sample_studio_rig(
@@ -672,21 +677,31 @@ fn studio_dispatch(
     fill_dir: vec3<f32>,
     sin_lp: f32,
     light_yaw: f32,
+    observer: vec3<f32>,
 ) -> f32 {
     switch (model) {
         case 1u: {
-            return sample_iso_hemisphere(d, spec_power, exposure, key_dir);
+            return sample_iso_hemisphere(d, spec_power, exposure, observer);
         }
         case 2u: {
-            return sample_soft_dome(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw);
+            return sample_light_tent(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw, observer);
         }
         case 3u: {
-            return sample_daylight_dome(d, spec_power, exposure, key_dir);
+            return sample_daylight_dome(d, spec_power, exposure, key_dir, observer);
         }
         default: {
             return sample_studio_rig(d, spec_power, spot_mult, exposure, key_dir, fill_dir, sin_lp, light_yaw);
         }
     }
+}
+
+// `LightingPreset::spectral_power`: the tabulated CIE D65 curve for the D65 presets,
+// else a Planckian fit at `studio_temp_k`.
+fn studio_spectral_power(lambda_nm: f32) -> f32 {
+    if (params.studio_use_d65 != 0u) {
+        return d65_relative_spectral_power(lambda_nm);
+    }
+    return blackbody_spectrum(lambda_nm, params.studio_temp_k);
 }
 
 // `key_dir`/`fill_dir`/`sin_lp` (the `StudioRig`-equivalent quantities) are constant
@@ -700,15 +715,10 @@ fn sample_studio_environment_with_rig(
     key_dir: vec3<f32>,
     fill_dir: vec3<f32>,
     sin_lp: f32,
+    observer: vec3<f32>,
 ) -> f32 {
     let d = normalize(dir_in);
-    // Mirrors `sample_studio_environment_with_rig`'s `preset.uses_d65()` branch.
-    var spec_power: f32;
-    if (params.studio_use_d65 != 0u) {
-        spec_power = d65_relative_spectral_power(lambda_nm);
-    } else {
-        spec_power = blackbody_spectrum(lambda_nm, params.studio_temp_k);
-    }
+    let spec_power = studio_spectral_power(lambda_nm);
 
     return studio_dispatch(
         params.studio_model,
@@ -720,6 +730,7 @@ fn sample_studio_environment_with_rig(
         fill_dir,
         sin_lp,
         params.studio_light_yaw,
+        observer,
     );
 }
 
@@ -783,13 +794,14 @@ fn sample_environment_with_rig(
     key_dir: vec3<f32>,
     fill_dir: vec3<f32>,
     sin_lp: f32,
+    observer: vec3<f32>,
 ) -> f32 {
     if (params.env_mode == 0u) {
         return rgb_to_spectral_radiance(params.l0, params.l0, params.l0, lambda_nm);
     } else if (params.env_mode == 2u) {
         return hdr_env_radiance_at(dir, lambda_nm);
     }
-    return sample_studio_environment_with_rig(dir, lambda_nm, key_dir, fill_dir, sin_lp);
+    return sample_studio_environment_with_rig(dir, lambda_nm, key_dir, fill_dir, sin_lp, observer);
 }
 
 // `dispersion_evaluate`, `spectral_absorption`, the four `mueller_*` Mueller-matrix
@@ -892,13 +904,14 @@ fn try_split_exit_channel(
     key_dir: vec3<f32>,
     fill_dir: vec3<f32>,
     sin_lp: f32,
+    observer: vec3<f32>,
 ) {
     let probe = intersect_ray(hit_point + dir_k * 1e-4, dir_k);
     if (probe.hit) {
         // Bounded re-entry: decline to trace further (a pure energy-loss truncation).
         return;
     }
-    let env_spectral = sample_environment_with_rig(dir_k, lambda_k, key_dir, fill_dir, sin_lp);
+    let env_spectral = sample_environment_with_rig(dir_k, lambda_k, key_dir, fill_dir, sin_lp, observer);
     (*split_radiance)[k] = fma(max(transmitted_intensity, 0.0), env_spectral, (*split_radiance)[k]);
 }
 
@@ -1248,9 +1261,10 @@ const BOUNCE_STATUS_TERMINATE: u32 = 1u;
 
 // See this file's header comment for the calling convention. Parameter order: `bounce`
 // (the loop counter) and the per-ray RNG seed first, then every read-only per-ray
-// constant in the same order the megakernel's own prologue computed them, then every
-// mutable per-bounce state pointer in the same order the megakernel's own prologue
-// declared them.
+// constant in the same order the megakernel's own prologue computed them (`observer`,
+// the unit direction back towards the eye for the lit lighting models' head shadow,
+// last), then every mutable per-bounce state pointer in the same order the
+// megakernel's own prologue declared them.
 fn transport_bounce_step(
     bounce: u32,
     seed0: u32,
@@ -1274,6 +1288,7 @@ fn transport_bounce_step(
     studio_key_dir: vec3<f32>,
     studio_fill_dir: vec3<f32>,
     studio_sin_lp: f32,
+    observer: vec3<f32>,
     stokes: ptr<function, array<vec4<f32>, 8>>,
     radiance: ptr<function, array<f32, 8>>,
     path_pdf: ptr<function, array<f32, 8>>,
@@ -1294,13 +1309,22 @@ fn transport_bounce_step(
 
         let hit = intersect_ray((*current_origin), (*current_dir));
         if (!hit.hit) {
+            // The camera ray sees the backdrop card, if the scene has one -- see
+            // `optics::raytracer::environment::fill_backdrop`.
+            if (bounce == 0u && params.env_mode == 1u && params.backdrop > 0.0) {
+                for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
+                    (*radiance)[k] = params.backdrop * studio_spectral_power((*lambdas)[k]);
+                }
+                (*path_escaped) = true;
+                return BOUNCE_STATUS_TERMINATE;
+            }
             var mis_weight: f32 = 1.0;
             if (phase_pdf_this_check > 0.0 && params.env_mode == 2u) {
                 let light_pdf = dist2d_pdf((*current_dir));
                 mis_weight = balance_heuristic(phase_pdf_this_check, light_pdf);
             }
             for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
-                let env = sample_environment_with_rig((*current_dir), (*lambdas)[k], studio_key_dir, studio_fill_dir, studio_sin_lp);
+                let env = sample_environment_with_rig((*current_dir), (*lambdas)[k], studio_key_dir, studio_fill_dir, studio_sin_lp, observer);
                 // `max((*stokes)[k].x, 0.0)` clamps `I` to >= 0 before the environment
                 // lookup, matching `accumulate_miss_radiance`'s `StokesVector::intensity`
                 // on the CPU side -- negative `I` is unphysical on either side.
@@ -2012,7 +2036,7 @@ fn transport_bounce_step(
                             if (original_stokes_i > 0.0) {
                                 try_split_exit_channel(
                                     split_radiance, hit_point, k, (*lambdas)[k], refr_wave_dir_k,
-                                    et_mm.transmitted.x, studio_key_dir, studio_fill_dir, studio_sin_lp,
+                                    et_mm.transmitted.x, studio_key_dir, studio_fill_dir, studio_sin_lp, observer,
                                 );
                             }
                             continue;
@@ -2330,7 +2354,7 @@ fn transport_bounce_step(
                         if (is_exit_event && original_stokes_k.x > 0.0) {
                             try_split_exit_channel(
                                 split_radiance, hit_point, k, (*lambdas)[k], refr_wave_dir_k,
-                                ct.transmitted.x, studio_key_dir, studio_fill_dir, studio_sin_lp,
+                                ct.transmitted.x, studio_key_dir, studio_fill_dir, studio_sin_lp, observer,
                             );
                         }
                     }

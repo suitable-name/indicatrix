@@ -39,6 +39,19 @@ pub(in crate::gui) fn setup_material_changed_callback(
         .on_material_changed(move |material: SharedString| {
             let mut ctx = render_ctx_mat.lock().unwrap();
             ctx.material_name = material.to_string();
+            // Cleared, not left alone: `resolve_material_with_override` PREFERS
+            // `material_override` over the name just written, and
+            // `editor::view::refresh_design_settings` sets one on every refresh while
+            // "Linked to design" is on. Without this, picking a material here moved the
+            // label, the toast and the persisted setting, and left the trace untouched
+            // -- the dropdown looked like it worked and did nothing at all.
+            ctx.material_override = None;
+            // Same reasoning one step further: a design that names no material and
+            // matches no built-in within tolerance suspends tracing outright
+            // (`SuspensionFlags`, via `editor::view::traced_material_for`'s refusal).
+            // Naming one by hand is exactly the way out of that, and the refusal cannot
+            // be re-imposed now that the link below is off.
+            ctx.material_unresolved = None;
             ctx.dirty = true;
             // Resolved once and reused for both derived UI values below -- the
             // crystal-axis-availability check and the RI-tolerance filter's "defaults to
@@ -56,6 +69,20 @@ pub(in crate::gui) fn setup_material_changed_callback(
             drop(ctx);
             settings_store_mat.update(|s| s.settings.selected_material = material.to_string());
             if let Some(ui) = ui_weak_mat.upgrade() {
+                // Picking a material by hand IS the independent choice "Linked to
+                // design" exists to suppress (see `ViewportModel::
+                // viewport_material_linked`'s own doc comment). Left on, the next
+                // editor refresh would put the design's own material straight back --
+                // and write a fresh `material_override` with it, making this dropdown
+                // inert again. Turning it off is also what makes the pick durable:
+                // `refresh_design_settings` touches none of the three fields above
+                // while unlinked. The link's own handler already re-syncs on the way
+                // back ON, so nothing is lost by switching it off here.
+                let was_linked = ui.global::<ViewportModel>().get_viewport_material_linked();
+                if was_linked {
+                    ui.global::<ViewportModel>()
+                        .set_viewport_material_linked(false);
+                }
                 ui.global::<SettingsModel>()
                     .set_c_axis_override_available(available);
                 // `ri_default` is f64; Slint's `float` property type is f32 -- a lossy
@@ -63,7 +90,12 @@ pub(in crate::gui) fn setup_material_changed_callback(
                 // range.
                 ui.global::<LibraryModel>()
                     .set_ri_material_default(ri_default as f32);
-                show_toast(&ui, &format!("Material switched to {material}"), "info");
+                let message = if was_linked {
+                    format!("Material switched to {material} \u{2014} unlinked from the design.")
+                } else {
+                    format!("Material switched to {material}")
+                };
+                show_toast(&ui, &message, "info");
             }
         });
 }
@@ -362,5 +394,26 @@ pub(in crate::gui) fn setup_material_effect_override_callbacks(
             ctx.dirty = true;
             drop(ctx);
             settings_store_stone.update(|s| s.settings.stone_width_mm = clamped);
+        });
+}
+
+/// Wires the backdrop pill row: what the camera sees behind the stone, in the live
+/// view and every export (`RenderContext::backdrop`, persisted as
+/// `AppSettings::backdrop`).
+pub(in crate::gui) fn setup_backdrop_callback(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    settings_store: &Arc<SettingsPersister>,
+) {
+    let render_ctx = render_ctx.clone();
+    let settings_store = settings_store.clone();
+    ui.global::<SettingsModel>()
+        .on_backdrop_changed(move |index: i32| {
+            let backdrop = crate::settings::model::Backdrop::from_index(index);
+            let mut ctx = render_ctx.lock().unwrap();
+            ctx.backdrop = backdrop;
+            ctx.dirty = true;
+            drop(ctx);
+            settings_store.update(|s| s.settings.backdrop = backdrop);
         });
 }

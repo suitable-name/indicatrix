@@ -1,21 +1,100 @@
-import { EditorTierItem, GearRemapRow, OptimizeResultRow } from "../types.slint";
+import { AngleItem, DeepSolveTierRow, EditorTierItem, GearRemapRow, IndexChipItem, OptimizeChangeRow, OptimizeResultRow } from "../types.slint";
 
 export global EditorModel {
     in property <bool> enabled: false;
 
     in-out property <int> selected_tier_index: -1;
     callback selected_tier_changed(int);
+    changed selected_tier_index => { selected_tier_changed(selected_tier_index); }
+
+    // Bumped by Rust (New/Load Selected/Open Native, and whenever removing the
+    // currently selected tier or an undo/redo leaves it pointing past the end)
+    // whenever the tier-edit form must go back to blank -- a monotonically
+    // increasing counter, not a plain flag, for the same reason `editor_tier_table.
+    // slint`'s `TierAngleCell::focus_pulse` is one: `selected_tier_index` going from
+    // `-1` to `-1` again (nothing was selected either before or after) fires no
+    // `changed`, so a plain "clear when index is -1" watcher would miss it. `EditorView`
+    // watches this (alongside `selected_tier_index` itself) to re-seed/clear
+    // `EditorInspector`'s form no matter which of those Rust call sites moved the
+    // selection -- see that file's own doc comment for why a global callback/`changed`
+    // handler can't be given a body outside the file that declares it, which is why
+    // this is a plain property rather than the more obvious `callback reset_selection()`.
+    in-out property <int> form_reset_pulse: 0;
+
+    // CAD audit item 43: bumped by app.slint's Ctrl+F arm when the Edit tab is
+    // showing, watched by `EditorTierTable`, which turns it into a `focus_filter()`
+    // call. A pulse rather than a direct call because both `EditorView`
+    // instantiations sit inside `if` branches, and an id inside a conditional
+    // element is unreachable from the root `global_shortcuts` FocusScope -- the
+    // same trap `form_reset_pulse` above exists to work around. Monotonic because
+    // writing the same value fires no `changed`, so pressing Ctrl+F twice must
+    // still focus twice.
+    in-out property <int> filter_focus_pulse: 0;
+
+    // CAD audit items 95/78: what the startup prompt is offering to open -- a full
+    // path, or "" for no offer (a first run, or a cutter who has opened nothing).
+    // The Edit tab still starts on a blank design either way; this only offers,
+    // because silently reopening yesterday's work would be a surprise, and would
+    // hide a crash-recovery file behind an ordinary-looking session.
+    in-out property <string> startup_restore_path: "";
+    // Whether that path is a leftover AUTOSAVE (a previous run that did not shut
+    // down cleanly) rather than an ordinary recent file. Changes the wording, and
+    // the stakes: an autosave holds work that was never saved at all.
+    in property <bool> startup_restore_is_autosave: false;
+    callback startup_restore_accept();
+    callback startup_restore_dismiss();
 
     in property <[EditorTierItem]> tiers: [];
+
+    // The tier table's search/filter box (CAD audit item 43) -- on a hundred-tier
+    // design, scrolling or 80 Down-presses was the only way to reach a distant row.
+    // `tier_filter_text` is a plain two-way property (Slint owns it; Rust never
+    // pushes into it) so typing needs no round trip on its own. The actual
+    // substring test, though, has to run in Rust: Slint's `string` has no
+    // `contains`/index-of operation at all (see `gui::editor::state::
+    // tier_matches_filter`'s own doc comment). `tier_matches_filter` is declared
+    // `pure` so `editor_tier_table.slint` can call it directly inside each row's
+    // dim/hide binding -- Slint re-evaluates that binding on its own whenever
+    // `tier_filter_text` (read in the very same expression) changes, no explicit
+    // push from Rust needed once the handler below is registered.
+    //
+    // *** HANDOFF: the handler itself is one line this global cannot carry (a
+    // global's callback can only get a body in Rust or in the file that declares
+    // the global -- and the file that declares this one, `ui/models/editor.slint`,
+    // is not a `.rs` file). It needs registering in `gui::editor::callbacks`
+    // (`tier_actions.rs`, alongside the other `EditorModel` `on_*` calls) as:
+    // `ui.global::<EditorModel>().on_tier_matches_filter(|haystack, filter| state::tier_matches_filter(&haystack, &filter).into());`
+    // Every call site below already short-circuits on an empty filter, so the
+    // table behaves exactly as it does today until that one line lands.
+    in-out property <string> tier_filter_text: "";
+    pure callback tier_matches_filter(string, string) -> bool;
     in property <bool> can_undo: false;
     in property <bool> can_redo: false;
     in property <string> status_text: "";
     in property <bool> status_is_problem: false;
 
+    // A one-shot override for the tier-edit form's "Meets" combo, consumed by
+    // `EditorInspector.load_tier_into_form` the next time `selected_tier_index`
+    // actually changes (then reset back to `-1` there). This is how the tier
+    // table's "Add Anchor" action (`editor_tier_table.slint`, shown on a row
+    // `EditorTierItem.needs_anchor` flags) opens the Tier tab already set to
+    // "Exact scale value" (`constraint_kind == 2`) instead of leaving the cutter to
+    // notice and pick that combo entry themselves. `-1` (the default, and what
+    // `load_tier_into_form` restores immediately after reading it) means "no
+    // suggestion -- load the tier's own current kind," the path every ordinary
+    // selection change takes.
+    in-out property <int> suggested_constraint_kind: -1;
+
     in-out property <int> preform_shape_index: 1;
     in-out property <string> preform_half_width: "1.20";
     in-out property <string> preform_length_over_width: "1.00";
     in-out property <string> preform_depth: "1.20";
+    // CAD audit item 136: the mm equivalent of Half-Width/Depth above, once a
+    // girdle diameter anchors the scale (`state::preform_mm_texts`) -- shown
+    // read-only ALONGSIDE the editable model-unit fields, never replacing
+    // them; empty when there is nothing to convert yet.
+    in property <string> preform_half_width_mm_text: "";
+    in property <string> preform_depth_mm_text: "";
 
     in-out property <string> girdle_diameter_mm: "";
     in-out property <int> material_index: 0;
@@ -31,6 +110,13 @@ export global EditorModel {
     in-out property <int> material_combo_index: 0;
     in-out property <string> ri_override_text: "";
     in property <string> effective_ri_text: "";
+    // Where `effective_ri_text` actually came from -- a typed override, a custom
+    // catalogue material, a built-in preset, or the design's legacy imported value
+    // (`gui::editor::state::ri_source_text`, mirroring `Design::
+    // effective_refractive_index_with`'s own precedence) -- CAD audit item 53.
+    // Shown in the inspector rather than `editor_design_settings.slint` (a
+    // different lane's file) alongside the existing "Eff. RI" chip.
+    in property <string> ri_source_text: "";
     in property <string> critical_angle_text: "";
     callback apply_design_material(int, string);
 
@@ -45,6 +131,17 @@ export global EditorModel {
     in-out property <string> symmetry_order_text: "8";
     in-out property <bool> mirror: true;
     callback apply_symmetry(string, bool);
+    // CAD audit item 135: a live "N tiers would become incomplete orbits"
+    // dry-run preview of the proposed Symmetry Order/Mirror change, requested
+    // by `editor_design_settings.slint` as those fields are edited -- BEFORE
+    // Apply Symmetry actually commits anything, mirroring the gear-remap
+    // path's own confirmation dry run. Empty until the first request (or when
+    // the typed symmetry order does not parse), and reset to empty whenever
+    // these two fields are freshly pushed from the real design
+    // (`view::refresh_design_settings`) -- a value that already matches the
+    // live design has nothing left to preview.
+    in property <string> symmetry_preview_text: "";
+    callback request_symmetry_preview(string, bool);
 
     in property <string> material_suggestion_text: "";
     in property <string> material_suggestion_name: "";
@@ -61,7 +158,20 @@ export global EditorModel {
     in-out property <string> new_symmetry_order_text: "8";
     in-out property <bool> new_mirror: true;
     in-out property <int> new_material_index: 0;
-    callback new_design_create(int, string, string, string, int, string, string, bool, int);
+    // Trailing `int` is the "Start from" template (CAD audit item 207): 0 empty,
+    // 1 standard round brilliant. A template carries its own tier table, which
+    // assumes a 96-tooth wheel at 8-fold symmetry with mirror on -- the dialog
+    // locks those three controls to match, by the owner's decision, rather than
+    // remapping the template onto whatever wheel was selected.
+    // The New Design dialog's "Start from" choice (CAD audit item 207): 0 empty,
+    // 1 standard round brilliant. On the model rather than local to the dialog
+    // because the dialog's Create button and `app.slint`'s Return-key handler are
+    // two independent call sites for `new_design_create`, and a dialog-local value
+    // would be invisible to the second -- so pressing Enter would silently discard
+    // the chosen template.
+    in-out property <int> new_template_index: 0;
+
+    callback new_design_create(int, string, string, string, int, string, string, bool, int, int);
 
     callback load_selected();
     callback solve();
@@ -81,10 +191,144 @@ export global EditorModel {
     callback nudge_angle(int, float);
     callback duplicate_tier(int);
     callback toggle_multi_select(int);
+    // CAD audit item 39's remainder: Shift+click range select, replacing the whole
+    // `multi_selected` set with every tier between the current selection anchor
+    // (`selected_tier_index`) and this index, inclusive -- unlike
+    // `toggle_multi_select`'s Ctrl+click, which only ever flips one row. See
+    // `gui::editor::callbacks::tier_actions::setup_select_tier_range_callback`.
+    callback select_tier_range(int);
     callback export_asc();
+    // CAD audit item 109 (blocker): a printable cutting sequence -- step, tier
+    // name, Crown/Pavilion label, angle, indices, mast in model units and mm,
+    // meet note -- as a single self-contained HTML file with the 2D diagram
+    // embedded, so it prints from a browser with no new dependency.
+    callback export_cutting_sheet();
+    // CAD audit item 214: the 2D diagram alone, as a PNG. Shares the cut sheet's
+    // own rendering path rather than a second one.
+    callback export_diagram();
+    // "Save Native As..." -- the explicit pick-a-location action, distinct from
+    // `save_native`, which now writes straight through to this design's own known
+    // file when there is one (CAD audit item 80). Without the split there was no
+    // way to save a copy elsewhere once a design had a location.
+    callback save_native_as();
     callback save_native();
     callback open_native();
     callback adopt_meet(int);
+
+    // Multi-select batch actions and the tier list's own "N selected" indicator
+    // (`editor_tier_table.slint`'s header) -- see `gui::editor::callbacks::
+    // tier_actions::setup_clear_multi_select_callback`/`setup_remove_multi_selected_
+    // callback`. Pushed alongside every `tiers` refresh from the same
+    // `apply_multi_selection` call site that already patches each row's own
+    // `multi_selected` flag, so the two never disagree.
+    in property <int> multi_selected_count: 0;
+    callback clear_multi_select();
+    callback remove_multi_selected();
+
+    // Row reorder (`Alt+Up`/`Alt+Down` and the tier list's own move buttons) --
+    // `direction` is `-1` (move up/earlier in cut order) or `+1` (move down/later).
+    // See `gui::editor::callbacks::tier_actions::setup_move_tier_callback` for why
+    // this swaps two tiers' content as two `Edit::ModifyTier`s rather than a single
+    // `Edit::MoveTier` (no such variant exists in `indicatrix-cut-core` yet).
+    callback move_tier(int, int);
+
+    // "Complete orbit" -- expands the tier's incomplete orbit unit(s) to their full
+    // symmetric membership via `Design::add_orbit_member`, shown on the tier
+    // table's ORBIT cell whenever `EditorTierItem::orbit_incomplete` is set.
+    callback complete_orbit(int);
+
+    // Per-facet editing (a different lane's Rust handlers; declared here only
+    // because a global's callback must be declared in the file that owns the
+    // global -- see this file's own module-level convention). The first
+    // argument is always the tier index; the second is the index-wheel
+    // position for the three facet callbacks, or the tooth count to rotate by
+    // for `tier_rotate_indices`. No handler body belongs here -- see
+    // `gui::editor::callbacks` for where these are actually wired.
+    callback facet_remove(int, float);
+    callback facet_toggle_detach(int, float);
+    callback facet_add(int, float);
+    callback tier_rotate_indices(int, float);
+    callback tier_mirror_indices(int);
+
+    // Tier-table actions, declared here for the same reason as the facet
+    // callbacks above (the table lives in `editor_tier_table.slint`, which
+    // cannot declare a callback on a global it does not own). Wired in
+    // `gui::editor::callbacks::tier_actions`.
+    //
+    // `adopt_all` takes every tier whose solved angle the solver has already
+    // proposed and applies the whole set as one undoable batch.
+    // `pin_to_mast` takes the tier index to convert to a `ScaleReference`
+    // constraint against the current solve's mast.
+    // `highlight_tooth` takes an index-wheel position; -1 clears the tint.
+    callback adopt_all();
+    // Like `adopt_all` but restricted to the multi-selection (CAD audit item 128),
+    // applied as one `Edit::Batch` so it is a single undo step.
+    callback adopt_selected();
+    // Rounding for the pending gear remap: 0 Nearest, 1 Floor, 2 Ceil (CAD audit
+    // item 86). Nearest was hard-coded, which silently moved indices a cutter had
+    // deliberately placed on a half-tooth.
+    callback gear_remap_set_rounding(int);
+    callback pin_to_mast(int);
+    callback highlight_tooth(int);
+
+    // The chip row for whichever tier the inspector's Tier tab currently has
+    // loaded (CAD audit item 45) -- one entry per index-wheel position, each
+    // flagging whether THAT occurrence is detached. Deliberately its own
+    // top-level property, computed only for the one tier being edited, rather
+    // than a field on every `EditorTierItem` row: that struct's list is built on
+    // a background thread for a large design (`gui::editor::auto_solve`) and
+    // shipped to the UI thread inside a `Send` struct, which a `ModelRc`-backed
+    // (`Rc`, so not `Send`) array field cannot be part of. Pushed by
+    // `gui::editor::view::push_selected_tier_chips`, called from the same
+    // `refresh_editor_panel`/`push_stale_content` that already push `tiers` --
+    // that covers every EDIT (including a facet add/remove/detach/rotate/mirror
+    // on the loaded tier), but not a plain selection change with no edit.
+    //
+    // *** HANDOFF: see `push_selected_tier_chips`'s own doc comment
+    // (`gui::editor::view`) for the one more call
+    // `callbacks::tier_actions::setup_solid_selected_tier_changed_callback` needs
+    // so a row click alone also keeps this current.
+    in property <[IndexChipItem]> selected_tier_chips: [];
+
+    // Unsaved-changes tracking (Save/Discard/Cancel guard in front of New/Load
+    // Selected/Open Native, plus the status strip's "Unsaved" marker and the window
+    // title's leading marker in `app.slint`). `is_dirty` is Rust-driven
+    // (`gui::editor::native_io::setup_dirty_tracking`'s `recompute_dirty` handler),
+    // but recomputed reactively from THIS side too: `tiers` is reassigned by every
+    // refresh path that follows a real edit (`view::refresh_editor_panel`/
+    // `refresh_editor_panel_stale`/`push_stale_content`, called from every edit
+    // callback across this app, not just the ones Rust-side dirty tracking can reach
+    // directly), so watching it here catches edits made through files outside that
+    // module's own reach (Deep Solve/Optimize Apply, Adopt, Retarget Apply) without
+    // needing a `set_is_dirty` call at every one of those sites individually.
+    in-out property <bool> is_dirty: false;
+    callback recompute_dirty();
+    changed tiers => { recompute_dirty(); }
+
+    // The Save/Discard/Cancel dialog New/Load Selected/Open Native show in front of
+    // their own destructive replace-the-design step whenever `is_dirty` is true --
+    // see `gui::editor::callbacks::tier_actions::setup_unsaved_guard_dispatch` for
+    // the Rust side, and `gui::editor::state::PendingUnsavedAction` for what "Save"/
+    // "Discard" actually resume.
+    in-out property <bool> unsaved_dialog_open: false;
+    in property <string> unsaved_dialog_message: "";
+    callback unsaved_dialog_save();
+    callback unsaved_dialog_discard();
+    callback unsaved_dialog_cancel();
+
+    // "Open Native" found a paired `.asc` whose fingerprint no longer matches the
+    // native sidecar (it was touched outside the editor since the last save) --
+    // rather than silently keeping or silently dropping the sidecar's authored meet
+    // constraints, this blocks on an explicit choice. `mismatch_dialog_can_apply` is
+    // `false` when the native file's own tier count no longer even agrees with the
+    // freshly imported `.asc` (see `indicatrix_cut_core::native::TierOverlay::
+    // SkippedTierCountMismatch`'s own doc comment) -- re-applying a per-index overlay
+    // in that case can't mean anything, so "Apply Anyway" is not offered at all.
+    in-out property <bool> mismatch_dialog_open: false;
+    in property <bool> mismatch_dialog_can_apply: false;
+    callback mismatch_dialog_apply_anyway();
+    callback mismatch_dialog_asc_only();
+    callback mismatch_dialog_cancel();
 
     in property <bool> deep_solve_available: false;
     in property <string> deep_solve_hint: "";
@@ -92,7 +336,26 @@ export global EditorModel {
     in property <string> deep_solve_status: "";
     in property <bool> deep_solve_status_is_problem: false;
     callback deep_solve();
+    // CAD audit item 112: abandons a running Solve/auto-solve. Unlike Deep Solve's
+    // cancel this cannot stop the worker mid-solve -- `Design::solve` has no
+    // checkpoint -- but it invalidates the in-flight result and gives the cutter
+    // their editor back immediately, which is the part that was missing entirely.
+    callback solve_cancel();
     callback deep_solve_cancel();
+    // The per-tier table behind `deep_solve_status`'s aggregate verdict (CAD
+    // audit item 67's display half) -- one row per tier whose mast Deep Solve's
+    // verified repair actually disagreed with the design's plain solve on
+    // (`gui::editor::deep_solve::tier_mast_deltas`, formatted by `gui::editor::
+    // view::deep_solve_tier_rows`). Empty on `Cancelled`, on a run that found
+    // full agreement, or before Deep Solve has ever completed.
+    //
+    // *** HANDOFF: nothing pushes this yet. `callbacks::solve_actions::
+    // setup_deep_solve_callback` already has `DeepSolveOutcome::Completed`'s
+    // `solved` and the design's own last plain solve in scope (that is where
+    // `format_tier_mast_deltas`'s status-line suffix already comes from) -- it
+    // needs one more call, `view::deep_solve_tier_rows(&deep_solve::tier_mast_deltas(&current, &solved), &design)`,
+    // pushed here the same way `optimize_result_rows` already is.
+    in property <[DeepSolveTierRow]> deep_solve_tier_rows: [];
 
     in property <bool> optimize_available: false;
     in property <string> optimize_hint: "";
@@ -100,6 +363,19 @@ export global EditorModel {
     in property <string> optimize_status: "";
     in property <bool> optimize_status_is_problem: false;
     in property <[OptimizeResultRow]> optimize_result_rows: [];
+    // The per-tier table behind the four aggregate component rows above (CAD
+    // audit item 68's display half) -- one row per `indicatrix_cut_core::
+    // OptimizeOutcome::changes` entry (`gui::editor::view::optimize_change_rows`),
+    // so a cutter can see WHICH tiers a pending Optimize result would move, and by
+    // how much, before clicking Apply -- not only the blended before/after scores.
+    // Empty while there is no current, un-applied result (mirrors
+    // `optimize_result_rows`'s own lifetime).
+    //
+    // *** HANDOFF: nothing pushes this yet -- needs the same one more call
+    // `optimize_result_rows` already gets, in `callbacks::solve_actions`, at each
+    // of its three `set_optimize_result_rows` call sites: `view::optimize_change_rows(&outcome, &design)`
+    // pushed to `set_optimize_change_rows`.
+    in property <[OptimizeChangeRow]> optimize_change_rows: [];
     in property <bool> optimize_can_apply: false;
     in-out property <string> optimize_weight_windowing: "1.0";
     in-out property <string> optimize_weight_extinction: "1.0";
@@ -108,7 +384,101 @@ export global EditorModel {
     callback optimize_cancel();
     callback optimize_apply();
 
+    // CAD audit item 216: Solve, Deep Solve and Optimize used to guard only their
+    // own `*_running` flag, so any two of them could be launched at once (each
+    // roughly doubling the others' runtime and making both progress readouts
+    // meaningless). `busy_action` is a single, derived notion of "what (if
+    // anything) is running right now" -- a plain computed property, not a fourth
+    // Rust-pushed flag, since the three inputs it reads (`solve_running`, pushed by
+    // both the explicit Solve button and a debounced background auto-solve in
+    // `gui::editor::auto_solve`; `deep_solve_running`/`optimize_running`, pushed by
+    // `callbacks::solve_actions`) already exist and Slint re-evaluates this
+    // reactively whenever any one of them changes -- there is no way for it to
+    // drift out of sync the way a fourth flag could. "" means none of the three
+    // are running. `EditorCommandBar`'s three launchers cross-disable on this (not
+    // only their own flag any more), and `EditorStatusStrip` shows it as a segment
+    // so a cutter always sees what is currently running.
+    out property <string> busy_action: solve_running
+        ? "Solve"
+        : (deep_solve_running ? "Deep Solve" : (optimize_running ? "Optimize" : ""));
+
     in property <[string]> manufacturability_warnings: [];
+
+    // CAD audit items 151/240: the solver's own state as a real tri-state, and the
+    // last completed solve's wall time.
+    //
+    // `status_is_problem` cannot serve here: every ordinary edit's stale refresh
+    // sets it unconditionally `true`, so it cannot tell "needs a Solve" apart from
+    // "solved, and genuinely failed". Keying the Solve button's `primary` styling
+    // off it made the button flip colour on every keystroke (#240), and the status
+    // strip had no way to show a persistent Solved/Stale/Solving/Failed chip at all
+    // (#151). One of "solving" | "stale" | "solved" | "failed"; a plain string
+    // rather than an enum because Slint has no enum a Rust global can set.
+    //
+    // `last_solve_duration_ms` mirrors `gui::editor::auto_solve::
+    // record_solve_duration`'s existing measurement -- no new timing was added, the
+    // figure was simply never surfaced. 0 means "nothing solved yet this session".
+    in property <string> solve_state: "solved";
+    in property <int> last_solve_duration_ms: 0;
+    // Facets in the current SOLVE, not tiers (CAD audit item 151): one tier emits
+    // as many facets as it has index positions, so the two numbers differ by a lot
+    // and the facet count is the one a cutter checks a published design against.
+    // 0 until something has actually solved.
+    in property <int> facet_count: 0;
+
+    // A short label naming the design currently under edit -- the paired
+    // `.asc`'s bare file name, or "Untitled design" (CAD audit item 62). Shown
+    // in the status strip so a cutter always knows which design the tier
+    // table/status readouts describe.
+    in property <string> design_label: "Untitled design";
+
+    // Where the last Save Native / Export .asc actually wrote (CAD audit item
+    // 192). Until this existed the only record was a toast that auto-hid after
+    // 3.5s, so a cutter who looked away had to go hunting through the
+    // filesystem for their own file. `last_saved_path` is the full path -- used
+    // for the reveal below and shown in full in the Details popup -- while
+    // `last_saved_label` is just the bare file name, because the strip has room
+    // for one short segment and Slint's `overflow: elide` cuts the END of a
+    // string, which on a full path hides exactly the part that identifies the
+    // file. Both empty until the first write of this session.
+    in property <string> last_saved_path: "";
+    in property <string> last_saved_label: "";
+    // Opens the folder containing `last_saved_path` in the OS file manager,
+    // through the same per-platform dispatch the Help menu's user manual uses.
+    // Wired in `gui::mod`, not `gui::editor`, because that is where the
+    // dispatch helper lives.
+    callback reveal_last_saved_path();
+
+    // The proportion readouts a cutter actually quotes -- table %, crown
+    // height, pavilion depth, total depth, length-to-width -- from
+    // `Design::stone_proportions`, shown in the Preform tab's "Proportions"
+    // section (CAD audit item 56). Every one reads "-" when the design does
+    // not currently solve/close, rather than a misleading zero.
+    in property <string> proportions_table_pct: "-";
+    in property <string> proportions_crown_height: "-";
+    in property <string> proportions_pavilion_depth: "-";
+    in property <string> proportions_total_depth: "-";
+    in property <string> proportions_length_to_width: "-";
+
+    // The design's own cut order (angle/facet/index/notes), as the same rows
+    // "Export Edited .asc" would write -- fed to a `CuttingTableView`-style
+    // readout in a "Schedule" inspector tab, so the cutter can see the design
+    // actually being edited rather than only ever the catalogue's original
+    // schedule (CAD audit item 49). Empty while the design is stale/unsolved --
+    // `EditorInspector` shows an explanatory placeholder in that case rather
+    // than a stale schedule that no longer matches the tier table.
+    in property <[AngleItem]> cutting_rows: [];
+
+    // A validation message for the tier-edit form, set from the same parse
+    // errors "Save Tier"/"Add Tier" would otherwise only show as a corner
+    // toast (CAD audit item 47) -- rendered under the form in
+    // `EditorInspector` instead of/alongside the toast. Left as plumbing only
+    // here: the callback that actually parses the form
+    // (`gui::editor::callbacks::tier_actions::setup_save_tier_callback`) is
+    // owned by a different lane right now and still needs to call
+    // `set_tier_form_error` from each of its error branches (and clear it back
+    // to "" on a successful save) for this to ever become non-empty.
+    in-out property <string> tier_form_error: "";
 
     // The Edit-mode layout split (`editor_view.slint`/`editor_command_bar.slint`/
     // `editor_inspector.slint`): the command bar's current hover hint (one line,

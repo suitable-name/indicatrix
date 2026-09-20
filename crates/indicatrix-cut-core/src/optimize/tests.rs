@@ -68,6 +68,7 @@ fn design_with_real_meet_structure(text: &str) -> Design {
             indices: input.indices,
             constraint: input.constraint,
             imported_meet: None,
+            original_notes: None,
             detached: Vec::new(),
         })
         .collect();
@@ -148,24 +149,31 @@ fn score_only_depends_on_weight_ratios_not_absolute_scale() {
 // --- free_tier_indices ---
 
 #[test]
-fn free_tier_indices_excludes_only_scale_reference_tiers() {
+fn free_tier_indices_excludes_scale_reference_and_vertical_tiers() {
     let design = rbc_445();
     let free = free_tier_indices(&design);
-    for &i in &free {
-        assert!(!matches!(
-            design.tiers[i].constraint,
-            MeetConstraint::ScaleReference(_)
-        ));
-    }
-    let pinned_count = design.tiers.len() - free.len();
     // RBC-445 has real prose G-instructions on two tiers ("G TCP"/"G PCP"), but
     // `meet_tier_inputs_from_asc` classifies those as MeetNamed/MeetExisting (see
     // that function's own doc comment: it is not a stated scale dimension) -- the
     // ONLY ScaleReference tiers are the ones this fixture's own bootstrap loop
-    // synthesizes, one per populated block.
+    // synthesizes, one per populated block. It also carries two real girdle facets
+    // at -90.0, which `free_tier_indices` excludes because no candidate angle for
+    // them could ever pass `candidate_angle_is_safe` (see that function's own doc
+    // comment).
+    for (i, tier) in design.tiers.iter().enumerate() {
+        let pinned = matches!(tier.constraint, MeetConstraint::ScaleReference(_));
+        let vertical = tier.angle_deg.abs() > candidate::MAX_SAFE_CANDIDATE_ANGLE_DEG;
+        assert_eq!(
+            free.contains(&i),
+            !pinned && !vertical,
+            "tier {i} ({} degrees, pinned {pinned}, vertical {vertical}) is on the wrong side \
+             of the free/not-free split",
+            tier.angle_deg
+        );
+    }
     assert!(
-        (1..=3).contains(&pinned_count),
-        "expected 1-3 bootstrapped anchors, got {pinned_count}"
+        !free.is_empty(),
+        "the fixture must leave something for the optimizer to move"
     );
 }
 
@@ -349,6 +357,60 @@ fn seeded_permutation_differs_across_seeds_almost_always() {
     );
 }
 
+// --- SearchStage::to_code / from_code (CAD audit item 161) ---
+
+#[test]
+fn search_stage_code_round_trips_every_variant() {
+    for stage in [
+        SearchStage::BaselineFull,
+        SearchStage::Coordinate,
+        SearchStage::Polish,
+        SearchStage::FinalFull,
+    ] {
+        assert_eq!(SearchStage::from_code(stage.to_code()), stage);
+    }
+}
+
+#[test]
+fn search_stage_from_code_defaults_an_unknown_value_to_coordinate() {
+    assert_eq!(SearchStage::from_code(255), SearchStage::Coordinate);
+}
+
+// --- inclusive_max_evaluations (CAD audit item 153) ---
+
+#[test]
+fn inclusive_max_evaluations_adds_the_polish_stage_s_default_cap() {
+    let config = OptimizeConfig {
+        max_evaluations: 200,
+        polish_start_step_deg: Some(0.5),
+        polish_max_evaluations: None,
+        ..OptimizeConfig::default()
+    };
+    // `run_polish_stage`'s own default: `3 * free_tier_count + 20`.
+    assert_eq!(inclusive_max_evaluations(&config, 10), 200 + 3 * 10 + 20);
+}
+
+#[test]
+fn inclusive_max_evaluations_excludes_polish_when_disabled() {
+    let config = OptimizeConfig {
+        max_evaluations: 200,
+        polish_start_step_deg: None,
+        ..OptimizeConfig::default()
+    };
+    assert_eq!(inclusive_max_evaluations(&config, 10), 200);
+}
+
+#[test]
+fn inclusive_max_evaluations_honors_an_explicit_polish_cap() {
+    let config = OptimizeConfig {
+        max_evaluations: 200,
+        polish_start_step_deg: Some(0.5),
+        polish_max_evaluations: Some(50),
+        ..OptimizeConfig::default()
+    };
+    assert_eq!(inclusive_max_evaluations(&config, 10), 250);
+}
+
 // --- optimize_design: acceptance-gate-shaped tests ---
 
 /// A freshly-imported design (every tier `ScaleReference`) has nothing free to
@@ -369,6 +431,31 @@ fn optimize_design_on_a_freshly_imported_design_spends_no_evaluations() {
     assert_eq!(outcome.evaluations, 0);
     assert_eq!(outcome.changes.len(), 0);
     assert_eq!(outcome.before, outcome.after);
+}
+
+/// CAD audit items 153/161: `baseline_report`'s [`SearchStage::BaselineFull`]
+/// report must fire even when there turns out to be nothing free to search over --
+/// otherwise a caller's progress ticker would show nothing at all for the one
+/// [`ObjectiveFidelity::Full`] scoring this path still performs. No
+/// [`SearchStage::FinalFull`] report follows, since the "nothing free" path never
+/// reaches [`build_outcome`].
+#[test]
+fn optimize_design_reports_baseline_full_even_with_nothing_free_to_search() {
+    let schedule = indicatrix_formats::asc::parse_asc(RBC_445).expect("fixture must parse");
+    let imported = Design::from_asc_schedule(PreformSpec::block(2.0, 1.0, 2.0), &schedule);
+    let material = GemMaterial::diamond();
+    let reports = std::cell::RefCell::new(Vec::new());
+    let on_progress = |evaluations: usize, stage: SearchStage| {
+        reports.borrow_mut().push((evaluations, stage));
+    };
+    let hooks = SearchHooks {
+        cancel: None,
+        on_progress: Some(&on_progress),
+    };
+    let outcome = optimize_design(&imported, &material, &OptimizeConfig::default(), &hooks)
+        .expect("a freshly imported, fully-anchored design must solve");
+    assert_eq!(outcome.evaluations, 0);
+    assert_eq!(*reports.borrow(), vec![(0, SearchStage::BaselineFull)]);
 }
 
 /// The core acceptance gate: starting from a deliberately PERTURBED (seeded, so
@@ -485,7 +572,8 @@ fn optimize_design_never_worsens_the_score_and_never_touches_a_pinned_tier() {
 }
 
 /// [`apply_optimize_outcome`] must go through `History` -- an applied optimization
-/// is undoable, one tier at a time, exactly like any other edit.
+/// is undoable as a single [`crate::edit::Edit::Batch`] step, exactly like any
+/// other edit (CAD audit item 79: it used to take one `Ctrl+Z` per tier).
 #[test]
 fn apply_optimize_outcome_is_undoable_through_history() {
     let design = rbc_445();
@@ -521,6 +609,107 @@ fn apply_optimize_outcome_is_undoable_through_history() {
     assert!((design.tiers[7].angle_deg - (original_angle + 1.0)).abs() < 1e-9);
     assert!(history.undo(&mut design).unwrap());
     assert!((design.tiers[7].angle_deg - original_angle).abs() < 1e-9);
+}
+
+/// CAD audit item 79: an Optimize outcome touching several tiers must undo as
+/// ONE `Ctrl+Z`, not one press per changed tier. Applies a two-tier outcome and
+/// checks that a single [`History::undo`] restores BOTH angles at once.
+#[test]
+fn apply_optimize_outcome_multi_tier_change_is_one_undo_step() {
+    let design = rbc_445();
+    let original_a = design.tiers[7].angle_deg; // tier "A"
+    let original_b = design.tiers[8].angle_deg; // tier "B"
+    let outcome = OptimizeOutcome {
+        before: ObjectiveComponents {
+            windowing_pct: 10.0,
+            extinction_pct: 10.0,
+            tilt_brilliance_pct: 80.0,
+        },
+        before_score: 10.0,
+        after: ObjectiveComponents {
+            windowing_pct: 5.0,
+            extinction_pct: 10.0,
+            tilt_brilliance_pct: 80.0,
+        },
+        after_score: 5.0,
+        evaluations: 8,
+        changes: vec![
+            AngleChange {
+                index: 7,
+                from_deg: original_a,
+                to_deg: original_a + 1.0,
+            },
+            AngleChange {
+                index: 8,
+                from_deg: original_b,
+                to_deg: original_b - 0.5,
+            },
+        ],
+        cancelled: false,
+        polish_evaluations: 0,
+        polish_improvement: 0.0,
+    };
+    let mut history = History::new();
+    let mut design = design;
+    let applied =
+        apply_optimize_outcome(&mut history, &mut design, &outcome).expect("apply must succeed");
+    assert_eq!(applied, 2);
+    assert!((design.tiers[7].angle_deg - (original_a + 1.0)).abs() < 1e-9);
+    assert!((design.tiers[8].angle_deg - (original_b - 0.5)).abs() < 1e-9);
+    // One History entry covers both tiers: a single undo restores both angles.
+    assert!(history.undo(&mut design).unwrap());
+    assert!((design.tiers[7].angle_deg - original_a).abs() < 1e-9);
+    assert!((design.tiers[8].angle_deg - original_b).abs() < 1e-9);
+    // Nothing left to undo -- the batch really was ONE step, not two.
+    assert!(!history.undo(&mut design).unwrap());
+}
+
+/// CAD audit item 79: an [`AngleChange`] naming a tier index that no longer
+/// exists must leave `design` completely untouched -- no partial application
+/// of the changes that came before it in the batch.
+#[test]
+fn apply_optimize_outcome_rejects_out_of_range_index_without_mutating_design() {
+    let design = rbc_445();
+    let original_a = design.tiers[7].angle_deg;
+    let tier_count = design.tiers.len();
+    let outcome = OptimizeOutcome {
+        before: ObjectiveComponents {
+            windowing_pct: 10.0,
+            extinction_pct: 10.0,
+            tilt_brilliance_pct: 80.0,
+        },
+        before_score: 10.0,
+        after: ObjectiveComponents {
+            windowing_pct: 5.0,
+            extinction_pct: 10.0,
+            tilt_brilliance_pct: 80.0,
+        },
+        after_score: 5.0,
+        evaluations: 8,
+        changes: vec![
+            AngleChange {
+                index: 7,
+                from_deg: original_a,
+                to_deg: original_a + 1.0,
+            },
+            AngleChange {
+                index: tier_count + 5,
+                from_deg: 0.0,
+                to_deg: 1.0,
+            },
+        ],
+        cancelled: false,
+        polish_evaluations: 0,
+        polish_improvement: 0.0,
+    };
+    let mut history = History::new();
+    let mut design = design;
+    let err = apply_optimize_outcome(&mut history, &mut design, &outcome)
+        .expect_err("an out-of-range index must be rejected");
+    assert_eq!(err.index, tier_count + 5);
+    assert_eq!(err.tier_count, tier_count);
+    assert!((design.tiers[7].angle_deg - original_a).abs() < 1e-9);
+    assert!(!history.undo(&mut design).unwrap());
 }
 
 // --- polish::run_polish -------------------------------------------------

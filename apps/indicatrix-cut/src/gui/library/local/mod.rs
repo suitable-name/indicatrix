@@ -18,9 +18,19 @@ mod helpers;
 mod import;
 mod organize;
 
-pub use export::setup_export_asc_callback;
+pub use export::{sanitize_filename, setup_export_asc_callback};
 pub use import::setup_import_callback;
 pub use organize::{
-    build_shape_picker_options, setup_delete_callback, setup_ignore_toggle_callback,
-    setup_rename_callback, setup_set_shape_callback,
+    build_shape_picker_options, setup_add_tag_callback, setup_delete_callback,
+    setup_ignore_toggle_callback, setup_remove_tag_callback, setup_rename_callback,
+    setup_set_shape_callback,
 };
+
+/// Re-exported for `gui::editor::native_io`'s own catalogue write-back (CAD audit
+/// items 92/96/186: "Save Native" merges into an existing source row, or measures a
+/// brand-new one, using exactly the same rules a `.asc` re-import already applies) --
+/// see each function's own doc comment. `helpers`/`import` stay private modules;
+/// only these specific, already-review-hardened helpers cross the `gui::editor`/
+/// `gui::library` boundary, rather than opening either module up wholesale.
+pub use helpers::refresh_after_library_change;
+pub use import::{apply_measured_metadata, merge_reimport_metadata};

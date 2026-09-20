@@ -85,5 +85,5 @@ pub use path::{
 };
 pub use schema::{
     FORMAT_VERSION, MaterialTable, NativeDesignFile, NativeFormatError, NativeMeetConstraint,
-    NativePreformShape, PreformTable, TierTable, from_toml_str, to_toml_string,
+    NativePreformShape, PreformTable, SourceTable, TierTable, from_toml_str, to_toml_string,
 };

@@ -21,13 +21,15 @@ exporting a design of your own.
 3. [Loading a Design Into the Editor and Understanding the Tier List](03-loading-and-tier-list.md)
    — cutting-schedule terms, loading a design, starting a new one, and
    every tier-list column.
-4. [Editing Tiers](04-editing-tiers.md) — the tier form, detaching a tier
-   from its symmetric family, removing a tier, and undo/redo.
+4. [Editing Tiers](04-editing-tiers.md) — the tabbed inspector, the tier
+   form, per-facet and whole-tier detaching, reordering and removing
+   tiers, and undo/redo.
 5. [Solving](05-solving.md) — what Solve does, every status message it can
    show, and why it is a deliberate button press.
 6. [Adjusting a Design for Another Material or Refractive Index](06-materials-and-refractive-index.md)
-   — what the app automates (nothing) and the manual procedure for
-   re-cutting a design's angles for a different material.
+   — the Design Settings panel, the automated Retarget proposal, and the
+   manual procedure behind it for re-cutting a design's angles for a
+   different material.
 7. [Creating a New Design From Scratch: A Worked Example](07-new-design-worked-example.md)
    — a full walkthrough building an 8-fold stone tier by tier.
 8. [Deep Solve, Optimize, Adopt, and Apply](08-deep-solve-optimize-adopt.md)
@@ -55,7 +57,8 @@ exporting a design of your own.
 - [Appendix A: Glossary](appendix-a-glossary.md) — faceting and optics
   terms used throughout this manual.
 - [Appendix B: Keyboard Shortcuts](appendix-b-keyboard-shortcuts.md) —
-  there are none beyond standard text-field editing.
+  every global shortcut, plus the tier list's own keyboard and mouse
+  shortcuts.
 - [Appendix C: Built-in Render Materials](appendix-c-render-materials.md)
   — every built-in material's refractive index, birefringence, optical
   character, dispersion, and colour.

@@ -317,8 +317,14 @@ impl Database {
         after_id: Option<i64>,
         limit: i64,
     ) -> Result<Vec<crate::model::entry::DiagramListItem>> {
-        let (mut sql, mut params) =
-            build_search_predicate(query, shape_filter, gear_filter, range, true);
+        let (mut sql, mut params) = build_search_predicate(
+            query,
+            shape_filter,
+            gear_filter,
+            range,
+            true,
+            DisplayFilters::default(),
+        );
 
         if let Some(after) = after_id {
             sql.push_str(" AND de.id > ? ");
@@ -327,7 +333,76 @@ impl Database {
         sql.push_str(" ORDER BY de.id ASC LIMIT ? ");
         params.push(Box::new(limit));
 
-        let mut stmt = self.conn.prepare(&sql)?;
+        self.query_diagram_list_items(&sql, &params)
+    }
+
+    /// Ordered, offset-paginated counterpart of [`Self::search_diagrams_page_raw`] --
+    /// backs [`Self::search_diagrams_display`]/[`Self::count_matching_diagrams`], never
+    /// the exhaustive keyset walk a mirror sync needs.
+    ///
+    /// `offset`/`limit` rather than `after_id`'s keyset cursor: unlike
+    /// `search_diagrams_page_raw` (whose id-ASC order and "no skip/dup on concurrent
+    /// insert" guarantee an exhaustive background walk depends on), a caller here is a
+    /// single foreground display fetch over an arbitrary [`SortOrder`], for which no
+    /// single column is guaranteed both unique and monotonic across every order. The
+    /// catalogue this ships against tops out in the low thousands of rows, so the
+    /// `OFFSET` cost this trades away is not measurable in practice.
+    ///
+    /// `local_only` restricts the predicate to `diagram_entries.url` values written by
+    /// [`crate::local::LOCAL_SOURCE_ID`] imports (`local://...`, see
+    /// [`build_search_predicate`]'s doc comment) -- the cutter's own designs, as
+    /// opposed to the wider scraped catalogue.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if preparing or running the assembled `SELECT` query fails, or
+    /// if a row fails to decode into a `DiagramListItem`.
+    fn search_diagrams_page_raw_ordered(
+        &self,
+        query: &str,
+        shape_filter: &str,
+        gear_filter: &str,
+        range: &RangeFilter,
+        page: DisplayPage<'_>,
+    ) -> Result<Vec<crate::model::entry::DiagramListItem>> {
+        let (mut sql, mut params) = build_search_predicate(
+            query,
+            shape_filter,
+            gear_filter,
+            range,
+            true,
+            DisplayFilters {
+                order: page.order,
+                local_only: page.local_only,
+                tag_filter: page.tag_filter,
+                id_filter: page.id_filter,
+            },
+        );
+        sql.push_str(page.order.order_by_sql());
+        sql.push_str(" LIMIT ? OFFSET ? ");
+        params.push(Box::new(page.limit));
+        params.push(Box::new(page.offset));
+
+        self.query_diagram_list_items(&sql, &params)
+    }
+
+    /// Runs `sql` (a full `SELECT` over `diagram_entries`/`diagram_details`/
+    /// `diagram_tilt_curves` matching [`build_search_predicate`]'s fixed column list and
+    /// order) with `params` bound positionally, decoding every row into a
+    /// [`crate::model::entry::DiagramListItem`]. Shared by
+    /// [`Self::search_diagrams_page_raw`] and [`Self::search_diagrams_page_raw_ordered`]
+    /// so the two can never decode the column list differently.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if preparing or running `sql` fails, or if a row fails to
+    /// decode.
+    fn query_diagram_list_items(
+        &self,
+        sql: &str,
+        params: &[Box<dyn rusqlite::ToSql>],
+    ) -> Result<Vec<crate::model::entry::DiagramListItem>> {
+        let mut stmt = self.conn.prepare(sql)?;
         let bound: Vec<&dyn rusqlite::ToSql> =
             params.iter().map(std::convert::AsRef::as_ref).collect();
 
@@ -403,11 +478,127 @@ impl Database {
             });
         }
 
+        let excluded = self.count_missing_curve_exclusions(
+            query,
+            shape_filter,
+            gear_filter,
+            range,
+            DisplayFilters::default(),
+        )?;
+
+        Ok(PerformanceSearchResult {
+            items,
+            excluded_for_missing_curves: excluded,
+        })
+    }
+
+    /// [`Self::search_diagrams_with_performance_exclusions`], plus a caller-chosen
+    /// [`SortOrder`] and an opt-in restriction to the cutter's own, locally-imported
+    /// designs (`local_only`) -- the display query behind the library panel's sort
+    /// selector and "My designs" toggle (items 189/190/191 of the CAD audit). Capped at
+    /// [`SEARCH_RESULT_CAP`] like every other display-facing search in this module.
+    ///
+    /// Unlike [`Self::search_diagrams_page`], this does not expose a keyset cursor: it
+    /// exists for a single foreground fetch of "the current view," not an exhaustive
+    /// background walk -- see [`Self::search_diagrams_page_raw_ordered`]'s doc comment
+    /// for why offset pagination is fine here but would not be for that other use.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error under the same conditions as
+    /// [`Self::search_diagrams_with_performance_exclusions`].
+    pub fn search_diagrams_display(
+        &self,
+        query: &str,
+        shape_filter: &str,
+        gear_filter: &str,
+        range: &RangeFilter,
+        filters: DisplayFilters<'_>,
+    ) -> Result<PerformanceSearchResult> {
+        if range.performance.is_empty() {
+            let items = self.search_diagrams_page_raw_ordered(
+                query,
+                shape_filter,
+                gear_filter,
+                range,
+                DisplayPage {
+                    order: filters.order,
+                    local_only: filters.local_only,
+                    tag_filter: filters.tag_filter,
+                    id_filter: filters.id_filter,
+                    offset: 0,
+                    limit: SEARCH_RESULT_CAP,
+                },
+            )?;
+            return Ok(PerformanceSearchResult {
+                items,
+                excluded_for_missing_curves: 0,
+            });
+        }
+
+        let limit_usize = usize::try_from(SEARCH_RESULT_CAP).unwrap_or(0);
+        let mut matched: Vec<crate::model::entry::DiagramListItem> = Vec::new();
+        let mut offset = 0i64;
+        loop {
+            let raw_page = self.search_diagrams_page_raw_ordered(
+                query,
+                shape_filter,
+                gear_filter,
+                range,
+                DisplayPage {
+                    order: filters.order,
+                    local_only: filters.local_only,
+                    tag_filter: filters.tag_filter,
+                    id_filter: filters.id_filter,
+                    offset,
+                    limit: SEARCH_RESULT_CAP,
+                },
+            )?;
+            let raw_page_was_full = raw_page.len() == limit_usize;
+            offset += raw_page.len() as i64;
+
+            for item in raw_page {
+                if self.item_satisfies_performance_filters(item.id, &range.performance)? {
+                    matched.push(item);
+                }
+            }
+
+            if matched.len() >= limit_usize || !raw_page_was_full {
+                break;
+            }
+        }
+        matched.truncate(limit_usize);
+
+        let excluded =
+            self.count_missing_curve_exclusions(query, shape_filter, gear_filter, range, filters)?;
+        Ok(PerformanceSearchResult {
+            items: matched,
+            excluded_for_missing_curves: excluded,
+        })
+    }
+
+    /// How many otherwise-matching designs (every `range` filter except performance)
+    /// have no stored tilt curves at all, so an active `range.performance` predicate
+    /// can never be satisfied by them -- see [`PerformanceSearchResult`]. Shared by
+    /// [`Self::search_diagrams_with_performance_exclusions`] and
+    /// [`Self::search_diagrams_display`] so the two can never compute this differently.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if preparing or running the assembled `COUNT` query fails.
+    fn count_missing_curve_exclusions(
+        &self,
+        query: &str,
+        shape_filter: &str,
+        gear_filter: &str,
+        range: &RangeFilter,
+        filters: DisplayFilters<'_>,
+    ) -> Result<usize> {
         // Every filter except performance, narrowed to rows with no tilt curves
         // generated (`tc.generated_at IS NULL`) -- candidates that could never satisfy
         // the filter.
         let (predicate_sql, params) =
-            build_search_predicate(query, shape_filter, gear_filter, range, false);
+            build_search_predicate(query, shape_filter, gear_filter, range, false, filters);
         let count_sql = format!(
             "SELECT COUNT(*) FROM ({predicate_sql} AND tc.generated_at IS NULL) AS missing_curves"
         );
@@ -415,14 +606,158 @@ impl Database {
         let bound: Vec<&dyn rusqlite::ToSql> =
             params.iter().map(std::convert::AsRef::as_ref).collect();
         let excluded: i64 = stmt.query_row(bound.as_slice(), |r| r.get(0))?;
-
-        Ok(PerformanceSearchResult {
-            items,
-            // A SQL COUNT(*) is never negative (workspace-wide `cast_sign_loss` =
-            // "allow" covers this cast; see Cargo.toml).
-            excluded_for_missing_curves: excluded as usize,
-        })
+        // A SQL COUNT(*) is never negative (workspace-wide `cast_sign_loss` = "allow"
+        // covers this cast; see Cargo.toml).
+        Ok(excluded as usize)
     }
+
+    /// The real, uncapped count of designs matching `query`/`shape_filter`/
+    /// `gear_filter`/`range`/`filters` -- fixes the library panel's "N of M designs
+    /// match" reading the whole-catalogue total instead of the actual match count (CAD
+    /// audit item 193). Distinct from [`Self::get_total_count`] (the entire catalogue)
+    /// and from a display query's `items.len()` (capped at [`SEARCH_RESULT_CAP`]).
+    ///
+    /// When `range.performance` is empty this is one `COUNT(*)` over
+    /// [`build_search_predicate`]'s own predicate. Otherwise -- since a performance
+    /// filter's exact test only runs once a candidate's curve is decoded in Rust, see
+    /// that function's doc comment -- this walks every SQL-narrowed candidate via
+    /// [`Self::search_diagrams_page_raw_ordered`] and tallies exact matches, unbounded
+    /// by `SEARCH_RESULT_CAP` (unlike the capped page a caller actually displays).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if preparing or running the underlying query fails, or (when
+    /// `range.performance` is non-empty) if loading or decoding a candidate's tilt
+    /// curves fails.
+    pub fn count_matching_diagrams(
+        &self,
+        query: &str,
+        shape_filter: &str,
+        gear_filter: &str,
+        range: &RangeFilter,
+        filters: DisplayFilters<'_>,
+    ) -> Result<usize> {
+        if range.performance.is_empty() {
+            let (predicate_sql, params) =
+                build_search_predicate(query, shape_filter, gear_filter, range, true, filters);
+            let count_sql = format!("SELECT COUNT(*) FROM ({predicate_sql}) AS matching");
+            let mut stmt = self.conn.prepare(&count_sql)?;
+            let bound: Vec<&dyn rusqlite::ToSql> =
+                params.iter().map(std::convert::AsRef::as_ref).collect();
+            let count: i64 = stmt.query_row(bound.as_slice(), |r| r.get(0))?;
+            return Ok(count as usize);
+        }
+
+        let limit_usize = usize::try_from(SEARCH_RESULT_CAP).unwrap_or(0);
+        let mut matched = 0usize;
+        let mut offset = 0i64;
+        loop {
+            let raw_page = self.search_diagrams_page_raw_ordered(
+                query,
+                shape_filter,
+                gear_filter,
+                range,
+                DisplayPage {
+                    order: SortOrder::CatalogueOrder,
+                    local_only: filters.local_only,
+                    tag_filter: filters.tag_filter,
+                    id_filter: filters.id_filter,
+                    offset,
+                    limit: SEARCH_RESULT_CAP,
+                },
+            )?;
+            let raw_page_was_full = raw_page.len() == limit_usize;
+            offset += raw_page.len() as i64;
+            for item in &raw_page {
+                if self.item_satisfies_performance_filters(item.id, &range.performance)? {
+                    matched += 1;
+                }
+            }
+            if !raw_page_was_full {
+                break;
+            }
+        }
+        Ok(matched)
+    }
+}
+
+/// Sort order for [`Database::search_diagrams_display`] -- the library panel's sort
+/// selector (CAD audit item 190's sort half; the tag/collection half is deliberately
+/// out of scope).
+///
+/// `#[default]` is [`Self::CatalogueOrder`], the same `de.id ASC` every other search in
+/// this module has always used, so a caller that never sets a sort preference sees no
+/// change in behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SortOrder {
+    /// `de.id ASC` -- insertion order, this module's long-standing default.
+    #[default]
+    CatalogueOrder,
+    /// Case-insensitive title, A-Z.
+    Title,
+    /// Most recently created first (`diagram_entries.created_at`, CAD audit item 191).
+    /// A row that predates that column (`NULL`) sorts last -- SQLite already orders
+    /// `NULL` after every non-null value in `DESC`, so no extra `CASE` is needed.
+    Newest,
+    /// Most recently edited first (`diagram_entries.updated_at`, CAD audit item 191).
+    /// Same `NULL`-sorts-last behaviour as [`Self::Newest`].
+    RecentlyEdited,
+}
+
+impl SortOrder {
+    /// The `ORDER BY` clause text for this order, appended directly after
+    /// [`build_search_predicate`]'s `WHERE` clause -- every variant is a fixed literal,
+    /// never built from caller input, so this is safe to interpolate.
+    const fn order_by_sql(self) -> &'static str {
+        match self {
+            Self::CatalogueOrder => " ORDER BY de.id ASC ",
+            Self::Title => " ORDER BY de.title COLLATE NOCASE ASC, de.id ASC ",
+            Self::Newest => " ORDER BY de.created_at DESC, de.id DESC ",
+            Self::RecentlyEdited => " ORDER BY de.updated_at DESC, de.id DESC ",
+        }
+    }
+}
+
+/// [`Database::search_diagrams_display`]/[`Database::count_matching_diagrams`]'s
+/// sort/restriction options.
+///
+/// Bundled into one value purely to keep those two public functions under clippy's
+/// `too_many_arguments` lint -- same reasoning as [`DisplayPage`], which this
+/// expands into once `offset`/`limit` are known for a given page.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DisplayFilters<'a> {
+    pub order: SortOrder,
+    /// "My designs" restriction (CAD audit item 189).
+    pub local_only: bool,
+    /// Tag chip restriction (CAD audit item 190's tag half), `None` for no
+    /// restriction.
+    pub tag_filter: Option<i64>,
+    /// "Show these N" restriction to an explicit id set (CAD audit item 187's batch
+    /// case), `None`/empty for no restriction.
+    pub id_filter: Option<&'a [i64]>,
+}
+
+/// Bundles [`Database::search_diagrams_page_raw_ordered`]'s order/restriction/paging
+/// parameters into one value, purely to keep that function under clippy's
+/// `too_many_arguments` lint -- each field is independent, not a cohesive value in its
+/// own right, so this has no behaviour of its own beyond grouping them.
+#[derive(Debug, Clone, Copy)]
+struct DisplayPage<'a> {
+    order: SortOrder,
+    local_only: bool,
+    /// Restricts the page to designs carrying this tag id (CAD audit item 190's tag
+    /// half), `None` for no tag restriction. See [`build_search_predicate`]'s own doc
+    /// comment for the predicate this adds.
+    tag_filter: Option<i64>,
+    /// Restricts the page to exactly these entry ids (CAD audit item 187's "show
+    /// these N" batch-import case), `None`/empty for no restriction. Borrowed, not
+    /// owned: every caller already holds the id list (`imported_ids`, or a UI
+    /// property read once per query) for at least as long as the query runs, so
+    /// cloning it into every `DisplayPage` a multi-page performance-filter walk
+    /// builds would be pure waste.
+    id_filter: Option<&'a [i64]>,
+    offset: i64,
+    limit: i64,
 }
 
 /// Maximum rows [`Database::search_diagrams`] and friends will return.
@@ -457,6 +792,14 @@ pub const SEARCH_RESULT_CAP: i64 = 1000;
 /// `search_diagrams_with_performance_exclusions`'s second query, which counts designs
 /// excluded *for lack of curves* and so must apply every other filter but not these.
 ///
+/// `local_only` restricts the predicate to designs synced under
+/// [`crate::local::LOCAL_SOURCE_ID`] -- identified the same way
+/// `library/detail.rs::is_local` already does, by `diagram_entries.url` starting with
+/// the synthetic `local://` scheme every local import writes (see
+/// `crate::local::import_asc`) -- as opposed to a real page URL from the wider scraped
+/// catalogue. `false` (the default for every pre-existing caller) applies no such
+/// restriction.
+///
 /// The returned `SELECT` always `LEFT JOIN`s `diagram_tilt_curves AS tc` regardless of
 /// `include_performance`: both are 1:1 joins on `diagram_entries.id`, so the
 /// unconditional join costs nothing measurable.
@@ -466,7 +809,14 @@ fn build_search_predicate(
     gear_filter: &str,
     range: &RangeFilter,
     include_performance: bool,
+    filters: DisplayFilters<'_>,
 ) -> (String, Vec<Box<dyn rusqlite::ToSql>>) {
+    let DisplayFilters {
+        local_only,
+        tag_filter,
+        id_filter,
+        order: _order,
+    } = filters;
     let q_pattern = format!("%{}%", query.trim());
     let mut sql = String::from(
         "SELECT de.id, de.title, de.url, de.design_id,
@@ -484,8 +834,18 @@ fn build_search_predicate(
     if query.trim().is_empty() {
         sql.push_str(" AND (1=1 OR ?1 IS NULL) ");
     } else {
+        // CAD audit item 228: the search tooltip/placeholder (header.slint) has
+        // always promised "title, designer or notes", but until now this predicate
+        // never actually looked at a stored note -- see that item's own STATUS
+        // write-up. `angle_settings.notes` is per-TIER (one design has many rows),
+        // so matching it needs an `EXISTS` subquery rather than a plain joined
+        // column, which would otherwise duplicate a design once per matching tier.
         sql.push_str(
-            " AND (de.title LIKE ?1 OR dd.designer_info LIKE ?1 OR de.design_id LIKE ?1) ",
+            " AND (de.title LIKE ?1 OR dd.designer_info LIKE ?1 OR de.design_id LIKE ?1
+                   OR EXISTS (
+                       SELECT 1 FROM angle_settings a
+                       WHERE a.detail_id = dd.id AND a.notes LIKE ?1
+                   )) ",
         );
     }
     params.push(Box::new(q_pattern));
@@ -552,6 +912,15 @@ fn build_search_predicate(
         sql.push_str(" AND de.ignored = 0 ");
     }
 
+    // "My designs" restriction (CAD audit item 189) -- no bound parameter: the
+    // `local://` prefix is a fixed literal this crate itself writes (see
+    // `crate::local::import_asc`), never caller-supplied text.
+    if local_only {
+        sql.push_str(" AND de.url LIKE 'local://%' ");
+    }
+
+    append_tag_and_id_filters(&mut sql, &mut params, tag_filter, id_filter);
+
     // Tilt-performance narrowing (see "SQL narrows, Rust decides" above).
     // `sound_sql_narrowing`'s column name only ever comes from
     // `global_extreme_column_name`, never user-supplied text.
@@ -568,6 +937,43 @@ fn build_search_predicate(
     }
 
     (sql, params)
+}
+
+/// Appends [`build_search_predicate`]'s tag-chip (CAD audit item 190) and "show
+/// these N" (CAD audit item 187) restrictions -- split out purely to keep that
+/// function under clippy's `too_many_lines` limit, not because these two are a
+/// cohesive concept; see [`build_search_predicate`]'s own doc comment for the
+/// predicate as a whole.
+fn append_tag_and_id_filters(
+    sql: &mut String,
+    params: &mut Vec<Box<dyn rusqlite::ToSql>>,
+    tag_filter: Option<i64>,
+    id_filter: Option<&[i64]>,
+) {
+    // Tag chip restriction -- bound, not interpolated, even though a tag id is
+    // already an integer: consistent with every other numeric bound in
+    // `build_search_predicate`.
+    if let Some(tag_id) = tag_filter {
+        sql.push_str(" AND de.id IN (SELECT entry_id FROM diagram_tag_links WHERE tag_id = ?) ");
+        params.push(Box::new(tag_id));
+    }
+
+    // "Show these N" restriction to an explicit id set -- one bound `?` per id, not
+    // a single interpolated literal list, even though an entry id is already
+    // caller-internal (never raw user text): consistent with every other bound
+    // value in `build_search_predicate`, and it costs nothing here since the id set
+    // is always small (one import batch's worth).
+    if let Some(ids) = id_filter
+        && !ids.is_empty()
+    {
+        let placeholders = std::iter::repeat_n("?", ids.len())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = write!(sql, " AND de.id IN ({placeholders}) ");
+        for &id in ids {
+            params.push(Box::new(id));
+        }
+    }
 }
 
 /// Linear-interpolation percentile (the same "linear" method `numpy.percentile`

@@ -12,18 +12,33 @@ has no "Edit" sub-tab next to "Live Render," it was built without it.
 
 ## The editor's toolbar
 
-The top row of buttons is grouped into two labelled clusters:
+The command bar is two rows of buttons. Each row ends in empty space rather
+than spreading its buttons out, and a single hint line underneath the two
+rows shows an explanation of whatever button you are currently hovering:
 
-- **Edit** — New, Load Selected, Undo, Redo.
-- **Verify & Solve** — Solve, Deep Solve, Optimize. Deep Solve carries the
-  caption "checks against the printed proportions, never changes the
-  design"; Optimize carries "searches free tiers, needs Apply." Both also
-  have a longer explanation on hover.
+- **Row 1, left** — New Design..., Load Selected, Undo, Redo.
+- **Row 1, right** — Solve, and the auto-solve delay control next to it —
+  labelled "Auto-solve:" (Off / 150 ms / 300 ms / 1 s / 3 s — Chapter 5).
+- **Row 2, left** — a Tier group (**+ Add Tier**, **Duplicate**, **Delete**,
+  and an up/down pair to reorder), acting on whichever tier is currently
+  selected in the list below — the same actions the tier list's own
+  per-row buttons and its "+ Add Tier" header button already offer
+  (Chapter 4), collected here too since they are easy to miss on first use.
+- **Row 2, middle** — Deep Solve, Optimize, and **Retarget...** (an automated
+  proposal for adapting a design to a different material — Chapter 6). Deep
+  Solve and Optimize grey out when there is nothing for them to do, and
+  hovering a greyed-out button shows the specific reason right on the
+  button rather than somewhere else you would have to go looking.
+- **Row 2, right** — Export Edited .asc, Save Native, and Open Native. The
+  File menu's version of the first uses the identical label; both trigger
+  the same export. See Chapter 11 for what each of the three actually
+  writes.
 
-**Export Edited .asc**, **Save Native**, and **Open Native** sit to the
-right, ungrouped — they're file I/O, not editing or verifying, so they get
-their own space rather than being folded into either cluster. See Chapter
-11 for what each of the three actually writes.
+Undo and Redo now say what they are about to do, rather than a bare "Undo"
+and "Redo" — hover either button, or open the Edit menu, and you will see
+something like "Undo: Set P1 angle to -41.0 degrees" or "Redo: Add tier
+C1'". This works for every kind of edit the app makes, including a Retarget
+or an Apply Optimize Result.
 
 ## Some terms first
 
@@ -58,13 +73,16 @@ their own space rather than being folded into either cluster. See Chapter
 
 What happens next depends on the design and where it lives:
 
-- **A remote-library design cannot be loaded.** If you are currently
-  browsing a remote worker's library (Chapter 10), Load Selected refuses
-  with a toast: "Switch to the local library to load a design into the
-  editor." A remote design record never carries the original file bytes
-  over the network, so there is nothing to load into the editor. Switch
-  back to your local library first (use the library-source control in the
-  Remote panel), then load.
+- **A remote-library design**: Load Selected fetches that entry's own
+  `.asc` file over the network from the worker and loads it exactly like a
+  local one, with a matching toast, `Loaded '<name>' into the editor.`,
+  naming the file itself rather than the catalogue title (a remote fetch
+  never carries the two together). This needs a real attached `.asc` file
+  on the worker's side; a remote design with none fails with
+  a clear error message instead of the placeholder reconstruction a local
+  design in the same situation gets (Chapter 12). There is nothing to
+  switch or reconfigure first; you do not need to be browsing your local
+  library to load a remote design into the editor.
 - **No design selected**: "No diagram selected to load."
 - **Local design with an attached `.asc` file**: the editor parses that
   file and builds the tier list from its exact recorded masts. Every tier
@@ -86,13 +104,18 @@ by the time you see it.
 
 ## Starting a new design instead
 
-Click **New** (or File → New) to open the New Design dialog rather than
-loading an existing design: pick the preform shape and dimensions, the
+Click **New Design...** (or File → New) to open the New Design dialog rather
+than loading an existing design: pick the preform shape and dimensions, the
 index gear, symmetry order, mirror, and a starting material, then click
 **Create**. Every one of these stays editable afterward — gear, symmetry,
 mirror and material through the Edit tab's Design Settings panel (Chapter
-6), the preform through the tier form's own Preform section (Chapter 4) —
-see the worked example in Chapter 7.
+6), the preform through the inspector's own Preform tab (Chapter 4) — see
+the worked example in Chapter 7.
+
+A brand-new design starts with zero tiers, and its very first Add Tier
+defaults to angle 0.0 and "Unspecified vertex" — the same as any other
+blank draft, with no round-brilliant or other starter template offered.
+Chapter 7's worked example takes you through building one by hand.
 
 ## Reading the tier list
 
@@ -101,18 +124,39 @@ Each row is one tier. The columns are:
 | Column | Meaning |
 |---|---|
 | **#** | The tier's position in the schedule. |
-| **ANGLE** | The facet's cutting angle, in degrees off the girdle plane. Negative angles are pavilion facets; zero or positive angles are crown facets, by this app's convention. |
-| **NAME / INDICES** | The facet's name (or "(unnamed)"), and the index position(s) it occupies, in brackets. |
+| **⚠** | A warning glyph when this tier has its own manufacturability warning (Chapter 5) — hover it to read the warning. Blank otherwise. |
+| **C/P/G** | The block this tier's angle actually classifies into — Crown, Pavilion, or Girdle, regardless of what you meant it to be (see "Anchors and blocks" below). Hover for the full block name. |
+| **ANGLE** | The facet's cutting angle, in degrees off the girdle plane. Negative angles are pavilion facets; zero or positive angles are crown facets, by this app's convention. A single click on this cell selects the row, like clicking anywhere else in it; double-click it (or press F2 on the selected row) to edit the value in place — see Chapter 4. |
+| **NAME / INDICES** | The facet's name (or "(unnamed)"), and the index position(s) it occupies. These two columns stretch with the width of the dock; every other column stays a fixed width. |
+| **MEETS** | What the tier's constraint actually is: a pin glyph and the stated value for an anchor, "meets `<names>`" for named facets, or a plain "meet" for an unspecified vertex. |
 | **MAST** | The solved depth — filled in only after a successful Solve, shown as `-` or `?` when the design hasn't been (re-)solved since this row last changed. |
-| **SOLVE** | How confident that mast value is — see "Trusting the SOLVE column" below. |
-| **ORBIT** | Whether the tier's indices form one clean symmetric family — see "Orbits" below. |
+| **SOLVE** | How confident that mast value is — see "Trusting the SOLVE column" below. Hover the cell for a one-line explanation of exactly why, when the app has one to give. |
+| **MARGIN** | For a pavilion tier, how far its angle sits above the design's critical angle — Chapter 6. A dash for crown and girdle tiers. |
+| **ORBIT** | Whether the tier's indices form one clean symmetric family — see "Orbits" below. When it is amber (incomplete), click it to fill in the missing symmetric positions automatically. |
 | **IMPORTED** | Shows an **Adopt** link when there is a better constraint recoverable from the original file — see Chapter 8. |
 
-There is also a **Detach / Reattach** toggle and a remove ("×") button per
-row, both covered in Chapter 4.
+To the right of those, per row: a small up/down pair to move the tier
+earlier or later in cutting order (the same as Alt+Up/Alt+Down — Chapter
+4), a **Detach / Reattach** toggle, a duplicate button, and a remove ("×")
+button — all covered in Chapter 4. A row needing an anchor (Chapter 5)
+also shows an **Add Anchor** button that jumps the inspector straight to
+that tier with "Exact scale value" already selected, ready for you to type
+the number and save.
 
-If there are no tiers yet, the list reads: "No tiers yet -- fill in the
-form on the right and click Save Tier."
+Above the column headers is a small filter box: type a few letters of a
+name, index, block, SOLVE strategy, or meet constraint and every
+non-matching row dims (rather than disappearing) so the row numbers and
+Up/Down/Home/End behaviour stay exactly as they would with no filter set.
+
+If two or more rows are Ctrl-clicked into a multi-select group (Chapter 4),
+a small bar above the table shows "N selected" with **Clear** and
+**Delete** buttons — Delete removes every selected tier as one Undo step
+per tier. Shift-click a row instead to select every tier between it and
+whichever row you selected last, inclusive; see "Selecting several tiers
+for a batched nudge" in Chapter 4 for how that range then behaves.
+
+If there are no tiers yet, the list reads: "No tiers yet -- open the Tier
+tab below to add one."
 
 ### Trusting the SOLVE column
 
@@ -144,6 +188,36 @@ stated fold count:
 This matters because editing one row of a multi-index tier normally moves
 the *whole* orbit — see Detach in Chapter 4 if you want to break that.
 
+### Selecting a tier
+
+Clicking a row, pressing Enter on it, using the Up/Down/Home/End/Page
+Up/Page Down keys (Chapter 4), or clicking one of its facets in the Solid
+viewport or the Diagram view (Chapter 13) all select the *same* tier
+everywhere at once: the row highlights and scrolls into view if it was off
+screen, the tier form on the inspector's Tier tab re-seeds with that tier's
+values, and the tier's whole symmetric orbit tints in both the Solid
+viewport and the Diagram view. Selecting a tier one way always shows up
+everywhere else.
+
+If you were mid-edit on an unsaved tier draft when the selection moves, the
+inspector does not silently throw your draft away — see "Losing an
+unsaved draft" in Chapter 4.
+
+Orbiting the 3D view (dragging to rotate the stone) no longer selects
+whatever facet happens to be under the cursor when you release the mouse —
+only a genuine click, one that barely moved between press and release,
+counts as a pick.
+
+### The inspector's Schedule tab
+
+Separately from the catalogue's own Cutting Schedule tab (Chapter 1), the
+Edit tab's inspector has its own **Schedule** tab: a read-only FACET /
+ANGLE / INDEX table built from this design's own current, solved tier
+list, not the catalogue's stored original. It reads "Not solved -- click
+Solve to see this design's own cut order here" until you do. It exists so
+you can eyeball the cutting order without leaving the Edit tab; for a
+copyable file, use Export Edited (above).
+
 ### Pinned vs. free tiers
 
 - A **pinned** tier is one whose "Meets" constraint is **Exact scale
@@ -167,7 +241,18 @@ never fix a whole block's overall size, because shifting every facet in a
 block along its own axis by the same amount preserves every internal meet
 point — something has to state the real-world size directly. If a block
 has no such anchor, Solve fails with a message naming exactly which
-block(s) are missing one; see Chapter 5.
+block(s) are missing one; see Chapter 5. Every tier the app puts in that
+missing block also grows a row-level **Add Anchor** button (see "Reading
+the tier list" above) that jumps straight to the fix.
+
+A tier's block is not what you intended it to be, it is whatever its angle
+actually classifies as: crown or pavilion by the sign of the angle, and
+**girdle only at exactly 90 (or -90) degrees** — the tolerance is very
+tight, so "about 90" still classifies as crown or pavilion, not girdle.
+Check the tier list's own C/P/G column (above) if a block you expected to
+be anchored still reads as missing one; the tier you added may have
+classified somewhere you did not expect. Chapter 7's worked example shows
+this in practice.
 
 ## Next steps
 

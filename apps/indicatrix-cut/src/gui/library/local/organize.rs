@@ -5,7 +5,10 @@
 use super::helpers::refresh_after_library_change;
 use crate::{
     DiagramDetailData, LibraryModel, MainWindow,
-    bridge::{library::source::LibrarySource, render_thread::RenderContext},
+    bridge::{
+        library::source::LibrarySource,
+        render_thread::{PlanesOwner, RenderContext},
+    },
     gui::show_toast,
 };
 use indicatrix::geometry::cuts::StandardGemCuts;
@@ -278,6 +281,107 @@ pub fn setup_set_shape_callback(
         });
 }
 
+/// Wires up the "Add tag..." context-menu entry (`diagram_list.slint`, CAD audit
+/// item 190) -> `add_tag_to_entry`. Creates the tag if it doesn't already exist
+/// (case-insensitively) and attaches it to `entry_id` -- see
+/// `Database::add_tag_to_entry`'s own doc comment for the exact create-or-reuse
+/// rule. A blank name (whitespace-only) is rejected with a toast rather than
+/// silently creating an empty tag.
+///
+/// Refuses outright while a remote library is being browsed, same reasoning as
+/// [`setup_rename_callback`]'s own doc comment.
+pub fn setup_add_tag_callback(
+    ui: &MainWindow,
+    db: &Arc<Mutex<Database>>,
+    source: &Arc<Mutex<LibrarySource>>,
+) {
+    let db_tag = Arc::clone(db);
+    let source_tag = Arc::clone(source);
+    let ui_weak = ui.as_weak();
+    ui.global::<LibraryModel>().on_add_tag_to_entry(
+        move |entry_id: i32, tag_name: SharedString| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            if source_tag
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_remote()
+            {
+                show_toast(&ui, "Switch to the local library to tag a design.", "error");
+                return;
+            }
+            let result = {
+                let db = db_tag
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                db.add_tag_to_entry(i64::from(entry_id), tag_name.as_str())
+            };
+            match result {
+                Ok(tag) => {
+                    show_toast(&ui, &format!("Tagged \"{}\".", tag.name), "success");
+                    refresh_after_library_change(&ui, &db_tag, &source_tag);
+                }
+                Err(e) => show_toast(&ui, &format!("Failed to add tag: {e}"), "error"),
+            }
+        },
+    );
+}
+
+/// Wires up a tag chip's remove control (`diagram_list.slint`) -> `remove_tag_from_entry`.
+/// Takes the tag's NAME rather than its id -- the card only ever carries
+/// `DiagramItem.tags: [string]` (see `gui::library::diagram_list::
+/// sync_tag_vocabulary_to_ui`'s own doc comment for why the Slint side never
+/// handles a tag id directly), so this resolves the name to an id via
+/// `Database::tag_id_by_name` itself. A name that no longer resolves (the tag was
+/// deleted from elsewhere between the chip rendering and this click) is a silent
+/// no-op, not an error -- there is nothing left to remove.
+///
+/// Refuses outright while a remote library is being browsed, same reasoning as
+/// [`setup_rename_callback`]'s own doc comment.
+pub fn setup_remove_tag_callback(
+    ui: &MainWindow,
+    db: &Arc<Mutex<Database>>,
+    source: &Arc<Mutex<LibrarySource>>,
+) {
+    let db_untag = Arc::clone(db);
+    let source_untag = Arc::clone(source);
+    let ui_weak = ui.as_weak();
+    ui.global::<LibraryModel>().on_remove_tag_from_entry(
+        move |entry_id: i32, tag_name: SharedString| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            if source_untag
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_remote()
+            {
+                show_toast(
+                    &ui,
+                    "Switch to the local library to untag a design.",
+                    "error",
+                );
+                return;
+            }
+            let result = {
+                let db = db_untag
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                match db.tag_id_by_name(tag_name.as_str()) {
+                    Ok(Some(tag_id)) => db.remove_tag_from_entry(i64::from(entry_id), tag_id),
+                    Ok(None) => Ok(()),
+                    Err(e) => Err(e),
+                }
+            };
+            match result {
+                Ok(()) => refresh_after_library_change(&ui, &db_untag, &source_untag),
+                Err(e) => show_toast(&ui, &format!("Failed to remove tag: {e}"), "error"),
+            }
+        },
+    );
+}
+
 /// Wires up the detail header's delete confirm -> `delete_diagram`: removes the
 /// entry (cascading to its detail/angle-settings/attached-files rows, see
 /// `Database::delete_diagram_entry`) and clears the now-stale detail/3D-viewport
@@ -356,10 +460,23 @@ pub fn setup_delete_callback(
                     let mut ctx = render_ctx_delete
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    ctx.active_planes =
-                        std::sync::Arc::new(StandardGemCuts::standard_round_brilliant());
-                    ctx.design_gear = None;
-                    ctx.dirty = true;
+                    // CAD audit items 58 and 145: deleting a row used to reset the
+                    // traced geometry to the demo brilliant no matter what was on
+                    // screen, so deleting an unrelated catalogue row threw away the
+                    // design being edited. Only reset when the deleted row is the
+                    // one whose planes are actually loaded.
+                    let owns_deleted_row = matches!(
+                        ctx.planes_owner,
+                        PlanesOwner::Catalogue { entry_id: owned } if owned == i64::from(entry_id)
+                    );
+                    if owns_deleted_row {
+                        ctx.claim_active_planes(
+                            std::sync::Arc::new(StandardGemCuts::standard_round_brilliant()),
+                            None,
+                            PlanesOwner::Builtin,
+                        );
+                        ctx.dirty = true;
+                    }
                 }
                 show_toast(&ui, "Diagram deleted.", "info");
                 refresh_after_library_change(&ui, &db_delete, &source_delete);

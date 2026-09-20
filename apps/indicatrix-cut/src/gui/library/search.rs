@@ -9,7 +9,7 @@ use indicatrix_net::library::{
     PerformanceFilterWire, PerformanceMetricWire, RangeFilterWire,
 };
 use indicatrix_vault::{
-    db::sqlite::Database,
+    db::sqlite::{Database, DisplayFilters, SortOrder},
     model::{
         entry::DiagramListItem,
         filter::RangeFilter,
@@ -91,6 +91,62 @@ pub fn read_range_filter(ui: &MainWindow) -> RangeFilter {
         performance: read_performance_filters(ui),
         include_ignored: ui.global::<LibraryModel>().get_show_ignored(),
     }
+}
+
+/// Maps `LibraryModel.sort_order_index` (the header toolbar's sort selector) onto a
+/// [`SortOrder`].
+///
+/// Index<->variant mapping happens here, once, the same convention
+/// [`read_performance_filters`] uses for its own index-coded fields. An out-of-range
+/// index (should not happen; the combo box's own model bounds it) falls back to
+/// [`SortOrder::CatalogueOrder`] rather than panicking.
+#[must_use]
+pub fn read_sort_order(ui: &MainWindow) -> SortOrder {
+    match ui.global::<LibraryModel>().get_sort_order_index() {
+        1 => SortOrder::Title,
+        2 => SortOrder::Newest,
+        3 => SortOrder::RecentlyEdited,
+        _ => SortOrder::CatalogueOrder,
+    }
+}
+
+/// Reads the library panel's "My designs" toggle (`filter_panel.slint`) -- `true`
+/// restricts the catalogue display to the cutter's own locally-imported designs (CAD
+/// audit item 189).
+#[must_use]
+pub fn read_local_only(ui: &MainWindow) -> bool {
+    ui.global::<LibraryModel>().get_local_only_filter()
+}
+
+/// Reads the library panel's tag chip filter (`filter_panel.slint`, CAD audit item
+/// 190's tag half) -- `LibraryModel.active_tag_filter_name` is `""` when no chip is
+/// selected.
+///
+/// Returns the tag's NAME, not its id: resolving a name to a `tags.id` is
+/// a database read (`Database::tag_id_by_name`), so that resolution happens in
+/// [`fetch_diagram_list_with_options`], the one place in this path that already
+/// holds the `Database` lock -- this function stays a pure `ui` read like every
+/// other `read_*` in this module.
+#[must_use]
+pub fn read_tag_filter(ui: &MainWindow) -> Option<String> {
+    let name = ui.global::<LibraryModel>().get_active_tag_filter_name();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// Reads the "show these N" restriction a batch import leaves behind
+/// (`LibraryModel.recent_import_filter`, CAD audit item 187's batch case) -- an
+/// empty list (the ordinary case) means no restriction.
+///
+/// Cleared by `gui::library::diagram_list::setup_search_and_filter_callbacks`'s four
+/// handlers the moment the cutter makes any real search/filter change, so it never
+/// outlives the view it was created for.
+#[must_use]
+pub fn read_id_filter(ui: &MainWindow) -> Option<Vec<i64>> {
+    let model = ui.global::<LibraryModel>().get_recent_import_filter();
+    if model.row_count() == 0 {
+        return None;
+    }
+    Some(model.iter().map(i64::from).collect())
 }
 
 /// Reads `ui.global::<LibraryModel>().get_performance_filters()` (the tilt-performance filter panel's rows,
@@ -211,6 +267,16 @@ pub(crate) fn refresh_diagram_list_remote(
                 ui.global::<LibraryModel>()
                     .set_diagram_list(ModelRc::new(VecModel::from(slint_items)));
                 ui.global::<LibraryModel>().set_total_count(total as i32);
+                // No server-side "real match count" exists yet for a remote source --
+                // `LibraryResponse::SearchResults` carries only the capped item list
+                // (see `indicatrix_net::library`'s wire types), not a separate
+                // `COUNT(*)` the way `Database::count_matching_diagrams` provides
+                // locally (CAD audit item 193). Setting it to this same capped `total`
+                // keeps the property populated with a truthful lower bound rather than
+                // stale/zero, matching this path's pre-existing `total_count` behaviour
+                // -- a real fix needs a new field on that wire response, out of scope
+                // for this crate alone (`indicatrix-net`/`indicatrix-worker`).
+                ui.global::<LibraryModel>().set_matched_count(total as i32);
                 // `DesignSummary::ignored` and this reply's `excluded_for_missing_curves`
                 // let a remote-sourced list drive the same ignored-row styling and
                 // missing-curves notice the local path (`refresh_diagram_list` below)
@@ -279,9 +345,20 @@ const fn to_performance_filter_wire(filter: &PerformanceFilter) -> PerformanceFi
     }
 }
 
+/// The synthetic URL scheme every locally-imported design is saved under (see
+/// `indicatrix_vault::local::import_asc`) -- shared by [`to_diagram_item`] and
+/// [`apply_diagram_list_to_ui`] so a design's "Mine" badge (CAD audit item 189) is
+/// decided identically for the local and remote-browsed paths.
+fn is_local_url(url: &str) -> bool {
+    url.starts_with("local://")
+}
+
 /// Reads [`DesignSummary::ignored`] straight off the row, giving a remote-sourced row
 /// the same ignored flag a local-sourced
-/// [`indicatrix_vault::model::entry::DiagramListItem::ignored`] already carries.
+/// [`indicatrix_vault::model::entry::DiagramListItem::ignored`] already carries. Same
+/// treatment for [`is_local_url`]/`DiagramItem::is_local` (CAD audit item 189): a
+/// remote-browsed row is exactly as able to say "the far end's own local import" as a
+/// local one, from the same `url` field.
 pub(crate) fn to_diagram_item(item: &DesignSummary) -> DiagramItem {
     DiagramItem {
         id: item.entry_id as i32,
@@ -293,6 +370,11 @@ pub(crate) fn to_diagram_item(item: &DesignSummary) -> DiagramItem {
         lw_ratio: item.lw_ratio.clone().unwrap_or_default().into(),
         ri: item.refractive_index.clone().unwrap_or_default().into(),
         ignored: item.ignored,
+        is_local: is_local_url(&item.url),
+        // CAD audit item 190: tags are a purely local-catalogue concept (see
+        // `Database::migrate_tag_tables`'s doc comment) -- the remote library
+        // protocol carries no tag data, so a remote-browsed row always shows none.
+        tags: ModelRc::new(VecModel::from(Vec::<slint::SharedString>::new())),
     }
 }
 
@@ -305,44 +387,104 @@ pub struct DiagramListRow {
     /// an ignored row can't reach this struct in that case, since it's excluded by the
     /// query itself.
     pub ignored: bool,
+    /// This row's tag names, alphabetical (CAD audit item 190) -- looked up in bulk by
+    /// [`fetch_diagram_list_with_options`] via `Database::tags_by_entry` rather than
+    /// one query per row.
+    pub tags: Vec<String>,
 }
 
 /// [`fetch_diagram_list`]'s full result.
 ///
-/// The rows, the catalogue's total design count
-/// (unrelated to how many matched), and how many otherwise-matching designs a
-/// currently-active tilt-performance filter excluded for having no computed curves at
-/// all -- see
+/// The rows, the catalogue's total design count (unrelated to how many matched), the
+/// real match count for the active search/filters (CAD audit item 193 -- see
+/// [`indicatrix_vault::db::sqlite::Database::count_matching_diagrams`], distinct from
+/// both `total` and `rows.len()`, which is capped), and how many otherwise-matching
+/// designs a currently-active tilt-performance filter excluded for having no computed
+/// curves at all -- see
 /// `indicatrix_vault::model::filter::PerformanceSearchResult::excluded_for_missing_curves`'s
 /// doc comment for what that count does and doesn't include.
 pub struct FetchedDiagramList {
     pub rows: Vec<DiagramListRow>,
     pub total: usize,
+    pub matched_count: usize,
     pub excluded_for_missing_curves: usize,
 }
 
-/// The `Database` read half of [`refresh_diagram_list`].
+/// The `Database` read half of [`refresh_diagram_list`], with no sort/"My designs"
+/// preference.
 ///
-/// Has no `ui` dependency beyond the already-resolved `range` -- split out so
-/// `gui::library`'s post-import/rename/delete/shape-change refresh can run this on a
-/// background thread (re-running an unfiltered search against a several-thousand-design
-/// catalogue synchronously on the UI thread is itself a perceptible freeze) and only
-/// marshal the cheap [`apply_diagram_list_to_ui`] step back onto the UI thread. Every
-/// other caller (search box edits, filter slider drags) stays on the synchronous
-/// [`refresh_diagram_list`] below, which a filter that must feel immediate as you type
-/// actually needs.
+/// Exactly [`fetch_diagram_list_with_options`] at [`SortOrder::CatalogueOrder`]/
+/// `local_only: false`, kept as its own function so this crate's existing call sites (a
+/// post-import/rename/delete background refresh, see `gui::library::local::helpers`)
+/// keep compiling and behaving exactly as before.
 ///
 /// # Errors
 ///
-/// Returns an error if `Database::search_diagrams_with_performance_exclusions` fails (a
-/// bad filter combination, or the connection itself). `get_total_count`'s own failure
-/// is tolerated instead (`unwrap_or(items.len())` below).
+/// Returns an error under the same conditions as [`fetch_diagram_list_with_options`].
 pub fn fetch_diagram_list(
     db_mutex: &Arc<Mutex<Database>>,
     search: &str,
     shape_filter: &str,
     gear_filter: &str,
     range: &RangeFilter,
+) -> Result<FetchedDiagramList> {
+    fetch_diagram_list_with_options(
+        db_mutex,
+        search,
+        shape_filter,
+        gear_filter,
+        range,
+        DisplaySearchOptions::default(),
+    )
+}
+
+/// [`fetch_diagram_list_with_options`]'s sort/restriction options.
+///
+/// Bundled into one value purely to keep that function under clippy's
+/// `too_many_arguments` lint -- same reasoning as
+/// `indicatrix_vault::db::sqlite::DisplayFilters`, which this expands into once
+/// `tag_filter` is resolved to an id.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DisplaySearchOptions<'a> {
+    pub order: SortOrder,
+    pub local_only: bool,
+    /// The tag chip filter's NAME (CAD audit item 190) -- see [`read_tag_filter`]'s
+    /// own doc comment for why this stays a name this far down, resolved to an id
+    /// only once the `Database` lock is already held below.
+    pub tag_filter: Option<&'a str>,
+    /// "Show these N" restriction to an explicit id set (CAD audit item 187's batch
+    /// case) -- see [`read_id_filter`]'s own doc comment.
+    pub id_filter: Option<&'a [i64]>,
+}
+
+/// [`fetch_diagram_list`], plus a caller-chosen [`SortOrder`] and "My designs"/tag/
+/// batch-id restriction (CAD audit items 187/189/190).
+///
+/// What [`refresh_diagram_list`] actually calls, reading every field of `options` off
+/// `ui` via [`read_sort_order`]/[`read_local_only`]/[`read_tag_filter`]/
+/// [`read_id_filter`].
+///
+/// Has no `ui` dependency beyond the already-resolved `range`/`options` -- split out
+/// so `gui::library`'s post-import/rename/delete/shape-change refresh can run this on
+/// a background thread (re-running an unfiltered search against a several-thousand-
+/// design catalogue synchronously on the UI thread is itself a perceptible freeze) and
+/// only marshal the cheap [`apply_diagram_list_to_ui`] step back onto the UI thread.
+/// Every other caller (search box edits, filter slider drags) stays on the synchronous
+/// [`refresh_diagram_list`] below, which a filter that must feel immediate as you type
+/// actually needs.
+///
+/// # Errors
+///
+/// Returns an error if `Database::search_diagrams_display` fails (a bad filter
+/// combination, or the connection itself). `get_total_count`'s/`count_matching_diagrams`'s
+/// own failures are tolerated instead (`unwrap_or` below).
+pub fn fetch_diagram_list_with_options(
+    db_mutex: &Arc<Mutex<Database>>,
+    search: &str,
+    shape_filter: &str,
+    gear_filter: &str,
+    range: &RangeFilter,
+    options: DisplaySearchOptions<'_>,
 ) -> Result<FetchedDiagramList> {
     let clean_shape = if shape_filter == "All Shapes" {
         "All"
@@ -358,13 +500,33 @@ pub fn fetch_diagram_list(
     // Scoped so the guard drops before this returns: this runs on a background thread
     // where any extra time holding the database lock is time a UI-thread callback can
     // block on it.
-    let (rows, total, excluded_for_missing_curves) = {
+    let (rows, total, matched_count, excluded_for_missing_curves) = {
         let db = db_mutex
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let result =
-            db.search_diagrams_with_performance_exclusions(search, clean_shape, clean_gear, range)?;
+        // A tag name that no longer resolves (deleted between the UI reading its
+        // chip and this call) is treated as no restriction rather than an error --
+        // consistent with `shape_filter`/`gear_filter`'s own "not found = All"
+        // tolerance a few lines up.
+        let tag_filter_id = options
+            .tag_filter
+            .and_then(|name| db.tag_id_by_name(name).ok().flatten());
+        let filters = DisplayFilters {
+            order: options.order,
+            local_only: options.local_only,
+            tag_filter: tag_filter_id,
+            id_filter: options.id_filter,
+        };
+        let result = db.search_diagrams_display(search, clean_shape, clean_gear, range, filters)?;
         let total = db.get_total_count().unwrap_or(result.items.len());
+        let matched_count = db
+            .count_matching_diagrams(search, clean_shape, clean_gear, range, filters)
+            .unwrap_or(result.items.len());
+        // CAD audit item 190: one bulk query for every entry's tags rather than one
+        // `tags_for_entry` call per row -- see `Database::tags_by_entry`'s own doc
+        // comment. A failed lookup degrades to "no tags shown" rather than failing
+        // the whole list fetch.
+        let mut tags_by_entry = db.tags_by_entry().unwrap_or_default();
 
         // `ignored` is read straight off the row (`DiagramListItem::ignored`).
         let rows: Vec<DiagramListRow> = result
@@ -372,17 +534,28 @@ pub fn fetch_diagram_list(
             .into_iter()
             .map(|item| {
                 let ignored = item.ignored;
-                DiagramListRow { item, ignored }
+                let tags = tags_by_entry.remove(&item.id).unwrap_or_default();
+                DiagramListRow {
+                    item,
+                    ignored,
+                    tags,
+                }
             })
             .collect();
         // Explicit: moving the results into the tuple needs no lock, and the UI
         // thread may be waiting on this same mutex.
         drop(db);
-        (rows, total, result.excluded_for_missing_curves)
+        (
+            rows,
+            total,
+            matched_count,
+            result.excluded_for_missing_curves,
+        )
     };
     Ok(FetchedDiagramList {
         rows,
         total,
+        matched_count,
         excluded_for_missing_curves,
     })
 }
@@ -403,6 +576,14 @@ pub fn apply_diagram_list_to_ui(ui: &MainWindow, fetched: FetchedDiagramList) {
             lw_ratio: row.item.lw_ratio.unwrap_or_default().into(),
             ri: row.item.refractive_index.unwrap_or_default().into(),
             ignored: row.ignored,
+            is_local: is_local_url(&row.item.url),
+            // CAD audit item 190: this row's tag chips.
+            tags: ModelRc::new(VecModel::from(
+                row.tags
+                    .into_iter()
+                    .map(Into::into)
+                    .collect::<Vec<slint::SharedString>>(),
+            )),
         })
         .collect();
 
@@ -410,6 +591,11 @@ pub fn apply_diagram_list_to_ui(ui: &MainWindow, fetched: FetchedDiagramList) {
         .set_diagram_list(ModelRc::new(VecModel::from(slint_items)));
     ui.global::<LibraryModel>()
         .set_total_count(fetched.total as i32);
+    // Real match count for the active search/filters (CAD audit item 193) -- see
+    // `FetchedDiagramList::matched_count`'s doc comment. Nowhere near `i32::MAX` for
+    // the same reason `total`/`excluded_for_missing_curves` below aren't.
+    ui.global::<LibraryModel>()
+        .set_matched_count(fetched.matched_count as i32);
     // Counts designs within one query's result set (`SEARCH_RESULT_CAP`-bounded,
     // currently 1000), nowhere near `i32::MAX`.
     ui.global::<LibraryModel>()
@@ -424,7 +610,23 @@ pub fn refresh_diagram_list(
     gear_filter: &str,
 ) {
     let range = read_range_filter(ui);
-    match fetch_diagram_list(db_mutex, search, shape_filter, gear_filter, &range) {
+    let order = read_sort_order(ui);
+    let local_only = read_local_only(ui);
+    let tag_filter = read_tag_filter(ui);
+    let id_filter = read_id_filter(ui);
+    match fetch_diagram_list_with_options(
+        db_mutex,
+        search,
+        shape_filter,
+        gear_filter,
+        &range,
+        DisplaySearchOptions {
+            order,
+            local_only,
+            tag_filter: tag_filter.as_deref(),
+            id_filter: id_filter.as_deref(),
+        },
+    ) {
         Ok(fetched) => apply_diagram_list_to_ui(ui, fetched),
         Err(e) => {
             error!("Failed to search diagrams: {:?}", e);

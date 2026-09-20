@@ -57,7 +57,8 @@ mod redraw_gate;
 mod scanline;
 
 pub use context::{
-    MaterialOverrides, RenderContext, apply_material_overrides, load_env_map, resolve_material,
+    MaterialOverrides, MaterialSources, PlanesOwner, RenderContext, apply_material_overrides,
+    load_env_map, resolve_material, resolve_material_with_override,
 };
 pub use denoise::{
     DenoiseScratch, FirstHitSnapshot, denoise_and_tonemap_frame, tonemap_running_average,
@@ -99,8 +100,9 @@ use std::{
 const DENOISE_MIN_INTERVAL: Duration = Duration::from_millis(120);
 
 use frame_helpers::{
-    AccumulationBuffers, SuspensionFlags, combined_sample_offset, remote_suspends_local,
-    resolve_remote_ownership, should_combine_remote, update_accumulation_state,
+    AccumulationBuffers, SuspensionFlags, combined_sample_offset, push_metrics_to_ui,
+    remote_suspends_local, resolve_remote_ownership, should_combine_remote,
+    update_accumulation_state,
 };
 
 #[expect(
@@ -153,8 +155,16 @@ pub fn spawn_render_thread<T, F, M>(
         let mut girdle_cache = GirdleFinishCache::new();
         let mut stone_width_cache = StoneWidthCache::new();
         // Denoise+tonemap+push runs on this dedicated thread instead of blocking the
-        // trace loop below -- see `display_thread`'s doc comment. Every UI push now
-        // happens exclusively on the display thread's side of the hand-off.
+        // trace loop below -- see `display_thread`'s doc comment. Every full-frame UI
+        // push happens exclusively on the display thread's side of the hand-off.
+        //
+        // `ui_weak`/`update_metrics` are cloned (both cheap: a weak pointer, an `Fn`
+        // closure bounded `Clone`) rather than moved wholesale, so this loop keeps its
+        // own copies for the metrics-only push on the suspended path below (CAD audit
+        // item 60) -- that path deliberately bypasses `display` entirely so an
+        // invisible tab never pays for a denoise+tonemap cycle nobody can see.
+        let ui_weak_metrics_only = ui_weak.clone();
+        let update_metrics_metrics_only = update_metrics.clone();
         let display = spawn_display_thread(ui_weak, update_image, update_metrics);
         // Single choke point for releasing stale remote-image ownership -- see
         // `resolve_remote_ownership`. `false` matches `RenderContext::remote_active`'s
@@ -171,7 +181,10 @@ pub fn spawn_render_thread<T, F, M>(
                 light_yaw,
                 light_pitch,
                 material_name,
+                material_override,
+                material_unresolved,
                 lighting_preset,
+                backdrop,
                 target_samples,
                 max_bounces,
                 exposure,
@@ -280,25 +293,77 @@ pub fn spawn_render_thread<T, F, M>(
 
             // Suspended by an explicit user pause, an invisible 3D tab, a remote worker
             // owning the displayed image (`remote_active`), or a running high-res export
-            // (`export_active`). Skips raytracing and metrics entirely -- the
-            // accumulation buffer stays in sync with `dirty`, so resuming continues
-            // converging. The sleep is long enough to cost no CPU but short enough
-            // (~100ms) to feel responsive.
+            // (`export_active`). Skips raytracing entirely -- the accumulation buffer
+            // stays in sync with `dirty`, so resuming continues converging. The sleep is
+            // long enough to cost no CPU but short enough (~100ms) to feel responsive.
             let suspension = SuspensionFlags {
                 paused,
                 tab_visible,
                 remote_suspends: remote_suspends_local(remote_active, live_compute_target),
                 export_active,
+                material_unresolved: material_unresolved.is_some(),
             };
             if suspension.tracing_suspended() {
+                // CAD audit item 60: an invisible tab alone (the Edit tab's default
+                // Solid view mode) must not also freeze the gemological HUD/tilt-dialog
+                // metrics while the cutter keeps editing -- only a hard suspend does
+                // (see `SuspensionFlags::metrics_suspended`). `compute_or_reuse_metrics`
+                // is a cache hit whenever planes/material/pose haven't moved since the
+                // last frame that computed them, so this costs nothing extra in the
+                // common case. Pushed directly via `push_metrics_to_ui`, bypassing
+                // `display` entirely, so nothing pays for a denoise+tonemap cycle for an
+                // image nobody can see.
+                if !suspension.metrics_suspended() {
+                    let (current_mat, _spp) = resolve_material_and_quality(
+                        &MaterialSources {
+                            materials: &materials,
+                            custom_materials: &custom_materials,
+                            material_override: material_override.as_ref(),
+                            material_name: &material_name,
+                        },
+                        target_samples,
+                        &MaterialOverrides {
+                            inclusion_sigma_s,
+                            c_axis_override,
+                            edge_rounding_radius,
+                            stone_width_mm,
+                        },
+                        &active_planes,
+                        &mut stone_width_cache,
+                    );
+                    let (metrics, graph_brilliance, graph_extinction, graph_windowing) =
+                        compute_or_reuse_metrics(
+                            &mut metrics_cache,
+                            &active_planes,
+                            &current_mat,
+                            yaw,
+                            pitch,
+                            light_yaw,
+                            light_pitch,
+                        );
+                    push_metrics_to_ui(
+                        &ui_weak_metrics_only,
+                        &update_metrics_metrics_only,
+                        FrameMetricsSnapshot {
+                            metrics,
+                            graph_brilliance,
+                            graph_extinction,
+                            graph_windowing,
+                            cam_pitch_deg: pitch.to_degrees(),
+                        },
+                    );
+                }
                 thread::sleep(std::time::Duration::from_millis(100));
                 continue;
             }
 
             let (current_mat, spp) = resolve_material_and_quality(
-                &materials,
-                &custom_materials,
-                &material_name,
+                &MaterialSources {
+                    materials: &materials,
+                    custom_materials: &custom_materials,
+                    material_override: material_override.as_ref(),
+                    material_name: &material_name,
+                },
                 target_samples,
                 &MaterialOverrides {
                     inclusion_sigma_s,
@@ -348,7 +413,11 @@ pub fn spawn_render_thread<T, F, M>(
             // adapter, device lost, `gpu` feature off), not an HDR-specific one -- see
             // `docs/history/indicatrix-cut.md` for the CPU-only HDR path this replaced.
             let environment = env_map.as_deref().map_or_else(
-                || lighting_preset.studio(exposure, light_yaw, light_pitch),
+                || {
+                    lighting_preset
+                        .studio(exposure, light_yaw, light_pitch)
+                        .with_backdrop(backdrop.level())
+                },
                 EnvironmentSource::HdrMap,
             );
 

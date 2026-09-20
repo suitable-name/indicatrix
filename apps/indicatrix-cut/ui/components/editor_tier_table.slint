@@ -2,16 +2,23 @@ import { ScrollView, LineEdit } from "std-widgets.slint";
 import { EditorTierItem } from "../types.slint";
 import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
+import { SolidPreviewModel } from "../models/solid_preview.slint";
 
 // One tier-list row's angle cell -- click-to-edit rather than always a `LineEdit`
 // (see the manual's "Inline Angle Editing" chapter): a plain, click-through `Text`
 // display normally, so the row's ordinary click-to-select/Ctrl+click/hover behavior
 // around it is completely unaffected, with a small `TouchArea` over just this cell
-// that (a) opens an editable `LineEdit` on a plain click and (b) nudges the value
-// +-0.1deg on every scroll-wheel tick regardless of whether it's currently in edit
-// mode. `EditorTierTable.nudge`/`commit` are the only two ways this component ever
-// reports intent -- it never touches `Design` itself, matching this whole file's
-// "dumb about the design" convention (see `EditorTierTable`'s own top doc comment).
+// that (a) opens an editable `LineEdit` on a DOUBLE click and (b) nudges the value
+// +-0.1deg on a scroll-wheel tick while already in edit mode, or with Ctrl held --
+// otherwise the wheel is left to scroll the tier list, the same as anywhere else in
+// it. A plain (single) click instead fires `select()`, so clicking the angle value
+// selects the row exactly like clicking anywhere else in it, matching GCS/
+// spreadsheet behavior -- it used to jump straight into edit mode on a single
+// click, silently leaving the inspector pointed at whatever row was selected
+// before. `EditorTierTable.select`/`nudge`/`commit`/`closed` are the only ways this
+// component ever reports intent -- it never touches `Design` itself, matching this
+// whole file's "dumb about the design" convention (see `EditorTierTable`'s own top
+// doc comment).
 //
 // Commit path: Enter (`accepted`) or focus loss (`changed has-focus`, since
 // `LineEdit` exposes no separate "blurred" callback -- see the interface in
@@ -19,7 +26,16 @@ import { EditorModel } from "../models/editor.slint";
 // the field's current text, then close edit mode. Escape closes edit mode WITHOUT
 // calling `commit` -- the `LineEdit` is destroyed uncommitted and the display
 // reverts to `value` (still whatever `Design` actually holds), no separate "revert"
-// step needed. Up/Down step +-0.1deg (Shift +-1deg, Ctrl +-0.01deg) via the
+// step needed. `cancelling` is what actually guarantees that (CAD audit item 125):
+// Escape, and `accepted` (which already committed once itself), both set it before
+// dropping `editing`, and the `changed has-focus` handler below skips its own
+// commit whenever it's set -- `if root.editing`'s teardown may or may not fire
+// `changed has-focus` on the way out, and without this flag that would silently
+// re-commit (or double-commit) the very value Escape just asked to throw away.
+// Every path that closes edit mode also fires `closed()` so the
+// caller (the tier list's own `FocusScope`) can reclaim keyboard focus -- see
+// `EditorTierTable`'s own `table_focus` doc comment for why that hand-back is
+// needed at all. Up/Down step +-0.1deg (Shift +-1deg, Ctrl +-0.01deg) via the
 // `LineEdit`'s own `key-pressed` -- see `i-slint-compiler`'s `widgets/interfaces/
 // lineedit.slint` for why this, not a wrapping `FocusScope`, is the mechanism: a
 // plain `Rectangle`/`FocusScope` has no `scroll-event` in Slint 1.17 (only
@@ -37,18 +53,39 @@ component TierAngleCell inherits Rectangle {
     in property <int> index;
     in property <int> focus_target: -1;
     in property <int> focus_pulse: 0;
+    // Fired on a plain click, BEFORE edit mode -- lets the row select itself the
+    // same way clicking any other cell does.
+    callback select();
     callback commit(string);
     // (index, delta_deg)
     callback nudge(int, float);
+    // Fired whenever `editing` transitions from `true` back to `false`, by every
+    // path that does so (Enter, focus loss, Escape) -- see this component's own
+    // top doc comment.
+    callback closed();
+
+    // CAD audit item 40's remainder: this cell's own `area` covers the whole
+    // 60px-wide column, so hovering it used to make the ENCLOSING row's
+    // `row_touch.has-hover` read false (a `TouchArea` "steals" hover from
+    // whatever is under it) and the row's highlight would flicker off as the
+    // pointer crossed the ANGLE column. Exposed here so the row (`editor_
+    // tier_table.slint`'s own per-row `Rectangle`) can OR it into its own
+    // background condition instead.
+    out property <bool> hovered: area.has-hover;
 
     width: 60px;
     height: 100%;
     property <bool> editing: false;
     property <int> seen_pulse: 0;
+    // Set right before `editing` drops to `false` on a path that must NOT commit
+    // (Escape) or that already committed once (`accepted`) -- see this
+    // component's own top doc comment (CAD audit item 125).
+    property <bool> cancelling: false;
 
     changed focus_pulse => {
         if root.focus_target == root.index && root.focus_pulse != root.seen_pulse {
             root.seen_pulse = root.focus_pulse;
+            root.cancelling = false;
             root.editing = true;
         }
     }
@@ -63,10 +100,13 @@ component TierAngleCell inherits Rectangle {
         }
     }
 
+    Tooltip { text: @markdown("Click to select this row, double-click to edit. Scroll while editing, or Ctrl+Scroll any time, to nudge +-0.1deg."); }
+
     area := TouchArea {
-        clicked => { root.editing = true; }
+        clicked => { root.select(); }
+        double-clicked => { root.cancelling = false; root.editing = true; }
         scroll-event(event) => {
-            if event.delta-y != 0 {
+            if event.delta-y != 0 && (root.editing || event.modifiers.control) {
                 root.nudge(root.index, event.delta-y > 0 ? 0.1 : -0.1);
                 return accept;
             }
@@ -79,6 +119,7 @@ component TierAngleCell inherits Rectangle {
         font-size: 11px;
         font-weight: 600;
         color: Theme.accent-amber;
+        overflow: elide;
         vertical-alignment: center;
     }
 
@@ -93,17 +134,27 @@ component TierAngleCell inherits Rectangle {
         }
         accepted => {
             root.commit(self.text);
+            // Already committed above -- the focus-loss teardown Enter also
+            // triggers must not commit `self.text` a second time.
+            root.cancelling = true;
             root.editing = false;
+            root.closed();
         }
         changed has-focus => {
             if !self.has-focus {
-                root.commit(self.text);
+                if !root.cancelling {
+                    root.commit(self.text);
+                }
+                root.cancelling = false;
                 root.editing = false;
+                root.closed();
             }
         }
         key-pressed(event) => {
             if event.text == Key.Escape {
+                root.cancelling = true;
                 root.editing = false;
+                root.closed();
                 return accept;
             } else if event.text == Key.UpArrow {
                 root.step(event.modifiers.shift, event.modifiers.control, 1.0);
@@ -133,23 +184,87 @@ component TierAngleCell inherits Rectangle {
 // Selecting a row (click or Enter) does not seed a form directly any more -- that
 // lived on the old combined `EditorView` before the Step A split; this component
 // only reports WHICH tier was selected via `tier_selected`, and `EditorView` wires
-// that to `EditorInspector.load_tier_into_form` (see `app.slint`'s Edit-mode layout
-// doc comment for the overall split).
+// that straight to `EditorModel.selected_tier_index` (see `app.slint`'s Edit-mode
+// layout doc comment for the overall split, and `EditorView`'s own doc comment for
+// why THAT global property, rather than a direct call into `EditorInspector`, is
+// the hand-off point: the Solid/Diagram viewport's click and "Duplicate" also need
+// to reach the inspector's form, but they can only ever set a global property, not
+// call a sibling component's function).
+//
+// Column widths are every one a named `col_*_width` property on `root` rather than
+// a literal repeated in both the header row and the per-row `HorizontalLayout` --
+// the two used to drift (the detach column was 56px in the header, 54px on every
+// row), and NAME/INDICES had no minimum width at all, so they were squeezed to
+// unreadable slivers before MAST/SOLVE/MARGIN/ORBIT/etc. ever gave up any space.
+// Giving NAME/INDICES a real `min-width` instead means the row's natural width can
+// now genuinely exceed a narrow dock -- `tier_scroll` (a `ScrollView`, scrollable on
+// both axes already) picks that up as a horizontal-scroll fallback with no extra
+// code, rather than the previous silent truncation. The column HEADER, however,
+// still does NOT scroll in lockstep with the body on that rare narrow-dock path
+// (it lives outside `tier_scroll`, kept there so it stays visible while the body
+// scrolls vertically) -- a known, accepted limitation, not a regression from
+// today's behavior (today's header never needed to scroll at all).
 export component EditorTierTable inherits Rectangle {
     vertical-stretch: 1;
     min-height: 120px;
     background: Theme.bg-darkest;
     border-radius: Theme.radius-sm;
-    border-width: 1px;
-    border-color: Theme.border-subtle;
+    // A visible border while the tier list's own `FocusScope` (`table_focus`) has
+    // keyboard focus -- previously indistinguishable from an unfocused table, so a
+    // cutter tabbing/clicking around had no way to tell whether Up/Down/Delete
+    // would land here at all.
+    border-width: root.table_focused ? 2px : 1px;
+    border-color: root.table_focused ? Theme.accent-cyan : Theme.border-subtle;
 
     // Fired on row click (plain, non-Ctrl) and on the keyboard list's Enter --
     // both used to mean "load this tier into the edit form."
     callback tier_selected(int);
 
+    property <bool> table_focused: false;
+
+    // Shared column-width constants -- see this component's own top doc comment.
+    property <length> col_hash_width: 26px;
+    // CAD audit item 65: a narrow badge column for this tier's own
+    // `ManufacturabilityWarning`(s) (`EditorTierItem::warning_text`) -- lets a
+    // cutter see, right on the offending row, that something needs attention
+    // instead of only reading it unattributed in the status strip's Log popup.
+    property <length> col_warn_width: 18px;
+    property <length> col_block_width: 26px;
+    property <length> col_angle_width: 60px;
+    property <length> col_name_min_width: 68px;
+    property <length> col_indices_min_width: 54px;
+    property <length> col_meets_width: 68px;
+    property <length> col_mast_width: 50px;
+    property <length> col_solve_width: 72px;
+    property <length> col_margin_width: 52px;
+    property <length> col_orbit_width: 56px;
+    property <length> col_adopt_width: 52px;
+    // CAD audit item 130: the per-row "Pin" action's own column (blank header,
+    // matching the other pure-action columns below -- e.g. `col_detach_width`).
+    property <length> col_pin_width: 34px;
+    property <length> col_detach_width: 54px;
+    property <length> col_anchor_width: 60px;
+    property <length> col_move_width: 20px;
+    property <length> col_dup_width: 20px;
+    property <length> col_remove_width: 20px;
+
     property <int> keyboard_focus_index: -1;
     property <int> inline_edit_target: -1;
     property <int> inline_edit_pulse: 0;
+
+    // Mirrors `EditorModel.tiers.length` purely so the `changed` below can clamp
+    // `keyboard_focus_index` whenever a Remove/Undo/Redo shrinks the tier list out
+    // from under it -- watching the count rather than `EditorModel.tiers` itself
+    // (which Slint has no `changed` support for at all: only a plain property, never
+    // a model, can be the target of a `changed` handler) also skips the clamp check
+    // on a same-length rebuild (an ordinary edit's `ModifyTier`), where the current
+    // cursor position is never invalid.
+    property <int> tier_count: EditorModel.tiers.length;
+    changed tier_count => {
+        if root.keyboard_focus_index >= root.tier_count {
+            root.keyboard_focus_index = root.tier_count - 1;
+        }
+    }
 
     function scrolled_to_show(idx: int, viewport_y: length, visible_height: length, viewport_height: length) -> length {
         if idx < 0 {
@@ -163,36 +278,349 @@ export component EditorTierTable inherits Rectangle {
         return viewport_y;
     }
 
+    /// Moves the keyboard cursor to `idx` -- called from `EditorView`'s own
+    /// selection-mirror handler (see that file's own doc comment) so a selection made
+    /// from OUTSIDE this table (the Solid/Diagram viewport's click, or "Duplicate")
+    /// still moves the keyboard cursor, the same as an in-list click already does via
+    /// `row_touch`'s own `clicked` handler below. Scrolling the row into view is a
+    /// side effect of `keyboard_focus_index` changing (see the `FocusScope` below's
+    /// own `scroll_target` watcher), not done here directly: `tier_scroll`'s id lives
+    /// inside that conditional `FocusScope`, and Slint refuses to resolve a
+    /// conditional element's id from a function declared on `root`.
+    public function focus_row(idx: int) {
+        root.keyboard_focus_index = idx;
+    }
+
+    // CAD audit item 43's remainder: lets Ctrl+F focus THIS table's own
+    // filter box instead of always routing to the catalogue search box --
+    // `filter_edit` is a plain (non-conditional) child of this component, so
+    // it is reachable from a root-level function. HANDOFF (not yet wired --
+    // this lane owns this file but not `app.slint`'s global shortcut handler):
+    // `app.slint`'s Ctrl+F arm (around its `header_toolbar.focus_search()`
+    // call) needs to call this instead, e.g. via `editor_tier_table.
+    // focus_filter()`, whenever the Edit sub-tab is the active one.
+    public function focus_filter() {
+        filter_edit.focus();
+    }
+
+    // CAD audit item 43: mirrored into a local property first, then watched --
+    // the same idiom `editor_inspector.slint` uses for `form_reset_pulse`, and for
+    // the same reason: a `changed` handler on a global's property directly is not
+    // reliable across this component's conditional mounting.
+    property <int> tracked_filter_focus_pulse: EditorModel.filter_focus_pulse;
+    changed tracked_filter_focus_pulse => { self.focus_filter(); }
+
+    // CAD audit item 121's remaining half: a global's own `changed` handler can
+    // only be written in the file that DECLARES the global (see this crate's
+    // SLINT FACTS), and `SolidPreviewModel.diagram_clicked_tooth` is declared in
+    // `models/solid_preview.slint`, not here -- so this mirrors it into a plain
+    // property ON THIS component (the same technique `editor_view.slint`'s own
+    // `tracked_selected_tier_index` uses for `EditorModel.selected_tier_index`),
+    // which THIS file's own `changed` handler is then free to react to.
+    // `EditorModel.highlight_tooth` (Rust: `gui::editor::callbacks::tier_actions::
+    // setup_highlight_tooth_callback`) does the actual reverse-lookup/highlight.
+    property <int> tracked_clicked_tooth: SolidPreviewModel.diagram_clicked_tooth;
+    changed tracked_clicked_tooth => {
+        EditorModel.highlight_tooth(root.tracked_clicked_tooth);
+    }
+
+    // CAD audit item 43: whether `row` matches the search/filter box below --
+    // Slint has no substring operation, so the real case-insensitive test runs in
+    // Rust (`EditorModel.tier_matches_filter`, `pure` so it can be called directly
+    // from a binding -- see that callback's own doc comment in `ui/models/
+    // editor.slint`). Short-circuited on an empty filter so an unset filter (the
+    // default, and the only state this table can be in before that callback's
+    // handler is registered -- see the handoff note there) never dims a single row.
+    // Matches against name/indices/block/strategy/meets-text jointly, so
+    // e.g. "pavilion" or "g1" both find what a cutter expects.
+    function row_matches(row: EditorTierItem) -> bool {
+        return EditorModel.tier_filter_text == ""
+            || EditorModel.tier_matches_filter(row.name + " " + row.indices + " " + row.block + " " + row.strategy + " " + row.constraint_text, EditorModel.tier_filter_text);
+    }
+
     VerticalLayout {
         padding: 8px;
         spacing: 4px;
+
+        // The search/filter box itself -- narrows the rendered rows by
+        // name/index/block/strategy/meets substring (row indices stay whatever
+        // `EditorTierItem.index` already says, so every callback below still
+        // identifies the right tier regardless of what's dimmed). Non-matching
+        // rows are DIMMED rather than removed from layout, so Up/Down/Home/End's
+        // arithmetic (all of it keyed on `EditorModel.tiers.length`, not a
+        // filtered count) keeps working exactly as it does with no filter set.
+        Rectangle {
+            height: 24px;
+            background: Theme.bg-input;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: filter_edit.has-focus ? Theme.accent-cyan : Theme.border-subtle;
+            HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 6px;
+                spacing: 4px;
+                Text {
+                    text: "\u{1F50D}";
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+                filter_edit := LineEdit {
+                    text <=> EditorModel.tier_filter_text;
+                    placeholder-text: "Filter tiers by name, index, block or strategy...";
+                    font-size: 10px;
+                }
+                if EditorModel.tier_filter_text != "": Rectangle {
+                    width: 16px;
+                    Text {
+                        text: "\u{2715}";
+                        font-size: 10px;
+                        color: clear_filter_touch.has-hover ? Theme.accent-ruby : Theme.text-muted;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    clear_filter_touch := TouchArea {
+                        clicked => { EditorModel.tier_filter_text = ""; }
+                    }
+                }
+            }
+        }
+
+        // CAD audit item 128: bulk-adopts every tier that still has an
+        // unadopted imported meet, as one undoable step, instead of one Adopt
+        // click (and one re-solve) per tier. Always shown rather than
+        // conditioned on "does anything need adopting" -- Slint has no cheap
+        // way to ask that of `EditorModel.tiers` from a binding here -- so a
+        // click with nothing to adopt is a harmless no-op handled on the Rust
+        // side (`EditorModel.adopt_all`, declared on `EditorModel` and wired
+        // to `gui::editor::callbacks::tier_actions::setup_adopt_all_callback`
+        // -- this comment used to say "HANDOFF: not yet declared", which was
+        // already stale by the time it was verified).
+        HorizontalLayout {
+            padding-left: 4px;
+            padding-right: 4px;
+            spacing: 6px;
+            // CAD audit item 219: a discoverable "+ Add Tier" affordance right
+            // in the table itself -- previously the only way in was noticing
+            // the Tier tab's inspector form below (the empty-state text names
+            // it, but nothing here does). Reuses the SAME `selected_tier_index
+            // = -1` + `inspector_tab`/`inspector_collapsed` properties the
+            // "Add Anchor" row action below already drives, so no new
+            // `EditorModel` surface is needed. The round-trip-through-another-
+            // value guard (see the "Add Anchor" touch handler's own comment for
+            // why) is not needed here: entering Add mode when already IN Add
+            // mode has nothing to reload, unlike jumping between two different
+            // real tiers.
+            Rectangle {
+                width: 78px;
+                height: 20px;
+                background: add_tier_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+                border-radius: 3px;
+                Text {
+                    text: "+ Add Tier";
+                    font-size: 9px;
+                    font-weight: 600;
+                    color: Theme.accent-emerald;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                add_tier_touch := TouchArea {
+                    clicked => {
+                        EditorModel.selected_tier_index = -1;
+                        EditorModel.inspector_tab = 0;
+                        EditorModel.inspector_collapsed = false;
+                    }
+                }
+                Tooltip { text: @markdown("Open the Tier tab in Add mode to author a new tier."); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Rectangle {
+                width: 64px;
+                height: 20px;
+                background: adopt_all_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+                border-radius: 3px;
+                Text {
+                    text: "Adopt all";
+                    font-size: 9px;
+                    font-weight: 600;
+                    color: Theme.accent-cyan;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                adopt_all_touch := TouchArea {
+                    clicked => { EditorModel.adopt_all(); }
+                }
+                Tooltip { text: @markdown("Adopt every tier's imported meet at once, as one Undo step."); }
+            }
+        }
+
+        // The "N selected" indicator plus its Clear/Delete batch actions -- shown
+        // only while a multi-select group of more than one row exists
+        // (`EditorModel.multi_selected_count`, pushed alongside every tier refresh).
+        // Lives in the tier table's own header rather than the status strip
+        // (`editor_status_strip.slint` is a different lane's file right now) --
+        // still a clear, always-visible place for it, just not the one the audit
+        // originally suggested.
+        if EditorModel.multi_selected_count > 1: HorizontalLayout {
+            padding-left: 4px;
+            padding-right: 4px;
+            spacing: 6px;
+            Rectangle {
+                width: 76px;
+                height: 20px;
+                background: Theme.bg-card-hover;
+                border-radius: 3px;
+                Text {
+                    text: EditorModel.multi_selected_count + " selected";
+                    font-size: 9px;
+                    font-weight: 600;
+                    color: Theme.accent-cyan;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            Rectangle {
+                width: 40px;
+                height: 20px;
+                background: clear_multi_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+                border-radius: 3px;
+                Text { text: "Clear"; font-size: 9px; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                clear_multi_touch := TouchArea {
+                    clicked => { EditorModel.clear_multi_select(); }
+                }
+            }
+            Rectangle {
+                width: 48px;
+                height: 20px;
+                background: delete_multi_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+                border-radius: 3px;
+                Text { text: "Delete"; font-size: 9px; color: Theme.accent-ruby; horizontal-alignment: center; vertical-alignment: center; }
+                delete_multi_touch := TouchArea {
+                    clicked => { EditorModel.remove_multi_selected(); }
+                }
+                Tooltip { text: @markdown("Delete every selected tier (one Undo step per tier)."); }
+            }
+            // CAD audit item 128: "Adopt all"'s own restriction to the current
+            // multi-selection -- freeing one Ctrl-clicked group for Optimize
+            // without also disturbing every other tier's still-pinned meet.
+            // A harmless no-op (same reasoning as "Adopt all" above) when none
+            // of the selection has an imported meet left to adopt.
+            Rectangle {
+                width: 64px;
+                height: 20px;
+                background: adopt_selected_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+                border-radius: 3px;
+                Text { text: "Adopt sel."; font-size: 9px; font-weight: 600; color: Theme.accent-cyan; horizontal-alignment: center; vertical-alignment: center; }
+                adopt_selected_touch := TouchArea {
+                    clicked => { EditorModel.adopt_selected(); }
+                }
+                Tooltip { text: @markdown("Adopt the imported meet of every selected tier, as one Undo step."); }
+            }
+            // CAD audit item 39's remainder: a batch "offset angle by X" mini-
+            // form, reusing `nudge_angle` (already reachable for a multi-select
+            // group -- see `gui::editor::callbacks::tier_actions::
+            // setup_nudge_angle_callback`'s own doc comment) rather than adding
+            // a new callback. `root.keyboard_focus_index` is the anchor: every
+            // plain/Ctrl/Shift click in this table sets it first (see
+            // `row_touch.pointer-event` below), so after Ctrl+clicking together
+            // a group it names a tier that is actually IN `multi_selected` --
+            // the one edge case is applying this right after a Ctrl+click that
+            // just REMOVED its own row from the group, where it would instead
+            // offset only that single (now-deselected) tier.
+            offset_edit := LineEdit {
+                width: 54px;
+                height: 20px;
+                font-size: 9px;
+                placeholder-text: "deg";
+            }
+            Rectangle {
+                width: 46px;
+                height: 20px;
+                background: offset_apply_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+                border-radius: 3px;
+                Text { text: "Offset"; font-size: 9px; font-weight: 600; color: Theme.accent-cyan; horizontal-alignment: center; vertical-alignment: center; }
+                offset_apply_touch := TouchArea {
+                    clicked => {
+                        if offset_edit.text != "" {
+                            EditorModel.nudge_angle(root.keyboard_focus_index, offset_edit.text.to-float());
+                            offset_edit.text = "";
+                        }
+                    }
+                }
+                Tooltip { text: @markdown("Offset every selected tier's angle by this many degrees, as one Undo step."); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
 
         Rectangle {
             height: 26px;
             HorizontalLayout {
                 padding-left: 4px;
                 padding-right: 4px;
-                Text { width: 30px; text: "#"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
-                Text { width: 60px; text: "ANGLE"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
-                Text { horizontal-stretch: 1; min-width: 0px; overflow: elide; text: "NAME / INDICES"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
-                Text { width: 60px; text: "MAST"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
-                Text { width: 96px; text: "SOLVE"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                Text { width: root.col_hash_width; text: "#"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                Text { width: root.col_warn_width; text: ""; }
+                Text { width: root.col_block_width; text: ""; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                Text { width: root.col_angle_width; text: "ANGLE"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                Text { horizontal-stretch: 1; min-width: root.col_name_min_width; overflow: elide; text: "NAME"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                Text { horizontal-stretch: 1; min-width: root.col_indices_min_width; overflow: elide; text: "INDICES"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                // What this tier's constraint actually is -- a scale reference,
+                // an unspecified meet, or named facets (`EditorTierItem::
+                // constraint_kind`/`constraint_text`).
+                Text { width: root.col_meets_width; text: "MEETS"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                // CAD audit item 136: the mast figure is in the design's own
+                // model units (girdle half-width = 1), never millimetres --
+                // named here since the column header carries no unit otherwise.
+                Rectangle {
+                    width: root.col_mast_width;
+                    height: 100%;
+                    Text { text: "MAST"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                    Tooltip { text: @markdown("Solved mast depth, in the design's own model units (girdle half-width = 1), not millimetres."); }
+                }
+                // CAD audit item 221: header Tooltips, reusing this same
+                // column's own row-cell wording (see `strategy_detail`'s
+                // Tooltip a few hundred lines below for the per-row detail).
+                Rectangle {
+                    width: root.col_solve_width;
+                    height: 100%;
+                    Text { text: "SOLVE"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                    Tooltip { text: @markdown("How this tier's MAST was derived: a real vertex-derived solve, or a least-squares/uncertain fallback (amber)."); }
+                }
                 // Margin over the design's effective critical angle
                 // (pavilion tiers only) and the risk band it falls into
                 // (`EditorTierItem::margin_text`/`risk_level`).
-                Text { width: 70px; text: "MARGIN"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                Rectangle {
+                    width: root.col_margin_width;
+                    height: 100%;
+                    Text { text: "MARGIN"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                    Tooltip { text: @markdown("Margin over the design's effective critical angle (pavilion tiers only), and the risk band it falls into."); }
+                }
                 // Whether this row is one orbit, several folded together,
                 // or partial/inconsistent (`EditorTierItem::orbit_status`)
                 // -- makes "editing this row moves more than one facet"
-                // visible before the user clicks Save.
-                Text { width: 76px; text: "ORBIT"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                // visible before the user clicks Save. Also doubles as the
+                // "Complete orbit" action's hit target (see the row's own
+                // `orbit_touch`).
+                Rectangle {
+                    width: root.col_orbit_width;
+                    height: 100%;
+                    Text { text: "ORBIT"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                    Tooltip { text: @markdown("Whether this row is one orbit, several folded together, or partial/inconsistent. Click an amber badge in the row below to complete it."); }
+                }
                 // What the source file claims this facet meets, when
                 // import pinned the tier instead of deriving it
                 // (`EditorTierItem::imported_meet_text`).
-                Text { width: 64px; text: "IMPORTED"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
-                Text { width: 56px; text: ""; }
-                Text { width: 20px; text: ""; }
-                Text { width: 20px; text: ""; }
+                Rectangle {
+                    width: root.col_adopt_width;
+                    height: 100%;
+                    Text { text: "IMPORTED"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                    Tooltip { text: @markdown("What the source file claims this facet meets, when import pinned the tier instead of deriving it. Click Adopt in the row below to switch to it."); }
+                }
+                Text { width: root.col_pin_width; text: ""; }
+                Text { width: root.col_detach_width; text: ""; }
+                Text { width: root.col_anchor_width; text: ""; }
+                Text { width: root.col_move_width; text: ""; }
+                Text { width: root.col_dup_width; text: ""; }
+                Text { width: root.col_remove_width; text: ""; }
             }
         }
 
@@ -203,36 +631,105 @@ export component EditorTierTable inherits Rectangle {
             horizontal-alignment: center;
         }
 
-        // Wrapped in a `FocusScope` for keyboard navigation
-        // (Up/Down/Enter/Delete/Ctrl+D/F2 -- see the manual's "Editing
-        // Tiers" chapter). Every branch below either `return accept`s or
-        // falls through to the trailing `reject`, so the global shortcuts
-        // in `app.slint` (Ctrl+Z/Y/S, F5, 1/2/3) still work while this
-        // list has focus -- none of those keys are handled here, so they
+        // Wrapped in a `FocusScope` for keyboard navigation (Up/Down/Home/End/
+        // PageUp/PageDown/Enter/Delete/Ctrl+D/F2/Alt+Up/Alt+Down -- see the
+        // manual's "Editing Tiers" chapter). Every branch below either
+        // `return accept`s or falls through to the trailing `reject`, so the
+        // global shortcuts in `app.slint` (Ctrl+Z/Y/S, F5, 1/2/3) still work while
+        // this list has focus -- none of those keys are handled here, so they
         // always fall to `reject` and bubble up.
-        if EditorModel.tiers.length > 0: FocusScope {
+        if EditorModel.tiers.length > 0: table_focus := FocusScope {
+            // Mirrors `root.keyboard_focus_index` so scrolling the cursor into view
+            // is driven from ONE place regardless of what moved it (arrow keys/F2
+            // below, an in-list click, or `focus_row` called from outside this
+            // table): `tier_scroll` is a child of this SAME conditional `FocusScope`,
+            // so it (unlike `root`'s own `focus_row`, see that function's own doc
+            // comment) can reference it directly.
+            property <int> scroll_target: root.keyboard_focus_index;
+            changed scroll_target => {
+                // `self`, not `root`: the property is declared on this `FocusScope`
+                // (see above), so `root` -- the component's own root element -- does
+                // not carry it.
+                tier_scroll.viewport-y = root.scrolled_to_show(self.scroll_target, tier_scroll.viewport-y, tier_scroll.visible-height, tier_scroll.viewport-height);
+            }
+
+            // Drives `root`'s focus-ring border and seeds the keyboard cursor from
+            // the CURRENT selection every time this list gains focus (a Tab into it,
+            // or focus returning here from an inline editor's `closed()`) -- without
+            // this, tabbing in for the first time (or after clicking a button
+            // elsewhere) left `keyboard_focus_index` at whatever it last was, which
+            // could disagree with `EditorModel.selected_tier_index` and make the
+            // very first arrow press jump from the wrong row.
+            changed has-focus => {
+                root.table_focused = self.has-focus;
+                if self.has-focus {
+                    root.keyboard_focus_index = EditorModel.selected_tier_index;
+                }
+            }
+
             key-pressed(event) => {
-                if event.text == Key.DownArrow {
+                if event.modifiers.alt && event.text == Key.UpArrow {
+                    if root.keyboard_focus_index >= 0 {
+                        EditorModel.move_tier(root.keyboard_focus_index, -1);
+                    }
+                    return accept;
+                } else if event.modifiers.alt && event.text == Key.DownArrow {
+                    if root.keyboard_focus_index >= 0 {
+                        EditorModel.move_tier(root.keyboard_focus_index, 1);
+                    }
+                    return accept;
+                } else if event.text == Key.DownArrow {
                     root.keyboard_focus_index = root.keyboard_focus_index < 0
                         ? 0
                         : Math.min(root.keyboard_focus_index + 1, EditorModel.tiers.length - 1);
-                    tier_scroll.viewport-y = root.scrolled_to_show(root.keyboard_focus_index, tier_scroll.viewport-y, tier_scroll.visible-height, tier_scroll.viewport-height);
+                    root.tier_selected(root.keyboard_focus_index);
                     return accept;
                 } else if event.text == Key.UpArrow {
                     root.keyboard_focus_index = root.keyboard_focus_index <= 0
                         ? 0
                         : root.keyboard_focus_index - 1;
-                    tier_scroll.viewport-y = root.scrolled_to_show(root.keyboard_focus_index, tier_scroll.viewport-y, tier_scroll.visible-height, tier_scroll.viewport-height);
+                    root.tier_selected(root.keyboard_focus_index);
+                    return accept;
+                } else if event.text == Key.Home {
+                    root.keyboard_focus_index = 0;
+                    root.tier_selected(root.keyboard_focus_index);
+                    return accept;
+                } else if event.text == Key.End {
+                    root.keyboard_focus_index = EditorModel.tiers.length - 1;
+                    root.tier_selected(root.keyboard_focus_index);
+                    return accept;
+                } else if event.text == Key.PageUp {
+                    root.keyboard_focus_index = root.keyboard_focus_index < 0
+                        ? 0
+                        : Math.max(0, root.keyboard_focus_index - 10);
+                    root.tier_selected(root.keyboard_focus_index);
+                    return accept;
+                } else if event.text == Key.PageDown {
+                    root.keyboard_focus_index = root.keyboard_focus_index < 0
+                        ? 0
+                        : Math.min(root.keyboard_focus_index + 10, EditorModel.tiers.length - 1);
+                    root.tier_selected(root.keyboard_focus_index);
                     return accept;
                 } else if event.text == Key.Return {
                     root.tier_selected(root.keyboard_focus_index);
                     return accept;
-                } else if event.text == Key.Delete || event.text == Key.Backspace {
+                } else if event.text == Key.Delete {
                     if root.keyboard_focus_index >= 0 && root.keyboard_focus_index < EditorModel.tiers.length {
+                        // `remove_tier` itself now shifts/clears
+                        // `EditorModel.selected_tier_index` correctly on the Rust
+                        // side (`tier_actions::adjust_selection_after_remove`) --
+                        // this used to also clear it here, but doing so a second
+                        // time, AFTER that shift already ran, compared the wrong
+                        // (pre-removal) index and could wrongly clear a selection
+                        // that had just been shifted down onto this same row.
+                        //
+                        // Backspace no longer shares this binding -- it is the
+                        // universal "delete the previous character" key in every
+                        // text field ELSEWHERE in this app, so a stray Backspace
+                        // (e.g. one that failed to land in a `LineEdit` that had
+                        // just lost focus) used to delete a whole tier with no
+                        // confirmation.
                         EditorModel.remove_tier(root.keyboard_focus_index);
-                        if EditorModel.selected_tier_index == root.keyboard_focus_index {
-                            EditorModel.selected_tier_index = -1;
-                        }
                     }
                     return accept;
                 } else if (event.modifiers.control || event.modifiers.meta) && event.text == "d" {
@@ -247,6 +744,14 @@ export component EditorTierTable inherits Rectangle {
                         tier_scroll.viewport-y = root.scrolled_to_show(root.keyboard_focus_index, tier_scroll.viewport-y, tier_scroll.visible-height, tier_scroll.viewport-height);
                     }
                     return accept;
+                } else if event.text == Key.Escape {
+                    // CAD audit item 229: clears the selection from the
+                    // keyboard, matching the Solid/Diagram viewport's own
+                    // click-on-empty-space behavior -- previously the only way
+                    // back to "nothing selected" from this list was the
+                    // inspector's "New" button.
+                    EditorModel.selected_tier_index = -1;
+                    return accept;
                 }
                 reject
             }
@@ -256,31 +761,61 @@ export component EditorTierTable inherits Rectangle {
                 spacing: 2px;
                 for row in EditorModel.tiers: Rectangle {
                     height: 28px;
+                    // CAD audit item 43: dimmed (not removed) when it fails the
+                    // search/filter box's substring test -- see `root.row_matches`'s
+                    // own doc comment for why dimming, not hiding, was chosen.
+                    opacity: root.row_matches(row) ? 1.0 : 0.35;
                     background: row.index == EditorModel.selected_tier_index
                         ? Theme.primary-glow
-                        : (row_touch.has-hover ? Theme.bg-card-hover : (Math.mod(row.index, 2) == 0 ? Theme.bg-input : Theme.bg-card));
+                        // CAD audit item 40: `angle_cell.hovered` keeps this row's
+                        // highlight from dropping out while the pointer is over
+                        // the ANGLE cell's own `TouchArea` (see `TierAngleCell::
+                        // hovered`'s own doc comment).
+                        : ((row_touch.has-hover || angle_cell.hovered) ? Theme.bg-card-hover : (Math.mod(row.index, 2) == 0 ? Theme.bg-input : Theme.bg-card));
                     border-radius: 2px;
-                    // Keyboard-cursor ring and multi-select tint -- both
-                    // additive to the selection background above, never
-                    // replacing it.
+                    // CAD audit item 200/205: the keyboard cursor ring and the
+                    // multi-select ring used to be the exact same 1-1.5px cyan
+                    // border, indistinguishable from each other, and the cursor
+                    // ring stayed bright even after this list lost focus (looking
+                    // selected when Up/Down/Delete no longer land here at all).
+                    // Cyan is now reserved for the cursor, and only while
+                    // `table_focus` (see below) actually has focus -- unfocused,
+                    // it dims to the same muted tone the table's own outer border
+                    // uses (`root.table_focused`'s own binding above), rather than
+                    // disappearing outright (a cutter tabbing away and back should
+                    // still see roughly where the cursor is). Multi-select gets its
+                    // own amber so a batched-edit group is never confused with the
+                    // single cursor row -- see the '#' column below for its other
+                    // half (the check glyph).
                     border-width: row.index == root.keyboard_focus_index ? 1.5px : (row.multi_selected ? 1px : 0px);
-                    border-color: row.index == root.keyboard_focus_index ? Theme.accent-cyan : (row.multi_selected ? Theme.accent-cyan : transparent);
+                    border-color: row.index == root.keyboard_focus_index
+                        ? (root.table_focused ? Theme.accent-cyan : Theme.border-subtle)
+                        : (row.multi_selected ? Theme.accent-amber : transparent);
 
-                    // `ctrl_down` records the LAST press's modifier state
-                    // (from `pointer-event`, the only place `TouchArea`
-                    // exposes `KeyboardModifiers`) so `clicked` -- which
-                    // carries no event/modifier argument of its own -- can
-                    // still tell a plain click from a Ctrl+click.
+                    // `ctrl_down`/`shift_down` record the LAST press's modifier
+                    // state (from `pointer-event`, the only place `TouchArea`
+                    // exposes `KeyboardModifiers`) so `clicked` -- which carries no
+                    // event/modifier argument of its own -- can still tell a plain
+                    // click from a Ctrl+click or a Shift+click.
                     property <bool> ctrl_down: false;
+                    property <bool> shift_down: false;
                     row_touch := TouchArea {
                         pointer-event(event) => {
                             if event.kind == PointerEventKind.down {
                                 parent.ctrl_down = event.modifiers.control || event.modifiers.meta;
+                                parent.shift_down = event.modifiers.shift;
                             }
                         }
                         clicked => {
                             root.keyboard_focus_index = row.index;
-                            if parent.ctrl_down {
+                            // CAD audit item 39's remainder: Shift+click range
+                            // select is checked before the existing Ctrl+click
+                            // toggle so Shift+Ctrl+click (an unlikely but possible
+                            // chord) still resolves to one clear behavior rather
+                            // than whichever branch happened to be tested first.
+                            if parent.shift_down {
+                                EditorModel.select_tier_range(row.index);
+                            } else if parent.ctrl_down {
                                 EditorModel.toggle_multi_select(row.index);
                             } else {
                                 root.tier_selected(row.index);
@@ -291,49 +826,192 @@ export component EditorTierTable inherits Rectangle {
                     HorizontalLayout {
                         padding-left: 4px;
                         padding-right: 4px;
-                        Text { width: 30px; text: row.index + 1; font-size: 11px; color: Theme.text-muted; vertical-alignment: center; }
-                        TierAngleCell {
+                        // CAD audit item 200: the other half of the multi-select
+                        // treatment above -- an amber tint plus a check glyph
+                        // (replacing the row number, which the amber border/tint
+                        // already flags as part of the group) so a batched-edit
+                        // group reads at a glance, distinct from the cyan cursor
+                        // ring which never touches this cell.
+                        Rectangle {
+                            width: root.col_hash_width;
+                            height: 100%;
+                            // cad_todo.md #245: was a bare `#f59e0b33` literal;
+                            // `Theme.accent-amber-glow` names the same value.
+                            background: row.multi_selected ? Theme.accent-amber-glow : transparent;
+                            Text {
+                                text: row.multi_selected ? "\u{2713}" : (row.index + 1);
+                                font-size: 11px;
+                                font-weight: row.multi_selected ? 700 : 400;
+                                color: row.multi_selected ? Theme.accent-amber : Theme.text-muted;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        // This tier's own manufacturability warning(s), badged
+                        // right on the row (CAD audit item 65) -- "" hides the
+                        // badge entirely, matching the Adopt/Detach columns'
+                        // own "nothing to show" convention.
+                        Rectangle {
+                            width: root.col_warn_width;
+                            height: 100%;
+                            if row.warning_text != "": Text {
+                                text: "\u{26A0}";
+                                font-size: 11px;
+                                font-weight: 700;
+                                color: Theme.accent-amber;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            if row.warning_text != "": Tooltip { text: @markdown("\{row.warning_text}"); }
+                        }
+                        // Crown/Pavilion/Girdle, one letter (`EditorTierItem::block`) --
+                        // the block a tier belongs to used to be visible only as the
+                        // sign of its angle, with an undocumented "unsigned 0.0
+                        // inherits the previous tier's side" rule behind it.
+                        //
+                        // CAD audit item 46: a facet authored at exactly 0 degrees has
+                        // no discoverable way to declare which side it is on short of
+                        // typing the sign-carrying "-0" by hand. `EditorModel.
+                        // inline_set_angle` (unlike the nudge path's own
+                        // `clamp_nudge_to_side`, which deliberately never crosses zero)
+                        // applies whatever text it is given verbatim, so it is the one
+                        // existing callback that CAN move a zero-degree tier to the
+                        // other side -- clicking this badge sends it the literal "0" or
+                        // "-0" for that. Only offered AT zero: a non-zero angle's side
+                        // is already unambiguous from its own sign, and silently
+                        // negating a real, non-boundary angle would move the facet to a
+                        // different depth on the opposite block, not just relabel it.
+                        Rectangle {
+                            property <bool> zero_angle: row.angle_deg == "0.00" || row.angle_deg == "-0.00";
+                            property <string> flip_hint: !self.zero_angle
+                                ? row.block + " facet."
+                                : (row.block == "Pavilion"
+                                    ? "Pavilion facet at 0\u{b0} -- click to flip to Crown."
+                                    : "Crown facet at 0\u{b0} -- click to flip to Pavilion.");
+                            width: root.col_block_width;
+                            height: 100%;
+                            background: self.zero_angle && block_flip_touch.has-hover ? Theme.bg-card-hover : transparent;
+                            Text {
+                                text: row.block == "Crown" ? "C" : (row.block == "Pavilion" ? "P" : "G");
+                                font-size: 10px;
+                                font-weight: 600;
+                                color: Theme.text-muted;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                            // A plain (non-conditional) sibling, not `if zero_angle:
+                            // TouchArea {...}` -- an id declared inside a conditional
+                            // element cannot be referenced from outside it (see this
+                            // file's own `filter_edit`/`focus_filter` doc comment for
+                            // the same trap), and `background` above already reads
+                            // `block_flip_touch.has-hover`. `enabled` alone is enough
+                            // to make this inert off the zero case.
+                            block_flip_touch := TouchArea {
+                                enabled: parent.zero_angle;
+                                clicked => {
+                                    EditorModel.inline_set_angle(row.index, row.block == "Pavilion" ? "0" : "-0");
+                                }
+                            }
+                            Tooltip { text: @markdown("\{parent.flip_hint}"); }
+                        }
+                        angle_cell := TierAngleCell {
+                            width: root.col_angle_width;
                             value: row.angle_deg;
                             index: row.index;
                             focus_target: root.inline_edit_target;
                             focus_pulse: root.inline_edit_pulse;
+                            select() => {
+                                root.keyboard_focus_index = row.index;
+                                root.tier_selected(row.index);
+                            }
                             commit(text) => { EditorModel.inline_set_angle(row.index, text); }
                             nudge(idx, delta) => { EditorModel.nudge_angle(idx, delta); }
+                            // Committing (or cancelling) an inline edit used to
+                            // leave keyboard focus stranded on the now-destroyed
+                            // `LineEdit`, which dropped every subsequent Up/Down/
+                            // Delete on the floor until the user clicked back into
+                            // the list -- reclaiming focus here fixes that for
+                            // every close path (Enter, focus loss, Escape) at once.
+                            closed() => { table_focus.focus(); }
                         }
                         Text {
                             horizontal-stretch: 1;
-                            text: (row.name == "" ? "(unnamed)" : row.name) + "  [" + row.indices + "]";
+                            min-width: root.col_name_min_width;
+                            text: row.name == "" ? "(unnamed)" : row.name;
                             font-size: 11px;
                             color: Theme.text-secondary;
                             overflow: elide;
                             vertical-alignment: center;
                         }
                         Text {
-                            width: 60px;
-                            text: row.mast;
+                            horizontal-stretch: 1;
+                            min-width: root.col_indices_min_width;
+                            text: row.indices;
                             font-size: 11px;
                             color: Theme.text-secondary;
                             overflow: elide;
                             vertical-alignment: center;
+                        }
+                        // What this tier's constraint is: an exact authored scale
+                        // value (pin glyph), named facets, or an unspecified meet
+                        // (`EditorTierItem::constraint_kind`/`constraint_text`).
+                        Rectangle {
+                            width: root.col_meets_width;
+                            height: 100%;
+                            Text {
+                                text: row.constraint_kind == 2
+                                    ? ("\u{1F4CC} " + row.constraint_text)
+                                    : (row.constraint_kind == 1 ? ("meets " + row.constraint_text) : "meet");
+                                font-size: 10px;
+                                color: Theme.text-muted;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+                            if row.constraint_kind == 1 && row.constraint_text != "": Tooltip { text: @markdown("Meets: \{row.constraint_text}"); }
+                        }
+                        // Items 54/136: the cell stays in model units -- that is
+                        // what the solver's own constraints are expressed in, and
+                        // the column is 50px wide -- but the tooltip carries the
+                        // millimetre figure a cutter actually dials into a mast
+                        // gauge, whenever a girdle diameter anchors a real scale.
+                        // A `Tooltip` may not be a layout child, hence the wrapper.
+                        Rectangle {
+                            width: root.col_mast_width;
+                            if row.mast_mm != "": Tooltip { text: @markdown("\{row.mast_mm}"); }
+                            Text {
+                                text: row.mast;
+                                font-size: 11px;
+                                color: Theme.text-secondary;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
                         }
                         // Solve-strategy badge: `DependencyOrder`/`JointGroup`
                         // (a real vertex-derived mast) reads normally;
                         // `LeastSquaresFallback`/`Failed`/no-anchor-yet is
                         // flagged in amber (`EditorTierItem::strategy_is_uncertain`).
-                        Text {
-                            width: 96px;
-                            text: row.strategy;
-                            font-size: 10px;
-                            font-weight: row.strategy_is_uncertain ? 700 : 400;
-                            color: row.strategy_is_uncertain ? Theme.accent-amber : Theme.text-muted;
-                            overflow: elide;
-                            vertical-alignment: center;
+                        // `strategy_detail` (either the one-block missing-anchor
+                        // remedy or `SolvedTier::detail`'s prose -- see that field's
+                        // own doc comment) is shown verbatim as this cell's tooltip
+                        // when there is one, rather than thrown away.
+                        Rectangle {
+                            width: root.col_solve_width;
+                            height: 100%;
+                            if row.strategy_detail != "": Tooltip { text: @markdown("\{row.strategy_detail}"); }
+                            Text {
+                                text: row.strategy;
+                                font-size: 10px;
+                                font-weight: row.strategy_is_uncertain ? 700 : 400;
+                                color: row.strategy_is_uncertain ? Theme.accent-amber : Theme.text-muted;
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
                         }
                         // Margin over the critical angle + risk badge -- ""
                         // / -1 (crown/girdle, or no material resolved)
                         // reads as a plain dash, nothing to flag.
                         Text {
-                            width: 70px;
+                            width: root.col_margin_width;
                             text: row.margin_text == "" ? "-" : row.margin_text;
                             font-size: 10px;
                             font-weight: row.risk_level >= 1 ? 700 : 400;
@@ -346,22 +1024,33 @@ export component EditorTierTable inherits Rectangle {
                         // folded together), amber for incomplete/
                         // inconsistent, muted with a trailing "*" once the
                         // row is detached (still shown, no longer
-                        // auto-followed).
-                        Text {
-                            width: 76px;
-                            text: row.orbit_status == "" ? "" : (row.is_detached ? row.orbit_status + " *" : row.orbit_status);
-                            font-size: 10px;
-                            font-weight: (row.orbit_incomplete && !row.is_detached) ? 700 : 400;
-                            color: row.is_detached ? Theme.text-muted : (row.orbit_incomplete ? Theme.accent-amber : Theme.accent-emerald);
-                            overflow: elide;
-                            vertical-alignment: center;
+                        // auto-followed). Clickable ("Complete orbit") whenever
+                        // amber and not detached -- fills in the missing
+                        // symmetric positions the schedule already implies
+                        // (`Design::add_orbit_member`) instead of leaving the
+                        // amber badge as the only, unactionable, sign of it.
+                        Rectangle {
+                            width: root.col_orbit_width;
+                            height: 100%;
+                            Text {
+                                text: row.orbit_status == "" ? "" : (row.is_detached ? row.orbit_status + " *" : row.orbit_status);
+                                font-size: 10px;
+                                font-weight: (row.orbit_incomplete && !row.is_detached) ? 700 : 400;
+                                color: row.is_detached ? Theme.text-muted : (row.orbit_incomplete ? Theme.accent-amber : Theme.accent-emerald);
+                                overflow: elide;
+                                vertical-alignment: center;
+                            }
+                            if row.orbit_incomplete && !row.is_detached: orbit_touch := TouchArea {
+                                clicked => { EditorModel.complete_orbit(row.index); }
+                            }
+                            if row.orbit_incomplete && !row.is_detached: Tooltip { text: @markdown("Click to complete this tier's orbit (adds the missing symmetric facets)."); }
                         }
                         // One-click "Adopt": switches this pinned tier over
                         // to the meet instruction the file actually stated
                         // (`Edit::SetConstraint`). Empty when there is
                         // nothing to adopt (`imported_meet_text == ""`).
                         Rectangle {
-                            width: 64px;
+                            width: root.col_adopt_width;
                             if row.imported_meet_text != "": Rectangle {
                                 background: adopt_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
                                 border-radius: 3px;
@@ -376,7 +1065,41 @@ export component EditorTierTable inherits Rectangle {
                                 adopt_touch := TouchArea {
                                     clicked => { EditorModel.adopt_meet(row.index); }
                                 }
-                                Tooltip { text: @markdown("Switch this pinned tier to the file's meet geometry so the solver and Optimize can move it."); }
+                                // CAD audit item 126: names what the file actually
+                                // said this facet meets, not just a generic action
+                                // description -- previously the cutter had to adopt
+                                // blind, with no way to see the imported geometry
+                                // before committing to it.
+                                Tooltip { text: @markdown("File says this tier \{row.imported_meet_text}. Click Adopt to switch to it so the solver and Optimize can move this facet."); }
+                            }
+                        }
+                        // CAD audit item 130: the inverse of Adopt -- pins this
+                        // tier's CURRENT solved mast as an exact scale-reference
+                        // anchor, freezing a value the solver just derived
+                        // before optimizing the rest. Hidden once already a
+                        // scale reference (nothing left to pin over,
+                        // `row.constraint_kind == 2`) or while the shown mast
+                        // isn't a trusted, up-to-date solve
+                        // (`row.strategy_is_uncertain`) -- pinning a stale or
+                        // placeholder mast would silently freeze the wrong
+                        // number.
+                        Rectangle {
+                            width: root.col_pin_width;
+                            if row.constraint_kind != 2 && !row.strategy_is_uncertain: Rectangle {
+                                background: pin_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+                                border-radius: 3px;
+                                Text {
+                                    text: "Pin";
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                    color: Theme.accent-cyan;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                pin_touch := TouchArea {
+                                    clicked => { EditorModel.pin_to_mast(row.index); }
+                                }
+                                Tooltip { text: @markdown("Pin this tier's current solved mast (\{row.mast_full}) as an exact scale-reference anchor."); }
                             }
                         }
                         // Explicit, visible detach/reattach act
@@ -384,7 +1107,7 @@ export component EditorTierTable inherits Rectangle {
                         // -- hidden for a tier with nothing to link
                         // (`orbit_status == ""`), like the Adopt column.
                         Rectangle {
-                            width: 54px;
+                            width: root.col_detach_width;
                             if row.orbit_status != "": Rectangle {
                                 background: detach_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
                                 border-radius: 3px;
@@ -399,44 +1122,131 @@ export component EditorTierTable inherits Rectangle {
                                 detach_touch := TouchArea {
                                     clicked => { EditorModel.toggle_detach(row.index); }
                                 }
-                                Tooltip { text: @markdown("Exempt this tier from orbit symmetry handling."); }
+                                // Reworded from "Exempt this tier from orbit
+                                // symmetry handling" -- that promised a general
+                                // exemption, but the ONLY behavioral consumer of
+                                // `detached` today is `Design::remove_orbit_member`
+                                // (no UI-reachable action calls it per-position yet);
+                                // this describes what the button actually,
+                                // observably does right now.
+                                Tooltip { text: @markdown("Mark this tier's facets as hand-managed -- they stay independent and are not swept along when an orbit member elsewhere is removed."); }
                             }
+                        }
+                        // The missing-anchor remedy action (`EditorTierItem::needs_anchor`,
+                        // set only for the tiers `MissingAnchor::block_details` actually
+                        // names -- never every tier in an unsolved design). Opens the Tier
+                        // tab on THIS row already set to "Exact scale value"
+                        // (`EditorModel.suggested_constraint_kind`, consumed by
+                        // `EditorInspector.load_tier_into_form`) so the cutter lands
+                        // straight on the fix the tooltip below describes rather than
+                        // having to notice and pick that combo entry unassisted.
+                        //
+                        // The index round-trip through `-1` guarantees a real
+                        // `selected_tier_index` transition (and so a real
+                        // `load_tier_into_form` call that actually consumes the
+                        // suggestion) even when this row is already selected --
+                        // assigning the same value again fires no `changed` at all
+                        // (see `EditorModel.form_reset_pulse`'s own doc comment for
+                        // the general rule), which would otherwise strand the
+                        // suggestion to misapply itself to the next unrelated
+                        // selection instead.
+                        Rectangle {
+                            width: root.col_anchor_width;
+                            if row.needs_anchor: Rectangle {
+                                background: anchor_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+                                border-radius: 3px;
+                                Text {
+                                    text: "Add Anchor";
+                                    font-size: 9px;
+                                    font-weight: 600;
+                                    color: Theme.accent-amber;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                                anchor_touch := TouchArea {
+                                    clicked => {
+                                        EditorModel.suggested_constraint_kind = 2;
+                                        if row.index == EditorModel.selected_tier_index {
+                                            EditorModel.selected_tier_index = -1;
+                                        }
+                                        EditorModel.selected_tier_index = row.index;
+                                        EditorModel.inspector_tab = 0;
+                                        EditorModel.inspector_collapsed = false;
+                                    }
+                                }
+                                if row.strategy_detail != "": Tooltip { text: @markdown("\{row.strategy_detail}"); }
+                            }
+                        }
+                        // Reorder this tier in cutting order (Alt+Up/Alt+Down do the
+                        // same thing from the keyboard) -- swaps this tier's content
+                        // with its neighbor's (`EditorModel.move_tier`).
+                        Rectangle {
+                            width: root.col_move_width;
+                            height: 100%;
+                            VerticalLayout {
+                                Rectangle {
+                                    height: 14px;
+                                    Text { text: "\u{25B2}"; font-size: 8px; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                                    TouchArea { clicked => { EditorModel.move_tier(row.index, -1); } }
+                                }
+                                Rectangle {
+                                    height: 14px;
+                                    Text { text: "\u{25BC}"; font-size: 8px; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                                    TouchArea { clicked => { EditorModel.move_tier(row.index, 1); } }
+                                }
+                            }
+                            Tooltip { text: @markdown("Move this tier up/down in cutting order (Alt+Up/Alt+Down)."); }
                         }
                         // Duplicate this tier -- the row-button half of
                         // the tier list's Ctrl+D shortcut.
                         Rectangle {
-                            width: 20px;
+                            width: root.col_dup_width;
                             height: 20px;
-                            Text {
-                                text: "\u{29C9}";
-                                color: Theme.accent-cyan;
-                                font-weight: 700;
+                            // cad_todo.md #247: was a plain text glyph
+                            // (`"\u{29C9}"`), which could render as a tofu box on
+                            // a system whose Segoe UI lacks that codepoint --
+                            // every other row action in this app is an `Image`.
+                            Image {
+                                source: @image-url("../icons/copy.svg");
+                                colorize: Theme.accent-cyan;
+                                width: 13px;
+                                height: 13px;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
                             TouchArea {
                                 clicked => { EditorModel.duplicate_tier(row.index); }
                             }
-                            Tooltip { text: @markdown("Duplicate this tier (Ctrl+D)."); }
+                            Tooltip { text: @markdown("Duplicate this tier, inserted right after it (Ctrl+D)."); }
                         }
                         Rectangle {
-                            width: 20px;
+                            width: root.col_remove_width;
                             height: 20px;
-                            Text {
-                                text: "x";
-                                color: Theme.accent-ruby;
-                                font-weight: 700;
+                            // cad_todo.md #247: was a plain text glyph (`"x"`);
+                            // reuses the same `trash.svg` the rest of the app's
+                            // destructive-remove actions already use.
+                            Image {
+                                source: @image-url("../icons/trash.svg");
+                                colorize: Theme.accent-ruby;
+                                width: 13px;
+                                height: 13px;
                                 horizontal-alignment: center;
                                 vertical-alignment: center;
                             }
                             TouchArea {
                                 clicked => {
+                                    // See the keyboard Delete handler's own
+                                    // comment above -- `remove_tier` already shifts/
+                                    // clears the selection correctly on the Rust side.
                                     EditorModel.remove_tier(row.index);
-                                    if EditorModel.selected_tier_index == row.index {
-                                        EditorModel.selected_tier_index = -1;
-                                    }
                                 }
                             }
+                            // CAD audit item 221: this destructive remove button
+                            // used to be the one row action with no Tooltip at
+                            // all, right next to an identically sized Duplicate
+                            // button.
+                            Tooltip { text: @markdown("Remove this tier (Delete)."); }
                         }
                     }
                 }

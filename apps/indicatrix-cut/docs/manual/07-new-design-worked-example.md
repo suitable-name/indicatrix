@@ -17,7 +17,7 @@ them with Solve and Optimize (Chapters 5 and 8) once the design closes.
 
 ## Step 1: The New Design dialog
 
-Click **New** (or File -> New) to open the New Design dialog:
+Click **New Design...** (or File -> New) to open the New Design dialog:
 
 - **Preform Shape**: Cylinder.
 - **Half-Width / Length-Width / Depth**: `1.50` / `1.00` / `1.50` -- a
@@ -52,13 +52,28 @@ every symmetric tier in this example.
 The girdle needs to be added before the crown and pavilion, because it gives
 both blocks something to meet, and it needs its own anchor.
 
-1. In the tier form: **Angle (deg)**: `0.0` (the girdle plane itself).
+**The girdle angle must be exactly 90.0, not 0.0.** This app classifies a
+tier's block from its angle (Chapter 3): 90 (or -90) degrees is Girdle,
+and the tolerance is very tight, so it has to be typed exactly. A 0.0
+tier is Crown -- its facet normal points straight up, the same as the
+table -- so it would give you a second, smaller table stacked on top of
+the real one instead of a girdle, and the pavilion tiers below would end
+up bounded only by the cylinder preform's own wall rather than by a real
+girdle band.
+
+1. On the inspector's Tier tab: **Angle (deg)**: `90.0`.
 2. **Meets**: **Exact scale value**. Type the girdle's half-width, e.g.
    `1.0`. This is the design's mandatory anchor for the girdle block -- see
-   Chapter 3's "Anchors and blocks."
+   Chapter 3's "Anchors and blocks." At 90 degrees the facet's normal points
+   straight out from the centre, so this scale value is genuinely a
+   half-width, the way it reads.
 3. **Name**: `G1`.
 4. **Indices**: `0, 12, 24, 36, 48, 60, 72, 84`.
 5. Click **Add Tier**.
+
+Check the tier table's own C/P/G column (Chapter 3) reads **G** for this
+row before moving on -- that is your confirmation the girdle classified
+the way you intended.
 
 ## Step 3: Pavilion main facets
 
@@ -115,16 +130,19 @@ Chapter 6's retargeting walkthrough.
 ## Step 7: Solve and check
 
 1. Click **Solve**.
-2. Read the status banner (Chapter 5):
-   - `Closed solid. -- volume ...` -- you have a valid stone. Continue to
+2. Read the status strip (Chapter 5):
+   - `Closed solid -- volume ...` -- you have a valid stone. Continue to
      step 8.
-   - `Cannot solve: no scale-reference tier for: <block>` -- that block
-     still has no anchor. Add one more **Exact scale value** tier to it
-     (for the pavilion, a common choice is a pavilion depth or culet-point
-     dimension) and Solve again.
-   - `Degenerate` or `Unbounded` -- check the angle and constraint on the
-     tier you most recently added; a facet meeting the wrong neighbour, or
-     an angle too shallow to intersect its neighbours, is the usual cause.
+   - `<Block> has no anchor: add a tier with an exact scale value.` -- that
+     block still has no anchor. Add one more **Exact scale value** tier to
+     it (for the pavilion, a common choice is a pavilion depth or
+     culet-point dimension) and Solve again, or use the tier table's own
+     **Add Anchor** button on one of that block's rows.
+   - `Degenerate` or `Unbounded` -- these now name the tier(s) most likely
+     responsible; check the angle and constraint on the tier you most
+     recently added, or on whichever tier the message names -- a facet
+     meeting the wrong neighbour, or an angle too shallow to intersect its
+     neighbours, is the usual cause.
 
 ## Step 8: Check the orbits
 
@@ -135,13 +153,15 @@ compare the tier's Indices field against the intended list.
 
 ## Step 9: Optional -- yield and rendering
 
-1. In the Yield panel, set **Girdle Diameter (mm)** to a real size (e.g. the
-   girdle half-width you set in Step 2, doubled and converted to
-   millimetres) and pick a **Yield Material** for the carat-weight estimate
-   (this is a separate control from the Design Settings panel's own
-   Material combo -- see Chapter 6's note on the two). Click **Apply Yield
-   Inputs**, then Solve again -- Volumetric Yield and Est. Carat Weight
-   should now show values.
+1. On the inspector's Preform tab (Chapter 4), in its Yield section, set
+   **Girdle Diameter (mm)** to a real size (e.g. the girdle half-width you
+   set in Step 2, doubled and converted to millimetres) and pick a **Yield
+   Material** for the carat-weight estimate (this is a separate control
+   from the Design Settings panel's own Material combo -- see Chapter 6's
+   note on the two). Click **Apply Yield Inputs**, then Solve again --
+   Volumetric Yield and Est. Carat Weight should now show values, and the
+   same tab's Proportions group will show table %, crown height, pavilion
+   depth, total depth, and length-to-width for this stone.
 2. Switch to the Live Render tab to see the stone rendered -- with "Linked
    to design" on (the default), it already shows the Diamond you picked in
    Step 6. Pick a lighting preset and check the brilliance/windowing/

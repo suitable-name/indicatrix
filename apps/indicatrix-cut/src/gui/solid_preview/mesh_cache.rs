@@ -72,6 +72,26 @@ impl CachedMesh {
         }
         Self { mesh, rings }
     }
+
+    /// The largest distance from the origin to any of this mesh's own vertices,
+    /// in the same model units [`SolidMesh::positions`] uses (#118, `cad_todo.md`
+    /// item 118).
+    ///
+    /// The solver's own coordinate origin is already the centre every facet
+    /// plane's offset is expressed against, so this needs no separate centroid
+    /// pass -- used to size the orbit camera's distance clamp
+    /// (`render::camera_lighting::orbit_distance_bounds`) to the design
+    /// ACTUALLY loaded instead of a fixed `[1.2, 8.0]` range that clips a large
+    /// preform's facets at minimum distance and leaves a tiny one lost in empty
+    /// space at maximum. `0.0` for an empty mesh (no vertices at all).
+    #[must_use]
+    pub fn bounding_radius(&self) -> f64 {
+        self.mesh
+            .positions
+            .iter()
+            .map(|position| position.length())
+            .fold(0.0_f64, f64::max)
+    }
 }
 
 /// A finished cache slot: either the last successfully built [`CachedMesh`], or the
@@ -84,16 +104,27 @@ enum CacheEntry {
 }
 
 /// Single-slot mesh cache keyed by [`hash_planes`] -- see this module's doc comment.
+///
+/// `last_closed` remembers the most recent [`SolidStatus::Closed`] build
+/// independently of `entry`, so a later arrangement that fails to close (a
+/// mid-keystroke [`SolidStatus::Unbounded`]/[`SolidStatus::Degenerate`] edit) can
+/// still hand back a real solid -- CAD audit item 63: an intermediate unbounded
+/// edit used to blank the viewport entirely, discarding the last mesh this cache
+/// had already built, because a failing rebuild simply overwrote `entry` with
+/// nothing to show.
 #[derive(Debug, Default)]
 pub struct MeshCache {
     key: Option<u64>,
     entry: Option<CacheEntry>,
+    last_closed: Option<CachedMesh>,
 }
 
 impl MeshCache {
     /// Rebuilds only when `planes` hashes differently from the last call; otherwise
     /// returns the cached mesh. Returns `None` when the arrangement is not
-    /// [`SolidStatus::Closed`], remembering the status for [`Self::status_message`].
+    /// [`SolidStatus::Closed`], remembering the status for [`Self::status_message`]/
+    /// [`Self::status`], and stashing the outgoing `Closed` entry (if any) into
+    /// [`Self::last_closed`] first so it survives the failed rebuild.
     pub fn get_or_build(&mut self, planes: &[(Vec3, f32)]) -> Option<&CachedMesh> {
         let key = hash_planes(planes);
         if self.key != Some(key) {
@@ -107,10 +138,14 @@ impl MeshCache {
                     )
                 })
                 .collect();
-            self.entry = Some(match build_solid_mesh(&widened) {
+            let new_entry = match build_solid_mesh(&widened) {
                 SolidStatus::Closed(mesh) => CacheEntry::Closed(CachedMesh::build(mesh)),
                 other => CacheEntry::Other(other),
-            });
+            };
+            if let Some(CacheEntry::Closed(outgoing)) = self.entry.take() {
+                self.last_closed = Some(outgoing);
+            }
+            self.entry = Some(new_entry);
         }
         match self.entry.as_ref() {
             Some(CacheEntry::Closed(cached)) => Some(cached),
@@ -118,10 +153,36 @@ impl MeshCache {
         }
     }
 
+    /// The most recent [`Self::get_or_build`] call that actually closed, kept even
+    /// while the CURRENT `planes` do not -- a caller whose own `get_or_build` just
+    /// returned `None` can render this instead of blanking the viewport. `None`
+    /// only before the very first successful build.
+    #[must_use]
+    pub const fn last_closed(&self) -> Option<&CachedMesh> {
+        self.last_closed.as_ref()
+    }
+
+    /// The raw [`SolidStatus`] behind the last [`Self::get_or_build`] failure, or
+    /// `None` when the last build was `Closed` (or nothing built yet). Lets a caller
+    /// with enough context on hand (a `Design`/solved masts) build a better message
+    /// than [`Self::status_message`]'s generic one -- e.g. naming the tier that owns
+    /// an `Unbounded` arrangement's escaping plane index via
+    /// `indicatrix_cut_core::Design::tier_for_plane_index` -- without this module
+    /// taking on that dependency itself (see the module doc comment).
+    #[must_use]
+    pub const fn status(&self) -> Option<&SolidStatus> {
+        match self.entry.as_ref() {
+            Some(CacheEntry::Other(status)) => Some(status),
+            _ => None,
+        }
+    }
+
     /// A short human-readable reason the last [`Self::get_or_build`] call returned
     /// `None`, empty when the last build was `Closed` (or nothing built yet). Wording
     /// mirrors `gui::editor::state::status_text_and_is_problem`'s, reimplemented here
-    /// so `solid_preview` stays independent of `gui::editor` types.
+    /// so `solid_preview` stays independent of `gui::editor` types. A generic
+    /// fallback for a caller with no `Design` context to name the escaping planes'
+    /// owning tiers with (see [`Self::status`] for that better-informed path).
     #[must_use]
     pub fn status_message(&self) -> String {
         let Some(CacheEntry::Other(status)) = self.entry.as_ref() else {
@@ -214,6 +275,53 @@ mod tests {
 
         assert!(cache.get_or_build(&box_planes(0.6)).is_some());
         assert_eq!(cache.status_message(), "");
+    }
+
+    /// CAD audit item 63: a build that stops closing must not lose the last real
+    /// solid this cache already had -- `last_closed` should keep handing it back
+    /// across any number of consecutive failing rebuilds, until a NEW closed build
+    /// replaces it.
+    #[test]
+    fn last_closed_survives_a_failing_rebuild() {
+        let mut cache = MeshCache::default();
+        assert!(cache.last_closed().is_none());
+
+        let closed_vertex_count = cache
+            .get_or_build(&box_planes(0.6))
+            .unwrap()
+            .mesh
+            .positions
+            .len();
+        assert!(cache.get_or_build(&unbounded_planes()).is_none());
+        assert!(cache.status().is_some(), "the failure must be remembered");
+        let last_closed = cache
+            .last_closed()
+            .expect("the earlier closed build must still be available");
+        assert_eq!(last_closed.mesh.positions.len(), closed_vertex_count);
+
+        // A second, DIFFERENT failing arrangement must not clear `last_closed` --
+        // only a fresh Closed build should ever replace it.
+        let other_unbounded_planes = vec![(Vec3::Y, 1.0), (Vec3::NEG_Y, 1.0)];
+        assert!(cache.get_or_build(&other_unbounded_planes).is_none());
+        assert_eq!(
+            cache
+                .last_closed()
+                .expect("still available after a second failure")
+                .mesh
+                .positions
+                .len(),
+            closed_vertex_count
+        );
+    }
+
+    /// #118: a unit cube's own farthest vertex is at `(1,1,1)`, radius `sqrt(3)`
+    /// -- confirms `bounding_radius` measures from the origin against every
+    /// vertex, not just one axis's own half-extent.
+    #[test]
+    fn bounding_radius_is_the_farthest_vertex_from_the_origin() {
+        let mut cache = MeshCache::default();
+        let cached = cache.get_or_build(&box_planes(1.0)).unwrap();
+        assert!((cached.bounding_radius() - 3.0_f64.sqrt()).abs() < 1e-9);
     }
 
     fn rbc_planes_f64() -> Vec<(DVec3, f64)> {

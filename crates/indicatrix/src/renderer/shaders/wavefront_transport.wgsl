@@ -220,6 +220,9 @@ fn wavefront_bounce(
     // See `transport_hoist_ray_constants`'s own doc comment: recomputed fresh every
     // bounce round from this ray's own stored `lambdas`, rather than stored.
     let rc = transport_hoist_ray_constants(lambdas);
+    // The megakernel's `observer = -gen.dir` (`spectral_transport.wgsl`): recomputed from
+    // this ray's own deterministic generation rather than stored, like `rc`.
+    let observer = -transport_generate_ray(ray_idx).dir;
 
     var current_origin = ray_origin[ray_idx].xyz;
     var current_dir = ray_dir[ray_idx].xyz;
@@ -251,7 +254,7 @@ fn wavefront_bounce(
         wf_params.bounce, seed0, &lambdas, rc.c_axis, rc.birefringence_delta, rc.is_anisotropic, rc.is_biaxial,
         rc.biax_ax0, rc.biax_ax1, rc.biax_ax2, rc.n_o_hero_seed, rc.n_beta_hero, rc.n_alpha_hero, rc.n_gamma_hero,
         rc.n_e_hero_seed, rc.n_o_hoisted, rc.alpha_o_hoisted, rc.alpha_e_hoisted, rc.alpha_beta_hoisted,
-        rc.studio_key_dir, rc.studio_fill_dir, rc.studio_sin_lp,
+        rc.studio_key_dir, rc.studio_fill_dir, rc.studio_sin_lp, observer,
         &stokes, &radiance, &path_pdf, &current_origin, &current_dir, &current_k,
         &inside_gem, &is_extraordinary, &prev_plane_normal, &have_prev_plane_normal,
         &split_radiance, &compat, &path_escaped, &pending_light_mis,

@@ -324,9 +324,7 @@ pub(super) fn illuminant_white_balance(lighting_preset: LightingPreset) -> Vec3 
     static RING_LIGHTS: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
     static DARK_SPOTLIGHT: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
     static DAYLIGHT_DEFAULT: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
-    static ISO_HEMISPHERE: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
-    static SOFT_DOME: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
-    static DAYLIGHT_DOME: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
+    static LIGHT_TENT: std::sync::OnceLock<Vec3> = std::sync::OnceLock::new();
 
     let temp_k = illuminant_temperature_k(lighting_preset);
     match lighting_preset {
@@ -339,14 +337,13 @@ pub(super) fn illuminant_white_balance(lighting_preset: LightingPreset) -> Vec3 
         LightingPreset::DarkSpotlight => {
             *DARK_SPOTLIGHT.get_or_init(|| compute_illuminant_white_balance(temp_k))
         }
-        LightingPreset::IsoHemisphere => {
-            *ISO_HEMISPHERE.get_or_init(|| compute_illuminant_white_balance(temp_k))
-        }
-        LightingPreset::SoftDome => {
-            *SOFT_DOME.get_or_init(|| compute_illuminant_white_balance(temp_k))
-        }
-        LightingPreset::DaylightDome => {
-            *DAYLIGHT_DOME.get_or_init(|| compute_illuminant_white_balance(temp_k))
+        // The lit D65 models sample the tabulated D65 curve, whose white IS the sRGB
+        // white point, so the adaptation is the identity -- a Planckian 6500 K scale
+        // would push their neutrals green. `Daylight` samples the same table but keeps
+        // the Planckian adaptation its golden images pin.
+        LightingPreset::IsoHemisphere | LightingPreset::DaylightDome => Vec3::ONE,
+        LightingPreset::LightTent => {
+            *LIGHT_TENT.get_or_init(|| compute_illuminant_white_balance(temp_k))
         }
         LightingPreset::Daylight => {
             *DAYLIGHT_DEFAULT.get_or_init(|| compute_illuminant_white_balance(temp_k))
@@ -417,13 +414,17 @@ mod white_balance_cache_tests {
     use super::*;
 
     /// The `OnceLock`-per-preset cache must not change the visible value: asserts the
-    /// cached value for every preset (the three named ones plus the default fallback
-    /// arm) exactly matches a fresh, uncached recomputation.
+    /// cached value for every preset exactly matches a fresh, uncached recomputation --
+    /// or the identity for the lit models that sample the D65 table directly.
     #[test]
     fn illuminant_white_balance_matches_direct_computation_for_all_presets() {
         for preset in LightingPreset::ALL {
             let cached = illuminant_white_balance(preset);
-            let direct = compute_illuminant_white_balance(illuminant_temperature_k(preset));
+            let direct = if preset.uses_d65() && preset != LightingPreset::Daylight {
+                Vec3::ONE
+            } else {
+                compute_illuminant_white_balance(illuminant_temperature_k(preset))
+            };
             assert!(
                 (cached - direct).length() < 1e-5,
                 "cached white balance for {preset:?} should exactly match direct integration (cached={cached:?}, direct={direct:?})"

@@ -414,17 +414,34 @@ fn source_id_migration_backfills_legacy_rows_and_is_idempotent_across_two_opens(
         .unwrap();
     assert_eq!(count, 2);
 
+    // The exact column set, not a bare count: the point of this assertion is that
+    // a re-run of the migration leaves no duplicate column behind, and comparing
+    // names catches that (a duplicate shows up twice) while also saying which
+    // columns the migration is expected to have produced.
     let mut type_stmt = db2
         .conn
         .prepare("PRAGMA table_info(diagram_entries)")
         .unwrap();
-    let column_count = type_stmt
+    let mut columns: Vec<String> = type_stmt
         .query_map([], |r| r.get::<_, String>("name"))
         .unwrap()
         .flatten()
-        .count();
-    // title, url, design_id, id, source_id, ignored -- 6, no leftover duplicate.
-    assert_eq!(column_count, 6);
+        .collect();
+    columns.sort();
+    assert_eq!(
+        columns,
+        vec![
+            "created_at",
+            "derived_from_entry_id",
+            "design_id",
+            "id",
+            "ignored",
+            "source_id",
+            "title",
+            "updated_at",
+            "url",
+        ]
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -572,6 +589,56 @@ fn save_diagram_detail_persists_the_designer_split_and_competition_fields() {
     assert_eq!(gem, None);
     // Read back as an integer, not the "5" string that went in.
     assert_eq!(category, Some(5));
+
+    let _ = std::fs::remove_file(&path);
+}
+
+/// `get_derived_from_title` must resolve the recorded source row's own id and
+/// title (CAD audit item 186's remaining "read it back for display" half),
+/// return `None` when nothing is recorded yet, and return `None` -- not an
+/// error -- when the recorded source row has since been deleted (no
+/// `FOREIGN KEY` backs this column; see `migrate_diagram_entries_provenance`).
+#[test]
+fn get_derived_from_title_resolves_the_source_rows_id_and_title() {
+    let path = temp_db_path("derived_from_title");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create migrated db");
+
+    let source = FacetDiagramEntry {
+        title: "Original Round Brilliant".to_string(),
+        url: "local://original.asc".to_string(),
+        design_id: String::new(),
+    };
+    let source_id = db
+        .save_diagram_entry(&source, LEGACY_SOURCE_ID)
+        .expect("save source entry");
+
+    let derived = FacetDiagramEntry {
+        title: "Original Round Brilliant (edited)".to_string(),
+        url: "local://original-edited.asc".to_string(),
+        design_id: String::new(),
+    };
+    let derived_id = db
+        .save_diagram_entry(&derived, LEGACY_SOURCE_ID)
+        .expect("save derived entry");
+
+    // Nothing recorded yet.
+    assert_eq!(db.get_derived_from_title(derived_id).unwrap(), None);
+
+    db.set_derived_from_entry_id(derived_id, Some(source_id))
+        .expect("record provenance");
+    assert_eq!(
+        db.get_derived_from_title(derived_id).unwrap(),
+        Some((source_id, "Original Round Brilliant".to_string()))
+    );
+
+    // A dangling reference (source since deleted) must read back as `None`.
+    db.conn
+        .execute(
+            "DELETE FROM diagram_entries WHERE id = ?1",
+            params![source_id],
+        )
+        .expect("delete source row");
+    assert_eq!(db.get_derived_from_title(derived_id).unwrap(), None);
 
     let _ = std::fs::remove_file(&path);
 }
@@ -901,6 +968,7 @@ fn save_custom_material_round_trips_crystal_optics_fields() {
         optical_character: Some("BiaxialPositive"),
         biaxial_delta_beta_alpha: Some(0.0070),
         per_axis_dispersion_json: Some(r#"{"kind":"uniaxial_extraordinary","a":1.7,"b":0.01}"#),
+        specific_gravity: Some(3.35),
     })
     .expect("save biaxial custom material");
 
@@ -915,6 +983,7 @@ fn save_custom_material_round_trips_crystal_optics_fields() {
         optical_character: Some("UniaxialNegative"),
         biaxial_delta_beta_alpha: None,
         per_axis_dispersion_json: None,
+        specific_gravity: Some(4.00),
     })
     .expect("save uniaxial custom material");
 
@@ -935,6 +1004,7 @@ fn save_custom_material_round_trips_crystal_optics_fields() {
         tanzanite.per_axis_dispersion_json.as_deref(),
         Some(r#"{"kind":"uniaxial_extraordinary","a":1.7,"b":0.01}"#)
     );
+    assert!((tanzanite.specific_gravity.unwrap() - 3.35).abs() < 1e-6);
 
     let sapphire = materials
         .iter()
@@ -947,6 +1017,7 @@ fn save_custom_material_round_trips_crystal_optics_fields() {
     );
     assert_eq!(sapphire.biaxial_delta_beta_alpha, None);
     assert_eq!(sapphire.per_axis_dispersion_json, None);
+    assert!((sapphire.specific_gravity.unwrap() - 4.00).abs() < 1e-6);
 
     // Re-saving over the same name (upsert) must update crystal-optics columns too.
     db.save_custom_material(&CustomMaterialParams {
@@ -959,6 +1030,7 @@ fn save_custom_material_round_trips_crystal_optics_fields() {
         optical_character: None,
         biaxial_delta_beta_alpha: None,
         per_axis_dispersion_json: None,
+        specific_gravity: None,
     })
     .expect("re-save clears crystal-optics fields");
     let materials = db.get_custom_materials().expect("read back after re-save");
@@ -968,6 +1040,7 @@ fn save_custom_material_round_trips_crystal_optics_fields() {
         .expect("Custom Sapphire still present");
     assert_eq!(sapphire.crystal_system, None);
     assert_eq!(sapphire.optical_character, None);
+    assert_eq!(sapphire.specific_gravity, None);
 
     let _ = std::fs::remove_file(&path);
 }
@@ -1052,6 +1125,84 @@ fn per_axis_dispersion_migration_adds_the_column_and_leaves_existing_rows_nullab
     let _ = std::fs::remove_file(&path);
 }
 
+/// Mirrors `a_fresh_database_already_has_the_per_axis_dispersion_column` for the new
+/// `specific_gravity` column (CAD audit item 169).
+#[test]
+fn a_fresh_database_already_has_the_specific_gravity_column() {
+    let path = temp_db_path("fresh_specific_gravity");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create fresh db");
+    assert!(
+        Database::column_exists(&db.conn, "custom_gem_materials", "specific_gravity").unwrap(),
+        "a fresh database's CREATE TABLE must already include specific_gravity"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Seeds a `custom_gem_materials` row via the schema predating this column
+/// (bypassing `Database::new`), including every column
+/// `migrate_per_axis_dispersion_column` already added -- this migration is purely
+/// additive on top of that one.
+fn seed_pre_specific_gravity_custom_material(path: &std::path::Path) {
+    let conn = Connection::open(path).expect("open raw connection for seeding");
+    conn.execute_batch(
+            "CREATE TABLE custom_gem_materials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                refractive_index REAL NOT NULL,
+                dispersion REAL NOT NULL,
+                birefringence REAL NOT NULL,
+                absorption_r REAL NOT NULL,
+                absorption_g REAL NOT NULL,
+                absorption_b REAL NOT NULL,
+                crystal_system TEXT,
+                optical_character TEXT,
+                biaxial_delta_beta_alpha REAL,
+                per_axis_dispersion_json TEXT
+            );
+            INSERT INTO custom_gem_materials
+                (name, refractive_index, dispersion, birefringence, absorption_r, absorption_g, absorption_b,
+                 crystal_system, optical_character, biaxial_delta_beta_alpha, per_axis_dispersion_json)
+                VALUES ('Legacy Custom Peridot', 1.690, 0.020, 0.0360, 0.4, 1.6, 0.2,
+                        'Orthorhombic', 'BiaxialPositive', 0.0360, NULL);",
+        )
+        .expect("create pre-specific-gravity custom_gem_materials and seed a row");
+}
+
+/// Old schema (per-axis dispersion column, no `specific_gravity`) -> migrated ->
+/// readable, mirroring `per_axis_dispersion_migration_adds_the_column_and_leaves_existing_rows_nullable`.
+#[test]
+fn specific_gravity_migration_adds_the_column_and_leaves_existing_rows_nullable() {
+    let path = temp_db_path("specific_gravity_migration");
+    seed_pre_specific_gravity_custom_material(&path);
+
+    {
+        let db = Database::new(Some(path.to_str().unwrap())).expect("first open migrates");
+        assert!(
+            Database::column_exists(&db.conn, "custom_gem_materials", "specific_gravity").unwrap(),
+            "migration must add specific_gravity"
+        );
+
+        // Pre-existing row survives, earlier columns intact, new field None.
+        let materials = db.get_custom_materials().expect("read back materials");
+        assert_eq!(materials.len(), 1);
+        let m = &materials[0];
+        assert_eq!(m.name, "Legacy Custom Peridot");
+        assert!((m.refractive_index - 1.690).abs() < 1e-6);
+        assert_eq!(m.crystal_system.as_deref(), Some("Orthorhombic"));
+        assert_eq!(m.specific_gravity, None);
+    }
+
+    // Second open: no-op, pre-existing row survives untouched.
+    let db2 = Database::new(Some(path.to_str().unwrap())).expect("second open is idempotent");
+    let materials = db2
+        .get_custom_materials()
+        .expect("read back materials again");
+    assert_eq!(materials.len(), 1);
+    assert_eq!(materials[0].specific_gravity, None);
+
+    let _ = std::fs::remove_file(&path);
+}
+
 // LEGACY_SOURCE_ID has no guard test here: what it must stay equal to isn't visible
 // from this crate. See that constant's own doc comment.
 
@@ -1083,6 +1234,66 @@ fn seeded_db(rows: &[(&str, &str, &str, &str, &str, &str)]) -> Database {
             .expect("save detail");
     }
     db
+}
+
+/// CAD audit item 228: the search tooltip/placeholder has always promised "title,
+/// designer or notes"; this asserts the predicate now actually honors the "notes"
+/// third of that claim -- a term that appears ONLY in a tier's `angle_settings.notes`
+/// (not in the title or `designer_info`) must still surface the design, and a design
+/// with no such note must not be a false positive.
+#[test]
+fn search_diagrams_matches_a_term_found_only_in_tier_notes() {
+    let path = temp_db_path("search_notes");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create migrated db");
+
+    let noted_entry = db
+        .save_diagram_entry(
+            &FacetDiagramEntry {
+                title: "Noted Design".to_string(),
+                url: "local://noted.asc".to_string(),
+                design_id: String::new(),
+            },
+            LEGACY_SOURCE_ID,
+        )
+        .expect("save noted entry");
+    db.save_diagram_detail(
+        &FacetDiagramDetail {
+            angle_settings_table: vec![crate::model::angle::AngleSetting {
+                order_index: 0,
+                facet: "P1".to_string(),
+                angle: "41".to_string(),
+                index: "0".to_string(),
+                notes: "cut to a client's heirloom spec".to_string(),
+            }],
+            ..Default::default()
+        },
+        noted_entry,
+    )
+    .expect("save noted detail");
+
+    let plain_entry = db
+        .save_diagram_entry(
+            &FacetDiagramEntry {
+                title: "Plain Design".to_string(),
+                url: "local://plain.asc".to_string(),
+                design_id: String::new(),
+            },
+            LEGACY_SOURCE_ID,
+        )
+        .expect("save plain entry");
+    db.save_diagram_detail(&FacetDiagramDetail::default(), plain_entry)
+        .expect("save plain detail");
+
+    let results = db
+        .search_diagrams("heirloom", "All", "All", &RangeFilter::default())
+        .expect("search must succeed");
+    assert_eq!(
+        results.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+        vec!["Noted Design"],
+        "a term found only in a tier's notes must match, and only that design"
+    );
+
+    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
@@ -1490,6 +1701,42 @@ fn rename_diagram_entry_rejects_blank_titles_and_unknown_ids() {
     // The blank-title attempt must not have touched the existing row.
     let full = db.get_diagram_full(id).unwrap().unwrap();
     assert_eq!(full.title, "Keep Me");
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn update_diagram_entry_url_changes_only_the_url_and_bumps_updated_at() {
+    let path = temp_db_path("update_entry_url");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create migrated db");
+    let entry = FacetDiagramEntry {
+        title: "Save Native round trip".to_string(),
+        url: "local://old_name.asc".to_string(),
+        design_id: "keep-me".to_string(),
+    };
+    let id = db.save_diagram_entry(&entry, "local-import").unwrap();
+
+    db.update_diagram_entry_url(id, "local://new_name.asc")
+        .unwrap();
+
+    let full = db.get_diagram_full(id).unwrap().unwrap();
+    assert_eq!(full.url, "local://new_name.asc");
+    // Title/design_id are a cutter's own hand-corrections (or, for design_id, synced
+    // from elsewhere) -- a "Save Native As..." file-name change must not touch either.
+    assert_eq!(full.title, "Save Native round trip");
+    assert_eq!(full.design_id.as_deref(), Some("keep-me"));
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn update_diagram_entry_url_rejects_an_unknown_entry_id() {
+    let path = temp_db_path("update_entry_url_errors");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create migrated db");
+    assert!(
+        db.update_diagram_entry_url(999_999, "local://nope.asc")
+            .is_err()
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -1930,17 +2177,34 @@ fn ignored_migration_backfills_not_ignored_and_is_idempotent_across_two_opens() 
         .unwrap();
     assert!(!ignored);
 
+    // The exact column set, not a bare count: the point of this assertion is that
+    // a re-run of the migration leaves no duplicate column behind, and comparing
+    // names catches that (a duplicate shows up twice) while also saying which
+    // columns the migration is expected to have produced.
     let mut type_stmt = db2
         .conn
         .prepare("PRAGMA table_info(diagram_entries)")
         .unwrap();
-    let column_count = type_stmt
+    let mut columns: Vec<String> = type_stmt
         .query_map([], |r| r.get::<_, String>("name"))
         .unwrap()
         .flatten()
-        .count();
-    // title, url, design_id, id, source_id, ignored -- 6, no leftover duplicate.
-    assert_eq!(column_count, 6);
+        .collect();
+    columns.sort();
+    assert_eq!(
+        columns,
+        vec![
+            "created_at",
+            "derived_from_entry_id",
+            "design_id",
+            "id",
+            "ignored",
+            "source_id",
+            "title",
+            "updated_at",
+            "url",
+        ]
+    );
 
     let _ = std::fs::remove_file(&path);
 }

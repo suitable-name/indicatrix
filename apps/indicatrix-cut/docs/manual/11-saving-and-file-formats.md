@@ -58,7 +58,27 @@ that any other GemCAD-compatible tool can open.
 - If your schedule hasn't actually changed since it was loaded, the
   paired `.asc` is preserved exactly, byte-for-byte.
 - The moment any edit changes the schedule, a fresh `.asc` is written to
-  match.
+  match. Only an **Exact scale value** tier's original note (the source
+  file's `G` field) survives this regeneration, and only as long as that
+  specific tier's own constraint has not itself changed since import. A
+  **Named facet(s)** or **Unspecified vertex** tier's `G` field is always
+  regenerated on any regeneration (blank, or `Meet <names>`) — even for a
+  tier that was itself never touched — since only the scale-reference kind
+  currently checks the imported note before falling back to a generated
+  one. A tier you actually re-authored, or one that was never imported at
+  all, also gets a generated note, same as before.
+- Saving keeps the file's previous version as a `.bak` backup alongside
+  it, for both the `.asc` and the `.toml` — one generation back, so a
+  second save overwrites the previous `.bak` in turn.
+
+A design with no anchor tiers, or no tiers at all, can still be saved --
+Save Native writes it as a **draft**: a placeholder `.asc` (real angles and
+indices, but no real masts yet) plus a native sidecar carrying every tier's
+real constraint. The toast says so plainly, e.g. "Saved '&lt;path&gt;' as a
+draft (no scale-reference tier yet). Add a scale-reference tier to finish
+it." Opening a draft back up rebuilds its tiers from the sidecar, ignoring
+the placeholder `.asc` masts entirely, so nothing is lost by parking a
+design mid-thought.
 
 The `.indicatrix.toml` file is plain text (TOML format), which means you can
 open it in a text editor, read it, add your own comments, and put it under
@@ -67,19 +87,38 @@ version control alongside your `.asc` files if you want to.
 Click **Open Native** to load an `.indicatrix.toml` file back — this restores
 everything the plain `.asc` alone cannot carry (preform, constraint kinds,
 detached tiers, mm sizing, material). Older `.gemcut.toml` sidecars (from
-before this app was renamed from GemCut) still open the same way.
+before this app was renamed from GemCut) still open the same way. The File
+menu also keeps an **Open Recent** submenu of native files you have saved
+or opened, so you don't have to hunt for a file picker to get back to one.
 
 ## What happens if a native file and its `.asc` disagree
 
 The native file remembers a fingerprint of its paired `.asc` from the
-moment it was saved. If you open a native sidecar whose `.asc` has
-since been changed by some other means (hand-edited, or touched in another
-program), the app notices the mismatch. It does not silently trust either
-file blindly: the design still loads, using the `.asc` on disk as the
-authoritative geometry, but the native file's extra per-tier information
-is only applied where it still safely lines up. The toast after opening
-tells you plainly what happened, in the form "Loaded '&lt;path&gt;':
-&lt;fingerprint note&gt;; &lt;overlay note&gt;."
+moment it was saved. If you open a native sidecar whose `.asc` has since
+been changed by some other means (hand-edited, or touched in another
+program), the app notices the mismatch and asks you what to do, rather
+than silently picking one file over the other: a dialog headed "Native
+Sidecar Out of Sync" explains that the per-tier meet constraints and
+detached facets in the sidecar can no longer be trusted to line up by
+position with the changed `.asc`, and offers **Apply Sidecar Anyway**
+(hidden if the two files no longer even agree on how many tiers there
+are), **Use .asc Only** (load the geometry with none of the sidecar's
+extra information), or Cancel.
+
+## Unsaved changes
+
+While the design has edits that have not been saved, the window title
+shows a leading "* " and the status strip (Chapter 5) shows a permanent
+amber **UNSAVED** badge, so you are never in doubt about whether the file
+on disk matches what is on screen. Clicking **New**, **Load Selected**,
+**Open Native**, or closing the window while there are unsaved changes
+asks first, rather than discarding them outright.
+
+Separately, an **autosave** runs automatically every two minutes while
+there are unsaved changes, to its own recovery location rather than your
+real file — it never overwrites the design you last deliberately saved.
+Once you do Save Native for real, the autosave file is cleared. Autosave
+does nothing at all while the design has no unsaved changes.
 
 ## A note on catalogue re-sync
 

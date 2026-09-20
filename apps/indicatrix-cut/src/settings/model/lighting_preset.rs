@@ -117,6 +117,32 @@ pub fn built_in_presets() -> Vec<LightingPreset> {
             env_map_path: None,
             export_usable: false,
         },
+        LightingPreset {
+            name: "Light Tent".to_string(),
+            built_in: true,
+            light_yaw_deg: 48.0,
+            light_pitch_deg: 54.0,
+            exposure: 1.0,
+            lighting_rig: "Light tent + black cards".to_string(),
+            camera_distance: 2.4,
+            camera_yaw: None,
+            camera_pitch: None,
+            env_map_path: None,
+            export_usable: false,
+        },
+        LightingPreset {
+            name: "Daylight Sun".to_string(),
+            built_in: true,
+            light_yaw_deg: 30.0,
+            light_pitch_deg: 55.0,
+            exposure: 1.0,
+            lighting_rig: "Daylight sky + sun".to_string(),
+            camera_distance: 2.4,
+            camera_yaw: None,
+            camera_pitch: None,
+            env_map_path: None,
+            export_usable: false,
+        },
     ]
 }
 

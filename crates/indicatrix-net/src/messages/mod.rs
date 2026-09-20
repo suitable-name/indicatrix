@@ -80,15 +80,19 @@ pub use tilt::{
 /// encoding.
 ///
 /// 9: three lighting models appended to `LightingPreset`.
-pub const PROTOCOL_VERSION: u16 = 9;
+/// 10: `LightingPreset` 4-6 redefined (ISO hemisphere with head shadow, light tent,
+///     daylight sky). Same encoding, but a peer on 9 shades those scenes differently, so
+///     tiles from mixed versions would not match.
+/// 11: `SceneState::backdrop` appended (the card the camera sees behind the stone).
+pub const PROTOCOL_VERSION: u16 = 11;
 
 #[cfg(test)]
 mod tests {
     #[test]
     /// Pins the constant so a bump is always a deliberate, reviewed edit.
     ///
-    /// 9: three lighting models appended to `LightingPreset`.
+    /// 11: `SceneState::backdrop` appended.
     fn protocol_version_matches_constant() {
-        assert_eq!(super::PROTOCOL_VERSION, 9);
+        assert_eq!(super::PROTOCOL_VERSION, 11);
     }
 }

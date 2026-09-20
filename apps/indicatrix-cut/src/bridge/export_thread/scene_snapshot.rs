@@ -6,7 +6,9 @@
 
 use crate::bridge::{
     frame_cache::stone_width::StoneWidthCache,
-    render_thread::{MaterialOverrides, RenderContext, apply_material_overrides, resolve_material},
+    render_thread::{
+        MaterialOverrides, RenderContext, apply_material_overrides, resolve_material_with_override,
+    },
 };
 use indicatrix::{
     geometry::{girdle_facet_finishes, plane::GpuFacetPlane},
@@ -39,6 +41,8 @@ pub struct SceneSnapshot {
     pub lighting_preset: LightingPreset,
     pub max_bounces: u32,
     pub exposure: f32,
+    /// Backdrop radiance -- `RenderContext::backdrop` resolved through `Backdrop::level`.
+    pub backdrop: f32,
     pub active_planes: Vec<GpuFacetPlane>,
     /// Frosted girdle: `girdle_facet_finishes(&active_planes)` when
     /// `RenderContext::girdle_frosted` was on at capture time, empty otherwise --
@@ -65,7 +69,16 @@ impl SceneSnapshot {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let materials = GemMaterial::all_materials();
-        let material = resolve_material(&materials, &guard.custom_materials, &guard.material_name);
+        // CAD audit item 61: a high-resolution export must honour the same RI/custom
+        // material override the live viewport, tilt sweep and hover preview already
+        // resolve through -- otherwise the export silently reverts to the by-name
+        // lookup for the one surface that matters most (the delivered image).
+        let material = resolve_material_with_override(
+            &materials,
+            &guard.custom_materials,
+            guard.material_override.as_ref(),
+            &guard.material_name,
+        );
         // Every one of these sliders/toggles is a property of what the user is looking
         // at, so an export has to carry it or the file silently differs from the
         // viewport. Applied here (not inside `resolve_material`, which `render_thread`
@@ -102,6 +115,7 @@ impl SceneSnapshot {
             lighting_preset: guard.lighting_preset,
             max_bounces: guard.max_bounces,
             exposure: guard.exposure,
+            backdrop: guard.backdrop.level(),
             // `SceneSnapshot::active_planes` is a plain `Vec` (a one-shot export
             // capture, not `RenderContext`'s hot-path per-frame snapshot), so this is
             // the one actual deep copy `capture` makes -- `.to_vec()` off the `Arc<Vec<..>>`
@@ -119,6 +133,45 @@ impl SceneSnapshot {
 mod tests {
     use super::*;
     use glam::Vec3;
+
+    /// CAD audit item 61: a high-resolution export must resolve the design's real
+    /// effective material (RI override / unlisted custom material) exactly as the
+    /// live viewport, tilt sweep and hover preview do, rather than falling back to
+    /// a plain by-name lookup that cannot represent an override. Guards
+    /// `SceneSnapshot::capture` against regressing to a bare `resolve_material` call.
+    #[test]
+    fn capture_prefers_the_material_override_over_the_by_name_lookup() {
+        let override_dispersion = indicatrix::optics::dispersion::DispersionModel::Cauchy {
+            a: 1.62,
+            b: 0.0,
+            c: 0.0,
+        };
+        let mut overridden = GemMaterial::diamond();
+        overridden.name = "Custom RI 1.62".to_string();
+        overridden.dispersion = override_dispersion;
+
+        let with_override = SceneSnapshot::capture(&Mutex::new(RenderContext {
+            material_name: "Diamond".to_string(),
+            material_override: Some(overridden),
+            ..Default::default()
+        }));
+        assert_eq!(
+            with_override.material.dispersion, override_dispersion,
+            "the override's flattened dispersion (its RI) must reach the exported \
+             scene, not the by-name material's own dispersion curve"
+        );
+
+        let without_override = SceneSnapshot::capture(&Mutex::new(RenderContext {
+            material_name: "Diamond".to_string(),
+            material_override: None,
+            ..Default::default()
+        }));
+        assert_eq!(
+            without_override.material.dispersion,
+            GemMaterial::diamond().dispersion,
+            "with no override, the export keeps resolving by name exactly as before"
+        );
+    }
 
     /// The inclusion slider is a property of what the user is looking at, so an
     /// export must carry it. Guards `SceneSnapshot::capture`'s override against the

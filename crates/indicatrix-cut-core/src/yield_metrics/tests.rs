@@ -32,6 +32,7 @@ fn box_design(girdle_diameter_mm: Option<f64>, material: MaterialSelection) -> D
         indices: vec![],
         constraint: MeetConstraint::ScaleReference(0.5),
         imported_meet: None,
+        original_notes: None,
         detached: Vec::new(),
     });
     design.girdle_diameter_mm = girdle_diameter_mm;
@@ -207,6 +208,47 @@ fn gate_4_a_design_larger_than_its_preform_is_flagged() {
     assert!(report.preform_fit.is_some());
     let report_fits = fits.yield_report(&solved_fits);
     assert!(report_fits.preform_fit.is_none());
+}
+
+/// CAD audit item 208: `exceeds_preform` must measure against the preform
+/// SHIFTED by `Design::preform_y_offset`, not always the centred arrangement
+/// -- a pure vertical shift never changes the preform's own width/length/
+/// total-height (top and bottom move together), so this specifically drives
+/// `PreformFit::exceeds_halfspace`, the one figure that genuinely depends on
+/// WHERE the preform sits, not just how big it is.
+#[test]
+fn exceeds_preform_honours_the_preforms_y_offset() {
+    let schedule = indicatrix_formats::asc::parse_asc(
+        "GemCad 4.41\ng 96 48.0\ny 4 n\nI 1.54\n\
+         H PC 11.020  Octahedron\n\
+         a 54.74 0.68041 0 72 48 24\n\
+         a -54.74 0.68041 0 24 48 72\n",
+    )
+    .expect("fixture must parse");
+
+    // Same "roomy" preform gate_4 confirms fits with no offset: half-width 2.0,
+    // depth 4.0, so before any offset the floor sits at y = -2.0, comfortably
+    // below the octahedron's own lower vertex (y ~= -1.1785).
+    let roomy_preform = PreformSpec::block(2.0, 1.0, 4.0);
+    let mut design = Design::from_asc_schedule(roomy_preform, &schedule);
+    let solved = design.solve().expect("every tier is pinned, must solve");
+    assert_eq!(
+        exceeds_preform(&design, &solved),
+        None,
+        "must fit with no offset, matching gate_4's own roomy case"
+    );
+
+    // Shift the preform up by 1.0: the floor rises from y = -2.0 to y = -1.0,
+    // now ABOVE the octahedron's own lower vertex, while total height (and so
+    // every extents comparison) is unchanged -- top and bottom moved together.
+    design.preform_y_offset = 1.0;
+    let fit = exceeds_preform(&design, &solved)
+        .expect("the shifted floor must now clip the octahedron's own lower vertex");
+    assert!(fit.exceeds_halfspace(), "{fit:?}");
+    assert!(
+        !fit.exceeds_width() && !fit.exceeds_length() && !fit.exceeds_height(),
+        "a pure vertical shift must not change any extents comparison: {fit:?}"
+    );
 }
 
 #[test]

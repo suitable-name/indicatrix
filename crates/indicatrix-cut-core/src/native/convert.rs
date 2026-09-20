@@ -19,10 +19,10 @@ use crate::{
     material::MaterialSelection,
     preform::{PreformShape, PreformSpec},
 };
-use indicatrix::geometry::meet_solver::MeetConstraint;
+use indicatrix::geometry::{meet_solver::MeetConstraint, stone_metrics::ExternalProportions};
 use indicatrix_formats::native::{
     MaterialTable, NativeDesignFile, NativeMeetConstraint, NativePreformShape, PreformTable,
-    TierTable, sha256_hex,
+    SourceTable, TierTable, sha256_hex,
 };
 
 pub(super) fn native_meet_constraint_from(constraint: &MeetConstraint) -> NativeMeetConstraint {
@@ -97,6 +97,39 @@ pub(super) fn material_selection_from_table(table: &MaterialTable) -> MaterialSe
     }
 }
 
+/// Mirrors an [`ExternalProportions`] into its on-disk [`SourceTable`] row -- see that
+/// type's own doc comment (Item 178).
+#[must_use]
+pub(super) const fn source_table_from_proportions(props: &ExternalProportions) -> SourceTable {
+    SourceTable {
+        vol_w3: props.vol_w3,
+        lw: props.lw,
+        cw: props.cw,
+        pw: props.pw,
+        hw: props.hw,
+    }
+}
+
+/// The inverse of [`source_table_from_proportions`].
+#[must_use]
+pub(super) const fn external_proportions_from_source(table: &SourceTable) -> ExternalProportions {
+    ExternalProportions {
+        vol_w3: table.vol_w3,
+        lw: table.lw,
+        cw: table.cw,
+        pw: table.pw,
+        hw: table.hw,
+    }
+}
+
+/// Mirrors one editor tier into its on-disk row.
+///
+/// The imported meet instruction and the `.asc` file's original `G` note ride along
+/// so an ordinary save is self-describing: a reload can restore the cutter's "Adopt
+/// Meet" action and re-export the file's real note text instead of a synthesized
+/// "Set stone size.". [`super::load::load_paired`] recomputes both from the paired
+/// `.asc` when the fingerprint matches, so these two fields matter for a draft, for
+/// hand inspection and for later tooling.
 #[must_use]
 pub(super) fn tier_table_from_tier(tier: &ConstraintTier) -> TierTable {
     TierTable::new(
@@ -104,6 +137,8 @@ pub(super) fn tier_table_from_tier(tier: &ConstraintTier) -> TierTable {
         native_meet_constraint_from(&tier.constraint),
         tier.detached.clone(),
     )
+    .with_imported_meet(tier.imported_meet.as_ref().map(native_meet_constraint_from))
+    .with_original_notes(tier.original_notes.clone())
 }
 
 /// Builds a [`NativeDesignFile`] from `design`'s current state.
@@ -112,18 +147,28 @@ pub(super) fn tier_table_from_tier(tier: &ConstraintTier) -> TierTable {
 /// see [`super::save::save_paired`] for the higher-level function that decides what
 /// those bytes are (preserved original text vs. a fresh export) and calls this with
 /// the result.
+///
+/// `printed_proportions`, when `Some`, is mirrored into the sidecar's own `[source]`
+/// table (Item 178) so a later Open Native can restore it -- see [`NativeDesignFile::
+/// with_source`] for why an all-`None` [`ExternalProportions`] still writes no table
+/// at all.
 #[must_use]
 pub fn to_native_file(
     design: &Design,
     asc_filename: impl Into<String>,
     asc_bytes: &[u8],
+    printed_proportions: Option<&ExternalProportions>,
 ) -> NativeDesignFile {
-    NativeDesignFile::new(
+    let native = NativeDesignFile::new(
         asc_filename,
         sha256_hex(asc_bytes),
         preform_table_from_spec(&design.preform),
         design.girdle_diameter_mm,
         material_table_from_selection(&design.material),
         design.tiers.iter().map(tier_table_from_tier).collect(),
-    )
+    );
+    match printed_proportions {
+        Some(props) => native.with_source(source_table_from_proportions(props)),
+        None => native,
+    }
 }

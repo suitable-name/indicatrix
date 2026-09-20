@@ -17,19 +17,123 @@ export global Theme {
     out property <color> primary-hover: #60a5fa;
     out property <color> primary-glow: #3b82f633;
     out property <color> accent-cyan: #38bdf8;
+    /// `accent-cyan`'s hovered state, mirroring `primary-hover` above --
+    /// cad_todo.md #245: `material_editor_dialog.slint`'s "Save & Apply" button was
+    /// the only user, as a bare `#7dd3fc` sitting on a line whose other two colors
+    /// were already tokens.
+    out property <color> accent-cyan-hover: #7dd3fc;
+    /// The dark surface that carries `accent-cyan` content -- cad_todo.md #245:
+    /// `header.slint`'s remote-library pill already paired this exact literal with
+    /// an `accent-cyan` border, while its "local" branch used `bg-elevated`, so one
+    /// line mixed a token and a hex code for the same role.
+    out property <color> accent-cyan-surface: #164e63;
     out property <color> accent-emerald: #10b981;
     out property <color> accent-amber: #f59e0b;
     out property <color> accent-ruby: #f43f5e;
     out property <color> accent-purple: #a855f7;
+    /// `accent-amber` at low opacity, the same "-glow" convention `primary-glow`
+    /// already established -- cad_todo.md #245: was a bare `#f59e0b33` literal on
+    /// the tier table's multi-selected-row highlight (`editor_tier_table.slint`)
+    /// with nothing tying it back to `accent-amber` for a future palette change.
+    out property <color> accent-amber-glow: #f59e0b33;
 
     // Text & Typography
     out property <color> text-primary: #f1f5f9;
     out property <color> text-secondary: #94a3b8;
     out property <color> text-muted: #64748b;
     out property <color> text-on-primary: #ffffff;
+    /// Dark text/icon color for content sitting directly on an `accent-amber`
+    /// fill (a toggle button's own "on" state, e.g. `header.slint`'s Filters
+    /// button) -- the amber-background counterpart to `text-on-primary`
+    /// (cad_todo.md #245: was a bare `#0f172a` literal repeated three times in
+    /// one file with nothing tying it to that role).
+    out property <color> text-on-amber: #0f172a;
+
+    /// Ink drawn on a LIGHT or saturated fill -- the counterpart to
+    /// `text-on-primary` (white, for dark saturated fills) and the general form of
+    /// `text-on-amber` (which stays as-is for its existing amber call sites).
+    /// cad_todo.md #245: `material_editor_dialog.slint` used a bare `#0f172a` for
+    /// the label on its light "Clear" swatch and for the check icon + label on its
+    /// accent-cyan "Save & Apply" button, with nothing naming that shared role.
+    out property <color> text-on-accent: #0f172a;
+
+    // Control surfaces inside a dialog -- cad_todo.md #245. Distinct from the
+    // `bg-*` scale above, which describes the main window's panels: a dialog sits
+    // on its own `surface-dialog` card and its controls need their own steps
+    // against that, which is why these values never matched a `bg-*` token.
+    /// A field, hairline divider, or hovered secondary button inside a dialog --
+    /// one step ABOVE the dialog card. Was a bare `#1e293b` in eight places in
+    /// `material_editor_dialog.slint` alone.
+    out property <color> surface-raised: #1e293b;
+    /// A recessed secondary-button or chip-row background -- one step BELOW the
+    /// dialog card. Same value as `text-on-accent` above, deliberately named
+    /// separately because the roles are unrelated.
+    out property <color> surface-sunken: #0f172a;
+    /// A small square control (a dialog's own close button) at rest.
+    out property <color> surface-control: #1a202c;
+    /// ...and hovered.
+    out property <color> surface-control-hover: #2d3748;
+    /// A disabled button's flat fill. Same value as `border-dialog`, named
+    /// separately for the same reason as the pair above: a fill is not a border,
+    /// and a future palette change would almost certainly move one without the
+    /// other.
+    out property <color> surface-disabled: #334155;
+
+    /// A selected list row's fill. cad_todo.md #245: `diagram_list.slint` used a
+    /// bare literal here inside a ternary whose other two branches were already
+    /// `bg-card-hover`/`bg-input`. Deliberately NOT shared with `header.slint`'s
+    /// logo mark, which happens to use the same value for an unrelated, brand
+    /// reason -- a palette change should move one without the other.
+    out property <color> surface-selected: #1e3a8a;
+    /// An informational banner's fill (the catalogue's "showing N just-imported
+    /// designs" strip).
+    out property <color> surface-info: #1e3a5f;
+    /// A warning banner's fill -- the dark amber counterpart to `accent-amber`
+    /// content, as `surface-info` is to a blue one.
+    out property <color> surface-warning: #422006;
 
     // Radii
     out property <length> radius-sm: 4px;
     out property <length> radius-md: 8px;
     out property <length> radius-lg: 12px;
+
+    // Overlay & Modal Surfaces -- cad_todo.md #245: every dialog card in this app
+    // (`new_design_dialog.slint`, `retarget_dialog.slint`, `material_editor_dialog.slint`,
+    // `metadata_editor_dialog.slint`, `confirm_action_dialog.slint`) already used these
+    // exact four literals for its backdrop/card/border/shadow -- named here so the
+    // convention is explicit and a future dialog (or a future palette change) doesn't
+    // have to rediscover it by copying another file's hex codes.
+    /// The full-viewport semi-transparent backdrop shown behind every modal dialog.
+    out property <color> overlay-backdrop: #00000088;
+    /// A modal dialog card's own background, distinct from `bg-elevated` (used for
+    /// smaller in-panel popups like the Log popup rather than full dialogs).
+    out property <color> surface-dialog: #11151f;
+    /// A modal dialog card's own border color.
+    out property <color> border-dialog: #334155;
+    /// The drop-shadow color under a floating modal dialog card.
+    out property <color> modal-shadow: #000000bb;
+    /// A small floating popup's own translucent card background -- distinct from
+    /// the opaque `surface-dialog` (a full modal dialog card): cad_todo.md #245's
+    /// remaining citation, `editor_status_strip.slint`'s "Details" popup, used a
+    /// bare `#111827ee` with no token naming its role. `border-dialog`/
+    /// `modal-shadow` above already fit that same popup's border/shadow exactly
+    /// (it was independently using the identical literals), so only the
+    /// background needed a new name rather than reusing one of the four above.
+    out property <color> popup-surface: #111827ee;
+
+    // Semantic state, distinct from the decorative `accent-*` colors above (which
+    // this codebase also reuses for non-status purposes, e.g. chart curves).
+    /// Danger/error/destructive-action color -- already the de facto shade for this
+    /// (toast error icon, Retarget's solve-error text, Material Editor's Delete
+    /// button) before this token existed to name it.
+    out property <color> danger: #f87171;
+    /// A destructive button's own flat fill at rest, and hovered -- the dark-red
+    /// surfaces that carry `danger` text/icons. cad_todo.md #245: the Material
+    /// Editor's Delete button and the Filters panel's remove-row button already
+    /// used these identical literals for the identical role, in two files, with
+    /// nothing connecting them.
+    out property <color> danger-surface: #1f1111;
+    out property <color> danger-surface-hover: #450a0a;
+    /// A destructive button's border.
+    out property <color> danger-border: #7f1d1d;
 }

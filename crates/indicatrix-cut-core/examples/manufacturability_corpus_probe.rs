@@ -360,6 +360,7 @@ fn genuine_meet_design(schedule: &indicatrix_formats::asc::AscSchedule) -> Desig
             indices: input.indices,
             constraint: input.constraint,
             imported_meet: None,
+            original_notes: None,
             detached: Vec::new(),
         })
         .collect();

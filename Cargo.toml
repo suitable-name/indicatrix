@@ -10,7 +10,7 @@ members = ["crates/indicatrix", "crates/indicatrix-net", "crates/indicatrix-form
 # connected by `indicatrix-net`'s wire protocol.
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.2"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Suitable-Name"]
@@ -73,8 +73,8 @@ socket2 = { version = "0.6.5", features = ["all"] }
 # see that comment. Each member re-declares the feature set it actually wants:
 # `apps/indicatrix-cut` names slint's own defaults verbatim (unchanged behaviour),
 # `apps/indicatrix-web` names the trimmed wasm set.
-slint = { version = "1.17.1", default-features = false }
-slint-build = "1.17.1"
+slint = { version = "1.18.0", default-features = false }
+slint-build = "1.18.0"
 # `rcgen::CertificateParams::not_before`/`not_after` are `time::OffsetDateTime` --
 # needed directly (not re-exported by `rcgen`) to set certificate validity windows,
 # including the clock-skew backdating in `pki::not_before_with_skew_slack`.
@@ -94,11 +94,11 @@ wgpu = { version = "30.0.1", default-features = false }
 winresource = "0.1.31"
 
 # Workspace members
-indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.2.0" }
-indicatrix = { path = "crates/indicatrix", version = "0.2.0" }
-indicatrix-net = { path = "crates/indicatrix-net", version = "0.2.0" }
-indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.2.0" }
-indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.2.0" }
+indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.3.2" }
+indicatrix = { path = "crates/indicatrix", version = "0.3.2" }
+indicatrix-net = { path = "crates/indicatrix-net", version = "0.3.2" }
+indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.3.2" }
+indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.3.2" }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

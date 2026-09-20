@@ -26,5 +26,6 @@ mod history;
 #[cfg(test)]
 mod tests;
 
+pub use apply::remap_ratio;
 pub use edit_type::{Edit, EditError, RemapRounding};
 pub use history::History;

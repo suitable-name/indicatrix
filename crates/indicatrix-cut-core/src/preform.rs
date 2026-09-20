@@ -141,6 +141,43 @@ impl PreformSpec {
         planes.push((DVec3::NEG_Y, half_depth));
         planes
     }
+
+    /// [`Self::planes`], but with the rough's vertical (`y`) span shifted by
+    /// `y_offset` instead of always centred at the origin.
+    ///
+    /// A real piece of rough is rarely centred on the girdle a cutter plans to
+    /// cut into it -- "the girdle should sit 2 mm below the top of this
+    /// stone" is an offset, not a dimension [`PreformSpec`]'s own fields carry
+    /// (see the module docs: every existing plane always spans
+    /// `[-depth/2, +depth/2]`). This is the pure geometry half of that:
+    /// `y_offset > 0.0` raises the whole rough (moves both the `+Y` and `-Y`
+    /// planes up), `y_offset < 0.0` lowers it, in the same mast-unit
+    /// convention [`Self::planes`] uses.
+    ///
+    /// [`PreformSpec`] itself carries no offset field -- adding one is a
+    /// breaking change to every existing struct-literal construction site
+    /// (`crates/indicatrix-cut-core/src/native/convert.rs`'s
+    /// `preform_spec_from_table`, in particular, builds a full literal with
+    /// no `..Default::default()`), several of which sit in files this pass
+    /// does not own. A caller that wants a *persistent* per-design offset
+    /// should store it alongside `girdle_diameter_mm` on
+    /// [`crate::design::Design`] instead (see this crate's hand-off notes)
+    /// and pass it through here at every [`Self::planes`] call site
+    /// (`crate::design::export`'s `planes`/`planes_from_solved`) rather than
+    /// widening this struct.
+    #[must_use]
+    pub fn planes_offset(&self, y_offset: f64) -> Vec<(DVec3, f64)> {
+        let half_depth = self.depth * 0.5;
+        let mut planes = self.planes();
+        // `Self::planes` always pushes the `+Y` plane then the `-Y` plane
+        // last, regardless of `shape` -- see its own body. Indexing from the
+        // end avoids a float-equality comparison against `DVec3::Y`/`NEG_Y`
+        // to find them.
+        let len = planes.len();
+        planes[len - 2].1 = half_depth + y_offset;
+        planes[len - 1].1 = half_depth - y_offset;
+        planes
+    }
 }
 
 #[cfg(test)]
@@ -207,6 +244,26 @@ mod tests {
             "{}",
             metrics.length_axis
         );
+    }
+
+    /// `planes_offset` must shift the rough's vertical span without changing
+    /// its total depth or horizontal extents, and `y_offset == 0.0` must
+    /// match `planes` exactly.
+    #[test]
+    fn planes_offset_shifts_the_vertical_span_only() {
+        let preform = PreformSpec::block(1.0, 1.5, 0.8);
+        assert_eq!(preform.planes_offset(0.0), preform.planes());
+
+        let shifted = preform.planes_offset(0.3);
+        let metrics = measure_solid(&shifted).expect("shifted block must still close");
+        assert!((metrics.total_height - 0.8).abs() < 1e-9);
+        assert!((metrics.width_axis - 2.0).abs() < 1e-9);
+        assert!((metrics.length_axis - 3.0).abs() < 1e-9);
+
+        // Shifting up by 0.3 must move both the top and bottom by 0.3.
+        let unshifted_top = measure_solid(&preform.planes()).unwrap().total_height / 2.0;
+        assert!((shifted[shifted.len() - 2].1 - (unshifted_top + 0.3)).abs() < 1e-9);
+        assert!((shifted[shifted.len() - 1].1 - (unshifted_top - 0.3)).abs() < 1e-9);
     }
 
     /// A degenerate side count (0, 1, 2) must be clamped up to a valid

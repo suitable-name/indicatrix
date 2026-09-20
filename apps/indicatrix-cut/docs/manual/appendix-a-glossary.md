@@ -95,6 +95,10 @@ example, a cylinder).
 light, expressed as n at a reference wavelength (this manual, like the
 app's render materials, uses the sodium D line, 589.3nm, written n_D).
 
+**Retarget** — The command bar's automated proposal for adapting a
+design's pavilion and crown angles to a different material, reviewed in a
+dialog before anything is applied (Chapter 6).
+
 **Scintillation** — The percentage measure of sparkle as light and stone
 move relative to each other; one of the app's optical performance
 readouts.

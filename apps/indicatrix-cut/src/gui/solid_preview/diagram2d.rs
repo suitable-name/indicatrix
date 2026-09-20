@@ -71,8 +71,23 @@ const NORMAL_EPS: f32 = 1e-3;
 const HATCH_PERIOD: i32 = 6;
 
 /// A facet's projected on-screen span (in either axis) must be at least this many
-/// pixels before [`render_diagram`] bothers drawing its tier-name label.
-const MIN_LABEL_SPAN: f32 = 22.0;
+/// pixels before [`draw_panel_labels`] draws its label directly ON the facet.
+/// Lowered from the original `22.0` (CAD audit item 28): at the crown/pavilion
+/// body radius typical of an 8-fold design in a ~700px-wide viewport, almost every
+/// facet fell under the old threshold, so the diagram showed almost no labels at
+/// all. A facet still too small for this gets a leader line instead (see
+/// [`LEADER_LINE_MIN_SPAN`]) rather than being dropped silently.
+const MIN_LABEL_SPAN: f32 = 10.0;
+
+/// Below this on-screen span (in either axis) a facet is too small even to anchor
+/// a leader line legibly -- a near-zero-area sliver -- so [`draw_panel_labels`]
+/// drops its label entirely, same as before item 28's fix. Facets between this and
+/// [`MIN_LABEL_SPAN`] get a leader line rather than nothing.
+const LEADER_LINE_MIN_SPAN: f32 = 2.5;
+
+/// Leader-line length in pixels, radiating from a too-small facet's centroid away
+/// from the panel center, with the label drawn at its far end -- CAD audit item 28.
+const LEADER_LINE_LENGTH: f32 = 22.0;
 
 /// A facet is drawn top-facing (crown) when its normal points enough toward `+Y`
 /// to not be considered edge-on. See this module's doc comment.
@@ -149,6 +164,17 @@ pub struct DiagramConfig {
     pub height: u32,
     pub gear_teeth: u32,
     pub gear_reference_angle: f32,
+    /// The schedule's own rotational symmetry order (`ScheduleMeta::
+    /// symmetry_order`) -- P1 item 29's symmetry-line overlay draws this many
+    /// evenly spaced radial guides on the crown/pavilion panels. `1` (or `0`,
+    /// treated the same) draws none: a design with no rotational symmetry has
+    /// no sector lines to show.
+    pub symmetry_order: u32,
+    /// The schedule's own mirror flag (`ScheduleMeta::mirror`) -- when set,
+    /// P1 item 29's overlay also draws the mirror axis (through index 0, the
+    /// same "up" direction on every panel per this module's own doc comment)
+    /// in its own distinct color.
+    pub mirror: bool,
 }
 
 /// Everything [`render_diagram`] needs beyond the mesh/config to style and label
@@ -162,9 +188,21 @@ pub struct DiagramConfig {
 pub struct DiagramStyle {
     pub base_color: [u8; 3],
     pub edge_color: [u8; 3],
+    /// Matches `raster::SolidStyle::pending_color` / `ui/theme.slint`'s
+    /// `accent-amber` -- see that field's doc comment.
     pub pending_color: [u8; 3],
     pub hatch_color: [u8; 3],
+    /// Matches `raster::SolidStyle::selected_color` / `ui/theme.slint`'s `primary`
+    /// -- see that field's doc comment.
     pub selected_color: [u8; 3],
+    /// Matches `raster::SolidStyle::hover_color` -- see that field's doc comment.
+    pub hover_color: [u8; 3],
+    /// Matches `raster::SolidStyle::selected_facet_color` -- see that field's doc
+    /// comment.
+    pub selected_facet_color: [u8; 3],
+    /// Matches `raster::SolidStyle::multi_selected_color` -- see that field's doc
+    /// comment.
+    pub multi_selected_color: [u8; 3],
     pub background: [u8; 4],
     pub flagged: Vec<bool>,
     pub pending: Vec<bool>,
@@ -172,6 +210,38 @@ pub struct DiagramStyle {
     /// Facet id -> short on-diagram label (`facet_map::FacetMap::facet_label`,
     /// typically the tier name); empty string suppresses the label.
     pub facet_labels: Vec<String>,
+    /// Matches `raster::SolidStyle::hovered` -- see that field's doc comment (#20).
+    pub hovered: Option<u32>,
+    /// Matches `raster::SolidStyle::selected_facet` -- see that field's doc comment
+    /// (#18).
+    pub selected_facet: Option<u32>,
+    /// Matches `raster::SolidStyle::multi_selected` -- see that field's doc comment
+    /// (#19).
+    pub multi_selected: Vec<u32>,
+    /// Facet id -> index-wheel tooth (`facet_map::FacetMap::index_on_gear`), for
+    /// #121's radial-line pass: whenever a facet on a crown/pavilion panel is
+    /// selected/hovered/multi-selected, a line is drawn from the panel centre
+    /// through this tooth, linking the facet on screen to its own position on
+    /// the index wheel. Unset (default empty) entries simply draw no radial.
+    pub facet_index_on_gear: Vec<u32>,
+    /// Facet-id pairs to mark with a meet-point dot on the crown/pavilion panels
+    /// (P1 item 29): `facet_map::FacetMap::meeting_facet_pairs`' output. Resolved
+    /// to actual world-space points by [`meet_marker_points`] against the SAME
+    /// mesh `render_diagram` is already drawing, since `facet_meets` only names
+    /// tiers, not geometry -- see that function's own doc comment.
+    pub meet_marker_pairs: Vec<(u32, u32)>,
+    /// Marker color for a resolved meet point (P1 item 29) -- deliberately
+    /// distinct from every edge/selection color so it reads as its own kind of
+    /// annotation rather than another highlight.
+    pub meet_marker_color: [u8; 3],
+    /// Radial-guide color for `DiagramConfig::symmetry_order`'s sector lines
+    /// (P1 item 29) -- muted, since these are a background reference, not a
+    /// highlight.
+    pub symmetry_line_color: [u8; 3],
+    /// Axis color for `DiagramConfig::mirror`'s mirror line (P1 item 29) --
+    /// distinct from `symmetry_line_color` so a mirrored design's own axis
+    /// still stands out among the ordinary sector guides.
+    pub mirror_line_color: [u8; 3],
 }
 
 impl Default for DiagramStyle {
@@ -179,14 +249,25 @@ impl Default for DiagramStyle {
         Self {
             base_color: [200, 205, 215],
             edge_color: [30, 32, 38],
-            pending_color: [235, 170, 40],
+            pending_color: [245, 158, 11],
             hatch_color: [90, 40, 40],
-            selected_color: [70, 160, 235],
+            selected_color: [59, 130, 246],
+            hover_color: [226, 232, 240],
+            selected_facet_color: [168, 85, 247],
+            multi_selected_color: [56, 189, 248],
             background: [12, 14, 20, 255],
             flagged: Vec::new(),
             pending: Vec::new(),
             selected: Vec::new(),
             facet_labels: Vec::new(),
+            hovered: None,
+            selected_facet: None,
+            multi_selected: Vec::new(),
+            facet_index_on_gear: Vec::new(),
+            meet_marker_pairs: Vec::new(),
+            meet_marker_color: [250, 250, 250],
+            symmetry_line_color: [70, 74, 84],
+            mirror_line_color: [45, 212, 191],
         }
     }
 }
@@ -207,6 +288,19 @@ pub struct DiagramFrame {
     pub(crate) pick: Vec<u32>,
     /// Which panel a pixel's fill came from (0 = none) -- see [`Self::panel_at`].
     panel: Vec<u8>,
+    /// `tooth + 1` per pixel within an index-wheel tick's hit region, `0`
+    /// elsewhere -- see [`Self::tooth_at`]. #121: a wheel tick is 1px wide, an
+    /// unusably small click/hover target, so [`draw_index_wheel`] tags a small
+    /// box around each tick's midpoint here rather than relying on the 1px
+    /// stroke itself.
+    ///
+    /// `pub(crate)` (like [`Self::pick`]) so `preview_state` can lift it
+    /// straight into a [`super::preview_state::PickBuffer`] -- its `+1`/`0`
+    /// encoding is bit-for-bit the same convention `PickBuffer::facet_at`
+    /// already reads, so this buffer is threaded through as one without a
+    /// second accessor type (#121, `cad_todo.md` item 121's remaining half:
+    /// "thread a tooth pick buffer alongside the existing facet pick buffer").
+    pub(crate) tooth: Vec<u32>,
     /// View-space depth of the closest fill written to each pixel so far, within
     /// that pixel's own panel (panels never share a clip rect, so cross-panel
     /// depth comparisons never happen even though the depth CONVENTION differs
@@ -229,6 +323,7 @@ impl DiagramFrame {
             color,
             pick: vec![0u32; n],
             panel: vec![0u8; n],
+            tooth: vec![0u32; n],
             depth: vec![f32::INFINITY; n],
         }
     }
@@ -255,6 +350,20 @@ impl DiagramFrame {
             return None;
         }
         PanelKind::from_tag(self.panel[(y * self.width + x) as usize])
+    }
+
+    /// The index-wheel tooth whose hit region covers pixel `(x, y)`, or `None`
+    /// well outside every tick (see [`Self::tooth`]'s own doc comment for the hit
+    /// region's size). #121: exposed so a caller (`gui::solid_preview::
+    /// diagram_wiring`) can turn a hover/click over the wheel into "which tooth",
+    /// exactly like [`Self::pick_at`] already does for a facet.
+    #[must_use]
+    pub fn tooth_at(&self, x: u32, y: u32) -> Option<u32> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        let v = self.tooth[(y * self.width + x) as usize];
+        (v != 0).then(|| v - 1)
     }
 
     const fn idx(&self, x: i32, y: i32) -> Option<usize> {
@@ -339,10 +448,11 @@ fn facet_normals(mesh: &SolidMesh) -> Vec<Option<DVec3>> {
     facet_normal
 }
 
-/// Computes the three panels' fixed pixel layout from the mesh's own extent.
-/// Falls back to a unit-scale layout for an empty mesh so a caller never has to
-/// special-case "nothing to draw yet".
-fn compute_layout(mesh: &SolidMesh, width: u32, height: u32) -> [PanelLayout; 3] {
+/// A mesh's own `(xz_radius, profile_radius)` -- the world-space radii
+/// [`build_panel_layout`] scales the crown/pavilion and profile panels against,
+/// shared between [`compute_layout`] (three columns) and
+/// [`compute_single_panel_layout`] (#29, one column spanning the whole frame).
+fn mesh_radii(mesh: &SolidMesh) -> (f32, f32) {
     let (mut min_x, mut max_x, mut min_y, mut max_y) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
     let mut xz_radius = 1e-6f64;
     for p in &mesh.positions {
@@ -354,42 +464,100 @@ fn compute_layout(mesh: &SolidMesh, width: u32, height: u32) -> [PanelLayout; 3]
     }
     let half_w = ((max_x - min_x) / 2.0).max(1e-6);
     let half_h = ((max_y - min_y) / 2.0).max(1e-6);
-    let profile_radius = half_w.max(half_h) as f32;
-    let xz_radius = xz_radius as f32;
+    (xz_radius as f32, half_w.max(half_h) as f32)
+}
 
+/// The column/row geometry every [`PanelLayout`] in a frame shares --
+/// [`grid_metrics`] computes it once for `columns` equal-width columns spanning
+/// the whole frame (`3` for [`compute_layout`], `1` for #29's
+/// [`compute_single_panel_layout`]).
+struct GridMetrics {
+    col_width: f32,
+    panel_box: f32,
+    center_y: f32,
+}
+
+fn grid_metrics(width: u32, height: u32, columns: u32) -> GridMetrics {
     let (width_f, height_f) = (width as f32, height as f32);
-    let col_width = width_f / 3.0;
+    let col_width = width_f / columns.max(1) as f32;
     let caption_height = (height_f * 0.06).clamp(10.0, 20.0);
     let avail_height = (height_f - caption_height).max(1.0);
-    let panel_box = col_width.min(avail_height);
-    let center_y = caption_height + avail_height / 2.0;
+    GridMetrics {
+        col_width,
+        panel_box: col_width.min(avail_height),
+        center_y: caption_height + avail_height / 2.0,
+    }
+}
 
-    let make = |index: usize, kind: PanelKind, world_radius: f32, body_frac: f32| {
-        let center_x = (index as f32).mul_add(col_width, col_width / 2.0);
-        let wheel_radius_px = panel_box / 2.0 * 0.86;
-        let body_radius_px = panel_box / 2.0 * body_frac;
-        let scale = body_radius_px / world_radius.max(1e-6);
-        let clip = (
-            (index as f32 * col_width).floor() as i32,
-            0,
-            ((index as f32 + 1.0) * col_width).ceil() as i32 - 1,
-            height as i32 - 1,
-        );
-        PanelLayout {
-            kind,
-            center_x,
-            center_y,
-            scale,
-            wheel_radius_px,
-            clip,
-        }
-    };
+/// Builds one panel's [`PanelLayout`] at column `index` within `metrics`' grid.
+fn build_panel_layout(
+    metrics: &GridMetrics,
+    index: usize,
+    kind: PanelKind,
+    world_radius: f32,
+    body_frac: f32,
+    height: u32,
+) -> PanelLayout {
+    let center_x = (index as f32).mul_add(metrics.col_width, metrics.col_width / 2.0);
+    let wheel_radius_px = metrics.panel_box / 2.0 * 0.86;
+    let body_radius_px = metrics.panel_box / 2.0 * body_frac;
+    let scale = body_radius_px / world_radius.max(1e-6);
+    let clip = (
+        (index as f32 * metrics.col_width).floor() as i32,
+        0,
+        ((index as f32 + 1.0) * metrics.col_width).ceil() as i32 - 1,
+        height as i32 - 1,
+    );
+    PanelLayout {
+        kind,
+        center_x,
+        center_y: metrics.center_y,
+        scale,
+        wheel_radius_px,
+        clip,
+    }
+}
 
+/// Computes the three panels' fixed pixel layout from the mesh's own extent.
+/// Falls back to a unit-scale layout for an empty mesh so a caller never has to
+/// special-case "nothing to draw yet".
+fn compute_layout(mesh: &SolidMesh, width: u32, height: u32) -> [PanelLayout; 3] {
+    let (xz_radius, profile_radius) = mesh_radii(mesh);
+    let metrics = grid_metrics(width, height, 3);
     [
-        make(0, PanelKind::Crown, xz_radius, 0.62),
-        make(1, PanelKind::Pavilion, xz_radius, 0.62),
-        make(2, PanelKind::Profile, profile_radius, 0.85),
+        build_panel_layout(&metrics, 0, PanelKind::Crown, xz_radius, 0.62, height),
+        build_panel_layout(&metrics, 1, PanelKind::Pavilion, xz_radius, 0.62, height),
+        build_panel_layout(
+            &metrics,
+            2,
+            PanelKind::Profile,
+            profile_radius,
+            0.85,
+            height,
+        ),
     ]
+}
+
+/// #29's single-panel counterpart to [`compute_layout`]: one column spanning
+/// the WHOLE frame width instead of a third of it, for [`render_diagram_single_panel`]'s
+/// "enlarge this panel" mode. Deliberately a fresh layout computation rather than
+/// a crop of [`compute_layout`]'s output -- cropping would enlarge the panel's
+/// PIXELS without changing its `scale`, leaving the facet body just as small
+/// relative to the (now much bigger) available column as it was in the
+/// three-column layout, defeating the point of "enlarge".
+fn compute_single_panel_layout(
+    mesh: &SolidMesh,
+    width: u32,
+    height: u32,
+    kind: PanelKind,
+) -> PanelLayout {
+    let (xz_radius, profile_radius) = mesh_radii(mesh);
+    let (world_radius, body_frac) = match kind {
+        PanelKind::Crown | PanelKind::Pavilion => (xz_radius, 0.62),
+        PanelKind::Profile => (profile_radius, 0.85),
+    };
+    let metrics = grid_metrics(width, height, 1);
+    build_panel_layout(&metrics, 0, kind, world_radius, body_frac, height)
 }
 
 /// Renders `mesh` into a three-panel [`DiagramFrame`] per this module's doc
@@ -409,7 +577,16 @@ pub fn render_diagram(
     }
     let layouts = compute_layout(mesh, config.width, config.height);
     let facet_normal = facet_normals(mesh);
-    let gear_teeth = config.gear_teeth.max(1);
+    let wheel = WheelConfig {
+        gear_teeth: config.gear_teeth.max(1),
+        gear_reference_angle: config.gear_reference_angle,
+        symmetry_order: config.symmetry_order,
+        mirror: config.mirror,
+    };
+    // #29: resolved once, panel-agnostic -- `render_panel` below only needs to
+    // filter by which side of the girdle a point falls on, not recompute it.
+    let marker_points =
+        meet_marker_points(mesh, &style.meet_marker_pairs, mesh_diagonal(mesh) * 1e-4);
 
     let mut dedup_scratch: Vec<DVec3> = Vec::new();
     let mut ring_scratch: Vec<DVec3> = Vec::new();
@@ -420,15 +597,89 @@ pub fn render_diagram(
             mesh,
             layout,
             &facet_normal,
-            gear_teeth,
-            config.gear_reference_angle,
+            wheel,
             style,
             &mut dedup_scratch,
             &mut ring_scratch,
+            &marker_points,
         );
     }
 
     frame
+}
+
+/// #29's "enlarge this panel" mode: renders `mesh` as a SINGLE panel filling the
+/// whole frame.
+///
+/// Everything else matches [`render_diagram`]'s fixed three-column layout: the same
+/// style, the same meet-marker and index-radial passes, and the same pick, panel and
+/// tooth buffer contract. `gui::solid_preview::diagram_wiring`'s hover and click
+/// callbacks therefore work against a frame from either function identically, since
+/// both go through the same [`render_panel`] into the same [`DiagramFrame`].
+#[must_use]
+pub fn render_diagram_single_panel(
+    mesh: &SolidMesh,
+    config: &DiagramConfig,
+    style: &DiagramStyle,
+    panel: PanelKind,
+) -> DiagramFrame {
+    let mut frame = DiagramFrame::blank(config.width, config.height, style.background);
+    if config.width == 0 || config.height == 0 {
+        return frame;
+    }
+    let layout = compute_single_panel_layout(mesh, config.width, config.height, panel);
+    let facet_normal = facet_normals(mesh);
+    let wheel = WheelConfig {
+        gear_teeth: config.gear_teeth.max(1),
+        gear_reference_angle: config.gear_reference_angle,
+        symmetry_order: config.symmetry_order,
+        mirror: config.mirror,
+    };
+    let marker_points =
+        meet_marker_points(mesh, &style.meet_marker_pairs, mesh_diagonal(mesh) * 1e-4);
+
+    let mut dedup_scratch: Vec<DVec3> = Vec::new();
+    let mut ring_scratch: Vec<DVec3> = Vec::new();
+    render_panel(
+        &mut frame,
+        mesh,
+        &layout,
+        &facet_normal,
+        wheel,
+        style,
+        &mut dedup_scratch,
+        &mut ring_scratch,
+        &marker_points,
+    );
+    frame
+}
+
+/// The mesh's own bounding-box diagonal, in world units -- the scale
+/// [`meet_marker_points`]'s vertex-matching tolerance is fractioned from
+/// (mirrors [`simplify_ring`]'s own scale-relative merge tolerance). `1e-6` for
+/// an empty mesh so a zero tolerance never turns into "everything matches".
+fn mesh_diagonal(mesh: &SolidMesh) -> f64 {
+    let Some(&first) = mesh.positions.first() else {
+        return 1e-6;
+    };
+    let (mut lo, mut hi) = (first, first);
+    for &p in &mesh.positions {
+        lo = lo.min(p);
+        hi = hi.max(p);
+    }
+    (hi - lo).length().max(1e-6)
+}
+
+/// The index-wheel/symmetry parameters every panel draw needs, bundled purely
+/// so [`render_panel`]'s own parameter list doesn't keep growing every time a
+/// new wheel-relative overlay (P1 item 29's symmetry/mirror lines, on top of
+/// the index wheel itself) needs another `DiagramConfig` field mirrored down.
+#[derive(Debug, Clone, Copy)]
+struct WheelConfig {
+    gear_teeth: u32,
+    gear_reference_angle: f32,
+    symmetry_order: u32,
+    mirror: bool,
 }
 
 /// One panel's whole draw pass: caption, index wheel, facet fill/edges, labels --
@@ -444,11 +695,11 @@ fn render_panel(
     mesh: &SolidMesh,
     layout: &PanelLayout,
     facet_normal: &[Option<DVec3>],
-    gear_teeth: u32,
-    gear_reference_angle: f32,
+    wheel: WheelConfig,
     style: &DiagramStyle,
     dedup_scratch: &mut Vec<DVec3>,
     ring_scratch: &mut Vec<DVec3>,
+    marker_points: &[DVec3],
 ) {
     let (cap_w, _) = text_size(layout.kind.caption(), 1);
     draw_text(
@@ -462,11 +713,12 @@ fn render_panel(
     );
 
     if layout.kind.has_index_wheel() {
+        draw_symmetry_and_mirror_lines(frame, layout, wheel, style);
         draw_index_wheel(
             frame,
             layout,
-            gear_teeth,
-            gear_reference_angle,
+            wheel.gear_teeth,
+            wheel.gear_reference_angle,
             style.edge_color,
         );
     }
@@ -494,6 +746,35 @@ fn render_panel(
         fill_panel_facets(frame, &fill_ctx, dedup_scratch, ring_scratch);
     draw_panel_edges(frame, layout, style, &edge_points, &edge_ranges);
     draw_panel_labels(frame, layout, style, label_spots);
+
+    if layout.kind.has_index_wheel() {
+        draw_selected_index_radials(
+            frame,
+            layout,
+            wheel.gear_teeth,
+            wheel.gear_reference_angle,
+            style,
+            &edge_ranges,
+        );
+    }
+
+    // #29: meet-point markers -- crown-side points on the crown panel,
+    // pavilion-side points on the pavilion panel (a profile panel shows no
+    // index-wheel-relative content and is skipped, same set as the radials
+    // above). See `meet_marker_points`'s own doc comment for how a point here
+    // was resolved from `DiagramStyle::meet_marker_pairs`.
+    let on_this_panel: fn(f64) -> bool = match layout.kind {
+        PanelKind::Crown => |y| y >= 0.0,
+        PanelKind::Pavilion => |y| y <= 0.0,
+        PanelKind::Profile => |_| false,
+    };
+    for &point in marker_points {
+        if !on_this_panel(point.y) {
+            continue;
+        }
+        let screen = project(point, layout);
+        draw_meet_marker(frame, screen, style.meet_marker_color, layout.clip);
+    }
 }
 
 /// The immutable per-panel context [`fill_panel_facets`] needs, bundled purely to
@@ -573,9 +854,33 @@ fn fill_panel_facets(
     (edge_points, edge_ranges, label_spots)
 }
 
+/// Which of [`draw_panel_edges`]'s ordered passes an edge segment belongs to --
+/// mirrors `raster::EdgePass` exactly (see that type's doc comment for why later
+/// passes must win a shared edge, and for the pass ordering rationale).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EdgePass {
+    /// None of the below: the plain `edge_color`, drawn first.
+    Ordinary,
+    /// The one facet named in `style.hovered` (#20).
+    Hovered,
+    /// A facet listed in `style.multi_selected` (#19), not otherwise highlighted.
+    MultiSelected,
+    /// `selected` (a whole tier) and not otherwise highlighted.
+    Selected,
+    /// The one facet named in `style.selected_facet` (#18).
+    SelectedFacet,
+    /// `pending`: drawn last, so it wins over every other pass too.
+    Pending,
+}
+
 /// The edge-draw pass of [`render_panel`]'s "two passes" scheme -- see
 /// [`fill_panel_facets`]'s doc comment. Split out of `render_panel` purely to keep
 /// that function under clippy's function-length lint.
+///
+/// Draws in [`EdgePass`]'s six ordered sub-passes rather than once per facet, and
+/// every highlighted sub-pass uses a wider stroke, so a highlighted facet's
+/// boundary reads as a clean, intentional outline instead of being
+/// half-overpainted by a neighbouring ordinary facet's dark edge.
 fn draw_panel_edges(
     frame: &mut DiagramFrame,
     layout: &PanelLayout,
@@ -583,18 +888,53 @@ fn draw_panel_edges(
     edge_points: &[(f32, f32, f32)],
     edge_ranges: &[(usize, usize, usize)],
 ) {
-    for &(facet_id, start, count) in edge_ranges {
-        let edge_color = if style.pending.get(facet_id).copied().unwrap_or(false) {
-            style.pending_color
-        } else if style.selected.get(facet_id).copied().unwrap_or(false) {
-            style.selected_color
-        } else {
-            style.edge_color
-        };
-        let pts = &edge_points[start..start + count];
-        for (i, &a) in pts.iter().enumerate() {
-            let b = pts[(i + 1) % count];
-            draw_edge(frame, a, b, edge_color, layout.clip);
+    let is_selected = |facet_id: usize| style.selected.get(facet_id).copied().unwrap_or(false);
+    let is_pending = |facet_id: usize| style.pending.get(facet_id).copied().unwrap_or(false);
+    let is_hovered = |facet_id: usize| style.hovered == Some(facet_id as u32);
+    let is_selected_facet = |facet_id: usize| style.selected_facet == Some(facet_id as u32);
+    let is_multi_selected = |facet_id: usize| style.multi_selected.contains(&(facet_id as u32));
+
+    for pass in [
+        EdgePass::Ordinary,
+        EdgePass::Hovered,
+        EdgePass::MultiSelected,
+        EdgePass::Selected,
+        EdgePass::SelectedFacet,
+        EdgePass::Pending,
+    ] {
+        for &(facet_id, start, count) in edge_ranges {
+            let selected = is_selected(facet_id);
+            let pending = is_pending(facet_id);
+            let hovered = is_hovered(facet_id);
+            let selected_facet = is_selected_facet(facet_id);
+            let multi_selected = is_multi_selected(facet_id);
+            let highlighted = selected || pending || hovered || selected_facet;
+            let (draw_this_pass, color, width) = match pass {
+                EdgePass::Ordinary => (!highlighted && !multi_selected, style.edge_color, 1),
+                EdgePass::Hovered => (hovered && !pending && !selected_facet, style.hover_color, 2),
+                EdgePass::MultiSelected => (
+                    multi_selected && !selected && !pending && !selected_facet,
+                    style.multi_selected_color,
+                    2,
+                ),
+                EdgePass::Selected => (
+                    selected && !pending && !selected_facet,
+                    style.selected_color,
+                    2,
+                ),
+                EdgePass::SelectedFacet => {
+                    (selected_facet && !pending, style.selected_facet_color, 3)
+                }
+                EdgePass::Pending => (pending, style.pending_color, 2),
+            };
+            if !draw_this_pass {
+                continue;
+            }
+            let pts = &edge_points[start..start + count];
+            for (i, &a) in pts.iter().enumerate() {
+                let b = pts[(i + 1) % count];
+                draw_edge(frame, a, b, color, layout.clip, width);
+            }
         }
     }
 }
@@ -610,7 +950,7 @@ fn draw_panel_labels(
     label_spots: Vec<(usize, f32, f32, f32, f32)>,
 ) {
     for (facet_id, cx, cy, w, h) in label_spots {
-        if w < MIN_LABEL_SPAN || h < MIN_LABEL_SPAN {
+        if w < LEADER_LINE_MIN_SPAN || h < LEADER_LINE_MIN_SPAN {
             continue;
         }
         let Some(label) = style.facet_labels.get(facet_id) else {
@@ -619,17 +959,47 @@ fn draw_panel_labels(
         if label.is_empty() {
             continue;
         }
-        let visible_here = frame
-            .idx(cx.round() as i32, cy.round() as i32)
-            .is_some_and(|idx| frame.pick[idx] == facet_id as u32 + 1);
-        if !visible_here {
+        let Some(idx) = frame.idx(cx.round() as i32, cy.round() as i32) else {
+            continue;
+        };
+        if frame.pick[idx] != facet_id as u32 + 1 {
             continue;
         }
+
+        // Too small to hold the label directly on the facet (CAD audit item 28):
+        // draw a short leader line radiating away from the panel center instead of
+        // dropping the label, so a cutter can still trace it back to its facet.
+        // Reuses the facet's own depth so the leader is occluded by anything truly
+        // in front of it but always wins against the (f32::INFINITY) background.
+        let (label_cx, label_cy) = if w < MIN_LABEL_SPAN || h < MIN_LABEL_SPAN {
+            let (dir_x, dir_y) = {
+                let (dx, dy) = (cx - layout.center_x, cy - layout.center_y);
+                let dist = dx.hypot(dy).max(1e-3);
+                (dx / dist, dy / dist)
+            };
+            let leader_end = (
+                dir_x.mul_add(LEADER_LINE_LENGTH, cx),
+                dir_y.mul_add(LEADER_LINE_LENGTH, cy),
+            );
+            let depth_here = frame.depth[idx];
+            draw_edge(
+                frame,
+                (cx, cy, depth_here),
+                (leader_end.0, leader_end.1, depth_here),
+                style.edge_color,
+                layout.clip,
+                1,
+            );
+            leader_end
+        } else {
+            (cx, cy)
+        };
+
         let (label_w, label_h) = text_size(label, 1);
         draw_text(
             frame,
-            cx - label_w as f32 / 2.0,
-            cy - label_h as f32 / 2.0,
+            label_cx - label_w as f32 / 2.0,
+            label_cy - label_h as f32 / 2.0,
             label,
             1,
             style.edge_color,
@@ -741,7 +1111,9 @@ fn fill_polygon(
 
     let flagged = style.flagged.get(facet_id).copied().unwrap_or(false);
     let selected = style.selected.get(facet_id).copied().unwrap_or(false);
-    let selected_fill = selected.then(|| blend_toward(color, style.selected_color, 0.35));
+    // Raised from an earlier 35% -- see `raster::SolidRasterizer::
+    // fill_convex_polygon`'s matching comment.
+    let selected_fill = selected.then(|| blend_toward(color, style.selected_color, 0.58));
 
     for py in row_start..=row_end {
         let sy = py as f32 + 0.5;
@@ -792,9 +1164,10 @@ fn fill_polygon(
     }
 }
 
-/// Draws one 1px edge segment, depth-tested against the fill pass -- see
-/// `raster::SolidRasterizer::draw_edge`'s doc comment for [`EDGE_DEPTH_BIAS`]'s
-/// purpose, reused here at the same value.
+/// Draws one edge segment `width` pixels wide (`1` for an ordinary facet
+/// boundary, `2` for a `selected`/`pending` highlight -- see [`draw_panel_edges`]),
+/// depth-tested against the fill pass -- see `raster::SolidRasterizer::draw_edge`'s
+/// doc comment for [`EDGE_DEPTH_BIAS`]'s purpose, reused here at the same value.
 const EDGE_DEPTH_BIAS: f32 = 5e-2;
 
 fn draw_edge(
@@ -803,6 +1176,7 @@ fn draw_edge(
     to: (f32, f32, f32),
     color: [u8; 3],
     clip: (i32, i32, i32, i32),
+    width: i32,
 ) {
     let (x0, y0, d0) = (from.0.round() as i32, from.1.round() as i32, from.2);
     let (x1, y1, d1) = (to.0.round() as i32, to.1.round() as i32, to.2);
@@ -816,19 +1190,14 @@ fn draw_edge(
     let mut err = dx + dy;
     let mut step = 0;
     loop {
-        if cx >= clip.0 && cy >= clip.1 && cx <= clip.2 && cy <= clip.3 {
-            let frac = step as f32 / steps_total as f32;
-            let depth = (1.0 - frac).mul_add(d0, frac * d1);
-            if let Some(idx) = frame.idx(cx, cy) {
-                let current = frame.depth[idx];
-                if depth <= current + EDGE_DEPTH_BIAS {
-                    let offset = idx * 4;
-                    frame.color[offset] = color[0];
-                    frame.color[offset + 1] = color[1];
-                    frame.color[offset + 2] = color[2];
-                    frame.color[offset + 3] = 255;
-                }
-            }
+        let frac = step as f32 / steps_total as f32;
+        let depth = (1.0 - frac).mul_add(d0, frac * d1);
+        try_paint_edge_pixel(frame, cx, cy, depth, color, clip);
+        // A broadened brush for the priority passes -- see `raster::
+        // SolidRasterizer::draw_edge`'s matching comment.
+        if width >= 2 {
+            try_paint_edge_pixel(frame, cx + 1, cy, depth, color, clip);
+            try_paint_edge_pixel(frame, cx, cy + 1, depth, color, clip);
         }
         if cx == x1 && cy == y1 {
             break;
@@ -843,6 +1212,33 @@ fn draw_edge(
             cy += sy;
         }
         step += 1;
+    }
+}
+
+/// Paints one edge pixel at `(x, y)` with `color` when inside `clip` and `depth`
+/// passes [`EDGE_DEPTH_BIAS`]'s slack against the fill pass -- the single-pixel
+/// primitive [`draw_edge`]'s Bresenham walk (and its width-2 broadening) both go
+/// through.
+fn try_paint_edge_pixel(
+    frame: &mut DiagramFrame,
+    x: i32,
+    y: i32,
+    depth: f32,
+    color: [u8; 3],
+    clip: (i32, i32, i32, i32),
+) {
+    if x < clip.0 || y < clip.1 || x > clip.2 || y > clip.3 {
+        return;
+    }
+    let Some(idx) = frame.idx(x, y) else {
+        return;
+    };
+    if depth <= frame.depth[idx] + EDGE_DEPTH_BIAS {
+        let offset = idx * 4;
+        frame.color[offset] = color[0];
+        frame.color[offset + 1] = color[1];
+        frame.color[offset + 2] = color[2];
+        frame.color[offset + 3] = 255;
     }
 }
 
@@ -883,14 +1279,197 @@ fn draw_index_wheel(
             sv.mul_add(-outer_r, layout.center_y),
             0.0,
         );
-        draw_edge(frame, from, to, color, layout.clip);
+        draw_edge(frame, from, to, color, layout.clip, 1);
+        // #121: tag a small hit region at this tick's midpoint so hover/click can
+        // resolve "which tooth" from a generous target, not the 1px stroke.
+        let mid_r = inner_r.midpoint(outer_r);
+        let mid_x = su.mul_add(mid_r, layout.center_x).round() as i32;
+        let mid_y = sv.mul_add(-mid_r, layout.center_y).round() as i32;
+        tag_tooth_hit(frame, mid_x, mid_y, tooth, 4);
 
         if is_major {
             let label = tooth.to_string();
             let (w, h) = text_size(&label, 1);
             let lx = su.mul_add(label_r, layout.center_x) - w as f32 / 2.0;
             let ly = sv.mul_add(-label_r, layout.center_y) - h as f32 / 2.0;
+            // #120: `label_r` alone puts the two horizontal ticks' labels (3 and 9
+            // o'clock) past the panel's own column edge -- `wheel_radius_px*1.2`
+            // exceeds `col_width/2` whenever the wheel is sized against a
+            // width-limited panel (see this function's doc comment history). The
+            // ticks themselves stay exactly where they were; only the label's
+            // drawing origin is pulled back inside the clip rect so the full
+            // glyph string survives rather than being cut off mid-digit.
+            let lx = lx.clamp(layout.clip.0 as f32, (layout.clip.2 as f32) - w as f32);
+            let ly = ly.clamp(layout.clip.1 as f32, (layout.clip.3 as f32) - h as f32);
             draw_text(frame, lx, ly, &label, 1, color, Some(layout.clip));
+        }
+    }
+}
+
+/// Fills a `(2*radius+1)` square of [`DiagramFrame::tooth`] around `(cx, cy)`
+/// with `tooth + 1` -- the hit-region primitive [`draw_index_wheel`]'s #121
+/// tagging pass uses per tick. Out-of-bounds pixels are silently skipped, same
+/// as every other per-pixel primitive in this module.
+fn tag_tooth_hit(frame: &mut DiagramFrame, cx: i32, cy: i32, tooth: u32, radius: i32) {
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
+            if let Some(idx) = frame.idx(cx + dx, cy + dy) {
+                frame.tooth[idx] = tooth + 1;
+            }
+        }
+    }
+}
+
+/// P1 item 29: draws `wheel.symmetry_order` evenly spaced radial guide lines
+/// (the schedule's own rotational symmetry, `ScheduleMeta::symmetry_order`) and,
+/// when `wheel.mirror` is set, the design's mirror axis -- always the vertical
+/// line through the panel centre, since index 0 sits at screen "up" on BOTH
+/// panels regardless of `mirrored` (see this module's own doc comment: only
+/// `screen_right` flips between crown and pavilion, never `screen_up`).
+/// Drawn before the index wheel and the facet body so both sit on top of these
+/// as background reference lines, not the other way around.
+fn draw_symmetry_and_mirror_lines(
+    frame: &mut DiagramFrame,
+    layout: &PanelLayout,
+    wheel: WheelConfig,
+    style: &DiagramStyle,
+) {
+    let mirrored = matches!(layout.kind, PanelKind::Pavilion);
+    let line_len = layout.wheel_radius_px * 1.05;
+    let center = (layout.center_x, layout.center_y, 0.0);
+
+    if wheel.symmetry_order > 1 {
+        for k in 0..wheel.symmetry_order {
+            let phi = 2.0 * std::f32::consts::PI * (k as f32) / (wheel.symmetry_order as f32);
+            let (su, sv) = wheel_direction(phi, mirrored);
+            let tip = (
+                su.mul_add(line_len, layout.center_x),
+                sv.mul_add(-line_len, layout.center_y),
+                0.0,
+            );
+            draw_edge(
+                frame,
+                center,
+                tip,
+                style.symmetry_line_color,
+                layout.clip,
+                1,
+            );
+        }
+    }
+
+    if wheel.mirror {
+        let top = (layout.center_x, layout.center_y - line_len, 0.0);
+        let bottom = (layout.center_x, layout.center_y + line_len, 0.0);
+        draw_edge(frame, top, bottom, style.mirror_line_color, layout.clip, 2);
+    }
+}
+
+/// #121: draws a radial line from the panel centre to a highlighted facet's own
+/// index-wheel tooth (`DiagramStyle::facet_index_on_gear`) -- the missing visual
+/// link between "here is tooth N on the wheel" and "here is the facet sitting at
+/// that tooth". Only ever called for a crown/pavilion panel (see
+/// [`render_panel`]): a profile panel has no index wheel to point at.
+///
+/// One radial per highlighted facet, in the SAME highlight color
+/// [`draw_panel_edges`] would give that facet's own boundary, at the same
+/// precedence (a more specific highlight wins over a coarser one).
+fn draw_selected_index_radials(
+    frame: &mut DiagramFrame,
+    layout: &PanelLayout,
+    gear_teeth: u32,
+    gear_reference_angle: f32,
+    style: &DiagramStyle,
+    edge_ranges: &[(usize, usize, usize)],
+) {
+    let mirrored = matches!(layout.kind, PanelKind::Pavilion);
+    for &(facet_id, _start, _count) in edge_ranges {
+        let color = if style.selected_facet == Some(facet_id as u32) {
+            style.selected_facet_color
+        } else if style.selected.get(facet_id).copied().unwrap_or(false) {
+            style.selected_color
+        } else if style.multi_selected.contains(&(facet_id as u32)) {
+            style.multi_selected_color
+        } else {
+            continue;
+        };
+        let Some(&index) = style.facet_index_on_gear.get(facet_id) else {
+            continue;
+        };
+        let phi = 2.0 * std::f32::consts::PI * (index as f32 + gear_reference_angle)
+            / gear_teeth.max(1) as f32;
+        let (su, sv) = wheel_direction(phi, mirrored);
+        let center = (layout.center_x, layout.center_y, 0.0);
+        let tip = (
+            su.mul_add(layout.wheel_radius_px, layout.center_x),
+            sv.mul_add(-layout.wheel_radius_px, layout.center_y),
+            0.0,
+        );
+        draw_edge(frame, center, tip, color, layout.clip, 2);
+    }
+}
+
+/// Resolves [`DiagramStyle::meet_marker_pairs`] (facet-id pairs `Design::
+/// facet_meets`' tier-level resolution names) to actual world-space points (P1
+/// item 29): the vertex the two facets' mesh rings genuinely share, found by
+/// nearest-point matching rather than trusting index alignment -- `facet_meets`
+/// only says WHICH tiers meet, never where. A pair with no ring vertex closer
+/// than `tolerance` contributes nothing (a generously over-listed candidate
+/// pair, see `FacetMap::meeting_facet_pairs`'s own doc comment, not a real
+/// shared vertex).
+///
+/// `tolerance` should scale with the mesh's own size -- [`render_diagram`] uses
+/// a fraction of its bounding-box diagonal, mirroring [`simplify_ring`]'s own
+/// scale-relative merge tolerance.
+fn meet_marker_points(mesh: &SolidMesh, pairs: &[(u32, u32)], tolerance: f64) -> Vec<DVec3> {
+    if pairs.is_empty() {
+        return Vec::new();
+    }
+    let ring_of = |facet_id: u32| -> Option<&Vec<DVec3>> {
+        mesh.rings
+            .iter()
+            .find(|(id, _)| *id == facet_id as usize)
+            .map(|(_, ring)| ring)
+    };
+    let mut points: Vec<DVec3> = Vec::new();
+    for &(facet_a, facet_b) in pairs {
+        let (Some(ring_a), Some(ring_b)) = (ring_of(facet_a), ring_of(facet_b)) else {
+            continue;
+        };
+        for &pa in ring_a {
+            for &pb in ring_b {
+                if (pa - pb).length() <= tolerance {
+                    // Dedup against points already found for an earlier pair --
+                    // a shared vertex between more than two facets (a table/star
+                    // apex, say) would otherwise get one marker per pair.
+                    if !points.iter().any(|&p| (p - pa).length() <= tolerance) {
+                        points.push(pa);
+                    }
+                }
+            }
+        }
+    }
+    points
+}
+
+/// Draws one meet-point marker (P1 item 29): a small filled diamond, depth-
+/// tested against `frame`'s fill pass with the same slack [`draw_edge`] uses, so
+/// a marker on the far side of the stone from this panel's view stays hidden
+/// rather than drawing through the solid.
+fn draw_meet_marker(
+    frame: &mut DiagramFrame,
+    point: (f32, f32, f32),
+    color: [u8; 3],
+    clip: (i32, i32, i32, i32),
+) {
+    let (cx, cy, depth) = point;
+    let (cx, cy) = (cx.round() as i32, cy.round() as i32);
+    for dy in -2..=2i32 {
+        for dx in -2..=2i32 {
+            if dx.abs() + dy.abs() > 2 {
+                continue; // Diamond, not a square.
+            }
+            try_paint_edge_pixel(frame, cx + dx, cy + dy, depth, color, clip);
         }
     }
 }
@@ -927,6 +1506,16 @@ const fn glyph_rows_symbols(c: char) -> Option<[&'static str; GLYPH_HEIGHT]> {
         ],
         '\'' => [
             ".X...", ".X...", ".....", ".....", ".....", ".....", ".....",
+        ],
+        // Multi-name tier join convention (`crates/indicatrix-cut-core/src/design/
+        // tier.rs`) and an underscore in a tier name both used to vanish (`glyph`
+        // falls back to a blank cell for anything `glyph_rows` returns `None` for)
+        // -- CAD audit item 28.
+        '/' => [
+            "....X", "...X.", "..X..", "..X..", ".X...", "X....", ".....",
+        ],
+        '_' => [
+            ".....", ".....", ".....", ".....", ".....", ".....", "XXXXX",
         ],
         _ => return None,
     })
@@ -1094,7 +1683,10 @@ fn glyph(c: char) -> [u8; GLYPH_HEIGHT] {
 
 /// The pixel size `text` occupies at `scale` (1 device pixel per glyph pixel at
 /// `scale == 1`), including inter-character spacing but not a trailing gap.
-fn text_size(text: &str, scale: u32) -> (u32, u32) {
+///
+/// `pub(super)` -- `raster.rs`'s orientation-marker/facet-label overlay (#119/
+/// #122) needs the same measurement to center its own labels.
+pub(super) fn text_size(text: &str, scale: u32) -> (u32, u32) {
     let len = text.chars().count() as u32;
     if len == 0 {
         return (0, (GLYPH_HEIGHT as u32) * scale);
@@ -1114,7 +1706,56 @@ fn draw_text(
     color: [u8; 3],
     clip: Option<(i32, i32, i32, i32)>,
 ) {
-    let clip = clip.unwrap_or((0, 0, frame.width as i32 - 1, frame.height as i32 - 1));
+    let (width, height) = (frame.width, frame.height);
+    draw_text_into_buffer(
+        TextCanvas {
+            color_buf: &mut frame.color,
+            width,
+            height,
+        },
+        x,
+        y,
+        text,
+        scale,
+        color,
+        clip,
+    );
+}
+
+/// The buffer-generic sibling of [`draw_text`]: draws `text` straight into a raw
+/// RGBA8 `width x height` buffer rather than a [`DiagramFrame`]. `pub(super)` so
+/// `raster.rs`'s orientation-marker/facet-label overlay (#119/#122) can share
+/// this module's one bitmap font instead of carrying a second copy -- see that
+/// module's own doc comment for what it draws.
+/// One RGBA8 drawing target for [`draw_text_into_buffer`]: the pixels plus the two
+/// dimensions needed to index them.
+///
+/// Bundled because the three always travel together and describe one thing, which
+/// also keeps that function's parameter list within the workspace's own limit.
+pub(super) struct TextCanvas<'a> {
+    /// RGBA8 pixels, `width * height * 4` bytes long.
+    pub(super) color_buf: &'a mut [u8],
+    /// Row width in pixels.
+    pub(super) width: u32,
+    /// Row count.
+    pub(super) height: u32,
+}
+
+pub(super) fn draw_text_into_buffer(
+    canvas: TextCanvas<'_>,
+    x: f32,
+    y: f32,
+    text: &str,
+    scale: u32,
+    color: [u8; 3],
+    clip: Option<(i32, i32, i32, i32)>,
+) {
+    let TextCanvas {
+        color_buf,
+        width,
+        height,
+    } = canvas;
+    let clip = clip.unwrap_or((0, 0, width as i32 - 1, height as i32 - 1));
     let scale = scale.max(1) as i32;
     let mut pen_x = x.round() as i32;
     let pen_y = y.round() as i32;
@@ -1133,13 +1774,15 @@ fn draw_text(
                         if px < clip.0 || py < clip.1 || px > clip.2 || py > clip.3 {
                             continue;
                         }
-                        if let Some(idx) = frame.idx(px, py) {
-                            let o = idx * 4;
-                            frame.color[o] = color[0];
-                            frame.color[o + 1] = color[1];
-                            frame.color[o + 2] = color[2];
-                            frame.color[o + 3] = 255;
+                        if px < 0 || py < 0 || px as u32 >= width || py as u32 >= height {
+                            continue;
                         }
+                        let idx = (py as u32 * width + px as u32) as usize;
+                        let o = idx * 4;
+                        color_buf[o] = color[0];
+                        color_buf[o + 1] = color[1];
+                        color_buf[o + 2] = color[2];
+                        color_buf[o + 3] = 255;
                     }
                 }
             }
@@ -1241,6 +1884,8 @@ mod tests {
             height: 120,
             gear_teeth: 96,
             gear_reference_angle: 0.0,
+            symmetry_order: 8,
+            mirror: true,
         };
         let style = DiagramStyle::default();
         let frame = render_diagram(&mesh, &config, &style);
@@ -1275,9 +1920,96 @@ mod tests {
             height: 0,
             gear_teeth: 96,
             gear_reference_angle: 0.0,
+            symmetry_order: 8,
+            mirror: false,
         };
         let frame = render_diagram(&mesh, &config, &DiagramStyle::default());
         assert_eq!(frame.width, 0);
         assert_eq!(frame.pick_at(0, 0), None);
+    }
+
+    /// #29: the enlarged panel must fill the WHOLE frame width, not the
+    /// one-third column [`render_diagram`] gives it -- otherwise "enlarge this
+    /// panel" would just be a relabeled crop of the existing image.
+    #[test]
+    fn render_diagram_single_panel_fills_the_whole_frame() {
+        let mesh = match build_solid_mesh(&[
+            (DVec3::X, 1.0),
+            (DVec3::NEG_X, 1.0),
+            (DVec3::Y, 0.6),
+            (DVec3::NEG_Y, 0.6),
+            (DVec3::Z, 1.0),
+            (DVec3::NEG_Z, 1.0),
+        ]) {
+            SolidStatus::Closed(mesh) => mesh,
+            other => panic!("box fixture must close: {other:?}"),
+        };
+        let config = DiagramConfig {
+            width: 300,
+            height: 120,
+            gear_teeth: 96,
+            gear_reference_angle: 0.0,
+            symmetry_order: 8,
+            mirror: false,
+        };
+        let style = DiagramStyle::default();
+        let frame = render_diagram_single_panel(&mesh, &config, &style, PanelKind::Crown);
+
+        // The crown panel's own center, now the FRAME's center (150, 60) rather
+        // than a one-third column's (50, 60) -- see `render_diagram`'s own
+        // matching assertion at column-center (50, 60).
+        assert_eq!(
+            frame.pick_at(150, 60),
+            Some(2),
+            "the enlarged panel's own center must show the +Y facet"
+        );
+        assert_eq!(frame.panel_at(150, 60), Some(PanelKind::Crown));
+        // "Fills the whole frame" in the sense the API can actually express:
+        // `panel_at` tags only pixels a facet paints (see its own doc comment), so a
+        // background pixel is `None` by contract, not `Some`. What must hold is that
+        // no pixel anywhere belongs to a DIFFERENT panel -- in the three-column
+        // layout, x = 200 would have been the pavilion column.
+        for y in 0..config.height {
+            for x in 0..config.width {
+                let tag = frame.panel_at(x, y);
+                assert!(
+                    tag.is_none() || tag == Some(PanelKind::Crown),
+                    "pixel ({x}, {y}) is tagged {tag:?}, but only the enlarged crown                      panel may paint in a single-panel frame"
+                );
+            }
+        }
+    }
+
+    /// [`meet_marker_points`] must find the actual shared vertices between two
+    /// touching facets, not merely trust that a candidate pair (from
+    /// `FacetMap::meeting_facet_pairs`) really touches.
+    #[test]
+    fn meet_marker_points_finds_the_shared_edge_between_two_touching_facets() {
+        let mesh = match build_solid_mesh(&[
+            (DVec3::X, 1.0),
+            (DVec3::NEG_X, 1.0),
+            (DVec3::Y, 0.6),
+            (DVec3::NEG_Y, 0.6),
+            (DVec3::Z, 1.0),
+            (DVec3::NEG_Z, 1.0),
+        ]) {
+            SolidStatus::Closed(mesh) => mesh,
+            other => panic!("box fixture must close: {other:?}"),
+        };
+        // Facet 0 (+X) and facet 2 (+Y) share the edge x=1, y=0.6, z in [-1, 1] --
+        // two corners, (1, 0.6, -1) and (1, 0.6, 1).
+        let points = meet_marker_points(&mesh, &[(0, 2)], 1e-4);
+        assert_eq!(points.len(), 2, "got: {points:?}");
+        for expected_z in [-1.0, 1.0] {
+            assert!(
+                points.iter().any(|p| (p.x - 1.0).abs() < 1e-6
+                    && (p.y - 0.6).abs() < 1e-6
+                    && (p.z - expected_z).abs() < 1e-6),
+                "expected a marker at z={expected_z}, got: {points:?}"
+            );
+        }
+
+        // An unrelated pair (facets that never touch) must find nothing.
+        assert_eq!(meet_marker_points(&mesh, &[(0, 1)], 1e-4).len(), 0);
     }
 }
