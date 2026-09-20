@@ -115,7 +115,7 @@ mod callbacks;
 mod cut_sheet;
 mod deep_solve;
 mod loading;
-mod material_lookup;
+pub(in crate::gui) mod material_lookup;
 mod native_io;
 mod optimize_solve;
 pub mod retarget;

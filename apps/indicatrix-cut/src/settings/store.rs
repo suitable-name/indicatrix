@@ -397,14 +397,11 @@ mod tests {
         let path = dir.path().join("settings.toml");
 
         let mut custom = SettingsFile::default();
-        custom.settings.lighting_rig = "ISO hemisphere (GemRay-style)".to_string();
+        custom.settings.lighting_rig = "ISO hemisphere".to_string();
         save(&path, &custom).unwrap();
 
         let loaded = load_or_default(&path);
-        assert_eq!(
-            loaded.settings.lighting_rig,
-            "ISO hemisphere (GemRay-style)"
-        );
+        assert_eq!(loaded.settings.lighting_rig, "ISO hemisphere");
     }
 
     #[test]

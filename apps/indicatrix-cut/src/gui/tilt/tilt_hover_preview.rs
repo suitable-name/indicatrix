@@ -133,7 +133,7 @@ fn render_hover_preview(scene: &HoverPreviewScene<'_>) -> SharedPixelBuffer<Rgba
     let environment = scene
         .lighting_preset
         .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
-        .with_backdrop(indicatrix::optics::raytracer::BACKDROP_GEMRAY_GREY);
+        .with_backdrop(indicatrix::optics::raytracer::BACKDROP_GREY);
 
     let mut accum = vec![Vec3::ZERO; (width * height) as usize];
     for y in 0..height {

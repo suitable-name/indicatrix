@@ -56,7 +56,7 @@ export global ViewportModel {
     // match `LightingPreset::ALL` (`Daylight`, `Incandescent`, `RingLights`,
     // `DarkSpotlight`, `IsoHemisphere`, `LightTent`, `DaylightDome`) exactly, since
     // `lighting_changed` below carries the selected INDEX, not the label text.
-    in property <[string]> lighting_options: ["D65 Daylight (6500K)", "Incandescent (3200K)", "Gem Studio Ring Lights", "Dramatic Dark Spotlight", "ISO hemisphere (GemRay-style)", "Light tent + black cards", "Daylight sky + sun"];
+    in property <[string]> lighting_options: ["D65 Daylight (6500K)", "Incandescent (3200K)", "Gem Studio Ring Lights", "Dramatic Dark Spotlight", "ISO hemisphere", "Light tent + black cards", "Daylight sky + sun"];
     in-out property <int> selected_lighting_index: 0;
     in property <[LightingPresetItem]> lighting_presets: [];
 

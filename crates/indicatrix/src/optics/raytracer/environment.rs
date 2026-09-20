@@ -193,7 +193,7 @@ impl LightingPreset {
             Self::Incandescent => "Incandescent (3200K)",
             Self::RingLights => "Gem Studio Ring Lights",
             Self::DarkSpotlight => "Dramatic Dark Spotlight",
-            Self::IsoHemisphere => "ISO hemisphere (GemRay-style)",
+            Self::IsoHemisphere => "ISO hemisphere",
             Self::LightTent => "Light tent + black cards",
             Self::DaylightDome => "Daylight sky + sun",
         }
@@ -211,7 +211,7 @@ impl LightingPreset {
             "Incandescent (3200K)" => Self::Incandescent,
             "Gem Studio Ring Lights" => Self::RingLights,
             "Dramatic Dark Spotlight" => Self::DarkSpotlight,
-            "ISO hemisphere (GemRay-style)" | "ISO hemisphere" => Self::IsoHemisphere,
+            "ISO hemisphere" | "ISO hemisphere" => Self::IsoHemisphere,
             "Light tent + black cards" | "Soft dome + ring lights" => Self::LightTent,
             "Daylight sky + sun" | "Daylight dome + sun" => Self::DaylightDome,
             _ => Self::Daylight,
@@ -320,14 +320,14 @@ pub enum EnvironmentSource<'a> {
         /// balance) and independent of `exposure`. `0.0` shows the environment itself.
         /// The stone's optics never see the card -- only the primary ray does -- so
         /// leakage and windows stay as dark as the real ground, the way `GemRay`
-        /// paints its grey canvas. See [`BACKDROP_GEMRAY_GREY`].
+        /// paints its grey canvas. See [`BACKDROP_GREY`].
         backdrop: f32,
     },
     HdrMap(&'a EnvironmentMap),
 }
 
 /// Backdrop radiance that tone-maps to `GemRay`'s neutral grey canvas (about sRGB 160).
-pub const BACKDROP_GEMRAY_GREY: f32 = 0.23;
+pub const BACKDROP_GREY: f32 = 0.23;
 /// Backdrop radiance that tone-maps to white: a light box behind the stone.
 pub const BACKDROP_WHITE: f32 = 8.0;
 
@@ -777,11 +777,10 @@ mod tests {
         assert!(!fill_backdrop(plain, &lambdas, &mut radiance));
         assert_eq!(radiance, [0.0; 3]);
 
-        let carded = plain.with_backdrop(BACKDROP_GEMRAY_GREY);
+        let carded = plain.with_backdrop(BACKDROP_GREY);
         assert!(fill_backdrop(carded, &lambdas, &mut radiance));
         for (&value, &lambda_nm) in radiance.iter().zip(&lambdas) {
-            let expected =
-                BACKDROP_GEMRAY_GREY * LightingPreset::LightTent.spectral_power(lambda_nm);
+            let expected = BACKDROP_GREY * LightingPreset::LightTent.spectral_power(lambda_nm);
             assert!(
                 (value - expected).abs() < 1e-6,
                 "backdrop at {lambda_nm} nm: got {value}, expected {expected}"

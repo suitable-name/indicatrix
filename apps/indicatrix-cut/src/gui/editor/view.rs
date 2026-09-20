@@ -8,7 +8,10 @@
 use super::{
     auto_solve,
     deep_solve::TierMastDelta,
-    material_lookup::{EditorMaterialLookup, nearest_built_in_material, traced_gem_material},
+    material_lookup::{
+        EditorMaterialLookup, MATERIAL_MATCH_TOLERANCE, nearest_built_in_material,
+        traced_gem_material,
+    },
     state::{
         EditorState, ScratchDelta, apply_multi_selection, cutting_schedule_rows, design_label_text,
         design_material_index_from_name, design_material_options, design_to_gpu_planes,
@@ -366,14 +369,6 @@ fn push_yield_material_scratch(ui: &MainWindow, state: &EditorState, delta: &Scr
 /// an edit that only changed one of the three never re-seeds -- and so
 /// silently discards any in-progress typing/selection in -- the other two's
 /// fields (CAD audit items 50/52).
-/// How close a design's own refractive index must sit to a built-in preset's for
-/// that preset to stand in for an unnamed material -- see [`traced_material_for`].
-/// 0.02 is roughly the gap between neighbouring species in the built-in table, so a
-/// match this close is the same stone by any practical reading, while a design
-/// sitting between two presets falls through to the refusal rather than being
-/// rounded to whichever happened to be nearer.
-const MATERIAL_MATCH_TOLERANCE: f64 = 0.02;
-
 /// The material name the tracer should use for `design`, and -- when there is no
 /// honest answer -- the sentence saying why it will not trace at all.
 ///

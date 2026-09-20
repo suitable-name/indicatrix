@@ -136,7 +136,7 @@ const PREVIEW_FOV_DEG: f32 = 42.0;
 const PREVIEW_LIGHTING_PRESET: LightingPreset = LightingPreset::LightTent;
 /// The backdrop every preview renders against -- `GemRay`'s grey, the live view's own
 /// default, so a catalogue thumbnail matches the Live Render tab.
-const PREVIEW_BACKDROP: f32 = indicatrix::optics::raytracer::BACKDROP_GEMRAY_GREY;
+const PREVIEW_BACKDROP: f32 = indicatrix::optics::raytracer::BACKDROP_GREY;
 
 /// Which of the two cached preview images a [`render_view`] call produces -- see this
 /// module's doc comment for the pitch each maps to.

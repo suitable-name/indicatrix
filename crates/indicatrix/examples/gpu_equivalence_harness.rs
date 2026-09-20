@@ -1117,7 +1117,7 @@ fn run_lighting_model_checks(ctx: &GpuContext) -> bool {
     println!();
     println!("== Lighting models: Tier 3 statistical image comparisons ==");
     let iso_passed = report_image_comparison_material(
-        "Diamond, ISO hemisphere (GemRay-style)",
+        "Diamond, ISO hemisphere",
         &estimator_check::run_image_comparison_iso_hemisphere(ctx),
     );
     let light_tent_passed = report_image_comparison_material(

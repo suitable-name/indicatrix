@@ -72,7 +72,7 @@ pub use sampling::{
 
 // environment.rs
 pub use environment::{
-    BACKDROP_GEMRAY_GREY, BACKDROP_WHITE, EnvironmentSource, LightingModel, LightingPreset,
+    BACKDROP_GREY, BACKDROP_WHITE, EnvironmentSource, LightingModel, LightingPreset,
     LightingRigParams, blackbody_spectrum, sample_studio_environment,
     sample_studio_environment_observed,
 };

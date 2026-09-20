@@ -2830,3 +2830,55 @@ fn memory_db_still_works() {
     db.checkpoint()
         .expect("checkpoint should be a no-op, not an error, on a non-WAL database");
 }
+
+/// The library search predicate's supporting indexes must exist on a fresh database,
+/// and the query planner must actually pick the `angle_settings` one -- see
+/// `migrations::SEARCH_INDEXES_SQL`'s own doc comment for the measurements. Without it
+/// the notes-matching `EXISTS` subquery degrades to a full scan of a table holding one
+/// row per TIER, which froze the library's search box for tens of seconds per keystroke
+/// on a 3,299-design catalogue.
+#[test]
+fn search_indexes_exist_and_the_planner_uses_them() {
+    let path = temp_db_path("search_indexes");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("fresh database opens");
+
+    for index in [
+        "idx_angle_settings_detail_id",
+        "idx_diagram_tag_links_tag_id",
+    ] {
+        let found: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?1",
+                [index],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(found, 1, "{index} must exist on a fresh database");
+    }
+
+    // The decisive half: an index nothing plans against would not have fixed anything.
+    // `SEARCH ... USING INDEX` is the plan line that replaced `SCAN a`.
+    let plan: Vec<String> = db
+        .conn
+        .prepare(
+            "EXPLAIN QUERY PLAN
+             SELECT 1 FROM angle_settings a WHERE a.detail_id = 1 AND a.notes LIKE '%x%'",
+        )
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(3))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(
+        plan.iter()
+            .any(|line| line.contains("idx_angle_settings_detail_id")),
+        "the planner must use the detail_id index, got {plan:?}"
+    );
+
+    // Reopening runs the migration a second time: `CREATE INDEX IF NOT EXISTS` must be
+    // a no-op, not an error.
+    drop(db);
+    let db2 = Database::new(Some(path.to_str().unwrap())).expect("second open is idempotent");
+    drop(db2);
+}

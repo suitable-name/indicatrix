@@ -5,6 +5,7 @@ use crate::{
         render_thread::{PlanesOwner, RenderContext},
     },
     gui::{
+        editor::material_lookup::{MATERIAL_MATCH_TOLERANCE, material_for_refractive_index},
         library::{
             diagram_list::sync_range_bounds_to_ui_preserving_filters,
             search::refresh_diagram_list_via_source,
@@ -94,6 +95,9 @@ pub fn load_diagram_detail(
             // gates "Open on Web"/"Copy Link" in `detail_header.slint`. Computed
             // before `full.url` is moved into the struct literal below.
             let is_local = full.url.starts_with("local://");
+            // Cloned before the struct literal below moves it: the viewport's material
+            // comes from this same value -- see `apply_reconstructed_planes`.
+            let ri_text = full.refractive_index.clone();
             let detail_data = DiagramDetailData {
                 id: full.entry_id as i32,
                 title: full.title.into(),
@@ -193,6 +197,7 @@ pub fn load_diagram_detail(
                 full.index_gear.as_deref(),
                 &angle_items,
                 entry_id,
+                ri_text.as_deref(),
             );
         }
         Ok(None) => {
@@ -352,6 +357,7 @@ fn apply_design_record_to_ui(
         record.index_gear.as_deref(),
         &angle_items,
         record.entry_id,
+        record.refractive_index.as_deref(),
     );
 
     // The remote counterpart of the local selection callback's own resubmit
@@ -569,6 +575,7 @@ fn apply_reconstructed_planes(
     index_gear: Option<&str>,
     angle_items: &[AngleItem],
     entry_id: i64,
+    refractive_index: Option<&str>,
 ) {
     // `indicatrix` must not depend on Slint, so convert the Slint-generated `AngleItem`
     // rows into plain `FacetSpec`s at this boundary.
@@ -605,10 +612,29 @@ fn apply_reconstructed_planes(
         Some((gear_teeth, 0.0)),
         PlanesOwner::Catalogue { entry_id },
     );
-    if claimed {
+    let resolved_material = if claimed {
+        let resolved = apply_catalogue_material(&mut ctx, refractive_index);
         ctx.dirty = true;
-    }
+        resolved
+    } else {
+        None
+    };
     drop(ctx);
+    // The dropdown's own displayed selection, not just the material being traced: the
+    // two are separate pieces of state, and writing only `RenderContext` left the
+    // toolbar reading (say) "Quartz" while the stone on screen was already the newly
+    // selected design's sapphire. Same treatment `editor::view::refresh_design_settings`
+    // gives its own material sync, via the same helper. `find_option_index` returning
+    // `None` leaves the selection alone rather than guessing -- it cannot happen for a
+    // built-in (`refresh_material_options` lists every one of them), so that case only
+    // covers an options model not pushed yet.
+    if let Some(name) = resolved_material {
+        let options = ui.global::<ViewportModel>().get_material_options();
+        if let Some(index) = crate::gui::startup_settings::find_option_index(&options, &name) {
+            ui.global::<ViewportModel>()
+                .set_selected_material_index(index);
+        }
+    }
     if !claimed {
         show_toast(
             ui,
@@ -625,6 +651,53 @@ fn apply_reconstructed_planes(
     if ui.global::<TiltModel>().get_dialog_open() {
         ui.global::<TiltModel>().invoke_request_tilt_profile_axes();
     }
+}
+
+/// Points the viewport's material at whichever built-in this catalogue row's own
+/// refractive index names -- the material half of a catalogue selection, which
+/// [`apply_reconstructed_planes`] used to leave untouched entirely. Without it the
+/// preview kept whatever the last editor refresh, the last Render Material pick or the
+/// PREVIOUS catalogue row left behind, so clicking through the library changed the shape
+/// on screen and never the stone.
+///
+/// Both halves are written, not just the name: `material_override` BEATS `material_name`
+/// in `render_thread::context::resolve_material_with_override`, so leaving a stale
+/// override in place would make the name below purely decorative.
+///
+/// A row whose refractive index is absent, unparsable, or within
+/// [`MATERIAL_MATCH_TOLERANCE`] of no built-in at all sets `material_unresolved` instead:
+/// the viewport then says why it will not trace rather than borrowing some other
+/// design's optics -- CAD audit item 57's rule, applied to the catalogue's own rows.
+///
+/// Returns the material's name on success, so the caller can point the Render Material
+/// dropdown at it once the `RenderContext` lock is released; `None` on either refusal,
+/// where there is no name to show.
+fn apply_catalogue_material(
+    ctx: &mut RenderContext,
+    refractive_index: Option<&str>,
+) -> Option<String> {
+    let n_d = refractive_index.and_then(|text| text.trim().parse::<f64>().ok());
+    let Some(n_d) = n_d.filter(|v| v.is_finite() && *v > 1.0) else {
+        ctx.material_unresolved = Some(
+            "This design records no usable refractive index, so there is no honest \
+             material to render it in. Pick one in the Render Material dropdown above."
+                .to_string(),
+        );
+        return None;
+    };
+    let Some((name, gem)) = material_for_refractive_index(n_d) else {
+        ctx.material_unresolved = Some(format!(
+            "This design's refractive index ({n_d:.4}) matches no built-in preset within \
+             {MATERIAL_MATCH_TOLERANCE:.2}. Pick a material in the Render Material dropdown \
+             above -- rendering it as something else would give you the optics of a \
+             different stone."
+        ));
+        return None;
+    };
+    ctx.material_unresolved = None;
+    ctx.material_name = name.to_string();
+    ctx.material_override = Some(gem);
+    Some(name.to_string())
 }
 
 /// Rebuilds a design's 3D facet planes from its shape/gear/angle-settings. Pulled out

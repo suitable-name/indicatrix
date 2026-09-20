@@ -121,8 +121,8 @@ genuine right-drag gesture.)
   - **Lit models** — what a stone looks like in a real scene. All three darken the
     facets that would reflect your own head, the way a face-up stone really shows a
     dark table:
-    - **ISO hemisphere (GemRay-style)** — the whole sky above the girdle evenly lit,
-      black below. The classic GemRay/GCS light model for comparing light-return
+    - **ISO hemisphere** — the whole sky above the girdle evenly lit,
+      black below. The classic Greylight model for comparing light-return
       patterns.
     - **Light tent + black cards** — the default. A jewellery light tent: grey walls,
       one broad overhead softbox, three black cards for facet contrast and a small hard
@@ -135,7 +135,7 @@ genuine right-drag gesture.)
   direct reflection of a light source clips to white; use Studio Exposure to go darker
   or brighter.
 - **Backdrop** (Settings gear, under Studio Exposure) — what the camera sees behind
-  the stone: **As lit** (the environment's own ground), **GemRay grey** (the default:
+  the stone: **As lit** (the environment's own ground), **Grey** (the default:
   the neutral canvas GemRay paints, for like-for-like comparisons) or **White**. Only
   the camera sees it; the stone's optics never do, so leakage and windows stay dark.
 - **Tilt Curve** — opens the tilt-performance dialog (below).

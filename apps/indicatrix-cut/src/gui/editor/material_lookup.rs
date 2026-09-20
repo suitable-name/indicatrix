@@ -78,6 +78,35 @@ pub(super) fn resolved_gem_material(
     gem
 }
 
+/// How close a design's own refractive index must sit to a built-in preset's for that
+/// preset to stand in for an unnamed material.
+///
+/// 0.02 is roughly the gap between neighbouring species in the built-in table, so a match
+/// this close is the same stone by any practical reading, while a design sitting between
+/// two presets falls through to a refusal rather than being rounded to whichever happened
+/// to be nearer. Shared by `super::view::traced_material_for` (the editor's own design)
+/// and [`material_for_refractive_index`] (a catalogue row), so the two can never disagree
+/// about what counts as a match.
+pub(in crate::gui) const MATERIAL_MATCH_TOLERANCE: f64 = 0.02;
+
+/// The built-in material a design carrying `n_d` and NO species name should be rendered
+/// as: the nearest preset within [`MATERIAL_MATCH_TOLERANCE`], resolved to a real
+/// [`GemMaterial`], or `None` when nothing built in is that close.
+///
+/// The catalogue's own case. A library row records a refractive index but never a
+/// species, so this is the only honest way to name a stone for it -- and `None` must stay
+/// a refusal rather than a substitution, which is the whole point of CAD audit item 57:
+/// rendering a quartz design as something else gives the optics of a different stone with
+/// nothing on screen saying so.
+#[must_use]
+pub(in crate::gui) fn material_for_refractive_index(
+    n_d: f64,
+) -> Option<(&'static str, GemMaterial)> {
+    let (name, _) = nearest_built_in_material(n_d, MATERIAL_MATCH_TOLERANCE)?;
+    let gem = BuiltinMaterials.lookup(name)?;
+    Some((name, gem))
+}
+
 /// The [`GemMaterial`] a design is actually RENDERED as, given the material name
 /// `super::view::traced_material_for` already resolved for it -- `None` when nothing
 /// in this catalogue answers to that name.
@@ -127,7 +156,10 @@ pub(super) fn traced_gem_material(
 /// "best built-in name for a display string" need -- there is only one such search in
 /// this crate today.
 #[must_use]
-pub(super) fn nearest_built_in_material(n_d: f64, tolerance: f64) -> Option<(&'static str, f64)> {
+pub(in crate::gui) fn nearest_built_in_material(
+    n_d: f64,
+    tolerance: f64,
+) -> Option<(&'static str, f64)> {
     super::state::MATERIAL_PRESET_NAMES
         .iter()
         .skip(1) // index 0 is "(none)", not a real preset.
@@ -165,6 +197,33 @@ mod tests {
         let lookup = EditorMaterialLookup::new(&custom_list);
         assert!(lookup.lookup("Quartz").is_some());
         assert!(lookup.lookup("Not A Real Material").is_none());
+    }
+
+    /// The catalogue's own case: a library row records a refractive index and no
+    /// species, so this is what names the stone for its preview. The four values are the
+    /// owner's actual catalogue's four most common (1,789 / 571 / 195 / 115 of 3,098
+    /// designs), so a regression here would mis-render most of the library.
+    #[test]
+    fn material_for_refractive_index_names_the_catalogues_common_stones() {
+        for (n_d, expected) in [
+            (1.54, "Quartz"),
+            (1.76, "Sapphire"),
+            (1.72, "Spinel"),
+            (2.16, "Cubic Zirconia"),
+        ] {
+            let (name, gem) = material_for_refractive_index(n_d)
+                .unwrap_or_else(|| panic!("{n_d} must resolve to a built-in"));
+            assert_eq!(name, expected, "n_d {n_d}");
+            assert_eq!(gem.name, expected, "n_d {n_d}: the resolved material too");
+        }
+    }
+
+    /// Refuses rather than rounding to whichever preset happens to be nearest -- the
+    /// whole point of CAD audit item 57. 1.90 sits between Cubic Zirconia (2.16) and
+    /// Tanzanite/Zircon below it, further than `MATERIAL_MATCH_TOLERANCE` from any.
+    #[test]
+    fn material_for_refractive_index_refuses_when_nothing_is_close() {
+        assert!(material_for_refractive_index(1.90).is_none());
     }
 
     /// The render path's own regression test: a design that names no material at all

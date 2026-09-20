@@ -280,6 +280,9 @@ impl Database {
         db.migrate_diagram_tilt_curves_table()?;
         db.migrate_prune_tilt_curve_aggregate_columns()?;
         db.migrate_tag_tables()?;
+        // After `migrate_tag_tables`: one of its two indexes is on `diagram_tag_links`,
+        // which a database old enough to predate that migration does not have yet.
+        db.migrate_search_indexes()?;
         Ok(db)
     }
 
@@ -403,6 +406,7 @@ impl Database {
         let diagram_previews_sql = migrations::DIAGRAM_PREVIEWS_TABLE_SQL;
         let diagram_tilt_curves_sql = migrations::diagram_tilt_curves_table_sql();
         let tag_tables_sql = migrations::TAG_TABLES_SQL;
+        let search_indexes_sql = migrations::SEARCH_INDEXES_SQL;
         let sql = format!(
             "BEGIN;
 
@@ -541,6 +545,12 @@ impl Database {
             -- see migrate_tag_tables's own doc comment for why this is a side table
             -- pair, not a column on diagram_entries).
             {tag_tables_sql}
+
+            -- The library search predicate's supporting indexes; see
+            -- SEARCH_INDEXES_SQL's own doc comment for why each is needed and what it
+            -- was measured to be worth. Last, because one of them is on a table the
+            -- block just above creates.
+            {search_indexes_sql}
 
             COMMIT;"
         );

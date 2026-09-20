@@ -31,8 +31,8 @@ use indicatrix::{
     optics::{
         materials::GemMaterial,
         raytracer::{
-            BACKDROP_GEMRAY_GREY, Camera, EnvironmentSource, LightingPreset, build_plane_soa,
-            hash_u32, trace_spectral_ray_with_finish_soa, xyz_to_srgb_gamma,
+            BACKDROP_GREY, Camera, EnvironmentSource, LightingPreset, build_plane_soa, hash_u32,
+            trace_spectral_ray_with_finish_soa, xyz_to_srgb_gamma,
         },
     },
 };
@@ -113,7 +113,7 @@ impl Shot {
                 self.light_yaw_deg.to_radians(),
                 self.light_pitch_deg.to_radians(),
             )
-            .with_backdrop(BACKDROP_GEMRAY_GREY)
+            .with_backdrop(BACKDROP_GREY)
     }
 }
 
@@ -316,7 +316,7 @@ Lighting gallery -- the standard round brilliant on GemRay's grey backdrop card,
 rendered on the GPU by crates/indicatrix/tests/lighting_gallery.rs. Look for:
   * Gem Studio Ring Lights (reference, the old look): black stone with hard white
     flashes and rainbow speckle, nothing in between.
-  * ISO hemisphere (GemRay-style): evenly white facets, black leakage, and the dark
+  * ISO hemisphere: evenly white facets, black leakage, and the dark
     head-shadow pattern in the table -- the GemRay ISO picture.
   * Light tent + black cards: grey-to-white gradation across the facets, black card
     reflections for contrast, one hard spark; Rutile keeps a saturated yellow body

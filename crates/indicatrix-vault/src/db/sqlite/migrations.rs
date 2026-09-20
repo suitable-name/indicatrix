@@ -185,6 +185,25 @@ impl Database {
         Ok(())
     }
 
+    /// Creates the library search predicate's supporting indexes on an existing
+    /// database -- see [`SEARCH_INDEXES_SQL`] for which, and for the measurements that
+    /// motivated them.
+    ///
+    /// `CREATE INDEX IF NOT EXISTS` is naturally idempotent, so this always runs rather
+    /// than checking first, the same way [`Database::migrate_shape_vocabulary`] does.
+    /// Must run AFTER [`Database::migrate_tag_tables`], since `diagram_tag_links` may
+    /// not exist yet on a database old enough to predate it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if creating either index fails.
+    pub(super) fn migrate_search_indexes(&self) -> Result<()> {
+        self.conn
+            .execute_batch(SEARCH_INDEXES_SQL)
+            .context("Failed to create the library search indexes")?;
+        Ok(())
+    }
+
     /// Creates `shape_vocabulary` for a database created before it existed, and seeds
     /// (or re-seeds) it from [`DEFAULT_SHAPES`] -- fixes `get_unique_shapes` returning
     /// nothing on a fresh database (no imported design has a `shape` value yet).
@@ -653,6 +672,31 @@ fn split_facets_count_column(tx: &Transaction<'_>) -> Result<()> {
     }
     Ok(())
 }
+
+/// The indexes the library search predicate needs, shared verbatim between
+/// [`Database::migrate_search_indexes`] and `create_tables_if_not_exist` -- same
+/// convention as [`DIAGRAM_PREVIEWS_TABLE_SQL`].
+///
+/// SQLite does not index a `FOREIGN KEY` column on its own, and neither of these is the
+/// LEADING column of a primary key, so without this pair both lookups below degrade to a
+/// full table scan *per candidate design*:
+///
+/// - `angle_settings (detail_id)` -- CAD audit item 228's `EXISTS (... WHERE a.detail_id
+///   = dd.id AND a.notes LIKE ?)` notes match. This table holds one row per TIER (50,817
+///   rows against 3,299 designs on the owner's catalogue), so the scan is ~168 million
+///   row visits, and `gui::library::search::refresh_diagram_list` issues three such
+///   queries per keystroke on the UI thread. Measured on that catalogue: 16.1 s for
+///   `%portuguese%`, 23.0 s for `%zzz%`; with this index, 0.01 s.
+/// - `diagram_tag_links (tag_id)` -- the tag-chip filter's `SELECT entry_id ... WHERE
+///   tag_id = ?`. `tag_id` is the second column of that table's composite primary key, so
+///   its automatic index cannot serve a lookup that does not also constrain `entry_id`.
+pub(super) const SEARCH_INDEXES_SQL: &str = "
+    CREATE INDEX IF NOT EXISTS idx_angle_settings_detail_id
+        ON angle_settings (detail_id);
+
+    CREATE INDEX IF NOT EXISTS idx_diagram_tag_links_tag_id
+        ON diagram_tag_links (tag_id);
+";
 
 /// `diagram_previews`' full `CREATE TABLE IF NOT EXISTS` text, shared verbatim between
 /// [`Database::migrate_diagram_previews_table`] and `create_tables_if_not_exist` so the

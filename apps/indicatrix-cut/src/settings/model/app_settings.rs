@@ -55,7 +55,7 @@ pub enum Backdrop {
     AsLit,
     /// The neutral grey canvas `GemRay` paints, for like-for-like comparisons.
     #[default]
-    GemRayGrey,
+    Grey,
     /// A white light box.
     White,
 }
@@ -66,7 +66,7 @@ impl Backdrop {
     pub const fn level(self) -> f32 {
         match self {
             Self::AsLit => 0.0,
-            Self::GemRayGrey => indicatrix::optics::raytracer::BACKDROP_GEMRAY_GREY,
+            Self::Grey => indicatrix::optics::raytracer::BACKDROP_GREY,
             Self::White => indicatrix::optics::raytracer::BACKDROP_WHITE,
         }
     }
@@ -76,7 +76,7 @@ impl Backdrop {
     pub const fn index(self) -> i32 {
         match self {
             Self::AsLit => 0,
-            Self::GemRayGrey => 1,
+            Self::Grey => 1,
             Self::White => 2,
         }
     }
@@ -87,7 +87,7 @@ impl Backdrop {
         match index {
             0 => Self::AsLit,
             2 => Self::White,
-            _ => Self::GemRayGrey,
+            _ => Self::Grey,
         }
     }
 }

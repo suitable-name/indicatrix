@@ -7,8 +7,8 @@ use crate::{
     optics::{
         materials::GemMaterial,
         raytracer::{
-            BACKDROP_GEMRAY_GREY, FacetFinish, LightingPreset,
-            environment::environment_white_balance, illuminant_temperature_k,
+            BACKDROP_GREY, FacetFinish, LightingPreset, environment::environment_white_balance,
+            illuminant_temperature_k,
         },
     },
     renderer::{
@@ -268,7 +268,7 @@ pub fn run_image_comparison_iso_hemisphere(
         &material,
         &[],
         LightingPreset::IsoHemisphere,
-        BACKDROP_GEMRAY_GREY,
+        BACKDROP_GREY,
     )
 }
 
@@ -290,7 +290,7 @@ pub fn run_image_comparison_light_tent(
         &material,
         &[],
         LightingPreset::LightTent,
-        BACKDROP_GEMRAY_GREY,
+        BACKDROP_GREY,
     )
 }
 
@@ -312,7 +312,7 @@ pub fn run_image_comparison_daylight_dome(
         &material,
         &[],
         LightingPreset::DaylightDome,
-        BACKDROP_GEMRAY_GREY,
+        BACKDROP_GREY,
     )
 }
 

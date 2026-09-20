@@ -1093,12 +1093,12 @@ export component SettingsDialog inherits Rectangle {
             spacing: 4px;
             Rectangle {
                 height: backdrop_lbl.preferred-height;
-                Tooltip { text: @markdown("What the camera sees behind the stone. **As lit**: the environment's own ground. **GemRay grey**: the neutral canvas GemRay paints, for like-for-like comparisons. **White**: a light box. The stone's optics never see the card, so leakage stays dark."); }
+                Tooltip { text: @markdown("What the camera sees behind the stone. **As lit**: the environment's own ground. **Grey**: the neutral canvas GemRay paints, for like-for-like comparisons. **White**: a light box. The stone's optics never see the card, so leakage stays dark."); }
                 backdrop_lbl := Text { text: "Backdrop"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
             }
             HorizontalLayout {
                 spacing: 4px;
-                for label[i] in ["As lit", "GemRay grey", "White"]: Rectangle {
+                for label[i] in ["As lit", "Grey", "White"]: Rectangle {
                     horizontal-stretch: 1;
                     height: 28px;
                     border-radius: Theme.radius-sm;
