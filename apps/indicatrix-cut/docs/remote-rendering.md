@@ -16,8 +16,8 @@ window *and* a remote worker is configured, the app hands off:
    the other. This mirrors `indicatrix-net`'s `FRAME`-vs-`PREVIEW` distinction:
    mixing a local partial accumulation into a remote one would be exactly the
    kind of un-composable mixing that protocol is built to prevent.
-2. Local rendering is suspended entirely (a remote worker now owns the
-   displayed image) and the remote worker starts streaming `FRAME`/`PREVIEW`
+2. Local rendering is suspended entirely (the remote worker owns the
+   displayed image) and it starts streaming `FRAME`/`PREVIEW`
    deltas back, accumulated the normal `indicatrix-net` way.
 3. If the user resumes dragging the camera mid-settle or mid-remote-render, the
    symmetric thing happens: a `CANCEL` is sent, the remote partial accumulation
@@ -59,24 +59,20 @@ That liveness deadline is two-tiered, not one flat value:
 - A generous **first-event timeout** (30s) applies to the wait for a
   dispatch's very first event. A worker's own calibration/warm-up — especially
   at a high resolution combined with a coarse, sample-count cadence — can
-  legitimately take longer than the steady-state deadline below. This was
-  confirmed as a real false positive: at 4K with a worker cadence of 20
-  samples/tick, the worker's first tick could legitimately run past the
-  steady-state deadline while genuinely still computing, and the connection
-  was reported as silent out from under it.
+  legitimately take longer than the steady-state deadline below. Without this,
+  a scenario like 4K with a worker cadence of 20 samples/tick could incorrectly
+  report the connection as silent while the worker is genuinely still computing.
 - A tighter, worker-heartbeat-derived **steady-state timeout** (8s — four
   times the worker's own guaranteed heartbeat interval of at least one
   `PROGRESS` every 2 seconds, regardless of cadence) applies to every wait
   after that first event.
 
-A separate concern — a thread that owns the connection's liveness clock doing
-unrelated CPU-heavy work (a local render tail, denoising, tone-mapping, PNG
-encoding) between reads, so the clock effectively keeps running while nobody
-is listening to the socket — was investigated and ruled out for this
-codebase's actual thread structure: the connection-owning thread never does
-anything but read, apply, and forward; every genuinely expensive step runs on
-a different thread (or, on the UI thread, is deferred via
-`Weak::upgrade_in_event_loop` rather than run inline). The liveness deadline
+A separate potential concern would be a thread that owns the connection's
+liveness clock doing unrelated CPU-heavy work (a local render tail, denoising,
+tone-mapping, PNG encoding) between reads. The connection-owning thread avoids
+this: it never does anything but read, apply, and forward; every genuinely
+expensive step runs on a different thread (or, on the UI thread, is deferred
+via `Weak::upgrade_in_event_loop` rather than run inline). The liveness deadline
 is therefore only ever checked immediately after a real, just-attempted, empty
 read — see `bridge::remote::remote_render::connection`'s own "Timeouts and
 liveness" and "Why a busy consumer can never make either deadline fire early"

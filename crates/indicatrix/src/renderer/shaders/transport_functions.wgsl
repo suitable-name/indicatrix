@@ -364,7 +364,7 @@ fn theta_c_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     let c = theta_c_cases[idx];
-    // P5: `theta_c_for_bounce`'s WGSL signature now takes the precomputed hero e-index
+    // P5: `theta_c_for_bounce`'s WGSL signature takes the precomputed hero e-index
     // directly (see that function's own doc comment in transport_physics.wgsl). This
     // case bank's `GemMaterial` (built in `cpu_theta_c` in
     // `renderer::gpu::transport_check::eigenmodes_uniaxial`) never carries a genuine
@@ -450,8 +450,8 @@ fn per_mode_index_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // ---------------------------------------------------------------------------------
-// Task 2 GPU port: optics::raytracer::cosine_weighted_hemisphere -- the frosted-bounce
-// direction sampler (Malley's method).
+// Frosted-facet GPU port: optics::raytracer::cosine_weighted_hemisphere -- the
+// frosted-bounce direction sampler (Malley's method).
 // ---------------------------------------------------------------------------------
 
 // Field order matters here: `n` (a vec3, needing 16-byte WGSL alignment) is placed
@@ -486,8 +486,8 @@ fn cosine_hemisphere_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // ---------------------------------------------------------------------------------
-// Task 2 GPU port: optics::raytracer::apply_frosted_bounce -- the full frosted-facet
-// bounce dispatch (TIR-forced / reflect / transmit branch selection, the broadband
+// Frosted-facet GPU port: optics::raytracer::apply_frosted_bounce -- the full
+// frosted-facet bounce dispatch (TIR-forced / reflect / transmit branch selection, the broadband
 // hero-only r_unpol split, Stokes depolarization, path_pdf scaling). Calls the SAME
 // `transport_physics.wgsl` function `spectral_transport.wgsl`'s megakernel calls for a
 // `FacetFinish::Frosted` facet -- see that shared function's own doc comment.
@@ -551,7 +551,7 @@ fn frosted_bounce_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // ---------------------------------------------------------------------------------
-// Physics review, Task 1 GPU port: optics::raytracer::{henyey_greenstein_phase,
+// Inclusion/subsurface scattering GPU port: optics::raytracer::{henyey_greenstein_phase,
 // sample_henyey_greenstein_direction, maybe_scatter_or_extinguish}. Calls the SAME
 // `transport_physics.wgsl` functions `spectral_transport.wgsl`'s megakernel calls for a
 // scattering-active material -- see that shared file's own doc comment.
@@ -936,7 +936,7 @@ fn internal_solve_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // ---------------------------------------------------------------------------------
-// P6 exit-event spectral splitting (2026-09-07): kernel-level equivalence for the
+// P6 exit-event spectral splitting: kernel-level equivalence for the
 // three pure per-channel helpers `transport_physics.wgsl`'s own "P6 exit-event
 // spectral splitting" section defines -- `compute_channel_transmission`,
 // `compute_uniaxial_exit_transmission`, `narrow_compat` -- driven by
@@ -944,7 +944,7 @@ fn internal_solve_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // comment for why its CPU reference functions are verbatim transcriptions of the real
 // CPU source rather than a direct call (both `compute_channel_transmission`/
 // `compute_uniaxial_exit_transmission` are module-private in `refraction.rs`, and
-// `narrow_compat` is `pub(super)` there -- `refraction.rs` is this task's
+// `narrow_compat` is `pub(super)` there -- `refraction.rs` is a
 // coordinator-owned/protected file, so none of the three can be imported cross-module).
 // ---------------------------------------------------------------------------------
 
@@ -1162,7 +1162,7 @@ fn assigned_mode_alpha_biaxial_main(@builtin(global_invocation_id) gid: vec3<u32
 }
 
 // ---------------------------------------------------------------------------------
-// Finding G7/G8: Next-event estimation, balance-heuristic MIS, and 1D/2D distribution
+// Next-event estimation, balance-heuristic MIS, and 1D/2D distribution
 // importance sampling.
 // ---------------------------------------------------------------------------------
 
@@ -1326,10 +1326,14 @@ fn tf_dist2d_pdf_uv(u: f32, v: f32) -> f32 {
     return pdf_u * pdf_v;
 }
 
+// Same `sin(theta)`-off-the-direction form as transport_bounce.wgsl's `dist2d_pdf` and
+// `EnvironmentMap::pdf` -- see the latter's own comment.
 fn tf_dist2d_pdf(dir: vec3<f32>) -> f32 {
     let uv = hdr_direction_to_uv(dir);
     let pdf_uv = tf_dist2d_pdf_uv(uv.x, uv.y);
-    return pdf_uv_to_solid_angle(pdf_uv, uv.y);
+    let d = normalize(dir);
+    let sin_theta = length(vec2<f32>(d.x, d.z));
+    return pdf_uv_to_solid_angle_from_sin(pdf_uv, sin_theta);
 }
 
 // ---------------------------------------------------------------------------------
@@ -1560,6 +1564,12 @@ fn tf_intersect_ray(origin: vec3<f32>, dir: vec3<f32>) -> HitInfo {
 }
 
 
+// Findings 2b/2d: `sigma_s`/`absorption_path_scale`/`alphas` and `frosted_exit` mirror
+// `optics::raytracer::scattering::nee_contribution_hg_scatter`'s own extra parameters
+// -- the standalone harness has no scene-wide `material`/`facet_finishes` bindings the
+// megakernel (`transport_bounce.wgsl`) reads those from, so each case carries its own
+// copy instead (see the CPU-side `NeeHgScatterCase` struct's doc comments for how
+// `run_nee_hg_scatter` drives them).
 struct NeeHgScatterCase {
     scatter_point: vec3<f32>,
     n_inside_hero: f32,
@@ -1567,8 +1577,13 @@ struct NeeHgScatterCase {
     g: f32,
     rng_seed: u32,
     bounce: u32,
+    sigma_s: f32,
+    absorption_path_scale: f32,
+    frosted_exit: u32,
     _pad0: f32,
     _pad1: f32,
+    _pad2: f32,
+    alphas: array<f32, 8>,
     lambdas: array<f32, 8>,
     stokes: array<vec4<f32>, 8>,
     radiance_in: array<f32, 8>,
@@ -1577,6 +1592,14 @@ struct NeeHgScatterCase {
 @group(0) @binding(76) var<storage, read> nee_hg_cases: array<NeeHgScatterCase>;
 @group(0) @binding(77) var<storage, read_write> nee_hg_out: array<f32>;
 
+// Operation-for-operation copy of `transport_bounce.wgsl`'s `nee_contribution_hg_scatter`
+// (itself the WGSL translation of `optics::raytracer::scattering::nee_contribution_hg_scatter`,
+// findings 2a-2d), adapted only in how it reaches the medium/finish inputs the megakernel
+// reads off the shared `material`/`facet_finishes` bindings: this standalone twin takes
+// them as explicit per-case parameters instead (`alphas`, `sigma_s`,
+// `absorption_path_scale`, `frosted_exit`), and samples the HDR environment through this
+// file's own `tf_hdr_env_sample_bilinear`/`tf_dist2d_sample` (bindings 62-66) rather than
+// the megakernel's scene-wide texture bindings.
 fn tf_nee_contribution_hg_scatter(
     lambdas: ptr<function, array<f32, 8>>,
     n_inside_hero: f32,
@@ -1587,6 +1610,10 @@ fn tf_nee_contribution_hg_scatter(
     bounce: u32,
     stokes: ptr<function, array<vec4<f32>, 8>>,
     radiance: ptr<function, array<f32, 8>>,
+    alphas: array<f32, 8>,
+    sigma_s: f32,
+    absorption_path_scale: f32,
+    frosted_exit: u32,
 ) {
     let u0 = f32(hash_u32(rng_seed ^ hash_u32(bounce ^ NEE_ENV_DIR_U_STREAM))) / 4294967295.0;
     let u1 = f32(hash_u32(rng_seed ^ hash_u32(bounce ^ NEE_ENV_DIR_V_STREAM))) / 4294967295.0;
@@ -1598,6 +1625,13 @@ fn tf_nee_contribution_hg_scatter(
     let probe_origin = scatter_point + sample.dir * 1e-4;
     let hit = tf_intersect_ray(probe_origin, sample.dir);
     if (!hit.hit) {
+        return;
+    }
+    // Mirrors `nee_contribution_hg_scatter`'s `facet_finishes` check -- the
+    // standalone harness has no scene-wide facet-finish buffer to index by `hit.facet_idx`,
+    // so the CPU driver marks the whole test cube Frosted or Polished up front and passes
+    // that verdict directly (see `NeeHgScatterCase::frosted_exit`'s doc comment).
+    if (frosted_exit != 0u) {
         return;
     }
 
@@ -1619,10 +1653,26 @@ fn tf_nee_contribution_hg_scatter(
         return;
     }
 
+    // The exterior direction this light sample actually leaves along --
+    // same Snell's-law form as the megakernel twin; `sample.pdf` stays in the INTERIOR
+    // (pre-refraction) measure `tf_dist2d_sample` sampled in, only the radiance LOOKUP
+    // moves to the refracted direction.
+    let refracted_dir = normalize(n_inside_hero * sample.dir - fma(n_inside_hero, cos_i, -cos_t) * hit.normal);
+    let refracted_uv = hdr_direction_to_uv(refracted_dir);
+    let env_rgb = tf_hdr_env_sample_bilinear(refracted_uv.x, refracted_uv.y);
+
+    // The medium transmittance a phase-sampled continuation reaching this
+    // same boundary would have paid -- the same per-channel
+    // `exp_poly(-(alphas[k]+sigma_s)*hit.t*path_scale)` the megakernel twin and the CPU
+    // function both apply (`exp_poly`, not the `exp()` builtin -- see
+    // that function's own doc comment, `transport_physics.wgsl`).
+    let hit_t_scaled = hit.t * absorption_path_scale;
+
     let nee_common = t_unpol * phase_val * mis_weight / sample.pdf;
     for (var k: u32 = 0u; k < 8u; k = k + 1u) {
-        let env_k = rgb_to_spectral_radiance(sample.rgb.x, sample.rgb.y, sample.rgb.z, (*lambdas)[k]);
-        (*radiance)[k] = fma((*stokes)[k].x * nee_common * env_k, 1.0, (*radiance)[k]);
+        let transmittance_k = exp_poly(-(alphas[k] + sigma_s) * hit_t_scaled);
+        let env_k = rgb_to_spectral_radiance(env_rgb.x, env_rgb.y, env_rgb.z, (*lambdas)[k]);
+        (*radiance)[k] = fma((*stokes)[k].x * transmittance_k * nee_common * env_k, 1.0, (*radiance)[k]);
     }
 }
 
@@ -1639,6 +1689,7 @@ fn nee_hg_scatter_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     tf_nee_contribution_hg_scatter(
         &lambdas, c.n_inside_hero, c.scatter_point, c.scatter_dir_in,
         c.g, c.rng_seed, c.bounce, &stokes, &radiance,
+        c.alphas, c.sigma_s, c.absorption_path_scale, c.frosted_exit,
     );
     let base = idx * 8u;
     for (var k: u32 = 0u; k < 8u; k = k + 1u) {

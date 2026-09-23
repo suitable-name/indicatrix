@@ -135,13 +135,23 @@ impl EnrollRegistry {
     /// The TTL-parameterized implementation behind [`Self::issue`] -- lets expiry tests
     /// use a real, short TTL instead of waiting out the full [`TOKEN_TTL_SECS`] (180s).
     /// Not part of the public API: every real caller is fixed at [`TOKEN_TTL_SECS`].
+    ///
+    /// `name` is sanitized via [`indicatrix_net::tls::sanitize_allowlist_label`]
+    /// before it is used for anything -- both the certificate's Subject
+    /// Common Name below and, later, the allowlist line
+    /// [`super::connection::handle_enroll_connection`]'s `Claim` arm appends via
+    /// [`indicatrix_net::tls::append_to_allowlist`] -- so a `\r`/`\n`/`#` in an
+    /// operator-supplied `--name` can never inject a stray allowlist line or corrupt a
+    /// later entry's own comment. Sanitizing once, here, keeps the certificate and the
+    /// eventual allowlist entry naming the SAME (sanitized) string.
     pub(super) fn issue_with_ttl(
         &self,
         pki_dir: &Path,
         name: &str,
         ttl: Duration,
     ) -> Result<(String, u64), EnrollIssueError> {
-        let bundle = pki::issue_client_in_memory(pki_dir, name)?;
+        let name = indicatrix_net::tls::sanitize_allowlist_label(name);
+        let bundle = pki::issue_client_in_memory(pki_dir, &name)?;
 
         let mut secret = [0u8; token::SECRET_LEN];
         random_bytes(&mut secret)?;
@@ -156,7 +166,7 @@ impl EnrollRegistry {
         pending.push(PendingEnrollment {
             secret_hash: Zeroizing::new(secret_hash),
             expires_at: Instant::now() + ttl,
-            name: name.to_string(),
+            name,
             bundle: EnrollBundle::from(bundle),
         });
         drop(pending);

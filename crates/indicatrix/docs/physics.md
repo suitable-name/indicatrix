@@ -68,9 +68,9 @@ GPU port and its equivalence harness, see [gpu.md](gpu.md).
 - **Every material renders on both CPU and GPU, biaxial ones included** — the
   `BiaxialIndicatrix` machinery is ported to WGSL and verified at the same
   Tier 2 / Tier 3 bar as the rest of the transport physics (see [gpu.md](gpu.md)),
-  so `GemMaterial::gpu_supported()` returns `true` unconditionally. It stays a
-  real per-scene routing predicate rather than being deleted, so a future
-  incompatible material or a regression can once again return `false`.
+  so `GemMaterial::gpu_supported()` returns `true` unconditionally. It remains a
+  real per-scene routing predicate, not a stub that always returns `true`, so a
+  future incompatible material or a regression can return `false`.
 
 ## Bit-exact golden tests
 

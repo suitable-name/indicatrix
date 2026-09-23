@@ -1,6 +1,6 @@
-# Facet Diagrams Studio — User Manual
+# Indicatrix Cut — User Manual
 
-Facet Diagrams Studio is a desktop program for lapidaries: a catalogue
+Indicatrix Cut is a desktop program for lapidaries: a catalogue
 browser for faceting designs, a physically based spectral renderer that
 shows any design in a chosen gem material and reports its optical
 performance, and — on the standard build — a cutting-design editor that
@@ -26,15 +26,17 @@ exporting a design of your own.
    tiers, and undo/redo.
 5. [Solving](05-solving.md) — what Solve does, every status message it can
    show, and why it is a deliberate button press.
-6. [Adjusting a Design for Another Material or Refractive Index](06-materials-and-refractive-index.md)
-   — the Design Settings panel, the automated Retarget proposal, and the
-   manual procedure behind it for re-cutting a design's angles for a
-   different material.
+6. [Adapting a Design for Another Material](06-materials-and-refractive-index.md)
+   — the built-in material list, building a custom material, RI Override
+   vs. Material, the Design Settings panel, and the automated Retarget
+   proposal (plus the manual procedure behind it) for re-cutting a
+   design's angles for a different material.
 7. [Creating a New Design From Scratch: A Worked Example](07-new-design-worked-example.md)
    — a full walkthrough building an 8-fold stone tier by tier.
 8. [Deep Solve, Optimize, Adopt, and Apply](08-deep-solve-optimize-adopt.md)
-   — verifying a solve against catalogue proportions, searching for better
-   angles, and converting an imported tier back to real meet geometry.
+   — verifying a solve against catalogue proportions, every Optimize
+   control (weights, budget/seed, Polish, Only selected tiers, Preview),
+   Adopt/Adopt all/Adopt sel., and fixing a tier whose solve is uncertain.
 9. [Rendering and Export](09-rendering-and-export.md) — exporting a
    still image, and how local and remote computation hand off while you
    work.
@@ -45,12 +47,16 @@ exporting a design of your own.
     versus this app's native `.indicatrix.toml` format, and where your files
     go.
 12. [Troubleshooting and Limitations](12-troubleshooting-and-limitations.md)
-    — a consolidated symptom/cause/fix table and every current limitation
-    in one place.
+    — a consolidated symptom/cause/fix table, where to find the app's log
+    file and how to raise its verbosity, and every current limitation in
+    one place.
 13. [The Solid Inspection View](13-solid-inspection-view.md) — the Edit
     tab's second viewport: view modes, orbiting, hover/click facet
     picking, the critical-angle and pending-edit overlays, and its own
     "Not solved" banner.
+14. [Retarget, Snapshot, Compare, and Tilt Curves](14-retarget-snapshot-compare-tilt-curves.md)
+    — a quick map of these four "compare two things" tools, and which of
+    their results actually survive after you close the design.
 
 ### Appendices
 

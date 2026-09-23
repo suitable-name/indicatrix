@@ -24,17 +24,26 @@ export global TiltModel {
     pure callback is_cached_curve_material_stale(string, string) -> bool;
     callback rerender_curve_with_current_material();
 
+    // True whenever the geometry/
+    // material/light the curves above were swept against no longer matches what is
+    // currently loaded (`gui::tilt::tilt_profile`'s own `AxesCacheKey` comparison,
+    // pushed on every dialog-open/rerender request) -- a DIFFERENT signal from
+    // `cached_curve_material`/`is_cached_curve_material_stale` above, which only
+    // ever compares the MATERIAL a database-cached preview image was rendered
+    // under. `performance_graph_dialog.slint` badges this with the shared
+    // `StaleBadge`, "Recompute" wired to `rerender_curve_with_current_material()`.
+    in property <bool> curves_stale: false;
+
     in property <image> hover_preview_image;
     callback request_tilt_hover_preview(int, float);
 
     callback request_tilt_profile_axes();
     callback copy_curve_data();
 
-    // CAD audit item 139: the Tilt Curve button's shared open/close + stale-
-    // cache-check sequence -- used to live only as `GemViewportView`'s own
-    // `toggle_performance_dialog` (`gem_viewport.slint`), so the Edit tab's
-    // `SolidViewportView` (`solid_viewport.slint`) had no way to reach it at
-    // all and would have needed its own second copy. A plain `function`, not a
+    // The Tilt Curve button's shared open/close + stale-cache-check sequence,
+    // reachable from both `GemViewportView`'s own `toggle_performance_dialog`
+    // (`gem_viewport.slint`) and the Edit tab's `SolidViewportView`
+    // (`solid_viewport.slint`) without a second copy. A plain `function`, not a
     // `callback`, specifically so its body can live right here rather than
     // needing a `on_toggle_dialog` handler wired up from Rust in a THIRD
     // place: a global's callback body may only live in Rust or in the file
@@ -51,4 +60,107 @@ export global TiltModel {
             }
         }
     }
+}
+
+// Settings and progress for exporting a tilt-performance video clip (a rendered frame
+// per swept angle, muxed into a video) -- `performance_graph_dialog.slint`'s
+// collapsible "Export tilt video" section. Every `in-out` property here persists
+// across dialog re-opens within the session, mirroring how `ExportModel`'s own quality
+// settings persist for the image export dialog -- only the section's own
+// expanded/collapsed state and its "confirm a huge run" guard live on the dialog
+// itself (`PerformanceGraphDialog.video_export_expanded`/`confirmed_large_run`), reset
+// fresh every time the dialog is re-instantiated, per the task's own "collapsed on
+// popup open, not persisted" requirement.
+export global TiltVideoExportModel {
+    // Sweep: start/end in whole degrees (`SpinBox`-driven, two-way bound directly since
+    // both are `int`), step as an arbitrary fractional degree value (`LineEdit`-driven
+    // via `parse_step_deg`, validated in Rust down to
+    // `gui::tilt::video_export::params::{MIN_STEP_DEG, MAX_STEP_DEG}` = 0.01..=5.0,
+    // required to work anywhere in 0.01..=1.0 per the task's own numeric-step
+    // requirement).
+    in-out property <int> start_angle_deg: -90;
+    in-out property <int> end_angle_deg: 90;
+    in-out property <float> step_deg: 1.0;
+    // Parses and clamps a step text field's raw entry -- Slint has no built-in
+    // string-to-float parse, so this round-trips through Rust
+    // (`gui::tilt::video_export::params::clamp_step_deg`); a value that fails to parse
+    // falls back to `1.0`, matching that function's own "non-finite -> 1.0" rule.
+    pure callback parse_step_deg(string) -> float;
+    in-out property <int> fps_index: 1; // 0: 24fps, 1: 30fps, 2: 60fps
+
+    // Resolution: an index into `gui::tilt::video_export::params::RESOLUTION_PRESETS`
+    // (7 square presets 128..8192, then 5 16:9 presets 720p..8K), or
+    // `CUSTOM_RESOLUTION_INDEX` for `custom_width`/`custom_height` (each clamped to
+    // [128, 8192] independently in Rust).
+    in-out property <int> resolution_preset: 8; // 1080p
+    in-out property <int> custom_width: 512;
+    in-out property <int> custom_height: 512;
+    // The single source of truth for which `resolution_preset` index means "Custom" --
+    // `gui::tilt::video_export::params::CUSTOM_RESOLUTION_INDEX`, so this dialog's own
+    // combo box never needs a second, hand-kept copy of the preset table's length.
+    pure callback custom_resolution_index() -> int;
+
+    // Quality -- same shape as `export_dialog.slint`'s own controls (power-of-two
+    // sample slider, bounce ladder, colour space), kept as this dialog's OWN state
+    // rather than shared with `ExportModel` so tuning a video export never silently
+    // changes the still-image export dialog's own remembered settings, or vice versa.
+    in-out property <float> sample_exponent_raw: 6.0; // 64 spp default -- multiplied by frame count, so lower than the image export's own default
+    in-out property <int> selected_color_space_index: 0; // 0: sRGB, 1: Display P3, 2: Rec.2020
+    in-out property <int> selected_bounce_index: 2; // 4/8/12/24/64/128 ladder, matching export_dialog.slint
+
+    // Output: same folder as the still-image export (`ExportModel.directory`), but its
+    // OWN filename template -- a video export names a FOLDER (holding the numbered PNG
+    // frames plus the muxed video), not a single file, so it needs `{axis}`/`{fps}`/
+    // `{step}`/`{start}`/`{end}`/`{frames}` variables the image template has no use
+    // for, alongside every variable the image template already supports
+    // (`{design}`/`{material}`/`{width}`/...).
+    in-out property <string> filename_template: "tilt_video_{design}_{material}_axis{axis}_{width}x{height}_{timestamp}";
+    // Second argument is the dialog's `selected_axis_index` (Slint-local state --
+    // `performance_graph_dialog.slint`'s own doc comment on that property) so the
+    // preview's `{axis}` substitution -- and the rest of the real open design/material
+    // it now resolves against -- matches what "Start Video Export" would actually run.
+    pure callback preview_video_folder_name(string, int) -> string;
+
+    // Overlay: whether to draw the swept metrics into each frame, and which ones.
+    // Always available: brilliance/windowing/extinction (the curve's own three
+    // channels), tilt brilliance (the axis's mean brilliance across the whole sweep --
+    // see `gui::tilt::video_export::metrics`'s own doc comment on why this is a
+    // DIFFERENT number from Optimize's own `tilt_brilliance_pct`), and the current
+    // tilt angle itself.
+    in-out property <bool> show_values: false;
+    in-out property <bool> metric_brilliance: true;
+    in-out property <bool> metric_windowing: true;
+    in-out property <bool> metric_extinction: true;
+    in-out property <bool> metric_tilt_brilliance: false;
+    in-out property <bool> metric_angle: true;
+
+    // Encoding: PNG frames are always written; an MP4 (ffmpeg on PATH) or GIF
+    // (fallback) is muxed from them afterward. `keep_frames` off (the default) deletes
+    // the PNG sequence once a video was produced successfully.
+    in-out property <bool> keep_frames: false;
+
+    // Frame-count/duration/cost estimate -- `frame_count` is a pure callback into
+    // `gui::tilt::video_export::params::frame_count` (not reimplemented in Slint)
+    // so the number shown here can never disagree with how many frames the export
+    // will actually render.
+    pure callback frame_count(float, float, float) -> int;
+    // A rough per-frame render-time estimate, in seconds -- 0.0 until the first frame
+    // of a run (this session or a prior one) has actually landed. `0.0` means "no
+    // estimate yet", not "instant".
+    in property <float> last_frame_seconds: 0.0;
+
+    // Progress, mirroring `ExportModel`'s own shape.
+    in property <bool> is_exporting: false;
+    in property <float> progress: 0.0; // 0.0..=1.0
+    in property <int> current_frame: 0;
+    in property <int> total_frames: 0;
+    in property <string> status_message: "";
+    in property <bool> has_error: false;
+
+    // Starts the export for `axis_index` (the dialog's own `selected_axis_index`,
+    // passed at the call site rather than mirrored into a property here -- see
+    // `performance_graph_dialog.slint`'s own comment on why). Every other setting is
+    // read directly off this global's own properties.
+    callback start_video_export(int);
+    callback cancel_video_export();
 }

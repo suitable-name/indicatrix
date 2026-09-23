@@ -61,13 +61,14 @@ const ABSORPTION_ABS_FLOOR: f32 = 1e-6;
 /// `BandShape::GaussianEnergy` (P6), plus one synthetic set mixing BOTH shapes in the
 /// same band list -- exercises the kernel's per-band `shape` branch inside one sum, not
 /// just one shape per whole case. This is the crate's ONE `spectral_absorption`/
-/// `AbsorptionBand` check: it used to be split into a wavelength-only bank here and a
+/// `AbsorptionBand` check: a split into a wavelength-only bank here and a
 /// separate `GaussianEnergy`-only bank/struct/kernel (`run_absorption_shaped`,
-/// `AbsorptionShapedCase`, `absorption_shaped_main`) proving only that the CPU formula's
-/// f32 op order survived translation to WGSL in a standalone function -- now that
+/// `AbsorptionShapedCase`, `absorption_shaped_main`) would prove only that the CPU
+/// formula's f32 op order survives translation to WGSL in a standalone function,
+/// unconnected to the production struct/function -- since
 /// `GpuAbsorptionBand`/`AbsorptionBand`/`spectral_absorption` themselves carry `shape`
 /// (see `renderer::buffers::GpuAbsorptionBand`'s own doc comment), that standalone proof
-/// and the production check would otherwise diverge, so they're merged into this one
+/// and the production check would otherwise diverge, so both are covered by this one
 /// case bank against the one production struct/function.
 fn build_absorption_cases() -> Vec<(
     AbsorptionCase,

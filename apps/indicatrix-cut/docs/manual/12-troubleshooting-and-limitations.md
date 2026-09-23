@@ -19,6 +19,12 @@ one place.
 | SOLVE column shows bold amber **Least-squares est.** or **FAILED (untrusted)** | The solver could not derive that tier's mast from real geometry and fell back to an estimate or a placeholder. | Treat the design as not actually finished. Review the tier's constraint and its neighbours; re-solve after changes. |
 | Solve is slow on a large design | Solve is a full geometric solve plus a solid-closure check across every tier -- this can take a second or two once a design has over a hundred tiers. This is expected, not a hang. | Wait for it to finish; this is exactly why Solve is a deliberate button press rather than something that reruns on every keystroke (Chapter 5). |
 | Deep Solve takes minutes | Deep Solve is a separate, much slower external verification pass -- a mean of roughly 68 solves per design on the app's own reference corpus. This is normal for Deep Solve specifically, not for ordinary Solve. | Let it finish, or click **Cancel** to stop waiting (the background computation keeps running to completion regardless; its result is simply discarded) -- Chapter 8. |
+| Deep Solve button is greyed out: "...unavailable for a new or placeholder-reconstructed design" | This design has no printed proportions (Vol/W^3, L/W, C/W, P/W, H/W) recorded in the catalogue to verify against. | Nothing to fix -- Deep Solve genuinely has nothing to check a brand-new or placeholder-reconstructed design against (Chapter 8). |
+| Deep Solve button is greyed out: "...has nothing to repair until you convert a tier to a meet constraint" | Every tier is still pinned exactly as imported -- there is nothing Deep Solve could move even if it found a discrepancy. | Adopt at least one tier first (Chapter 8), then try again. |
+| Optimize button is greyed out: "Every tier is currently pinned as a scale reference..." | A freshly loaded catalogue design starts with zero free tiers -- this is expected, not broken. | Adopt at least one tier's real meet constraint, or author one by hand (Chapter 8). |
+| Optimize will not move a particular tier | That tier is either pinned as an Exact scale value (including the girdle, which Optimize never moves), or its SOLVE strategy is still uncertain (Least-squares est. / FAILED / not solved / blocked / no anchor yet). | Adopt the tier if it is pinned and you want it free; otherwise fix the uncertain solve first -- see "Trusting the SOLVE column" (Chapter 8). |
+| Clicking Solve shows an **Abandon** button instead of Cancel, and the wait does not stop right away | The solver has no mid-run checkpoint yet, so Abandon only discards the result on the app's side -- the background worker keeps computing to completion regardless (Chapter 5). | This is expected; the editor is usable again immediately even though the CPU work finishes unseen. |
+| A dialog titled "This design is not a closed solid" appears when saving or exporting | The design does not currently solve to a closed solid, and you are about to write a file anyway. | Click **No** to cancel and fix the design first, or **Yes** to write it with a `NOT A CLOSED SOLID` header stamp so the file itself carries the warning (Chapter 11). |
 
 ## Rendering and remote-worker problems
 
@@ -43,17 +49,43 @@ one place.
 | A design's notes contain what looks like leftover web-page text, or only one tier (crown or pavilion) is stored where you would expect two | The design was imported from an external design-sharing source, and that import had a data-cleanup issue that has since been fixed. | Re-sync your catalogue against its original source to pick up the corrected import. If you do not manage the catalogue yourself, ask whoever does to re-run the sync. |
 | Catalogue seems to have lost designs you had before | You most likely started the program from a different folder than usual -- the catalogue file is opened relative to the program's working directory, not a fixed location (Chapter 1). | Start the program the same way you did before. Your designs are not deleted, just not the ones this session is looking at. |
 
+## Log file
+
+Every run writes a plain-text log file, `indicatrix-cut.log`, next to the
+app's executable — falling back to the system temp folder if that
+location is not writable (Program Files, a read-only mount). By default
+it logs at `warn` for everything, with this app's own two crates turned
+up to `info`: the geometry/solver library (`indicatrix`) and the app
+itself (`indicatrix_cut`). The same messages also print to stderr when a
+console is attached — a debug build, or the app started from a terminal;
+a normal release-build launch has no console, so only the file gets
+anything in that case.
+
+To see more detail while reproducing a problem, set the `RUST_LOG`
+environment variable before starting the app — for example
+`RUST_LOG=indicatrix=debug,indicatrix_cut=debug` for both of this app's
+own crates at debug level, or `RUST_LOG=trace` for the noisiest level
+everywhere. `RUST_LOG`, when set, replaces the default filter above
+entirely rather than adding to it.
+
+If you are filing a bug report, attach `indicatrix-cut.log` (from beside
+the executable, or the temp folder if that is where it landed) — it is
+the single most useful thing to include alongside a description of what
+you were doing. A crash additionally writes `indicatrix-cut-panic.log` in
+the same location, with the panic message, the thread it happened on, and
+a full backtrace; attach that too if it exists.
+
 ## Known limitations
 
-- **A custom catalogue material's own RI does not flow to the exported
-  schedule automatically.** The Design Settings panel's Effective RI (and
-  what "Export .asc"/"Save Native" actually writes) only ever derives from a
-  built-in preset's name or an explicit RI override -- never from a custom
-  catalogue material's own number, even though that same custom material's
-  real RI/dispersion IS what the optimizer, tilt curve, and (when linked)
-  the viewport use for it. Set an explicit RI override matching the custom
-  material's own value if you need the exported schedule to agree (Chapter
-  6).
+- **Solid view's windowing-risk hatch does not fully resolve custom materials.**
+  Export Edited .asc, Save Native, and the cutting sheet all correctly resolve
+  a custom catalogue material's own RI (Chapter 6), but the Solid
+  view's own windowing-risk hatch overlay and one internal solve helper
+  do not. For a design whose Material names a custom catalogue material with no RI
+  override, this means the Solid view's hatch can briefly disagree with
+  the tier list's MARGIN badge and the Live Render view. Set an explicit
+  RI override matching the custom material's own value if you notice this
+  (Chapter 6).
 - **Deep Solve never modifies the design.** It is a read-only diagnostic
   that reports and suggests; nothing it finds is written back to the tier
   list unless you separately make the same change yourself (Chapter 8).
@@ -63,12 +95,12 @@ one place.
   to it to create or edit one -- for that you still have to switch to the
   Live Render tab and use the pencil button next to Render Material
   (Chapter 2), then come back.
-- **The "Linked to design" toggle lives only on the Live Render tab.** If
-  you pick a different material there to preview a design in it, then go
-  back to the Edit tab and change anything, the render silently snaps back
-  to the design's own material the next time it refreshes -- the toggle
-  that explains why (Chapter 6) is on the tab you just left, not the one
-  you are editing in.
+- **The "Linked to design" toggle exists as two separate copies of the
+  same control** -- one on the Live Render tab's own toolbar, one in the
+  Edit tab's Design Settings panel (Chapter 6). Both control the same
+  underlying setting, so toggling either one moves the other, but this
+  duplication in the underlying UI code is itself worth a developer's
+  attention (see Chapter 6's material chapter for what the toggle does).
 - **The Solid and Live Render viewports show a generic placeholder for a
   brand-new, empty design.** Both read "Solve to preview" / "Select a
   design to preview" rather than a message that names New Design.../Load
@@ -79,9 +111,8 @@ one place.
   materials: it needs birefringence and dispersion far outside the range
   this renderer's anisotropic optics have been verified against, so adding
   it without that verification would mean shipping unverified numbers
-  rather than a measured material (Appendix C). Rutile, previously
-  excluded for the same reason, has since been added and is reachable from
-  the render material drop-down like every other built-in.
+  rather than a measured material (Appendix C). Rutile is included and is
+  reachable from the render material drop-down like every other built-in.
 - **The GPU render path has two known gaps against the CPU path.** First,
   the "D65 Daylight" lighting preset renders with the real measured
   daylight spectrum on the CPU but still falls back to a simplified 6500K

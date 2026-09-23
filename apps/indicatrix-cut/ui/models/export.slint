@@ -63,14 +63,6 @@ export global ExportModel {
     pure callback preview_filename_template(string) -> string;
     pure callback filename_template_unknown_placeholders(string) -> string;
 
-    // Max ray bounces: the export's OWN cap, independent of the live viewport's -- see
-    // `bridge::export_thread::scene_snapshot`'s doc comment on why an export must not
-    // silently inherit whatever the viewport happens to be set to. `live_bounce_index`
-    // is the live viewport's CURRENT pill index (`SettingsModel.bounce_index`), already
-    // resolved via `gui::mod::bounces_index`'s nearest-rung matching -- reused here
-    // rather than re-deriving a second mapping.
-    in property <int> live_bounce_index: 2;
-
     in property <bool> is_exporting: false;
     in property <float> progress: 0.0; // 0.0 .. 1.0
     in property <string> status_message: "";

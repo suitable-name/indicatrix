@@ -12,6 +12,16 @@ import { LibraryModel } from "../models/library.slint";
 // a folder import (every `.asc` file directly inside it) and a single-file import are
 // both genuinely useful, and one native dialog can't offer both at once.
 //
+// When a picked file/folder would replace an existing catalogue row by filename,
+// Rust shows a synchronous native confirm dialog (a plain `rfd::MessageDialog`,
+// the same "no `.slint` file owns a place to put a new modal for a decision it
+// alone knows needs asking" precedent `gui::editor::native_io::
+// confirm_status_before_write` already uses) BEFORE running
+// `pick_asc_file`/`pick_asc_folder`'s import -- see
+// `gui::library::local::import::confirm_collisions_if_any`. Nothing in this file
+// changes for that: the picker buttons below still just fire-and-forget the same two
+// callbacks either way.
+//
 // Inherits `PopupWindow` -- same reasoning as `filter_panel.slint`: renders in
 // Slint's dedicated popup layer, always on top, and must be instantiated
 // unconditionally and driven via show()/close() (see `header.slint`'s
@@ -19,12 +29,12 @@ import { LibraryModel } from "../models/library.slint";
 export component ImportDialog inherits PopupWindow {
     in property <string> result_text: LibraryModel.import_result_text;
     in property <bool> importing: LibraryModel.is_busy;
-    // CAD audit items 197 and 98: whether this import produced something worth
-    // reading -- it replaced an existing catalogue row by filename-only dedup, or
-    // some files failed. `result_text` already carried that sentence, but
-    // `changed importing` below used to close this popup the instant `importing`
-    // went false regardless, so it was never actually reachable. Now driven by the
-    // real signal the import completion handler sets.
+    // Whether this import produced something worth reading -- it replaced an
+    // existing catalogue row by filename-only dedup, or some files failed.
+    // `result_text` already carries that sentence, but showing it requires
+    // keeping the popup open past `importing` going false -- see `changed
+    // importing` below, which is driven by the real signal the import completion
+    // handler sets rather than closing unconditionally.
     in property <bool> had_collision: LibraryModel.import_should_stay_open;
     // Overall progress for the import currently running -- 0.0..1.0, only meaningful
     // while `importing` is true. `import_done`/`import_total` are the raw file counts
@@ -35,7 +45,7 @@ export component ImportDialog inherits PopupWindow {
     in property <int> import_total: LibraryModel.import_total;
     in property <float> import_progress: LibraryModel.import_progress;
 
-    // Whether the NEXT folder pick should also walk subfolders (Task: FEATURE 3).
+    // Whether the NEXT folder pick should also walk subfolders.
     // Read at the moment "Choose folder..." is clicked and handed to
     // `pick_asc_folder` as its argument -- NOT polled afterwards. This has to be set
     // BEFORE that click: picking a folder starts the import in the same step (see
@@ -46,11 +56,10 @@ export component ImportDialog inherits PopupWindow {
 
     // The default `close-policy` (`close-on-click`) would close the popup on the
     // very first click anywhere inside it -- including a press on "Choose file..."
-    // itself, before that click could ever reach the button -- which is exactly why
-    // the whole import flow was unreachable before this fix (see this task's BUG 1).
-    // `filter_panel.slint`/`remote_worker_dialog.slint` make the same choice for the
-    // same reason. Closing is handled explicitly instead: the '×' button below calls
-    // the inherited `close()`.
+    // itself, before that click could ever reach the button, making the whole
+    // import flow unreachable. `filter_panel.slint`/`remote_worker_dialog.slint`
+    // make the same choice for the same reason. Closing is handled explicitly
+    // instead: the '×' button below calls the inherited `close()`.
     close-policy: PopupClosePolicy.no-auto-close;
 
     // A `PopupWindow` is modal: while it is open, Slint routes every click to the
@@ -61,13 +70,12 @@ export component ImportDialog inherits PopupWindow {
     // toast already carries the import summary.
     changed importing => {
         if (!self.importing) {
-            // CAD audit item 197: stay open when this import replaced an existing
-            // row, so `result_text`'s warning about it is actually reachable
-            // instead of vanishing with the popup the same instant it appears.
-            // Every other outcome still auto-closes, so the import completion
-            // handler's own preview-generation confirm step (see this component's
-            // doc comment above) still gets the popup layer handed back to it
-            // immediately, unchanged from today.
+            // Stays open when this import replaced an existing row, so
+            // `result_text`'s warning about it is actually reachable instead of
+            // vanishing with the popup the same instant it appears. Every other
+            // outcome still auto-closes, so the import completion handler's own
+            // preview-generation confirm step (see this component's doc comment
+            // above) still gets the popup layer handed back to it immediately.
             if (!root.had_collision) {
                 root.close();
             }
@@ -127,6 +135,18 @@ export component ImportDialog inherits PopupWindow {
             Text {
                 text: "Pick a single .asc file, or a folder of .asc files -- the import runs immediately.";
                 font-size: 11px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+            // This importer reads ONLY `.asc` -- a folder containing `GemCAD`'s own
+            // `.gem`/`.gcs` files scans past them silently unless something says so.
+            // The Rust side (`gui::library::local::import::import_path`) counts and
+            // names any `.gem`/`.gcs` files it skips in `result_text` itself once an
+            // import actually runs; this line sets the expectation up front, before
+            // the cutter even picks a folder.
+            Text {
+                text: ".gem and .gcs files are not read by Import -- this app only reads part of .gem elsewhere (no facet geometry) and .gcs is read-only wherever it is read.";
+                font-size: 10px;
                 color: Theme.text-muted;
                 wrap: word-wrap;
             }

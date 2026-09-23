@@ -11,7 +11,7 @@
 //! # Wide-gamut export
 //!
 //! `run_export`'s tone-mapping branches on the caller's `ColorSpace`: `Srgb` (default)
-//! goes through [`tonemap_to_rgba`]'s pre-existing `xyz_to_srgb_gamma` path unchanged.
+//! goes through [`tonemap_to_rgba`]'s `xyz_to_srgb_gamma` path.
 //! Any other space routes through [`tonemap_wide_gamut`] (`ColorSpace::encode` with
 //! `ToneMap::AcesFilmic { exposure: 1.0 }`), which reproduces `xyz_to_srgb_gamma`'s
 //! tone-mapping exactly so the wide-gamut path only changes gamut primaries and

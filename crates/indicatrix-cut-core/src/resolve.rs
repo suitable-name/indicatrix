@@ -52,7 +52,7 @@
 //! measured extreme.
 
 use crate::{
-    design::{Design, MissingAnchor},
+    design::{Design, DesignSolveError},
     edit::Edit,
 };
 use indicatrix::geometry::meet_solver::{MeetConstraint, MeetTierInput, SolvedTier};
@@ -77,8 +77,13 @@ pub(crate) fn affected_tiers(inputs: &[MeetTierInput], dirty: &BTreeSet<usize>) 
 }
 
 /// Re-solves a design after `edit` was applied to it, as cheaply as the edit
-/// allows -- the single entry point `indicatrix-cut` calls instead of
-/// [`Design::solve`] on the edit path.
+/// allows.
+///
+/// `apps/indicatrix-cut` does not call this function directly (grep: zero call
+/// sites) -- it re-solves through its own `auto_solve` wrapper around
+/// [`Design::resolve_dirty`]/[`Design::solve`] instead. This function is the
+/// library-level building block that wrapper's reasoning is built from, and
+/// this crate's own tests exercise it directly.
 ///
 /// `design` is the design *after* `edit` was applied (via
 /// [`crate::edit::History::apply`], or replayed by
@@ -92,20 +97,36 @@ pub(crate) fn affected_tiers(inputs: &[MeetTierInput], dirty: &BTreeSet<usize>) 
 /// # Errors
 ///
 /// Propagates [`Design::solve`]'s/[`Design::resolve_dirty`]'s
-/// [`MissingAnchor`].
+/// [`DesignSolveError`].
 pub fn resolve_after_edit(
     design: &Design,
     previous: &[SolvedTier],
     edit: &Edit,
-) -> Result<Vec<SolvedTier>, MissingAnchor> {
+) -> Result<Vec<SolvedTier>, DesignSolveError> {
     match edit {
-        // None of these touch a tier's angle/indices/constraint -- no mast could
-        // possibly have changed.
+        // None of these touch a tier's angle/indices/constraint -- no MAST could
+        // possibly have changed, so `previous`'s masts are still valid and this
+        // returns them unchanged. `SetMeta`'s `gear_reference_angle` is the one
+        // exception worth flagging here: it rotates the solved PLANE arrangement
+        // downstream of this function (see `Edit::SetMeta`'s own doc comment), so
+        // a caller that also needs the rotated planes -- not just the masts --
+        // still gets them correctly, since `Design::planes_from_solved` reads
+        // `gear_reference_angle` fresh on every call; this function's job is
+        // masts only.
         Edit::SetPreform { .. }
+        | Edit::SetPreformYOffset { .. }
         | Edit::SetGirdleDiameterMm { .. }
         | Edit::SetMaterial { .. }
         | Edit::SetMeta { .. }
-        | Edit::SetCheaterOffset { .. } => Ok(previous.to_vec()),
+        | Edit::SetCheaterOffset { .. }
+        | Edit::SetTierNote { .. }
+        // A `TierTarget` only ever becomes a mast inside `Design::solve_with`/
+        // `resolve_dirty_with`'s own resolution pre-pass (see
+        // `crate::design::targets`'s module docs), never retroactively -- so
+        // editing one alone changes no mast `resolve_after_edit` should already
+        // know about; a caller that wants the target actually applied re-solves
+        // through those entry points next, same as every edit here.
+        | Edit::SetTierTarget { .. } => Ok(previous.to_vec()),
         // Shifts every later tier's index against `previous`, which is keyed by
         // position -- always fully re-solve rather than reason about a moving index space.
         // `MoveTier` renumbers every tier strictly between its two positions the same way.
@@ -154,10 +175,13 @@ fn batch_needs_full_resolve(edits: &[Edit], dirty: &mut BTreeSet<usize>) -> bool
     for edit in edits {
         match edit {
             Edit::SetPreform { .. }
+            | Edit::SetPreformYOffset { .. }
             | Edit::SetGirdleDiameterMm { .. }
             | Edit::SetMaterial { .. }
             | Edit::SetMeta { .. }
-            | Edit::SetCheaterOffset { .. } => {}
+            | Edit::SetCheaterOffset { .. }
+            | Edit::SetTierNote { .. }
+            | Edit::SetTierTarget { .. } => {}
             Edit::AddTier { .. }
             | Edit::RemoveTier { .. }
             | Edit::MoveTier { .. }

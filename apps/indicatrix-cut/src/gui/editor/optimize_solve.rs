@@ -34,16 +34,17 @@
 //! ticker reads that counter on its own schedule and is the only thing that ever calls
 //! `Weak::upgrade_in_event_loop`.
 //!
-//! # Cancellation is a real mid-search checkpoint, unlike `deep_solve`'s
+//! # Cancellation is a real mid-search checkpoint
 //!
-//! `deep_solve.rs`'s own doc comment is explicit that its cancellation is "a UI-level
-//! abandonment, not a mid-call interrupt": `solve_meet_points_verified` has no
-//! checkpoint that crate could poll. `optimize_design` is different: it polls `cancel`
-//! once per tier decision, so a cancellation here typically takes effect within one
-//! `evaluate_candidate_pair` call's latency (milliseconds to a few seconds).
-//! [`OptimizeSolveOutcome::Cancelled`] therefore carries a real partial
-//! `OptimizeOutcome` (whatever the search found before the checkpoint fired), not a
-//! discarded one, unlike `deep_solve::DeepSolveOutcome::Cancelled`'s empty variant.
+//! `optimize_design` polls `cancel` once per tier decision, so a cancellation here
+//! typically takes effect within one `evaluate_candidate_pair` call's latency
+//! (milliseconds to a few seconds) -- the same kind of real checkpoint
+//! `deep_solve::DeepSolveHandle::cancel` polls per pipeline run (see that module's
+//! own doc comment, "Cancellation is a real mid-search checkpoint"), just at a
+//! different grain. [`OptimizeSolveOutcome::Cancelled`] differs from
+//! `deep_solve::DeepSolveOutcome::Cancelled` in what it carries, though: a real
+//! partial `OptimizeOutcome` (whatever the search found before the checkpoint
+//! fired), not `deep_solve`'s empty, discarded variant.
 
 // Wired via `gui::editor::setup_optimize_callback`/`setup_optimize_cancel_callback`/
 // `setup_optimize_apply_callback`, which call `spawn_optimize_solve` below the exact
@@ -58,7 +59,7 @@
 use super::material_lookup::{EditorMaterialLookup, resolved_gem_material};
 use indicatrix::optics::materials::GemMaterial;
 use indicatrix_cut_core::{
-    Design, MaterialSelection, MissingAnchor, OptimizeConfig, OptimizeOutcome, SearchHooks,
+    Design, DesignSolveError, MaterialSelection, OptimizeConfig, OptimizeOutcome, SearchHooks,
     free_tier_indices,
     optimize::{SearchStage, inclusive_max_evaluations},
     optimize_design,
@@ -87,6 +88,8 @@ pub struct OptimizeSolveHandle {
 }
 
 impl OptimizeSolveHandle {
+    /// Requests cancellation -- see the module doc comment, "Cancellation is a
+    /// real mid-search checkpoint".
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
@@ -96,13 +99,11 @@ impl OptimizeSolveHandle {
 /// comment's "Real progress, not just elapsed time" section.
 ///
 /// `max_evaluations` is [`inclusive_max_evaluations`]'s figure (coordinate stage
-/// PLUS the polish stage's own cap), not [`OptimizeConfig::max_evaluations`] alone
-/// -- CAD audit item 153: the coordinate-only figure meant `evaluations` could sail
-/// past `max_evaluations` the moment the polish stage started, reading as the
-/// counter having broken past its own stated budget. `stage` is CAD audit item
-/// 161's fix for the two hangs bracketing every run: a caller shows a stage name
-/// instead of a stalled fraction while [`SearchStage::BaselineFull`]/
-/// [`SearchStage::FinalFull`] are the active stage.
+/// PLUS the polish stage's own cap), not [`OptimizeConfig::max_evaluations`] alone.
+/// This prevents the evaluation counter sailing past `max_evaluations` once the
+/// polish stage starts. `stage` is the true search stage at each progress report,
+/// so a caller can show a stage name instead of a stalled fraction while
+/// [`SearchStage::BaselineFull`]/[`SearchStage::FinalFull`] are running.
 #[derive(Debug, Clone, Copy)]
 pub struct OptimizeSolveProgress {
     pub evaluations: usize,
@@ -123,10 +124,12 @@ pub enum OptimizeSolveOutcome {
     Cancelled {
         outcome: OptimizeOutcome,
     },
-    /// `design` itself did not solve at all (no [`indicatrix_cut_core::design::MeetConstraint::ScaleReference`]
-    /// anchor for one or more blocks) -- the search was never even started.
+    /// `design` itself did not solve at all -- no
+    /// [`indicatrix_cut_core::design::MeetConstraint::ScaleReference`] anchor for
+    /// one or more blocks, or a [`indicatrix_cut_core::TierTarget`] could not be
+    /// resolved -- so the search was never even started.
     Failed {
-        error: MissingAnchor,
+        error: DesignSolveError,
     },
 }
 
@@ -176,9 +179,8 @@ where
     let stage_done = Arc::new(AtomicU8::new(SearchStage::BaselineFull.to_code()));
     let stage_ticker = Arc::clone(&stage_done);
     let ticker_ui = ui_weak.clone();
-    // CAD audit item 153: the coordinate stage's own budget alone used to be
-    // reported as `max_evaluations`, understating the true cap the moment the
-    // polish stage's evaluations started counting toward the same running total.
+    // Include both coordinate and polish stage evaluation budgets in the reported cap,
+    // so the total never appears to exceed `max_evaluations`.
     let max_evaluations = inclusive_max_evaluations(&config, free_tier_indices(&design).len());
 
     // Ticker: throttles how often the UI thread is asked to redraw progress -- see the
@@ -240,7 +242,7 @@ where
 /// (checked first, since it can happen regardless of `cancelled`) takes priority.
 fn outcome_for(
     cancelled: bool,
-    result: Result<OptimizeOutcome, MissingAnchor>,
+    result: Result<OptimizeOutcome, DesignSolveError>,
 ) -> OptimizeSolveOutcome {
     match result {
         Err(error) => OptimizeSolveOutcome::Failed { error },
@@ -252,7 +254,7 @@ fn outcome_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indicatrix_cut_core::{AngleChange, ObjectiveComponents};
+    use indicatrix_cut_core::{AngleChange, MissingAnchor, ObjectiveComponents};
 
     fn dummy_outcome(changed: bool) -> OptimizeOutcome {
         let components = ObjectiveComponents {
@@ -263,8 +265,10 @@ mod tests {
         OptimizeOutcome {
             before: components,
             before_score: 10.0,
+            before_yield_loss_pct: 0.0,
             after: components,
             after_score: 10.0,
+            after_yield_loss_pct: 0.0,
             evaluations: 4,
             changes: if changed {
                 vec![AngleChange {
@@ -301,9 +305,9 @@ mod tests {
         // A `MissingAnchor` can happen whether or not the user also cancelled --
         // solve failure takes priority since there is no partial search outcome to
         // report at all in that case.
-        let error = MissingAnchor {
+        let error = DesignSolveError::MissingAnchor(MissingAnchor {
             blocks: vec![indicatrix::geometry::meet_solver::Block::Crown],
-        };
+        });
         for cancelled in [true, false] {
             let outcome = outcome_for(cancelled, Err(error.clone()));
             assert!(matches!(outcome, OptimizeSolveOutcome::Failed { .. }));

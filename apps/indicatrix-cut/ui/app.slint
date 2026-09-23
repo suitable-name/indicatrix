@@ -15,28 +15,44 @@ import { DetachedRenderWindow } from "detached_render_window.slint";
 import { EditorView } from "components/editor_view.slint";
 import { EditorStatusStrip } from "components/editor_status_strip.slint";
 import { RetargetDialog, RetargetRowItem } from "components/retarget_dialog.slint";
+import { GearRemapDialog } from "components/editor_design_settings.slint";
 import { UndoRedoLabels } from "components/editor_command_bar.slint";
 import { SolidViewportView } from "components/solid_viewport.slint";
 import { SplitHandle } from "components/split_handle.slint";
 import { ConfirmActionDialog } from "components/confirm_action_dialog.slint";
+// Guidance layer imports: empty state, guide panel, keyboard-shortcuts overlay.
+import { EmptyState } from "components/empty_state.slint";
+import { GuidePanel } from "components/guide_panel.slint";
+import { ShortcutOverlay } from "components/shortcut_overlay.slint";
+// One-time anchor explainer card.
+import { AnchorExplainer } from "components/anchor_explainer.slint";
 
 import { SolidPreviewModel } from "models/solid_preview.slint";
+import { ActivityModel, ActivityItem } from "models/activity.slint";
 import { ViewportModel } from "models/viewport.slint";
 import { RetargetModel } from "models/retarget.slint";
 import { ExportModel } from "models/export.slint";
 import { SettingsModel } from "models/settings.slint";
 import { RemoteWorkerModel } from "models/remote_worker.slint";
 import { BatchModel } from "models/batch.slint";
-import { TiltModel } from "models/tilt.slint";
+import { TiltModel, TiltVideoExportModel } from "models/tilt.slint";
 import { LibraryModel } from "models/library.slint";
 import { EditorModel } from "models/editor.slint";
+// Guidance layer globals: see each file's own doc comment.
+import { GuideModel, GuideStepData } from "models/guide.slint";
+import { ShortcutsModel, ShortcutItem } from "models/shortcuts.slint";
+import { TemplateGalleryModel, TemplateCardData } from "models/templates.slint";
 
 export {
     DiagramItem, AngleItem, FileItem, DiagramDetailData, OpticalMetricsData,
     LightingPresetItem, WorkerItem, PerformanceFilterRow, EditorTierItem,
     OptimizeResultRow, GearRemapRow, RetargetRowItem, DetachedRenderWindow,
     SolidPreviewModel, ViewportModel, RetargetModel, ExportModel, SettingsModel,
-    RemoteWorkerModel, BatchModel, TiltModel, LibraryModel, EditorModel, UndoRedoLabels
+    RemoteWorkerModel, BatchModel, TiltModel, TiltVideoExportModel, LibraryModel, EditorModel, UndoRedoLabels,
+    // ActivityModel: the app's background-activity/status model -- see ui/models/activity.slint.
+    ActivityModel, ActivityItem,
+    // Guidance globals: guide, keyboard shortcuts overlay, template gallery -- see each global's doc comment.
+    GuideModel, GuideStepData, ShortcutsModel, ShortcutItem, TemplateGalleryModel, TemplateCardData
 }
 
 // --- Sizing notes -----------------------------------------------------------
@@ -69,19 +85,12 @@ export {
 //    dock_width`/`inspector_height` for where the clamped result lands.
 // -----------------------------------------------------------------------------
 export component MainWindow inherits Window {
-    /// The currently loaded design's own display name (a bare `.asc` file name, or
-    /// a catalogue diagram's title) -- cad_todo.md #248: with two windows open, the
-    /// old static title gave a cutter no way to tell which design was in which
-    /// window from the taskbar, and named a retired product ("Facet Diagrams
-    /// Studio") that no longer matches this app. Empty (the default) for a
-    /// brand-new, never-saved design. Set from `gui::editor::native_io`'s own
-    /// Save Native/Open Native paths (this lane's file); New Design and Load
-    /// Selected also need to set it, from `gui::editor::callbacks::tier_actions`
-    /// (owned by another lane) -- see this file's own handoff note.
+    /// Currently loaded design's display name (bare .asc file name or catalogue title).
+    /// Empty for brand-new, never-saved design. Set from native_io's Save/Open paths
+    /// and from tier_actions' New Design and Load Selected callbacks.
     in property <string> loaded_design_name: "";
 
-    // Leading "* " marker while the Edit tab has unsaved changes -- see
-    // `EditorModel.is_dirty`'s own doc comment. `EditorModel.enabled` guards this the
+    // Leading "* " marker while Edit tab has unsaved changes (EditorModel.is_dirty).
     // same way it guards every other Edit-tab-only affordance in this file: a
     // non-`editor`-feature build never sets `is_dirty` at all, but this stays
     // explicit rather than relying on that default.
@@ -90,13 +99,11 @@ export component MainWindow inherits Window {
         + (root.loaded_design_name == "" ? "" : " — " + root.loaded_design_name);
     preferred-width: 1600px;
     preferred-height: 900px;
-    // cad_todo.md #204: raised from 640px -- below ~720px even the Edit sub-tab's
-    // OWN narrow (<900px, stacked) layout further down has nothing left to give
-    // (`EditorView`'s own command bar/design settings need real room), so the old
-    // 640px floor let a cutter resize into a state only `clip: true` was saving
-    // from being unreadable. Kept below the 900px stacking threshold so a window
-    // between 720-899px still exercises that stacked layout rather than the
-    // side-by-side split it can no longer fit.
+    // Kept below the 900px stacking threshold so a window between 720-899px
+    // still exercises the narrow (<900px, stacked) layout further down
+    // rather than the side-by-side split it has no room for -- `EditorView`'s
+    // own command bar/design settings need real room, and `clip: true` is
+    // what keeps a window this narrow readable instead of unreadable.
     min-width: 720px;
     min-height: 480px;
     background: Theme.bg-darkest;
@@ -111,8 +118,8 @@ export component MainWindow inherits Window {
 
     callback open_user_manual();
 
-    // File > Open Recent (Item 78: up to ten native paths, persisted in the settings
-    // store) -- populated once at startup from `AppSettings.recent_native_files`
+    // File > Open Recent: up to ten native paths, persisted in the settings
+    // store -- populated once at startup from `AppSettings.recent_native_files`
     // (`gui::startup_settings::apply_loaded_ui_mirrors`) and kept live afterward by
     // `gui::editor::native_io::record_recent_native_file` on every successful Save
     // Native/Open Native (never written back to from Slint itself).
@@ -124,7 +131,7 @@ export component MainWindow inherits Window {
     // `on_close_requested` sets this instead of closing outright when
     // `EditorModel.is_dirty` is true, and its own `close_confirm_save`/
     // `close_confirm_discard` handlers do the actual `render_ctx.running = false` +
-    // settings-flush + `window().hide()` the ordinary close path used to do
+    // settings-flush + `window().hide()` that an ordinary close does
     // unconditionally. Cancel needs no Rust round trip -- it only ever resets this
     // property, handled inline below.
     in-out property <bool> close_confirm_open: false;
@@ -153,7 +160,7 @@ export component MainWindow inherits Window {
         EditorModel.layout_changed();
     }
 
-    // cad_todo.md #204: whether `LibraryModel.panel_collapsed` is currently `true`
+    // Whether `LibraryModel.panel_collapsed` is currently `true`
     // because THIS reaction collapsed it for lack of width, as opposed to the user
     // having collapsed it themselves via `diagram_list.slint`'s own rail toggle.
     // Only that first case is ever auto-restored below -- a manual collapse must
@@ -190,14 +197,14 @@ export component MainWindow inherits Window {
     MenuBar {
         Menu {
             title: "File";
-            // cad_todo.md #201: every accelerator text below is a label only -- the
+            // Every accelerator text below is a label only -- the
             // actual key handling lives in `global_shortcuts.key-pressed` further
             // down, kept in lock-step by hand since a `MenuItem` has no accelerator
             // property of its own to bind.
             MenuItem {
-                // cad_todo.md #220: matches the command bar's own "New Design..."
-                // rename -- both start a brand-new design (discarding the current
-                // one), unlike the inspector's unrelated "New Tier" button.
+                // Matches the command bar's own "New Design..." label -- both
+                // start a brand-new design (discarding the current one),
+                // unlike the inspector's unrelated "New Tier" button.
                 title: "New Design... (Ctrl+N)";
                 enabled: EditorModel.enabled;
                 activated => { EditorModel.new_dialog_open = true; }
@@ -230,23 +237,19 @@ export component MainWindow inherits Window {
                 enabled: EditorModel.enabled;
                 activated => { EditorModel.export_asc(); }
             }
-            MenuItem {
-                title: "Export Cutting Sheet (HTML)...";
-                enabled: EditorModel.enabled;
-                activated => { EditorModel.export_cutting_sheet(); }
-            }
-            MenuItem {
-                title: "Export Diagram (PNG)...";
-                enabled: EditorModel.enabled;
-                activated => { EditorModel.export_diagram(); }
-            }
+            // "Export Cutting Sheet (HTML)..."/"Export Diagram (PNG)..." live on
+            // the command bar's own "Export..." split button
+            // (`ui/components/export_split_button.slint`, mounted in
+            // `editor_command_bar.slint` next to Save Native), not on this File
+            // menu -- same `EditorModel.export_cutting_sheet()`/`export_diagram()`
+            // callbacks, just one menu instead of two to know to open.
         }
         Menu {
             title: "Edit";
             // `UndoRedoLabels.undo_label`/`redo_label` -- a cutter-facing summary of
             // what Ctrl+Z/Ctrl+Y will actually do (e.g. "Undo: Set P1 angle to
             // -41.0 degrees"), from `Edit::describe` via
-            // `History::peek_undo`/`peek_redo` (Item 77). See that global's own doc
+            // `History::peek_undo`/`peek_redo`. See that global's own doc
             // comment (`ui/components/editor_command_bar.slint`) for the Rust-side
             // handoff that still needs to push it -- until then both read "".
             MenuItem {
@@ -265,6 +268,17 @@ export component MainWindow inherits Window {
             MenuItem {
                 title: "User Manual";
                 activated => { root.open_user_manual(); }
+            }
+            // Opens the keyboard-shortcuts overlay and the worked-example
+            // walkthrough -- see `ui/models/shortcuts.slint`/`ui/models/guide.slint`.
+            MenuItem {
+                title: "Keyboard Shortcuts";
+                activated => { ShortcutsModel.open = true; }
+            }
+            MenuItem {
+                title: "Guide: New Design Walkthrough";
+                enabled: EditorModel.enabled;
+                activated => { GuideModel.start(); }
             }
         }
     }
@@ -289,19 +303,26 @@ export component MainWindow inherits Window {
                 }
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "z" {
-                if EditorModel.enabled {
+                // A text field mid-correction (a facet name, a
+                // typed angle) must keep Ctrl+Z for itself -- without this guard
+                // the design's last edit was undone instead, with no on-screen
+                // explanation, while the caret sat unmoved in the field. See
+                // `EditorModel.text_focus`'s own doc comment for what sets this
+                // and which files still need to.
+                if EditorModel.enabled && !EditorModel.text_focus {
                     EditorModel.undo();
                 }
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && (event.text == "y" || (event.modifiers.shift && event.text == "Z")) {
-                if EditorModel.enabled {
+                // Same guard as Ctrl+Z above.
+                if EditorModel.enabled && !EditorModel.text_focus {
                     EditorModel.redo();
                 }
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && event.text == "f" {
-                // CAD audit item 43: on the Edit tab, Ctrl+F belongs to the tier
+                // On the Edit tab, Ctrl+F belongs to the tier
                 // filter, not the catalogue search -- the cutter is looking at a
-                // schedule, not a library. Everywhere else it keeps its old target.
+                // schedule, not a library. Everywhere else it keeps its usual target.
                 if root.active_tab == 0 && root.render_view_tab == 1 && EditorModel.enabled {
                     EditorModel.filter_focus_pulse += 1;
                 } else {
@@ -309,19 +330,17 @@ export component MainWindow inherits Window {
                 }
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "n" {
-                // cad_todo.md #201.
                 if EditorModel.enabled {
                     EditorModel.new_dialog_open = true;
                 }
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "o" {
-                // cad_todo.md #201.
                 if EditorModel.enabled {
                     EditorModel.open_native();
                 }
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "e" {
-                // cad_todo.md #201: toggles the 3D Gem tab's Live Render/Edit pill --
+                // Toggles the 3D Gem tab's Live Render/Edit pill --
                 // only meaningful (and only offered as a pill at all) while the Edit
                 // sub-tab exists.
                 if EditorModel.enabled {
@@ -342,10 +361,9 @@ export component MainWindow inherits Window {
                 root.active_tab_changed(2);
                 return accept;
             } else if event.text == Key.F5 {
-                // Documented (appendix-b-keyboard-shortcuts.md, 05-solving.md) but never
-                // wired up (cad_todo.md #104) -- gated the same way the command bar's own
-                // Solve button is (`editor_command_bar.slint`) so F5 cannot start a second
-                // solve on top of one already running.
+                // Documented (appendix-b-keyboard-shortcuts.md, 05-solving.md); gated the
+                // same way the command bar's own Solve button is (`editor_command_bar.slint`)
+                // so F5 cannot start a second solve on top of one already running.
                 if EditorModel.enabled && !EditorModel.solve_running {
                     EditorModel.solve();
                 }
@@ -353,13 +371,12 @@ export component MainWindow inherits Window {
             } else if !event.modifiers.control && !event.modifiers.meta && !event.modifiers.alt
                     && (event.text == "1" || event.text == "2" || event.text == "3" || event.text == "4")
                     && root.active_tab == 0 && root.render_view_tab == 1 && EditorModel.enabled {
-                // cad_todo.md #201: Solid/Diagram viewport view-mode shortcuts
+                // Solid/Diagram viewport view-mode shortcuts
                 // (`SolidPreviewModel.view_mode` 0-3). Only bound while the Edit
                 // sub-tab's Solid viewport is actually on screen, so a plain digit
-                // typed anywhere else (the 3D Gem tab, a text field that already
-                // consumed it before this handler ever saw it -- see cad_todo.md
-                // #202's own note on `TextInput` swallowing unmodified printable
-                // keys while focused) is left alone.
+                // typed anywhere else (the 3D Gem tab, or a text field that already
+                // consumed it before this handler ever saw it -- `TextInput`
+                // swallows unmodified printable keys while focused) is left alone.
                 if event.text == "1" {
                     SolidPreviewModel.view_mode = 0;
                 } else if event.text == "2" {
@@ -373,10 +390,16 @@ export component MainWindow inherits Window {
             } else if event.text == Key.Escape {
                 // Global fallback: clears the tier selection and dismisses whatever toast
                 // is showing. Only fires when nothing more specific (a dialog, the inline
-                // angle editor) already consumed the key first -- see cad_todo.md #102's
-                // "Escape does nothing anywhere except the inline angle cell" finding.
+                // angle editor) already consumed the key first.
                 EditorModel.selected_tier_index = -1;
                 root.toast_visible = false;
+                return accept;
+            } else if event.text == "?" && !EditorModel.text_focus {
+                // Opens the Keyboard Shortcuts overlay -- same `!EditorModel.text_focus`
+                // guard the Ctrl+Z/Ctrl+Y arms above already use, so typing a
+                // literal "?" into a text field (a search box, a facet name)
+                // is left alone.
+                ShortcutsModel.open = true;
                 return accept;
             }
             return reject;
@@ -402,7 +425,10 @@ export component MainWindow inherits Window {
 
         VerticalLayout {
             padding: 12px;
-            spacing: 12px;
+            // Tightens the gap above/below the app bar (this spacing) and around
+            // the design header (below) -- part of the <=150px "app bar top to
+            // viewport top" budget.
+            spacing: 6px;
 
             // 1. TOP BAR
             header_toolbar := HeaderToolbar {}
@@ -414,26 +440,101 @@ export component MainWindow inherits Window {
                 if !LibraryModel.panel_collapsed: DiagramListView {}
                 if LibraryModel.panel_collapsed: CollapsedLibraryRail {}
 
-                // Right: Detail Area (Header + Tab Content)
+                // Right: Detail Area (Header + Tab/View-Pill Row + Tab Content)
                 VerticalLayout {
                     horizontal-stretch: 1;
-                    spacing: 12px;
+                    spacing: 6px;
 
                     DetailHeaderView {
-                        active_tab <=> root.active_tab;
                         compact: root.render_view_tab == 1 && EditorModel.enabled;
+                        // `user_collapsed`'s own default-collapse-under-900px-window
+                        // fallback (see that property's doc comment) reads this.
+                        window_height: root.height;
+                        // `narrow`'s own chip-wrap threshold (see that property's doc
+                        // comment for why it reads the WINDOW's width, not this
+                        // column's).
+                        window_width: root.width;
                     }
 
-                    // Tab 0: 3D Preview
-                    if root.active_tab == 0: VerticalLayout {
-                        spacing: 8px;
+                    // Catalogue tab pills (3D Spectral Preview / Cutting Schedule /
+                    // Files & Downloads) share one 28px row with the Live Render/Edit/
+                    // Pop Out view pills. The row is always visible (tabs must be
+                    // reachable from every tab), with the view pills as a conditional
+                    // right-hand cluster shown only `if root.active_tab ==
+                    // 0` (they are meaningless on Cutting Schedule/Files).
+                    HorizontalLayout {
+                        height: 28px;
+                        spacing: 6px;
 
-                        HorizontalLayout {
-                            height: 32px;
-                            spacing: 8px;
+                        Rectangle {
+                            height: 28px;
+                            background: root.active_tab == 0 ? Theme.primary : (tabpill0_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: root.active_tab == 0 ? Theme.accent-cyan : Theme.border-subtle;
+                            tabpill0_touch := TouchArea { clicked => { root.active_tab = 0; root.active_tab_changed(0); } }
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                alignment: center;
+                                spacing: 6px;
+                                Image { source: @image-url("icons/gem.svg"); colorize: root.active_tab == 0 ? Theme.text-on-primary : Theme.text-secondary; width: 11px; height: 11px; vertical-alignment: center; }
+                                Text { text: "3D Spectral Preview (1)"; font-size: 11px; font-weight: 600; color: root.active_tab == 0 ? Theme.text-on-primary : Theme.text-secondary; vertical-alignment: center; }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 28px;
+                            background: root.active_tab == 1 ? Theme.primary : (tabpill1_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: root.active_tab == 1 ? Theme.accent-cyan : Theme.border-subtle;
+                            tabpill1_touch := TouchArea { clicked => { root.active_tab = 1; root.active_tab_changed(1); } }
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                alignment: center;
+                                spacing: 6px;
+                                Image { source: @image-url("icons/ruler.svg"); colorize: root.active_tab == 1 ? Theme.text-on-primary : Theme.text-secondary; width: 11px; height: 11px; vertical-alignment: center; }
+                                Text { text: "Cutting Schedule (2)"; font-size: 11px; font-weight: 600; color: root.active_tab == 1 ? Theme.text-on-primary : Theme.text-secondary; vertical-alignment: center; }
+                            }
+                        }
+
+                        Rectangle {
+                            height: 28px;
+                            background: root.active_tab == 2 ? Theme.primary : (tabpill2_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: root.active_tab == 2 ? Theme.accent-cyan : Theme.border-subtle;
+                            tabpill2_touch := TouchArea { clicked => { root.active_tab = 2; root.active_tab_changed(2); } }
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                alignment: center;
+                                spacing: 6px;
+                                Image { source: @image-url("icons/folder.svg"); colorize: root.active_tab == 2 ? Theme.text-on-primary : Theme.text-secondary; width: 11px; height: 11px; vertical-alignment: center; }
+                                Text { text: "Files & Downloads (3)"; font-size: 11px; font-weight: 600; color: root.active_tab == 2 ? Theme.text-on-primary : Theme.text-secondary; vertical-alignment: center; }
+                            }
+                        }
+
+                        Rectangle { horizontal-stretch: 1; }
+
+                        // View pills -- Live Render/Edit sub-tab + Pop Out -- only
+                        // meaningful while looking at the 3D Preview tab. Kept in
+                        // `app.slint` rather than `GemViewportView`'s own top control
+                        // row: `GemViewportView` isn't instantiated at all while
+                        // `root.live_render_detached` (see the placeholder `Rectangle`
+                        // further down, "Dock Back" instead of the viewport), so these
+                        // pills would vanish from the main window exactly when they
+                        // matter most -- getting back from a popped-out Live Render, or
+                        // over to Edit, has no other control on this window
+                        // (`detached_render_window.slint` carries no return affordance
+                        // of its own).
+                        if root.active_tab == 0: HorizontalLayout {
+                            spacing: 6px;
 
                             Rectangle {
-                                height: 32px;
+                                height: 28px;
                                 background: root.render_view_tab == 0 ? Theme.primary : (live_render_tab_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
                                 border-radius: Theme.radius-sm;
                                 border-width: 1px;
@@ -442,20 +543,20 @@ export component MainWindow inherits Window {
                                     clicked => { root.render_view_tab = 0; root.render_view_tab_changed(0); }
                                 }
                                 HorizontalLayout {
-                                    padding-left: 14px;
-                                    padding-right: 14px;
+                                    padding-left: 12px;
+                                    padding-right: 12px;
                                     alignment: center;
                                     spacing: 6px;
                                     Image {
                                         source: @image-url("icons/gem.svg");
                                         colorize: root.render_view_tab == 0 ? Theme.text-on-primary : Theme.text-secondary;
-                                        width: 12px;
-                                        height: 12px;
+                                        width: 11px;
+                                        height: 11px;
                                         vertical-alignment: center;
                                     }
                                     Text {
                                         text: "Live Render";
-                                        font-size: 12px;
+                                        font-size: 11px;
                                         font-weight: 600;
                                         color: root.render_view_tab == 0 ? Theme.text-on-primary : Theme.text-secondary;
                                         vertical-alignment: center;
@@ -464,7 +565,7 @@ export component MainWindow inherits Window {
                             }
 
                             if EditorModel.enabled: Rectangle {
-                                height: 32px;
+                                height: 28px;
                                 background: root.render_view_tab == 1 ? Theme.primary : (edit_tab_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
                                 border-radius: Theme.radius-sm;
                                 border-width: 1px;
@@ -473,20 +574,20 @@ export component MainWindow inherits Window {
                                     clicked => { root.render_view_tab = 1; root.render_view_tab_changed(1); }
                                 }
                                 HorizontalLayout {
-                                    padding-left: 14px;
-                                    padding-right: 14px;
+                                    padding-left: 12px;
+                                    padding-right: 12px;
                                     alignment: center;
                                     spacing: 6px;
                                     Image {
                                         source: @image-url("icons/pencil.svg");
                                         colorize: root.render_view_tab == 1 ? Theme.text-on-primary : Theme.text-secondary;
-                                        width: 12px;
-                                        height: 12px;
+                                        width: 11px;
+                                        height: 11px;
                                         vertical-alignment: center;
                                     }
                                     Text {
                                         text: "Edit";
-                                        font-size: 12px;
+                                        font-size: 11px;
                                         font-weight: 600;
                                         color: root.render_view_tab == 1 ? Theme.text-on-primary : Theme.text-secondary;
                                         vertical-alignment: center;
@@ -494,10 +595,8 @@ export component MainWindow inherits Window {
                                 }
                             }
 
-                            Rectangle { horizontal-stretch: 1; }
-
                             if root.render_view_tab == 0: Rectangle {
-                                height: 32px;
+                                height: 28px;
                                 background: root.live_render_detached ? Theme.accent-emerald : (detach_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
                                 border-radius: Theme.radius-sm;
                                 border-width: 1px;
@@ -527,7 +626,14 @@ export component MainWindow inherits Window {
                                 }
                             }
                         }
+                    }
 
+                    // Tab 0: 3D Preview
+                    if root.active_tab == 0: VerticalLayout {
+                        spacing: 8px;
+
+                        // The Live Render/Edit/Pop Out view pills live in the shared
+                        // tab/view-pill row above (see that row's own doc comment for why).
                         if root.render_view_tab == 0 && !root.live_render_detached: GemViewportView {}
 
                         if root.render_view_tab == 0 && root.live_render_detached: Rectangle {
@@ -599,7 +705,7 @@ export component MainWindow inherits Window {
                             spacing: 8px;
                             vertical-stretch: 1;
 
-                            // cad_todo.md #204: below ~900px, dock >= 600px + the
+                            // Below ~900px, dock >= 600px + the
                             // viewport's own 380px + the handle + gaps already exceeds
                             // the window, so the side-by-side split below always left
                             // the dock (Detach/Duplicate/delete, first) silently
@@ -617,7 +723,7 @@ export component MainWindow inherits Window {
                                 // THIS row's actual width -- not only against the delta
                                 // the drag handler below sees. Without this, a dock width
                                 // saved on a wide monitor is pushed back unclamped on a
-                                // narrower one (cad_todo.md #108) and can leave the
+                                // narrower one and can leave the
                                 // viewport narrower than its 380px guarantee, or the dock
                                 // wider than the row itself. `6px` is `SplitHandle`'s own
                                 // fixed thickness on this axis (`split_handle.slint`),
@@ -634,38 +740,27 @@ export component MainWindow inherits Window {
                                         height: 100%;
                                     }
 
-                                    // cad_todo.md #226: a brand-new (or freshly
-                                    // "New"-ed) zero-tier design left the viewport
-                                    // showing `solid_viewport.slint`'s own "Solve to
-                                    // preview" message underneath -- true of a design
-                                    // that failed to solve, but misleading here: there
-                                    // is nothing to solve yet. `solid_viewport.slint`
-                                    // itself is a different lane's file, so this is an
-                                    // opaque overlay drawn OVER it from the wrapping
+                                    // A brand-new (or freshly "New"-ed) zero-tier design
+                                    // would otherwise show `solid_viewport.slint`'s own
+                                    // "Solve to preview" message underneath -- true of a
+                                    // design that failed to solve, but misleading here:
+                                    // there is nothing to solve yet. `solid_viewport.slint`
+                                    // itself belongs to a different component, so this is
+                                    // an opaque overlay drawn OVER it from the wrapping
                                     // `Rectangle` this file already owns, rather than
-                                    // a change to that message's own condition.
-                                    if EditorModel.enabled && EditorModel.tiers.length == 0: Rectangle {
-                                        background: Theme.bg-card;
-                                        VerticalLayout {
-                                            alignment: center;
-                                            padding: 24px;
-                                            spacing: 8px;
-                                            Text {
-                                                text: "Nothing to show yet";
-                                                font-size: 14px;
-                                                font-weight: 700;
-                                                color: Theme.text-primary;
-                                                horizontal-alignment: center;
-                                            }
-                                            Text {
-                                                text: "Start with New, Load Selected from the catalogue, or Open Native.";
-                                                font-size: 11px;
-                                                color: Theme.text-muted;
-                                                horizontal-alignment: center;
-                                                wrap: word-wrap;
-                                            }
-                                        }
+                                    // a change to that message's own condition. Shows a
+                                    // real card grid with actions (`EmptyState`) -- see
+                                    // that component's own doc comment.
+                                    if EditorModel.enabled && EditorModel.tiers.length == 0: EmptyState {
+                                        width: 100%;
+                                        height: 100%;
+                                        recent_native_files: root.recent_native_files;
+                                        open_recent(path) => { root.open_recent_native_file(path); }
                                     }
+                                }
+
+                                if GuideModel.open: GuidePanel {
+                                    window_height: root.height;
                                 }
 
                                 editor_split_handle := SplitHandle {
@@ -706,32 +801,16 @@ export component MainWindow inherits Window {
                                         height: 100%;
                                     }
 
-                                    // cad_todo.md #226: same empty-state overlay as
-                                    // the wide (>=900px) layout's own copy above --
-                                    // see that Rectangle's doc comment for why it is
-                                    // an overlay rather than a `solid_viewport.slint`
-                                    // change.
-                                    if EditorModel.enabled && EditorModel.tiers.length == 0: Rectangle {
-                                        background: Theme.bg-card;
-                                        VerticalLayout {
-                                            alignment: center;
-                                            padding: 24px;
-                                            spacing: 8px;
-                                            Text {
-                                                text: "Nothing to show yet";
-                                                font-size: 14px;
-                                                font-weight: 700;
-                                                color: Theme.text-primary;
-                                                horizontal-alignment: center;
-                                            }
-                                            Text {
-                                                text: "Start with New, Load Selected from the catalogue, or Open Native.";
-                                                font-size: 11px;
-                                                color: Theme.text-muted;
-                                                horizontal-alignment: center;
-                                                wrap: word-wrap;
-                                            }
-                                        }
+                                    // Same empty-state overlay as the wide (>=900px)
+                                    // layout's own copy above -- see that Rectangle's doc
+                                    // comment for why it is an overlay rather than a
+                                    // `solid_viewport.slint` change. No `GuidePanel` here:
+                                    // there is no spare column in the narrow stack.
+                                    if EditorModel.enabled && EditorModel.tiers.length == 0: EmptyState {
+                                        width: 100%;
+                                        height: 100%;
+                                        recent_native_files: root.recent_native_files;
+                                        open_recent(path) => { root.open_recent_native_file(path); }
                                     }
                                 }
 
@@ -755,18 +834,16 @@ export component MainWindow inherits Window {
 
         // Dialogs:
         //
-        // cad_todo.md #199: `NewDesignDialog`/`RetargetDialog`/`MetadataEditorDialog`
-        // are plain Rectangles with no key handling of their own (not this file's
-        // dialog components to edit) -- wrapped here in a `FocusScope` that takes
-        // focus on mount, maps Escape to that dialog's own cancel/close path and
-        // Return to its primary action, and swallows every other key (`return
-        // accept`) so `global_shortcuts` above cannot fire on the design underneath
-        // while one of these is open (e.g. Ctrl+S saving over the New Design form).
-        // `Key.Tab` is let through unhandled so the window's built-in focus-cycling
-        // still moves between the dialog's own fields/buttons. `MaterialEditorDialog`
-        // and `ExportDialog` need the identical treatment but are mounted in
-        // `gem_viewport.slint:808`/`:822`, a file this pass does not own -- see the
-        // handoff in this pass's own final report for the exact wording; the
+        // `NewDesignDialog`/`RetargetDialog`/`MetadataEditorDialog`
+        // are plain Rectangles with no key handling of their own -- wrapped here in
+        // a `FocusScope` that takes focus on mount, maps Escape to that dialog's own
+        // cancel/close path and Return to its primary action, and swallows every
+        // other key (`return accept`) so `global_shortcuts` above cannot fire on the
+        // design underneath while one of these is open (e.g. Ctrl+S saving over the
+        // New Design form). `Key.Tab` is let through unhandled so the window's
+        // built-in focus-cycling still moves between the dialog's own fields/
+        // buttons. `MaterialEditorDialog` and `ExportDialog` need the identical
+        // treatment but are mounted in `gem_viewport.slint:808`/`:822` instead; the
         // fingerprint-mismatch/unsaved-changes/window-close guards below already get
         // it for free from `ConfirmActionDialog` itself (`confirm_action_dialog.slint`).
         if EditorModel.new_dialog_open: FocusScope {
@@ -831,6 +908,36 @@ export component MainWindow inherits Window {
             }
         }
 
+        // The gear-remap confirmation is a modal dialog (rather than an inline
+        // section inside `EditorDesignSettings`, `editor_design_settings.slint`)
+        // so it cannot be missed entirely behind other work. Same
+        // wrapping-`FocusScope` idiom as `RetargetDialog`
+        // above: `GearRemapDialog` already has its own internal Escape/Return
+        // handling, but this outer layer additionally swallows every other key
+        // (e.g. Ctrl+S) so it cannot fire on the design underneath while this
+        // modal is open.
+        if EditorModel.gear_remap_open: FocusScope {
+            width: 100%;
+            height: 100%;
+            z: 400;
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    EditorModel.gear_remap_cancel();
+                } else if event.text == Key.Return {
+                    EditorModel.gear_remap_confirm();
+                } else if event.text == Key.Tab {
+                    return reject;
+                }
+                return accept;
+            }
+
+            GearRemapDialog {
+                width: 100%;
+                height: 100%;
+            }
+        }
+
         if LibraryModel.metadata_editor_open: FocusScope {
             width: 100%;
             height: 100%;
@@ -841,8 +948,7 @@ export component MainWindow inherits Window {
                 // needs its own internal draft properties (title_draft/shape_draft/
                 // .../volume_draft), which the dialog resolves itself
                 // (`selected_shape` there is a plain, not externally readable,
-                // property) -- see this file's own handoff note (cad_todo.md #199)
-                // for why that half stays with the dialog's own file.
+                // property), so that half stays with the dialog's own file.
                 if event.text == Key.Escape {
                     LibraryModel.metadata_editor_open = false;
                 } else if event.text == Key.Tab {
@@ -869,9 +975,33 @@ export component MainWindow inherits Window {
             z: 400;
         }
 
+        // The Keyboard Shortcuts overlay (Help menu, or `?` --
+        // `global_shortcuts` above). Same wrapping-`FocusScope` Escape
+        // convention as `NewDesignDialog`/
+        // `RetargetModel` above.
+        if ShortcutsModel.open: FocusScope {
+            width: 100%;
+            height: 100%;
+            z: 400;
+            init => { self.focus(); }
+            key-pressed(event) => {
+                if event.text == Key.Escape {
+                    ShortcutsModel.close();
+                } else if event.text == Key.Tab {
+                    return reject;
+                }
+                return accept;
+            }
+
+            ShortcutOverlay {
+                width: 100%;
+                height: 100%;
+            }
+        }
+
         // Unsaved-changes guard for New/Load Selected/Open Native -- see
         // `EditorModel.unsaved_dialog_*`'s own doc comment.
-        // CAD audit items 95/78. Deliberately last-but-one in this stack: it only
+        // Deliberately last-but-one in this stack: it only
         // appears at startup, when none of the others can be open.
         if EditorModel.startup_restore_path != "": ConfirmActionDialog {
             heading: EditorModel.startup_restore_is_autosave
@@ -921,6 +1051,36 @@ export component MainWindow inherits Window {
             }
         }
 
+        // Replaces the two blocking `rfd::MessageDialog` Yes/No prompts
+        // `gui::editor::native_io` would otherwise show on the UI thread ("not a
+        // closed solid, write anyway?" and "overwrite an unrelated sidecar?") --
+        // see `EditorModel.write_confirm_*`'s own doc comment. No `secondary_label`
+        // set: Cancel alone is the decline.
+        if EditorModel.write_confirm_open: ConfirmActionDialog {
+            width: 100%;
+            height: 100%;
+            z: 500;
+            heading: EditorModel.write_confirm_heading;
+            message: EditorModel.write_confirm_message;
+            primary_label: EditorModel.write_confirm_primary_label;
+            secondary_label: "";
+            show_dont_ask: EditorModel.write_confirm_show_dont_ask;
+            dont_ask <=> EditorModel.write_confirm_dont_ask;
+            primary => { EditorModel.write_confirm_accept(); }
+            cancel => {
+                EditorModel.write_confirm_open = false;
+                EditorModel.write_confirm_cancel();
+            }
+        }
+
+        // The one-time anchor explainer card -- see
+        // `EditorModel.anchor_explainer_open`'s own doc comment.
+        if EditorModel.anchor_explainer_open: AnchorExplainer {
+            width: 100%;
+            height: 100%;
+            z: 500;
+        }
+
         // Window-close unsaved-changes guard -- see `close_confirm_open`'s own doc
         // comment. Its own Save/Discard buttons call straight into `MainWindow`'s own
         // callbacks (handled in Rust, `gui::mod::build_main_window`) rather than
@@ -941,14 +1101,14 @@ export component MainWindow inherits Window {
 
         Toast {
             x: (parent.width - self.width) / 2;
-            // cad_todo.md #206: offset above the Edit sub-tab's status strip while it
+            // Offset above the Edit sub-tab's status strip while it
             // is showing, so a sticky error toast never hides the exact solver/
             // validation line it tells the user to read. The strip is the LAST child
             // of the body's own outer `VerticalLayout` (`padding: 12px`, above), so
             // its top edge sits 12px (that padding) + 26px (the strip's own fixed
             // height, `editor_status_strip.slint`) == 38px above the window's bottom
-            // edge -- matching cad_todo.md #206's own "roughly 12-38px" figure. Adding
-            // the base case's same 24px breathing margin above THAT edge gives 62px.
+            // edge. Adding the base case's same 24px breathing margin above THAT
+            // edge gives 62px.
             y: parent.height - self.height - (root.active_tab == 0 && root.render_view_tab == 1 && EditorModel.enabled ? 62px : 24px);
             text: root.toast_message;
             is_visible: root.toast_visible;

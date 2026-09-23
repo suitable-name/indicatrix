@@ -241,14 +241,30 @@ mod tests {
         let key_path = dir.join(crate::pki::SERVER_KEY_FILE);
         let allowlist_path = dir.join(crate::pki::ALLOWLIST_FILE);
 
+        let args = crate::cli::ServeArgs {
+            bind: "127.0.0.1:1".to_string(), // unused: overridden by EnrollConfig::build's own bind_addr
+            threads: 0,
+            allow_remote: false,
+            ca: None,
+            cert: None,
+            key: None,
+            allowlist: None,
+            trust_any_client_cert: false,
+            insecure_no_tls: false,
+            compute_mode: crate::cli::ComputeMode::default(),
+            enroll_bind: Some("127.0.0.1:0".to_string()), // ephemeral port
+            no_enroll: false,
+            db: None,
+            max_connections: 64,
+        };
         let config = crate::enroll::EnrollConfig::build(
             "127.0.0.1:1".parse().unwrap(), // unused: overridden below
-            Some("127.0.0.1:0"),            // ephemeral port
-            false,
+            &args,
             &ca_path,
             &cert_path,
             &key_path,
             Some(allowlist_path.clone()),
+            crate::serve::ConnectionLimiter::new(64),
         )
         .unwrap();
         let addr = crate::enroll::spawn_enroll_listener(config).unwrap();

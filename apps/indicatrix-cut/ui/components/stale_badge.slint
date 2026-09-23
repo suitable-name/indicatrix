@@ -1,0 +1,59 @@
+import { Theme } from "../theme.slint";
+
+// A shared amber "Stale: design
+// changed" chip for any analysis panel whose last result was computed against an
+// older `EditorState::generation` than the design now on screen (Deep Solve,
+// Optimize, Retarget, Snapshot compare, tilt curves, trace -- see each caller's own
+// `stale_...` property, pushed from Rust by comparing the result's stamped
+// generation against the live one).
+//
+// Deliberately badges the EXISTING result rather than clearing it: a Deep Solve
+// verdict or an Optimize result computed two edits ago is still useful context, it
+// just needs an honest "this may not describe the design you are holding anymore"
+// marker next to it -- see the module doc comment on `gui/editor/state/mod.rs` for
+// why `generation` counts edits, not solves.
+export component StaleBadge inherits Rectangle {
+    // Hides the "Recompute" action for a panel with no single re-run entry point of
+    // its own (e.g. Snapshot compare has no one-click re-diff action yet) -- the
+    // badge text alone still shows.
+    in property <bool> show_recompute: true;
+    callback recompute();
+
+    width: layout.preferred-width;
+    height: layout.preferred-height;
+    border-radius: Theme.radius-sm;
+    background: Theme.accent-amber-glow;
+    border-width: 1px;
+    border-color: Theme.accent-amber;
+
+    layout := HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        padding-top: 2px;
+        padding-bottom: 2px;
+        spacing: 6px;
+
+        Text {
+            text: "Stale: design changed";
+            font-size: 10px;
+            font-weight: 700;
+            color: Theme.accent-amber;
+            vertical-alignment: center;
+        }
+
+        if root.show_recompute: Rectangle {
+            width: recompute_label.preferred-width;
+            recompute_touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.recompute(); }
+            }
+            recompute_label := Text {
+                text: "Recompute";
+                font-size: 10px;
+                font-weight: 700;
+                color: recompute_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

@@ -89,12 +89,15 @@ impl Design {
     }
 
     /// Builds the [`Edit`] that removes the occurrence at `position` from the tier
-    /// at `tier_index`. If `position` belongs to a complete,
-    /// non-[`Design::detach_orbit_member`]d orbit unit, every member of that unit
-    /// is removed with it: deleting "one facet" out of a clean orbit deletes the
-    /// facet, not one arbitrary copy, so `symmetry_order` never silently becomes a
-    /// lie about what `indices` holds. A detached `position`, or one belonging to
-    /// an already-incomplete unit, is removed alone.
+    /// at `tier_index`. If `position` belongs to a unit whose ATTACHED members
+    /// alone are complete (every [`Design::detach_orbit_member`]d occurrence in
+    /// that unit excluded from both the count and the sweep), every attached
+    /// member of that unit is removed with it: deleting "one facet" out of a
+    /// clean orbit deletes the facet, not one arbitrary copy, so `symmetry_order`
+    /// never silently becomes a lie about what `indices` holds. A detached
+    /// `position`, or one belonging to a unit that is not attached-complete (either
+    /// genuinely partial, or complete only by counting a detached sibling that
+    /// must never be swept), is removed alone.
     ///
     /// # Errors
     ///
@@ -128,12 +131,41 @@ impl Design {
             units
                 .into_iter()
                 .find(|u| {
-                    u.is_complete()
-                        && u.members
-                            .iter()
-                            .any(|&m| same_index(m, position, gear_teeth_abs))
+                    u.members
+                        .iter()
+                        .any(|&m| same_index(m, position, gear_teeth_abs))
                 })
-                .map_or_else(|| vec![position], |u| u.members)
+                .map_or_else(
+                    || vec![position],
+                    |u| {
+                        // A detached occurrence has already left orbit-wide
+                        // propagation (that is the whole point of detaching it), so it
+                        // must never be swept along with the rest of the unit -- and
+                        // its absence means the unit is no longer "clean" for the
+                        // completeness check either: completeness is judged over the
+                        // ATTACHED members alone, not `u.expected_len` against the raw
+                        // (detached-included) member count `OrbitUnit::is_complete`
+                        // would use.
+                        let OrbitUnit {
+                            members,
+                            expected_len,
+                        } = u;
+                        let attached: Vec<f64> = members
+                            .into_iter()
+                            .filter(|&m| {
+                                !tier
+                                    .detached
+                                    .iter()
+                                    .any(|&d| same_index(d, m, gear_teeth_abs))
+                            })
+                            .collect();
+                        if attached.len() == expected_len {
+                            attached
+                        } else {
+                            vec![position]
+                        }
+                    },
+                )
         };
         let indices: Vec<f64> = tier
             .indices

@@ -28,8 +28,8 @@ use slint::{ComponentHandle, Weak};
 /// Where the viewer's library UI is currently reading designs from.
 ///
 /// [`Default`] is [`Self::Local`] -- an app that has never touched this feature (or has
-/// no remote worker configured at all) is always in this state, matching the
-/// pre-Phase-2 behaviour this module adds to, not replaces.
+/// no remote worker configured at all) is always in this state: this module only adds
+/// a remote option, it never changes what "no configuration" means.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum LibrarySource {
     #[default]

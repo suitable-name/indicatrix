@@ -33,6 +33,10 @@ use indicatrix::{
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::sync::{Arc, Mutex};
 
+/// The material every session falls back to when a persisted `selected_material`
+/// is not found. Matches `RenderContext::default()`'s starting material.
+const DEFAULT_MATERIAL_NAME: &str = "Diamond";
+
 /// Applies settings loaded from disk into the render context and into the UI's own
 /// mirrored properties (`target_samples_exponent`, `resolution_index`, `bounce_index`,
 /// `exposure_val`, `light_yaw_deg`, `light_pitch_deg`, `inclusion_sigma_s`,
@@ -53,15 +57,34 @@ pub(super) fn apply_loaded_settings(
     // fallback, rather than resetting the user's choice. See
     // `indicatrix::optics::LightingPreset::from_label`.
     let lighting_preset = LightingPreset::from_label(&s.lighting_rig);
-    apply_loaded_render_context(render_ctx, s, lighting_preset);
+
+    // Resolve the persisted material once upfront so the render context, dropdown,
+    // and UI defaults all agree on the effective name. A deleted custom material
+    // must not leave mismatched state between context and UI.
+    let material_options = ui.global::<ViewportModel>().get_material_options();
+    let material_found = find_option_index(&material_options, &s.selected_material).is_some();
+    let effective_material_name: &str = if material_found {
+        &s.selected_material
+    } else {
+        DEFAULT_MATERIAL_NAME
+    };
+
+    apply_loaded_render_context(render_ctx, s, lighting_preset, effective_material_name);
     apply_loaded_ui_mirrors(ui, s, lighting_preset);
 
-    if let Some(idx) = find_option_index(
-        &ui.global::<ViewportModel>().get_material_options(),
-        &s.selected_material,
-    ) {
+    if let Some(idx) = find_option_index(&material_options, effective_material_name) {
         ui.global::<ViewportModel>()
             .set_selected_material_index(idx);
+    }
+    if !material_found {
+        show_toast(
+            ui,
+            &format!(
+                "Material '{}' no longer exists; using {DEFAULT_MATERIAL_NAME}.",
+                s.selected_material
+            ),
+            "info",
+        );
     }
     // Whether the crystal-axis control is interactive at all depends on the
     // STARTING material -- must be set here too, not just from `on_material_changed`,
@@ -69,8 +92,8 @@ pub(super) fn apply_loaded_settings(
     // show the slider as enabled until the user touched the material dropdown once.
     let starting_material = resolve_material(
         &GemMaterial::all_materials(),
-        &render_ctx.lock().unwrap().custom_materials,
-        &s.selected_material,
+        &RenderContext::lock(render_ctx).custom_materials,
+        effective_material_name,
     );
     ui.global::<SettingsModel>()
         .set_c_axis_override_available(is_c_axis_override_available(&starting_material));
@@ -110,7 +133,7 @@ pub(super) fn apply_loaded_settings(
                 ui.global::<SettingsModel>()
                     .set_env_map_status(env_map_status_text(&map, &s.env_map_path).into());
                 ui.global::<SettingsModel>().set_env_map_loaded(true);
-                render_ctx.lock().unwrap().env_map = Some(map);
+                RenderContext::lock(render_ctx).env_map = Some(map);
             }
             Err(err) => {
                 ui.global::<SettingsModel>().set_env_map_loaded(false);
@@ -126,16 +149,19 @@ pub(super) fn apply_loaded_settings(
     }
 }
 
-/// The `RenderContext` half of [`apply_loaded_settings`]: writes every render-context
-/// field the settings load restores, under one lock hold. Split out purely to keep
-/// that function under clippy's function-length lint; see its own doc comment for
-/// which UI-mirrored properties correspond to these.
+/// The `RenderContext` half of [`apply_loaded_settings`]: writes every
+/// render-context field the settings load restores. Split out to keep
+/// [`apply_loaded_settings`] under clippy's length lint.
+///
+/// `material_name` is the caller's already-resolved effective name, never the
+/// raw persisted value, so this cannot reintroduce stale-name mismatches.
 fn apply_loaded_render_context(
     render_ctx: &Arc<Mutex<RenderContext>>,
     s: &crate::settings::model::AppSettings,
     lighting_preset: LightingPreset,
+    material_name: &str,
 ) {
-    let mut ctx = render_ctx.lock().unwrap();
+    let mut ctx = RenderContext::lock(render_ctx);
     ctx.target_samples = s.target_samples;
     ctx.width = s.render_width;
     ctx.height = s.render_height;
@@ -156,8 +182,13 @@ fn apply_loaded_render_context(
     ctx.lighting_preset = lighting_preset;
     ctx.yaw = s.camera_yaw;
     ctx.pitch = crate::gui::render::camera_lighting::wrap_pitch(s.camera_pitch);
-    ctx.distance = s.camera_distance.clamp(1.2, 8.0);
-    ctx.material_name.clone_from(&s.selected_material);
+    // Same dynamic zoom clamp as the live orbit camera, not a fixed range.
+    // A saved distance for a larger/smaller design must not get pulled back.
+    let (min_distance, max_distance) = crate::gui::render::camera_lighting::orbit_distance_bounds(
+        crate::gui::solid_preview::preview_state::DEFAULT_MESH_BOUNDING_RADIUS,
+    );
+    ctx.distance = s.camera_distance.clamp(min_distance, max_distance);
+    ctx.material_name = material_name.to_string();
     ctx.denoise_enabled = s.denoise_enabled;
     ctx.backdrop = s.backdrop;
     // Local preview-then-settle rendering / remote render sample
@@ -394,16 +425,11 @@ pub(in crate::gui) const fn local_compute_target_from_index(index: i32) -> Local
     }
 }
 
-/// Finds `needle`'s index in a Slint `[string]` model, for restoring a `ComboBox`
-/// selection (material, lighting rig) from a persisted name. Returns `None` (leaving
-/// the current selection untouched) rather than guessing if the name isn't present --
-/// e.g. a lighting rig from an older options list, or a custom material that was
-/// deleted since the settings file was last saved.
+/// Finds `needle`'s index in a Slint `[string]` model for restoring `ComboBox`
+/// selections (material, lighting rig) from persisted names. Returns `None` if the
+/// name isn't present (e.g., deleted custom material or legacy option).
 ///
-/// `pub(in crate::gui)` (CAD audit item 140's duplication cleanup) so
-/// `gui::editor::view::refresh_design_settings`'s Render Material dropdown sync --
-/// a different lane's file, needing this exact logic -- can call this directly
-/// instead of keeping its own byte-for-byte copy.
+/// Public to `gui` so other modules can reuse this logic instead of duplicating it.
 #[must_use]
 pub(in crate::gui) fn find_option_index(
     options: &ModelRc<SharedString>,

@@ -783,7 +783,7 @@ pub fn run_white_balance(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResu
 }
 
 // ---------------------------------------------------------------------------------
-// hdr_env_radiance_at (finding G6)
+// hdr_env_radiance_at
 // ---------------------------------------------------------------------------------
 //
 // Exercises `shaders/environment.wgsl`'s standalone `hdr_env_radiance_main` kernel --
@@ -824,7 +824,11 @@ pub const HDR_ENV_ABS_FLOOR: f32 = 1e-4;
 /// `(u, v)`, so `sample_bilinear`'s interpolation is genuinely exercised (a uniform map,
 /// like [`crate::renderer::env_map::EnvironmentMap::uniform`], would return the same
 /// value regardless of a wrong texel index or a wrong interpolation weight).
-fn build_hdr_test_map() -> crate::renderer::env_map::EnvironmentMap {
+///
+/// `pub(crate)`: `estimator_check::spectral_debug::run_spectral_debug` reuses this same
+/// map for its own `EnvironmentSource::HdrMap` case rather than building a second
+/// synthetic map.
+pub(crate) fn build_hdr_test_map() -> crate::renderer::env_map::EnvironmentMap {
     let width = 16usize;
     let height = 8usize;
     let mut pixels = Vec::with_capacity(width * height);
@@ -876,7 +880,7 @@ pub fn build_hdr_env_cases() -> Vec<HdrEnvCase> {
     cases
 }
 
-/// Runs the `hdr_env_radiance_at` ULP-budget self-test against a live GPU (finding G6).
+/// Runs the `hdr_env_radiance_at` ULP-budget self-test against a live GPU.
 ///
 /// # Panics
 ///

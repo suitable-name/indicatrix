@@ -1,0 +1,37 @@
+import { Theme } from "../theme.slint";
+
+// A small "Within" / "Near" / "Outside" chip shown next to one of the Preform
+// tab's raw proportion numbers (table %, crown angle, pavilion angle, total
+// depth %, girdle thickness %), judged against
+// `indicatrix_cut_core::proportions_windows`'s reference table
+// (`EditorModel.proportion_verdict_*_level`/`_reason`, pushed by
+// `gui::editor::view::push_proportion_verdicts`). Renders nothing at
+// `level == -1` ("nothing to judge yet" -- the design does not currently
+// solve/close, or this particular metric has no value, e.g. no crown tier at
+// all) rather than a misleading chip.
+export component VerdictChip inherits Rectangle {
+    in property <int> level: -1;
+    in property <string> reason: "";
+
+    property <string> chip_label: root.level == 0 ? "Within" : (root.level == 1 ? "Near" : (root.level == 2 ? "Outside" : ""));
+    property <color> chip_color: root.level == 0 ? Theme.accent-emerald : (root.level == 1 ? Theme.accent-amber : Theme.accent-ruby);
+
+    visible: root.level >= 0;
+    width: root.level >= 0 ? label.preferred-width + 12px : 0px;
+    height: root.level >= 0 ? label.preferred-height + 4px : 0px;
+    background: root.chip_color.with-alpha(0.16);
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: root.chip_color;
+
+    label := Text {
+        text: root.chip_label;
+        font-size: 9px;
+        font-weight: 700;
+        color: root.chip_color;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    if root.reason != "": Tooltip { text: @markdown("\{root.reason}"); }
+}

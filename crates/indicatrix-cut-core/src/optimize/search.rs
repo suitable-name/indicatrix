@@ -7,7 +7,7 @@
 use super::{
     candidate::{
         BaselineWarningCounts, CandidateOutcome, SearchContext, build_free_angle_candidate,
-        evaluate_candidate, evaluate_candidate_pair, free_tier_indices,
+        evaluate_candidate, evaluate_candidate_pair, free_tier_indices, yield_loss_pct,
     },
     objective::{
         ObjectiveComponents, ObjectiveFidelity, ObjectiveWeights, evaluate_objective, to_gpu_planes,
@@ -15,18 +15,18 @@ use super::{
     polish,
 };
 use crate::{
-    design::{Design, MissingAnchor},
+    design::{Design, DesignSolveError},
     manufacturability::{DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, check_manufacturability},
 };
 use indicatrix::optics::materials::GemMaterial;
 
 /// Which phase of [`optimize_design`] a [`SearchHooks::on_progress`] call reports on.
 ///
-/// CAD audit items 153/161: without this, a caller's progress ticker had no way
-/// to tell "the counter is frozen because nothing is happening" (a real hang)
-/// apart from "the counter is frozen because this stage does not advance it" (the
-/// two fixed [`ObjectiveFidelity::Full`] scorings that bracket every run, and --
-/// before this type existed -- the polish stage too, which never reported at all).
+/// This allows a caller's progress ticker to distinguish between "the counter is
+/// frozen because nothing is happening" (a real hang) and "the counter is frozen
+/// because this stage does not advance it" (the two fixed [`ObjectiveFidelity::Full`]
+/// scorings that bracket every run, and the polish stage, which both report their
+/// own evaluations).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchStage {
     /// Scoring `design` exactly as given, at [`ObjectiveFidelity::Full`], before
@@ -83,8 +83,7 @@ impl SearchStage {
 /// possible: `cancel` is polled once per tier decision, and `on_progress` is
 /// invoked with the running evaluation count and the active [`SearchStage`] at
 /// every point this module's own doc comment on [`SearchStage`] names -- including
-/// the polish stage's own evaluations and the two fixed full-fidelity scorings,
-/// neither of which used to report at all (CAD audit items 153/161).
+/// the polish stage's own evaluations and the two fixed full-fidelity scorings.
 ///
 /// Both fields default to `None` ([`SearchHooks::default`]) for a caller (e.g. a
 /// test) that wants neither.
@@ -190,10 +189,10 @@ impl Default for OptimizeConfig {
 /// when the polish stage is disabled) -- see
 /// [`OptimizeConfig::polish_max_evaluations`]'s own default.
 ///
-/// CAD audit item 153: a caller reporting progress via [`SearchHooks::on_progress`]
+/// A caller reporting progress via [`SearchHooks::on_progress`]
 /// needs this to show an honest "N of ~M evaluations" once the polish stage's own
-/// evaluations are included in `N` -- `config.max_evaluations` alone silently
-/// excluded the polish stage's budget, reading as the counter blowing past its own
+/// evaluations are included in `N` -- `config.max_evaluations` alone would silently
+/// exclude the polish stage's budget, reading as the counter blowing past its own
 /// stated maximum.
 #[must_use]
 pub fn inclusive_max_evaluations(config: &OptimizeConfig, free_tier_count: usize) -> usize {
@@ -228,8 +227,19 @@ pub struct AngleChange {
 pub struct OptimizeOutcome {
     pub before: ObjectiveComponents,
     pub before_score: f32,
+    /// `100.0 -` the starting design's own
+    /// [`crate::yield_metrics::volumetric_yield`] percentage -- the same figure
+    /// [`super::objective::ObjectiveWeights::score_with_yield`] blended into
+    /// [`Self::before_score`] at [`OptimizeConfig::weights`]'s own
+    /// `yield_weight`, reported here too so a before/after report can show the
+    /// yield term even when `yield_weight == 0.0` left it out of the score
+    /// itself.
+    pub before_yield_loss_pct: f32,
     pub after: ObjectiveComponents,
     pub after_score: f32,
+    /// [`Self::before_yield_loss_pct`]'s counterpart for the design
+    /// [`Self::changes`] produced.
+    pub after_yield_loss_pct: f32,
     pub evaluations: usize,
     pub changes: Vec<AngleChange>,
     /// `true` iff [`SearchHooks::cancel`] was observed set before the search would
@@ -303,7 +313,7 @@ pub struct OptimizeOutcome {
 ///
 /// # Errors
 ///
-/// Propagates [`Design::solve`]'s [`MissingAnchor`] if `design` itself (before any
+/// Propagates [`Design::solve`]'s [`DesignSolveError`] if `design` itself (before any
 /// candidate is even tried) does not solve.
 ///
 /// # Panics
@@ -327,15 +337,17 @@ pub fn optimize_design(
     material: &GemMaterial,
     config: &OptimizeConfig,
     hooks: &SearchHooks<'_>,
-) -> Result<OptimizeOutcome, MissingAnchor> {
+) -> Result<OptimizeOutcome, DesignSolveError> {
     let baseline = baseline_report(design, material, &config.weights, hooks)?;
 
     if baseline.free.is_empty() {
         return Ok(OptimizeOutcome {
             before: baseline.before,
             before_score: baseline.before_score,
+            before_yield_loss_pct: baseline.before_yield_loss_pct,
             after: baseline.before,
             after_score: baseline.before_score,
+            after_yield_loss_pct: baseline.before_yield_loss_pct,
             evaluations: 0,
             changes: Vec::new(),
             cancelled: false,
@@ -388,6 +400,11 @@ pub fn optimize_design(
 struct Baseline {
     before: ObjectiveComponents,
     before_score: f32,
+    /// `weights.score_with_yield`
+    /// already computes this to fold into [`Self::before_score`] -- stored here
+    /// too (rather than recomputed) so [`OptimizeOutcome::before_yield_loss_pct`]
+    /// can report the same figure the score itself was blended from.
+    before_yield_loss_pct: f32,
     warnings: BaselineWarningCounts,
     free: Vec<usize>,
 }
@@ -396,20 +413,20 @@ struct Baseline {
 ///
 /// Reports [`SearchStage::BaselineFull`] (evaluations `0`, since none of
 /// `config`'s budget is spent here) through `hooks` before running the one
-/// [`ObjectiveFidelity::Full`] scoring this function performs -- CAD audit item
-/// 161: that scoring alone measures ~1.3s on a small real design (see the parent
-/// module's "Cost first" doc section), and used to report nothing at all, reading
-/// as a frozen counter before the search had even started.
+/// [`ObjectiveFidelity::Full`] scoring this function performs -- that scoring
+/// alone measures ~1.3s on a small real design (see the parent
+/// module's "Cost first" doc section); without this report, a caller's progress
+/// display would read as a frozen counter before the search had even started.
 ///
 /// # Errors
 ///
-/// Propagates [`Design::solve`]'s [`MissingAnchor`].
+/// Propagates [`Design::solve`]'s [`DesignSolveError`].
 fn baseline_report(
     design: &Design,
     material: &GemMaterial,
     weights: &ObjectiveWeights,
     hooks: &SearchHooks<'_>,
-) -> Result<Baseline, MissingAnchor> {
+) -> Result<Baseline, DesignSolveError> {
     hooks.report(0, SearchStage::BaselineFull);
     let baseline_solved = design.solve()?;
     let baseline_planes = design.planes_from_solved(&baseline_solved);
@@ -423,11 +440,13 @@ fn baseline_report(
         material,
         ObjectiveFidelity::Full,
     );
-    let before_score = weights.score(&before);
+    let before_yield_loss_pct = yield_loss_pct(design, &baseline_planes);
+    let before_score = weights.score_with_yield(&before, before_yield_loss_pct);
     let free = free_tier_indices(design);
     Ok(Baseline {
         before,
         before_score,
+        before_yield_loss_pct,
         warnings,
         free,
     })
@@ -543,14 +562,14 @@ struct CoordinateStageOutcome {
 /// short-circuits to a zero-evaluation, unchanged [`PolishStageOutcome`] before ever
 /// building the closure or calling [`polish::run_polish`].
 ///
-/// `coord`'s own `evaluations` is only for progress reporting (CAD audit item
-/// 153): each call the `evaluate` closure below makes reports `hooks.report` with
+/// `coord`'s own `evaluations` is only for progress reporting: each call the
+/// `evaluate` closure below makes reports `hooks.report` with
 /// [`SearchStage::Polish`] and a running total that STARTS from
 /// `coord.evaluations` rather than from zero, so a caller's own evaluation
 /// counter keeps climbing smoothly across the coordinate-to-polish hand-off
-/// instead of resetting or (as it did before this reporting existed at all)
-/// freezing for the whole polish stage. Only ever called with `coord.cancelled ==
-/// false` -- see [`optimize_design`]'s own call site.
+/// instead of resetting or freezing for the whole polish stage. Only ever
+/// called with `coord.cancelled == false` -- see [`optimize_design`]'s own call
+/// site.
 fn run_polish_stage(
     design: &Design,
     free: &[usize],
@@ -662,11 +681,10 @@ struct SearchRunSummary {
 /// Reports [`SearchStage::FinalFull`] through `hooks` (evaluations
 /// `summary.evaluations`, unchanged by this call -- same reasoning as
 /// [`baseline_report`]'s own report) before running its own
-/// [`ObjectiveFidelity::Full`] scoring -- CAD audit item 161's second bracketing
-/// hang: this call is as expensive as the baseline's, and used to leave a
-/// caller's progress ticker stuck on its last coordinate/polish reading through
-/// the whole final scoring, reading as the run having already finished when it
-/// had not.
+/// [`ObjectiveFidelity::Full`] scoring -- this call is as expensive as the
+/// baseline's; without this report, a caller's progress ticker would stay stuck
+/// on its last coordinate/polish reading through the whole final scoring,
+/// reading as the run having already finished when it had not.
 fn build_outcome(
     design: &Design,
     current: &Design,
@@ -685,7 +703,8 @@ fn build_outcome(
         ctx.material,
         ObjectiveFidelity::Full,
     );
-    let after_score = ctx.weights.score(&after);
+    let after_yield_loss_pct = yield_loss_pct(current, &final_planes);
+    let after_score = ctx.weights.score_with_yield(&after, after_yield_loss_pct);
 
     let changes: Vec<AngleChange> = design
         .tiers
@@ -704,8 +723,10 @@ fn build_outcome(
     OptimizeOutcome {
         before: baseline.before,
         before_score: baseline.before_score,
+        before_yield_loss_pct: baseline.before_yield_loss_pct,
         after,
         after_score,
+        after_yield_loss_pct,
         evaluations: summary.evaluations,
         changes,
         cancelled: summary.cancelled,

@@ -154,14 +154,13 @@ impl PreformSpec {
     /// planes up), `y_offset < 0.0` lowers it, in the same mast-unit
     /// convention [`Self::planes`] uses.
     ///
-    /// [`PreformSpec`] itself carries no offset field -- adding one is a
+    /// [`PreformSpec`] itself carries no offset field -- adding one would be a
     /// breaking change to every existing struct-literal construction site
     /// (`crates/indicatrix-cut-core/src/native/convert.rs`'s
     /// `preform_spec_from_table`, in particular, builds a full literal with
-    /// no `..Default::default()`), several of which sit in files this pass
-    /// does not own. A caller that wants a *persistent* per-design offset
-    /// should store it alongside `girdle_diameter_mm` on
-    /// [`crate::design::Design`] instead (see this crate's hand-off notes)
+    /// no `..Default::default()`). A caller that wants a *persistent*
+    /// per-design offset should store it alongside `girdle_diameter_mm` on
+    /// [`crate::design::Design`] instead
     /// and pass it through here at every [`Self::planes`] call site
     /// (`crate::design::export`'s `planes`/`planes_from_solved`) rather than
     /// widening this struct.

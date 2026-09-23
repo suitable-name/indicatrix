@@ -35,9 +35,9 @@ pub const MIN_CADENCE_FLOOR_MS: u32 = 100;
 ///
 /// Both read a message's length-prefix first byte with a raw, timeout-tolerant `read()`
 /// so a timeout can only land BEFORE any byte has arrived. Once a byte arrives, the
-/// remainder gets this bounded window instead of `None`; a timeout within it is a
-/// protocol error (tearing down the connection), closing the gap where a peer sending a
-/// partial frame and going silent used to hang the reading thread forever.
+/// remainder gets this bounded window instead of `None`, so a peer that sends a partial
+/// frame and then goes silent hits a protocol error (tearing down the connection)
+/// instead of hanging the reading thread forever.
 ///
 /// 5s is generous relative to both functions' millisecond-scale first-byte poll
 /// interval: a real message (tiny -- a `CANCEL` or pipelined `RenderRequest`) completes
@@ -127,10 +127,10 @@ impl<T: TimeoutRead + ?Sized> TimeoutRead for &mut T {
 /// # Why this exists
 ///
 /// `run_stream`'s emitter calls [`emitter::poll_for_client_message`] every
-/// [`emitter::EMITTER_POLL`] (20ms), which used to call `set_read_timeout` twice per
+/// [`emitter::EMITTER_POLL`] (20ms), which calls `set_read_timeout` up to twice per
 /// call (once for the poll window, once more after the first byte of a message
-/// arrives) unconditionally -- on an idle streaming connection (no `CANCEL`, no
-/// pipelined `RenderRequest` ever arriving) that's ~100 setsockopt syscalls/s for no
+/// arrives). On an idle streaming connection (no `CANCEL`, no pipelined
+/// `RenderRequest` ever arriving) that would be ~100 setsockopt syscalls/s for no
 /// behavioral benefit, since the value being set is identical to what's already on the
 /// socket. [`Self::apply`] makes the second call a no-op whenever the requested value
 /// hasn't changed since the last one this cache actually applied.

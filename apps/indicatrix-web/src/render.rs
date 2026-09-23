@@ -25,8 +25,9 @@
 //!   error explicitly (as [`RenderError::Declined`]) so a future picker fails loudly
 //!   instead of quietly mis-rendering.
 //!
-//! Material is no longer a decline reason at all: `GemMaterial::gpu_supported()` is
-//! unconditionally `true` since the biaxial WGSL port.
+//! Material is never a decline reason here: `GemMaterial::gpu_supported()` is
+//! unconditionally `true`, since the biaxial WGSL port covers every material this
+//! crate offers.
 //!
 //! # Progressive accumulation
 //!
@@ -92,8 +93,8 @@ pub const TARGET_SPP: u32 = 256;
 /// while `spp * (width * height)` stays under that cap -- `8` sat comfortably under it
 /// at this crate's original fixed 660x480.
 ///
-/// The render target is no longer fixed (see `scene::MAX_RENDER_DIM`), so at the
-/// largest sizes `accumulate_async` now transparently splits one call into a few
+/// The render target is variable (see `scene::MAX_RENDER_DIM`), so at the
+/// largest sizes `accumulate_async` transparently splits one call into a few
 /// sequential internal dispatches rather than failing (a latency concern only;
 /// additivity holds regardless of dispatch count). `8` still keeps [`TARGET_SPP`] /
 /// `CHUNK_SPP` = 32 visible refinement steps at any resolution.

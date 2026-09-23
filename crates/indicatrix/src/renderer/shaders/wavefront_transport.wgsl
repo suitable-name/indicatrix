@@ -1,9 +1,9 @@
-// Finding G5 Part B: the wavefront transport pipeline -- an ALTERNATIVE, selectable path
+// The wavefront transport pipeline -- an ALTERNATIVE, selectable path
 // to the megakernel (`spectral_transport.wgsl`'s `transport_main`), not a replacement.
 // Ray state lives in storage buffers instead of per-thread local variables, and one
 // bounce of every still-alive ray is a SEPARATE dispatch, so a divergent material
-// (uniaxial/biaxial boundary solves, up to 7 exit-event polyhedron probes) no longer
-// keeps every thread in a warp/wavefront resident through the whole bounce loop --
+// (uniaxial/biaxial boundary solves, up to 7 exit-event polyhedron probes) does not
+// keep every thread in a warp/wavefront resident through the whole bounce loop --
 // threads that die early free their warp slot for the next `wavefront_generate` chunk's
 // rays instead of idling until their warp's slowest ray finishes. See
 // `renderer::gpu::frame`'s module doc comment ("Wavefront pipeline") for the buffer
@@ -130,6 +130,20 @@ struct WavefrontParams {
 // The host-computed exclusive prefix sum of `compact_block_alive_count` -- see that
 // binding's own doc comment.
 @group(0) @binding(33) var<storage, read> compact_block_offset: array<u32>;
+// The interior direction `ray_pending_light_mis`'s phase pdf was evaluated
+// at -- see `transport_bounce_step`'s own doc comment on its matching
+// `pending_light_mis_dir` parameter (`shaders/transport_bounce.wgsl`). `vec4` (not
+// `vec3`) for the same storage-buffer-alignment reason `ray_origin`/`ray_dir`/`ray_k`/
+// `ray_prev_plane_normal` above already use; `.w` is always `0.0` and unread.
+//
+// Rust-side storage buffer: `renderer::gpu::frame::WavefrontRayBuffers::pending_light_mis_dir`
+// -- `chunk_rays` `[f32; 4]` entries, allocated/reset alongside `pending_light_mis`
+// (`WavefrontRayBuffers::new`), bound at binding 34 in both `wavefront_generate`'s and
+// `wavefront_bounce`'s bind groups (`wavefront_generate_bindings`/
+// `wavefront_bounce_bind_group`). The megakernel path (`spectral_transport.wgsl`,
+// `GpuPipelineKind`'s default) carries this same state in a per-invocation local
+// variable instead (see `spectral_transport.wgsl`'s own `pending_light_mis_dir`).
+@group(0) @binding(34) var<storage, read_write> ray_pending_light_mis_dir: array<vec4<f32>>;
 
 const RAY_FLAG_INSIDE_GEM: u32 = 0x1u;
 const RAY_FLAG_IS_EXTRAORDINARY: u32 = 0x2u;
@@ -170,6 +184,7 @@ fn wavefront_generate(@builtin(global_invocation_id) gid: vec3<u32>) {
         ray_lambdas[idx * 8u + k] = gen.lambdas[k];
     }
     ray_pending_light_mis[idx] = 0.0;
+    ray_pending_light_mis_dir[idx] = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     ray_seed[idx] = gen.seed0;
 
     // Identity permutation: every ray starts alive, in ascending `ray_idx` order --
@@ -187,7 +202,7 @@ fn wavefront_bounce(
     @builtin(global_invocation_id) gid: vec3<u32>,
     @builtin(local_invocation_index) local_index: u32,
 ) {
-    // Finding G5 Part A's workgroup-shared plane cache applies here exactly as in the
+    // The workgroup-shared plane cache applies here exactly as in the
     // megakernel -- `transport_bounce_step` (via `intersect_ray`,
     // `shaders/transport_bounce.wgsl`) reads `planes_shared`/`planes` the same way
     // regardless of which entry point filled it, so this dispatch fills it itself,
@@ -247,6 +262,7 @@ fn wavefront_bounce(
         compat[k] = ray_compat[ray_idx * 8u + k];
     }
     var pending_light_mis = ray_pending_light_mis[ray_idx];
+    var pending_light_mis_dir = ray_pending_light_mis_dir[ray_idx].xyz;
 
     // One bounce of the SAME shared body `transport_main`'s loop calls -- see
     // `transport_bounce_step`'s own doc comment (`shaders/transport_bounce.wgsl`).
@@ -257,7 +273,7 @@ fn wavefront_bounce(
         rc.studio_key_dir, rc.studio_fill_dir, rc.studio_sin_lp, observer,
         &stokes, &radiance, &path_pdf, &current_origin, &current_dir, &current_k,
         &inside_gem, &is_extraordinary, &prev_plane_normal, &have_prev_plane_normal,
-        &split_radiance, &compat, &path_escaped, &pending_light_mis,
+        &split_radiance, &compat, &path_escaped, &pending_light_mis, &pending_light_mis_dir,
     );
 
     if (status == BOUNCE_STATUS_TERMINATE) {
@@ -296,6 +312,7 @@ fn wavefront_bounce(
         ray_compat[ray_idx * 8u + k] = compat[k];
     }
     ray_pending_light_mis[ray_idx] = pending_light_mis;
+    ray_pending_light_mis_dir[ray_idx] = vec4<f32>(pending_light_mis_dir, 0.0);
 }
 
 // ---------------------------------------------------------------------------------

@@ -100,9 +100,9 @@ uses (see [remote-rendering.md](remote-rendering.md)'s own "Timeouts and
 liveness" section): a generous 30s first-event grace for the wait for that
 chunk's very first update (a worker's calibration/warm-up at a high resolution
 with a coarse cadence can legitimately take that long), then a tighter 8s
-steady-state deadline once at least one update has arrived. This closes a real
-false positive: exporting at 4K with a worker cadence of 20 samples/tick could
-previously report "worker silent" for a calibration probe that was, in fact,
+steady-state deadline once at least one update has arrived. This prevents a false
+timeout: exporting at 4K with a worker cadence of 20 samples/tick would otherwise
+incorrectly report "worker silent" for a calibration probe that is, in fact,
 still computing its first tick.
 
 When a chunk's dispatch does time out (or fails for any other reason) partway

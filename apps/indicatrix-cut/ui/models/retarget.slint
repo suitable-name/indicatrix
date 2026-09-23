@@ -37,8 +37,8 @@ export global RetargetModel {
     in property <string> target_material_name: "";
     in property <string> target_material_ri: "";
     in property <string> target_critical_angle: "";
-    // Item 183: `target_ri_override_text` failed to parse (not a number, or not a
-    // valid refractive index) -- non-empty means the readout/rows above are stale
+    // Non-empty when `target_ri_override_text` fails to parse (not a number, or
+    // not a valid refractive index) -- means the readout/rows above are stale
     // (frozen at whatever the last valid target was) and `rows`/`notes` were left
     // empty rather than silently rebuilt against the OLD material. Cleared the
     // moment the field parses again.
@@ -68,6 +68,50 @@ export global RetargetModel {
     in property <int> optimize_evaluations: 0;
     in property <int> optimize_max_evaluations: 0;
 
+    // While on, the shared solid viewport shows the CURRENT proposal's candidate
+    // geometry (`gui::editor::view::submit_design_ghost_preview`)
+    // instead of the live design, so a cutter can see whether the retargeted
+    // pavilion still closes before ever clicking Apply. Read (not just set) by
+    // `callbacks::retarget_actions::setup_retarget_proposal_changed_callback` every
+    // time the proposal rebuilds, so toggling it off immediately reverts to the
+    // real design on the very next rebuild -- including the one this checkbox's own
+    // `clicked` handler should trigger by also calling `proposal_changed()`.
+    in-out property <bool> preview_enabled: false;
+
+    // "Snapshot" / "Compare to Snapshot" -- a design + its solved masts captured
+    // on demand (`callbacks::retarget_actions`'s own module-local snapshot store,
+    // rather than an `EditorState` field on `state/mod.rs`), diffed against the
+    // design's CURRENT state via `indicatrix_cut_core::cutting_sheet::diff_tiers`.
+    // Reuses this dialog's own `RetargetRowItem` row shape rather than a second
+    // table type (see `compare_rows`'s own doc comment for exactly how each field
+    // is repurposed). Deliberately a SEPARATE open flag from `is_open`: Compare
+    // has nothing to do with a target-material proposal, but reuses this same
+    // modal's shell (see `retarget_dialog.slint`'s own `if compare_open` branch)
+    // rather than a second dialog component, since there is no `app.slint`
+    // export to wire one up.
+    in-out property <bool> compare_open: false;
+    // A short label naming what was snapshotted (the design's own label at
+    // snapshot time) -- shown in the compare header so two different snapshots
+    // across a session are never mistaken for each other.
+    in property <string> compare_label: "";
+    // One row per tier position `indicatrix_cut_core::cutting_sheet::diff_tiers`
+    // compared (see that function's own "positional only" doc comment for its
+    // insert/delete limitation) -- `tier_index`/`name`/`old_angle`/`new_angle` mean
+    // exactly what they do in the Retarget table above (before/after this tier's
+    // angle); `margin` is repurposed to show the mast delta instead of a critical-
+    // angle margin (there is no target material here to measure one against); and
+    // `risk_label`/`risk_color` become a plain change-status badge ("Same" /
+    // "Changed" / "Added" / "Removed") rather than a windowing risk.
+    in property <[RetargetRowItem]> compare_rows: [];
+
+    // True whenever the held proposal above (`rows`/`notes`) was computed against
+    // an OLDER design generation than the one now live -- `gui::editor::stale`'s
+    // own doc comment
+    // explains why this is the one result that registry tracks. Badged with the
+    // shared `StaleBadge` in `retarget_dialog.slint`, "Recompute" wired to
+    // `proposal_changed()` (rebuilds against the live design/current controls).
+    in property <bool> stale: false;
+
     // Opens the dialog and builds the first (Shift-mode) proposal.
     callback open();
     callback close();
@@ -78,4 +122,7 @@ export global RetargetModel {
     // doc comment) without closing the dialog.
     callback cancel_optimize();
     callback apply();
+    // Closes the Compare panel -- deliberately separate from `close()`, which also
+    // discards a pending Retarget proposal that Compare never builds.
+    callback compare_close();
 }

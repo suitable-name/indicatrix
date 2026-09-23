@@ -100,11 +100,11 @@ pub fn apply_measured_metadata(detail: &mut FacetDiagramDetail) {
     detail.shape = classify_shape(&planes, m.length_axis / w);
 }
 
-/// CAD audit item 97: `Database::save_diagram_detail` fully REPLACES a design's
+/// `Database::save_diagram_detail` fully REPLACES a design's
 /// `diagram_details` row (see that method's own doc comment), so re-importing a
-/// `.asc` whose filename collides with an existing row used to silently wipe every
-/// hand-entered field the fresh parse doesn't itself produce -- `designer_info`, a
-/// manually corrected `shape`, the competition-entry columns, and any proportion the
+/// `.asc` whose filename collides with an existing row would, without merging, silently
+/// wipe every hand-entered field the fresh parse doesn't itself produce -- `designer_info`,
+/// a manually corrected `shape`, the competition-entry columns, and any proportion the
 /// cutter typed in over `apply_measured_metadata`'s own measurement.
 ///
 /// # The merge rule
@@ -118,7 +118,7 @@ pub fn apply_measured_metadata(detail: &mut FacetDiagramDetail) {
 /// `shape_category`, `diagram_image_name`/`diagram_image_data` or `page_url` at all
 /// (those are remote-scrape-only or hand-typed fields), this rule always preserves
 /// them across a local re-import -- exactly the "never silently discard a cutter's
-/// typed metadata" contract this item exists to restore. `angle_settings_table` and
+/// typed metadata" contract this function exists to uphold. `angle_settings_table` and
 /// `attached_files` are deliberately NOT touched here: those two are the whole point
 /// of a re-import and must always come from the fresh file.
 pub fn merge_reimport_metadata(fresh: &mut FacetDiagramDetail, existing: &FullDiagramRecord) {
@@ -265,6 +265,7 @@ fn collect_asc_files_recursive(
     max_depth: usize,
     visited: &mut HashSet<PathBuf>,
     out: &mut Vec<PathBuf>,
+    gem_gcs_skipped: &mut usize,
 ) {
     if depth > max_depth {
         warn!(
@@ -289,22 +290,65 @@ fn collect_asc_files_recursive(
         let p = entry.path();
         if p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("asc")) {
             out.push(p);
+        } else if p.is_file() && is_gem_or_gcs(&p) {
+            *gem_gcs_skipped += 1;
         } else if recurse && p.is_dir() {
-            collect_asc_files_recursive(&p, recurse, depth + 1, max_depth, visited, out);
+            collect_asc_files_recursive(
+                &p,
+                recurse,
+                depth + 1,
+                max_depth,
+                visited,
+                out,
+                gem_gcs_skipped,
+            );
         }
     }
 }
+
+/// `true` for a `.gem` (`GemCAD` native save) or `.gcs` file -- this import flow
+/// only ever reads `.asc` (see this module's own doc comment). Silently skipping a
+/// folder's `GemCAD`-native files with no count and no explanation would read as
+/// "my files were not there" rather than "this importer does not read that format."
+/// [`collect_import_candidates`] counts these (never opens or parses them -- neither
+/// reader lives in this crate, see `indicatrix_formats::gem`/`gcs`'s own doc
+/// comments), and [`import_path`] turns the count into an honest sentence in the
+/// summary a cutter actually sees.
+#[must_use]
+fn is_gem_or_gcs(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("gem") || e.eq_ignore_ascii_case("gcs"))
+}
+
+/// The honest explanation
+/// [`collect_import_candidates`] gives for a directly-picked `.gem`/`.gcs` file,
+/// and [`import_path`]'s own summary note for however many of them a folder
+/// scan skipped -- see [`is_gem_or_gcs`]'s own doc comment for why this
+/// importer never reads either format. Named `.gem`/`.gcs` explicitly (never
+/// just "unsupported format") and says what each format actually yields
+/// elsewhere in this app, so a cutter is not left guessing: `.gem` is read
+/// only PARTIALLY, by a different reader entirely (no facet geometry --
+/// `indicatrix_formats::gem`'s own module doc comment), and `.gcs` is read-only
+/// wherever it is read at all. Neither is available to Import specifically.
+const GEM_GCS_EXPLANATION: &str = ".gem is GemCAD's own binary format -- this app reads only \
+     partial data from it (no facet geometry) elsewhere, never through Import; .gcs is read-only \
+     wherever it is read. Import a .asc export of the same design instead.";
 
 /// Resolves what `import_path` should actually import: the single file `path` names,
 /// or every `.asc` directly inside it (plus, when `recurse`, its subfolders; see
 /// [`collect_asc_files_recursive`] for the symlink-loop/depth guards).
 ///
+/// Returns the `.asc` candidates alongside how many `.gem`/`.gcs` files a folder
+/// scan skipped along the way -- `0` for a single-file pick, which instead rejects a `.gem`/`.gcs` file
+/// outright (see [`GEM_GCS_EXPLANATION`]) rather than silently counting one.
+///
 /// `Err` carries the user-facing message `import_path` returns verbatim -- an
 /// unreadable folder, a path that is neither file nor folder, or a folder with no
 /// `.asc` in it. Split out purely so `import_path` stays under clippy's
 /// `too_many_lines` limit.
-fn collect_import_candidates(path: &Path, recurse: bool) -> Result<Vec<PathBuf>, String> {
+fn collect_import_candidates(path: &Path, recurse: bool) -> Result<(Vec<PathBuf>, usize), String> {
     let mut candidates: Vec<PathBuf> = Vec::new();
+    let mut gem_gcs_skipped = 0usize;
     if path.is_dir() {
         match std::fs::read_dir(path) {
             Ok(entries) => {
@@ -316,6 +360,8 @@ fn collect_import_candidates(path: &Path, recurse: bool) -> Result<Vec<PathBuf>,
                     let p = entry.path();
                     if p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("asc")) {
                         candidates.push(p);
+                    } else if p.is_file() && is_gem_or_gcs(&p) {
+                        gem_gcs_skipped += 1;
                     } else if recurse && p.is_dir() {
                         collect_asc_files_recursive(
                             &p,
@@ -324,6 +370,7 @@ fn collect_import_candidates(path: &Path, recurse: bool) -> Result<Vec<PathBuf>,
                             MAX_RECURSE_DEPTH,
                             &mut visited,
                             &mut candidates,
+                            &mut gem_gcs_skipped,
                         );
                     }
                 }
@@ -331,10 +378,10 @@ fn collect_import_candidates(path: &Path, recurse: bool) -> Result<Vec<PathBuf>,
             Err(e) => return Err(format!("Could not read folder '{}': {e}", path.display())),
         }
     } else if path.is_file() {
-        // Item 196: a directly picked Indicatrix native sidecar (current
+        // A directly picked Indicatrix native sidecar (current
         // `.indicatrix.toml` or legacy `.gemcut.toml`) is not a `.asc` this import
-        // path can do anything useful with -- it used to reach `local::import_asc`
-        // anyway and come back as an opaque "parse error", with nothing pointing the
+        // path can do anything useful with -- reaching `local::import_asc` with it
+        // would come back as an opaque "parse error", with nothing pointing the
         // cutter at the button that actually opens this kind of file. Detected via
         // `indicatrix_cut_core::native::asc_path_for_native`'s own suffix check (a
         // naming guess, not a parse -- see that function's own doc comment) since no
@@ -346,15 +393,32 @@ fn collect_import_candidates(path: &Path, recurse: bool) -> Result<Vec<PathBuf>,
                 path.display()
             ));
         }
+        // Same honesty note as the
+        // folder-scan case above, for the single-file pick -- see
+        // `GEM_GCS_EXPLANATION`'s own doc comment.
+        if is_gem_or_gcs(path) {
+            return Err(format!(
+                "'{}' is not a .asc file. {GEM_GCS_EXPLANATION}",
+                path.display()
+            ));
+        }
         candidates.push(path.to_path_buf());
     } else {
         return Err(format!("'{}' is not a file or folder.", path.display()));
     }
 
     if candidates.is_empty() {
-        return Err(format!("No .asc files found at '{}'.", path.display()));
+        return Err(if gem_gcs_skipped > 0 {
+            format!(
+                "No .asc files found at '{}' ({gem_gcs_skipped} .gem/.gcs file(s) found but not \
+                 imported -- {GEM_GCS_EXPLANATION})",
+                path.display()
+            )
+        } else {
+            format!("No .asc files found at '{}'.", path.display())
+        });
     }
-    Ok(candidates)
+    Ok((candidates, gem_gcs_skipped))
 }
 
 /// Looks for a native sidecar sitting beside `asc_path` -- the current
@@ -363,7 +427,7 @@ fn collect_import_candidates(path: &Path, recurse: bool) -> Result<Vec<PathBuf>,
 /// neither file is present, which is the ordinary case for a bare `.asc` with no
 /// Indicatrix-authored history.
 ///
-/// CAD audit item 93. `Path::set_extension` is used the same way
+/// `Path::set_extension` is used the same way
 /// `indicatrix_formats::native::path::native_path_for_asc` builds the current-suffix
 /// path (a multi-segment extension like `"indicatrix.toml"` replaces everything
 /// after the LAST dot in the file name, giving `stem.indicatrix.toml`, not
@@ -389,17 +453,16 @@ fn find_native_sidecar(asc_path: &Path) -> Option<(String, Vec<u8>)> {
 struct ImportOutcome {
     summary: String,
     imported_ids: Vec<i64>,
-    /// CAD audit item 98: whether at least one candidate file failed to read, parse
+    /// Whether at least one candidate file failed to read, parse
     /// or save. `spawn_import` derives the completion toast's kind from THIS, not
     /// from sniffing the summary text -- a message like "Imported 3 .asc file(s); 12
-    /// skipped (...)" used to read as a plain success because it started with
-    /// "Imported" and wasn't "Imported 0", even though 12 of the 15 files failed.
+    /// skipped (...)" would otherwise read as a plain success because it starts with
+    /// "Imported" and isn't "Imported 0", even though 12 of the 15 files failed.
     had_failures: bool,
-    /// CAD audit item 197/98: whether at least one imported file replaced an
+    /// Whether at least one imported file replaced an
     /// existing catalogue row (filename-only dedup). Together with `had_failures`,
-    /// this is what should keep the import popup open on completion instead of
-    /// auto-closing -- see this module's own handoff note for the
-    /// `LibraryModel.import_should_stay_open` hub property this is waiting on.
+    /// this drives `LibraryModel.import_should_stay_open`, which keeps the import
+    /// popup open on completion instead of auto-closing.
     had_collision: bool,
 }
 
@@ -407,14 +470,14 @@ struct ImportOutcome {
 /// save landed on an existing row -- split out of [`import_path`]'s own loop purely
 /// to keep that function under clippy's `too_many_lines` limit.
 ///
-/// CAD audit item 97: on a collision, carries the existing row's hand-entered
+/// On a collision, carries the existing row's hand-entered
 /// metadata forward before the full-replace write (see
 /// [`merge_reimport_metadata`]'s own doc comment for the exact rule) and invalidates
 /// its now-stale preview/tilt cache afterwards so a regenerate pass rebuilds from
 /// the new geometry rather than describing the old one. `file_name` is used only for
 /// the cache-invalidation warning logs.
 ///
-/// CAD audit item 186: on a fresh (non-collision) row, stamps
+/// On a fresh (non-collision) row, stamps
 /// `diagram_entries.derived_from_entry_id` from `parsed`'s own recovered
 /// [`local::ImportedAsc::derived_from_entry_id`] -- but only once the recorded id is
 /// confirmed to still name a real row (it may have been deleted since the `.asc` was
@@ -542,7 +605,7 @@ fn import_path(
     recurse: bool,
     mut on_progress: impl FnMut(usize, usize),
 ) -> ImportOutcome {
-    let candidates = match collect_import_candidates(path, recurse) {
+    let (candidates, gem_gcs_skipped) = match collect_import_candidates(path, recurse) {
         Ok(c) => c,
         Err(message) => {
             return ImportOutcome {
@@ -588,11 +651,11 @@ fn import_path(
         // collision is still caught even if this occurrence fails to parse or panics.
         let seen_before_in_batch = !seen_in_batch.insert(file_name.clone());
 
-        // CAD audit item 93: a design saved through Save Native writes a `.asc` PLUS
+        // A design saved through Save Native writes a `.asc` PLUS
         // a native sidecar carrying everything the bare `.asc` can't (authored meet
         // constraints, preform, detached facets, material/RI override -- see
         // `indicatrix_formats::native`'s module doc comment). Importing only the
-        // `.asc` silently threw all of that away. `find_native_sidecar` looks beside
+        // `.asc` would silently discard all of that. `find_native_sidecar` looks beside
         // the `.asc` itself, independent of what `collect_import_candidates`
         // collected, and `local::import_asc` attaches it as a second file when found;
         // `gui::editor::loading::design_from_full_record` already prefers
@@ -637,17 +700,25 @@ fn import_path(
     };
     if !replaced.is_empty() {
         use std::fmt::Write as _;
-        // Item 197: this sentence used to close with "see this app's import
-        // report", which does not exist anywhere a cutter can reach it (the
-        // popup that shows this text auto-closes on completion -- see
-        // `import_dialog.slint`'s own `result_text` block). Named right here
-        // instead, since that's the only place this information is ever shown.
+        // Named right here, since the popup that shows this text
+        // (`import_dialog.slint`'s own `result_text` block) is the only place this
+        // information is ever shown.
         let _ = write!(
             summary,
             " {} design(s) replaced an existing entry with the same file name ({}) -- \
              filename-only matching, not a content comparison.",
             replaced.len(),
             replaced.join(", ")
+        );
+    }
+    if gem_gcs_skipped > 0 {
+        use std::fmt::Write as _;
+        // Same honesty note as `collect_import_candidates`'s own no-`.asc`-found
+        // case, for the ordinary "some `.asc` files imported too" case -- see
+        // `GEM_GCS_EXPLANATION`'s own doc comment.
+        let _ = write!(
+            summary,
+            " {gem_gcs_skipped} .gem/.gcs file(s) were not imported -- {GEM_GCS_EXPLANATION}"
         );
     }
     ImportOutcome {
@@ -713,22 +784,21 @@ fn spawn_import(
                 .set_import_result_text(message.clone().into());
             ui.global::<LibraryModel>()
                 .set_status_message(message.clone().into());
-            // CAD audit item 98: derived from the actual failure count, not from
+            // Derived from the actual failure count, not from
             // sniffing `message`'s text -- see `ImportOutcome::had_failures`'s own
-            // doc comment for why that used to misreport a partly-failed batch as a
-            // plain success.
+            // doc comment for why sniffing the text would misreport a partly-failed
+            // batch as a plain success.
             let toast_kind = if had_failures { "error" } else { "success" };
             show_toast(&ui, &message, toast_kind);
-            // CAD audit item 98: keep the import popup open on completion (instead
+            // Keep the import popup open on completion (instead
             // of auto-closing into the toast, where a failure list becomes
             // unreadable within 3.5s) whenever there is something worth reading --
             // a failure list or a collision warning, both already in `message`/
-            // `import_result_text` above. See this module's own handoff note for
-            // the `LibraryModel.import_should_stay_open` property and
-            // `import_dialog.slint`'s `changed importing` this drives.
+            // `import_result_text` above -- driving `import_dialog.slint`'s
+            // `changed importing` handler.
             ui.global::<LibraryModel>()
                 .set_import_should_stay_open(had_failures || had_collision);
-            // CAD audit item 187's batch case: for more than one imported id, set
+            // For more than one imported id, set
             // `recent_import_filter` to exactly those ids BEFORE
             // `refresh_after_library_change` runs, so the very refresh this import
             // triggers already shows only the just-imported rows -- no separate
@@ -752,9 +822,9 @@ fn spawn_import(
                     .set_recent_import_filter(ModelRc::new(VecModel::from(Vec::<i32>::new())));
             }
             refresh_after_library_change(&ui, &db, &source);
-            // Item 187: the common case (a single `.asc` picked via "Choose file...")
-            // knows exactly which row it just created, but used to say nothing and
-            // leave the cutter to scroll a possibly-large list looking for their own
+            // The common case (a single `.asc` picked via "Choose file...")
+            // knows exactly which row it just created; without this, the cutter would
+            // have to scroll a possibly-large list looking for their own
             // title. `invoke_select_diagram` re-runs the exact same path a click on
             // the row itself takes (`setup_diagram_selection_and_export_callbacks`,
             // `diagram_list.rs`), so the detail pane opens on it immediately.
@@ -776,13 +846,24 @@ fn spawn_import(
 }
 
 /// Wires up the "Import" popup's native pickers (`import_dialog.slint`'s "Choose
-/// file..."/"Choose folder..." buttons): picking a target runs the import
-/// immediately, off the UI thread (see [`spawn_import`]) -- no separate path field or
-/// "Import" button to confirm through. Cancelling the native picker does nothing:
-/// no import, no error, the popup stays open (`pick_file`/`pick_folder` return `None`,
-/// and both handlers just fall through). The folder picker also carries a `bool` --
-/// whether to recurse into subfolders -- from `import_dialog.slint`'s toggle at the
-/// moment the button was clicked.
+/// file..."/"Choose folder..." buttons).
+///
+/// Picking a target runs [`count_pending_collisions`] first: with no filename
+/// collision against the existing catalogue, [`begin_import`] starts immediately, off
+/// the UI thread (see [`spawn_import`]). When at
+/// least one candidate WOULD replace an existing row, [`confirm_collisions_if_any`]
+/// shows a synchronous native Yes/No dialog ("up-front confirmation before replacing")
+/// before anything is imported; declining leaves the
+/// catalogue untouched, same as cancelling the picker itself does. Cancelling the
+/// native picker does nothing at all: no import, no error, the popup stays open
+/// (`pick_file`/`pick_folder` return `None`, and both handlers just fall through).
+/// The folder picker also carries a `bool` -- whether to recurse into subfolders --
+/// from `import_dialog.slint`'s toggle at the moment the button was clicked.
+///
+/// Also kicks off [`spawn_save_folder_rescan`] --
+/// "once per session" falls out of this function itself only ever being called once,
+/// from `gui::build_main_window`, the same way `gui::batch::preview::setup_preview_batch_callbacks`'s
+/// own once-per-session missing-previews scan does.
 ///
 /// Always writes to the LOCAL database regardless of which library is currently being
 /// browsed -- import is inherently a local-only operation, so it needs no `source`
@@ -803,27 +884,37 @@ pub fn setup_import_callback(
         let Some(ui) = ui_weak_file.upgrade() else {
             return;
         };
-        // Blocking `rfd::FileDialog`, invoked directly on the Slint UI thread (see
-        // Cargo.toml's `rfd` dependency comment) -- only the picker itself blocks;
-        // the import that follows runs on its own thread.
-        let dialog = seed_last_import_directory(
-            rfd::FileDialog::new().add_filter(".asc design", &["asc"]),
-            &settings_file,
-        );
-        let Some(path) = dialog.pick_file() else {
-            return;
-        };
-        remember_import_directory(&settings_file, path.parent());
-        ui.global::<LibraryModel>().set_is_busy(true);
-        ui.global::<LibraryModel>()
-            .set_status_message("Importing...".into());
-        reset_import_progress(&ui);
-        spawn_import(
-            ui_weak_file.clone(),
-            Arc::clone(&db_file),
-            Arc::clone(&source_file),
-            path,
-            false,
+        // The picker runs off the UI thread via `gui::pickers::pick` -- only its own
+        // continuation (collision pre-scan, confirm dialog, import dispatch)
+        // runs after; the import itself runs on its own thread regardless.
+        let db_file = Arc::clone(&db_file);
+        let source_file = Arc::clone(&source_file);
+        let settings_file = Arc::clone(&settings_file);
+        let ui_weak_file = ui_weak_file.clone();
+        crate::gui::pickers::pick(
+            &ui,
+            crate::gui::pickers::PickerRequest {
+                kind: crate::gui::pickers::PickerKind::OpenFile,
+                title: None,
+                filters: vec![crate::gui::pickers::PickerFilter {
+                    label: ".asc design".to_string(),
+                    extensions: vec!["asc".to_string()],
+                }],
+                default_file_name: None,
+                starting_dir: last_import_directory(&settings_file),
+            },
+            move |ui, path| {
+                let Some(path) = path else {
+                    return;
+                };
+                remember_import_directory(&settings_file, path.parent());
+                let (collisions, total) = count_pending_collisions(&db_file, &path, false);
+                let db_file = Arc::clone(&db_file);
+                let source_file = Arc::clone(&source_file);
+                confirm_collisions_then(ui, collisions, total, move |ui| {
+                    begin_import(ui, &db_file, &source_file, ui_weak_file, path, false);
+                });
+            },
         );
     });
 
@@ -833,51 +924,233 @@ pub fn setup_import_callback(
     let ui_weak_folder = ui.as_weak();
     // `recurse` is `import_dialog.slint`'s "Include subfolders" toggle, read at the
     // moment "Choose folder..." was clicked -- it must be set before the click since
-    // the picker opens and the import starts in this same callback.
+    // the picker opens (and, absent a collision, the import starts) in this same
+    // callback.
     ui.global::<LibraryModel>()
         .on_pick_asc_folder(move |recurse: bool| {
             let Some(ui) = ui_weak_folder.upgrade() else {
                 return;
             };
-            let dialog = seed_last_import_directory(rfd::FileDialog::new(), &settings_folder);
-            let Some(path) = dialog.pick_folder() else {
-                return;
-            };
-            // The chosen folder itself, not its parent: the next import is far more
-            // likely to be another file from inside it than a sibling folder.
-            remember_import_directory(&settings_folder, Some(path.as_path()));
-            ui.global::<LibraryModel>().set_is_busy(true);
-            ui.global::<LibraryModel>()
-                .set_status_message("Importing...".into());
-            reset_import_progress(&ui);
-            spawn_import(
-                ui_weak_folder.clone(),
-                Arc::clone(&db_folder),
-                Arc::clone(&source_folder),
-                path,
-                recurse,
+            // Same off-UI-thread picker as `on_pick_asc_file` above.
+            let db_folder = Arc::clone(&db_folder);
+            let source_folder = Arc::clone(&source_folder);
+            let settings_folder = Arc::clone(&settings_folder);
+            let ui_weak_folder = ui_weak_folder.clone();
+            crate::gui::pickers::pick(
+                &ui,
+                crate::gui::pickers::PickerRequest {
+                    kind: crate::gui::pickers::PickerKind::PickFolder,
+                    title: None,
+                    filters: Vec::new(),
+                    default_file_name: None,
+                    starting_dir: last_import_directory(&settings_folder),
+                },
+                move |ui, path| {
+                    let Some(path) = path else {
+                        return;
+                    };
+                    // The chosen folder itself, not its parent: the next import is far
+                    // more likely to be another file from inside it than a sibling
+                    // folder.
+                    remember_import_directory(&settings_folder, Some(path.as_path()));
+                    let (collisions, total) = count_pending_collisions(&db_folder, &path, recurse);
+                    let db_folder = Arc::clone(&db_folder);
+                    let source_folder = Arc::clone(&source_folder);
+                    confirm_collisions_then(ui, collisions, total, move |ui| {
+                        begin_import(
+                            ui,
+                            &db_folder,
+                            &source_folder,
+                            ui_weak_folder,
+                            path,
+                            recurse,
+                        );
+                    });
+                },
             );
         });
+
+    spawn_save_folder_rescan(ui.as_weak(), Arc::clone(db), Arc::clone(settings_store));
 }
 
-/// Opens `dialog` in the folder the last import came from, or leaves it at the OS
-/// default when nothing has been imported yet (or the remembered folder has since
-/// been moved or deleted -- `rfd` silently ignores a missing directory on some
-/// platforms and falls back on others, so this checks rather than relying on that).
-fn seed_last_import_directory(
-    dialog: rfd::FileDialog,
-    settings_store: &Arc<SettingsPersister>,
-) -> rfd::FileDialog {
+/// Filename-only pre-scan of what [`import_path`] would find at
+/// `path` -- how many of its candidate `.asc` files already share a name with a row
+/// already in `db` (returned first), out of how many candidates total (returned
+/// second). Uses the same `local://<file_name>` collision test
+/// [`save_imported_design`] itself applies later, since that url is derivable from the
+/// file name alone -- no file is read or parsed here, so this costs only the
+/// directory listing [`collect_import_candidates`] needs regardless.
+///
+/// `(0, 0)` for an unreadable path/empty folder: [`import_path`] reports that failure
+/// itself once the import actually runs, so this pre-scan does not need to duplicate
+/// it.
+fn count_pending_collisions(
+    db: &Arc<Mutex<Database>>,
+    path: &Path,
+    recurse: bool,
+) -> (usize, usize) {
+    let (candidates, _gem_gcs_skipped) =
+        collect_import_candidates(path, recurse).unwrap_or_default();
+    let db = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let collisions = candidates
+        .iter()
+        .filter(|p| {
+            let file_name = p.file_name().map_or_else(
+                || "unknown.asc".to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            db.has_detail_for_entry_url(&format!("local://{file_name}"))
+                .unwrap_or(false)
+        })
+        .count();
+    (collisions, candidates.len())
+}
+
+/// When `collisions` is non-zero, opens the SAME in-window write-confirm dialog
+/// `gui::editor::native_io::ask_write_confirm` already gives Save Native's own
+/// prompts, naming how many of `total` candidate files would replace an existing
+/// catalogue row, and runs `proceed` once the cutter accepts. Declining runs
+/// nothing at all -- the catalogue stays untouched, exactly like cancelling the
+/// picker itself does. Runs `proceed` immediately (synchronously) when
+/// `collisions == 0`, the common case with nothing to ask about.
+///
+/// Reuses `EditorModel.write_confirm_*` (`ui/models/editor.slint`), a plain global
+/// with no notion of which part of the app is asking, so no new Slint callback is
+/// needed -- only `native_io::ask_write_confirm` itself becoming reachable from here
+/// (see that function's own doc comment).
+fn confirm_collisions_then(
+    ui: &MainWindow,
+    collisions: usize,
+    total: usize,
+    proceed: impl FnOnce(&MainWindow) + 'static,
+) {
+    if !collisions_need_confirmation(collisions) {
+        proceed(ui);
+        return;
+    }
+    crate::gui::editor::native_io::ask_write_confirm(
+        ui,
+        "Replace existing design(s)?",
+        format!(
+            "{collisions} of {total} file(s) have the same name as a design already in \
+             the catalogue and will REPLACE it (filename-only match, not a content \
+             comparison). Continue?"
+        ),
+        "Continue",
+        // Not suppressible -- unlike
+        // `native_io::confirm_keys`'s two prompts (which only ever change whether a
+        // header note gets written), silencing this one would let a cutter
+        // permanently stop being warned before a catalogue row gets overwritten.
+        None,
+        proceed,
+    );
+}
+
+/// [`confirm_collisions_then`]'s pure decision -- whether ANY collision means the
+/// dialog is needed at all. Pulled out so a test can call it directly, matching
+/// `gui::editor::native_io::decide_write_status`'s own "pure decision, `ui`-touching
+/// action kept separate" split -- `confirm_collisions_then` itself is not
+/// exercised end-to-end here, since `ask_write_confirm` needs a live
+/// `slint::ComponentHandle` (a real `MainWindow`) this crate's test environment
+/// cannot start (the same constraint `solve_service`/`edit_intent`'s own test
+/// modules document).
+#[must_use]
+const fn collisions_need_confirmation(collisions: usize) -> bool {
+    collisions > 0
+}
+
+/// The actual "start importing now" step -- [`setup_import_callback`]'s pickers call
+/// this once [`confirm_collisions_if_any`] has cleared.
+fn begin_import(
+    ui: &MainWindow,
+    db: &Arc<Mutex<Database>>,
+    source: &Arc<Mutex<LibrarySource>>,
+    ui_weak: Weak<MainWindow>,
+    path: PathBuf,
+    recurse: bool,
+) {
+    ui.global::<LibraryModel>().set_is_busy(true);
+    ui.global::<LibraryModel>()
+        .set_status_message("Importing...".into());
+    reset_import_progress(ui);
+    spawn_import(ui_weak, Arc::clone(db), Arc::clone(source), path, recurse);
+}
+
+/// The folder the cutter's most recent native
+/// save/open used (`AppSettings::recent_native_files`'s first, most-recent entry),
+/// non-recursively. `None` when nothing has been saved/opened natively this app knows
+/// of yet, or that file's own path has no parent directory (should not happen for a
+/// real saved file, but never assumed).
+fn last_save_folder(settings_store: &Arc<SettingsPersister>) -> Option<PathBuf> {
+    settings_store
+        .snapshot()
+        .settings
+        .recent_native_files
+        .first()
+        .map(PathBuf::from)
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+}
+
+/// The library never rescans the save folder on its own; once per session, this
+/// quietly checks [`last_save_folder`] for `.asc` files not yet in
+/// the local catalogue at all (the `total - collisions` half of
+/// [`count_pending_collisions`]'s own count) and, if it finds any, toasts a pointer at
+/// the existing "Choose folder..." picker rather than importing anything itself.
+///
+/// Deliberately informational, not automatic: this app's own precedent for "something
+/// found at startup" (`setup_startup_restore`, `gui::editor::mod`) is an explicit
+/// OFFER, never a silent action, for the same "must not surprise the cutter with an
+/// unasked-for write" reasoning -- an automatic
+/// import here would also have to decide, unasked, what to do about any filename
+/// COLLISION it found, which this module treats as something that must never happen
+/// silently (see [`confirm_collisions_then`]).
+///
+/// Runs off the UI thread (the folder listing plus one `has_detail_for_entry_url`
+/// point lookup per candidate is cheap, but this still follows
+/// `gui::batch::preview::scan::spawn_missing_preview_scan`'s own "never block startup
+/// on catalogue I/O" convention) and posts its toast back via
+/// `Weak::upgrade_in_event_loop`.
+fn spawn_save_folder_rescan(
+    ui_weak: Weak<MainWindow>,
+    db: Arc<Mutex<Database>>,
+    settings_store: Arc<SettingsPersister>,
+) {
+    thread::spawn(move || {
+        let Some(folder) = last_save_folder(&settings_store) else {
+            return;
+        };
+        let (collisions, total) = count_pending_collisions(&db, &folder, false);
+        let new_files = total - collisions;
+        if new_files == 0 {
+            return;
+        }
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            show_toast(
+                &ui,
+                &format!(
+                    "{new_files} new .asc file(s) found in your last save folder -- open \
+                     Import > Choose folder to bring {} in.",
+                    if new_files == 1 { "it" } else { "them" }
+                ),
+                "info",
+            );
+        });
+    });
+}
+
+/// The folder the last import came from, as a
+/// [`super::super::super::pickers::PickerRequest::starting_dir`] -- `None`
+/// (leaving the OS's own default in place) when nothing has been imported yet,
+/// or the remembered folder has since been moved or deleted (checked here
+/// rather than handed to `rfd` unchecked, since it silently ignores a missing
+/// directory on some platforms and falls back on others).
+fn last_import_directory(settings_store: &Arc<SettingsPersister>) -> Option<PathBuf> {
     let remembered = settings_store.snapshot().settings.last_import_directory;
     if remembered.is_empty() {
-        return dialog;
+        return None;
     }
     let path = PathBuf::from(remembered);
-    if path.is_dir() {
-        dialog.set_directory(path)
-    } else {
-        dialog
-    }
+    path.is_dir().then_some(path)
 }
 
 /// Records where the cutter just imported from, so the next picker opens there.

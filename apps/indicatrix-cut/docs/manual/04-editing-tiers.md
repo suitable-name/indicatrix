@@ -23,7 +23,7 @@ Chapter 8, and Schedule is covered in Chapter 3.
 The Tier tab has these fields:
 
 - **Angle (deg)** — the facet's cutting angle off the girdle plane.
-- **Meets** — a drop-down with three choices that decide how the facet's
+- **Meets** — a drop-down with six choices that decide how the facet's
   depth is worked out:
   - **Unspecified vertex** — the facet is cut until its plane meets some
     vertex of the surrounding geometry, with no vertex named. Use this for
@@ -36,12 +36,25 @@ The Tier tab has these fields:
     dimension, not a derived one. This is how you set an **anchor** (see
     Chapter 3). The field's own hint reads "a real dimension, e.g. girdle
     half-width."
+  - **Cut to depth (mm)**, **Girdle thickness (mm)**, **Table width (mm)** —
+    the three real-world **targets** — see "Targets: cut to depth, girdle
+    thickness, table width," below.
 - **Name** — the facet's name, referenced by other tiers' "Named facet(s)"
   field and shown in the tier list and cutting schedule.
 - **Indices (comma-separated)** — which index position(s) on the gear this
   tier occupies. A single value for one facet, several for a symmetric
   family (e.g. `0, 12, 24, 36, 48, 60, 72, 84` for an 8-fold family on a
   96-tooth gear).
+
+A **Girdle Facet Preset (90°, scale = 1)** button sits with the form
+fields. Click it to fill Angle, Meets, and the scale value in one step —
+`90.0`, **Exact scale value**, and `1` — the exact combination Chapter 7's
+worked example sets by hand for its own girdle tier. It only fills the
+form; you still type the Name and Indices and click **Add Tier** yourself.
+Use it any time you are about to author a girdle anchor and want the
+three number fields right on the first try, rather than typing `90.0` and
+remembering that the girdle's own scale convention is a half-width, so `1`
+is a natural starting value.
 
 The tab's title reads "Add Tier" when you are creating a new row, or "Edit
 Tier #N" when editing an existing one (click a row, or select it any other
@@ -128,6 +141,19 @@ any one selected tier — they describe the whole design:
   Height, Pavilion Depth, and Total Depth each on their own line. Every one
   of these reads "-" rather than a misleading zero whenever the design does
   not currently solve, or has no girdle plane to measure a depth from.
+
+  Table %, Crown Angle, Pavilion Angle, Total Depth %, and Girdle % each
+  carry a small **verdict chip** next to the number — **Within**, **Near**,
+  or **Outside** a reference window, with a one-line reason on hover. The
+  windows depend on the design's own shape (only a round-brilliant-family
+  schedule gets a dedicated window today — anything else falls back to the
+  same generic range) and material band (diamond's own tighter AGS/GIA
+  "Excellent" round-brilliant ranges above RI 1.8; a wider, widely published
+  lapidary rule-of-thumb range — 40-43° pavilion, 30-40° crown — below it).
+  These are guidance, not a grading report: a chip reading Outside is a
+  prompt to look closer, not a verdict on the design's worth. No chip is
+  shown at all when there is nothing to judge yet (the design does not
+  currently solve/close).
 - **Yield** — the effective-RI readout and its source, Girdle Diameter
   (mm), a Yield Material and Specific Gravity Override for the carat
   estimate (a separate control from Design Settings' own Material combo —
@@ -267,10 +293,74 @@ edit history (adding, saving, removing, detaching, reordering, and
 per-facet editing of tiers; applying a preform; adopting a meet; a
 Retarget; applying an Optimize result). They are greyed out when there is
 nothing to undo or redo in that direction, and their hover text (and the
-Edit menu) now says exactly what they will do — "Undo: Set P1 angle to
+Edit menu) says exactly what they will do — "Undo: Set P1 angle to
 -41.0 degrees," for instance — instead of a bare "Undo." Undo/redo does not
 re-solve either — the same staleness rule applies, so click Solve again
 after undoing or redoing if you need current mast values.
+
+## Row identity and cheater offsets
+
+Every row in the tier table carries a stable identity of its own
+(`TierId`, `indicatrix-cut-core/src/design/tier_id.rs`) that survives
+add/remove/move/undo — a manufacturability warning badges the row it is
+about directly, instead of the badge silently drifting onto the wrong row
+if you insert or remove a tier above it before reading the warning.
+
+A cheater/azimuth offset you record on a tier (the same field the cut sheet
+prints) rotates that tier's own facet plane(s)
+about the vertical axis before the solid, the tracer and the diagram build
+from it — a positive offset rotates counter-clockwise about the vertical
+axis.
+
+## Targets: cut to depth, girdle thickness, table width
+
+A tier can carry an authoring-level **target** instead of a raw scale
+value — three of the Meets combo's six choices:
+
+- **Cut to depth (mm)** — the facet's own plane offset, stated directly in
+  millimetres rather than the model-unit scale value **Exact scale value**
+  uses. Converts through the design's own mm-per-unit scale in one pass: the
+  design is solved once with this tier bootstrapped at mast `0.0` to measure
+  its own width, the millimetre figure you typed is converted to a mast
+  through that measurement, and that mast becomes the tier's real scale
+  reference.
+- **Girdle thickness (mm)** — searches (bisects) this tier's own mast until
+  the *whole design's* measured girdle thickness matches the millimetre
+  figure you typed. You do not have to author this on the actual girdle
+  tier — it resolves the same way regardless of which tier carries it,
+  though ordinarily you would put it there.
+- **Table width (mm)** — searches (bisects) this tier's own mast until the
+  table facet's own measured width matches the millimetre figure you typed.
+
+All three need a **Girdle Diameter (mm)** set on the Preform tab's Yield
+group (Chapter 6) — that is the one figure the mm-per-unit conversion is
+built from. The girdle-thickness and table-width searches also cost more
+than an ordinary edit: each is up to 24 solves (a bisection search) rather
+than one, so expect Solve to take noticeably longer on a design with one of
+these authored.
+
+The tier table's MEETS column shows the target itself (e.g. "→ 3.20 mm
+depth," "→ girdle 0.25 mm," "→ table 4.10 mm"); the adjacent MAST/MAST(mm)
+columns show the *resolved* scale reference once the design has solved, the
+same as for any other tier. Changing the Meets combo away from a target
+kind and saving clears the target — the tier goes back to being an ordinary
+meet/scale-reference tier, exactly as if the target had never been set.
+
+### When a target cannot be resolved
+
+Two things can stop a target from resolving into a real mast; both surface
+as the status strip's (and the Solve toast's) problem text, the same way a
+missing anchor does:
+
+- **No girdle diameter set.** *"cut-to-depth needs a girdle diameter — set
+  one in Design settings."* Remedy: set **Girdle Diameter (mm)** on the
+  Preform tab's Yield group, then Solve again.
+- **The bisection search could not bracket the target.** *"tier N's target
+  could not be bracketed — widen or remove it."* This means the millimetre
+  figure you typed is outside what the design can physically produce (for
+  example, a table width wider than the preform itself allows). Remedy:
+  type a more plausible figure, or clear the target and author an ordinary
+  **Exact scale value** instead.
 
 ## Next steps
 

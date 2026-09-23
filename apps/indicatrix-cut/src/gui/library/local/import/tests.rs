@@ -1,8 +1,12 @@
 use super::*;
-use crate::gui::library::local::helpers::test_support::{
-    VALID_ASC, open_temp_db, temp_db_path_for_test, temp_dir_for_test,
+use crate::{
+    gui::library::local::helpers::test_support::{
+        VALID_ASC, open_temp_db, temp_db_path_for_test, temp_dir_for_test,
+    },
+    settings::{SettingsFile, SettingsPersister},
 };
 use indicatrix::geometry::cuts::StandardGemCuts;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// The strongest available anchor: the built-in standard round brilliant has 16
 /// girdle facets, so the outline-based rule must call it Round.
@@ -75,12 +79,11 @@ fn catch_file_panic_returns_ok_when_the_closure_does_not_panic() {
     );
 }
 
-/// The reproduction for this task's BUG 1: a batch with one good file and one
-/// file that fails to parse must still import the good one, record the bad one in
-/// `failed` rather than abort, and report progress for both -- not just silently
-/// stop partway (which is what the OLD whole-loop `db.lock()` plus an uncaught
-/// panic anywhere downstream would risk turning into a wedged `is_busy`, per this
-/// task's write-up).
+/// A batch with one good file and one file that fails to parse must still import
+/// the good one, record the bad one in `failed` rather than abort, and report
+/// progress for both -- not silently stop partway, which a whole-loop `db.lock()`
+/// plus an uncaught panic anywhere downstream would risk turning into a wedged
+/// `is_busy`.
 #[test]
 fn import_path_continues_after_one_file_fails_to_parse() {
     let dir = temp_dir_for_test("parse_fail");
@@ -113,10 +116,9 @@ fn import_path_continues_after_one_file_fails_to_parse() {
     let _ = std::fs::remove_file(&db_path);
 }
 
-/// FEATURE 3's ordering contract at the `import_path` level: with `recurse:
-/// false`, a file that only exists one level down is invisible (matching the old,
-/// always-flat behaviour); with `recurse: true`, the exact same folder yields it
-/// too.
+/// The `import_path`-level recursion contract: with `recurse: false`, a file that
+/// only exists one level down is invisible; with `recurse: true`, the exact same
+/// folder yields it too.
 #[test]
 fn import_path_recurses_into_subfolders_only_when_requested() {
     let dir = temp_dir_for_test("recurse");
@@ -146,7 +148,7 @@ fn import_path_recurses_into_subfolders_only_when_requested() {
     let _ = std::fs::remove_file(&deep_db_path);
 }
 
-/// CAD audit item 93: a `.asc` saved by Save Native has a `<stem>.indicatrix.toml`
+/// A `.asc` saved by Save Native has a `<stem>.indicatrix.toml`
 /// sidecar sitting right beside it on disk. Importing that pair must attach the
 /// sidecar as a second file on the saved row, not just the bare `.asc`, so
 /// `gui::editor::loading::design_from_full_record`'s existing `load_paired`
@@ -216,10 +218,10 @@ fn find_native_sidecar_falls_back_to_the_legacy_suffix() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// CAD audit item 97: re-importing a `.asc` over an existing row (a filename
-/// collision) used to silently wipe hand-entered metadata `local::import_asc` never
-/// produces (`designer_info`, here) and leave a stale preview image describing the
-/// old geometry. Both must survive/clear correctly across the collision.
+/// Re-importing a `.asc` over an existing row (a filename collision) must not
+/// silently wipe hand-entered metadata `local::import_asc` never produces
+/// (`designer_info`, here), and must invalidate the stale preview image describing
+/// the old geometry. Both are asserted here.
 #[test]
 fn import_path_merges_hand_entered_metadata_and_invalidates_stale_preview_on_collision() {
     let dir = temp_dir_for_test("reimport_merge");
@@ -314,9 +316,18 @@ fn collect_asc_files_recursive_stops_at_max_depth() {
 
     let mut visited = HashSet::new();
     let mut out = Vec::new();
+    let mut gem_gcs_skipped = 0usize;
     // Entering at depth 1 with max_depth 1: `level1` itself is walked (its own
     // depth is within budget), but `level2` one level further down is not.
-    collect_asc_files_recursive(&level1, true, 1, 1, &mut visited, &mut out);
+    collect_asc_files_recursive(
+        &level1,
+        true,
+        1,
+        1,
+        &mut visited,
+        &mut out,
+        &mut gem_gcs_skipped,
+    );
 
     assert_eq!(
         out.len(),
@@ -358,7 +369,16 @@ fn collect_asc_files_recursive_guards_against_a_symlink_loop() {
 
     let mut visited = HashSet::new();
     let mut out = Vec::new();
-    collect_asc_files_recursive(&root, true, 0, MAX_RECURSE_DEPTH, &mut visited, &mut out);
+    let mut gem_gcs_skipped = 0usize;
+    collect_asc_files_recursive(
+        &root,
+        true,
+        0,
+        MAX_RECURSE_DEPTH,
+        &mut visited,
+        &mut out,
+        &mut gem_gcs_skipped,
+    );
 
     assert_eq!(
         out.len(),
@@ -369,13 +389,126 @@ fn collect_asc_files_recursive_guards_against_a_symlink_loop() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// Manual perf probe for FEATURE 2's "per-file step indicator" question: how long
-/// a single file's parse + geometry actually takes, to judge whether "parse ->
-/// geometry -> write" sub-steps would be visible to a human (roughly 100ms is the
-/// usual perceptible threshold) or just UI noise. `#[ignore]`d for the same reason
-/// as `perf_probe_refresh_after_library_change_cost` in `super::helpers`: a timing
-/// measurement, not a correctness test, doesn't belong in a normal CI run. Run
-/// explicitly with `cargo test -p indicatrix-cut -- --ignored perf_probe --nocapture`.
+// --- count_pending_collisions ---
+
+#[test]
+fn count_pending_collisions_finds_no_collisions_in_an_empty_catalogue() {
+    let dir = temp_dir_for_test("collisions_none");
+    std::fs::write(dir.join("fresh.asc"), VALID_ASC).expect("write fresh.asc");
+    let db_path = temp_db_path_for_test("collisions_none");
+    let db = open_temp_db(&db_path);
+
+    assert_eq!(count_pending_collisions(&db, &dir, false), (0, 1));
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[test]
+fn count_pending_collisions_flags_a_filename_already_in_the_catalogue() {
+    let dir = temp_dir_for_test("collisions_some");
+    std::fs::write(dir.join("existing.asc"), VALID_ASC).expect("write existing.asc");
+    std::fs::write(dir.join("new.asc"), VALID_ASC).expect("write new.asc");
+    let db_path = temp_db_path_for_test("collisions_some");
+    let db = open_temp_db(&db_path);
+
+    // Seed the catalogue with a row already named `existing.asc`, via the exact
+    // machinery a real import uses -- from a DIFFERENT folder, since the collision
+    // test is filename-only, not path-based (see `save_imported_design`'s own doc
+    // comment).
+    let seed_dir = temp_dir_for_test("collisions_some_seed");
+    std::fs::write(seed_dir.join("existing.asc"), VALID_ASC).expect("write seed existing.asc");
+    let seeded = import_path(&db, &seed_dir, false, |_, _| {});
+    assert_eq!(seeded.imported_ids.len(), 1, "seed import must succeed");
+
+    // Nothing was written by the scan itself: re-running it gives the identical
+    // answer, and the seeded row above is still the only row in the catalogue.
+    assert_eq!(count_pending_collisions(&db, &dir, false), (1, 2));
+    assert_eq!(count_pending_collisions(&db, &dir, false), (1, 2));
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&seed_dir);
+    let _ = std::fs::remove_file(&db_path);
+}
+
+#[test]
+fn count_pending_collisions_is_zero_zero_for_an_unreadable_path() {
+    let db_path = temp_db_path_for_test("collisions_unreadable");
+    let db = open_temp_db(&db_path);
+    let missing = std::env::temp_dir().join("indicatrix_cut_test_does_not_exist_at_all");
+
+    assert_eq!(count_pending_collisions(&db, &missing, false), (0, 0));
+
+    let _ = std::fs::remove_file(&db_path);
+}
+
+// --- last_save_folder ---
+
+fn temp_settings_store(label: &str) -> Arc<SettingsPersister> {
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "indicatrix_cut_import_test_settings_{label}_{n}_{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).expect("create temp settings dir");
+    Arc::new(SettingsPersister::spawn(
+        dir.join("settings.toml"),
+        SettingsFile::default(),
+    ))
+}
+
+#[test]
+fn last_save_folder_returns_none_when_nothing_recorded() {
+    let store = temp_settings_store("none");
+    assert!(last_save_folder(&store).is_none());
+}
+
+#[test]
+fn last_save_folder_returns_the_most_recent_entrys_parent_directory() {
+    let store = temp_settings_store("some");
+    let saved_dir = temp_dir_for_test("last_save_folder");
+    let saved_file = saved_dir.join("design.indicatrix.toml");
+    store.update(|s| {
+        s.settings.recent_native_files = vec![
+            saved_file.display().to_string(),
+            "/some/older/design.indicatrix.toml".to_string(),
+        ];
+    });
+
+    assert_eq!(
+        last_save_folder(&store),
+        Some(saved_dir.clone()),
+        "must use the FIRST (most recent) entry, not an older one"
+    );
+
+    let _ = std::fs::remove_dir_all(&saved_dir);
+}
+
+/// Manual perf probe: how long a single file's parse + geometry actually takes, to
+/// judge whether "parse -> geometry -> write" sub-steps would be visible to a
+/// human (roughly 100ms is the usual perceptible threshold) or just UI noise.
+/// `#[ignore]`d for the same reason as `perf_probe_refresh_after_library_change_cost`
+/// in `super::helpers`: a timing measurement, not a correctness test, doesn't
+/// belong in a normal CI run. Run explicitly with
+/// `cargo test -p indicatrix-cut -- --ignored perf_probe --nocapture`.
+// --- The collision-confirm decision ---
+
+#[test]
+fn no_collisions_never_needs_confirmation() {
+    assert!(!collisions_need_confirmation(0));
+}
+
+#[test]
+fn a_single_collision_needs_confirmation() {
+    assert!(collisions_need_confirmation(1));
+}
+
+#[test]
+fn many_collisions_still_need_only_one_confirmation() {
+    assert!(collisions_need_confirmation(50));
+}
+
 #[test]
 #[ignore = "manual perf probe, not for CI"]
 fn perf_probe_single_file_parse_and_measure_cost() {

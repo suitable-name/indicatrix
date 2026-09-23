@@ -46,14 +46,14 @@ const DEFAULT_REMOTE_RATE_GUESS: f64 = 1000.0;
 ///
 /// # Local + remote as a third engine, sharing a claim point
 ///
-/// `compute_target` and `workers` add a remote worker alongside the pre-existing
+/// `compute_target` and `workers` add a remote worker alongside the
 /// CPU/GPU hybrid split (see "Hybrid CPU+GPU export" below). Unlike that split -- a
 /// single up-front calibration, since both live in-process -- remote samples are
 /// claimed from a [`SampleCursor`] the local loop ALSO claims from concurrently for
 /// the whole concurrent phase: see `sample_cursor`'s module doc for why a shared
 /// atomic claim point avoids handing an engine a fixed slice that runs out early with
 /// nothing further to claim. `ComputeTarget::LocalOnly` skips every remote code path
-/// entirely, so its output stays byte-identical to before remote existed.
+/// entirely, so its output stays byte-identical to a purely local export.
 ///
 /// Remote is dispatched as a SEQUENCE of chunk requests sized to a target wall-clock
 /// duration (see `remote::remote_chunk_samples`), not one request for its whole share
@@ -114,9 +114,11 @@ pub(super) fn run_export(
     //
     // A loaded HDR panorama (`SceneSnapshot::env_map`) replaces the analytic studio
     // rig as this export's environment, mirroring `render_thread::mod`'s live render
-    // loop. `GpuBackend::try_accumulate` already declines any `EnvironmentSource::
-    // HdrMap` scene, so building `gpu_scene.environment` as `HdrMap` here reuses that
-    // existing decline path automatically.
+    // loop. The GPU megakernel has its own `env_mode` for `HdrMap` and
+    // renders it directly -- `gpu_scene.environment` built as `HdrMap` here traces on
+    // the GPU exactly like any other environment, falling through to the CPU tracer
+    // only on the same generic per-frame decline every other scene gets (no adapter,
+    // device lost, `gpu` feature off), not an HDR-specific one.
     let environment = scene.env_map.as_deref().map_or_else(
         || {
             scene
@@ -136,6 +138,11 @@ pub(super) fn run_export(
         max_bounces: scene.max_bounces,
         environment,
     };
+    // Shared by every batch this export runs (via `ExportCtx::gpu_retired`)
+    // so a joined GPU-thread panic in any one of them retires the backend for the
+    // REST of this export, not just the batch it happened in -- see `batch::hybrid_batch`'s
+    // own doc comment.
+    let gpu_retired = AtomicBool::new(false);
     let ctx = ExportCtx {
         width,
         height,
@@ -143,6 +150,7 @@ pub(super) fn run_export(
         scene,
         gpu: &gpu,
         gpu_scene: &gpu_scene,
+        gpu_retired: &gpu_retired,
     };
 
     // ---- Remote availability -------------------------------------------------------
@@ -476,7 +484,7 @@ pub(super) fn run_export(
         return ExportOutcome::Cancelled;
     }
 
-    // `Srgb` keeps the exact pre-existing tone-mapping call (byte-identical output);
+    // `Srgb` uses the plain sRGB tone-mapping call (byte-identical output);
     // any other space routes through `tonemap_wide_gamut` -- see this module's doc.
     let rgba = if color_space == ColorSpace::Srgb {
         tonemap_to_rgba(width, height, samples_per_pixel, &accum)

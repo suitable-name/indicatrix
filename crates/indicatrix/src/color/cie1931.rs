@@ -1,11 +1,11 @@
 //! CIE 1931 2° Standard Observer Color Matching Functions (CMFs), tabulated at 5 nm and
 //! linearly interpolated.
 //!
-//! # Why a table, not the old analytic fit
+//! # Why a table, not an analytic fit
 //!
-//! This module used to evaluate the Wyman/Sloan/Shirley (2013) multi-lobe Gaussian
-//! analytic fit to the CIE 1931 CMFs. That fit is a *fit*, not the standard: it carries
-//! 1-3% XYZ error relative to the real tabulated observer, worst in the x-bar trough
+//! The Wyman/Sloan/Shirley (2013) multi-lobe Gaussian analytic fit to the CIE 1931
+//! CMFs is a *fit*, not the standard: it carries 1-3% XYZ error relative to the real
+//! tabulated observer, worst in the x-bar trough
 //! between the fit's two x-bar lobes -- the real x-bar dips to a near-zero minimum
 //! around 495-510nm (table entries as small as 0.0024), and a sum of two Gaussians
 //! does not fall to zero between two peaks as sharply as the real curve does. Relative
@@ -138,11 +138,11 @@ const CIE_1931_TABLE: [[f32; 3]; 81] = [
 /// Computed here as a `const` directly from [`CIE_1931_TABLE`] (not copied by hand) so
 /// it can never silently drift from the table it is derived from. Evaluates to
 /// ~106.8555 -- the SAME value, to the precision every other caller already hard-codes,
-/// as their `106.856` literal (that literal was already the true tabulated integral, not
-/// the old Gaussian fit's own integral -- see
+/// as their `106.856` literal (that literal is the true tabulated integral, not an
+/// analytic-fit integral -- see
 /// `y_integral_matches_every_other_callers_106_856_literal` below, which pins this down
 /// numerically instead of asserting it in prose). No file outside `color/` needs to
-/// change its normalization constant for this switch to a tabulated CMF.
+/// change its normalization constant to use this tabulated CMF.
 pub const CIE_1931_Y_INTEGRAL_5NM: f32 = {
     let mut sum = 0.0f32;
     let mut i = 0usize;
@@ -201,21 +201,21 @@ pub fn cie_1931_cmf(lambda_nm: f32) -> [f32; 3] {
 
 /// Batched form of [`cie_1931_cmf`] over 8 wavelengths.
 ///
-/// The old Gaussian-lobe fit needed this as a distinct code path so all 8 lanes could
-/// share one [`crate::simd::exp_f32x8`] call instead of paying for 8 scalar `f32::exp`
-/// calls; a table lookup has no transcendental function to batch, so this is now a
-/// plain per-lane [`cie_1931_cmf`] call, kept only so
-/// `optics::raytracer::color::cie_1931_cmf_x8` (its `Vec3`-returning wrapper) and its
-/// callers don't need to change. Bit-identical to 8 separate [`cie_1931_cmf`] calls (not
-/// merely close, as the old batched path was).
+/// A table lookup has no transcendental function to batch (unlike a Gaussian-lobe fit,
+/// which would need all 8 lanes to share one [`crate::simd::exp_f32x8`] call instead of
+/// paying for 8 scalar `f32::exp` calls), so this is a plain per-lane [`cie_1931_cmf`]
+/// call, kept only so `optics::raytracer::color::cie_1931_cmf_x8` (its
+/// `Vec3`-returning wrapper) and its callers don't need to change. Bit-identical to 8
+/// separate [`cie_1931_cmf`] calls.
 #[must_use]
 pub fn cie_1931_cmf_x8(lambdas: &[f32; 8]) -> [[f32; 3]; 8] {
     lambdas.map(cie_1931_cmf)
 }
 
-/// The retired Wyman, Sloan, Shirley (2013) multi-lobe analytic fit this module used to
-/// expose as `cie_1931_cmf`, kept test-only to quantify how much more accurate the
-/// tabulated version above is (see the module doc comment).
+/// The Wyman, Sloan, Shirley (2013) multi-lobe analytic fit to the CIE 1931 CMFs.
+///
+/// Kept test-only to quantify how much more accurate the tabulated version above is
+/// (see the module doc comment).
 #[cfg(test)]
 fn cie_1931_cmf_legacy_gaussian_fit(lambda_nm: f32) -> [f32; 3] {
     fn lobe(x: f32, mu: f32, sigma_lo: f32, sigma_hi: f32) -> f32 {
@@ -248,8 +248,9 @@ mod tests {
     use super::*;
 
     /// [`cie_1931_cmf_x8`] must agree with 8 separate [`cie_1931_cmf`] calls exactly --
-    /// both now go through the identical per-lane lookup, no SIMD exponential involved
-    /// (unlike the retired fit, which only guaranteed a few-ULP agreement).
+    /// both go through the identical per-lane table lookup, with no SIMD exponential
+    /// involved (unlike a Gaussian-lobe analytic fit, which would only guarantee a
+    /// few-ULP agreement).
     #[test]
     fn cmf_x8_matches_scalar_exactly() {
         let mut state = 99u64;
@@ -407,8 +408,8 @@ mod tests {
         );
     }
 
-    /// Away from the x-bar trough (e.g. at either lobe's own peak), the retired fit and
-    /// the table stay within 5% relative of each other -- the fit's problem was
+    /// Away from the x-bar trough (e.g. at either lobe's own peak), the analytic fit and
+    /// the table stay within 5% relative of each other -- the fit's problem is
     /// specifically the trough between its two lobes, not a globally wrong shape.
     #[test]
     fn legacy_fit_and_table_agree_within_5_percent_at_the_x_bar_lobe_peaks() {
@@ -426,10 +427,10 @@ mod tests {
 
     /// The `x_bar` trough between the fit's two lobes (its near-zero minimum, around
     /// 495-510nm -- table entries as small as 0.0024) is exactly where the module doc
-    /// comment says the old Gaussian fit was worst: a sum of two asymmetric Gaussians
+    /// comment says the Gaussian fit is worst: a sum of two asymmetric Gaussians
     /// doesn't fall to the real curve's near-zero trough value as sharply as the
     /// tabulated observer actually does, so the fit overshoots there by well over 5%
-    /// relative -- this is the finding this module exists to fix.
+    /// relative -- this is why this module uses a table instead of an analytic fit.
     #[test]
     fn legacy_fit_diverges_from_the_table_at_the_x_bar_trough() {
         let lambda = 500.0f32;

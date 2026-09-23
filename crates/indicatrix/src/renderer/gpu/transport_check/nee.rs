@@ -12,7 +12,7 @@ use crate::{
     optics::{
         polarization::StokesVector,
         raytracer::{
-            EnvironmentSource, balance_heuristic, build_plane_soa,
+            EnvironmentSource, FacetFinish, balance_heuristic, build_plane_soa,
             scattering::{
                 NeeContext, nee_contribution_frosted_exterior, nee_contribution_hg_scatter,
             },
@@ -386,9 +386,44 @@ pub fn run_dist2d_sample(
         for (c_idx, comp) in ["rgb_r", "rgb_g", "rgb_b"].iter().enumerate() {
             acc.record(case, comp, cpu_rgb[c_idx], gpu_out[base + 3 + c_idx]);
         }
-        acc.record(case, "pdf", cpu_pdf, gpu_out[base + 6]);
+        let gpu_pdf = gpu_out[base + 6];
+        if cpu_dir.y < SOUTH_POLE_CONDITIONING_Y {
+            let gpu_dir = Vec3::new(gpu_out[base], gpu_out[base + 1], gpu_out[base + 2]);
+            acc.record(
+                case,
+                "pdf*sin_theta (south pole, see SOUTH_POLE_CONDITIONING_Y)",
+                cpu_pdf * sin_theta_of(cpu_dir),
+                gpu_pdf * sin_theta_of(gpu_dir),
+            );
+        } else {
+            acc.record(case, "pdf", cpu_pdf, gpu_pdf);
+        }
     }
     acc.finish()
+}
+
+/// `dir.y` below which [`run_dist2d_sample`] compares `pdf * sin(theta)` (each side's
+/// own `sin(theta)`, read off its own returned direction) instead of the raw pdf.
+///
+/// The solid-angle pdf is `pdf_uv / (2 PI^2 sin(theta))` with `theta = v * PI`, and
+/// `v` is an `f32` in `[0, 1)`: next to the SOUTH pole (`v -> 1`) its spacing is `6e-8`,
+/// so one rounding difference in `v` -- e.g. the GPU's division in
+/// `dist1d_sample_continuous` rounding the other way than the CPU's -- moves the
+/// reported pdf by `6e-8 / (1 - v)` relative. At `u1 = 0.999999` that is `1 - v =
+/// 1.6e-6`, a 3.7 % swing (559043 ULP) from a single ULP of
+/// `v`, on a direction whose own components are already exempted as near-zero. Both
+/// sides are self-consistent (each pdf IS the density of its own direction), so the
+/// ULP comparison is meaningless there; `pdf * sin(theta)` cancels the `1/sin(theta)`
+/// amplification and compares the well-conditioned `pdf_uv / (2 PI^2)` instead. The
+/// budget-48 threshold: `6e-8 / (1 - v) < 48 * 6e-8` needs `1 - v > 0.02`, i.e.
+/// `theta < 176.4 degrees`, `y > -cos(0.02 PI) = -0.998`. The north pole needs no such
+/// treatment: `f32` is dense near `v = 0`.
+const SOUTH_POLE_CONDITIONING_Y: f32 = -0.998;
+
+/// `sin(theta)` of a unit direction, `|(x, z)|` -- the same expression
+/// `EnvironmentMap::pdf` uses.
+fn sin_theta_of(dir: Vec3) -> f32 {
+    dir.x.hypot(dir.z)
 }
 
 // ---------------------------------------------------------------------------------
@@ -407,31 +442,46 @@ const _: () = assert!(size_of::<Dist2dPdfCase>() == 16);
 const DIST2D_PDF_ULP_BUDGET: u32 = 32;
 const DIST2D_PDF_ABS_FLOOR: f32 = 1e-5;
 
+/// Every direction here must map to a `(u, v)` strictly INSIDE a texel bucket of the
+/// 8x4 [`synthetic_test_map`], never onto a bucket edge.
+///
+/// `EnvironmentMap::pdf` is piecewise constant, so it is discontinuous at every
+/// `u * width` / `v * height` integer: a direction sitting exactly on such an edge
+/// gets bucket `k` or `k-1` depending on the last ULP of `atan2`/`acos`, and the two
+/// neighbouring texels of this map differ by up to 10x in luminance. The CPU's `libm`
+/// `atan2(x, x)` rounds to exactly `PI/4` (so `u = 0.125`, `u * 8 == 1.0`, column 1);
+/// the GPU's lands one ULP below (column 0) -- `cpu = 5.706e-2`
+/// vs `gpu = 5.915e-3`, a 27-million-ULP "divergence" purely from this edge
+/// ambiguity (a naive grid puts many cases on an edge: 89 of 154 candidate directions
+/// sat on an edge to within `1e-5`). The grid
+/// below therefore offsets both angles by an irrational-ish fraction of a step, and
+/// the hand-picked directions avoid `phi` multiples of `PI/8` and `theta` multiples of
+/// `PI/4` (the two near-pole ones carry a small `x` so `phi` is neither `0` nor `PI`,
+/// both of which are column edges); the two poles stay (both sides return exactly
+/// `0.0` there).
 fn build_dist2d_pdf_cases() -> Vec<Dist2dPdfCase> {
     let mut cases = Vec::new();
-    let cardinals = [
-        Vec3::X,
-        Vec3::NEG_X,
+    let hand_picked = [
         Vec3::Y,
         Vec3::NEG_Y,
-        Vec3::Z,
-        Vec3::NEG_Z,
-        Vec3::new(0.0, 0.9999, 0.01).normalize(),
-        Vec3::new(0.0, -0.9999, 0.01).normalize(),
-        Vec3::new(1.0, 1.0, 1.0).normalize(),
+        Vec3::new(0.007, 0.9999, 0.01).normalize(),
+        Vec3::new(0.007, -0.9999, 0.01).normalize(),
+        Vec3::new(0.3, 0.4, 0.5).normalize(),
         Vec3::new(-1.0, 2.0, -0.5).normalize(),
+        Vec3::new(0.9, -0.1, -0.2).normalize(),
+        Vec3::new(-0.2, -0.7, 0.6).normalize(),
     ];
-    for &d in &cardinals {
+    for &d in &hand_picked {
         cases.push(Dist2dPdfCase {
             dir: d.to_array(),
             _pad0: 0.0,
         });
     }
-    for theta_i in 1..10 {
-        let theta = (theta_i as f32) * std::f32::consts::PI / 10.0;
+    for theta_i in 0..10 {
+        let theta = (theta_i as f32 + 0.37) * std::f32::consts::PI / 10.0;
         let (sin_t, cos_t) = theta.sin_cos();
         for phi_i in 0..16 {
-            let phi = (phi_i as f32) * 2.0 * std::f32::consts::PI / 16.0;
+            let phi = (phi_i as f32 + 0.29) * 2.0 * std::f32::consts::PI / 16.0;
             let (sin_p, cos_p) = phi.sin_cos();
             let d = Vec3::new(sin_t * sin_p, cos_t, sin_t * cos_p);
             cases.push(Dist2dPdfCase {
@@ -669,14 +719,30 @@ pub struct NeeHgScatterCase {
     g: f32,
     rng_seed: u32,
     bounce: u32,
+    /// `optics::materials::GemMaterial::scattering_sigma_s`, the SAME
+    /// quantity `maybe_scatter_or_extinguish`'s survive branch uses.
+    sigma_s: f32,
+    /// `optics::materials::GemMaterial::absorption_path_scale`.
+    absorption_path_scale: f32,
+    /// `1` marks every one of the cube's six exit facets
+    /// [`crate::optics::raytracer::FacetFinish::Frosted`] (see [`build_nee_hg_cases`]) so
+    /// `nee_contribution_hg_scatter`'s frosted-exit skip fires regardless of which facet
+    /// the sampled shadow ray actually hits; `0` leaves every facet
+    /// [`crate::optics::raytracer::FacetFinish::Polished`] (the CPU function's default).
+    frosted_exit: u32,
     _pad0: f32,
     _pad1: f32,
+    _pad2: f32,
+    /// `optics::absorption::channel_absorption_alphas_assigned`'s per-channel
+    /// output, the same array `maybe_scatter_or_extinguish` and `nee_contribution_hg_scatter`
+    /// both read.
+    alphas: [f32; 8],
     lambdas: [f32; 8],
     stokes: [[f32; 4]; 8],
     radiance_in: [f32; 8],
 }
 
-const _: () = assert!(size_of::<NeeHgScatterCase>() == 240);
+const _: () = assert!(size_of::<NeeHgScatterCase>() == 288);
 
 const NEE_HG_ULP_BUDGET: u32 = 64;
 const NEE_HG_ABS_FLOOR: f32 = 1e-4;
@@ -708,12 +774,33 @@ fn build_nee_hg_cases() -> Vec<NeeHgScatterCase> {
     });
     let radiance_in: [f32; 8] = std::array::from_fn(|k| 0.05 * (k as f32));
 
+    // Findings 2b/2d: the medium-transmittance and frosted-exit-skip inputs the old
+    // twin never modeled. Cycled by case index (not cross-producted with the six axes
+    // above) so the case count stays the same order of magnitude while still covering
+    // lossless/unit-scale/polished alongside real absorbing, scattering and frosted
+    // combinations.
+    let sigma_s_values = [0.0f32, 0.4, 1.2];
+    let path_scale_values = [1.0f32, 1.6];
+    let alpha_sets: [[f32; 8]; 3] = [
+        [0.0; 8],
+        std::array::from_fn(|k| (k as f32).mul_add(0.02, 0.05)),
+        std::array::from_fn(|k| (k as f32).mul_add(-0.01, 0.15)),
+    ];
+
+    let mut i: usize = 0;
     for &p in &points {
         for &d in &dirs_in {
             for &g in &gs {
                 for &n_hero in &n_heroes {
                     for &s in &seeds {
                         for &b in &bounces {
+                            let sigma_s = sigma_s_values[i % sigma_s_values.len()];
+                            let absorption_path_scale =
+                                path_scale_values[i % path_scale_values.len()];
+                            let alphas = alpha_sets[i % alpha_sets.len()];
+                            // Every seventh case exercises the frosted-exit
+                            // skip; the rest stay polished.
+                            let frosted_exit = u32::from(i.is_multiple_of(7));
                             cases.push(NeeHgScatterCase {
                                 scatter_point: p.to_array(),
                                 n_inside_hero: n_hero,
@@ -721,12 +808,18 @@ fn build_nee_hg_cases() -> Vec<NeeHgScatterCase> {
                                 g,
                                 rng_seed: s,
                                 bounce: b,
+                                sigma_s,
+                                absorption_path_scale,
+                                frosted_exit,
                                 _pad0: 0.0,
                                 _pad1: 0.0,
+                                _pad2: 0.0,
+                                alphas,
                                 lambdas,
                                 stokes,
                                 radiance_in,
                             });
+                            i += 1;
                         }
                     }
                 }
@@ -812,6 +905,25 @@ pub fn run_nee_hg_scatter(
     };
 
     let mut acc = UlpAccumulator::new("nee_hg_scatter", NEE_HG_ULP_BUDGET, NEE_HG_ABS_FLOOR);
+    accumulate_nee_hg_cpu_results(&cases, nee_ctx, &gpu_out, &mut acc);
+    acc.finish()
+}
+
+/// Runs the real CPU [`nee_contribution_hg_scatter`] for every case and records each
+/// channel's CPU-vs-GPU comparison into `acc`. Split out of [`run_nee_hg_scatter`] to
+/// keep that function under the house line-count limit.
+fn accumulate_nee_hg_cpu_results(
+    cases: &[NeeHgScatterCase],
+    nee_ctx: NeeContext<'_>,
+    gpu_out: &[f32],
+    acc: &mut UlpAccumulator<NeeHgScatterCase>,
+) {
+    // Same six-facet cube `run_nee_hg_scatter`'s GPU side probes; marking
+    // every facet `Frosted` (rather than trying to predict which one a given case's
+    // shadow ray actually exits through) guarantees the skip fires whenever the
+    // per-case `frosted_exit` flag is set, matching `frosted_exit: u32` driving the
+    // WGSL twin's own skip (see `NeeHgScatterCase::frosted_exit`'s doc comment).
+    let all_frosted = [FacetFinish::Frosted; 6];
     for (idx, case) in cases.iter().enumerate() {
         let mut cpu_rad = case.radiance_in;
         let stokes_cpu: [StokesVector; 8] = std::array::from_fn(|k| {
@@ -822,6 +934,11 @@ pub fn run_nee_hg_scatter(
                 case.stokes[k][3],
             )
         });
+        let facet_finishes: &[FacetFinish] = if case.frosted_exit != 0 {
+            &all_frosted
+        } else {
+            &[]
+        };
         nee_contribution_hg_scatter(
             nee_ctx,
             &case.lambdas,
@@ -833,11 +950,14 @@ pub fn run_nee_hg_scatter(
             case.bounce,
             &stokes_cpu,
             &mut cpu_rad,
+            &case.alphas,
+            case.sigma_s,
+            case.absorption_path_scale,
+            facet_finishes,
         );
         let base = idx * 8;
         for k in 0..8 {
             acc.record(case, "rad", cpu_rad[k], gpu_out[base + k]);
         }
     }
-    acc.finish()
 }

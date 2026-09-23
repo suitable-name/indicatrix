@@ -176,40 +176,32 @@ fn scintillation_differs_between_two_cuts_of_the_same_material() {
 
 #[test]
 fn srb_can_scintillate_more_than_emerald_cut_at_matched_brilliance() {
-    // This is the test the Task-B temporal scintillation term (see
-    // `combine_scintillation_pct` / `cell_returned_at_yaw_offset` in metrics.rs) exists
-    // to make pass: the standard round brilliant's many small facets at varied angles
-    // should scintillate more than the emerald cut's few large, near-parallel facets --
-    // the defining perceptual difference between the two cut families -- PROVIDED the two
-    // are actually returning a comparable amount of light. Without that proviso this
-    // isn't a fair comparison: a cut returning almost no light can show enormous spatial
-    // contrast (a handful of bright cells against an otherwise-dark field) without
-    // "sparkling" in the perceptual sense at all.
+    // This is the test the temporal scintillation term (see `combine_scintillation_pct`
+    // / `cell_returned_at_yaw_offset` in metrics.rs) exists to make pass: the standard
+    // round brilliant's many small facets at varied angles should scintillate more than
+    // the emerald cut's few large, near-parallel facets -- the defining perceptual
+    // difference between the two cut families -- PROVIDED the two are actually
+    // returning a comparable amount of light. Without that proviso this isn't a fair
+    // comparison: a cut returning almost no light can show enormous spatial contrast (a
+    // handful of bright cells against an otherwise-dark field) without "sparkling" in
+    // the perceptual sense at all.
     //
-    // Caveat carried over from the Fire "Known limitation" doc in metrics.rs, now
-    // resolved: `StandardGemCuts::emerald_cut()` was found (independently, late in the
-    // original task) to be over-constrained -- 11 of its 34 declared planes contributed
-    // no facet to the actual solid, so this used to be comparing SRB against a 23-facet
-    // solid missing most of its step structure, not a validated step cut.
-    // `emerald_cut()`'s tier offsets have since been re-derived from a single shared
-    // profile and all 34 planes now contribute a facet (`hull.untouched_planes()` is
-    // empty; see `tests/optics_geometry_tests.rs`).
+    // `StandardGemCuts::emerald_cut()`'s tier offsets are derived from a single shared
+    // profile so all 34 declared planes contribute a facet to the solid
+    // (`hull.untouched_planes()` is empty; see `tests/optics_geometry_tests.rs`) --
+    // necessary for this to be a fair comparison against a properly step-faceted cut,
+    // not one missing most of its step structure.
     //
-    // Re-measured against the corrected 34-facet geometry (same search method: sweeping
-    // yaw 0.0-0.9 x pitch 0.15-1.32 in a finer grid, keeping poses with a brilliance gap
-    // under 4pp): the claim is now materially weaker than previously documented. Where
-    // the old (malformed, 23-facet) emerald cut supported the claim at 12 of 14 fair
-    // poses (85.7%), the corrected (properly step-faceted, 34-facet) emerald cut supports
-    // it at only 20 of 39 fair poses (51.3%) -- essentially a coin flip, not "the defining
-    // perceptual difference between the two cut families" the old comment claimed. This
-    // makes physical sense in hindsight: the old 23-facet solid was missing most of its
-    // step structure, so it under-scintillated by construction; the properly-faceted step
-    // cut has enough of its own facet-edge structure to rival the round brilliant's
-    // temporal sparkle at a large fraction of poses. The directional claim (SRB CAN
-    // scintillate more than EC at matched brilliance) still holds and is demonstrated
-    // below, but "many small facets scintillate more than few large ones" is no longer a
-    // safe generalization across poses -- see the task report for this finding flagged
-    // explicitly rather than silently re-tuned away.
+    // Measured against that 34-facet geometry (grid-search method: sweeping yaw
+    // 0.0-0.9 x pitch 0.15-1.32 in a finer grid, keeping poses with a brilliance gap
+    // under 4pp): the directional claim holds at 20 of 39 fair poses (51.3%) --
+    // essentially a coin flip rather than a defining property of the two cut families at
+    // large. This makes physical sense: a properly step-faceted cut has enough of its
+    // own facet-edge structure to rival the round brilliant's temporal sparkle at a
+    // large fraction of poses. The directional claim (SRB CAN scintillate more than EC
+    // at matched brilliance) still holds and is demonstrated below, but "many small
+    // facets scintillate more than few large ones" is not a safe generalization across
+    // poses.
     let srb = StandardGemCuts::standard_round_brilliant();
     let ec = StandardGemCuts::emerald_cut();
     let diamond = GemMaterial::diamond();
@@ -262,44 +254,30 @@ const SCINTILLATION_CEILING_MARGIN: f32 = 0.5;
 
 #[test]
 fn scintillation_is_not_a_pure_function_of_windowing_and_extinction() {
-    // The old formula was 100.0 - (windowing_pct * 0.6 + extinction_pct * 0.4): an exact
-    // arithmetic function of the other two metrics with no independent information. To
-    // honestly falsify that, we need two configurations whose windowing_pct and
-    // extinction_pct are (nearly) equal but whose scintillation_pct differs --
-    // impossible under the old formula (equal inputs -> bit-identical output), but
-    // exactly what the new per-cell spatial-contrast measurement can produce, since it
+    // A pure arithmetic function of windowing_pct and extinction_pct (for example
+    // 100.0 - (windowing_pct * 0.6 + extinction_pct * 0.4)) would carry no independent
+    // information: equal inputs would always produce bit-identical output. To honestly
+    // falsify that possibility, this test needs two configurations whose windowing_pct
+    // and extinction_pct are (nearly) equal but whose scintillation_pct differs --
+    // exactly what the per-cell spatial-contrast measurement can produce, since it
     // depends on *where* the light returns from, not just how much.
     //
-    // An earlier version of this test used a pair (Spinel vs. Quartz) that only worked
-    // because Spinel had saturated to exactly 100.0 under the old `clamp(cv * 100, 0,
-    // 100)` display mapping -- with the mapping fixed to `cv / (1 + cv)` (see
-    // metrics.rs), that pair's gap shrank to ~4.8 points, and worse, a saturated
-    // scintillation_pct=100.0 could have passed this test vacuously (100 clearly "differs
-    // substantially" from anything below it, whether or not the underlying CVs actually
-    // differ). A second pair (Sapphire vs. Tanzanite, both on the emerald cut) replaced
-    // that one and worked for the same reason. Task B (the spatial + temporal
-    // scintillation combination -- see `combine_scintillation_pct` in metrics.rs) moved
-    // the whole metric enough that THAT pair's gap also shrank, from ~10.1 points to
-    // ~3.9 -- below this test's >5.0 threshold. A third pair (SRB Diamond vs. emerald-cut
-    // Synthetic Moissanite) replaced that one, but was itself invalidated when
-    // `StandardGemCuts::emerald_cut()`'s geometry was corrected elsewhere (11 of its 34
-    // planes were previously dominated and contributed no facet -- see the geometry note
-    // on `evaluate_gem_optical_metrics` in metrics.rs) and, independently, by the F/C
-    // bifurcation gate added to the Fire metric (this fix): windowing_pct/extinction_pct
-    // don't depend on Fire at all, but they DO depend on the corrected cut geometry, so
-    // the old pair's windowing gap grew from <0.5pp to ~7.1pp.
+    // The chosen pair must also stay clear of the scintillation_pct display ceiling (see
+    // `SCINTILLATION_CEILING_MARGIN` above): a saturated scintillation_pct=100.0 could
+    // pass this test vacuously (100 clearly "differs substantially" from anything below
+    // it, whether or not the underlying CVs actually differ). Both assertions below --
+    // "below the ceiling" and "differ from each other" -- are required together so a
+    // regression back into saturation (which would make both values collapse toward
+    // 100) fails this test instead of passing it.
     //
-    // Re-searched under the corrected geometry (same method: grid-search every built-in
-    // material, both `StandardGemCuts` cuts, and a spread of camera-tilt/light-direction
-    // parameters, for the pair whose windowing_pct/extinction_pct matched most closely
-    // while still differing substantially in scintillation_pct) -- this time landing on
-    // the SAME material (Cubic Zirconia) on both cuts, which if anything makes the point
-    // more sharply: with material held fixed, only cut geometry and viewing/lighting pose
-    // differ, and scintillation still diverges by ~10.9pp while windowing/extinction stay
-    // within a third of a point of each other. Both assertions below -- "below the
-    // ceiling" and "differ from each other" -- are required together so a future
-    // regression back into saturation (which would make both values collapse toward 100)
-    // fails this test instead of passing it.
+    // The pair used here comes from a grid-search over every built-in material, both
+    // `StandardGemCuts` cuts, and a spread of camera-tilt/light-direction parameters,
+    // for the pair whose windowing_pct/extinction_pct matched most closely while still
+    // differing substantially in scintillation_pct. It lands on the SAME material
+    // (Cubic Zirconia) on both cuts, which if anything makes the point more sharply:
+    // with material held fixed, only cut geometry and viewing/lighting pose differ, and
+    // scintillation still diverges by ~10.9pp while windowing/extinction stay within a
+    // third of a point of each other.
     let srb = StandardGemCuts::standard_round_brilliant();
     let ec = StandardGemCuts::emerald_cut();
     let cz = GemMaterial::all_materials()
@@ -363,10 +341,9 @@ fn no_built_in_material_saturates_scintillation_on_either_cut() {
     // The display mapping `cv / (1 + cv)` is a monotone bijection from [0, inf) onto
     // [0, 1) -- it approaches 100% asymptotically but can never reach it. This test pins
     // that property against every built-in material on both cuts at a representative
-    // viewing/lighting configuration, and would have caught the regression this test
-    // module previously had: a straight `clamp(cv * 100, 0, 100)` measured 19 of 26
-    // material/cut combinations pinned at exactly 100.0, collapsing the metric's ability
-    // to tell most stones apart.
+    // viewing/lighting configuration, guarding against a straight `clamp(cv * 100, 0,
+    // 100)` mapping, which would pin 19 of 26 material/cut combinations at exactly
+    // 100.0, collapsing the metric's ability to tell most stones apart.
     let srb = StandardGemCuts::standard_round_brilliant();
     let ec = StandardGemCuts::emerald_cut();
 

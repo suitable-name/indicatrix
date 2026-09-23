@@ -11,15 +11,15 @@ import { SolidPreviewModel } from "../models/solid_preview.slint";
 import { SettingsModel } from "../models/settings.slint";
 import { TiltModel } from "../models/tilt.slint";
 import { EditorModel } from "../models/editor.slint";
-// CAD audit item 149: a running catalogue-wide batch (tilt sweep or preview
-// render) sets `ctx.export_active`, which suspends the live tracer exactly like
-// an explicit pause -- but the pause pill only reflected `render_paused`/
-// `ExportModel.is_exporting`, so a frozen Path-traced image here still read as
-// "Live". `BatchModel.tilt_batch_running`/`preview_batch_running` are already
+import { StaleBadge } from "stale_badge.slint";
+// A running catalogue-wide batch (tilt sweep or preview render) sets
+// `ctx.export_active`, which suspends the live tracer exactly like an explicit
+// pause. `BatchModel.tilt_batch_running`/`preview_batch_running` are already
 // set by the batch dialogs' own wiring (`gui::batch::tilt::wiring`/
 // `gui::batch::preview::wiring`); this file only reads them to fold the same
-// suspended-display treatment into the pause pill below. Mirrors
-// `solid_viewport.slint`'s identical `batch_suspends_tracer` property.
+// suspended-display treatment into the pause pill below, so a frozen
+// Path-traced image during a batch still reads as paused rather than "Live".
+// Mirrors `solid_viewport.slint`'s identical `batch_suspends_tracer` property.
 import { BatchModel } from "../models/batch.slint";
 
 export component GemViewportView inherits Rectangle {
@@ -51,13 +51,13 @@ export component GemViewportView inherits Rectangle {
     // means the size is already correct the moment the user flips into Solid mode,
     // rather than stale until the next resize.
     //
-    // #26: `live_viewport_width`/`live_viewport_height`, NOT `SolidPreviewModel.
-    // viewport_width`/`viewport_height` -- this component and `SolidViewportView`
-    // used to push their layout size into the SAME two properties, so whichever one
-    // resized last silently clobbered the other's pending redraw size (undocking or
-    // resizing the Live Render window while the Edit tab was open left ITS next
-    // redraw sized to the Live tab's viewport, or vice versa). See
-    // `SolidPreviewModel.live_viewport_width`'s own doc comment.
+    // `live_viewport_width`/`live_viewport_height`, NOT `SolidPreviewModel.
+    // viewport_width`/`viewport_height`: if this component and `SolidViewportView`
+    // pushed their layout size into the SAME two properties, whichever one
+    // resized last would silently clobber the other's pending redraw size
+    // (undocking or resizing the Live Render window while the Edit tab was open
+    // would leave ITS next redraw sized to the Live tab's viewport, or vice
+    // versa). See `SolidPreviewModel.live_viewport_width`'s own doc comment.
     changed width => { SolidPreviewModel.live_viewport_width = self.width; }
     changed height => { SolidPreviewModel.live_viewport_height = self.height; }
 
@@ -268,12 +268,12 @@ export component GemViewportView inherits Rectangle {
                 HorizontalLayout {
                     spacing: 8px;
 
-                    // Render Material Dropdown -- UI/UX review finding 3: renamed from the
-                    // bare, unlabelled "Material" this control used to be (a `ComboBox`
-                    // with no caption at all), which collided in name with
-                    // `editor_view.slint`'s unrelated Yield Material/SG-override control.
-                    // This one picks what's simulated for colour/dispersion/birefringence
-                    // in the render; it never touches the cut itself.
+                    // Render Material Dropdown -- labelled "Render Material", not a
+                    // bare "Material", so it cannot be confused with
+                    // `editor_view.slint`'s unrelated Yield Material/SG-override
+                    // control. This one picks what's simulated for
+                    // colour/dispersion/birefringence in the render; it never
+                    // touches the cut itself.
                     Rectangle {
                         width: 140px;
                         height: 32px;
@@ -390,11 +390,10 @@ export component GemViewportView inherits Rectangle {
                         border-color: TiltModel.dialog_open ? Theme.accent-cyan : Theme.border-medium;
 
                         perf_touch := TouchArea {
-                            // CAD audit item 139: moved onto `TiltModel` itself
-                            // (`ui/models/tilt.slint`) so `SolidViewportView`'s
-                            // own Tilt Curve pill can share the exact same
-                            // open/close + stale-cache-check sequence instead
-                            // of a second copy.
+                            // Lives on `TiltModel` itself (`ui/models/tilt.slint`)
+                            // so `SolidViewportView`'s own Tilt Curve pill can share
+                            // the exact same open/close + stale-cache-check sequence
+                            // instead of a second copy.
                             clicked => { TiltModel.toggle_dialog(); }
                         }
                         Tooltip { text: @markdown("Open the tilt-performance chart: brilliance, windowing and extinction versus tilt."); }
@@ -571,27 +570,17 @@ export component GemViewportView inherits Rectangle {
                     // Belongs to the tracer -- only shown in Path-traced mode
                     // (`live_view_mode == 1`); Solid mode has nothing of the tracer's to
                     // pause.
-                    // CAD audit item 59: the traced image is only re-rendered on a
-                    // solve, so after an ordinary tier edit it still shows the design
-                    // as it was -- said plainly here rather than left to be noticed.
+                    // The traced image is only re-rendered on a solve, so after an
+                    // ordinary tier edit it still shows the design as it was -- said
+                    // plainly here rather than left to be noticed.
                     // Sits beside the pause pill, in the tracer's own mode only, for
                     // the same reason that pill does: it is a fact about the trace.
-                    if ViewportModel.live_view_mode == 1 && ViewportModel.trace_stale: Rectangle {
-                        height: 32px;
-                        border-radius: Theme.radius-sm;
-                        background: Theme.accent-amber;
-                        stale_layout := HorizontalLayout {
-                            padding-left: 10px;
-                            padding-right: 10px;
-                            Text {
-                                text: "Trace is from an earlier edit -- Solve to refresh";
-                                font-size: 11px;
-                                font-weight: 700;
-                                color: Theme.bg-darkest;
-                                vertical-alignment: center;
-                            }
-                        }
-                        width: stale_layout.preferred-width;
+                    // Uses the shared `StaleBadge` (every other analysis panel's
+                    // own "stale" marker) for the same condition, with a one-click
+                    // "Recompute" (`EditorModel.solve()`) instead of only a hint to
+                    // solve manually.
+                    if ViewportModel.live_view_mode == 1 && ViewportModel.trace_stale: StaleBadge {
+                        recompute => { EditorModel.solve(); }
                     }
 
                     if ViewportModel.live_view_mode == 1: Rectangle {
@@ -605,8 +594,7 @@ export component GemViewportView inherits Rectangle {
                             // Disabled during a batch too -- same reasoning as the
                             // exporting case above: a click must not flip the user's
                             // real pause state out from under them while the pill is
-                            // showing a state that isn't `render_paused` (CAD audit
-                            // item 149).
+                            // showing a state that isn't `render_paused`.
                             enabled: !ExportModel.is_exporting && !root.batch_suspends_tracer;
                             clicked => {
                                 ViewportModel.render_paused = !ViewportModel.render_paused;
@@ -634,6 +622,34 @@ export component GemViewportView inherits Rectangle {
                                 vertical-alignment: center;
                             }
                         }
+                    }
+
+                    // GPU status pill -- surfaces a lost GPU device instead of
+                    // leaving the viewport silently stuck with nothing on screen
+                    // saying why it stopped updating. `ViewportModel.
+                    // gpu_status_text`'s own doc comment (models/viewport.slint) has
+                    // the exact sequence this reflects: empty while healthy (hidden),
+                    // "reacquiring" text during the brief self-heal attempt, or a
+                    // "CPU fallback: <reason>" message once that attempt has also
+                    // failed. Same amber-pill styling as the "Trace is from an
+                    // earlier edit" pill above -- both are "something's not showing
+                    // what Live normally means" facts about the trace.
+                    if ViewportModel.live_view_mode == 1 && ViewportModel.gpu_status_text != "": Rectangle {
+                        height: 32px;
+                        border-radius: Theme.radius-sm;
+                        background: Theme.accent-amber;
+                        gpu_status_layout := HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            Text {
+                                text: ViewportModel.gpu_status_text;
+                                font-size: 11px;
+                                font-weight: 700;
+                                color: Theme.bg-darkest;
+                                vertical-alignment: center;
+                            }
+                        }
+                        width: gpu_status_layout.preferred-width;
                     }
 
                     // Settings Dialog Trigger Button (⚙)

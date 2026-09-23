@@ -127,6 +127,37 @@ fn issue_refuses_once_the_pending_cap_is_reached() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `EnrollRegistry::issue` must sanitize `name` the same way
+/// `indicatrix_net::tls::append_to_allowlist` sanitizes an allowlist label -- an
+/// operator-supplied `--name`/enrollment `name` containing `\r`/`\n`/`#` must not be
+/// able to inject a stray allowlist line once this enrollment is claimed.
+#[test]
+fn issue_sanitizes_a_name_containing_line_breaks_and_a_comment_marker() {
+    let dir = unique_temp_dir("issue-sanitizes-name");
+    pki::init(&dir).unwrap();
+    let registry = EnrollRegistry::new();
+
+    let evil_name =
+        "laptop\r\ndeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  # not trusted";
+    let (encoded, _ttl) = registry
+        .issue_with_ttl(&dir, evil_name, Duration::from_secs(60))
+        .unwrap();
+    let decoded = token::decode(&encoded).unwrap();
+
+    let claimed = registry
+        .claim(&decoded.secret)
+        .expect("a fresh token must claim successfully");
+    assert!(!claimed.name.contains('\r'));
+    assert!(!claimed.name.contains('\n'));
+    assert!(!claimed.name.contains('#'));
+    assert_eq!(
+        claimed.name,
+        indicatrix_net::tls::sanitize_allowlist_label(evil_name)
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn token_comparison_uses_constant_time_equality() {
     // Timing itself isn't observable in a unit test; this just pins down that
@@ -234,6 +265,37 @@ fn a_failed_claim_never_touches_the_allowlist() {
         "{response:?}"
     );
     assert!(!allowlist_path.exists());
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+// ---- Bounded read ----------------------------------------------------------------
+
+/// A malicious/corrupt length prefix declaring far more than
+/// `connection::MAX_ENROLL_REQUEST_LEN` must be rejected from the 4-byte prefix alone,
+/// before `handle_enroll_connection` ever attempts to allocate a buffer for it -- this
+/// listener accepts a connection from anyone (no client certificate required), so an
+/// unauthenticated peer must not be able to make it commit to a huge allocation.
+#[test]
+fn handle_enroll_connection_rejects_an_oversized_length_prefix_without_allocating() {
+    let dir = unique_temp_dir("oversized-prefix");
+    pki::init(&dir).unwrap();
+    let registry = EnrollRegistry::new();
+
+    let mut input = Vec::new();
+    input.extend_from_slice(&0x1FFF_FFFFu32.to_le_bytes());
+    // Deliberately no payload bytes follow: if the bound weren't enforced before
+    // allocating, this would need to actually supply ~512 MiB (or the read would hang
+    // waiting for bytes that never arrive) instead of failing immediately.
+    let mut duplex = DuplexHalf::new(input);
+
+    let err = handle_enroll_connection(&mut duplex, &registry, &dir, None, Some(loopback_peer()))
+        .unwrap_err();
+    assert!(err.contains("exceeds"), "{err}");
+    assert!(
+        duplex.out.is_empty(),
+        "a request rejected before decoding gets no reply written"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }

@@ -24,6 +24,8 @@
 //! [`Design::planes_from_solved`] gives the same plane, by construction rather than
 //! by re-matching floats after the fact.
 
+use std::collections::BTreeSet;
+
 use glam::Vec3;
 use indicatrix::geometry::meet_solver::{Block, SolvedTier, classify_blocks};
 use indicatrix_cut_core::{
@@ -214,8 +216,8 @@ impl FacetMap {
 
     /// The index-wheel tooth this facet sits at (`FacetInfo::index_on_gear`), or
     /// `0` for a preform plane, an out-of-range id, or a tier with no listed
-    /// indices. Used by `diagram2d`'s index-wheel radial-line pass (#121) to find
-    /// a selected facet's own tooth without exposing [`FacetInfo`] itself.
+    /// indices. Used by `diagram2d`'s index-wheel radial-line pass to find a
+    /// selected facet's own tooth without exposing [`FacetInfo`] itself.
     #[must_use]
     pub fn index_on_gear(&self, facet_id: usize) -> u32 {
         self.facets.get(facet_id).map_or(0, |f| f.index_on_gear)
@@ -239,14 +241,11 @@ impl FacetMap {
     }
 
     /// The facet's own short on-diagram label: `"<tier name> <index>"` (the one
-    /// number a cutter reads off a `GemCad` diagram, per #28), or just the tier name
+    /// number a cutter reads off a `GemCad` diagram), or just the tier name
     /// for a tier with no listed indices (a table/culet, where the index is always
     /// `0` and carries no information). `""` for a preform plane, an unnamed tier,
     /// or an out-of-range id -- unlike the fuller [`Self::hover_text`] tooltip.
-    /// Returns an owned `String` (rather than the old plain tier-name `&str`)
-    /// since the index has to be formatted in; the one caller
-    /// (`preview_state::update_diagram_memory_from_design`) already turned the old
-    /// `&str` into an owned `String` immediately anyway.
+    /// Returns an owned `String` since the index has to be formatted in.
     #[must_use]
     pub fn facet_label(&self, facet_id: usize) -> String {
         let Some(info) = self.facets.get(facet_id) else {
@@ -275,11 +274,11 @@ impl FacetMap {
     /// `n_d` is the design's effective refractive index the margin is computed
     /// against.
     ///
-    /// #123: the margin clause used to be printed for every facet, but
+    /// The margin clause is only printed for a pavilion facet:
     /// `optics_hints::tier_margin_and_risk` (the table's own path, `state/mod.rs`)
     /// only has a real windowing answer for `Block::Pavilion` -- a crown or girdle
-    /// facet cannot window, so a margin figure there means nothing and undermines
-    /// the reading of the pavilion facets' real margins.
+    /// facet cannot window, so a margin figure there would mean nothing and would
+    /// undermine the reading of the pavilion facets' real margins.
     #[must_use]
     pub fn hover_text(&self, facet_id: usize, n_d: f64) -> String {
         let Some(info) = self.facets.get(facet_id) else {
@@ -320,13 +319,18 @@ impl FacetMap {
     /// angle for the windowing check, even before the mesh itself catches up.
     /// Windowing risk applies only to pavilion tiers (`angle_deg < 0.0`), per
     /// `optics_hints`'s own module doc comment.
+    ///
+    /// `pending_tiers` marks EVERY tier index it contains, not just one: a batch
+    /// nudge/offset dirties several tiers at once, and a cutter watching a
+    /// multi-tier edit needs every one of the changed facets outlined as pending,
+    /// not just the first.
     #[must_use]
     pub fn overlay_flags(
         &self,
         design: &Design,
         n_d: f64,
         selected_tier: Option<usize>,
-        pending_tier: Option<usize>,
+        pending_tiers: &BTreeSet<usize>,
     ) -> OverlayFlags {
         let plane_count = self.facets.len();
         let mut flagged = vec![false; plane_count];
@@ -337,7 +341,7 @@ impl FacetMap {
             let Some(tier_index) = info.tier_index else {
                 continue;
             };
-            if pending_tier == Some(tier_index) {
+            if pending_tiers.contains(&tier_index) {
                 pending[facet_id] = true;
             }
             if selected_tier == Some(tier_index) {
@@ -360,9 +364,9 @@ impl FacetMap {
         }
     }
 
-    /// Every facet-id pair that should carry a meet-point marker (P1 item 29):
-    /// for every tier pair `Design::facet_meets` names as meeting each other, the
-    /// full cross product of that pair's surviving facet ids.
+    /// Every facet-id pair that should carry a meet-point marker: for every tier
+    /// pair `Design::facet_meets` names as meeting each other, the full cross
+    /// product of that pair's surviving facet ids.
     ///
     /// `Design::facet_meets` is resolved by the same [`indicatrix::geometry::
     /// meet_solver::MeetNameResolver`] `Design::solve` itself uses (girdle/culet/
@@ -547,7 +551,7 @@ mod tests {
         // Neither tier is steep enough to window at diamond's critical angle
         // (~24.4 deg), so `flagged` should be empty -- this only pins the
         // pending/selected wiring.
-        let flags = map.overlay_flags(&design, n_d, Some(2), Some(5));
+        let flags = map.overlay_flags(&design, n_d, Some(2), &BTreeSet::from([5]));
 
         for &facet_id in map.facets_of_tier(5) {
             assert!(flags.pending[facet_id as usize]);
@@ -563,6 +567,32 @@ mod tests {
             flags.flagged.iter().all(|&f| !f),
             "diamond RBC must not window"
         );
+    }
+
+    /// A MULTI-tier `pending_tiers` set must mark every one of its members, not
+    /// just the first -- a batch nudge/offset dirties several tiers at once and
+    /// every one of them must read as pending in the viewport.
+    #[test]
+    fn overlay_flags_marks_every_member_of_a_multi_tier_pending_set() {
+        let design = standard_round_brilliant_design();
+        let solved = design.solve().expect("every tier is pinned");
+        let map = FacetMap::from_design(&design, &solved);
+        let n_d = design.effective_refractive_index();
+
+        let flags = map.overlay_flags(&design, n_d, None, &BTreeSet::from([2, 5]));
+
+        for &facet_id in map.facets_of_tier(2) {
+            assert!(flags.pending[facet_id as usize], "tier 2 must be pending");
+        }
+        for &facet_id in map.facets_of_tier(5) {
+            assert!(flags.pending[facet_id as usize], "tier 5 must be pending");
+        }
+        for &facet_id in map.facets_of_tier(3) {
+            assert!(
+                !flags.pending[facet_id as usize],
+                "tier 3 must not be pending"
+            );
+        }
     }
 
     #[test]
@@ -683,5 +713,122 @@ mod tests {
         let facet_text = map.hover_text(map.preform_plane_count(), n_d);
         assert!(facet_text.contains("Table"), "got: {facet_text}");
         assert!(facet_text.contains("index 0"), "got: {facet_text}");
+    }
+
+    // --- Does the 2D diagram apply a tier's cheater offset? ---
+    //
+    // `crown_project`/`pavilion_project`/`profile_project` project `SolidMesh`
+    // vertex positions directly, with no separate azimuth recomputation anywhere
+    // in the fill/edge passes (the module's own `index_to_azimuth`-based
+    // `wheel_direction` is used ONLY for the decorative index-wheel ticks, never
+    // for a facet's own body), so a cheater offset baked into
+    // `Design::planes_from_solved` (`design/export.rs::apply_cheater_offsets`)
+    // does reach the picture. This test proves it by actually rendering both a
+    // plain and a cheatered diagram from the SAME round-brilliant fixture every
+    // other test in this file uses, and comparing the two `DiagramFrame`s.
+    #[test]
+    fn cheater_offset_moves_only_its_own_tiers_facets_in_the_2d_diagram() {
+        use super::super::diagram2d::{DiagramConfig, DiagramStyle, render_diagram};
+        use indicatrix::geometry::stone_metrics::{SolidStatus, build_solid_mesh};
+
+        let mut design = standard_round_brilliant_design();
+        let cheatered_tier = design
+            .tiers
+            .iter()
+            .position(|t| t.name == "Crown Main")
+            .expect("fixture must have a Crown Main tier");
+        // Tiers whose facets share no plane with Crown Main and are nowhere near
+        // it in the schedule -- these must render byte-identically whichever way
+        // the cheater offset is set. (Crown Main's own immediate neighbours,
+        // Star and Upper Girdle, are deliberately excluded: a real rotation also
+        // moves the shared EDGE with an adjacent tier, so asserting pixel
+        // equality for them would be asserting something not actually true of
+        // the geometry.)
+        let unrelated_tier_names = ["Table", "Girdle", "Pavilion Main", "Lower Girdle", "Culet"];
+
+        let solved = design.solve().expect("every tier is pinned");
+        let map = FacetMap::from_design(&design, &solved);
+
+        let plain_planes = design.planes_from_solved(&solved);
+        design.cheater_offsets_deg.insert(cheatered_tier, 0.5);
+        let cheatered_planes = design.planes_from_solved(&solved);
+        // Sanity check on the precondition this test actually exercises: the
+        // rotation must have landed on the planes at all (core-level behaviour
+        // `design/export.rs`'s own tests already cover in depth; asserted here
+        // only so a regression there fails loudly in THIS test too, rather than
+        // this test silently passing because nothing differed upstream).
+        assert_ne!(
+            plain_planes, cheatered_planes,
+            "the cheater offset must change at least one plane"
+        );
+
+        let plain_mesh = match build_solid_mesh(&plain_planes) {
+            SolidStatus::Closed(m) => m,
+            other => panic!("plain fixture must close: {other:?}"),
+        };
+        let cheatered_mesh = match build_solid_mesh(&cheatered_planes) {
+            SolidStatus::Closed(m) => m,
+            other => panic!("cheatered fixture must close: {other:?}"),
+        };
+
+        let config = DiagramConfig {
+            width: 300,
+            height: 300,
+            gear_teeth: design.meta.gear_teeth_abs(),
+            gear_reference_angle: design.meta.gear_reference_angle as f32,
+            symmetry_order: design.meta.symmetry_order,
+            mirror: design.meta.mirror,
+        };
+        let style = DiagramStyle::default();
+        let plain_frame = render_diagram(&plain_mesh, &config, &style);
+        let cheatered_frame = render_diagram(&cheatered_mesh, &config, &style);
+
+        let unrelated_facet_ids: std::collections::BTreeSet<usize> = (0..map.facets.len())
+            .filter(|&id| {
+                map.tier_of(id)
+                    .is_some_and(|t| unrelated_tier_names.contains(&design.tiers[t].name.as_str()))
+            })
+            .collect();
+        let cheatered_facet_ids: std::collections::BTreeSet<usize> = (0..map.facets.len())
+            .filter(|&id| map.tier_of(id) == Some(cheatered_tier))
+            .collect();
+        assert!(!unrelated_facet_ids.is_empty());
+        assert!(!cheatered_facet_ids.is_empty());
+
+        let mut unrelated_tier_pixel_differs = false;
+        let mut cheatered_tier_pixel_differs = false;
+        for y in 0..config.height {
+            for x in 0..config.width {
+                let plain_pick = plain_frame.pick_at(x, y).map(|id| id as usize);
+                let cheatered_pick = cheatered_frame.pick_at(x, y).map(|id| id as usize);
+                if plain_pick == cheatered_pick {
+                    continue;
+                }
+                // A differing pixel is attributed to whichever facet was
+                // painted there in EITHER render (a facet whose edge shrank
+                // shows up as the OTHER frame's facet id instead, and vice
+                // versa).
+                for id in [plain_pick, cheatered_pick].into_iter().flatten() {
+                    if unrelated_facet_ids.contains(&id) {
+                        unrelated_tier_pixel_differs = true;
+                    }
+                    if cheatered_facet_ids.contains(&id) {
+                        cheatered_tier_pixel_differs = true;
+                    }
+                }
+            }
+        }
+
+        assert!(
+            cheatered_tier_pixel_differs,
+            "the cheatered tier's own facet(s) must visibly move in the diagram -- \
+             if this fails, diagram2d.rs is not reading the already-rotated planes \
+             `Design::planes_from_solved` produces"
+        );
+        assert!(
+            !unrelated_tier_pixel_differs,
+            "a cheater offset on Crown Main must not move any pixel belonging to a \
+             tier that shares no plane with it"
+        );
     }
 }

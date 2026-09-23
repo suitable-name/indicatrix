@@ -199,8 +199,8 @@ fn tiny_scene() -> SceneSnapshot {
     }
 }
 
-/// An `Srgb` export must produce bytes IDENTICAL to what this app wrote before the
-/// colour-space picker existed, down to the raw bytes.
+/// An `Srgb` export must produce bytes IDENTICAL regardless of which `save_png` code
+/// path runs, down to the raw bytes.
 #[test]
 fn srgb_export_is_byte_identical_regardless_of_which_save_png_path_runs() {
     let scene = tiny_scene();

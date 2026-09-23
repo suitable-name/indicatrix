@@ -1,4 +1,4 @@
-//! Corpus-wide measurement for `indicatrix_cut_core::manufacturability`'s four Phase 4 checks.
+//! Corpus-wide measurement for `indicatrix_cut_core::manufacturability` checks.
 //!
 //! Reads real `.asc` files directly out of the user's own `facet_diagrams.sqlite`
 //! catalogue (one per design, deduplicated by `detail_id`, exactly the pattern

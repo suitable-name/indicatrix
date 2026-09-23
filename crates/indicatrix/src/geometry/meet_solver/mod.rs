@@ -87,8 +87,9 @@
 //!
 //! # Cost envelope
 //!
-//! [`candidates::enumerate_candidate_vertices`] -- every well-conditioned
-//! triple of the arrangement's `P` planes, solved and feasibility-tested -- is
+//! [`candidates::enumerate_candidate_vertices_cancellable`] -- every
+//! well-conditioned triple of the arrangement's `P` planes, solved and
+//! feasibility-tested -- is
 //! `O(P^3)` per call. Phase 1 (the constructive pass) avoids paying that per
 //! tier via `phase1_cache`'s incremental candidate set, but phase 3
 //! (refinement) re-enumerates the *entire* arrangement from scratch every
@@ -136,10 +137,40 @@
 //! low seconds even under [`solve_meet_points_verified`]'s repair search;
 //! a design pushing into the 300+-plane range should be expected to take
 //! several seconds and to receive little or no repair search regardless (the
-//! budget above has already reduced it near to the plain solve). Neither
-//! entry point streams progress or supports cancellation mid-solve -- a
-//! caller driving this from an interactive UI should run it off the main
+//! budget above has already reduced it near to the plain solve). A caller
+//! driving this from an interactive UI should still run it off the main
 //! thread and size any timeout to the plane count, not assume a fixed budget.
+//!
+//! # Cancellation and progress
+//!
+//! [`solve_meet_points_with`] and [`solve_meet_points_verified_with`] accept a
+//! [`SolveControl`], the cancellation/progress-reporting sibling of
+//! [`solve_meet_points`]/[`solve_meet_points_verified`] (which pass a no-op
+//! control and stay infallible -- an unused [`SolveControl`] costs one
+//! `Option::is_some` check per cancel point and changes no output). Cancel
+//! points, from coarsest to finest: once per constructive-pass sweep AND once
+//! per still-unsettled tier within a sweep (phase 1 -- `phase1_cache`-backed,
+//! not the cubic path, but one sweep's cumulative filtering cost across every
+//! unsettled tier was measured able to exceed the budget below in an
+//! unoptimized build on its own, hence the per-tier check too), once per
+//! refinement sweep (phase 3, up to [`MAX_REFINE_SWEEPS`] times), and --
+//! since phase 3's [`candidates::enumerate_candidate_vertices_cancellable`]
+//! call is the measured long pole (it dominates the real 103-tier design's
+//! 5.5-6.1 s total, see above) -- twice within its candidate-triple
+//! enumeration itself: once per outer-plane iteration and once per
+//! middle-plane iteration, bounding the largest uninterrupted unit of work to
+//! one `O(P)` inner loop rather than a whole `O(P^2)` outer-plane "chunk" (an
+//! outer-only check was tried first and measured insufficient -- the first,
+//! largest chunk alone could still miss the budget below in an unoptimized
+//! build; see that function's own doc comment). Measured on that same
+//! 103-tier design (dev profile, the same build `cargo test` uses):
+//! cancelling 50 ms into a solve started on a background thread is observed
+//! within 500 ms -- see `indicatrix-cut-core`'s
+//! `design::tests::cancel_stops_a_large_real_solve_quickly`.
+//! [`solve_meet_points_verified_with`]'s own repair-search pipeline runs each
+//! go through the same [`SolveControl`], so a cancel or progress report from
+//! deep inside one repair-search run surfaces exactly the same way a plain
+//! solve's does -- no separate progress model for the verified path.
 //!
 //! # Module layout
 //!
@@ -155,6 +186,7 @@
 //! schedule-export helpers.
 
 use indicatrix_formats::asc::AscSchedule;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 mod anchors;
 mod blocks;
@@ -169,9 +201,12 @@ pub use anchors::apply_ratio_anchors;
 pub use blocks::{Block, classify_blocks};
 pub use candidates::tier_instance_normals;
 pub use names::{MeetNameResolver, ResolvedNames, TokenResolution};
-pub use solve::solve_meet_points;
+pub use solve::{solve_meet_points, solve_meet_points_with};
 pub use validation::{build_reconstructed_schedule, vertex_meet_groups};
-pub use verify::{VERIFY_ACCEPT_TOL, VerifiedSolveReport, solve_meet_points_verified};
+pub use verify::{
+    VERIFY_ACCEPT_TOL, VerifiedSolveReport, solve_meet_points_verified,
+    solve_meet_points_verified_with,
+};
 
 /// Half-extent of the bounding box standing in for the uncut rough stone. Real
 /// `.asc` masts sit close to 1.0, so this never masquerades as a real facet; it only
@@ -215,6 +250,149 @@ const MAX_CONSTRUCTIVE_SWEEPS: usize = 64;
 /// mostly failed to converge within 20,000 iterations, and slightly worsened
 /// accuracy on the corpus median when it did; rejected.
 const MAX_REFINE_SWEEPS: usize = 4;
+
+/// Which of the three solve phases (see the module docs' "Solving strategy") a
+/// [`SolveProgress`] report describes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolvePhase {
+    /// Phase 1: the file-order constructive pass.
+    Constructive,
+    /// Phase 2: the per-block least-squares estimate for whatever phase 1
+    /// left unsettled.
+    LeastSquares,
+    /// Phase 3: nearest-level refinement sweeps over the full arrangement.
+    Refine,
+}
+
+/// One progress report from a `_with` solve entry point's [`SolveControl`].
+///
+/// `sweep`/`max_sweeps` count within the current [`SolvePhase`] only (each
+/// phase's own sweep counter restarts at 1); `blocks_done`/`blocks_total`
+/// count tiers processed within the current sweep (`blocks_total` is always
+/// the design's tier count). Neither pair is comparable across a phase
+/// boundary -- a caller driving a progress bar should key it off
+/// `(phase, sweep)`, not assume a single global counter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SolveProgress {
+    /// Which phase this report is from.
+    pub phase: SolvePhase,
+    /// 1-based sweep index within `phase`.
+    pub sweep: u32,
+    /// The most sweeps `phase` can run (1 for [`SolvePhase::LeastSquares`],
+    /// which has no sweep structure of its own).
+    pub max_sweeps: u32,
+    /// Tiers processed so far within this sweep.
+    pub blocks_done: u32,
+    /// Total tiers in the design -- `blocks_done` reaches this at the end of
+    /// every completed sweep.
+    pub blocks_total: u32,
+}
+
+/// Why a `_with` solve entry point ([`solve_meet_points_with`],
+/// [`solve_meet_points_verified_with`]) returned early instead of a solved result.
+///
+/// The plain (non-`_with`) entry points never produce this: an unused
+/// [`SolveControl`] never cancels, and they keep the legacy
+/// all-[`SolveStrategy::Failed`] behavior for [`Self::TooManyPlanes`] instead
+/// of erroring (see each variant's doc comment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolveError {
+    /// [`SolveControl`]'s cancel flag was observed set at a cancel point (see
+    /// the module docs, "Cancellation and progress"). No partial result is
+    /// returned -- a cancelled solve has no use for an incomplete one.
+    Cancelled,
+    /// More than `max` facet-plane instances (`planes` of them) -- the same
+    /// [`MAX_PLANES`] cap [`solve_meet_points`]/[`solve_meet_points_verified`]
+    /// silently return an all-[`SolveStrategy::Failed`] result for instead.
+    TooManyPlanes {
+        /// The design's actual plane-instance count.
+        planes: usize,
+        /// The cap it exceeded ([`MAX_PLANES`]).
+        max: usize,
+    },
+}
+
+impl std::fmt::Display for SolveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Cancelled => write!(f, "solve cancelled"),
+            Self::TooManyPlanes { planes, max } => write!(
+                f,
+                "design has {planes} facet-plane instances, above the {max}-plane cap for \
+                 candidate-vertex enumeration"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SolveError {}
+
+/// Cancellation and progress-reporting hooks for a `_with` solve entry point.
+///
+/// [`Self::default`] is the no-op control every plain (non-`_with`) entry
+/// point passes internally: `cancel` absent and `progress` absent, so every
+/// cancel/progress point in the pipeline costs one cheap `Option::is_some`
+/// check and calls nothing. Build one with [`Self::default`] then
+/// [`Self::with_cancel`]/[`Self::with_progress`] (either or both) to opt in.
+#[derive(Default, Clone, Copy)]
+pub struct SolveControl<'a> {
+    cancel: Option<&'a AtomicBool>,
+    progress: Option<&'a dyn Fn(SolveProgress)>,
+}
+
+impl<'a> SolveControl<'a> {
+    /// A control that checks `cancel` at every cancel point (see the module
+    /// docs) and reports no progress. `cancel` is read with
+    /// [`Ordering::Relaxed`] -- a solve only ever needs to observe the flag
+    /// eventually, not synchronize any other state through it.
+    #[must_use]
+    pub const fn with_cancel(cancel: &'a AtomicBool) -> Self {
+        Self {
+            cancel: Some(cancel),
+            progress: None,
+        }
+    }
+
+    /// A control that reports every [`SolveProgress`] point to `progress` and
+    /// never cancels.
+    #[must_use]
+    pub const fn with_progress(progress: &'a dyn Fn(SolveProgress)) -> Self {
+        Self {
+            cancel: None,
+            progress: Some(progress),
+        }
+    }
+
+    /// Adds cancellation to an existing control (e.g. one already carrying a
+    /// `progress` callback via [`Self::with_progress`]).
+    #[must_use]
+    pub const fn cancelling(mut self, cancel: &'a AtomicBool) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+
+    /// Adds progress reporting to an existing control (e.g. one already
+    /// carrying a `cancel` flag via [`Self::with_cancel`]).
+    #[must_use]
+    pub const fn reporting(mut self, progress: &'a dyn Fn(SolveProgress)) -> Self {
+        self.progress = Some(progress);
+        self
+    }
+
+    /// `true` iff `self.cancel` is set and observed set. Cheap when unused
+    /// (`self.cancel` is `None`): one `Option::is_some` check, no atomic load.
+    #[must_use]
+    pub(super) fn is_cancelled(&self) -> bool {
+        self.cancel.is_some_and(|c| c.load(Ordering::Relaxed))
+    }
+
+    /// Calls `self.progress` with `report` when one is set; a no-op otherwise.
+    pub(super) fn report(&self, report: SolveProgress) {
+        if let Some(f) = self.progress {
+            f(report);
+        }
+    }
+}
 
 /// A picked level more than this many times the design's scale prior almost
 /// certainly means the region isn't really bounded there yet (the pick hit

@@ -184,7 +184,7 @@ impl ConstraintTier {
     /// [`indicatrix::geometry::meet_solver::Block::Girdle`] when a tier's angle
     /// is at (or within `1e-6` of) 90 degrees, so a 0-degree "girdle" -- the
     /// manual's own worked-example mistake this constructor exists to make hard
-    /// to repeat, CAD audit item 115 -- classifies as a second table instead
+    /// to repeat -- classifies as a second table instead
     /// (see [`super::Design::from_asc_schedule`]'s doc comment for the module
     /// this crate treats as authoritative on that point) and never produces a
     /// live girdle band at all.
@@ -285,6 +285,24 @@ pub struct ScheduleMeta {
     pub gear_reference_angle: f64,
     pub symmetry_order: u32,
     pub mirror: bool,
+    /// The legacy `.asc` `I` line's refractive index, as last imported or
+    /// exported. [`super::Design::effective_refractive_index`] is the value
+    /// everything else in this crate actually scores/exports/critical-angles
+    /// against (override, then a recognized material name, then this field only
+    /// as the final fallback); this field is read directly only when neither of
+    /// those apply.
+    ///
+    /// **Overwritten on an export/re-import round trip** (a known, unfixed
+    /// data-loss path): `Design::to_asc_schedule[_from_solved]` writes
+    /// `effective_refractive_index()` -- not this field -- as the exported `I`
+    /// line, and `Design::from_asc_schedule` then reads that same freshly
+    /// exported line straight back into this field on the next import. So
+    /// picking a recognized material (even without an explicit override) and
+    /// then saving-and-reopening through `.asc` permanently replaces whatever
+    /// this field held with the material's own resolved `n_D` -- there is no way
+    /// to recover the original legacy value afterward, though in practice this
+    /// rarely matters since `effective_refractive_index` would already have
+    /// preferred the material/override over this field anyway.
     pub refractive_index: f64,
     pub headers: Vec<String>,
     pub footnotes: Vec<String>,
@@ -356,7 +374,7 @@ mod tests {
     }
 
     /// `girdle` must build an exactly-90-degree tier pinned to `half_width`,
-    /// and -- the whole point of CAD audit item 115 -- `classify_blocks` must
+    /// and -- the whole point of this constructor -- `classify_blocks` must
     /// actually classify it as `Block::Girdle`, unlike the manual's own
     /// 0-degree worked-example mistake, which classifies as `Block::Crown`.
     #[test]
@@ -376,7 +394,7 @@ mod tests {
             constraint: tier.constraint.clone(),
             names: vec![tier.name.clone()],
         };
-        // The manual's own worked-example mistake (CAD audit item 115): the
+        // The manual's own worked-example mistake: the
         // same tier authored at 0 degrees instead of 90.
         let zero_degree_mistake = MeetTierInput {
             angle_deg: 0.0,

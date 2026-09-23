@@ -13,7 +13,7 @@ use crate::{
 ///
 /// All changed tiers are folded into ONE [`Edit::Batch`] of [`Edit::ModifyTier`]
 /// sub-edits, in tier-index order, so an Optimize apply is a single undo step
-/// (CAD audit item 79) rather than one `Ctrl+Z` per tier. Every index is
+/// rather than one `Ctrl+Z` per tier. Every index is
 /// validated up front against a scratch clone of `design.tiers` -- never
 /// `design` itself -- so a change whose index no longer exists leaves `design`
 /// completely untouched instead of applying a partial, silently-mismatched

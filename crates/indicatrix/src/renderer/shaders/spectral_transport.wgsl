@@ -4,25 +4,23 @@
 // furnace anchor, spectral-space debug comparison) and `renderer::gpu::transport_check`
 // (per-function ULP budgets, exercised via `shaders/transport_functions.wgsl`).
 //
-// Finding G5 Part B: this file now holds ONLY the megakernel entry point,
+// This file holds ONLY the megakernel entry point,
 // `transport_main`: its per-thread prologue (camera ray generation, hero wavelength,
 // hoisted per-channel dispersion/absorption arrays), a loop that calls
 // `transport_bounce_step` (`shaders/transport_bounce.wgsl`) once per bounce, and the
 // final per-channel-family XYZ integration and output writes. Every scene binding, and
-// every helper function the old inline bounce loop called (`intersect_ray`,
+// every helper function the bounce loop calls (`intersect_ray`,
 // `try_split_exit_channel`, the NEE/environment-sampling machinery, the uniaxial/biaxial
-// dispatch helpers), moved to `transport_bounce.wgsl` -- see that file's own header
+// dispatch helpers), lives in `transport_bounce.wgsl` -- see that file's own header
 // comment for why (in one sentence: `wavefront_transport.wgsl`'s `wavefront_bounce`
 // kernel needs the exact same bindings and calls the exact same
 // `transport_bounce_step` function, so both live where both callers can share them
 // without a duplicate copy).
 //
-// This file's OWN doc comment used to describe the full transport physics in detail;
-// that description now lives in `transport_bounce.wgsl`, next to the code it actually
-// describes. What remains here is deliberately thin: `transport_main` is now a per-ray
-// setup routine plus a bounce-count loop, bit-identical to before this split (see
-// `transport_bounce_step`'s own doc comment for exactly what "bit-identical by
-// construction" means here).
+// The full transport physics is described in `transport_bounce.wgsl`, next to the code
+// it actually describes. What remains here is deliberately thin: `transport_main` is a
+// per-ray setup routine plus a bounce-count loop (see `transport_bounce_step`'s own doc
+// comment for exactly what "bit-identical by construction" means here).
 // optics::raytracer::trace_spectral_ray -- the isotropic-only estimator.
 
 @compute @workgroup_size(64)
@@ -30,7 +28,7 @@ fn transport_main(
     @builtin(global_invocation_id) gid: vec3<u32>,
     @builtin(local_invocation_index) local_index: u32,
 ) {
-    // Finding G5 Part A: cooperative workgroup-shared plane fill -- deliberately BEFORE
+    // Cooperative workgroup-shared plane fill -- deliberately BEFORE
     // the out-of-range early `return` below. `workgroupBarrier()` requires every
     // invocation in the workgroup to reach it, including the last (partial) workgroup's
     // threads whose `gid.x` is `>= total` and which return right after: an invocation
@@ -57,8 +55,8 @@ fn transport_main(
         return;
     }
 
-    // Finding G5 Part B: camera-ray generation, hero wavelength, and the per-channel
-    // `lambdas` derivation are now `transport_generate_ray` (`shaders/transport_bounce.wgsl`),
+    // Camera-ray generation, hero wavelength, and the per-channel
+    // `lambdas` derivation are `transport_generate_ray` (`shaders/transport_bounce.wgsl`),
     // shared with `wavefront_generate`'s (`wavefront_transport.wgsl`) identical need for
     // the SAME deterministic RNG draws from the SAME `idx` -- see that function's own
     // doc comment. `idx` means exactly the same thing to both callers: this dispatch's
@@ -80,8 +78,8 @@ fn transport_main(
         path_pdf[k] = 1.0;
     }
 
-    // Finding G5 Part B: the material-derived per-ray "hoisted" constants (dispersion,
-    // absorption, biaxial axis frame, hero indices, studio rig directions) are now
+    // The material-derived per-ray "hoisted" constants (dispersion,
+    // absorption, biaxial axis frame, hero indices, studio rig directions) are
     // `transport_hoist_ray_constants` (`shaders/transport_bounce.wgsl`), called ONCE
     // per ray here exactly as this prologue's own inline computation always did -- see
     // that function's own doc comment for why `wavefront_bounce` instead calls it fresh
@@ -118,12 +116,14 @@ fn transport_main(
     }
     var path_escaped = false;
     var pending_light_mis: f32 = 0.0;
+    // The interior direction `pending_light_mis`'s phase pdf was evaluated
+    // at -- see `transport_bounce_step`'s own doc comment on its matching parameter.
+    var pending_light_mis_dir = vec3<f32>(0.0, 0.0, 0.0);
 
     for (var bounce: u32 = 0u; bounce < params.max_bounces; bounce = bounce + 1u) {
-        // Finding G5 Part B: one bounce of the shared `transport_bounce_step` body
+        // One bounce of the shared `transport_bounce_step` body
         // (`shaders/transport_bounce.wgsl`) -- see that function's own doc comment for
-        // the calling convention and why this is bit-identical to the old inline loop
-        // body it replaces.
+        // the calling convention and the "bit-identical by construction" guarantee.
         let status = transport_bounce_step(
             bounce, seed0, &lambdas, rc.c_axis, rc.birefringence_delta, rc.is_anisotropic, rc.is_biaxial,
             rc.biax_ax0, rc.biax_ax1, rc.biax_ax2, rc.n_o_hero_seed, rc.n_beta_hero, rc.n_alpha_hero, rc.n_gamma_hero,
@@ -131,16 +131,16 @@ fn transport_main(
             rc.studio_key_dir, rc.studio_fill_dir, rc.studio_sin_lp, observer,
             &stokes, &radiance, &path_pdf, &current_origin, &current_dir, &current_k,
             &inside_gem, &is_extraordinary, &prev_plane_normal, &have_prev_plane_normal,
-            &split_radiance, &compat, &path_escaped, &pending_light_mis,
+            &split_radiance, &compat, &path_escaped, &pending_light_mis, &pending_light_mis_dir,
         );
         if (status == BOUNCE_STATUS_TERMINATE) {
             break;
         }
     }
 
-    // Finding G5 Part B: the per-ray tail (commit staged exit-split contributions,
+    // The per-ray tail (commit staged exit-split contributions,
     // integrate per-channel-family XYZ, von Kries white balance, final clamp, and
-    // every output-buffer write) is now `transport_finalize_ray`
+    // every output-buffer write) is `transport_finalize_ray`
     // (`shaders/transport_bounce.wgsl`), shared with `wavefront_bounce`'s /
     // `wavefront_finalize_survivors`'s own per-ray termination paths -- see that
     // function's own doc comment.

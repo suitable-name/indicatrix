@@ -23,12 +23,20 @@
 //! native format now exists: [`save_paired`] takes the caller's already-loaded
 //! original `.asc` text and preserves it byte for byte whenever the design's current
 //! [`crate::design::Design::to_asc_schedule`] output is semantically equal to what
-//! that text itself parses to -- i.e. nothing authored actually changed, even if only
-//! `girdle_diameter_mm`/`material`/`preform` were touched (none of which round-trip
-//! into `.asc`). Once a real tier/preform edit breaks that equality, this regenerates
-//! a fresh `.asc` instead -- see the
-//! `save_paired_preserves_untouched_text`/`save_paired_regenerates_after_a_real_edit`
-//! tests.
+//! that text itself parses to, WITH ONE FIELD MASKED: `refractive_index` is compared
+//! against the original text's own value, not the design's current
+//! [`crate::design::Design::effective_refractive_index`] -- picking a different
+//! built-in material changes that derived figure on its own, with no tier/preform
+//! data touched at all, and the sidecar's `[material]` table already records the
+//! real selection (see [`convert::to_native_file`]), so the exported `I` line
+//! staying at its original value costs nothing. So: nothing authored actually
+//! changed, even if `girdle_diameter_mm`/`material`/`preform` were touched (none of
+//! which round-trip into `.asc` beyond that one masked field). Once a real
+//! tier/preform edit breaks that (masked) equality, this regenerates a fresh `.asc`
+//! instead -- see the
+//! `save_paired_preserves_untouched_text`/`save_paired_preserves_untouched_text_after_a_material_change_alone`/`save_paired_regenerates_after_a_real_edit`
+//! tests, and that module's own (private) `schedules_equal_ignoring_refractive_index`
+//! for the actual comparison.
 
 mod convert;
 mod load;
@@ -36,16 +44,23 @@ mod save;
 #[cfg(test)]
 mod tests;
 
-pub use convert::to_native_file;
-pub use load::{LoadPairedError, LoadPairedResult, MaterialResolution, TierOverlay, load_paired};
-pub use save::{DraftReason, PairedSave, SaveError, save_paired};
+pub use convert::{SaveExtras, gem_material_from_custom_snapshot, to_native_file};
+pub use load::{
+    LoadNativeOnlyError, LoadNativeOnlyResult, LoadPairedError, LoadPairedResult,
+    MaterialResolution, TierOverlay, load_native_only, load_paired,
+};
+pub use save::{
+    DraftReason, PairedSave, SaveError, save_native_only, save_native_only_toml, save_paired,
+    save_paired_extended, save_paired_extended_from_solved,
+};
 
 /// Kept under its historic name -- `apps/indicatrix-cut` calls this as
 /// `indicatrix_cut_core::native::parse_toml_string`.
 pub use indicatrix_formats::native::from_toml_str as parse_toml_string;
 pub use indicatrix_formats::native::{
-    FORMAT_VERSION, FingerprintCheck, LEGACY_NATIVE_EXTENSION_SUFFIX, MaterialTable,
-    NATIVE_EXTENSION_SUFFIX, NativeDesignFile, NativeFormatError, NativeMeetConstraint,
-    NativePreformShape, PreformTable, SourceTable, TierTable, asc_path_for_native,
-    check_fingerprint, native_path_for_asc, sha256_hex, to_toml_string,
+    CustomMaterialSnapshot, FORMAT_VERSION, FingerprintCheck, HistoryTable,
+    LEGACY_NATIVE_EXTENSION_SUFFIX, MaterialTable, NATIVE_EXTENSION_SUFFIX, NativeDesignFile,
+    NativeFormatError, NativeMeetConstraint, NativePreformShape, PreformTable, SourceTable,
+    TierTable, asc_path_for_native, check_fingerprint, native_path_for_asc, sha256_hex,
+    to_toml_string,
 };

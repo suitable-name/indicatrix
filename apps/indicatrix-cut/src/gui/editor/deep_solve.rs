@@ -1,7 +1,7 @@
 //! "Deep Solve" -- an explicit, off-thread, cancellable action layered next to the
 //! ordinary "Solve" button (which only calls the cheap `solve_meet_points`). This one
-//! calls `solve_meet_points_verified` instead: the externally-verified repair search
-//! that scores candidate mast configurations against a design's own printed
+//! calls `solve_meet_points_verified_with` instead: the externally-verified repair
+//! search that scores candidate mast configurations against a design's own printed
 //! proportions rather than trusting every self-consistent meet vertex is right --
 //! median relative error 0.2110 -> 0.1278, within-10% designs 10.8% -> 23.7%, at a
 //! mean cost of 68.4 pipeline runs per design.
@@ -22,63 +22,72 @@
 //!
 //! At a mean 68.4 pipeline runs per design, on a design whose plain `solve_meet_points`
 //! already takes 5.9 seconds, that's on the order of seven minutes -- would freeze the
-//! UI thread outright. Follows the same `thread::spawn` + `Arc<AtomicBool>` cancel +
-//! `Weak::upgrade_in_event_loop` progress convention `bridge::export_thread` uses.
+//! UI thread outright. Runs on [`super::solve_service::SolveService`]'s single worker
+//! thread rather than a bespoke `thread::spawn` -- one `SolveService` per
+//! [`spawn_deep_solve`] call, since each Deep Solve run has its own caller-supplied
+//! `on_progress`/`on_done` closures; see that type's own doc comment for the
+//! mailbox/cancellation machinery this reuses.
 //!
 //! # `adjustable_anchors` is always empty
 //!
-//! `solve_meet_points_verified` is explicit that passing real recorded-mast anchors
-//! as `adjustable_anchors` is wrong, and measurably weaker even when used as
+//! `solve_meet_points_verified_with` is explicit that passing real recorded-mast
+//! anchors as `adjustable_anchors` is wrong, and measurably weaker even when used as
 //! intended (24.2% pass rate vs. 90.4% for the fixed-anchor mode this module uses).
 //! Every `ScaleReference` tier here is a real recorded mast or authored dimension,
-//! never an estimate, so this module always passes `&[]`.
+//! never an estimate, so [`super::solve_service::SolveKind::Verified`] always passes
+//! `&[]` for that parameter.
 //!
 //! # No true progress fraction
 //!
-//! The repair search has no caller-visible loop (it lives entirely inside
-//! `indicatrix::geometry::meet_solver::verify`, which this crate doesn't own), so
-//! [`DeepSolveProgress`] carries only elapsed wall time, posted on a fixed interval
-//! by a lightweight ticker thread -- an honest "still working" indicator, never a
-//! fabricated percentage.
+//! The repair search has no caller-visible loop of its own (every pipeline run
+//! forwards whichever plain-solve-shaped [`indicatrix::geometry::meet_solver::SolveProgress`]
+//! its current run is at -- see `solve_meet_points_verified_with`'s own doc
+//! comment), so [`DeepSolveProgress`] still carries only elapsed wall time, exactly
+//! as before: a caller wanting the raw `SolveProgress` can read it from
+//! `SolveService` directly, but this module's own `EditorModel.deep_solve_status`
+//! consumer only ever wanted "still working, N seconds in."
 //!
-//! # Cancellation is a UI-level abandonment, not a mid-call interrupt
+//! # Cancellation is a real mid-search checkpoint
 //!
-//! [`DeepSolveHandle::cancel`] cannot stop the in-flight call partway through --
-//! there is no checkpoint to poll. What it DOES do: the UI stops waiting and
-//! discards whatever the call eventually returns
-//! ([`DeepSolveOutcome::Cancelled`] is reported within one [`TICK_INTERVAL`]), so
-//! the user gets the editor back immediately. The already-spawned OS thread keeps
-//! running to completion in the background and its result is simply dropped -- costs
-//! CPU, never correctness, bounded by the search's own run budget.
+//! [`DeepSolveHandle::cancel`] sets the SAME `SolveControl::with_cancel` flag
+//! `solve_meet_points_verified_with` checks from inside whichever pipeline run is
+//! in flight -- typically single-digit milliseconds, matching `solve_service`'s
+//! own cancellation guarantee, not whenever the in-flight OS thread happens to
+//! finish its multi-minute run. A cancelled run's [`DeepSolveOutcome::Cancelled`]
+//! carries nothing to show -- see [`outcome_for`]'s own doc comment for why.
 
+use super::solve_service::{
+    SolveKind, SolveOutcome, SolveRequest, SolveResult, SolveService, VerifiedSolve,
+};
 use indicatrix::geometry::{
-    meet_solver::{MeetTierInput, SolvedTier, VerifiedSolveReport, solve_meet_points_verified},
+    meet_solver::{SolveError, SolvedTier, VerifiedSolveReport},
     stone_metrics::ExternalProportions,
 };
+use indicatrix_cut_core::Design;
 use slint::{ComponentHandle, Weak};
 use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    thread,
+    sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
 };
 
-/// How often the ticker thread posts an elapsed-time [`DeepSolveProgress`] update --
-/// see "No true progress fraction". Cheap enough against a computation already
-/// measured in seconds-to-minutes.
-const TICK_INTERVAL: Duration = Duration::from_millis(250);
-
-/// Handle returned by [`spawn_deep_solve`]. See "Cancellation is a UI-level
-/// abandonment" for exactly what cancelling does and doesn't stop.
+/// Handle returned by [`spawn_deep_solve`]. See the module doc comment,
+/// "Cancellation is a real mid-search checkpoint".
 pub struct DeepSolveHandle {
-    cancel: Arc<AtomicBool>,
+    handle: super::solve_service::SolveHandle,
+    /// Keeps this run's dedicated [`SolveService`] (and its one worker thread)
+    /// alive for as long as anything could still call [`Self::cancel`] -- see the
+    /// module doc comment, "Why this needs its own thread". The worker parks
+    /// forever on its empty mailbox once this one-shot request completes; dropping
+    /// this field (with the handle) simply lets that parked thread be reclaimed
+    /// like any other -- there is nothing left for it to do either way.
+    _service: SolveService,
 }
 
 impl DeepSolveHandle {
+    /// Requests cancellation -- see the module doc comment, "Cancellation is a
+    /// real mid-search checkpoint".
     pub fn cancel(&self) {
-        self.cancel.store(true, Ordering::Relaxed);
+        self.handle.cancel();
     }
 }
 
@@ -100,8 +109,8 @@ pub struct DeepSolveProgress {
 /// the deep-solve status line via [`format_tier_mast_deltas`]. A dedicated per-tier
 /// TABLE (like Optimize's own result rows) would need more than that one-line
 /// summary: a display slot on `EditorModel`/a Slint model type to hold rows, and a
-/// declared callback or property for the inspector to read it from -- none of which
-/// this lane owns (see `ui/models/editor.slint`).
+/// declared callback or property for the inspector to read it from (see
+/// `ui/models/editor.slint`).
 pub enum DeepSolveOutcome {
     Completed {
         /// The verified repair search's own solved masts, in the same tier order as
@@ -110,6 +119,15 @@ pub enum DeepSolveOutcome {
         /// The aggregate verdict to DISPLAY -- see `format_deep_solve_report`
         /// (`gui::editor::view`).
         report: VerifiedSolveReport,
+        /// This design's own plain solve, computed on the background worker
+        /// alongside `solved` when [`spawn_deep_solve`]'s caller had no valid
+        /// cached one -- `None` either because the caller already had one (nothing
+        /// to compute) or because the plain solve itself failed. Whichever it is,
+        /// `callbacks::solve_actions::apply_deep_solve_outcome` falls back to its
+        /// own cached copy first and only reads this when that cache was missing,
+        /// so exactly one of the two is ever `Some` for a given run -- see that
+        /// function's own comment.
+        baseline: Option<Vec<SolvedTier>>,
     },
     /// The user cancelled before the search returned -- it may still be running in
     /// the background, but its eventual result is never delivered anywhere.
@@ -192,17 +210,20 @@ pub fn format_tier_mast_deltas(deltas: &[TierMastDelta]) -> String {
 }
 
 /// The five printed proportions Deep Solve verified against, formatted for the
-/// status line (CAD audit item 162: a verdict with no target values on screen reads
-/// as "not accepted -- still deviates from the printed figures" with nothing saying
-/// WHICH figures). Only the ones the catalogue actually printed are shown --
+/// status line. Only the ones the catalogue actually printed are shown --
 /// `ExternalProportions`' fields are each independently optional -- so a design
 /// missing, say, `C/W` simply omits it rather than showing a placeholder. Empty
 /// string (nothing appended) only if every field is `None`, which cannot happen on
 /// [`setup_deep_solve_callback`](super::super::callbacks::setup_deep_solve_callback)'s
 /// one call site (it already requires `Some(targets)` to launch Deep Solve at all)
 /// but keeps this safe to call generally.
+///
+/// `source` is `EditorState::asc_filename` at the moment Deep Solve was launched.
+/// `printed_proportions` is captured once at catalogue load and never re-derived,
+/// so the paired `.asc`'s own file name is the honest source for output formatting --
+/// `None` prints no source clause at all rather than inventing one.
 #[must_use]
-pub fn format_verification_targets(targets: &ExternalProportions) -> String {
+pub fn format_verification_targets(targets: &ExternalProportions, source: Option<&str>) -> String {
     let mut parts = Vec::new();
     if let Some(v) = targets.vol_w3 {
         parts.push(format!("Vol/W3 {v:.4}"));
@@ -222,24 +243,24 @@ pub fn format_verification_targets(targets: &ExternalProportions) -> String {
     if parts.is_empty() {
         return String::new();
     }
+    let source_clause = source.map_or_else(String::new, |name| format!(" (from \"{name}\")"));
     format!(
-        " Verified against the printed proportions: {}.",
+        " Verified against the printed proportions{source_clause}: {}.",
         parts.join(", ")
     )
 }
 
-/// CAD audit item 162: `EditorState::printed_proportions` is captured once, at
-/// catalogue-load time, and never re-derived from the design's own edits (see that
-/// field's own doc comment) -- so a Deep Solve verdict against it after any edit is
-/// honestly a verdict against what the design USED TO print, not necessarily what it
-/// prints now. `edited_since_load` should be the caller's
+/// `EditorState::printed_proportions` is captured once, at catalogue-load time,
+/// and never re-derived from the design's own edits -- so a Deep Solve verdict
+/// against it after any edit is a verdict against what the design was when printed,
+/// not what it is now. `edited_since_load` should be the caller's
 /// `EditorState::history.can_undo()` at the moment the run was launched: a fresh
 /// `History` is created on every load/new/replace, so "can undo" means "at least one
-/// edit has landed since load" -- exactly the "History is non-empty since load"
-/// signal the finding names. Deliberately NOT `EditorState::is_dirty` (`generation`
-/// vs. `saved_generation`): that one goes back to `false` the moment the cutter
+/// edit has landed since load". Deliberately NOT `EditorState::is_dirty`
+/// (`generation` vs. `saved_generation`): that goes back to `false` when the cutter
 /// saves, even though the printed-proportions targets still describe the design as
-/// it was PRINTED, not as it now is post-edit -- saving does not un-invalidate them.
+/// it was when printed, not what it is post-edit -- saving does not un-invalidate
+/// them.
 #[must_use]
 pub const fn edited_since_load_caveat(edited_since_load: bool) -> &'static str {
     if edited_since_load {
@@ -250,14 +271,25 @@ pub const fn edited_since_load_caveat(edited_since_load: bool) -> &'static str {
     }
 }
 
-/// Spawns the deep-solve worker (plus its progress ticker) off the UI thread.
-/// `on_progress` is invoked on the UI event loop roughly every [`TICK_INTERVAL`]
-/// while the search runs; `on_done` exactly once, with the final outcome.
+/// Spawns a dedicated [`SolveService`] and submits one `Verified` request to it --
+/// see the module doc comment, "Why this needs its own thread". `on_progress` is
+/// invoked on the UI event loop, throttled to `solve_service`'s own ~10 Hz (an
+/// honest "still working, N seconds in", not a fabricated percentage -- see "No
+/// true progress fraction"); `on_done` exactly once, with the final outcome.
+///
+/// `need_baseline` is the caller's own answer to "do I already have a valid plain
+/// solve for this design cached?" (`false` when it does) -- forwarded unchanged as
+/// [`SolveKind::Verified::compute_baseline`], so a caller whose cache was missing
+/// or stale gets that baseline computed on THIS worker thread, alongside the
+/// verified search, rather than falling back to a synchronous `Design::solve` on
+/// the UI thread. See [`DeepSolveOutcome::Completed::baseline`]'s own doc comment
+/// for how the two possible sources reconcile at the one call site that reads
+/// either.
 pub fn spawn_deep_solve<T, P, D>(
     ui_weak: Weak<T>,
-    gear_teeth_abs: u32,
-    tiers: Vec<MeetTierInput>,
+    design: Design,
     targets: ExternalProportions,
+    need_baseline: bool,
     on_progress: P,
     on_done: D,
 ) -> DeepSolveHandle
@@ -266,61 +298,106 @@ where
     P: Fn(&T, DeepSolveProgress) + Send + 'static + Clone,
     D: FnOnce(&T, DeepSolveOutcome) + Send + 'static,
 {
-    let cancel = Arc::new(AtomicBool::new(false));
-    let cancel_ticker = Arc::clone(&cancel);
-    let cancel_worker = Arc::clone(&cancel);
-    let done_flag = Arc::new(AtomicBool::new(false));
-    let done_ticker = Arc::clone(&done_flag);
-    let ticker_ui = ui_weak.clone();
-
-    // Ticker: posts an elapsed-time progress update until the compute thread
-    // signals it is done, or the user cancels (no point ticking a dialog the
-    // UI has already been told to stop waiting on).
-    thread::spawn(move || {
-        let start = Instant::now();
-        loop {
-            thread::sleep(TICK_INTERVAL);
-            if done_ticker.load(Ordering::Relaxed) || cancel_ticker.load(Ordering::Relaxed) {
-                break;
+    let start = Instant::now();
+    // `on_done` is a one-shot `FnOnce`, but `SolveService::new` needs a `Fn` it can
+    // clone onto every completion (this module's own `SolveService` only ever
+    // completes once -- see the module doc comment -- but the type itself does not
+    // know that). `Mutex<Option<D>>` lets the single real call `.take()` it; a
+    // second call (which cannot happen here) would silently do nothing rather than
+    // panic, the safer failure mode for a bound this loose.
+    let on_done = Arc::new(Mutex::new(Some(on_done)));
+    let service = SolveService::new(
+        ui_weak,
+        move |ui: &T, report: super::solve_service::SolveProgressReport| {
+            debug_assert_eq!(
+                report.generation, 0,
+                "this module always submits generation 0"
+            );
+            // An honest trace of which pipeline-run phase/sweep the search is
+            // currently on, at `solve_service`'s own ~10 Hz throttle -- cheap, and
+            // the only place this module ever sees the raw `SolveProgress`. The module
+            // uses only elapsed time, not a progress fraction (see doc comment).
+            tracing::trace!(
+                phase = ?report.progress.phase,
+                sweep = report.progress.sweep,
+                "deep solve progress"
+            );
+            on_progress(
+                ui,
+                DeepSolveProgress {
+                    elapsed: start.elapsed(),
+                },
+            );
+        },
+        move |ui: &T, result: SolveResult| {
+            debug_assert_eq!(
+                result.generation, 0,
+                "this module always submits generation 0"
+            );
+            tracing::info!(
+                elapsed_ms = result.elapsed.as_millis(),
+                "deep solve finished"
+            );
+            let SolveOutcome::Verified(verified) = result.outcome else {
+                unreachable!("spawn_deep_solve only ever submits SolveKind::Verified");
+            };
+            let outcome = outcome_for(verified);
+            let done = on_done
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            if let Some(done) = done {
+                done(ui, outcome);
             }
-            let elapsed = start.elapsed();
-            let on_progress = on_progress.clone();
-            let _ = ticker_ui.upgrade_in_event_loop(move |ui| {
-                on_progress(&ui, DeepSolveProgress { elapsed });
-            });
-        }
+        },
+    );
+    // `adjustable_anchors: &[]` (inside `SolveKind::Verified`'s handling) -- every
+    // `ScaleReference` tier here is a real recorded mast or authored dimension,
+    // never an estimate safe to adjust. `generation: 0` -- see the closure above.
+    let handle = service.submit(SolveRequest {
+        design: Arc::new(design),
+        generation: 0,
+        kind: SolveKind::Verified {
+            targets,
+            compute_baseline: need_baseline,
+        },
     });
-
-    thread::spawn(move || {
-        // `adjustable_anchors: &[]` -- every `ScaleReference` tier here is a real
-        // recorded mast or authored dimension, never an estimate safe to adjust.
-        let (solved, report) = solve_meet_points_verified(gear_teeth_abs, &tiers, &targets, &[]);
-        done_flag.store(true, Ordering::Relaxed);
-        let cancelled = cancel_worker.load(Ordering::Relaxed);
-        let outcome = outcome_for(cancelled, solved, report);
-        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            on_done(&ui, outcome);
-        });
-    });
-
-    DeepSolveHandle { cancel }
+    debug_assert_eq!(
+        handle.generation, 0,
+        "this module always submits generation 0"
+    );
+    DeepSolveHandle {
+        handle,
+        _service: service,
+    }
 }
 
-/// What a finished worker-thread call becomes for the UI: a cancelled run's
-/// `solved`/`report` are discarded unconditionally, regardless of what they say,
-/// since the user has already been told the editor stopped waiting. Pulled out of
-/// [`spawn_deep_solve`]'s worker closure so this decision -- the one genuinely
-/// testable piece of behavior in an otherwise thread-plumbing module -- has
-/// something a test can call directly.
-fn outcome_for(
-    cancelled: bool,
-    solved: Vec<SolvedTier>,
-    report: VerifiedSolveReport,
-) -> DeepSolveOutcome {
-    if cancelled {
-        DeepSolveOutcome::Cancelled
-    } else {
-        DeepSolveOutcome::Completed { solved, report }
+/// What a finished run becomes for the UI: a cancelled run's `solved`/`report` are
+/// discarded unconditionally, regardless of what they say, since the user has
+/// already been told the editor stopped waiting. Pulled out of [`spawn_deep_solve`]
+/// so this decision -- the one genuinely testable piece of behavior in an otherwise
+/// thread-plumbing module -- has something a test can call directly.
+fn outcome_for(result: Result<VerifiedSolve, SolveError>) -> DeepSolveOutcome {
+    match result {
+        Ok(VerifiedSolve {
+            solved,
+            report,
+            baseline,
+        }) => DeepSolveOutcome::Completed {
+            solved,
+            report,
+            baseline,
+        },
+        // `TooManyPlanes` cannot occur in practice: Deep Solve is only offered once
+        // the ordinary "Solve" button has already solved this SAME design
+        // successfully, and the verified search never adds planes of its own -- so
+        // the plane count already cleared `indicatrix::geometry::meet_solver::MAX_PLANES`
+        // before this run started. Reported the same as a real cancellation
+        // (nothing to show) rather than adding a third `DeepSolveOutcome` variant
+        // for a case this module's one call site cannot reach.
+        Err(SolveError::Cancelled | SolveError::TooManyPlanes { .. }) => {
+            DeepSolveOutcome::Cancelled
+        }
     }
 }
 
@@ -349,53 +426,83 @@ mod tests {
         }
     }
 
-    // --- DeepSolveHandle::cancel ---
-
-    #[test]
-    fn cancel_sets_the_flag_the_worker_and_ticker_threads_poll() {
-        // `DeepSolveHandle::cancel`'s entire job is flipping the shared
-        // `Arc<AtomicBool>`. Verified directly, without spinning up either thread.
-        let flag = Arc::new(AtomicBool::new(false));
-        let handle = DeepSolveHandle {
-            cancel: Arc::clone(&flag),
-        };
-        assert!(!flag.load(Ordering::Relaxed));
-        handle.cancel();
-        assert!(flag.load(Ordering::Relaxed));
-    }
+    // `DeepSolveHandle::cancel` delegates to `solve_service::SolveHandle::cancel` --
+    // see `solve_service::tests::handle_cancel_sets_the_flag_a_worker_would_read`
+    // for the underlying flag behavior. `DeepSolveHandle` itself can only be
+    // constructed by `spawn_deep_solve` (its `handle`/`_service` fields require a
+    // real `SolveService`), so there is nothing left to test bare here.
 
     // --- outcome_for: the cancellation decision ---
 
     #[test]
-    fn outcome_for_reports_cancelled_and_discards_the_report_when_cancelled_is_true() {
-        let outcome = outcome_for(true, Vec::new(), dummy_report(true));
-        assert!(matches!(outcome, DeepSolveOutcome::Cancelled));
-    }
-
-    #[test]
-    fn outcome_for_reports_completed_with_the_report_when_not_cancelled() {
+    fn outcome_for_reports_completed_with_the_report_when_ok() {
         let report = dummy_report(false);
         let solved = vec![dummy_solved_tier(1.0)];
-        let outcome = outcome_for(false, solved, report);
+        let outcome = outcome_for(Ok(VerifiedSolve {
+            solved,
+            report,
+            baseline: None,
+        }));
         match outcome {
             DeepSolveOutcome::Completed {
                 solved: s,
                 report: r,
+                baseline,
             } => {
                 assert_eq!(r.accepted, report.accepted);
                 assert_eq!(r.pipeline_runs, report.pipeline_runs);
                 assert_eq!(r.final_score, report.final_score);
                 assert_eq!(s.len(), 1);
+                assert!(baseline.is_none());
+            }
+            DeepSolveOutcome::Cancelled => panic!("expected Completed, got Cancelled"),
+        }
+    }
+
+    // The baseline plain solve `solve_service::run_solve` computes on the
+    // background worker (never on the UI thread -- see `spawn_deep_solve`'s own
+    // doc comment) must reach `DeepSolveOutcome::Completed` unchanged, so the
+    // completion handler can use it in place of a missing cache without any
+    // further solving of its own.
+    #[test]
+    fn outcome_for_carries_a_worker_computed_baseline_through_to_completed() {
+        let report = dummy_report(true);
+        let solved = vec![dummy_solved_tier(1.0)];
+        let baseline = vec![dummy_solved_tier(0.9)];
+        let outcome = outcome_for(Ok(VerifiedSolve {
+            solved,
+            report,
+            baseline: Some(baseline.clone()),
+        }));
+        match outcome {
+            DeepSolveOutcome::Completed {
+                baseline: Some(b), ..
+            } => {
+                assert_eq!(b.len(), baseline.len());
+                assert!((b[0].mast - baseline[0].mast).abs() < 1e-9);
+            }
+            DeepSolveOutcome::Completed { baseline: None, .. } => {
+                panic!("expected the worker-computed baseline to survive");
             }
             DeepSolveOutcome::Cancelled => panic!("expected Completed, got Cancelled"),
         }
     }
 
     #[test]
-    fn outcome_for_ignores_the_reports_own_accepted_flag_when_cancelled() {
-        // Even a would-have-been-accepted report is thrown away on cancel -- the
-        // search's eventual result is never delivered once the user has cancelled.
-        let outcome = outcome_for(true, Vec::new(), dummy_report(true));
+    fn outcome_for_reports_cancelled_on_a_cancelled_solve_error() {
+        let outcome = outcome_for(Err(SolveError::Cancelled));
+        assert!(matches!(outcome, DeepSolveOutcome::Cancelled));
+    }
+
+    #[test]
+    fn outcome_for_reports_cancelled_on_the_unreachable_in_practice_too_many_planes_case() {
+        // See `outcome_for`'s own doc comment for why this cannot happen from
+        // `spawn_deep_solve`'s one call site, and why `Cancelled` (nothing to
+        // show) is the honest fallback rather than a panic.
+        let outcome = outcome_for(Err(SolveError::TooManyPlanes {
+            planes: 999,
+            max: 400,
+        }));
         assert!(matches!(outcome, DeepSolveOutcome::Cancelled));
     }
 
@@ -471,7 +578,7 @@ mod tests {
             pw: None,
             hw: None,
         };
-        let text = format_verification_targets(&targets);
+        let text = format_verification_targets(&targets, None);
         assert!(text.contains("Vol/W3 0.6013"));
         assert!(text.contains("C/W 0.1489"));
         assert!(!text.contains("L/W"));
@@ -482,9 +589,32 @@ mod tests {
     #[test]
     fn format_verification_targets_is_empty_when_nothing_is_set() {
         assert_eq!(
-            format_verification_targets(&ExternalProportions::default()),
-            ""
+            format_verification_targets(&ExternalProportions::default(), Some("RBC-445.asc")),
+            "",
+            "no source clause should print when there are no targets to report at all"
         );
+    }
+
+    #[test]
+    fn format_verification_targets_names_the_source_when_given_one() {
+        // The verdict must say where the printed figures it verified against came
+        // from.
+        let targets = ExternalProportions {
+            vol_w3: Some(0.6013),
+            ..ExternalProportions::default()
+        };
+        let text = format_verification_targets(&targets, Some("RBC-445.asc"));
+        assert!(text.contains("RBC-445.asc"), "got: {text}");
+    }
+
+    #[test]
+    fn format_verification_targets_omits_the_source_clause_when_none() {
+        let targets = ExternalProportions {
+            vol_w3: Some(0.6013),
+            ..ExternalProportions::default()
+        };
+        let text = format_verification_targets(&targets, None);
+        assert!(!text.contains("(from"), "got: {text}");
     }
 
     // --- edited_since_load_caveat ---

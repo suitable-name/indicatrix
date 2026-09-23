@@ -284,6 +284,57 @@ fn migration_retypes_columns_and_splits_facets_count() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// A FRESH database's `diagram_details` (via
+/// `create_tables_if_not_exist`) already declares `refractive_index`/`lw_ratio`/
+/// `volume`/`index_gear` as REAL/INTEGER and already has `facets`/`girdle_facets` --
+/// `migrate_numeric_columns` must detect that from the column's actual type and skip
+/// its DROP-COLUMN/RENAME-COLUMN retype cycle entirely, never running it against
+/// columns that were never TEXT. Also proves the migration logic is safe to invoke
+/// twice in a row on the same already-typed database (idempotency), since production
+/// code runs it on every `Database::new` regardless of how many times the process has
+/// opened this file before.
+#[test]
+fn fresh_database_columns_are_already_typed_and_the_numeric_migration_is_a_no_op() {
+    let db = Database::new(Some(":memory:")).expect("create in-memory db");
+
+    let types = |db: &Database| -> std::collections::HashMap<String, String> {
+        let mut stmt = db
+            .conn
+            .prepare("PRAGMA table_info(diagram_details)")
+            .unwrap();
+        stmt.query_map([], |r| {
+            Ok((r.get::<_, String>("name")?, r.get::<_, String>("type")?))
+        })
+        .unwrap()
+        .flatten()
+        .collect()
+    };
+
+    let before = types(&db);
+    assert_eq!(before["refractive_index"], "REAL");
+    assert_eq!(before["lw_ratio"], "REAL");
+    assert_eq!(before["volume"], "REAL");
+    assert_eq!(before["index_gear"], "INTEGER");
+    assert_eq!(before["facets"], "INTEGER");
+    assert_eq!(before["girdle_facets"], "INTEGER");
+    assert!(Database::column_exists(&db.conn, "diagram_details", "facets").unwrap());
+    assert!(Database::column_exists(&db.conn, "diagram_details", "girdle_facets").unwrap());
+
+    // `Database::new` (above) already ran `migrate_numeric_columns` once as part of
+    // opening. Running the exact same migration logic a second time, directly, proves
+    // it is a genuine no-op against an already-typed table rather than merely "ran
+    // without erroring the first time because the table happened to be fresh."
+    db.migrate_numeric_columns()
+        .expect("re-running the migration against an already-typed table must not error");
+
+    let after = types(&db);
+    assert_eq!(
+        before, after,
+        "a second run must leave every diagram_details column exactly as it was, with \
+         no duplicated staging column and no retyping"
+    );
+}
+
 #[test]
 fn migration_is_idempotent_across_two_opens() {
     let path = temp_db_path("idempotent");
@@ -594,7 +645,7 @@ fn save_diagram_detail_persists_the_designer_split_and_competition_fields() {
 }
 
 /// `get_derived_from_title` must resolve the recorded source row's own id and
-/// title (CAD audit item 186's remaining "read it back for display" half),
+/// title,
 /// return `None` when nothing is recorded yet, and return `None` -- not an
 /// error -- when the recorded source row has since been deleted (no
 /// `FOREIGN KEY` backs this column; see `migrate_diagram_entries_provenance`).
@@ -1125,8 +1176,8 @@ fn per_axis_dispersion_migration_adds_the_column_and_leaves_existing_rows_nullab
     let _ = std::fs::remove_file(&path);
 }
 
-/// Mirrors `a_fresh_database_already_has_the_per_axis_dispersion_column` for the new
-/// `specific_gravity` column (CAD audit item 169).
+/// Mirrors `a_fresh_database_already_has_the_per_axis_dispersion_column` for the
+/// `specific_gravity` column.
 #[test]
 fn a_fresh_database_already_has_the_specific_gravity_column() {
     let path = temp_db_path("fresh_specific_gravity");
@@ -1236,8 +1287,8 @@ fn seeded_db(rows: &[(&str, &str, &str, &str, &str, &str)]) -> Database {
     db
 }
 
-/// CAD audit item 228: the search tooltip/placeholder has always promised "title,
-/// designer or notes"; this asserts the predicate now actually honors the "notes"
+/// The search tooltip/placeholder promises "title,
+/// designer or notes"; this asserts the predicate honors the "notes"
 /// third of that claim -- a term that appears ONLY in a tier's `angle_settings.notes`
 /// (not in the title or `designer_info`) must still surface the design, and a design
 /// with no such note must not be a false positive.
@@ -1296,6 +1347,78 @@ fn search_diagrams_matches_a_term_found_only_in_tier_notes() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// An unescaped `_`/`%` in the search box is a SQL `LIKE` wildcard,
+/// not the literal character it looks like -- on the real catalogue that made a bare
+/// `"_"` query match all 3,299 rows. `Database::search_diagrams` must treat `_` (and
+/// `%`) as literal text, matching only a title that actually contains one.
+#[test]
+fn search_diagrams_treats_underscore_and_percent_as_literal_characters() {
+    let db = Database::new(Some(":memory:")).expect("create in-memory db");
+
+    let underscore_entry = db
+        .save_diagram_entry(
+            &FacetDiagramEntry {
+                title: "Round_Brilliant".to_string(),
+                url: "local://has-underscore.asc".to_string(),
+                design_id: String::new(),
+            },
+            LEGACY_SOURCE_ID,
+        )
+        .expect("save underscore entry");
+    db.save_diagram_detail(&FacetDiagramDetail::default(), underscore_entry)
+        .expect("save underscore detail");
+
+    let plain_entry = db
+        .save_diagram_entry(
+            &FacetDiagramEntry {
+                title: "Round Brilliant".to_string(),
+                url: "local://no-underscore.asc".to_string(),
+                design_id: String::new(),
+            },
+            LEGACY_SOURCE_ID,
+        )
+        .expect("save plain entry");
+    db.save_diagram_detail(&FacetDiagramDetail::default(), plain_entry)
+        .expect("save plain detail");
+
+    let underscore_results = db
+        .search_diagrams("_", "All", "All", &RangeFilter::default())
+        .expect("search must succeed");
+    assert_eq!(
+        underscore_results
+            .iter()
+            .map(|r| r.title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Round_Brilliant"],
+        "an unescaped '_' must match only a literal underscore, not every title"
+    );
+
+    let percent_entry = db
+        .save_diagram_entry(
+            &FacetDiagramEntry {
+                title: "50% Off Design".to_string(),
+                url: "local://has-percent.asc".to_string(),
+                design_id: String::new(),
+            },
+            LEGACY_SOURCE_ID,
+        )
+        .expect("save percent entry");
+    db.save_diagram_detail(&FacetDiagramDetail::default(), percent_entry)
+        .expect("save percent detail");
+
+    let percent_results = db
+        .search_diagrams("50%", "All", "All", &RangeFilter::default())
+        .expect("search must succeed");
+    assert_eq!(
+        percent_results
+            .iter()
+            .map(|r| r.title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["50% Off Design"],
+        "a literal '%' in the query must not act as an open wildcard"
+    );
+}
+
 #[test]
 fn range_query_returns_only_rows_within_known_bounds() {
     let db = seeded_db(&[
@@ -1333,6 +1456,50 @@ fn range_query_returns_only_rows_within_known_bounds() {
         .search_diagrams("", "All", "All", &RangeFilter::default())
         .unwrap();
     assert_eq!(results.len(), 3);
+}
+
+/// The library's "regenerate previews/tilt curves for the whole filtered set" batch
+/// action (`apps/indicatrix-cut`'s `gui::library::diagram_list`) needs the exact same
+/// match set `search_diagrams` itself would show, just uncapped and id-only.
+#[test]
+fn matching_entry_ids_agrees_with_search_diagrams_on_which_rows_match() {
+    let db = seeded_db(&[
+        ("Low", "Round", "1.50", "1.00", "0.10", "50"),
+        ("Mid", "Round", "1.76", "1.10", "0.20", "60"),
+        ("High", "Round", "2.40", "1.20", "0.30", "70"),
+    ]);
+    let range = RangeFilter {
+        ri_min: Some(1.6),
+        ri_max: Some(2.0),
+        ..Default::default()
+    };
+
+    let expected: Vec<i64> = db
+        .search_diagrams("", "All", "All", &range)
+        .unwrap()
+        .into_iter()
+        .map(|item| item.id)
+        .collect();
+    let ids = db
+        .matching_entry_ids("", "All", "All", &range, DisplayFilters::default())
+        .unwrap();
+
+    assert_eq!(ids.len(), 1, "only Mid's RI (1.76) falls in [1.6, 2.0]");
+    assert_eq!(ids, expected);
+}
+
+#[test]
+fn matching_entry_ids_is_empty_for_a_range_no_row_satisfies() {
+    let db = seeded_db(&[("Only", "Round", "1.76", "1.10", "0.20", "60")]);
+    let range = RangeFilter {
+        ri_min: Some(9.0),
+        ri_max: Some(9.5),
+        ..Default::default()
+    };
+    let ids = db
+        .matching_entry_ids("", "All", "All", &range, DisplayFilters::default())
+        .unwrap();
+    assert_eq!(ids, [] as [i64; 0]);
 }
 
 #[test]
@@ -1703,6 +1870,117 @@ fn rename_diagram_entry_rejects_blank_titles_and_unknown_ids() {
     assert_eq!(full.title, "Keep Me");
 
     let _ = std::fs::remove_file(&path);
+}
+
+/// Reads `diagram_entries.updated_at` directly -- shared by the
+/// tests below, which check whether a given write bumps it.
+fn read_updated_at(db: &Database, entry_id: i64) -> Option<i64> {
+    db.conn
+        .query_row(
+            "SELECT updated_at FROM diagram_entries WHERE id = ?1",
+            params![entry_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+/// Forces `entry_id`'s `updated_at` to a known-stale value (`0`), bypassing whatever
+/// `save_diagram_entry` itself just stamped -- lets a test prove a later write moved it
+/// forward without depending on wall-clock resolution (`unix_now()` only has 1-second
+/// granularity, too coarse to reliably observe within a single fast test).
+fn force_stale_updated_at(db: &Database, entry_id: i64) {
+    db.conn
+        .execute(
+            "UPDATE diagram_entries SET updated_at = 0 WHERE id = ?1",
+            params![entry_id],
+        )
+        .unwrap();
+}
+
+/// `rename_diagram_entry` must bump `updated_at` for the "recently edited" sort,
+/// same as `update_diagram_metadata`/
+/// `update_diagram_entry_url` already do.
+#[test]
+fn rename_diagram_entry_bumps_updated_at() {
+    let db = Database::new(Some(":memory:")).expect("create in-memory db");
+    let id = db
+        .save_diagram_entry(
+            &FacetDiagramEntry {
+                title: "Before".to_string(),
+                url: "local://rename-bumps.asc".to_string(),
+                design_id: String::new(),
+            },
+            "local-import",
+        )
+        .unwrap();
+    force_stale_updated_at(&db, id);
+
+    db.rename_diagram_entry(id, "After").unwrap();
+
+    assert!(
+        read_updated_at(&db, id).is_some_and(|t| t > 0),
+        "rename_diagram_entry must bump updated_at forward from its stale value"
+    );
+}
+
+/// `save_diagram_detail` must bump its `entry_id`'s
+/// `diagram_entries.updated_at` -- a full detail re-sync is at least as much a content
+/// change as the hand-corrections `update_diagram_metadata` already bumps for.
+#[test]
+fn save_diagram_detail_bumps_the_entrys_updated_at() {
+    let db = Database::new(Some(":memory:")).expect("create in-memory db");
+    let id = db
+        .save_diagram_entry(
+            &FacetDiagramEntry {
+                title: "Detail Bumps".to_string(),
+                url: "local://detail-bumps.asc".to_string(),
+                design_id: String::new(),
+            },
+            "local-import",
+        )
+        .unwrap();
+    force_stale_updated_at(&db, id);
+
+    db.save_diagram_detail(&FacetDiagramDetail::default(), id)
+        .unwrap();
+
+    assert!(
+        read_updated_at(&db, id).is_some_and(|t| t > 0),
+        "save_diagram_detail must bump the entry's updated_at forward from its stale value"
+    );
+}
+
+/// `set_diagram_ignored` deliberately does NOT bump `updated_at` --
+/// see that method's own doc comment for why (hiding/restoring a design isn't a
+/// content edit).
+#[test]
+fn set_diagram_ignored_does_not_bump_updated_at() {
+    let db = Database::new(Some(":memory:")).expect("create in-memory db");
+    let id = db
+        .save_diagram_entry(
+            &FacetDiagramEntry {
+                title: "Ignore Me".to_string(),
+                url: "local://ignore-me.asc".to_string(),
+                design_id: String::new(),
+            },
+            "local-import",
+        )
+        .unwrap();
+    force_stale_updated_at(&db, id);
+
+    db.set_diagram_ignored(id, true).unwrap();
+    assert_eq!(
+        read_updated_at(&db, id),
+        Some(0),
+        "set_diagram_ignored(true) must leave updated_at untouched"
+    );
+
+    db.set_diagram_ignored(id, false).unwrap();
+    assert_eq!(
+        read_updated_at(&db, id),
+        Some(0),
+        "set_diagram_ignored(false) must leave updated_at untouched"
+    );
 }
 
 #[test]
@@ -2485,6 +2763,87 @@ fn performance_filter_reports_how_many_designs_were_excluded_for_missing_curves(
     let _ = std::fs::remove_file(&path);
 }
 
+/// A stored tilt-curve BLOB that fails to decode (wrong length --
+/// e.g. on-disk corruption, or a future format change) must not fail the whole
+/// performance-filtered search; it must be treated the same as "no curves stored" for
+/// that one design, silently excluded, leaving every other design's result unaffected.
+#[test]
+fn a_corrupt_tilt_curve_blob_is_excluded_rather_than_failing_the_whole_search() {
+    let db = Database::new(Some(":memory:")).expect("create in-memory db");
+
+    let good_id = db
+        .save_diagram_entry(
+            &FacetDiagramEntry {
+                title: "Good Curves".to_string(),
+                url: "local://good.asc".to_string(),
+                design_id: String::new(),
+            },
+            "local-import",
+        )
+        .unwrap();
+    db.save_tilt_curves(good_id, &flat_tilt_curves(10.0), None, 1)
+        .unwrap();
+
+    let corrupt_id = db
+        .save_diagram_entry(
+            &FacetDiagramEntry {
+                title: "Corrupt Curves".to_string(),
+                url: "local://corrupt.asc".to_string(),
+                design_id: String::new(),
+            },
+            "local-import",
+        )
+        .unwrap();
+    // Written directly, bypassing `save_tilt_curves`, with a `curves` BLOB of the
+    // wrong length. The 6 global-extreme columns are set permissively (0..=100) so
+    // this row survives SQL-level narrowing and reaches the Rust-side decode this test
+    // targets, rather than being pruned out before `get_tilt_curves` is ever called.
+    let mut columns: Vec<String> = vec!["entry_id".into(), "curves".into(), "generated_at".into()];
+    let mut values: Vec<Box<dyn rusqlite::ToSql>> =
+        vec![Box::new(corrupt_id), Box::new(vec![0u8; 4]), Box::new(1i64)];
+    for (metric, extreme) in crate::model::performance::all_global_extreme_columns() {
+        columns.push(crate::model::performance::global_extreme_column_name(
+            metric, extreme,
+        ));
+        let bound = match extreme {
+            crate::model::performance::Extreme::Min => 0.0_f64,
+            crate::model::performance::Extreme::Max => 100.0_f64,
+        };
+        values.push(Box::new(bound));
+    }
+    let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("?{i}")).collect();
+    let insert_sql = format!(
+        "INSERT INTO diagram_tilt_curves ({}) VALUES ({})",
+        columns.join(", "),
+        placeholders.join(", ")
+    );
+    let bound: Vec<&dyn rusqlite::ToSql> = values.iter().map(std::convert::AsRef::as_ref).collect();
+    db.conn
+        .prepare(&insert_sql)
+        .unwrap()
+        .execute(bound.as_slice())
+        .unwrap();
+
+    let filter = RangeFilter {
+        performance: vec![crate::model::performance::PerformanceFilter {
+            metric: crate::model::performance::PerformanceMetric::Windowing,
+            bound: crate::model::performance::PerformanceBound::AtMost(90.0),
+            tilt_radius_deg: 45.0,
+            aggregate: crate::model::performance::PerformanceAggregate::Worst,
+        }],
+        ..Default::default()
+    };
+
+    let results = db
+        .search_diagrams("", "All", "All", &filter)
+        .expect("a corrupt curve BLOB must not fail the whole search");
+    assert_eq!(
+        results.iter().map(|r| r.title.as_str()).collect::<Vec<_>>(),
+        vec!["Good Curves"],
+        "the corrupt row must be silently excluded, not crash the query nor false-match"
+    );
+}
+
 #[test]
 fn performance_filters_combine_by_and() {
     let path = temp_db_path("performance_filter_and");
@@ -2552,6 +2911,86 @@ fn performance_filters_combine_by_and() {
     );
 
     let _ = std::fs::remove_file(&path);
+}
+
+/// The single-pass fix:
+/// [`Database::search_diagrams_display_with_count`] must agree, item-for-item and
+/// count-for-count, with calling [`Database::search_diagrams_display`] and
+/// [`Database::count_matching_diagrams`] separately for the same arguments -- with an
+/// active performance filter, which is exactly the case the combined method exists to
+/// walk only once instead of twice.
+#[test]
+fn search_diagrams_display_with_count_agrees_with_the_two_separate_calls() {
+    let db = Database::new(Some(":memory:")).expect("create in-memory db");
+
+    // Five designs: three pass a `Windowing <= 20` filter, two don't; one has no
+    // curves at all and can never pass.
+    for (i, windowing) in [10.0, 15.0, 18.0, 55.0, 90.0].iter().enumerate() {
+        let entry_id = db
+            .save_diagram_entry(
+                &FacetDiagramEntry {
+                    title: format!("Design {i}"),
+                    url: format!("local://design-{i}.asc"),
+                    design_id: String::new(),
+                },
+                "local-import",
+            )
+            .unwrap();
+        db.save_tilt_curves(entry_id, &flat_tilt_curves(*windowing), None, 1)
+            .unwrap();
+    }
+    db.save_diagram_entry(
+        &FacetDiagramEntry {
+            title: "No Curves".to_string(),
+            url: "local://no-curves.asc".to_string(),
+            design_id: String::new(),
+        },
+        "local-import",
+    )
+    .unwrap();
+
+    let filter = RangeFilter {
+        performance: vec![crate::model::performance::PerformanceFilter {
+            metric: crate::model::performance::PerformanceMetric::Windowing,
+            bound: crate::model::performance::PerformanceBound::AtMost(20.0),
+            tilt_radius_deg: 45.0,
+            aggregate: crate::model::performance::PerformanceAggregate::Worst,
+        }],
+        ..Default::default()
+    };
+
+    let separate_display = db
+        .search_diagrams_display("", "All", "All", &filter, DisplayFilters::default())
+        .unwrap();
+    let separate_count = db
+        .count_matching_diagrams("", "All", "All", &filter, DisplayFilters::default())
+        .unwrap();
+
+    let (combined_display, combined_count) = db
+        .search_diagrams_display_with_count("", "All", "All", &filter, DisplayFilters::default())
+        .unwrap();
+
+    assert_eq!(
+        separate_count, 3,
+        "exactly the three windowing<=20 designs match"
+    );
+    assert_eq!(combined_count, separate_count);
+    assert_eq!(
+        combined_display
+            .items
+            .iter()
+            .map(|i| i.id)
+            .collect::<Vec<_>>(),
+        separate_display
+            .items
+            .iter()
+            .map(|i| i.id)
+            .collect::<Vec<_>>(),
+    );
+    assert_eq!(
+        combined_display.excluded_for_missing_curves,
+        separate_display.excluded_for_missing_curves
+    );
 }
 
 // ---- Pruning soundness: the SQL global-min/max narrowing must never disagree with a

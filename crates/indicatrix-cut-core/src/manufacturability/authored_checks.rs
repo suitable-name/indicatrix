@@ -1,10 +1,10 @@
-//! Checks 3 and 4: [`check_gear_quantization`] and [`check_cut_order`], the
-//! two that need no solved mast at all -- see the parent module's doc
-//! comment. Both read `design`'s raw authored state directly, so they run
-//! even on a design that has never been solved.
+//! Checks 3, 4 and 5: [`check_gear_quantization`], [`check_cut_order`] and
+//! [`check_meet_name_asc_safety`], the three that need no solved mast at all --
+//! see the parent module's doc comment. All three read `design`'s raw authored
+//! state directly, so they run even on a design that has never been solved.
 
 use super::warning::ManufacturabilityWarning;
-use crate::design::Design;
+use crate::design::{Design, meet_name_is_asc_safe};
 use indicatrix::geometry::meet_solver::{MeetConstraint, MeetNameResolver};
 
 /// An index within this absolute distance of an integer counts as landing on
@@ -21,9 +21,20 @@ const GEAR_QUANTIZATION_EPS: f64 = 1e-9;
 ///
 /// Needs no mast at all, so this runs off `design`'s raw authored `indices`
 /// regardless of whether the design has ever been solved.
+///
+/// Reports nothing at all when `design.meta.gear_teeth_abs() == 0`: a
+/// `.max(1)` fallback would compute an `azimuth_error_deg` as if this design had
+/// a real one-tooth wheel (`360 * delta`), which is not a gear any lapidary owns
+/// and is not a meaningful figure to show -- with no real gear stated, there is
+/// nothing to quantize against, so the honest answer is no warning rather than a
+/// fabricated one.
 #[must_use]
 pub fn check_gear_quantization(design: &Design) -> Vec<ManufacturabilityWarning> {
-    let gear_teeth = f64::from(design.meta.gear_teeth_abs().max(1));
+    let gear_teeth_abs = design.meta.gear_teeth_abs();
+    if gear_teeth_abs == 0 {
+        return Vec::new();
+    }
+    let gear_teeth = f64::from(gear_teeth_abs);
     let mut warnings = Vec::new();
     for (tier_index, tier) in design.tiers.iter().enumerate() {
         for &requested in &tier.indices {
@@ -32,6 +43,7 @@ pub fn check_gear_quantization(design: &Design) -> Vec<ManufacturabilityWarning>
             if delta.abs() > GEAR_QUANTIZATION_EPS {
                 warnings.push(ManufacturabilityWarning::FractionalIndex {
                     tier_index,
+                    tier_id: design.tier_id_at_or_synthetic(tier_index),
                     tier_name: tier.name.clone(),
                     requested,
                     achievable,
@@ -74,11 +86,43 @@ pub fn check_cut_order(design: &Design) -> Vec<ManufacturabilityWarning> {
             if target >= tier_index {
                 warnings.push(ManufacturabilityWarning::OutOfOrderMeet {
                     tier_index,
+                    tier_id: design.tier_id_at_or_synthetic(tier_index),
                     tier_name: tier.name.clone(),
                     target_tier_index: target,
                     target_tier_name: design.tiers[target].name.clone(),
                 });
             }
+        }
+    }
+    warnings
+}
+
+/// Check 5: a tier's [`MeetConstraint::MeetNamed`] names a target that would not
+/// survive a plain `.asc` export/re-import.
+///
+/// See [`meet_name_is_asc_safe`]'s own doc comment for exactly which names fail
+/// and why (`crate::design::export`'s own `"Meet <names>"` text is the export
+/// this guards). Needs no mast either, same as [`check_cut_order`]: purely a
+/// property of the tier's own authored name list.
+#[must_use]
+pub fn check_meet_name_asc_safety(design: &Design) -> Vec<ManufacturabilityWarning> {
+    let mut warnings = Vec::new();
+    for (tier_index, tier) in design.tiers.iter().enumerate() {
+        let MeetConstraint::MeetNamed(names) = &tier.constraint else {
+            continue;
+        };
+        let unsafe_names: Vec<String> = names
+            .iter()
+            .filter(|name| !meet_name_is_asc_safe(name.as_str()))
+            .cloned()
+            .collect();
+        if !unsafe_names.is_empty() {
+            warnings.push(ManufacturabilityWarning::MeetNameNotAscSafe {
+                tier_index,
+                tier_id: design.tier_id_at_or_synthetic(tier_index),
+                tier_name: tier.name.clone(),
+                unsafe_names,
+            });
         }
     }
     warnings

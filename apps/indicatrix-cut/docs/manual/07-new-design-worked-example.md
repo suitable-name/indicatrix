@@ -7,6 +7,15 @@ tier, putting Chapters 3-6 together in practice. It builds an 8-fold round
 brilliant-style stone: a girdle, pavilion main facets, crown main facets, and
 a table.
 
+**Shortcut: follow this chapter inside the app.** The empty state (shown
+whenever the Edit sub-tab has no design loaded) has an "Open the Worked
+Example" card that builds this exact stone in one click and opens an in-app
+guide panel walking through the same steps below, with the tier table or
+Design Settings panel highlighted for whichever step is current. Reopen the
+guide any time from Help > Guide: New Design Walkthrough. The steps below
+are still the authoritative, fuller description -- the in-app guide's own
+text is a condensed version of them.
+
 **Note on this example.** No built-in round-brilliant template ships with
 the app -- there is no "starter design" library to pick from. Every number
 below (angles, indices) is a constructed, illustrative example consistent
@@ -17,7 +26,12 @@ them with Solve and Optimize (Chapters 5 and 8) once the design closes.
 
 ## Step 1: The New Design dialog
 
-Click **New Design...** (or File -> New) to open the New Design dialog:
+Click **New Design...** (or File -> New Design...) to open the New Design
+dialog. Its "Start From" section is a small template gallery -- for this
+walkthrough, leave it on **Empty** (the first card) and build the tiers by
+hand below, so you see every step; picking "Standard Round Brilliant"
+instead seeds the finished eight-tier table immediately, skipping ahead to
+Step 6:
 
 - **Preform Shape**: Cylinder.
 - **Half-Width / Length-Width / Depth**: `1.50` / `1.00` / `1.50` -- a
@@ -138,7 +152,7 @@ Chapter 6's retargeting walkthrough.
      it (for the pavilion, a common choice is a pavilion depth or
      culet-point dimension) and Solve again, or use the tier table's own
      **Add Anchor** button on one of that block's rows.
-   - `Degenerate` or `Unbounded` -- these now name the tier(s) most likely
+   - `Degenerate` or `Unbounded` -- these name the tier(s) most likely
      responsible; check the angle and constraint on the tier you most
      recently added, or on whichever tier the message names -- a facet
      meeting the wrong neighbour, or an angle too shallow to intersect its
@@ -159,8 +173,8 @@ compare the tier's Indices field against the intended list.
    Material** for the carat-weight estimate (this is a separate control
    from the Design Settings panel's own Material combo -- see Chapter 6's
    note on the two). Click **Apply Yield Inputs**, then Solve again --
-   Volumetric Yield and Est. Carat Weight should now show values, and the
-   same tab's Proportions group will show table %, crown height, pavilion
+   Volumetric Yield and Est. Carat Weight show values, and the
+   same tab's Proportions group shows table %, crown height, pavilion
    depth, total depth, and length-to-width for this stone.
 2. Switch to the Live Render tab to see the stone rendered -- with "Linked
    to design" on (the default), it already shows the Diamond you picked in

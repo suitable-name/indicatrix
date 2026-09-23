@@ -253,12 +253,11 @@ fn fetch_tilt_curves_remote(
 /// abandoning this one in-flight design without saving anything for it (this group's
 /// own "all-or-nothing" section).
 ///
-/// No longer reports per-axis progress to the caller (a prior version did, via an
-/// `on_axis_done` callback) -- see this group's `mod.rs` doc comment's "Progress with N
-/// local lanes" section for why a per-axis readout stopped being meaningful once more
-/// than one local lane can be mid-design at once. `cancel` is still checked once per
-/// axis regardless: that granularity is about how quickly a cancel is honoured,
-/// unrelated to what the UI displays.
+/// Reports no per-axis progress to the caller -- see this group's `mod.rs` doc
+/// comment's "Progress with N local lanes" section for why a per-axis readout isn't
+/// meaningful once more than one local lane can be mid-design at once. `cancel` is
+/// still checked once per axis regardless: that granularity is about how quickly a
+/// cancel is honoured, unrelated to what the UI displays.
 fn compute_tilt_curves_locally(
     planes: &[GpuFacetPlane],
     material: &GemMaterial,
@@ -289,25 +288,42 @@ fn compute_tilt_curves_locally(
 /// Persists `curves` for `entry_id`. Shared by both [`process_local_entry`] and
 /// [`process_remote_entry`] -- whichever lane actually produced the curves, the save
 /// itself is identical.
-fn save_curves(ctx: &BatchContext<'_>, entry_id: i64, curves: &TiltPerformanceCurves) -> bool {
+fn save_curves(
+    db: &Mutex<indicatrix_vault::db::sqlite::Database>,
+    entry_id: i64,
+    curves: &TiltPerformanceCurves,
+) -> bool {
     // Unix seconds fits in i64 until well past the year 292 billion; the column this
     // feeds (`diagram_tilt_curves.generated_at`) is already declared INTEGER (i64) to
     // match (`cast_possible_wrap` is workspace-`allow`ed, `Cargo.toml`).
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
-    let guard = ctx.db.lock().unwrap_or_else(PoisonError::into_inner);
+    let guard = db.lock().unwrap_or_else(PoisonError::into_inner);
     // `curve_image_png: None` -- rendered tilt-curve images are explicitly out of
-    // scope for this batch (see this task's own brief); nothing in this module ever
-    // produces one.
+    // scope for this batch; nothing in this module ever produces one.
     guard.save_tilt_curves(entry_id, curves, None, now).is_ok()
+}
+
+/// [`save_curves`], exposed for a caller outside this module -- the single-design
+/// counterpart the Edit tab needs (its own "save tilt curves for this design" action,
+/// once a design has been saved into the catalogue and so has a real `entry_id` to
+/// save against). Kept as a thin wrapper rather than making `save_curves` itself
+/// `pub` so every existing in-module call site stays untouched.
+#[must_use]
+pub fn save_tilt_curves_for_entry(
+    db: &Mutex<indicatrix_vault::db::sqlite::Database>,
+    entry_id: i64,
+    curves: &TiltPerformanceCurves,
+) -> bool {
+    save_curves(db, entry_id, curves)
 }
 
 /// Resolves and computes `entry_id`'s tilt curves on the LOCAL engine. Returns `true`
 /// iff curves were computed and saved.
 ///
-/// No longer reports a title or per-axis progress -- see this group's `mod.rs` doc
-/// comment's "Progress with N local lanes" section: with N lanes potentially
+/// Reports no title or per-axis progress -- see this group's `mod.rs` doc comment's
+/// "Progress with N local lanes" section: with N lanes potentially
 /// resolving/computing different designs at once, no single title is meaningful to
 /// surface from here. [`run_local_lane`] reports only that a lane is busy (via
 /// `local_active`), not what it is working on.
@@ -319,7 +335,7 @@ fn process_local_entry(ctx: &BatchContext<'_>, entry_id: i64, cancel: &AtomicBoo
     else {
         return false;
     };
-    save_curves(ctx, entry_id, &curves)
+    save_curves(ctx.db, entry_id, &curves)
 }
 
 /// Resolves `entry_id` and dispatches its tilt curves to `worker` (if any), reporting
@@ -347,7 +363,7 @@ fn process_remote_entry(
     else {
         return false;
     };
-    save_curves(ctx, entry_id, &curves)
+    save_curves(ctx.db, entry_id, &curves)
 }
 
 fn panic_message(payload: &(dyn Any + Send)) -> String {
@@ -536,8 +552,8 @@ pub(super) fn run_local_lane(
 /// `worker` is `None` only for `RemoteOnly` with no worker configured (see
 /// [`process_remote_entry`]'s own doc comment); `fallback_to_local` is `true` only for
 /// `LiveComputeTarget::Both` -- for `RemoteOnly` every failure is final and tallied
-/// `failed` directly, per this task's own "must not silently fall back to local"
-/// requirement.
+/// `failed` directly: a remote failure is reported as failed and never silently
+/// re-rendered locally.
 pub(super) fn run_remote_lane(
     shared: &LaneShared<'_>,
     ui_weak: &Weak<crate::MainWindow>,
@@ -608,6 +624,54 @@ pub(super) fn run_remote_lane(
     // this follows) -- see `gui::batch::batch_queue`'s doc comment for why the local
     // lane's own stop condition depends on that ordering.
     remote_lane_done.store(true, Ordering::Release);
+}
+
+/// The single-design entry point: computes tilt curves directly from already-resolved
+/// `planes`/`material` -- typically `EditorState::design`'s own solved planes plus
+/// `gui::editor::material_lookup::resolved_gem_material` (neither defined in this
+/// module) -- entirely bypassing [`resolve_design`]'s
+/// database read. `resolve_design` can only ever see whatever a design's catalogue
+/// row currently stores, so routing the Edit tab's own "run tilt analysis for what's
+/// on the bench right now" action through the ordinary batch would silently score a
+/// STALE on-disk copy instead of the cutter's actual unsaved (or since-edited) work,
+/// or fail outright for a design that was never saved at all (no `entry_id` to look
+/// up).
+///
+/// Tries `worker` first when given, falling back to the local engine on any remote
+/// shortfall -- the same fallback [`LiveComputeTarget::Both`] gives the catalogue
+/// batch (see [`process_remote_entry`]'s own doc comment); `worker: None` runs local
+/// only, matching [`LiveComputeTarget::LocalOnly`]. Deliberately reuses
+/// [`fetch_tilt_curves_remote`]/[`compute_tilt_curves_locally`] verbatim rather than a
+/// third implementation, so a single-design run and a catalogue batch run can never
+/// silently disagree about how a design's tilt curves are computed. Unlike
+/// [`process_local_entry`]/[`process_remote_entry`], this never calls [`save_curves`]:
+/// there is no `entry_id` to save against for a design that may not exist in the
+/// catalogue at all, and a design that DOES have one should not have its saved
+/// catalogue curves silently overwritten by a still-being-edited version without the
+/// cutter explicitly asking for that -- a caller that wants to persist should call
+/// [`save_curves`] itself once it has an `entry_id` to save against.
+///
+/// Synchronous and blocking (a real ~1.36s local sweep, or a remote round trip) --
+/// exactly like [`process_local_entry`]/[`process_remote_entry`], so a caller must run
+/// this off the UI thread and marshal the result back itself, the same
+/// `thread::spawn` + `upgrade_in_event_loop` shape every other worker call in this
+/// crate already uses (e.g. `gui::tilt::tilt_profile::spawn_tilt_profile_sweep`).
+///
+/// [`LiveComputeTarget::Both`]: crate::settings::LiveComputeTarget::Both
+/// [`LiveComputeTarget::LocalOnly`]: crate::settings::LiveComputeTarget::LocalOnly
+#[must_use]
+pub fn tilt_curves_for_planes(
+    planes: &[GpuFacetPlane],
+    material: &GemMaterial,
+    worker: Option<&WorkerSettings>,
+    cancel: &AtomicBool,
+) -> Option<TiltPerformanceCurves> {
+    if let Some(worker) = worker
+        && let Some(curves) = fetch_tilt_curves_remote(worker, planes, material, cancel)
+    {
+        return Some(curves);
+    }
+    compute_tilt_curves_locally(planes, material, cancel)
 }
 
 /// Runs every lane for one batch attempt inside a `std::thread::scope`, blocking until

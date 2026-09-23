@@ -135,7 +135,7 @@ fn accumulate_miss_radiance(
 /// `try_scatter_step`'s identical treatment), leaving no coherent wave-normal-vs-
 /// Poynting distinction to track past it.
 ///
-/// Returns finding G8's `pending_light_mis` carry -- `Some` only when the `Frosted`
+/// Returns the `pending_light_mis` carry -- `Some` only when the `Frosted`
 /// branch dispatched an NEE-eligible outcome (see `apply_frosted_bounce`'s "Sign
 /// convention for NEE eligibility" doc section), `None` for every TIR/polished dispatch
 /// and every non-eligible frosted one. The caller stashes this in `pending_light_mis`
@@ -150,9 +150,12 @@ fn accumulate_miss_radiance(
               touches behind an opaque &mut; `exit` is the per-trace `ExitSplitCtx` \
               (see its doc comment), used only by the apply_partial_fresnel_bounce \
               branch -- the frosted/TIR branches never reach an exit event; `nee`/ \
-              `lambdas`/`radiance` are finding G8's own NEE inputs/output, used only by \
+              `lambdas`/`radiance` are the HDR-map NEE inputs/output, used only by \
               the frosted branch, mirroring try_scatter_step's identical addition for \
-              the Henyey-Greenstein path"
+              the Henyey-Greenstein path; `incoming_light_mis` is the light-sample MIS \
+              carry, \
+              threaded through so the partial-Fresnel arm's transmit-out case can return \
+              it unchanged rather than silently dropping it"
 )]
 fn dispatch_bounce(
     ctx: &RayMaterialContext,
@@ -174,8 +177,13 @@ fn dispatch_bounce(
     nee: NeeContext<'_>,
     lambdas: &[f32; NUM_CHANNELS],
     radiance: &mut [f32; NUM_CHANNELS],
-) -> Option<f32> {
-    let (new_k, new_s, new_inside_gem, is_extraordinary_update, exact_p_o, frosted_light_mis) =
+    incoming_light_mis: Option<(f32, Vec3)>,
+) -> Option<(f32, Vec3)> {
+    // Pre-bounce `inside_gem`, captured before any branch below mutates it -- both the
+    // `was_internal_reflection` computation further down and the transmit-out
+    // carry-through need the value from BEFORE this bounce, not after.
+    let pre_bounce_inside_gem = *inside_gem;
+    let (new_k, new_s, new_inside_gem, is_extraordinary_update, exact_p_o, bounce_light_mis) =
         if finish == FacetFinish::Frosted {
             let (new_dir, new_inside_gem, is_extraordinary_update, frosted_light_mis) =
                 apply_frosted_bounce(
@@ -198,7 +206,15 @@ fn dispatch_bounce(
                 new_inside_gem,
                 is_extraordinary_update,
                 None,
-                frosted_light_mis,
+                // The frosted arm's own carry pairs with `new_dir`: unlike the polished
+                // exit below, a frosted transmit's `new_dir` is already the true
+                // exterior propagation direction (no further refraction happens between
+                // here and a possible direct escape next iteration), so pairing the
+                // carry with `new_dir` is bit-identical to reading `current_ray.dir`
+                // (equal to this same `new_dir`) at escape time. The
+                // INCOMING carry is deliberately dropped here, superseded by this
+                // bounce's own fresh one (or `None`).
+                frosted_light_mis.map(|phase_pdf| (phase_pdf, new_dir)),
             )
         } else if geo.sin2_t > 1.0 {
             let (k_prime, exact_p_o) = apply_tir_bounce(
@@ -211,6 +227,9 @@ fn dispatch_bounce(
                 path_pdf,
             );
             let s_prime = poynting_dir_for_mode(ctx, geo, k_prime, *inside_gem, *is_extraordinary);
+            // TIR is always an internal reflection (still inside afterward) -- the
+            // incoming carry has no competing NEE sample to weigh itself against here,
+            // so it is dropped, exactly like every other non-transmit-out dispatch.
             (k_prime, s_prime, *inside_gem, None, exact_p_o, None)
         } else {
             let bctx = BounceContext { ctx, cache, geo };
@@ -235,13 +254,29 @@ fn dispatch_bounce(
                     &mut state,
                     &mut exit_event,
                 );
+            // A scatter event's pending complementary-MIS carry must survive
+            // the polished exit refraction rather than being dropped here. Reachable
+            // only for the genuine transmit-out case -- `pre_bounce_inside_gem` was
+            // true, the outcome flipped to exterior, and `is_extraordinary_update` is
+            // `None` (guaranteed here since `entering_anisotropic` requires
+            // `!inside_gem`, so it can never be the transmit branch's own entry-mode
+            // update when the ray started inside) -- never for a reflect (which never
+            // changes `inside_gem`) or an air->crystal entry transmit (`inside_gem` was
+            // already `false`, so no carry could have been pending for it anyway).
+            let transmit_out_of_gem =
+                pre_bounce_inside_gem && !new_inside_gem && is_extraordinary_update.is_none();
+            let bounce_light_mis = if transmit_out_of_gem {
+                incoming_light_mis
+            } else {
+                None
+            };
             (
                 k_prime,
                 s_prime,
                 new_inside_gem,
                 is_extraordinary_update,
                 exact_p_o,
-                None,
+                bounce_light_mis,
             )
         };
     let was_internal_reflection =
@@ -272,7 +307,7 @@ fn dispatch_bounce(
         bounce,
         is_extraordinary,
     );
-    frosted_light_mis
+    bounce_light_mis
 }
 
 /// Russian Roulette termination with weighted survival. A hard cutoff on dim paths
@@ -315,9 +350,9 @@ pub(super) fn apply_russian_roulette(
 ///
 /// # What this models
 ///
-/// A path's eigenmode is assigned once at the air->crystal entry, and every subsequent
-/// internal bounce used to reuse that mode's index via an isotropic Fresnel
-/// calculation -- wrong because a uniaxial crystal's o/e eigenbasis is defined
+/// A path's eigenmode is assigned once at the air->crystal entry. Reusing that mode's
+/// index unconditionally at every subsequent internal bounce via an isotropic Fresnel
+/// calculation would be wrong: a uniaxial crystal's o/e eigenbasis is defined
 /// relative to the LOCAL wave-normal direction at each facet, so a differently
 /// oriented facet has a different eigenbasis than the one the path last bounced off:
 /// real light partially converts between the two labels at every internal bounce, a
@@ -891,7 +926,7 @@ fn trace_spectral_ray_inner(
         plane_soa,
         enabled: enable_nee,
     };
-    let mut pending_light_mis: Option<f32> = None;
+    let mut pending_light_mis: Option<(f32, Vec3)> = None;
 
     for bounce in 0..max_bounces {
         // Consumed unconditionally every iteration: meaningful only if THIS iteration's
@@ -917,18 +952,25 @@ fn trace_spectral_ray_inner(
                 break;
             }
             // Ray exited or missed the gemstone -> sample the environment source.
-            // If the immediately preceding bounce was an NEE-eligible
-            // scatter event, this escape is the SAME light-sampling technique's
-            // competing (BSDF/phase-sampled) continuation -- weight it by the balance
-            // heuristic so the two techniques' contributions sum to the true value
-            // rather than double-counting. `phase_pdf_for_mis_this_check.map_or(1.0,
-            // ..)` reproduces the full-weight behaviour exactly whenever NEE
-            // didn't just fire (including every trace with NEE disabled, where this is
-            // always `None`).
-            let mis_weight = phase_pdf_for_mis_this_check.map_or(1.0, |phase_pdf| {
-                let light_pdf = environment_nee_pdf(environment, current_ray.dir);
-                balance_heuristic(phase_pdf, light_pdf)
-            });
+            // If an earlier bounce left a pending NEE-eligible carry still live (a
+            // scatter event whose continuation just now escaped directly, possibly
+            // after first transmitting out through a polished exit facet -- see
+            // `dispatch_bounce`'s doc comment for why the carry must survive that
+            // intervening refraction), this escape is the SAME light-sampling
+            // technique's competing (BSDF/phase-sampled) continuation -- weight it by
+            // the balance heuristic so the two techniques' contributions sum to the
+            // true value rather than double-counting. Evaluated at the carried INTERIOR
+            // direction, the same measure `nee_contribution_hg_scatter`
+            // sampled in -- NOT `current_ray.dir`, which by the time a transmit-out
+            // carry reaches here is the refracted EXTERIOR direction instead.
+            // `phase_pdf_for_mis_this_check.map_or(1.0, ..)` reproduces the full-weight
+            // behaviour exactly whenever no carry is live (including every trace with
+            // NEE disabled, where this is always `None`).
+            let mis_weight =
+                phase_pdf_for_mis_this_check.map_or(1.0, |(phase_pdf, interior_dir)| {
+                    let light_pdf = environment_nee_pdf(environment, interior_dir);
+                    balance_heuristic(phase_pdf, light_pdf)
+                });
             accumulate_miss_radiance(
                 environment,
                 current_ray.dir,
@@ -961,6 +1003,7 @@ fn trace_spectral_ray_inner(
                 nee_ctx,
                 &lambdas,
                 &mut radiance,
+                facet_finishes,
             ) {
                 ScatterStepOutcome::NotApplicable | ScatterStepOutcome::ReachedBoundary => {}
                 ScatterStepOutcome::ScatteredAndSurvived(phase_pdf_for_mis) => {
@@ -1027,11 +1070,11 @@ fn trace_spectral_ray_inner(
         // Girdle finish: `Polished` (default) takes the pre-existing dispatch;
         // `Frosted` takes `apply_frosted_bounce` instead.
         let finish = facet_finish_for(facet_finishes, hit_rec.facet_idx);
-        // `dispatch_bounce`'s return is `Some` only for an NEE-eligible
-        // frosted-facet outcome (see `apply_frosted_bounce`'s doc comment); `None` for
-        // every other dispatch, which is always correct here since `pending_light_mis`
-        // was already drained by this same iteration's `.take()` above and no branch
-        // between there and here can set it.
+        // `dispatch_bounce`'s return is `Some` for an NEE-eligible frosted-facet
+        // outcome (see `apply_frosted_bounce`'s doc comment), OR for a
+        // polished transmit-out event that had a live incoming carry
+        // (`phase_pdf_for_mis_this_check`, this same iteration's `.take()` result from
+        // above) to pass through -- `None` for every other dispatch.
         pending_light_mis = dispatch_bounce(
             &mat_ctx,
             &wavelength_cache,
@@ -1052,6 +1095,7 @@ fn trace_spectral_ray_inner(
             nee_ctx,
             &lambdas,
             &mut radiance,
+            phase_pdf_for_mis_this_check,
         );
 
         // See `apply_russian_roulette`'s doc comment. Reborrowed through
@@ -1094,7 +1138,17 @@ fn trace_spectral_ray_inner(
 
     // Von Kries white-balance (diagonalised in Bradford LMS, not raw XYZ -- see
     // `compute_illuminant_white_balance`'s doc comment) so the chosen illuminant
-    // itself renders as neutral white.
+    // itself renders as neutral white. Only the analytic `Studio` rig has a
+    // single well-defined illuminant colour temperature to neutralize against -- see
+    // `environment_white_balance`'s own doc comment, which already documents the
+    // `HdrMap` no-op. The transform is skipped entirely for `HdrMap` rather than run at
+    // that documented-no-op `Vec3::ONE` scale, because the round trip is not
+    // quite the identity in f32 (the two published Bradford matrices are not exact
+    // inverses, `max|B*A - I| ~= 5.2e-7`): running it anyway would make a hybrid CPU/GPU
+    // HDR frame -- the WGSL twin gates this same transform on `params.env_mode == 1u`
+    // (`Studio`), never running it for `HdrMap` -- sum CPU and GPU tiles that disagree
+    // systematically at exactly this floor. Skipping the transform entirely for
+    // `HdrMap`, matching the WGSL gate, is exact instead of merely close.
     //
     // `.max(Vec3::ZERO)` clamps the result the same way `StokesVector::intensity`/
     // `cie_1931_cmf(_x8)` already clamp every other radiance quantity to non-negative.
@@ -1104,8 +1158,16 @@ fn trace_spectral_ray_inner(
     // saturated/spectrally-narrow input -- a pre-existing property of that transform.
     // Exit-event splitting can make more previously-terminated companion channels
     // survive to shift some inputs into that regime, so the clamp matters more now,
-    // but it is the same physical floor already applied elsewhere in this file.
-    apply_von_kries_white_balance(xyz, environment_white_balance(environment)).max(Vec3::ZERO)
+    // but it is the same physical floor already applied elsewhere in this file. Kept
+    // unconditionally (including for `HdrMap`, which now skips the transform above it)
+    // since it is a physical floor on `xyz` itself, not a byproduct of white balance.
+    match environment {
+        EnvironmentSource::Studio { .. } => {
+            apply_von_kries_white_balance(xyz, environment_white_balance(environment))
+        }
+        EnvironmentSource::HdrMap(_) => xyz,
+    }
+    .max(Vec3::ZERO)
 }
 
 /// O<->e mode re-coupling at internal reflections.
@@ -1668,6 +1730,108 @@ mod nee_tests {
             "NEE-on and NEE-off should converge to the same mean radiance on a uniform \
              HDR map (mean_on={mean_on:?}, mean_off={mean_off:?}, rel_err=({ex}, {ey}, \
              {ez}), tolerance={TOLERANCE})"
+        );
+    }
+
+    /// The uniform-map furnace test above cannot catch NEE looking up the
+    /// environment at the wrong direction -- `rgb_to_spectral_radiance` gives the same
+    /// answer everywhere on a uniform map regardless of which direction is sampled. A
+    /// genuinely directional (two-hemisphere: bright `+Y` half, black `-Y` half) map
+    /// makes that bug visible: if [`nee_contribution_hg_scatter`] looked up
+    /// the environment at the UNREFRACTED interior light-sample direction instead of the
+    /// true refracted exterior one, NEE-on would read a systematically different mean
+    /// than NEE-off (whose phase-sampled continuation always escapes along the genuinely
+    /// refracted direction).
+    #[test]
+    fn nee_on_and_off_agree_on_a_two_hemisphere_hdr_map() {
+        const L0: f32 = 3.0;
+        const SAMPLES: u32 = 40_000;
+        const TOLERANCE: f32 = 0.05;
+        const WIDTH: usize = 8;
+        const HEIGHT: usize = 4;
+
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let plane_soa = build_plane_soa(&planes);
+        // Lossless scattering, same as the uniform-map furnace test above, so this
+        // isolates the NEE lookup-direction check here from the separately-tested
+        // medium transmittance.
+        let material =
+            GemMaterial::new_custom("2c two-hemisphere probe", 1.5, 0.0, 0.0, [0.0, 0.0, 0.0])
+                .with_scattering(1.0, 0.2);
+
+        // Row `0` is `v = 0` (north pole, `+Y`); row `HEIGHT - 1` is `v = 1` (south
+        // pole, `-Y`) -- see `EnvironmentMap`'s own struct doc comment. The upper half
+        // of the rows (`+Y` hemisphere) is bright, the lower half (`-Y` hemisphere)
+        // stays black.
+        let mut pixels = vec![[0.0f32, 0.0, 0.0]; WIDTH * HEIGHT];
+        for row in 0..HEIGHT / 2 {
+            for col in 0..WIDTH {
+                pixels[row * WIDTH + col] = [L0, L0, L0];
+            }
+        }
+        let env_map = crate::renderer::env_map::EnvironmentMap::from_rgb(WIDTH, HEIGHT, pixels)
+            .expect("WIDTH * HEIGHT pixels for a WIDTH x HEIGHT map");
+        let environment = EnvironmentSource::HdrMap(&env_map);
+        let ray = Ray {
+            origin: Vec3::new(0.0, 2.5, 0.0),
+            dir: Vec3::new(0.1, -1.0, 0.05).normalize(),
+        };
+
+        let mut sum_on = Vec3::ZERO;
+        let mut sum_off = Vec3::ZERO;
+        for i in 0..SAMPLES {
+            let seed = 77_000 + i;
+            let hero_rand = (hash_u32(seed) as f32) / 4_294_967_295.0;
+            sum_on += trace_spectral_ray_inner(
+                ray,
+                &planes,
+                &plane_soa,
+                &[],
+                &material,
+                12,
+                environment,
+                seed,
+                hero_rand,
+                None,
+                true,
+                true,
+                true,
+                None,
+            );
+            sum_off += trace_spectral_ray_inner(
+                ray,
+                &planes,
+                &plane_soa,
+                &[],
+                &material,
+                12,
+                environment,
+                seed,
+                hero_rand,
+                None,
+                true,
+                true,
+                false,
+                None,
+            );
+        }
+        let mean_on = sum_on / SAMPLES as f32;
+        let mean_off = sum_off / SAMPLES as f32;
+        let rel_err = |v: f32, t: f32| (v - t).abs() / t.abs().max(1e-6);
+        let (ex, ey, ez) = (
+            rel_err(mean_on.x, mean_off.x),
+            rel_err(mean_on.y, mean_off.y),
+            rel_err(mean_on.z, mean_off.z),
+        );
+        println!(
+            "[2c two-hemisphere NEE] mean_on={mean_on:?} mean_off={mean_off:?} \
+             rel_err=({ex:.4}, {ey:.4}, {ez:.4})"
+        );
+        assert!(
+            ex <= TOLERANCE && ey <= TOLERANCE && ez <= TOLERANCE,
+            "NEE-on and NEE-off should agree within tolerance on a directional \
+             (two-hemisphere) HDR map, not only a uniform one (mean_on={mean_on:?}, \
+             mean_off={mean_off:?}, rel_err=({ex}, {ey}, {ez}), tolerance={TOLERANCE})"
         );
     }
 

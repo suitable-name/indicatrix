@@ -591,9 +591,9 @@ fn run_stream_loop<S: Read + Write + TimeoutRead + TimeoutWrite>(
 /// # The cancelled `DONE` write stays inside `WRITE_TIMEOUT`
 ///
 /// `write_cancelled_done` runs, and its error is propagated, before the write timeout is
-/// cleared -- an earlier version cleared both timeouts right after `tracer_handle.join()`
-/// and only then attempted this write, leaving it able to block forever against a peer
-/// that stopped reading. The read timeout is restored to blocking right after the join
+/// cleared: clearing both timeouts right after `tracer_handle.join()` and only then
+/// attempting this write would leave it able to block forever against a peer that
+/// stopped reading. The read timeout is restored to blocking right after the join
 /// regardless of outcome; the write timeout stays live through this one additional write.
 ///
 /// # A pipelined `RenderRequest` is queued, not rejected

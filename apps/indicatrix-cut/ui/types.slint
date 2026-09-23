@@ -15,9 +15,9 @@ export struct DiagramItem {
     // Whether this design is one of the cutter's own locally-imported designs (a
     // synthetic `local://...` url) rather than part of the wider scraped catalogue --
     // see `gui::library::search::is_local_url`. `diagram_list.slint` renders this as a
-    // "Mine" badge next to the shape/Ignored badges (CAD audit item 189).
+    // "Mine" badge next to the shape/Ignored badges.
     is_local: bool,
-    // Tag names attached to this design (CAD audit item 190), alphabetical.
+    // Tag names attached to this design, alphabetical.
     // Filled in bulk by `gui::library::search` via `Database::tags_by_entry`
     // rather than one query per row -- the catalogue is ~3187 rows.
     tags: [string],
@@ -67,11 +67,10 @@ export struct AngleItem {
     // Which side of the girdle this facet cuts: -1 pavilion, 1 crown, 0 neither (a
     // girdle facet, a table, or a catalogue row whose angle text does not parse).
     // A real field rather than something the markup derives from the formatted
-    // `angle` string: `CuttingTableView`'s Pavilion/Crown filter used to read the
-    // sign back out of that text, which breaks as soon as the display format
-    // changes and cannot tell a girdle facet from a crown one. The editor fills it
-    // from the solver's own block classification, the same source the tier table's
-    // block column uses.
+    // `angle` string: reading the sign back out of that text breaks as soon as the
+    // display format changes and cannot tell a girdle facet from a crown one. The
+    // editor fills it from the solver's own block classification, the same source
+    // the tier table's block column uses.
     side: int,
 }
 
@@ -81,7 +80,7 @@ export struct FileItem {
     size_str: string,
 }
 
-// One gear-position chip in the SELECTED tier's index list (CAD audit item 45) --
+// One gear-position chip in the SELECTED tier's index list --
 // built in Rust (`gui::editor::view::selected_tier_chips`) from `ConstraintTier::
 // indices`/`detached` directly, so `editor_inspector.slint` never has to parse
 // `EditorTierItem::indices`' own comma-joined display string itself (Slint's
@@ -104,8 +103,8 @@ export struct IndexChipItem {
     label: string,
     // Whether THIS occurrence is in `ConstraintTier::detached` -- unlike
     // `EditorTierItem::is_detached` (true whenever the tier has ANY detached
-    // occurrence at all), this is the real per-position state, now that
-    // `EditorModel.facet_toggle_detach` can act on one chip at a time.
+    // occurrence at all), this is the real per-position state, because
+    // `EditorModel.facet_toggle_detach` acts on one chip at a time.
     detached: bool,
 }
 
@@ -116,7 +115,7 @@ export struct IndexChipItem {
 // `EditorView.save_tier`/`remove_tier` -- the same "list index is the identity"
 // convention `WorkerItem`/`LightingPresetItem` use.
 //
-// `mast` is no longer authored -- it is `Design::solve`'s derived output, formatted
+// `mast` is not authored -- it is `Design::solve`'s derived output, formatted
 // read-only for display. What the user actually authors is the constraint:
 // `constraint_kind` (0 = meet an unspecified vertex / `MeetConstraint::MeetExisting`,
 // 1 = meet named facets / `MeetConstraint::MeetNamed`, 2 = an exact authored scale
@@ -133,13 +132,13 @@ export struct EditorTierItem {
     constraint_kind: int,
     constraint_text: string,
     mast: string,
-    // The same mast in millimetres (CAD audit items 54/136), `""` when the design
-    // has no girdle diameter to anchor a real scale. Shown in the MAST cell's
+    // The same mast in millimetres, `""` when the design has no girdle diameter to
+    // anchor a real scale. Shown in the MAST cell's
     // tooltip rather than the cell itself: the column is 50px and the model-unit
     // figure is what the solver's own constraints are expressed in, but mm is what
     // a cutter actually dials into a mast gauge.
     mast_mm: string,
-    // The same mast unrounded (CAD audit item 54). The MAST cell deliberately shows
+    // The same mast unrounded. The MAST cell deliberately shows
     // 4 decimals -- more is noise in a 50px column -- but "Pin to mast" applies the
     // full value, so its tooltip must quote the full value rather than the rounded
     // one it happens to sit next to.
@@ -164,8 +163,8 @@ export struct EditorTierItem {
     // "orbit x4" (one complete orbit), "2 orbits" (a clean multi-facet fold, every
     // unit complete), "2 orbits (1 incomplete)" (a fold where at least one but not
     // every unit is complete), "3/4 orbit" (a single partial unit -- usually just
-    // one occurrence missing at the edge of the schedule), or "not symmetric" (CAD
-    // audit item 231: `mixed_fold` -- several units, but NONE of them complete, the
+    // one occurrence missing at the edge of the schedule), or "not symmetric"
+    // (`mixed_fold` -- several units, but NONE of them complete, the
     // genuinely inconsistent case the corpus study in `orbit::mod`'s own doc
     // comment calls out separately from a merely partial fold). "" for a trivial
     // <=1-index tier. Makes "editing this row affects more than one facet" visible
@@ -245,9 +244,19 @@ export struct EditorTierItem {
     // Log popup. Prefixed "(pre-solve) " whenever it was computed without a
     // completed solve (`gui::editor::state::manufacturability_warnings_tagged`).
     warning_text: string,
+    // What a pending Optimize outcome (still
+    // applicable to this design's current generation -- see `EditorModel.
+    // optimize_can_apply`'s own doc comment for that check) would set THIS
+    // tier's angle to, formatted like `angle_deg`, or `""` when Optimize
+    // proposes no change for this row -- `gui::editor::state::
+    // apply_proposed_angles` patches it onto the already-built row list, the
+    // same "patch in place" shape `multi_selected` above already uses. Lets the
+    // tier table show a per-row ghost of the proposed angle beside the real
+    // one, alongside (not only through) the Optimize "Preview" toggle's whole-
+    // viewport ghost.
+    proposed_angle: string,
 }
 
-// One gear-position chip in a tier's index list (CAD audit item 45) -- built in
 // One row of the gear-remap confirmation panel (`editor_view.slint`) -- shown after
 // the user picks a different index-gear tooth count in the Design Settings panel,
 // before `Edit::RemapIndices` is actually applied. `new_indices` is exactly what
@@ -273,7 +282,7 @@ export struct OptimizeResultRow {
     before: string,
     after: string,
     // Which way this metric moved, so the row can be coloured rather than leaving
-    // the cutter to read a sign out of the text (CAD audit item 237): -1 worse,
+    // the cutter to read a sign out of the text: -1 worse,
     // 0 unchanged, 1 better. "Better" is per-metric, not per-sign -- windowing
     // going DOWN is an improvement, brilliance going down is not -- so this is
     // computed alongside the figure in `gui::editor::view::after_with_delta`
@@ -282,7 +291,7 @@ export struct OptimizeResultRow {
 }
 
 // One tier Deep Solve's externally-verified repair actually disagreed with the
-// design's plain solve on (CAD audit item 67's display half) -- built from
+// design's plain solve on -- built from
 // `gui::editor::deep_solve::TierMastDelta`, already filtered to only the tiers
 // whose mast moved by more than a small epsilon (see that type's own doc
 // comment). Shown as a real table in the inspector alongside the aggregate
@@ -299,8 +308,8 @@ export struct DeepSolveTierRow {
     delta: string,
 }
 
-// One tier Optimize would change if its result were applied (CAD audit item 68's
-// display half) -- built from `indicatrix_cut_core::OptimizeOutcome::changes`
+// One tier Optimize would change if its result were applied --
+// built from `indicatrix_cut_core::OptimizeOutcome::changes`
 // (`gui::editor::view::optimize_change_rows`), shown as a second table alongside
 // the existing four-component `EditorModel.optimize_result_rows` so a cutter can
 // see WHICH tiers move, not only the blended before/after scores.
@@ -387,6 +396,14 @@ export struct DiagramDetailData {
     // otherwise never plumbs an "unknown" sentinel through an `int` field.
     symmetry_order: string,
     mirror_symmetry: bool,
+    // Inferred material, shown as a guess and never as a fact: a catalogue row
+    // records only a refractive index, never a species name, so `gui::library::detail`
+    // computes the SAME nearest-n_D guess the editor's own material-guess
+    // badge shows (`gui::editor::material_lookup::material_for_refractive_index`),
+    // formatted identically ("Sapphire? (from RI 1.76)"). `""` when nothing
+    // built in is close enough to guess at all -- hides the chip entirely,
+    // same convention as every other optional field on this struct.
+    material_guess: string,
 }
 
 // "Retarget for material" dialog row: one per pavilion/crown tier; girdle tiers are

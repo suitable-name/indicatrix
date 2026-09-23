@@ -8,10 +8,8 @@
 //! parse/reconstruct logic this module wires up to the UI.
 //!
 //! Split into [`import`], [`organize`] (ignore/rename/shape/delete), and [`export`],
-//! sharing [`helpers`]'s `refresh_after_library_change` -- each used to be one
-//! function group inside a single flat `library.rs`; the split follows that exact
-//! seam, with the once-implicit shared "refresh after any write" step now named and
-//! pulled out into `helpers` instead of duplicated three times.
+//! sharing [`helpers`]'s `refresh_after_library_change` as the common "refresh after
+//! any write" step.
 
 mod export;
 mod helpers;
@@ -26,11 +24,11 @@ pub use organize::{
     setup_set_shape_callback,
 };
 
-/// Re-exported for `gui::editor::native_io`'s own catalogue write-back (CAD audit
-/// items 92/96/186: "Save Native" merges into an existing source row, or measures a
-/// brand-new one, using exactly the same rules a `.asc` re-import already applies) --
-/// see each function's own doc comment. `helpers`/`import` stay private modules;
-/// only these specific, already-review-hardened helpers cross the `gui::editor`/
-/// `gui::library` boundary, rather than opening either module up wholesale.
+/// Re-exported for `gui::editor::native_io`'s own catalogue write-back: "Save Native"
+/// merges into an existing source row, or measures a brand-new one, using exactly the
+/// same rules a `.asc` re-import already applies -- see each function's own doc
+/// comment. `helpers`/`import` stay private modules; only these specific helpers
+/// cross the `gui::editor`/`gui::library` boundary, rather than opening either module
+/// up wholesale.
 pub use helpers::refresh_after_library_change;
 pub use import::{apply_measured_metadata, merge_reimport_metadata};

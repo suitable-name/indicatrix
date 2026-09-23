@@ -206,7 +206,31 @@ impl GemPolyhedron {
 
         let dual_points = dual_points_from_planes(&planes)?;
 
-        // 3D Convex Hull in Dual Space using `chull`
+        // Normalise the dual point cloud to unit magnitude before the hull. `chull`'s own
+        // degeneracy check (`is_degenerate` in `chull::convex`, 0.2.4) compares a Gram
+        // determinant built from the RAW coordinates against a fixed internal threshold;
+        // that determinant scales with a high power of the coordinate magnitude, so a
+        // schedule in large model units (dual points `n / -d` of magnitude 1e-3 for a cube
+        // of half-extent 1000) is reported `Degenerated` no matter what tolerance is
+        // passed here (1e-12..1e-3 all fail; verified against the crate's source and
+        // empirically, C:/temp/mcp2/brep_scale_invariance_diagnosis.md). Uniform scaling
+        // cannot change which points are hull vertices or how they connect, so the hull
+        // is built at unit scale, and EVERY downstream dual-space step stays in that
+        // frame: `map_hull_vertices_to_planes` (relative tolerance with a `max(1.0)`
+        // floor) and `check_origin_interior` (fixed absolute `ORIGIN_INTERIOR_EPS`) are
+        // both scale-invariant only when fed unit-scale coordinates. Nothing primal reads
+        // the dual coordinates; `reconstruct_vertices` solves from the planes themselves.
+        let dual_scale = dual_points
+            .iter()
+            .flatten()
+            .fold(0.0_f64, |m, &v| m.max(v.abs()))
+            .max(f64::MIN_POSITIVE);
+        let dual_points: Vec<Vec<f64>> = dual_points
+            .iter()
+            .map(|p| p.iter().map(|&v| v / dual_scale).collect())
+            .collect();
+
+        // 3D Convex Hull in (unit-scale) Dual Space using `chull`
         let hull = ConvexHull::try_new(&dual_points, 1e-6f64, None).map_err(|e| {
             BrepError::HullComputationFailed {
                 message: format!("{e:?}"),

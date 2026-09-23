@@ -66,8 +66,8 @@ const NEAR_EPS: f32 = 1e-4;
 const HATCH_PERIOD: i32 = 6;
 
 /// Minimum on-screen span (either axis), in pixels, before [`SolidRasterizer::
-/// draw_facet_labels`] (#122) bothers stamping a facet's own label on it --
-/// mirrors `diagram2d::MIN_LABEL_SPAN`'s own threshold and reasoning.
+/// draw_facet_labels`] bothers stamping a facet's own label on it -- mirrors
+/// `diagram2d::MIN_LABEL_SPAN`'s own threshold and reasoning.
 const MIN_LABEL_SPAN: f32 = 26.0;
 
 /// Which of [`SolidRasterizer::draw_facet_edges`]'s ordered passes an edge segment
@@ -80,13 +80,13 @@ const MIN_LABEL_SPAN: f32 = 26.0;
 enum EdgePass {
     /// None of the below: the plain `edge_color`, drawn first.
     Ordinary,
-    /// The one facet named in `style.hovered` (#20).
+    /// The one facet named in `style.hovered`.
     Hovered,
-    /// A facet listed in `style.multi_selected` (#19), not otherwise highlighted.
+    /// A facet listed in `style.multi_selected`, not otherwise highlighted.
     MultiSelected,
     /// `selected` (a whole tier) and not otherwise highlighted.
     Selected,
-    /// The one facet named in `style.selected_facet` (#18) -- a stronger, more
+    /// The one facet named in `style.selected_facet` -- a stronger, more
     /// specific identification than the tier-level `Selected` pass.
     SelectedFacet,
     /// `pending`: drawn last, so it wins over every other pass too.
@@ -142,18 +142,21 @@ pub struct SolidStyle {
     /// table paints its own selected row with (`editor_tier_table.slint`'s
     /// `primary-glow` background), so the two views read as one selection.
     pub selected_color: [u8; 3],
-    /// Outline color for the single facet named in `hovered` (#20) -- a light
+    /// Outline color for the single facet named in `hovered` -- a light
     /// neutral, distinct from every other overlay color so it never gets mistaken
     /// for a selection.
     pub hover_color: [u8; 3],
-    /// Outline color for the single facet named in `selected_facet` (#18) --
+    /// Outline color for the single facet named in `selected_facet` --
     /// `ui/theme.slint`'s `accent-purple`, deliberately different from
     /// `selected_color` (a whole tier) so "this exact facet" and "this facet's
     /// tier" read as two different kinds of highlight.
     pub selected_facet_color: [u8; 3],
-    /// Outline color for every facet id listed in `multi_selected` (#19) --
-    /// `ui/theme.slint`'s `accent-cyan`, the same color `editor_tier_table.slint`
-    /// already outlines a multi-selected row with.
+    /// Outline color for every facet id listed in `multi_selected` --
+    /// `ui/theme.slint`'s `accent-cyan`. NOT the same color
+    /// `editor_tier_table.slint` uses for its own multi-selected row outline,
+    /// which is `Theme.accent-amber` (see that file's `row.multi_selected`
+    /// border-color binding) -- the 3D viewport and the tier table deliberately
+    /// disagree on this color today, this is not a shared convention.
     pub multi_selected_color: [u8; 3],
     /// Buffer-clear color (RGBA8) before each `render` call.
     pub background: [u8; 4],
@@ -164,41 +167,41 @@ pub struct SolidStyle {
     /// The one facet under the cursor, or `None` -- set by
     /// `preview_state::SolidPreviewState::request_facet_overlay`, never by a
     /// fresh replan (a new plan always starts with no hover; the next mouse-move
-    /// request re-establishes it). See #20.
+    /// request re-establishes it).
     pub hovered: Option<u32>,
     /// The one facet a click identified within its (possibly multi-facet) tier
-    /// selection, or `None` -- same update path as `hovered`. See #18.
+    /// selection, or `None` -- same update path as `hovered`.
     pub selected_facet: Option<u32>,
     /// Every facet id belonging to a multi-selected tier (table checkbox/ctrl-click
-    /// selection) -- same update path as `hovered`. See #19. A `Vec` rather than a
+    /// selection) -- same update path as `hovered`. A `Vec` rather than a
     /// per-facet `bool` table since the caller already has the small set of ids
     /// straight from `facet_map::FacetMap::facets_of_tier`, and multi-select sizes
     /// are small enough that a linear scan per facet is not worth a second buffer.
     pub multi_selected: Vec<u32>,
-    /// Facet id -> short on-facet label (`facet_map::FacetMap::facet_label`) --
-    /// #122's "no facet labels in the 3D view" fix. Empty string (or a facet id
+    /// Facet id -> short on-facet label (`facet_map::FacetMap::facet_label`),
+    /// shown directly on the facet in the 3D view. Empty string (or a facet id
     /// past the end) draws nothing; a facet also needs a large enough on-screen
     /// span (see [`MIN_LABEL_SPAN`]) and must still win the depth test at its own
     /// centroid before its label is drawn (never labels an occluded facet).
     pub facet_labels: Vec<String>,
-    /// Draws #119's orientation cue after the ordinary render pass: a tick
+    /// Draws an orientation cue after the ordinary render pass: a tick
     /// toward world `+X` (the same "index 0" direction `diagram2d`'s index wheel
     /// uses) at the girdle plane, labeled "0", plus a CROWN/PAVILION caption --
     /// so a cutter who free-orbited the stone can tell orientation without
     /// switching to Diagram mode. Defaults to `true`.
     pub show_orientation_marker: bool,
-    /// #122: facet ids below this are the rough's own bounding (preform)
+    /// Facet ids below this are the rough's own bounding (preform)
     /// planes, in `Design::planes_from_solved`'s order (`facet_map::FacetMap::
     /// preform_plane_count`). `0` (the default) means "no preform to
     /// distinguish", matching every caller that never sets it.
     pub preform_plane_count: usize,
-    /// #122: when `false`, a preform-plane facet is skipped entirely (culled,
+    /// When `false`, a preform-plane facet is skipped entirely (culled,
     /// as if back-face-culled) instead of rendered, so a cutter can see through
     /// the rough's own bounding box to the actual cut. `true` (the default)
     /// keeps every preform facet visible, tinted by [`Self::preform_tint_color`]
     /// rather than drawn as an ordinary cut facet.
     pub show_preform: bool,
-    /// Tint blended into a preform-plane facet's own shaded color (#122) so the
+    /// Tint blended into a preform-plane facet's own shaded color so the
     /// rough's bounding planes read as visually distinct from an ordinary cut
     /// facet -- otherwise a preform plane looks and behaves (under hover/click)
     /// exactly like a real facet with nothing marking it as the uncut rough.
@@ -368,7 +371,7 @@ impl SolidRasterizer {
                 continue;
             }
 
-            // #122: a preform (rough-bounding) facet either tints distinctly or,
+            // A preform (rough-bounding) facet either tints distinctly or,
             // when hidden, is culled here exactly like a back-face.
             let is_preform = *facet_id < style.preform_plane_count;
             if is_preform && !style.show_preform {
@@ -497,9 +500,9 @@ impl SolidRasterizer {
     /// select/pending, each pass only overpainting a facet already drawn by an
     /// earlier one -- so a shared edge between an ordinary facet and a highlighted
     /// one always ends up in the highlighted color, never the other way around.
-    /// Before this, edges were drawn once per facet in mesh-ring order, so
-    /// whichever of a shared edge's two owning facets happened to be visited LAST
-    /// silently overpainted the other's color (`draw_edge`'s depth test admits a
+    /// Drawing edges once per facet in plain mesh-ring order instead would let
+    /// whichever of a shared edge's two owning facets happens to be visited LAST
+    /// silently overpaint the other's color (`draw_edge`'s depth test admits a
     /// coincident edge from either side) -- on roughly half of a highlighted
     /// facet's boundary the neighbour's plain dark edge would win, making the
     /// highlight look like a rendering glitch rather than a selection. Every
@@ -634,12 +637,12 @@ impl SolidRasterizer {
 
         let flagged = style.flagged.get(facet_id).copied().unwrap_or(false);
         let selected = style.selected.get(facet_id).copied().unwrap_or(false);
-        // A 58% blend toward `selected_color` -- raised from an earlier 35%, which
-        // read as barely distinguishable from an unselected facet on a light-grey
-        // solid, especially one turned away from the key light. Still leaves the
-        // facet's own lighting visible underneath (unlike the flagged hatch, which
-        // fully replaces the pixel), while now reading clearly next to a hatched
-        // facet instead of losing to it for attention.
+        // A 58% blend toward `selected_color`, strong enough to read clearly
+        // against an unselected facet even on a light-grey solid turned away
+        // from the key light. Still leaves the facet's own lighting visible
+        // underneath (unlike the flagged hatch, which fully replaces the
+        // pixel), while reading clearly next to a hatched facet instead of
+        // losing to it for attention.
         let selected_fill = selected.then(|| blend_toward(color, style.selected_color, 0.58));
         let alpha: u8 = if style.fill_mode == FillMode::Transparent {
             0
@@ -773,7 +776,7 @@ impl SolidRasterizer {
         }
     }
 
-    /// #122: stamps each visible facet's own label (`style.facet_labels`,
+    /// Stamps each visible facet's own label (`style.facet_labels`,
     /// `facet_map::FacetMap::facet_label`'s output) at its screen centroid, but
     /// only where the facet is big enough to read ([`MIN_LABEL_SPAN`]) and still
     /// wins the depth test at its own centroid -- the same two guards
@@ -820,7 +823,7 @@ impl SolidRasterizer {
         }
     }
 
-    /// Draws #119's orientation cue directly into the finished color buffer,
+    /// Draws the orientation cue directly into the finished color buffer,
     /// after every facet/edge -- an overlay, not a lit surface, so it is never
     /// depth-tested against the mesh (it would otherwise vanish behind whatever
     /// facet happens to be nearest at that screen point). See
@@ -889,7 +892,7 @@ impl SolidRasterizer {
 
 /// Screen-space `(min_x, max_x, min_y, max_y)` bounds of a facet's projected
 /// ring -- shared by [`SolidRasterizer::render`]'s and [`SolidRasterizer::
-/// render_prepared`]'s label-spot collection (#122).
+/// render_prepared`]'s label-spot collection.
 fn screen_bounds(pts: &[(f32, f32, f32)]) -> (f32, f32, f32, f32) {
     let (mut min_x, mut max_x, mut min_y, mut max_y) = (
         f32::INFINITY,
@@ -1249,7 +1252,7 @@ mod tests {
 
     #[test]
     fn preform_facets_are_tinted_and_can_be_hidden() {
-        // #122: facet 4 (+Z, the only one visible from this camera) counts as a
+        // Facet 4 (+Z, the only one visible from this camera) counts as a
         // preform plane under this style (`preform_plane_count: 5`).
         let mesh = unit_box_mesh();
         let camera = Camera::new(0.0, 0.0, 5.0, 42.0);

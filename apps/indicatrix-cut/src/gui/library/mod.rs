@@ -4,10 +4,8 @@
 //! and switching between the local database and a remote worker's library plus
 //! driving a pull-mirror sync ([`remote`]).
 //!
-//! Was 6 flat top-level `gui` files (`library.rs`, `library_remote.rs`,
-//! `diagram_list.rs`, `search.rs`, `detail.rs`, `clipboard.rs`); grouped here as the
-//! one coherent "design library" domain, with `library.rs` itself (the largest, at
-//! local-only import/organize/export) further split into [`local`]'s own submodules.
+//! Grouped here as one coherent "design library" domain, with the local-only
+//! import/organize/export logic further split into [`local`]'s own submodules.
 
 pub mod clipboard;
 pub mod detail;

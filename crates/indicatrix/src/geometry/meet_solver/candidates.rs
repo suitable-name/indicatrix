@@ -4,14 +4,14 @@
 //! values into "levels". Everything here is plain nested loops over a fixed
 //! plane order (no hashing, no convex-hull library) -- the property the whole
 //! solver's determinism rests on -- and is batched through `crate::simd` for
-//! speed without changing that order (see [`enumerate_candidate_vertices`]'s
+//! speed without changing that order (see [`enumerate_candidate_vertices_cancellable`]'s
 //! doc comment).
 //!
 //! NOTE -- tried caching each triple's mast-independent 3x3 inverse across
 //! phase-3 sweeps: the feasibility scan dominates, not the triple solve, so it
 //! saved nothing measurable while regressing single-sweep time ~25%; rejected.
 //!
-//! NOTE -- tried threading [`enumerate_candidate_vertices`] itself (sharding the
+//! NOTE -- tried threading [`enumerate_candidate_vertices_cancellable`] itself (sharding the
 //! outer loop across OS threads, verified bit-exact with the sequential scan):
 //! measured flat-to-regressed on a real 103-tier design (up to ~9.6s vs.
 //! 5.5-6.1s single-threaded), since the feasibility scan is a fixed-size,
@@ -114,7 +114,7 @@ pub(super) fn blank_planes() -> Vec<SolvePlane> {
 
 /// Drains one full (or final partial) [`crate::simd::TripleBatch`] solve into
 /// `out`, in ascending lane order -- the same order the flushed triples were
-/// pushed in. Shared by [`enumerate_candidate_vertices`]'s batching loop.
+/// pushed in. Shared by [`enumerate_candidate_vertices_cancellable`]'s batching loop.
 fn flush_candidate_batch(
     batch: &crate::simd::TripleBatch,
     soa: &crate::simd::PlanesSoA64,
@@ -159,10 +159,24 @@ fn flush_candidate_batch(
 /// determinism contract at the top of `src/simd/mod.rs`), draining lanes in
 /// ascending order, so results are byte-for-byte identical to the unbatched
 /// scalar solve this replaces.
-pub(super) fn enumerate_candidate_vertices(
+///
+/// `cancel` is checked once per outer `a` iteration AND once per middle `b`
+/// iteration -- bounding the largest uninterrupted unit of work to one
+/// `O(P)` inner `c` loop, not the whole `O(P^2)` `a`-chunk (measured
+/// necessary on the real 103-tier fixture in an unoptimized build: the
+/// `a = first_real` chunk alone, checked only per-`a`, could still exceed a
+/// caller's cancel-latency budget -- see the module docs, "Cancellation and
+/// progress") -- and this returns `None` the first time `cancel` is observed
+/// set, discarding whatever candidates that partial scan already found (a
+/// cancelled solve has no use for a partial arrangement). `cancel` is `None`
+/// for every caller with no [`super::SolveControl`] in hand (e.g. this
+/// module's own tests), which costs one cheap `Option::is_some` check per
+/// iteration and never returns `None`.
+pub(super) fn enumerate_candidate_vertices_cancellable(
     planes: &[SolvePlane],
     first_real: usize,
-) -> Vec<CandidateVertex> {
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+) -> Option<Vec<CandidateVertex>> {
     let mut soa = crate::simd::PlanesSoA64::with_capacity(planes.len());
     for q in planes {
         let owner = if q.owner == usize::MAX {
@@ -178,7 +192,20 @@ pub(super) fn enumerate_candidate_vertices(
     let mut batch = crate::simd::TripleBatch::default();
     let mut owner_meta = [[0usize; 3]; crate::simd::TRIPLE_LANES];
     for a in first_real..p {
+        if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+            return None;
+        }
         for b in (a + 1)..p {
+            // Also checked once per middle-loop `b` iteration, not just once
+            // per outer `a`: the `a = first_real` chunk alone is `O(P^2)`
+            // (every other plane, twice), and measurement on the real
+            // 103-tier fixture (see the module docs) showed that single
+            // chunk's own worst-case latency could still exceed a caller's
+            // cancel budget in an unoptimized build. Checking per `b` bounds
+            // the uninterrupted unit of work to one `O(P)` inner `c` loop.
+            if cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
+                return None;
+            }
             for c in (b + 1)..p {
                 let (pa, pb, pc) = (planes[a], planes[b], planes[c]);
                 owner_meta[batch.len] = [pa.owner, pb.owner, pc.owner];
@@ -192,7 +219,7 @@ pub(super) fn enumerate_candidate_vertices(
     if batch.len > 0 {
         flush_candidate_batch(&batch, &soa, &owner_meta, &mut out);
     }
-    out
+    Some(out)
 }
 
 /// Sorts `vals` ascending in [`f64::total_cmp`] order -- the exact sequence
@@ -451,7 +478,9 @@ mod tests {
     fn filter_levels_by_instance_support_matches_linear_reference_on_real_arrangement() {
         let normals = sample_normals();
         let mast: Vec<f64> = normals.iter().map(|_| 1.0).collect();
-        let cands = enumerate_candidate_vertices(&arrangement(&normals, &mast), 6);
+        let cands =
+            enumerate_candidate_vertices_cancellable(&arrangement(&normals, &mast), 6, None)
+                .expect("no cancel token: never cancels");
         for (i, normals_i) in normals.iter().enumerate() {
             let usable: Vec<&CandidateVertex> = cands
                 .iter()
@@ -525,7 +554,8 @@ mod tests {
                     }
                 }
             }
-            let got = enumerate_candidate_vertices(&planes, 6);
+            let got = enumerate_candidate_vertices_cancellable(&planes, 6, None)
+                .expect("no cancel token: never cancels");
             assert_eq!(
                 want.len(),
                 got.len(),

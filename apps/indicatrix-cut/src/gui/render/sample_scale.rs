@@ -1,5 +1,5 @@
 //! Exponent <-> sample-count conversion for the settings dialog's "Target Samples"
-//! slider, replacing the old four-tier `QualityPreset`.
+//! slider.
 //!
 //! The slider itself (`settings_dialog.slint`) drags an EXPONENT, not the sample count
 //! directly: image noise falls as `1/sqrt(N)`, so a linear 8..1024 control would spend

@@ -16,23 +16,28 @@ mod tier_actions;
 
 pub(in crate::gui::editor) use retarget_actions::{
     setup_retarget_apply_callback, setup_retarget_close_callback, setup_retarget_open_callback,
-    setup_retarget_proposal_changed_callback,
+    setup_retarget_proposal_changed_callback, setup_snapshot_callbacks,
 };
 pub(in crate::gui::editor) use solve_actions::{
-    clear_analysis_results, setup_adopt_meet_callback, setup_deep_solve_callback,
-    setup_deep_solve_cancel_callback, setup_optimize_apply_callback, setup_optimize_callback,
-    setup_optimize_cancel_callback,
+    clear_analysis_results, setup_adopt_meet_callback, setup_batch_tilt_for_open_design_callback,
+    setup_deep_solve_callback, setup_deep_solve_cancel_callback, setup_deep_solve_pin_callback,
+    setup_optimize_apply_callback, setup_optimize_callback, setup_optimize_cancel_callback,
+    setup_optimize_preview_callback,
 };
 pub(in crate::gui::editor) use tier_actions::{
-    setup_apply_design_material_callback, setup_apply_preform_callback,
-    setup_apply_symmetry_callback, setup_apply_yield_inputs_callback,
+    setup_anchor_explainer_dismiss_callback, setup_angle_live_preview_callback,
+    setup_apply_cheater_offset_callback, setup_apply_design_material_callback,
+    setup_apply_design_meta_callback, setup_apply_preform_callback,
+    setup_apply_preform_y_offset_callback, setup_apply_symmetry_callback,
+    setup_apply_tier_note_callback, setup_apply_yield_inputs_callback,
     setup_duplicate_tier_callback, setup_gear_apply_callback, setup_gear_remap_cancel_callback,
     setup_gear_remap_confirm_callback, setup_inline_set_angle_callback,
-    setup_load_selected_callback, setup_material_suggestion_accept_callback,
-    setup_material_suggestion_dismiss_callback, setup_new_design_create_callback,
-    setup_nudge_angle_callback, setup_redo_callback, setup_remove_tier_callback,
-    setup_save_tier_callback, setup_solid_facet_click_callback, setup_solid_facet_hover_callback,
-    setup_solid_selected_tier_changed_callback, setup_solve_callback, setup_tier_filter_callback,
-    setup_toggle_detach_callback, setup_toggle_multi_select_callback, setup_undo_callback,
+    setup_load_selected_callback, setup_material_guess_set_callback,
+    setup_material_suggestion_accept_callback, setup_material_suggestion_dismiss_callback,
+    setup_new_design_create_callback, setup_nudge_angle_callback, setup_redo_callback,
+    setup_remove_tier_callback, setup_save_tier_callback, setup_solid_facet_click_callback,
+    setup_solid_facet_hover_callback, setup_solid_selected_tier_changed_callback,
+    setup_solve_callback, setup_tier_filter_callback, setup_toggle_detach_callback,
+    setup_toggle_multi_select_callback, setup_undo_callback,
     setup_viewport_material_linked_changed_callback,
 };

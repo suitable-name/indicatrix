@@ -13,8 +13,8 @@
 //!
 //! [`claim`](Self::claim) and [`claim_local`](Self::claim_local) hand out ranges via a
 //! single atomic `fetch_add`, so any number of callers on any number of threads can
-//! never receive overlapping indices, by construction -- unlike the old design, which
-//! relied on nothing running concurrently while sharing one counter. Disjointness
+//! never receive overlapping indices, by construction, with no reliance on callers
+//! coordinating access any other way. Disjointness
 //! matters because both the CPU tracer and GPU megakernel derive each sample's
 //! pixel-jitter/RNG draws from its *absolute* index: overlapping ranges would redraw
 //! identical samples and silently bias the average toward whatever indices got traced

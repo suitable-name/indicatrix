@@ -80,8 +80,8 @@ pub(super) fn tonemap_wide_gamut(
 }
 
 /// Writes `rgba` (`width * height * 4` bytes) to `path` as PNG. `ColorSpace::Srgb`
-/// goes through the pre-existing `image::RgbaImage::save` call -- untagged, byte-
-/// identical to before this control existed. Any other space is written via
+/// goes through the plain `image::RgbaImage::save` call -- untagged, since every
+/// viewer already assumes sRGB for an unlabeled PNG. Any other space is written via
 /// `PngEncoder` directly so an ICC profile (`icc_profile::build`) can be attached
 /// first: an untagged Display P3/Rec.2020 PNG would be silently misread as sRGB.
 pub(super) fn save_png(

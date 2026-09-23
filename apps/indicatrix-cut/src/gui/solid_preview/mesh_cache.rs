@@ -74,8 +74,7 @@ impl CachedMesh {
     }
 
     /// The largest distance from the origin to any of this mesh's own vertices,
-    /// in the same model units [`SolidMesh::positions`] uses (#118, `cad_todo.md`
-    /// item 118).
+    /// in the same model units [`SolidMesh::positions`] uses.
     ///
     /// The solver's own coordinate origin is already the centre every facet
     /// plane's offset is expressed against, so this needs no separate centroid
@@ -108,10 +107,8 @@ enum CacheEntry {
 /// `last_closed` remembers the most recent [`SolidStatus::Closed`] build
 /// independently of `entry`, so a later arrangement that fails to close (a
 /// mid-keystroke [`SolidStatus::Unbounded`]/[`SolidStatus::Degenerate`] edit) can
-/// still hand back a real solid -- CAD audit item 63: an intermediate unbounded
-/// edit used to blank the viewport entirely, discarding the last mesh this cache
-/// had already built, because a failing rebuild simply overwrote `entry` with
-/// nothing to show.
+/// still hand back a real solid instead of blanking the viewport and discarding
+/// the last mesh this cache already built.
 #[derive(Debug, Default)]
 pub struct MeshCache {
     key: Option<u64>,
@@ -277,10 +274,9 @@ mod tests {
         assert_eq!(cache.status_message(), "");
     }
 
-    /// CAD audit item 63: a build that stops closing must not lose the last real
-    /// solid this cache already had -- `last_closed` should keep handing it back
-    /// across any number of consecutive failing rebuilds, until a NEW closed build
-    /// replaces it.
+    /// A build that stops closing must not lose the last real solid this cache
+    /// already had -- `last_closed` should keep handing it back across any number
+    /// of consecutive failing rebuilds, until a NEW closed build replaces it.
     #[test]
     fn last_closed_survives_a_failing_rebuild() {
         let mut cache = MeshCache::default();
@@ -314,9 +310,9 @@ mod tests {
         );
     }
 
-    /// #118: a unit cube's own farthest vertex is at `(1,1,1)`, radius `sqrt(3)`
-    /// -- confirms `bounding_radius` measures from the origin against every
-    /// vertex, not just one axis's own half-extent.
+    /// A unit cube's own farthest vertex is at `(1,1,1)`, radius `sqrt(3)` --
+    /// confirms `bounding_radius` measures from the origin against every vertex,
+    /// not just one axis's own half-extent.
     #[test]
     fn bounding_radius_is_the_farthest_vertex_from_the_origin() {
         let mut cache = MeshCache::default();

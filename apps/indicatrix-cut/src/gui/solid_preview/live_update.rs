@@ -24,13 +24,13 @@
 //! `last_solved` missing or misaligned (an `AddTier`/`RemoveTier` edit, which can
 //! never resolve as a subgraph) falls back to a full [`indicatrix_cut_core::Design::solve`];
 //! a successful full solve is authoritative regardless of timing, reported
-//! [`Freshness::Fresh`] too. Either path failing with [`indicatrix_cut_core::MissingAnchor`]
+//! [`Freshness::Fresh`] too. Either path failing with [`indicatrix_cut_core::DesignSolveError`]
 //! reports [`Freshness::Unsolvable`], falling back to whatever `last_solved` planes
 //! are available -- never an empty `PreviewPlan::planes` when a prior frame exists.
 
 use glam::{DVec3, Vec3};
 use indicatrix::geometry::meet_solver::{MeetConstraint, SolveStrategy, SolvedTier};
-use indicatrix_cut_core::{Design, MissingAnchor};
+use indicatrix_cut_core::{Design, DesignSolveError};
 use std::{
     collections::BTreeSet,
     time::{Duration, Instant},
@@ -57,7 +57,7 @@ pub trait DirtySolver {
         design: &Design,
         previous: &[SolvedTier],
         dirty: &BTreeSet<usize>,
-    ) -> Result<Vec<SolvedTier>, MissingAnchor>;
+    ) -> Result<Vec<SolvedTier>, DesignSolveError>;
 }
 
 /// The real [`DirtySolver`], delegating straight to [`indicatrix_cut_core::Design::resolve_dirty`].
@@ -71,7 +71,7 @@ impl DirtySolver for RealSolver {
         design: &Design,
         previous: &[SolvedTier],
         dirty: &BTreeSet<usize>,
-    ) -> Result<Vec<SolvedTier>, MissingAnchor> {
+    ) -> Result<Vec<SolvedTier>, DesignSolveError> {
         design.resolve_dirty(previous, dirty)
     }
 }
@@ -85,8 +85,8 @@ pub enum Freshness {
     Fresh,
     /// `pending` is the `dirty` set, for the caller's overlay/banner.
     Stale { pending: BTreeSet<usize> },
-    /// See [`indicatrix_cut_core::MissingAnchor`].
-    Unsolvable(MissingAnchor),
+    /// See [`indicatrix_cut_core::DesignSolveError`].
+    Unsolvable(DesignSolveError),
 }
 
 /// [`plan_preview`]'s result: what to draw, what to remember as `last_solved` next
@@ -112,10 +112,9 @@ fn narrow_planes(planes: Vec<(DVec3, f64)>) -> Vec<(Vec3, f32)> {
 }
 
 /// [`plan_preview`]'s single choice of "the full arrangement" vs. "truncated through
-/// a tier cutoff" (CAD audit item 211's "show through tier N" viewport slider) -- every
-/// one of `plan_preview`'s five branches drew the full [`Design::planes_from_solved`]
-/// arrangement unconditionally before this existed; routing all five through here
-/// keeps that truncation decision in exactly one place rather than five.
+/// a tier cutoff" (the "show through tier N" viewport slider) -- routing every one
+/// of `plan_preview`'s five branches through here keeps that truncation decision in
+/// exactly one place rather than five.
 ///
 /// `tier_cutoff.is_none()` reproduces [`Design::planes_from_solved`] exactly --
 /// the pre-existing behaviour for every caller that has no cutoff to offer.
@@ -159,11 +158,11 @@ fn masts_from_pinned_tiers(design: &Design) -> Vec<SolvedTier> {
 /// `indicatrix_cut_core::resolve::affected_tiers`); `last_solved` is the previous call's
 /// [`PreviewPlan::solved`], or `None` after an `AddTier`/`RemoveTier` edit.
 ///
-/// `tier_cutoff` is CAD audit item 211's "show through tier N" viewport slider:
-/// `Some(n)` truncates every branch's drawn planes to `design.tiers[..=n]` (the
-/// preform's own planes are always kept) via [`Design::planes_through_tier`] instead
-/// of the full [`Design::planes_from_solved`] arrangement -- see [`planes_for_display`].
-/// `None` reproduces the pre-existing "always the full arrangement" behaviour exactly.
+/// `tier_cutoff` is the "show through tier N" viewport slider: `Some(n)` truncates
+/// every branch's drawn planes to `design.tiers[..=n]` (the preform's own planes
+/// are always kept) via [`Design::planes_through_tier`] instead of the full
+/// [`Design::planes_from_solved`] arrangement -- see [`planes_for_display`]. `None`
+/// draws the full arrangement.
 #[must_use]
 pub fn plan_preview(
     design: &Design,
@@ -265,7 +264,7 @@ mod tests {
             _design: &Design,
             _previous: &[SolvedTier],
             _dirty: &BTreeSet<usize>,
-        ) -> Result<Vec<SolvedTier>, MissingAnchor> {
+        ) -> Result<Vec<SolvedTier>, DesignSolveError> {
             panic!("DirtySolver::resolve_dirty must not be called on this branch");
         }
     }
@@ -281,7 +280,7 @@ mod tests {
             _design: &Design,
             _previous: &[SolvedTier],
             _dirty: &BTreeSet<usize>,
-        ) -> Result<Vec<SolvedTier>, MissingAnchor> {
+        ) -> Result<Vec<SolvedTier>, DesignSolveError> {
             Ok(self.result.clone())
         }
     }
@@ -298,7 +297,7 @@ mod tests {
             _design: &Design,
             _previous: &[SolvedTier],
             _dirty: &BTreeSet<usize>,
-        ) -> Result<Vec<SolvedTier>, MissingAnchor> {
+        ) -> Result<Vec<SolvedTier>, DesignSolveError> {
             std::thread::sleep(self.sleep);
             Ok(self.result.clone())
         }
@@ -439,9 +438,9 @@ mod tests {
         assert!(plan.solved.is_some());
     }
 
-    /// CAD audit item 211: a `Some` tier cutoff must actually shrink the drawn
-    /// arrangement (via `Design::planes_through_tier`) relative to the same design's
-    /// uncut `plan_preview` result, not just pass through as a no-op.
+    /// A `Some` tier cutoff must actually shrink the drawn arrangement (via
+    /// `Design::planes_through_tier`) relative to the same design's uncut
+    /// `plan_preview` result, not just pass through as a no-op.
     #[test]
     fn tier_cutoff_truncates_the_drawn_plane_arrangement() {
         let design = free_design();

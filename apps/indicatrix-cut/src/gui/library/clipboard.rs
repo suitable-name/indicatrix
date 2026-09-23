@@ -67,10 +67,10 @@ pub fn copy_to_clipboard(text: &str) -> bool {
 
 /// Axis labels for the four full-axis (±90°) rows [`build_curve_data_csv`] appends --
 /// same order and text as `gui::tilt_profile`'s `PROFILE_AZIMUTHS_DEG` and
-/// `performance_graph_dialog.slint`'s `axis_labels`. Unlike before the ±90° widening,
-/// axis 0 (the canonical azimuth) is included here too: `graph_*_extra_axes` now holds
-/// all four axes' full-range sweeps, not just the three non-canonical ones -- see that
-/// property's doc comment in `performance_graph_dialog.slint`.
+/// `performance_graph_dialog.slint`'s `axis_labels`. Axis 0 (the canonical azimuth) is
+/// included here too: `graph_*_extra_axes` holds all four axes' full-range sweeps, not
+/// just the three non-canonical ones -- see that property's doc comment in
+/// `performance_graph_dialog.slint`.
 const FULL_AXIS_LABELS: [&str; 4] = ["0 (length)", "45", "90 (width)", "135"];
 
 /// Number of samples per full-axis row: -90..=+90 in exact 1° steps -- matches

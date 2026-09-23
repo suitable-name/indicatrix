@@ -6,28 +6,29 @@ import { RemoteWorkerModel } from "../models/remote_worker.slint";
 // Remote rendering: the worker-list panel -- add/edit/remove configured remote
 // render workers, per-worker transfer mode / cadence / preview scale, a "Test
 // connection" button, and token-based enrollment ("Redeem" -- claims a
-// `indicatrix-worker cert issue-token` token directly, so installing the worker binary and
-// running `cert claim` in a terminal is no longer required). Kept thin per the task's
+// `indicatrix-worker cert issue-token` token directly, without installing the worker
+// binary or running `cert claim` in a terminal). Kept thin per the task's
 // own instruction: every field here is plain data round-tripped to Rust by list index
 // (same convention as `SettingsDialog`'s lighting-preset list); all the actual
 // protocol/connection logic lives in `indicatrix_net::client`/`indicatrix_net::enroll` and
 // `apps/indicatrix-cut/src/bridge/remote_render.rs`/`bridge::enroll`, already unit-tested
 // there without any GUI involved.
 //
-// Inherits `PopupWindow`, not `Rectangle`: this used to be a plain `Rectangle`-based
-// conditional child of `HeaderToolbar`, which paints as part of `HeaderToolbar`'s
+// Inherits `PopupWindow`, not `Rectangle`, because a plain `Rectangle`-based
+// conditional child of `HeaderToolbar` paints as part of `HeaderToolbar`'s
 // subtree -- and `HeaderToolbar` is declared before the main workspace layout in
-// `app.slint`, so it always painted underneath the detail panel with no `z` value able
-// to fix it (`z` only reorders siblings, it can't reach across subtrees). A
+// `app.slint`, so it would always paint underneath the detail panel with no `z` value
+// able to fix it (`z` only reorders siblings, it can't reach across subtrees). A
 // `PopupWindow` renders in Slint's dedicated popup layer, always on top of the rest of
 // the window regardless of declaration order. See `filter_panel.slint`'s doc comment
 // for the full mechanism, including why an explicit content-driven `height` is needed
 // (`Rectangle`'s default sizing fills whatever it's anchored to). See `header.slint`'s
-// `remote_popup` instantiation for the show()/close() wiring this requires -- a
-// `PopupWindow` can't be used with the `if condition: RemoteWorkerDialog { ... }`
-// pattern that used to sit there (that's a compile error).
+// `remote_popup` instantiation for the show()/close() wiring this requires --
+// `PopupWindow` cannot be used with the `if condition: RemoteWorkerDialog { ... }`
+// pattern (that's a compile error).
 export component RemoteWorkerDialog inherits PopupWindow {
     in property <string> claimed_cert_dir: RemoteWorkerModel.claimed_cert_dir;
+    in property <string> picked_cert_dir: RemoteWorkerModel.picked_cert_dir;
 
     property <int> remote_samples_rounded_exponent: Math.round(RemoteWorkerModel.render_samples_exponent);
 
@@ -51,6 +52,16 @@ export component RemoteWorkerDialog inherits PopupWindow {
             if (root.form_address == "") {
                 root.form_address = RemoteWorkerModel.claimed_address;
             }
+        }
+    }
+
+    // `pick_cert_dir`'s own completion -- see `RemoteWorkerModel.picked_cert_dir`'s
+    // own doc comment. Empty is "no pick landed yet" (initial value, and a
+    // cancelled dialog never sets this at all), not a real folder, so it is never
+    // copied into `form_cert_dir`.
+    changed picked_cert_dir => {
+        if (root.picked_cert_dir != "") {
+            root.form_cert_dir = root.picked_cert_dir;
         }
     }
 
@@ -390,7 +401,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                 }
                 Button {
                     text: "Browse...";
-                    clicked => { root.form_cert_dir = RemoteWorkerModel.pick_cert_dir(root.form_cert_dir); }
+                    clicked => { RemoteWorkerModel.pick_cert_dir(root.form_cert_dir); }
                 }
             }
 

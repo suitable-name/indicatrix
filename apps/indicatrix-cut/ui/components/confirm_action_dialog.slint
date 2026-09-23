@@ -1,4 +1,4 @@
-import { Button } from "std-widgets.slint";
+import { Button, CheckBox } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 
 // A generic modal Save/Discard/Cancel-shaped confirmation, reused by every
@@ -24,6 +24,22 @@ export component ConfirmActionDialog inherits Rectangle {
     in property <string> message: "";
     in property <string> primary_label: "Save";
     in property <string> secondary_label: "Discard";
+    // An optional "Don't ask
+    // again" checkbox for a confirmation the cutter may want to silence once
+    // they've seen it -- hidden (`false`, the default) for dialogs like the
+    // unsaved-changes/fingerprint-mismatch guards above, where the decision is
+    // genuinely different every time and suppressing it would risk real data
+    // loss. `dont_ask` reflects the checkbox's OWN on-screen state at the moment
+    // `primary`/`secondary` fires (never for `cancel`, which the caller should
+    // treat as "asked nothing, decided nothing") -- the caller decides what
+    // persisting it means (`gui::editor::native_io`'s `write_confirm_*` call
+    // sites are the first to use this).
+    in property <bool> show_dont_ask: false;
+    // `in-out`, not `out`: the checkbox below sets it internally (`checked <=>
+    // root.dont_ask`), and a caller that wants to read it back after the dialog
+    // closes needs a two-way `<=>` binding at its own mount site (`app.slint`'s
+    // `write_confirm_open` mount), which Slint refuses on a plain `out` property.
+    in-out property <bool> dont_ask: false;
 
     callback primary();
     callback secondary();
@@ -31,7 +47,7 @@ export component ConfirmActionDialog inherits Rectangle {
 
     background: Theme.overlay-backdrop;
 
-    // cad_todo.md #199: takes focus the moment this dialog is mounted so Escape/
+    // Takes focus the moment this dialog is mounted so Escape/
     // Return work without a prior click, and -- since every key not explicitly
     // handled below is still swallowed (`return accept`) -- so `app.slint`'s global
     // shortcuts (Ctrl+S/Z/Y/F5/...) cannot fire on the design underneath while this
@@ -107,6 +123,11 @@ export component ConfirmActionDialog inherits Rectangle {
                     font-size: 12px;
                     color: Theme.text-secondary;
                     wrap: word-wrap;
+                }
+
+                if root.show_dont_ask: CheckBox {
+                    text: "Don't ask again";
+                    checked <=> root.dont_ask;
                 }
 
                 HorizontalLayout {

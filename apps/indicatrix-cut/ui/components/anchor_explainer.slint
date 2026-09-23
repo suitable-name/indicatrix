@@ -1,0 +1,77 @@
+import { Button, CheckBox } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { EditorModel } from "../models/editor.slint";
+
+// A one-time card explaining why the solver needs an anchor, shown
+// the first time (this session) a design lacks one
+// (`EditorModel.anchor_explainer_open`, driven by `gui::editor::state::
+// should_open_anchor_explainer`). "Don't show again" persists through
+// `AppSettings.suppressed_confirmations` (key `"anchor_explainer"`) --
+// `EditorModel.anchor_explainer_dismiss`'s own doc comment. Mounted once in
+// `app.slint`, the same way `mismatch_dialog`/`write_confirm` are.
+export component AnchorExplainer inherits Rectangle {
+    in-out property <bool> dont_show_again: false;
+
+    background: Theme.overlay-backdrop;
+
+    TouchArea {} // Swallows clicks on the backdrop -- this card has no "click outside to dismiss".
+
+    Rectangle {
+        width: min(420px, parent.width - 40px);
+        background: Theme.surface-dialog;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-dialog;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.modal-shadow;
+
+        TouchArea {} // Isolates clicks inside the card from the backdrop above.
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Text {
+                text: "Why this design needs an anchor";
+                font-size: 13px;
+                font-weight: 700;
+                color: Theme.text-primary;
+            }
+            Text {
+                text: "The solver works out every facet's depth (\"mast\") from how the tiers meet each other -- but that only pins RELATIVE depths, the same way a chain of \"this meets that\" statements can describe a shape's proportions without ever fixing its size.";
+                font-size: 10px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+            Text {
+                text: "Somewhere in each block (crown, pavilion, girdle) one tier has to state an exact, authored depth -- a \"scale reference\" -- so the solver has a real number to build every other tier's depth from. Without one, the block has a shape but no size, and cannot be solved.";
+                font-size: 10px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+            Text {
+                text: "Click \"Add Anchor\" on the flagged row, or use the Girdle Facet Preset (90\u{b0}, scale = 1), or set any tier's Meets to \"Exact scale value\" yourself.";
+                font-size: 10px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                CheckBox {
+                    text: "Don't show again";
+                    checked <=> root.dont_show_again;
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                Button {
+                    text: "Got it";
+                    primary: true;
+                    clicked => {
+                        EditorModel.anchor_explainer_dismiss(root.dont_show_again);
+                    }
+                }
+            }
+        }
+    }
+}

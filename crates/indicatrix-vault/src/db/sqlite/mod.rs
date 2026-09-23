@@ -442,11 +442,24 @@ impl Database {
                 diagram_image_name TEXT,
                 diagram_image_data BLOB,
                 competition_diagram TEXT,
-                lw_ratio TEXT,
-                refractive_index TEXT,
-                index_gear TEXT,
-                volume TEXT,
+                -- lw_ratio/refractive_index/volume/index_gear are typed numeric here
+                -- (not TEXT) so a fresh database never needs migrate_numeric_columns'
+                -- DROP-COLUMN/RENAME-COLUMN retype cycle -- see that migration's doc
+                -- comment for why it's gated on the actual PRAGMA table_info type
+                -- rather than column presence, precisely so it can detect and skip
+                -- past a table already shaped like this one.
+                lw_ratio REAL,
+                refractive_index REAL,
+                index_gear INTEGER,
+                volume REAL,
                 facets_count TEXT,
+                -- facets/girdle_facets: queryable split of facets_count (e.g. 55+6),
+                -- see parse_facets_count and Self::save_diagram_detail/
+                -- Self::update_diagram_metadata, which derive and write both at save
+                -- time. Declared here (not just added by migrate_numeric_columns) for
+                -- the same reason as the four columns above.
+                facets INTEGER,
+                girdle_facets INTEGER,
                 shape TEXT,
                 designer_info TEXT,
                 hw_ratio REAL,
@@ -503,7 +516,7 @@ impl Database {
                 per_axis_dispersion_json TEXT,
                 -- Nullable specific gravity (density relative to water); see
                 -- migrations::Database::migrate_custom_material_specific_gravity's
-                -- doc comment (CAD audit item 169).
+                -- doc comment.
                 specific_gravity REAL
             );
 
@@ -541,9 +554,9 @@ impl Database {
 
             {diagram_tilt_curves_sql}
 
-            -- Flat tag set plus its many-to-many join table (CAD audit item 190;
-            -- see migrate_tag_tables's own doc comment for why this is a side table
-            -- pair, not a column on diagram_entries).
+            -- Flat tag set plus its many-to-many join table; see migrate_tag_tables's
+            -- own doc comment for why this is a side table pair, not a column on
+            -- diagram_entries.
             {tag_tables_sql}
 
             -- The library search predicate's supporting indexes; see

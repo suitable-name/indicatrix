@@ -22,12 +22,12 @@ use indicatrix_net::{
     library::{
         AngleSettingWire, AttachedFileMeta, AttributeRangesWire, DesignRecord, DesignSummary,
         LibraryRequest, LibraryResponse, PerformanceAggregateWire, PerformanceBoundWire,
-        PerformanceFilterWire, PerformanceMetricWire, RangeFilterWire,
+        PerformanceFilterWire, PerformanceMetricWire, RangeFilterWire, SortOrderWire,
     },
     messages::ErrorMsg,
 };
 use indicatrix_vault::{
-    db::sqlite::{Database, SEARCH_RESULT_CAP},
+    db::sqlite::{Database, DisplayFilters, SEARCH_RESULT_CAP, SortOrder},
     model::{
         entry::{DiagramListItem, FullDiagramMeta},
         filter::{AttributeRanges, RangeFilter},
@@ -61,28 +61,17 @@ pub fn handle_request(request: &LibraryRequest, db: &Database) -> LibraryRespons
             shape_filter,
             gear_filter,
             range,
-        } => {
-            let range = match from_range_wire(range) {
-                Ok(r) => r,
-                Err(resp) => return resp,
-            };
-            // Degrades to exactly `search_diagrams` (count fixed at 0) when
-            // `range.performance` is empty, so calling it unconditionally costs nothing
-            // extra while giving a real count when a performance filter is active.
-            match db.search_diagrams_with_performance_exclusions(
-                query,
-                shape_filter,
-                gear_filter,
-                &range,
-            ) {
-                Ok(result) => LibraryResponse::SearchResults {
-                    items: result.items.iter().map(to_summary).collect(),
-                    // Capped at SEARCH_RESULT_CAP (1000), so this cast never truncates.
-                    excluded_for_missing_curves: result.excluded_for_missing_curves as u32,
-                },
-                Err(e) => db_error("search_diagrams_with_performance_exclusions", &e),
-            }
-        }
+            order,
+            tag_filter,
+        } => search(
+            db,
+            query,
+            shape_filter,
+            gear_filter,
+            range,
+            *order,
+            tag_filter.as_deref(),
+        ),
         LibraryRequest::FilterOptions => filter_options(db),
         LibraryRequest::FetchDesign { entry_id } => match db.get_diagram_full_meta(*entry_id) {
             Ok(Some(meta)) => {
@@ -112,6 +101,66 @@ pub fn handle_request(request: &LibraryRequest, db: &Database) -> LibraryRespons
             cursor,
         } => search_page(db, query, shape_filter, gear_filter, range, *cursor),
         LibraryRequest::FetchDesignSource { entry_id } => design_source(db, *entry_id),
+    }
+}
+
+/// Handles [`LibraryRequest::Search`]: resolves `order`/`tag_filter` and
+/// calls `Database::search_diagrams_display`, so a remote search honours the same
+/// sort order and tag-chip restriction a local one does -- rather than the
+/// catalogue-order-only `search_diagrams_with_performance_exclusions`, which ignores both.
+///
+/// `tag_filter` is resolved by NAME via [`Database::tag_id_by_name`] (see
+/// [`LibraryRequest::Search`]'s own doc comment for why a name crosses the wire, never
+/// an id): a name this worker's catalogue has never seen resolves to `None` -- no
+/// restriction -- the same tolerance `apps/indicatrix-cut`'s own tag-chip lookup has for
+/// an unknown tag, rather than an error over an absent chip.
+///
+/// `local_only`/`id_filter` on [`DisplayFilters`] are always `false`/`None` here: both
+/// name concepts local to the client's own database (see [`LibraryRequest::Search`]'s
+/// doc comment) that never cross the wire.
+fn search(
+    db: &Database,
+    query: &str,
+    shape_filter: &str,
+    gear_filter: &str,
+    range: &RangeFilterWire,
+    order: SortOrderWire,
+    tag_filter: Option<&str>,
+) -> LibraryResponse {
+    let range = match from_range_wire(range) {
+        Ok(r) => r,
+        Err(resp) => return resp,
+    };
+    let tag_filter = match tag_filter.map(|name| db.tag_id_by_name(name)) {
+        Some(Ok(id)) => id,
+        Some(Err(e)) => return db_error("tag_id_by_name", &e),
+        None => None,
+    };
+    let filters = DisplayFilters {
+        order: sort_order_from_wire(order),
+        local_only: false,
+        tag_filter,
+        id_filter: None,
+    };
+    match db.search_diagrams_display(query, shape_filter, gear_filter, &range, filters) {
+        Ok(result) => LibraryResponse::SearchResults {
+            items: result.items.iter().map(to_summary).collect(),
+            // Capped at SEARCH_RESULT_CAP (1000), so this cast never truncates.
+            excluded_for_missing_curves: result.excluded_for_missing_curves as u32,
+        },
+        Err(e) => db_error("search_diagrams_display", &e),
+    }
+}
+
+/// Maps a wire [`SortOrderWire`] onto the vault's local [`SortOrder`]. A plain
+/// `match`, not a shared derive, since the two types deliberately live in different
+/// crates -- see [`SortOrderWire`]'s own doc comment.
+const fn sort_order_from_wire(order: SortOrderWire) -> SortOrder {
+    match order {
+        SortOrderWire::CatalogueOrder => SortOrder::CatalogueOrder,
+        SortOrderWire::Title => SortOrder::Title,
+        SortOrderWire::Newest => SortOrder::Newest,
+        SortOrderWire::RecentlyEdited => SortOrder::RecentlyEdited,
     }
 }
 
@@ -570,6 +619,8 @@ mod tests {
                 shape_filter: "All".to_string(),
                 gear_filter: "All".to_string(),
                 range: RangeFilterWire::default(),
+                order: SortOrderWire::default(),
+                tag_filter: None,
             },
             &db,
         );
@@ -801,6 +852,8 @@ mod tests {
                 shape_filter: "All".to_string(),
                 gear_filter: "All".to_string(),
                 range: RangeFilterWire::default(),
+                order: SortOrderWire::default(),
+                tag_filter: None,
             },
             &ro,
         );
@@ -936,6 +989,8 @@ mod tests {
                     }],
                     ..RangeFilterWire::default()
                 },
+                order: SortOrderWire::default(),
+                tag_filter: None,
             },
             &db,
         );
@@ -968,6 +1023,8 @@ mod tests {
                     }],
                     ..RangeFilterWire::default()
                 },
+                order: SortOrderWire::default(),
+                tag_filter: None,
             },
             &db,
         );
@@ -1097,6 +1154,8 @@ mod tests {
                     include_ignored: true,
                     ..RangeFilterWire::default()
                 },
+                order: SortOrderWire::default(),
+                tag_filter: None,
             },
             &ro,
         );
@@ -1108,5 +1167,153 @@ mod tests {
 
         drop(ro);
         std::fs::remove_file(&path).ok();
+    }
+
+    /// A `Search` with `order: Title` must return results sorted by title,
+    /// not the catalogue's insertion (id) order -- `populated_temp_db` seeds "Round
+    /// Brilliant" first, so two more titles are added here specifically out of
+    /// alphabetical order to prove the sort, not just pass by coincidence.
+    #[test]
+    fn search_with_title_order_returns_titles_sorted() {
+        let path = populated_temp_db();
+        let db = Database::new(Some(path.to_str().unwrap())).unwrap();
+        for (title, design_id) in [("Zircon Cut", "ZC-1"), ("Asscher Cut", "AC-1")] {
+            db.save_diagram_entry(
+                &FacetDiagramEntry {
+                    title: title.to_string(),
+                    url: format!("https://example.test/diagram/{design_id}"),
+                    design_id: design_id.to_string(),
+                },
+                "facetdiagrams.org",
+            )
+            .unwrap();
+        }
+        drop(db);
+
+        let ro = Database::open_read_only(path.to_str().unwrap()).unwrap();
+        let response = handle_request(
+            &LibraryRequest::Search {
+                query: String::new(),
+                shape_filter: "All".to_string(),
+                gear_filter: "All".to_string(),
+                range: RangeFilterWire::default(),
+                order: SortOrderWire::Title,
+                tag_filter: None,
+            },
+            &ro,
+        );
+        let LibraryResponse::SearchResults { items, .. } = response else {
+            panic!("expected SearchResults, got {response:?}");
+        };
+        let titles: Vec<&str> = items.iter().map(|i| i.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            vec!["Asscher Cut", "Round Brilliant", "Zircon Cut"],
+            "results must come back alphabetically by title, not insertion order"
+        );
+
+        drop(ro);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A `Search` whose `tag_filter` names a tag one seeded design carries
+    /// (and the other does not) must restrict the results to that design only.
+    #[test]
+    fn search_with_tag_filter_restricts_to_designs_carrying_that_tag() {
+        let path = populated_temp_db();
+        let db = Database::new(Some(path.to_str().unwrap())).unwrap();
+        let tagged_entry_id = db
+            .save_diagram_entry(
+                &FacetDiagramEntry {
+                    title: "Emerald Cut".to_string(),
+                    url: "https://example.test/diagram/2".to_string(),
+                    design_id: "EC-1".to_string(),
+                },
+                "facetdiagrams.org",
+            )
+            .unwrap();
+        db.add_tag_to_entry(tagged_entry_id, "Favorites").unwrap();
+        drop(db);
+
+        let ro = Database::open_read_only(path.to_str().unwrap()).unwrap();
+        let response = handle_request(
+            &LibraryRequest::Search {
+                query: String::new(),
+                shape_filter: "All".to_string(),
+                gear_filter: "All".to_string(),
+                range: RangeFilterWire::default(),
+                order: SortOrderWire::default(),
+                tag_filter: Some("Favorites".to_string()),
+            },
+            &ro,
+        );
+        let LibraryResponse::SearchResults { items, .. } = response else {
+            panic!("expected SearchResults, got {response:?}");
+        };
+        assert_eq!(
+            items.len(),
+            1,
+            "only the tagged design should match, not the seeded untagged one too"
+        );
+        assert_eq!(items[0].entry_id, tagged_entry_id);
+        assert_eq!(items[0].title, "Emerald Cut");
+
+        drop(ro);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A `tag_filter` naming a tag this worker's catalogue has never seen
+    /// must resolve to no restriction (every design matches), the same tolerance
+    /// `apps/indicatrix-cut`'s own tag-chip lookup has for an unknown tag -- not an
+    /// error, and not "match nothing".
+    #[test]
+    fn search_with_an_unknown_tag_name_applies_no_restriction() {
+        let path = populated_temp_db();
+        let db = Database::open_read_only(path.to_str().unwrap()).unwrap();
+
+        let response = handle_request(
+            &LibraryRequest::Search {
+                query: String::new(),
+                shape_filter: "All".to_string(),
+                gear_filter: "All".to_string(),
+                range: RangeFilterWire::default(),
+                order: SortOrderWire::default(),
+                tag_filter: Some("Nonexistent Tag".to_string()),
+            },
+            &db,
+        );
+        let LibraryResponse::SearchResults { items, .. } = response else {
+            panic!("expected SearchResults, got {response:?}");
+        };
+        assert_eq!(
+            items.len(),
+            1,
+            "an unknown tag name must not exclude the seeded design"
+        );
+
+        drop(db);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// [`sort_order_from_wire`] maps all four [`SortOrderWire`] variants to the matching
+    /// [`SortOrder`]. A pure function, so unlike the sibling `search_with_*`
+    /// tests above (which additionally prove `Title` drives a real sorted query) this
+    /// needs no database fixture -- it just pins the mapping itself, including the two
+    /// variants (`Newest`, `RecentlyEdited`) no integration test above exercises.
+    #[test]
+    fn sort_order_from_wire_maps_every_variant() {
+        assert_eq!(
+            sort_order_from_wire(SortOrderWire::CatalogueOrder),
+            SortOrder::CatalogueOrder
+        );
+        assert_eq!(sort_order_from_wire(SortOrderWire::Title), SortOrder::Title);
+        assert_eq!(
+            sort_order_from_wire(SortOrderWire::Newest),
+            SortOrder::Newest
+        );
+        assert_eq!(
+            sort_order_from_wire(SortOrderWire::RecentlyEdited),
+            SortOrder::RecentlyEdited
+        );
     }
 }

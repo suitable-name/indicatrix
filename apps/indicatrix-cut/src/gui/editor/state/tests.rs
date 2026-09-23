@@ -3,12 +3,55 @@ use indicatrix_cut_core::ConstraintTier;
 
 #[test]
 fn material_index_and_name_round_trip_for_every_preset() {
-    for (index, &name) in MATERIAL_PRESET_NAMES.iter().enumerate() {
-        let expected_name = (name != "(none)").then(|| name.to_string());
+    let names = builtin_preset_names();
+    for (index, name) in names.iter().enumerate() {
+        let expected_name = (name != "(none)").then(|| name.clone());
         assert_eq!(material_name_from_index(index as i32), expected_name);
         assert_eq!(
             material_index_from_name(expected_name.as_deref()),
             index as i32
+        );
+    }
+}
+
+/// `builtin_preset_names` must list EVERY built-in
+/// `GemMaterial::all_materials()` preset, not a hardcoded subset. This ensures the
+/// CAD part supports all materials from the renderer.
+#[test]
+fn builtin_preset_names_covers_every_renderer_built_in() {
+    let names = builtin_preset_names();
+    let all_material_names: Vec<String> =
+        indicatrix::optics::materials::GemMaterial::all_materials()
+            .into_iter()
+            .map(|m| m.name)
+            .collect();
+    assert_eq!(names[0], "(none)");
+    assert_eq!(&names[1..], all_material_names.as_slice());
+    for expected in [
+        "Aquamarine",
+        "Morganite",
+        "Chrysoberyl (Yellow)",
+        "Amethyst",
+        "Citrine",
+        "Pyrope Garnet",
+        "Almandine Garnet",
+        "Spessartine Garnet",
+        "Grossular Garnet (Tsavorite)",
+        "Andradite Garnet (Demantoid)",
+        "Peridot",
+        "YAG",
+        "GGG",
+        "Benitoite",
+        "Andalusite",
+        "Opal",
+        "Glass (N-BK7)",
+        "Glass (F2)",
+        "Rutile",
+    ] {
+        assert!(
+            names.iter().any(|n| n == expected),
+            "{expected} must be offered -- it was traceable in Live Render but never \
+             namable on a design before this fix"
         );
     }
 }
@@ -39,14 +82,11 @@ fn parse_yield_form_reads_girdle_diameter_and_specific_gravity_override() {
     assert_eq!(material.specific_gravity_override, Some(3.515));
 }
 
-// CAD audit item 55: `parse_yield_form` used to rebuild `MaterialSelection` from
-// scratch, deriving `name` from `material_index` against `MATERIAL_PRESET_NAMES`
-// (built-ins only) and always clearing `refractive_index_override` to `None`. The
-// Yield tab's own Material combo has no way to represent a custom catalogue
-// material or an RI override, so applying the form with either set on the design
-// silently cleared them. `material_index` is now ignored entirely -- `name` and
+// `parse_yield_form` ignores the `material_index` parameter -- `name` and
 // `refractive_index_override` always carry through from `current` unchanged,
 // regardless of what the combo (still passed as `material_index`, here `0`) shows.
+// The Yield tab's Material combo has no way to represent a custom catalogue
+// material or an RI override, so the form preserves them from the current design.
 #[test]
 fn parse_yield_form_preserves_the_current_material_name_and_ri_override_regardless_of_material_index()
  {
@@ -146,6 +186,28 @@ fn status_text_reports_closed_for_a_fresh_design() {
     let (text, is_problem) = status_text_and_is_problem(&EditorState::fresh().design);
     assert!(text.starts_with("Closed"));
     assert!(!is_problem);
+}
+
+// `proportions_texts` guads against tierless designs by returning "-" for all
+// fields. `girdle_and_ratio_texts` (state/mod.rs's own `inline_tests` module)
+// has a matching guard; this test verifies `proportions_texts`'s counterpart.
+#[test]
+fn proportions_texts_dashes_out_a_design_with_no_tiers() {
+    let design = EditorState::fresh().design;
+    assert_eq!(
+        proportions_texts(&design),
+        (
+            "-".to_string(),
+            "-".to_string(),
+            "-".to_string(),
+            "-".to_string(),
+            "-".to_string(),
+        ),
+        "a tierless design must never show the bare preform block's own \
+         numbers as if they were the stone's -- including total depth, which \
+         (unlike the other four fields) has no `Option`-driven '-' fallback \
+         of its own and relied entirely on this guard"
+    );
 }
 
 #[test]
@@ -401,14 +463,16 @@ fn adopting_a_suggested_meet_keeps_the_design_solved_at_the_same_mast() {
 
 #[test]
 fn tier_margin_and_risk_is_not_applicable_for_crown_and_girdle_angles() {
-    assert_eq!(tier_margin_and_risk(30.0, 2.417), (String::new(), -1));
-    assert_eq!(tier_margin_and_risk(0.0, 2.417), (String::new(), -1));
+    // A crown angle (> 0) with no pavilion partner to estimate against, and
+    // an exact-zero (girdle) angle, both read "nothing to show".
+    assert_eq!(tier_margin_and_risk(30.0, 2.417, None), (String::new(), -1));
+    assert_eq!(tier_margin_and_risk(0.0, 2.417, None), (String::new(), -1));
 }
 
 #[test]
 fn tier_margin_and_risk_classifies_a_comfortably_safe_pavilion_tier() {
     // Diamond's critical angle is ~24.4 degrees; -40 sits well past it.
-    let (text, risk) = tier_margin_and_risk(-40.0, 2.417);
+    let (text, risk) = tier_margin_and_risk(-40.0, 2.417, None);
     assert_eq!(risk, 0);
     assert!(text.starts_with('+'), "{text}");
 }
@@ -416,7 +480,7 @@ fn tier_margin_and_risk_classifies_a_comfortably_safe_pavilion_tier() {
 #[test]
 fn tier_margin_and_risk_classifies_a_windowing_pavilion_tier() {
     // -20 is well below diamond's ~24.4 degree critical angle.
-    let (text, risk) = tier_margin_and_risk(-20.0, 2.417);
+    let (text, risk) = tier_margin_and_risk(-20.0, 2.417, None);
     assert_eq!(risk, 2);
     assert!(text.starts_with('-'), "{text}");
 }
@@ -427,8 +491,18 @@ fn tier_margin_and_risk_classifies_a_marginal_pavilion_tier() {
     // not Safe or Windows.
     let n_d = 2.417;
     let critical = indicatrix_cut_core::critical_angle_deg(n_d);
-    let (_, risk) = tier_margin_and_risk(-critical, n_d);
+    let (_, risk) = tier_margin_and_risk(-critical, n_d, None);
     assert_eq!(risk, 1);
+}
+
+#[test]
+fn tier_margin_and_risk_classifies_a_crown_tier_as_an_estimate_against_a_pavilion_partner() {
+    // Diamond's critical angle is ~24.4 degrees; a 34-degree crown facet
+    // against a comfortably-safe 41-degree pavilion partner should itself
+    // read Safe, suffixed "(est.)" to mark it as an estimate.
+    let (text, risk) = tier_margin_and_risk(34.0, 2.417, Some(41.0));
+    assert_eq!(risk, 0);
+    assert!(text.ends_with("(est.)"), "{text}");
 }
 
 // --- design_material_options / index / name ---
@@ -842,7 +916,7 @@ fn inline_set_angle_accepts_a_well_formed_value() {
     );
 }
 
-// --- index_chip_items (CAD audit item 45) ---
+// --- index_chip_items ---
 
 #[test]
 fn index_chip_items_builds_one_chip_per_index_flagging_only_the_detached_ones() {
@@ -870,7 +944,7 @@ fn index_chip_items_is_empty_for_an_empty_tier() {
     assert_eq!(index_chip_items(&[], &[]).len(), 0);
 }
 
-// --- tier_matches_filter (CAD audit item 43) ---
+// --- tier_matches_filter ---
 
 #[test]
 fn tier_matches_filter_is_case_insensitive_and_matches_a_substring_anywhere() {
@@ -887,7 +961,7 @@ fn tier_matches_filter_treats_a_blank_or_whitespace_only_filter_as_matching_ever
     assert!(tier_matches_filter("", ""));
 }
 
-// --- ri_source_text (CAD audit item 53) ---
+// --- ri_source_text ---
 
 #[test]
 fn ri_source_text_reports_a_typed_override_first_regardless_of_material() {
@@ -1045,5 +1119,128 @@ fn the_epoch_keeps_counting_across_several_replacements() {
         captured.load(std::sync::atomic::Ordering::Relaxed),
         started + 2,
         "loading design B then design C must not land back on A's own epoch"
+    );
+}
+
+// --- result_is_stale ---
+
+#[test]
+fn a_result_with_no_generation_stamped_is_never_stale() {
+    assert!(!result_is_stale(None, 0));
+    assert!(!result_is_stale(None, 42));
+}
+
+#[test]
+fn a_result_stamped_with_the_current_generation_is_not_stale() {
+    assert!(!result_is_stale(Some(5), 5));
+}
+
+#[test]
+fn a_result_is_stale_one_generation_later() {
+    // A result computed at generation N is stale at N+1.
+    assert!(result_is_stale(Some(5), 6));
+}
+
+#[test]
+fn a_result_is_stale_many_generations_later_too() {
+    assert!(result_is_stale(Some(0), 100));
+}
+
+#[test]
+fn deep_solve_result_generation_starts_unset_on_a_fresh_state() {
+    let state = EditorState::fresh();
+    assert_eq!(state.deep_solve_result_generation, None);
+}
+
+#[test]
+fn replace_wholesale_carries_over_the_replacements_own_unset_deep_solve_result() {
+    // A brand-new/loaded design has never had its own Deep Solve run yet, however
+    // stale the PREVIOUS design's verdict was -- see `EditorState::
+    // deep_solve_result_generation`'s own doc comment for why this must not
+    // survive a wholesale replacement.
+    let mut state = EditorState::fresh();
+    state.deep_solve_result_generation = Some(3);
+    state.replace_wholesale(EditorState::fresh());
+    assert_eq!(state.deep_solve_result_generation, None);
+}
+
+// --- constraint_kind_and_text ---
+
+#[test]
+fn constraint_kind_and_text_reads_the_three_plain_constraint_kinds_with_no_target() {
+    assert_eq!(
+        constraint_kind_and_text(&MeetConstraint::MeetExisting, None),
+        (0, String::new())
+    );
+    assert_eq!(
+        constraint_kind_and_text(
+            &MeetConstraint::MeetNamed(vec!["P1".to_string(), "G1".to_string()]),
+            None
+        ),
+        (1, "P1, G1".to_string())
+    );
+    assert_eq!(
+        constraint_kind_and_text(&MeetConstraint::ScaleReference(0.65), None),
+        (2, "0.65".to_string())
+    );
+}
+
+#[test]
+fn constraint_kind_and_text_prefers_a_target_over_the_scale_reference_placeholder() {
+    // `Design::resolved_meet_tier_inputs` always leaves a target-bearing tier's
+    // own `constraint` as a `ScaleReference(0.0)` placeholder -- this must read
+    // back the TARGET (kind 3/4/5), never "kind 2, text '0'".
+    let placeholder = MeetConstraint::ScaleReference(0.0);
+    assert_eq!(
+        constraint_kind_and_text(&placeholder, Some(TierTarget::DepthMm(3.2))),
+        (3, "3.2".to_string())
+    );
+    assert_eq!(
+        constraint_kind_and_text(&placeholder, Some(TierTarget::GirdleThicknessMm(0.25))),
+        (4, "0.25".to_string())
+    );
+    assert_eq!(
+        constraint_kind_and_text(&placeholder, Some(TierTarget::TableWidthMm(4.1))),
+        (5, "4.1".to_string())
+    );
+}
+
+// --- status strip: TargetResolveError reaching the same "problem" sentence ---
+
+#[test]
+fn status_text_reports_the_girdle_diameter_remedy_for_an_unresolvable_depth_target() {
+    let mut state = EditorState::fresh();
+    state
+        .apply(Edit::AddTier {
+            index: 0,
+            tier: ConstraintTier {
+                angle_deg: 90.0,
+                name: "G".to_string(),
+                indices: vec![],
+                constraint: MeetConstraint::ScaleReference(1.0),
+                imported_meet: None,
+                original_notes: None,
+                detached: Vec::new(),
+            },
+        })
+        .unwrap();
+    state
+        .apply(Edit::SetTierTarget {
+            index: 0,
+            target: Some(TierTarget::DepthMm(3.2)),
+        })
+        .unwrap();
+    assert_eq!(
+        state.design.girdle_diameter_mm, None,
+        "this design must never have had a girdle diameter set, or the target \
+         would resolve instead of hitting the error this test checks"
+    );
+
+    let (text, is_problem) = status_text_and_is_problem(&state.design);
+    assert!(is_problem);
+    assert!(
+        text.contains("girdle diameter"),
+        "expected TargetResolveError::MissingGirdleDiameter's own remedy \
+         sentence in the status strip text, got: {text}"
     );
 }

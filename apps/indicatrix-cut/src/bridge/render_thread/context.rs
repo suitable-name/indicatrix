@@ -16,7 +16,7 @@ use indicatrix::{
     renderer::env_map::{EnvMapError, EnvironmentMap},
 };
 use indicatrix_net::client::Accumulator;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 pub struct RenderContext {
     /// Live render resolution, set via `settings_dialog.slint`'s pill selector
@@ -36,18 +36,11 @@ pub struct RenderContext {
     pub light_pitch: f32,
     pub material_name: String,
     /// A fully-resolved material that, when present, takes priority over
-    /// `material_name` in [`resolve_material_with_override`] -- CAD audit items 57
-    /// and 61. `material_name`'s plain by-name lookup (see [`resolve_material`])
-    /// cannot represent "this design's real effective material" for a design with
-    /// no `material.name` set (every `.asc`-imported or brand-new design, per
-    /// `crates/indicatrix-cut-core/src/design/construct.rs`) or with an RI
-    /// override typed against an unlisted material -- both currently fall back to
-    /// silently tracing as Diamond. The intended writer is `gui::editor::view::
-    /// refresh_design_settings`, via `gui::editor::material_lookup::
-    /// resolved_gem_material` (already override-aware) -- `bridge::render_thread`
-    /// sits below `gui::` and resolves materials by value on purpose, so it has no
-    /// way to call that resolver itself. `None` (default) reproduces the
-    /// pre-existing by-name-only resolution exactly.
+    /// `material_name` in [`resolve_material_with_override`]. Plain by-name lookup
+    /// cannot represent designs with no material name or unlisted RI overrides,
+    /// which would fall back to Diamond. The intended writer is
+    /// `gui::editor::material_lookup::resolved_gem_material`. `None` (default)
+    /// reproduces by-name-only resolution.
     pub material_override: Option<GemMaterial>,
     pub lighting_preset: LightingPreset,
     /// What the camera sees behind the stone -- `AppSettings::backdrop`.
@@ -75,13 +68,11 @@ pub struct RenderContext {
     /// `0.0` (default) is off (sharp edges). See `edge_rounding_radius` in
     /// `crates/indicatrix/src/optics/materials.rs` for units/range.
     pub edge_rounding_radius: f32,
-    /// Physical stone size: girdle width in millimetres the active design should be
-    /// treated as measuring, for absorption/scattering. `0.0` (default) is off --
-    /// every built-in cut already renders at `absorption_path_scale = 1.0`. When
-    /// positive, `apply_material_overrides` divides this by the design's measured
-    /// model-unit girdle width (`stone_metrics::measure_solid`, cached by
-    /// `StoneWidthCache`) to get the scale factor, so e.g. "6.5" renders the current
-    /// cut as if cut from a 6.5mm rough, without changing any facet angle.
+    /// Physical stone size: girdle width in mm for absorption/scattering. `0.0`
+    /// (default) is off. When positive, scales by typed mm divided by the design's
+    /// measured girdle width, so the value persists across `active_planes` owner
+    /// changes (catalogue browse, editor solve completion) and can scale for a
+    /// different stone. See [`Self::claim_active_planes`], which logs this case.
     pub stone_width_mm: f32,
     /// The active design's facet planes, and the catalogue's custom materials.
     ///
@@ -115,38 +106,22 @@ pub struct RenderContext {
     /// comment), which is a fine default for callers that have no design of their own
     /// to report (the built-in placeholder cut, a deleted-selection reset).
     pub design_gear: Option<(u32, f32)>,
-    /// Which of `active_planes`'s four writers most recently claimed the slot --
-    /// CAD audit item 58. `active_planes`/`design_gear` have no ownership check
-    /// today: an editor solve, the editor's own background auto-solve, a catalogue
-    /// row selection, and a catalogue-row delete-reset all write them
-    /// unconditionally, so browsing the catalogue while editing a design silently
-    /// swaps out the design every downstream reader (the tracer, the metrics HUD,
-    /// the tilt sweep/hover preview, export, remote render) describes.
-    ///
-    /// This field only RECORDS the claim -- see [`Self::claim_active_planes`], the
-    /// single point meant to set `active_planes`/`design_gear`/`planes_owner`
-    /// together. It does not by itself refuse or arbitrate anything: each of the
-    /// four writers (`gui::editor::view::refresh_viewport`, `gui::editor::
-    /// auto_solve`'s background-solve resubmit, `gui::library::detail::
-    /// apply_reconstructed_planes`, `gui::library::local::organize`'s delete-reset)
-    /// still needs to switch to calling [`Self::claim_active_planes`] instead of
-    /// assigning the three fields directly, and `apply_reconstructed_planes`/the
-    /// delete-reset still need to consult [`Self::planes_owner`] before deciding
-    /// whether to overwrite an `Editor` owner's in-progress work (see that
-    /// method's own doc comment for the exact check).
+    /// Which of `active_planes`'s four writers most recently claimed the slot.
+    /// Currently records the claim only; enforcement is partial. See
+    /// [`Self::claim_active_planes`] for the intended single point of mutation.
     pub planes_owner: PlanesOwner,
-    /// Why the design currently on the bench cannot be traced honestly, as a
-    /// cutter-facing sentence -- `None` when it can (CAD audit item 57).
-    ///
-    /// Set when a design names no material AND its own refractive index matches no
-    /// built-in preset within tolerance. The old behaviour was to silently trace it
-    /// as Diamond, so a quartz design's windowing, extinction and tilt curve were a
-    /// diamond simulation while MARGIN and the critical angle beside them used the
-    /// real RI -- two numbers on screen contradicting each other with no hint why.
-    /// Refusing and saying so is the owner's chosen behaviour over substituting
-    /// something plausible.
+    /// Why the design cannot be traced honestly, as a cutter-facing message.
+    /// `None` when tracing is valid. Set when a design has no material name and
+    /// its refractive index matches no built-in preset; refusal to substitute is
+    /// the chosen behaviour over silent fallback to Diamond.
     pub material_unresolved: Option<String>,
     pub custom_materials: Arc<Vec<GemMaterial>>,
+    /// Name -> specific gravity for custom catalogue materials. A parallel side
+    /// channel to [`Self::custom_materials`], not on `GemMaterial` itself (SG is
+    /// gemological data unrelated to optical tracing). Kept in lock-step by
+    /// `gui::optics::custom_materials`'s callbacks and `gui::mod`'s startup load.
+    /// `Arc<Vec<..>>` for cheap cloning into per-frame snapshots.
+    pub custom_material_specific_gravity: Arc<Vec<(String, f64)>>,
     /// Shutdown signal for the render thread. Setting this `false` ends the loop
     /// *permanently* -- never reuse this as a pause mechanism; see `paused`.
     pub running: bool,
@@ -180,8 +155,8 @@ pub struct RenderContext {
     /// point releasing a *completed* render's ownership on the next real scene
     /// invalidation).
     ///
-    /// For [`LiveComputeTarget::Both`] the render loop no longer suspends tracing while
-    /// this is `true` (see `SuspensionFlags`): local keeps tracing past whatever
+    /// For [`LiveComputeTarget::Both`], a `true` value here does not suspend tracing
+    /// (see `SuspensionFlags`): local keeps tracing past whatever
     /// `remote_reserved_samples` reserves, and this field instead gates whether the
     /// display cycle folds [`remote_accumulator`](Self::remote_accumulator) into the
     /// shown image (see `should_combine_remote`).
@@ -205,17 +180,20 @@ pub struct RenderContext {
     /// arithmetic `export_thread::run_export` uses, here specialised to a fixed
     /// `[0, remote_render_samples)` request rather than a calibrated split).
     pub remote_reserved_samples: u32,
-    /// Set by `gui::render_export` for the duration of a high-resolution export;
-    /// suspends local tracing like `paused`/`tab_visible`/`remote_active` so the
-    /// viewport stops burning CPU (and contending for `GpuBackend`'s shared `Mutex`) on
-    /// a picture nobody is watching. Must never be observable as a user-visible pause --
-    /// flipping `paused` instead would corrupt its restore. Cleared on every exit path
-    /// (success/error/cancel) by the same `on_done` callback that resets
-    /// `is_exporting`, so a failed export can't freeze the viewport.
-    pub export_active: bool,
+    /// A COUNT, not a `bool`, of the high-resolution render jobs currently in flight --
+    /// the batch preview, the batch tilt-curve sweep, and a fanned-out hi-res export
+    /// queue each increment this on start and decrement it on every exit path (success,
+    /// error, cancel, or an unwinding `Drop` guard). A single shared `bool` would
+    /// let one job's own cleanup re-enable local tracing while a SECOND job (e.g. a
+    /// tilt batch finishing mid-export) is still running. Suspends local tracing like
+    /// `paused`/`tab_visible`/`remote_active` (and contending for `GpuBackend`'s shared
+    /// `Mutex`) whenever this is above zero -- see [`Self::export_active`] for the
+    /// `bool` view every read site still wants. Must never be observable as a
+    /// user-visible pause -- flipping `paused` instead would corrupt its restore.
+    pub export_active_count: u32,
     /// The one-shot remote render's total sample budget, read live by
-    /// `start_remote_render` at dispatch time (not cached). `512` by default, matching
-    /// the old hardcoded `REMOTE_RENDER_SAMPLES`.
+    /// `start_remote_render` at dispatch time (not cached). `512` by default -- see
+    /// `settings::model::DEFAULT_REMOTE_RENDER_SAMPLES`.
     pub remote_render_samples: u32,
     /// Live rendering's Local/Remote/Local+Remote choice -- see
     /// `LiveComputeTarget`. Read fresh by `orchestrator::poll_tick` at every settle
@@ -223,7 +201,7 @@ pub struct RenderContext {
     pub live_compute_target: LiveComputeTarget,
     /// Local live-rendering CPU/CPU+GPU/GPU choice -- see `LocalComputeTarget`. Read
     /// fresh every frame by `accumulate_frame_samples`, so a settings change applies
-    /// immediately with no restart. `CpuGpu` (default) is the pre-existing hybrid
+    /// immediately with no restart. `CpuGpu` (default) is the hybrid
     /// behaviour -- see that function's doc comment for how.
     pub local_compute_target: LocalComputeTarget,
     /// Local preview-then-settle rendering: resolution reduction while the camera is
@@ -250,8 +228,8 @@ pub struct RenderContext {
     pub env_map: Option<Arc<EnvironmentMap>>,
 }
 
-/// Tags which subsystem last claimed `RenderContext::active_planes`/`design_gear`
-/// -- CAD audit item 58. See [`RenderContext::claim_active_planes`] for the
+/// Tags which subsystem last claimed `RenderContext::active_planes`/`design_gear`.
+/// See [`RenderContext::claim_active_planes`] for the
 /// intended write path and [`RenderContext::planes_owner`] for why this exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PlanesOwner {
@@ -267,7 +245,7 @@ pub enum PlanesOwner {
         /// `EditorState`'s generation counter at claim time.
         generation: u64,
     },
-    /// A catalogue entry, tagged by its row id so a delete-reset (item 145) can
+    /// A catalogue entry, tagged by its row id so a delete-reset can
     /// check whether the row it just deleted is the one that owns the slot before
     /// resetting it.
     Catalogue {
@@ -277,8 +255,8 @@ pub enum PlanesOwner {
 }
 
 impl RenderContext {
-    /// Whether a write tagged `new_owner` may overwrite the slot's CURRENT owner
-    /// -- CAD audit item 58's arbitration rule, factored out so every writer
+    /// Whether a write tagged `new_owner` may overwrite the slot's CURRENT owner --
+    /// the arbitration rule, factored out so every writer
     /// applies the same policy instead of five copies of an `if` chain.
     ///
     /// An `Editor` owner always wins over anything else: the cutter is actively
@@ -303,13 +281,13 @@ impl RenderContext {
     }
 
     /// The single intended write path for `active_planes`/`design_gear`/
-    /// `planes_owner` together -- CAD audit item 58. Returns `false` (and leaves
+    /// `planes_owner` together. Returns `false` (and leaves
     /// every field untouched) when [`Self::may_claim_active_planes`] refuses the
     /// claim, so a caller can decide whether to surface that as a toast/prompt.
     ///
     /// Does NOT set `dirty` -- callers already do that themselves alongside
     /// whatever else a plane-set change requires (a `Reproject`/`Replan` request,
-    /// a tilt-sweep re-request per item 147, etc.), and folding it in here would
+    /// a tilt-sweep re-request, etc.), and folding it in here would
     /// make a refused claim's caller have to remember to skip that too.
     pub fn claim_active_planes(
         &mut self,
@@ -320,34 +298,80 @@ impl RenderContext {
         if !self.may_claim_active_planes(owner) {
             return false;
         }
+        // A new owner is about to take over `active_planes`,
+        // and `stone_width_mm` (never itself reset by a plane-slot change -- see
+        // that field's own doc comment) is still on. Nothing here can tell
+        // whether the figure was actually meant for THIS new owner or is simply
+        // left over from whichever design was active when it was typed, so this
+        // only logs -- an outright reset would just as often clear a value the
+        // cutter deliberately wants to keep applying (e.g. re-measuring the same
+        // physical rough across two catalogue rows).
+        if self.stone_width_mm > 0.0 && self.planes_owner != owner {
+            tracing::warn!(
+                stone_width_mm = self.stone_width_mm,
+                previous_owner = ?self.planes_owner,
+                new_owner = ?owner,
+                "active_planes' owner is changing while stone_width_mm is still set; \
+                 absorption/scattering scale may now be computed against the wrong \
+                 stone's measured width"
+            );
+        }
         self.active_planes = planes;
         self.design_gear = design_gear;
         self.planes_owner = owner;
         true
     }
 
-    /// CAD audit item 59: whether the currently traced/rasterized `active_planes`
+    /// Whether the currently traced/rasterized `active_planes`
     /// describe an OLDER edit than `current_generation` -- the "render is stale"
-    /// signal that finding's STATUS note says is still missing (no
-    /// `planes_generation`/`trace_stale` property exists anywhere in the app).
+    /// signal. No `planes_generation`/`trace_stale` property exists anywhere else in
+    /// the app.
     /// [`PlanesOwner::Editor`] already carries exactly the generation
-    /// `active_planes` was last claimed at (CAD audit item 58), so this is a
+    /// `active_planes` was last claimed at, so this is a
     /// direct comparison against it rather than a new field -- `false` whenever
     /// the slot is not even owned by the editor (`Builtin`/`Catalogue`), since
     /// "stale relative to an edit" only means something while the editor owns the
     /// slot at all.
     ///
-    /// This alone does not close item 59: a caller still needs to call it with
-    /// `EditorState::generation`'s live value (not this lane's file to read from)
-    /// and push the result into a new Slint property with an amber overlay in the
-    /// Path-traced/Both viewport (`ui/**`, also not this lane's file) -- see this
-    /// fix's own handoff notes for the exact wiring.
+    /// This alone does not surface staleness to the cutter: a caller still needs to call
+    /// it with `EditorState::generation`'s live value and push the result into a new
+    /// Slint property with an amber overlay in the Path-traced/Both viewport (`ui/**`).
     #[must_use]
     pub const fn traced_planes_are_stale(&self, current_generation: u64) -> bool {
         matches!(
             self.planes_owner,
             PlanesOwner::Editor { generation } if generation != current_generation
         )
+    }
+
+    /// Looks up `name`'s specific gravity in [`Self::custom_material_specific_gravity`],
+    /// case-insensitively -- the same matching convention every
+    /// other name lookup this struct's fields feed uses (see [`resolve_material`]).
+    /// `None` when no custom material by that name has a recorded SG.
+    #[must_use]
+    pub fn custom_specific_gravity(&self, name: &str) -> Option<f64> {
+        self.custom_material_specific_gravity
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, sg)| *sg)
+    }
+
+    /// Whether ANY high-resolution render job currently suspends local tracing -- the
+    /// `bool` view of [`Self::export_active_count`] every existing reader wants.
+    #[must_use]
+    pub const fn export_active(&self) -> bool {
+        self.export_active_count > 0
+    }
+
+    /// Locks `ctx`, recovering from a poisoned mutex rather than panicking -- the one
+    /// convention every `RenderContext` lock in this crate should follow,
+    /// since a guard here only ever wraps plain field reads/writes with no partial-
+    /// update invariant a poisoning panic could have left broken. An `.unwrap()` call
+    /// site instead would let one panic while the lock is held poison it
+    /// for every later caller, turning an unrelated later click, drag or window close
+    /// into a second, unrelated UI-thread panic.
+    pub fn lock(ctx: &Arc<Mutex<Self>>) -> MutexGuard<'_, Self> {
+        ctx.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
@@ -378,6 +402,7 @@ impl Default for RenderContext {
             planes_owner: PlanesOwner::Builtin,
             material_unresolved: None,
             custom_materials: Arc::new(Vec::new()),
+            custom_material_specific_gravity: Arc::new(Vec::new()),
             running: true,
             dirty: true,
             paused: false,
@@ -386,7 +411,7 @@ impl Default for RenderContext {
             remote_active: false,
             remote_accumulator: None,
             remote_reserved_samples: 0,
-            export_active: false,
+            export_active_count: 0,
             remote_render_samples: 512,
             live_compute_target: LiveComputeTarget::Both,
             local_compute_target: LocalComputeTarget::CpuGpu,
@@ -424,7 +449,7 @@ pub(super) struct FrameInputs {
     pub(super) light_pitch: f32,
     pub(super) material_name: String,
     pub(super) material_override: Option<GemMaterial>,
-    /// See [`RenderContext::material_unresolved`] -- CAD audit item 57.
+    /// See [`RenderContext::material_unresolved`].
     pub(super) material_unresolved: Option<String>,
     pub(super) lighting_preset: LightingPreset,
     pub(super) backdrop: crate::settings::model::Backdrop,
@@ -465,9 +490,7 @@ pub(super) fn snapshot_frame_inputs(ctx: &Arc<Mutex<RenderContext>>) -> FrameInp
     // hang, with no console in a release build to show why. Every field is a plain
     // value written under this same lock, so the worst a poisoning writer leaves
     // behind is a stale-but-valid frame, overwritten next tick anyway.
-    let mut ctx = ctx
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut ctx = RenderContext::lock(ctx);
     let dirty = ctx.dirty;
     ctx.dirty = false;
     FrameInputs {
@@ -506,7 +529,7 @@ pub(super) fn snapshot_frame_inputs(ctx: &Arc<Mutex<RenderContext>>) -> FrameInp
         // `Arc::clone`, not a deep copy -- see `remote_accumulator`'s doc comment.
         remote_accumulator: ctx.remote_accumulator.clone(),
         remote_reserved_samples: ctx.remote_reserved_samples,
-        export_active: ctx.export_active,
+        export_active: ctx.export_active(),
         live_compute_target: ctx.live_compute_target,
         local_compute_target: ctx.local_compute_target,
         local_preview_scale: ctx.local_preview_scale,
@@ -538,18 +561,16 @@ pub fn resolve_material(
 }
 
 /// Prefers `material_override` (see [`RenderContext::material_override`]) over the
-/// plain by-name lookup [`resolve_material`] already does -- CAD audit items 57
-/// and 61. Purely additive: [`resolve_material`]'s own signature and every
+/// plain by-name lookup [`resolve_material`] already does. Purely additive: [`resolve_material`]'s own signature and every
 /// existing call site are untouched, so a caller that has no override to offer
-/// (or hasn't been updated to look one up yet) keeps its exact prior behaviour by
+/// (or hasn't been updated to look one up yet) keeps by-name-only resolution by
 /// passing `None`.
 ///
 /// Callers outside `bridge::render_thread` that want a design's real effective
 /// material honoured end to end (the tilt sweep, the tilt hover preview, a
 /// high-resolution export) should switch their existing `resolve_material(...)`
 /// call to `resolve_material_with_override(..., ctx.material_override.as_ref(),
-/// ...)` -- see this crate's CAD audit notes for items 57/61 for the specific
-/// call sites still on the old by-name-only path.
+/// ...)`.
 #[must_use]
 pub fn resolve_material_with_override(
     materials: &[GemMaterial],
@@ -633,8 +654,7 @@ pub fn apply_material_overrides(
 }
 
 /// Resolves the current gem material (see `resolve_material_with_override`, which
-/// prefers `material_override` over `material_name` when present -- CAD audit
-/// items 57/61), applies every user material override on top of it (see
+/// prefers `material_override` over `material_name` when present), applies every user material override on top of it (see
 /// [`MaterialOverrides`]/[`apply_material_overrides`]), and derives this frame's
 /// samples-per-frame from the user's target sample count.
 ///
@@ -643,7 +663,7 @@ pub fn apply_material_overrides(
 /// directly.
 /// Everything needed to name the material for a frame: the two tables to look a
 /// name up in, the name itself, and the editor's already-resolved override that
-/// beats both when it is set (CAD audit items 57/61).
+/// beats both when it is set.
 pub struct MaterialSources<'a> {
     pub materials: &'a [GemMaterial],
     pub custom_materials: &'a [GemMaterial],
@@ -680,7 +700,7 @@ pub(super) fn resolve_material_and_quality(
 mod tests {
     use super::*;
 
-    // ---- PlanesOwner / claim_active_planes: CAD audit item 58 ------------------------
+    // ---- PlanesOwner / claim_active_planes ------------------------
 
     #[test]
     fn builtin_is_the_default_owner_and_anything_may_claim_over_it() {
@@ -700,8 +720,7 @@ mod tests {
         ));
         assert!(
             !ctx.may_claim_active_planes(PlanesOwner::Catalogue { entry_id: 42 }),
-            "a catalogue click must not silently steal the slot from the editor \
-             (the exact scenario CAD audit item 58 describes)"
+            "a catalogue click must not silently steal the slot from the editor"
         );
         assert_eq!(ctx.planes_owner, PlanesOwner::Editor { generation: 3 });
     }
@@ -761,7 +780,69 @@ mod tests {
         assert_eq!(ctx.planes_owner, PlanesOwner::Catalogue { entry_id: 2 });
     }
 
-    // --- traced_planes_are_stale (CAD audit item 59) ---
+    // ---- claim_active_planes's stone_width_mm warning -----------
+    //
+    // The warning itself is a `tracing::warn!` inside `claim_active_planes` -- this crate
+    // has no test-capturing `tracing` subscriber wired up, so its exact text isn't
+    // asserted here. These instead pin the CONDITION the warning fires under
+    // (`stone_width_mm > 0.0` and the owner actually changing) by checking that a
+    // claim under each circumstance still behaves exactly like the plain ownership
+    // tests above -- accepted/refused per `may_claim_active_planes`, with
+    // `stone_width_mm` itself always left untouched, warning or not.
+
+    #[test]
+    fn a_zero_stone_width_claim_is_unaffected_by_an_owner_change() {
+        let mut ctx = RenderContext::default();
+        assert!(ctx.claim_active_planes(
+            Arc::new(Vec::new()),
+            None,
+            PlanesOwner::Catalogue { entry_id: 1 },
+        ));
+        assert_eq!(ctx.stone_width_mm, 0.0);
+    }
+
+    #[test]
+    fn a_nonzero_stone_width_survives_an_owner_change_the_claim_still_accepts() {
+        let mut ctx = RenderContext {
+            stone_width_mm: 6.5,
+            ..RenderContext::default()
+        };
+        // A catalogue browse taking the slot from `Builtin` is an ordinary accepted
+        // claim -- this is exactly the scenario the warning
+        // flags, but the claim itself must still succeed and must never reset the
+        // control on the caller's behalf (see `stone_width_mm`'s own doc comment for
+        // why an automatic reset was not chosen).
+        assert!(ctx.claim_active_planes(
+            Arc::new(Vec::new()),
+            None,
+            PlanesOwner::Catalogue { entry_id: 9 },
+        ));
+        assert_eq!(ctx.stone_width_mm, 6.5);
+    }
+
+    #[test]
+    fn a_nonzero_stone_width_claim_for_the_same_owner_is_not_an_owner_change() {
+        let mut ctx = RenderContext {
+            stone_width_mm: 6.5,
+            ..RenderContext::default()
+        };
+        assert!(ctx.claim_active_planes(
+            Arc::new(Vec::new()),
+            None,
+            PlanesOwner::Editor { generation: 1 },
+        ));
+        // A second claim at the SAME (or a newer) generation is the ordinary
+        // "design re-solved" case, not a switch to a different stone -- ordinary
+        // `claim_active_planes` behaviour, with the warning above never firing.
+        assert!(ctx.claim_active_planes(
+            Arc::new(Vec::new()),
+            None,
+            PlanesOwner::Editor { generation: 2 },
+        ));
+        assert_eq!(ctx.stone_width_mm, 6.5);
+    }
+
+    // --- traced_planes_are_stale ---
 
     #[test]
     fn traced_planes_match_the_generation_they_were_claimed_at() {
@@ -823,7 +904,35 @@ mod tests {
         assert_eq!(ctx.planes_owner, PlanesOwner::Editor { generation: 10 });
     }
 
-    // ---- resolve_material_with_override: CAD audit items 57/61 -----------------------
+    // ---- custom_specific_gravity ---------------------------------
+
+    #[test]
+    fn default_context_has_no_custom_specific_gravity_entries() {
+        let ctx = RenderContext::default();
+        assert!(ctx.custom_material_specific_gravity.is_empty());
+        assert_eq!(ctx.custom_specific_gravity("My Garnet"), None);
+    }
+
+    #[test]
+    fn custom_specific_gravity_finds_a_recorded_entry_case_insensitively() {
+        let ctx = RenderContext {
+            custom_material_specific_gravity: Arc::new(vec![("My Garnet".to_string(), 3.9)]),
+            ..RenderContext::default()
+        };
+        assert_eq!(ctx.custom_specific_gravity("my garnet"), Some(3.9));
+        assert_eq!(ctx.custom_specific_gravity("MY GARNET"), Some(3.9));
+    }
+
+    #[test]
+    fn custom_specific_gravity_is_none_for_an_unrecorded_name() {
+        let ctx = RenderContext {
+            custom_material_specific_gravity: Arc::new(vec![("My Garnet".to_string(), 3.9)]),
+            ..RenderContext::default()
+        };
+        assert_eq!(ctx.custom_specific_gravity("Custom Diamond"), None);
+    }
+
+    // ---- resolve_material_with_override -----------------------
 
     #[test]
     fn no_override_falls_through_to_the_plain_by_name_lookup() {

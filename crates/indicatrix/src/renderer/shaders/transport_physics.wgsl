@@ -38,9 +38,9 @@
 // Tier 2 kernels' per-case bindings are entirely different shapes). A function that
 // only one of the two files needs stays local to that file.
 //
-// P6 exit-event spectral splitting (2026-09-07): the CPU-side physics this pass added
+// P6 exit-event spectral splitting: the CPU-side physics
 // (`compute_channel_transmission`/`compute_uniaxial_exit_transmission` in
-// `optics::raytracer::refraction`) IS ported here -- see the two functions of the same
+// `optics::raytracer::refraction`) is ported here -- see the two functions of the same
 // name further down this file (~line 1965) -- and wired into `spectral_transport.wgsl`'s
 // megakernel and verified by `renderer::gpu::transport_check::p6_exit_splitting`'s Tier 2
 // checks.
@@ -53,24 +53,22 @@ const PI: f32 = 3.14159265358979323846;
 // MODE_COUPLING_STREAM/FROSTED_DIR_U_STREAM/FROSTED_DIR_V_STREAM) and the frosted
 // r_unpol clamp bounds (R_UNPOL_MIN/R_UNPOL_MAX).
 //
-// Task 2 GPU port (frosted girdle finish) moved these here from
-// `spectral_transport.wgsl` (which used to define its own copy, the only consumer
-// until now) so `apply_frosted_bounce` below -- shared verbatim between the megakernel
-// and Tier 2's `transport_functions.wgsl` -- has them in scope in EITHER concatenated
-// file without a second copy of the constants themselves. A pure move, not a value
-// change: `spectral_transport.wgsl` no longer defines these (see that file's own
-// comment at the old location) so there is exactly one definition per concatenated
-// module, never two (WGSL rejects a duplicate top-level identifier).
+// These constants (frosted girdle finish) live here rather than in
+// `spectral_transport.wgsl` so `apply_frosted_bounce` below -- shared verbatim between
+// the megakernel and Tier 2's `transport_functions.wgsl` -- has them in scope in EITHER
+// concatenated file without a second copy of the constants themselves: there is exactly
+// one definition per concatenated module, never two (WGSL rejects a duplicate
+// top-level identifier).
 const FRESNEL_BRANCH_STREAM: u32 = 0x9e3779b1u;
 const RUSSIAN_ROULETTE_STREAM: u32 = 0x517cc1b7u;
 const BIREFRINGENT_SPLIT_STREAM: u32 = 0x2545f491u;
 const MODE_COUPLING_STREAM: u32 = 0xcc9e2d51u;
-// Task 2 (girdle finish): the 2D cosine-weighted-hemisphere direction draw at a frosted
+// Frosted girdle finish: the 2D cosine-weighted-hemisphere direction draw at a frosted
 // bounce -- two independent streams for (u, v), mirroring
 // optics::raytracer::{FROSTED_DIR_U_STREAM, FROSTED_DIR_V_STREAM}.
 const FROSTED_DIR_U_STREAM: u32 = 0x27d4eb2fu;
 const FROSTED_DIR_V_STREAM: u32 = 0x165667b1u;
-// Finding G7/G8: next-event estimation environment direction draws.
+// Next-event estimation environment direction draws.
 // Mirrors optics::raytracer::sampling::{NEE_ENV_DIR_U_STREAM, NEE_ENV_DIR_V_STREAM,
 // FROSTED_NEE_ENV_DIR_U_STREAM, FROSTED_NEE_ENV_DIR_V_STREAM}.
 const NEE_ENV_DIR_U_STREAM: u32 = 0x4b725c19u;
@@ -533,11 +531,10 @@ fn canonicalize_eigenvector_sign(v: vec3<f32>) -> vec3<f32> {
 // optics::birefringence::BiaxialIndicatrix::eigenvector_world -- see that Rust
 // function's doc comment for the "transverse impermeability" (Gamma = P.B.P) matrix
 // construction and the sign-aligned row-pair-cross-product null-vector extraction this
-// mirrors op-for-op (reformulated 2026-09-02 for numerical conditioning; replaces the
-// previous "cleared-denominator" polynomial form, and then again replaces a first
-// largest-of-three-magnitude version of this construction that still measured up to
-// ~640K ULP against the CPU side -- see the Rust doc comment for why the discrete
-// argmax branch itself was the remaining problem).
+// mirrors op-for-op. This formulation (rather than a cleared-denominator polynomial
+// form, or a largest-of-three-magnitude selection) is used for numerical conditioning:
+// a discrete argmax branch over the three candidate magnitudes is the mechanism that
+// otherwise degrades precision -- see the Rust doc comment for the full derivation.
 //
 // Mirrors optics::birefringence::BiaxialIndicatrix::precise_root_near op-for-op: an
 // algebraically-exact discriminant reformulation that replaces `B^2 - 4C` (a
@@ -636,13 +633,19 @@ fn biaxial_eigen_polarizations(
     return result;
 }
 
-// optics::birefringence::BiaxialIndicatrix::d_to_e_direction
+// optics::birefringence::BiaxialIndicatrix::d_to_e_direction -- see quadratic_form3's
+// doc comment above for why the per-axis dot products are spelled out as explicit
+// non-fused scalar sums rather than the `dot()` builtin.
 fn biaxial_d_to_e_direction(
     n_alpha: f32, n_beta: f32, n_gamma: f32,
     ax0: vec3<f32>, ax1: vec3<f32>, ax2: vec3<f32>,
     d_hat: vec3<f32>,
 ) -> vec3<f32> {
-    let d_local = vec3<f32>(dot(ax0, d_hat), dot(ax1, d_hat), dot(ax2, d_hat));
+    let d_local = vec3<f32>(
+        ax0.x * d_hat.x + ax0.y * d_hat.y + ax0.z * d_hat.z,
+        ax1.x * d_hat.x + ax1.y * d_hat.y + ax1.z * d_hat.z,
+        ax2.x * d_hat.x + ax2.y * d_hat.y + ax2.z * d_hat.z,
+    );
     let e_local = vec3<f32>(
         d_local.x / (n_alpha * n_alpha),
         d_local.y / (n_beta * n_beta),
@@ -762,10 +765,24 @@ fn biaxial_resolve_entry_mode(
 // `birefringence::biaxial_reduction_tests::absorption_frame_is_bit_identical_to_index_frame`
 // on the CPU side), so which call site does the rebuilding is a style choice, not a
 // correctness one.
+// See eigenmodes_biaxial.rs's ASSIGNED_MODE_ALPHA_BIAXIAL_ULP_BUDGET doc comment. The
+// three per-axis dot products are spelled out as explicit non-fused scalar sums here,
+// matching optics::birefringence::AbsorptionTensor3::quadratic_form's exact
+// `axes.transpose() * e_hat` accumulation order bit-for-bit (glam's Mat3::mul_vec3
+// SAXPY expansion reduces algebraically to this same left-to-right x+y+z grouping --
+// see that CPU function's doc comment). WGSL's `dot()` builtin is not specified to
+// lower this way (a driver's shader compiler may contract it into an FMA chain), so
+// this avoids relying on that unspecified rounding. This does not by itself close the
+// harness's `assigned_mode_alpha_biaxial` ULP gap between `cpu` and `gpu` bit patterns
+// -- see `eigenmodes_biaxial.rs`'s `ASSIGNED_MODE_ALPHA_BIAXIAL_ULP_BUDGET` doc comment
+// for the full measurement and why the residual traces to hardware `/`/`sqrt`
+// precision in the shared eigenvector solve instead, not this function's op order.
+// Kept anyway: removing the dependency on `dot()`'s unspecified lowering is still
+// worth having.
 fn quadratic_form3(alpha: f32, beta: f32, gamma: f32, a1: vec3<f32>, a2: vec3<f32>, c: vec3<f32>, e_hat: vec3<f32>) -> f32 {
-    let l0 = dot(a1, e_hat);
-    let l1 = dot(a2, e_hat);
-    let l2 = dot(c, e_hat);
+    let l0 = a1.x * e_hat.x + a1.y * e_hat.y + a1.z * e_hat.z;
+    let l1 = a2.x * e_hat.x + a2.y * e_hat.y + a2.z * e_hat.z;
+    let l2 = c.x * e_hat.x + c.y * e_hat.y + c.z * e_hat.z;
     return alpha * (l0 * l0) + beta * (l1 * l1) + gamma * (l2 * l2);
 }
 
@@ -803,7 +820,7 @@ fn pleochroic_channel_alpha_biaxial(
 // these functions read NO Stokes vector at all). The isotropic branch keeps calling
 // pleochroic_channel_alpha(_biaxial) above, unchanged -- see the megakernel call site's
 // own comment for why that is a deliberate, numerically-inert divergence from the CPU
-// side's isotropic branch (which no longer has a Stokes vector available to it there).
+// side's isotropic branch, which has no Stokes vector available to it there.
 // ---------------------------------------------------------------------------------
 
 // optics::birefringence::assigned_mode_e_field_uniaxial
@@ -972,8 +989,7 @@ fn per_channel_uniaxial_index(
 // directly) for the same reason as `dispersion_evaluate` above: one shared body, two
 // different binding shapes at the call sites. The megakernel calls this once per
 // eigenmode (`material.o_ray_bands`/`o_ray_band_count`, then `e_ray_bands`/
-// `e_ray_band_count`) where it previously had two near-identical `_o`/`_e` copies of
-// this function.
+// `e_ray_band_count`), avoiding two near-identical `_o`/`_e` copies of this function.
 // ---------------------------------------------------------------------------------
 
 // P6: `shape` selects which domain this band is Gaussian in (0 = GaussianWavelength,
@@ -997,11 +1013,13 @@ fn spectral_absorption(bands: array<AbsorptionBand, 8>, band_count: u32, lambda_
     for (var i: u32 = 0u; i < band_count; i = i + 1u) {
         let band = bands[i];
         if (band.shape == 1u) {
-            // Wavenumber in cm^-1: nu = 1e7 / lambda_nm -- see
-            // optics::absorption::AbsorptionBand::evaluate's own comment for why 1e7.
-            let nu = 1.0e7 / lambda_nm;
-            let nu0 = 1.0e7 / band.center_nm;
-            let t = (nu - nu0) / band.width_nm;
+            // Well-conditioned wavenumber-difference form -- see
+            // optics::absorption::AbsorptionBand::evaluate's GaussianEnergy branch (in
+            // absorption.rs) for the full derivation and the f64-verified measurement.
+            // Must stay op-for-op identical to that branch.
+            let delta_nm = band.center_nm - lambda_nm;
+            let nu_diff = 1.0e7 * delta_nm / (lambda_nm * band.center_nm);
+            let t = nu_diff / band.width_nm;
             sum = sum + band.peak * exp(-0.5 * t * t);
         } else {
             let t = (lambda_nm - band.center_nm) / band.width_nm;
@@ -1012,14 +1030,14 @@ fn spectral_absorption(bands: array<AbsorptionBand, 8>, band_count: u32, lambda_
 }
 
 // ---------------------------------------------------------------------------------
-// Task 2 GPU port: optics::raytracer::{frosted_orthonormal_basis,
+// Frosted-facet GPU port: optics::raytracer::{frosted_orthonormal_basis,
 // cosine_weighted_hemisphere, apply_frosted_bounce} -- the diffuse (bruted/frosted
 // girdle facet) bounce, ported here (not into `spectral_transport.wgsl` or
 // `transport_functions.wgsl` separately) so the shipped megakernel and Tier 2's
 // standalone `frosted_bounce_main`/`cosine_hemisphere_main` kernels call the exact same
 // function object, never two texts that could drift -- see this file's own header
-// comment for why that property matters (a duplicate-vs-shipped-code fault was
-// previously caught only by luck, see `renderer::gpu::transport_check`'s module doc
+// comment for why that property matters (a duplicate-vs-shipped-code fault is
+// otherwise caught only by luck, see `renderer::gpu::transport_check`'s module doc
 // comment).
 //
 // # The one deliberate simplification, preserved exactly
@@ -1153,9 +1171,9 @@ fn apply_frosted_bounce(
 
     let new_dir = cosine_weighted_hemisphere(u1, u2, -normal);
     let entering_anisotropic = (!inside_gem) && is_anisotropic;
-    // Mode SELECTION is still a stochastic 50/50 draw -- only the throughput weighting
-    // that used to accompany it (a `split_pdf` divisor/multiplier) is gone, since it
-    // estimated twice the transmitted energy no interface can deliver. See
+    // Mode SELECTION is a stochastic 50/50 draw with no throughput weighting (no
+    // `split_pdf` divisor/multiplier): weighting by the split probability would
+    // estimate twice the transmitted energy no interface can deliver. See
     // optics::raytracer::apply_frosted_bounce's doc comment for the full energy-share
     // reasoning (same shape as the polished path's entry split in refraction.rs).
     var use_extraordinary = is_extraordinary;
@@ -1185,7 +1203,7 @@ fn apply_frosted_bounce(
 }
 
 // ---------------------------------------------------------------------------------
-// Physics review, Task 1 GPU port: inclusion/subsurface scattering
+// Inclusion/subsurface scattering GPU port
 // (optics::raytracer::{henyey_greenstein_phase, sample_henyey_greenstein_direction,
 // maybe_scatter_or_extinguish}) -- ported here (not into `spectral_transport.wgsl` or
 // `transport_functions.wgsl` separately) for the exact same reason `apply_frosted_bounce`
@@ -1238,6 +1256,52 @@ fn sample_henyey_greenstein_direction(u1: f32, u2: f32, g: f32, forward: vec3<f3
     return normalize_or_zero(dir);
 }
 
+// `simd::exp_poly::exp_lane` -- the scalar reference `exp_f32x8`'s AVX2
+// path is tested bit-identical against (`src/simd/exp_poly.rs`), ported op-for-op
+// (same Cody-Waite range reduction, same `mul_add`/`fma` placement, same polynomial
+// coefficient order) so this and the CPU's `exp_f32x8` agree beyond the intrinsic
+// `exp()`/`f32::exp()` divergence a hardware transcendental unit vs. a software `libm`
+// necessarily has. Used at every WGSL site whose CPU twin calls `exp_f32x8` --
+// Beer-Lambert/extinction transmittance (`maybe_scatter_or_extinguish` below,
+// `nee_contribution_hg_scatter`'s medium transmittance, `apply_absorption`'s twin in
+// `transport_bounce.wgsl`) -- NEVER at a site whose CPU twin genuinely calls
+// `f32::exp()` instead (`spectral_absorption`'s Gaussian band shape, the Planckian
+// `blackbody_spectrum` twin): those stay on the plain `exp()` builtin, matching the CPU
+// op-for-op, and their (small, bounded) ULP gap against `f32::exp()` is a genuine
+// hardware-transcendental-precision fact about this adapter, not a bug this function
+// papers over.
+const EXP_LOG2E: f32 = 1.4426950408889634;
+const EXP_C1: f32 = 0.693359375;
+const EXP_C2: f32 = -2.1219444e-4;
+const EXP_P0: f32 = 1.9875691e-4;
+const EXP_P1: f32 = 1.3981999e-3;
+const EXP_P2: f32 = 8.333452e-3;
+const EXP_P3: f32 = 4.1665796e-2;
+const EXP_P4: f32 = 1.6666665e-1;
+const EXP_P5: f32 = 5.0000003e-1;
+const EXP_HI: f32 = 88.02875;
+const EXP_LO: f32 = -87.33654;
+
+fn exp_poly(x_in: f32) -> f32 {
+    let x0 = clamp(x_in, EXP_LO, EXP_HI);
+    let n = floor(fma(x0, EXP_LOG2E, 0.5));
+    let x1 = fma(n, -EXP_C1, x0);
+    let x2 = fma(n, -EXP_C2, x1);
+    let z = x2 * x2;
+    var p = EXP_P0;
+    p = fma(p, x2, EXP_P1);
+    p = fma(p, x2, EXP_P2);
+    p = fma(p, x2, EXP_P3);
+    p = fma(p, x2, EXP_P4);
+    p = fma(p, x2, EXP_P5);
+    let poly = fma(p, z, x2) + 1.0;
+    // 2^n by exponent-bit construction -- mirrors `exp_lane`'s
+    // `f32::from_bits((((n as i32) + 127) << 23) as u32)` exactly; `n` is integral and
+    // within the f32 exponent range after the clamp above.
+    let pow2n = bitcast<f32>(u32(i32(n) + 127) << 23u);
+    return poly * pow2n;
+}
+
 // The `Option<(f32, Vec3)>` `maybe_scatter_or_extinguish` returns, encoded for WGSL:
 // `scattered == 0u` is the CPU's `None` (`t_free`/`new_dir` unset, ignored by the
 // caller); `!= 0u` is `Some((t_free, new_dir))`.
@@ -1280,7 +1344,7 @@ fn maybe_scatter_or_extinguish(
         let pdf_hero = sigma_t_hero * one_minus_u;
         for (var k: u32 = 0u; k < 8u; k = k + 1u) {
             let sigma_t_k = alphas[k] + sigma_s;
-            let tr_k = exp(-sigma_t_k * t_free);
+            let tr_k = exp_poly(-sigma_t_k * t_free);
             let weight = tr_k * sigma_s / pdf_hero;
             let intensity = max((*stokes)[k].x, 0.0) * weight;
             (*stokes)[k] = vec4<f32>(intensity, 0.0, 0.0, 0.0);
@@ -1297,10 +1361,10 @@ fn maybe_scatter_or_extinguish(
         return result;
     }
 
-    let survive_hero = exp(-sigma_t_hero * hit_t_scaled);
+    let survive_hero = exp_poly(-sigma_t_hero * hit_t_scaled);
     for (var k: u32 = 0u; k < 8u; k = k + 1u) {
         let sigma_t_k = alphas[k] + sigma_s;
-        let survive_k = exp(-sigma_t_k * hit_t_scaled);
+        let survive_k = exp_poly(-sigma_t_k * hit_t_scaled);
         (*stokes)[k] = (*stokes)[k] * (survive_k / max(survive_hero, 1e-30));
         (*path_pdf)[k] = (*path_pdf)[k] * survive_k;
     }
@@ -1311,7 +1375,7 @@ fn maybe_scatter_or_extinguish(
 }
 
 // ---------------------------------------------------------------------------------
-// Finding G7/G8: next-event estimation -- optics::raytracer::scattering::balance_heuristic.
+// Next-event estimation -- optics::raytracer::scattering::balance_heuristic.
 //
 // The direction-sampling (dist1d/dist2d binary search over the HDR importance
 // distribution) and shadow-ray-dependent NEE contribution functions
@@ -1342,7 +1406,7 @@ fn balance_heuristic(pdf_a: f32, pdf_b: f32) -> f32 {
 }
 
 // ---------------------------------------------------------------------------------
-// Finding G6/G7: Environment map spherical direction and UV conversions, solid-angle
+// Environment map spherical direction and UV conversions, solid-angle
 // Jacobian, and spectral conversion.
 // Mirrors optics::raytracer::environment::EnvironmentMap::{uv_to_direction, direction_to_uv, pdf_uv_to_solid_angle}.
 // ---------------------------------------------------------------------------------
@@ -1361,16 +1425,28 @@ fn hdr_uv_to_direction(u_in: f32, v_in: f32) -> vec3<f32> {
     let v = clamp(v_in, 0.0, 1.0);
     let theta = v * PI;
     let phi = u * 2.0 * PI;
-    let sin_theta = sin(theta);
+    // `sin` of the reflected argument, `cos` of the direct one -- exactly as
+    // `EnvironmentMap::uv_to_direction`; see `pdf_uv_to_solid_angle` below for why.
+    let sin_theta = sin(min(v, 1.0 - v) * PI);
     let cos_theta = cos(theta);
     let sin_phi = sin(phi);
     let cos_phi = cos(phi);
     return vec3<f32>(sin_theta * sin_phi, cos_theta, sin_theta * cos_phi);
 }
 
+// `min(v, 1.0 - v)`: the reflection `sin(PI - x) == sin(x)` folded in BEFORE the
+// multiply, exactly as `renderer::env_map::pdf_uv_to_solid_angle` does -- see that
+// function's own doc comment ("Why `sin(min(v, 1-v) * PI)`") for the measured
+// near-south-pole error the plain `sin(v * PI)` form carries on both CPU and GPU.
 fn pdf_uv_to_solid_angle(pdf_uv: f32, v: f32) -> f32 {
-    let theta = v * PI;
-    let sin_theta = sin(theta);
+    let theta = min(v, 1.0 - v) * PI;
+    return pdf_uv_to_solid_angle_from_sin(pdf_uv, sin(theta));
+}
+
+// renderer::env_map::pdf_uv_to_solid_angle_from_sin -- the Jacobian division with
+// `sin(theta)` supplied by the caller (`dist2d_pdf` takes it straight off the direction,
+// see `EnvironmentMap::pdf`'s own comment for the `acos` conditioning argument).
+fn pdf_uv_to_solid_angle_from_sin(pdf_uv: f32, sin_theta: f32) -> f32 {
     if (sin_theta <= 1e-6) {
         return 0.0;
     }
@@ -1527,8 +1603,8 @@ fn cplx_div(a: Cplx, b: Cplx) -> Cplx {
 
 // optics::raytracer::uniaxial_fresnel::Cplx::sqrt_forward_branch
 fn cplx_sqrt_forward_branch(a: Cplx) -> Cplx {
-    // GPU-parity fix (P2 exit wiring, 2026-09-07): mirrors the CPU function's own
-    // identical fix -- see that function's doc comment for the full derivation. A
+    // Mirrors the CPU function's own identical fix -- see that function's doc comment
+    // for the full derivation. A
     // pure negative-real input makes `theta` land exactly on `pi/2`, where
     // `cos(theta)`'s sign is rounding noise this hardware's trig unit resolves
     // differently from Rust's `atan2`/`cos`; bypassing that round-trip for this one
@@ -2168,7 +2244,7 @@ fn mode_power(t_s: Cplx, t_p: Cplx, mode_flux: f32, inc_flux: f32, stokes: vec4<
 }
 
 // ---------------------------------------------------------------------------------
-// P6 exit-event spectral splitting (2026-09-07, final): the three pure (no-binding)
+// P6 exit-event spectral splitting: the three pure (no-binding)
 // per-channel helpers optics::raytracer::refraction's own top-of-file "Exit-event
 // spectral splitting" doc comment names -- `compute_channel_transmission`,
 // `compute_uniaxial_exit_transmission`, and `narrow_compat`. Every operation, and its
@@ -2179,7 +2255,7 @@ fn mode_power(t_s: Cplx, t_p: Cplx, mode_flux: f32, inc_flux: f32, stokes: vec4<
 // `compute_channel_transmission`/`compute_uniaxial_exit_transmission` are private
 // (module-private, not even `pub(super)`) inside `refraction.rs`, and `narrow_compat`
 // is `pub(super)` (visible only within `optics::raytracer`, not from this crate's
-// `renderer` tree) -- `refraction.rs` is on this task's protected/coordinator-owned
+// `renderer` tree) -- `refraction.rs` is on the protected/coordinator-owned
 // list, so its visibility cannot be widened to import these directly the way
 // `p2_uniaxial_fresnel.rs` imports the (already `pub(crate)`) `entry_solve_pair`/
 // `internal_solve`. `renderer::gpu::transport_check::p6_exit_splitting`'s own CPU

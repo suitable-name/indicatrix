@@ -87,7 +87,7 @@ USAGE:
                        against the GPU path, or a machine whose adapter misbehaves.
                        Meaningless (and harmless) on a binary built without the gpu
                        feature, which never uses the GPU regardless. Mutually exclusive
-                       with --only-gpu. What --no-gpu (removed) used to do.
+                       with --only-gpu.
                        Default (neither flag given): hybrid -- CPU and GPU trace
                        concurrently whenever the measured split is worth it (see
                        render_core::hybrid), automatically falling back to GPU-only
@@ -137,8 +137,7 @@ USAGE:
                                binary was built with the gpu feature and a usable
                                adapter is present -- WELCOME then reports Backend::Cpu.
                                For A/B comparison, or a machine whose adapter misbehaves.
-                               Mutually exclusive with --only-gpu. What --no-gpu
-                               (removed) used to do.
+                               Mutually exclusive with --only-gpu.
                                Default (neither flag given): hybrid -- CPU and GPU trace
                                concurrently whenever the measured split is worth it (see
                                render_core::hybrid), automatically falling back to

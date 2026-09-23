@@ -1,0 +1,81 @@
+// A single status model -- one `ActivityModel` list instead of scattered
+// `solve_running`/`busy_action`/`deep_solve_status`/`optimize_status` writes,
+// each expressing its own "something is running" state independently
+// (`ui/models/editor.slint`). Every long-running action routes through
+// `gui::editor::activity::ActivityRegistry` (background auto-solve, Deep
+// Solve, Optimize, Retarget optimize, Snapshot compare, tilt curve/video
+// export, trace generation) and pushes ONE `ActivityItem` here while it
+// runs, instead of a bespoke boolean/string pair per feature.
+//
+// This global does not itself decide what counts as "running" -- it is a plain,
+// Rust-driven list. `gui::editor::activity::ActivityRegistry` is the only writer of
+// `activities`/`now_ms` (`in-out` only so `ActivityRegistry::sync_model` can call
+// `set_activities`; no `.slint` file should push into it directly).
+import { Theme } from "../theme.slint";
+
+// One running (or just-finished, until the next sync removes it) background
+// operation. `progress` is `-1.0` for "indeterminate" (no fraction known -- most of
+// this app's solves report only elapsed time, not a completion percentage, see
+// `gui::editor::deep_solve`'s own doc comment "No true progress fraction"), and a
+// value in `[0.0, 1.0]` otherwise (Optimize's evaluation-count-derived fraction).
+// `started_ms` is milliseconds since `ActivityRegistry`'s own construction (an
+// arbitrary but monotonic per-session epoch, NOT wall-clock/Unix time -- picked so
+// the value comfortably fits a plain `int` for the whole life of one editor session,
+// see that struct's own doc comment), paired with `ActivityModel.now_ms` (ticked by
+// the same registry) so a `.slint` file can compute "N s elapsed" as
+// `(ActivityModel.now_ms - item.started_ms) / 1000` without needing a live clock of
+// its own.
+export struct ActivityItem {
+    id: int,
+    kind: string,
+    label: string,
+    progress: float,
+    cancellable: bool,
+    started_ms: int,
+}
+
+export global ActivityModel {
+    in-out property <[ActivityItem]> activities: [];
+    // Ticked (roughly once a second, only while `activities` is non-empty) by
+    // `ActivityRegistry`'s own elapsed-time timer -- see `ActivityItem.started_ms`'s
+    // own doc comment for the shared epoch this is measured against.
+    in-out property <int> now_ms: 0;
+    // Derived, not written directly -- true whenever at least one activity is
+    // running. The status strip and command bar both key their "something is
+    // running" affordances off this single property instead of re-deriving it from
+    // `activities.length` themselves.
+    out property <bool> busy: activities.length > 0;
+    // Requests cancellation of the activity with this `id` -- a no-op if that id is
+    // not currently registered (already finished) or was started with
+    // `cancellable: false`. `ActivityRegistry::new` is the one place this is
+    // handled, dispatching to whichever `cancel` closure `ActivityRegistry::start`
+    // was given for that id.
+    callback cancel(int);
+
+    // Bridges `gui::editor::activity::ActivityRegistry` to callers OUTSIDE
+    // `gui::editor` -- `gui::tilt`'s tilt-curve sweep/video export and
+    // `bridge::render_thread`'s trace/preview activity, neither of which can name
+    // `gui::editor::activity::ActivityRegistry` directly: `mod activity;`/`mod
+    // auto_solve;` (`gui/editor/mod.rs`) are private to that module's own subtree
+    // (Rust module privacy, not just the items inside), so reaching them from
+    // outside would require widening `mod.rs`. A Slint global, by contrast, is reachable from ANY
+    // module holding a `&MainWindow`/`Weak<MainWindow>` -- these four callbacks let
+    // a non-editor module drive the SAME registry through the `ui.global::
+    // <ActivityModel>()` handle it already needs for other globals, with no change
+    // to `gui/editor/mod.rs` at all. `ActivityRegistry::new` is the only place
+    // `start_external`/`progress_external`/`finish_external` are handled, exactly
+    // like `cancel` above -- callers use `invoke_start_external`/etc, never `on_*`.
+    // `external_cancel` is the reverse direction: invoked BY `ActivityRegistry` when
+    // a cancel click lands on an id that has no LOCAL Rust cancel closure (i.e. one
+    // started through this bridge, cancellable but with nowhere to reach back into
+    // in-process) -- handled by whichever module started that one activity kind.
+    // Only ONE caller through this bridge is cancellable today
+    // (`gui::tilt::video_export`, via its own AtomicBool cancel flag), so only it
+    // registers `on_external_cancel`; a second externally-cancellable kind would
+    // need to filter by `kind`/`id` itself, the same way `ActivityModel.cancel`'s
+    // own handler already dispatches by id.
+    callback start_external(string, string, bool) -> int;
+    callback progress_external(int, float);
+    callback finish_external(int);
+    callback external_cancel(int);
+}

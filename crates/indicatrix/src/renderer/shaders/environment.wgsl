@@ -46,12 +46,12 @@ fn powi_u(base: f32, exp: u32) -> f32 {
 // cie_1931_cmf
 // ---------------------------------------------------------------------------------
 //
-// P4: CIE 1931 2-degree observer, tabulated at 5nm (CIE 15:2004 Table T.4, 380-780nm)
+// CIE 1931 2-degree observer, tabulated at 5nm (CIE 15:2004 Table T.4, 380-780nm)
 // and linearly interpolated -- ported identically to shaders/furnace.wgsl and the CMF
 // region of shaders/spectral_transport.wgsl (all three copies transcribed by hand from
 // `color::cie1931::CIE_1931_TABLE`, so an edit to one must be mirrored into the other
-// two by hand too). Replaces the retired Wyman/Sloan/Shirley Gaussian-lobe fit, which
-// carried 1-3% XYZ error against the real tabulated observer -- see `color::cie1931`'s
+// two by hand too). Uses the real tabulated observer rather than a Wyman/Sloan/Shirley
+// Gaussian-lobe fit, which carries 1-3% XYZ error against it -- see `color::cie1931`'s
 // module doc comment. Deliberately plain f32 arithmetic in the same fixed order as that
 // Rust function (floor, fraction, `lo + (hi - lo) * t`), no mul_add/fma, no f64
 // intermediate anywhere, so this reproduces it bit-for-bit modulo ordinary driver-level
@@ -580,7 +580,7 @@ fn white_balance_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 // ---------------------------------------------------------------------------------
-// Finding G6: renderer::env_map::EnvironmentMap::{direction_to_uv, sample_bilinear,
+// renderer::env_map::EnvironmentMap::{direction_to_uv, sample_bilinear,
 // radiance_at}, plus renderer::env_map_spectrum::rgb_to_spectral_radiance.
 //
 // A SEPARATE port from `shaders/spectral_transport.wgsl`'s own `hdr_direction_to_uv`/

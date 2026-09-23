@@ -1,4 +1,4 @@
-//! [`Tag`]: one row of the catalogue's flat tag set (CAD audit item 190).
+//! [`Tag`]: one row of the catalogue's flat tag set.
 //!
 //! Deliberately flat, not hierarchical -- a design can carry any number of tags, but a
 //! tag itself has no parent/child structure (folders) and no other metadata. See

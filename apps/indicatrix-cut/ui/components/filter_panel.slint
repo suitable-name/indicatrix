@@ -2,6 +2,7 @@ import { Slider, Button, ComboBox } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { PerformanceFilterRow } from "../types.slint";
 import { LibraryModel } from "../models/library.slint";
+import { RemoteWorkerModel } from "../models/remote_worker.slint";
 
 // One attribute's min/max range control: a label + current "min – max" readout above
 // two stacked sliders (Slint has no built-in dual-handle slider, so two single-handle
@@ -78,9 +79,9 @@ component RangeRow inherits VerticalLayout {
 // app) needs an explicit content-driven `height` since plain `Rectangle`s default to
 // filling their parent's size when no height is set. See `header.slint`'s
 // `filter_popup` instantiation for the show()/close() wiring this requires -- a
-// `PopupWindow` can't be used with the `if condition: FilterPanel { ... }` pattern
-// that used to sit there (that's a compile error: "PopupWindow cannot be directly
-// repeated or conditional").
+// `PopupWindow` cannot be used with an `if condition: FilterPanel { ... }` pattern
+// (that's a compile error: "PopupWindow cannot be directly repeated or
+// conditional").
 export component FilterPanel inherits PopupWindow {
     // Add-performance-filter form local draft state
     property <int> perf_draft_metric: 2; // Windowing
@@ -119,12 +120,12 @@ export component FilterPanel inherits PopupWindow {
         LibraryModel.filters_changed();
     }
 
-    // "N of M matching designs shown"/"N designs match" (CAD audit item 193) --
+    // "N of M matching designs shown"/"N designs match" --
     // `LibraryModel.matched_count` is the real, uncapped match count for the active
     // search/filters; `diagram_list.length` is the shown page, capped at
-    // `SEARCH_RESULT_CAP` (1000). The two used to be compared against `total_count`
-    // (the whole catalogue) instead, which was false on both halves whenever any
-    // filter -- or just a catalogue over 1000 rows -- was in play.
+    // `SEARCH_RESULT_CAP` (1000). Comparing either against `total_count` (the
+    // whole catalogue) instead would be wrong whenever any filter -- or just a
+    // catalogue over 1000 rows -- is in play.
     pure function match_summary() -> string {
         return LibraryModel.diagram_list.length < LibraryModel.matched_count
             ? LibraryModel.diagram_list.length + " of " + LibraryModel.matched_count + " matching designs shown"
@@ -232,7 +233,7 @@ export component FilterPanel inherits PopupWindow {
 
         Rectangle { height: 1px; background: Theme.border-dialog; }
 
-        // --- RI CENTRE + TOLERANCE FILTER (Task 1) ---
+        // --- RI CENTRE + TOLERANCE FILTER ---
         // A second, independent RI predicate alongside the min/max `RangeRow` above --
         // see `RangeFilter::ri_tolerance`'s own doc comment for why the two compose by
         // intersection rather than one replacing the other.
@@ -324,7 +325,7 @@ export component FilterPanel inherits PopupWindow {
 
         Rectangle { height: 1px; background: Theme.border-dialog; }
 
-        // --- SHOW IGNORED DESIGNS TOGGLE (Task 3) ---
+        // --- SHOW IGNORED DESIGNS TOGGLE ---
         HorizontalLayout {
             alignment: space-between;
             Rectangle {
@@ -356,14 +357,22 @@ export component FilterPanel inherits PopupWindow {
 
         Rectangle { height: 1px; background: Theme.border-dialog; }
 
-        // --- "MY DESIGNS" TOGGLE (CAD audit item 189) ---
+        // --- "MY DESIGNS" TOGGLE ---
         // Restricts the catalogue to the cutter's own locally-imported designs,
         // distinguishing them from the wider scraped corpus -- same toggle-switch
         // styling and `filters_changed()` wiring as "Show ignored designs" above.
+        //
+        // A remote worker's search reply has no local-only concept at all (there
+        // is no local import to distinguish from), so this toggle is greyed out
+        // and its `TouchArea` refuses clicks while
+        // `RemoteWorkerModel.library_is_remote`.
         HorizontalLayout {
             alignment: space-between;
+            opacity: RemoteWorkerModel.library_is_remote ? 0.45 : 1.0;
             Rectangle {
-                Tooltip { text: @markdown("Show only designs you imported yourself, not the wider scraped catalogue."); }
+                Tooltip { text: RemoteWorkerModel.library_is_remote
+                    ? @markdown("\"My designs\" applies to the local library only.")
+                    : @markdown("Show only designs you imported yourself, not the wider scraped catalogue."); }
                 Text { text: "My designs only"; font-size: 11px; font-weight: 600; color: Theme.text-muted; vertical-alignment: center; }
             }
             Rectangle {
@@ -372,6 +381,7 @@ export component FilterPanel inherits PopupWindow {
                 border-radius: 9px;
                 background: LibraryModel.local_only_filter ? Theme.accent-cyan : Theme.border-dialog;
                 TouchArea {
+                    enabled: !RemoteWorkerModel.library_is_remote;
                     clicked => {
                         LibraryModel.local_only_filter = !LibraryModel.local_only_filter;
                         LibraryModel.filters_changed();
@@ -391,7 +401,7 @@ export component FilterPanel inherits PopupWindow {
 
         Rectangle { height: 1px; background: Theme.border-dialog; }
 
-        // --- TAG CHIP FILTER (CAD audit item 190) ---
+        // --- TAG CHIP FILTER ---
         // A flat tag set, deliberately not folders/collections -- see
         // `indicatrix_vault::db::sqlite::Database::migrate_tag_tables`'s doc comment.
         // Lives in this panel rather than header.slint because it composes with
@@ -404,6 +414,11 @@ export component FilterPanel inherits PopupWindow {
         // set. Identified by NAME, not id -- see `gui::library::diagram_list::
         // sync_tag_vocabulary_to_ui`'s own doc comment for why the Slint side never
         // handles a tag id directly.
+        // `gui::library::search::refresh_diagram_list_remote` sends the active
+        // chip's name on the wire (`LibraryRequest::Search::tag_filter`) and
+        // `apps/indicatrix-worker::serve::library` resolves and applies it against
+        // its own catalogue, so a remote search honours the chip exactly like a
+        // local one, and this control stays enabled in remote mode.
         VerticalLayout {
             spacing: 6px;
             visible: LibraryModel.all_tags.length > 0;
@@ -415,7 +430,7 @@ export component FilterPanel inherits PopupWindow {
             // container than Slint's fixed layouts give for free.
             Flickable {
                 height: 24px;
-                viewport-width: tag_row.preferred-width;
+                content-width: tag_row.preferred-width;
                 tag_row := HorizontalLayout {
                     spacing: 4px;
                     for tag_name[idx] in LibraryModel.all_tags: Rectangle {
@@ -443,7 +458,7 @@ export component FilterPanel inherits PopupWindow {
 
         Rectangle { height: 1px; background: Theme.border-dialog; }
 
-        // --- TILT-PERFORMANCE SEARCH FILTERS (Task 2) ---
+        // --- TILT-PERFORMANCE SEARCH FILTERS ---
         VerticalLayout {
             spacing: 6px;
 
@@ -489,8 +504,8 @@ export component FilterPanel inherits PopupWindow {
                 }
             }
 
-            // Excluded-for-missing-curves notice (Task 2's own requirement: never
-            // silently hide these designs) -- only shown while a performance filter is
+            // Excluded-for-missing-curves notice -- these designs must never be
+            // silently hidden, so this is shown whenever a performance filter is
             // actually active and it excluded at least one design this way.
             if LibraryModel.performance_filters.length > 0 && LibraryModel.performance_excluded_count > 0: Rectangle {
                 background: Theme.surface-warning;
@@ -586,6 +601,32 @@ export component FilterPanel inherits PopupWindow {
             icon: @image-url("../icons/reset.svg");
             colorize-icon: true;
             clicked => { root.reset(); }
+        }
+
+        Rectangle { height: 1px; background: Theme.border-dialog; }
+
+        // --- REGENERATE FOR THE CURRENT FILTERED SET ---
+        // Runs the same catalogue-wide preview/tilt-curve batches every other
+        // trigger of them uses (`gui::batch::preview`/`gui::batch::tilt`'s own
+        // confirm/progress/cancel dialog), but scoped to whatever this panel's
+        // search/filters currently match rather than the whole catalogue --
+        // useful right after a renderer or material change, to refresh only the
+        // designs currently in view.
+        VerticalLayout {
+            spacing: 6px;
+            Text { text: "Regenerate for filtered set"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+            Button {
+                text: "Regenerate Previews";
+                icon: @image-url("../icons/gem.svg");
+                colorize-icon: true;
+                clicked => { LibraryModel.regenerate_previews_for_filtered_set(); }
+            }
+            Button {
+                text: "Regenerate Tilt Curves";
+                icon: @image-url("../icons/bar-chart.svg");
+                colorize-icon: true;
+                clicked => { LibraryModel.regenerate_tilt_curves_for_filtered_set(); }
+            }
         }
         }
     }

@@ -1,7 +1,10 @@
 //! Computes a stable content hash of this crate's own `src/**/*.rs` and `src/**/*.wgsl`
 //! tree (plus `Cargo.toml`) and exposes it to `lib.rs` as `INDICATRIX_SOURCE_HASH`
-//! (`indicatrix::SOURCE_HASH`, a diagnostic), and a hash of the crate version as
-//! `INDICATRIX_BUILD_ID` (`indicatrix::BUILD_ID`, the handshake identity).
+//! (`indicatrix::SOURCE_HASH`), and a hash of the crate version as `INDICATRIX_BUILD_ID`
+//! (`indicatrix::BUILD_ID`). Both feed the handshake identity (see
+//! `indicatrix-net`'s `handshake` module): `BUILD_ID` is the primary, always-enforced
+//! check; `SOURCE_HASH` is a second, finer check enforced only when both peers can
+//! establish their own (a `warn!`, not a refusal, when either side's is unknown).
 //!
 //! # Why this exists
 //!
@@ -9,9 +12,13 @@
 //! worker whose `indicatrix` builds disagree -- see `indicatrix-net`'s `handshake`
 //! module. Mixing samples traced by two different physics implementations produces a
 //! silently, plausibly wrong image: no crash, just numbers that look like a render and
-//! aren't. This is exactly the situation a version number can't catch (there isn't one
-//! yet) and a "protocol version" field can't catch either (the wire format didn't
-//! change, the *physics* did).
+//! aren't. `BUILD_ID` alone can't fully catch this on its own: it's a hash of the crate
+//! VERSION, so it only catches a mismatch when the release rule below ("bump the
+//! version whenever the physics changes") was actually followed. `SOURCE_HASH`, being a
+//! content hash of the actual source tree, catches a physics-affecting edit that never
+//! bumped the version at all. A plain "protocol
+//! version" field could never catch either case (the wire format didn't change, the
+//! *physics* did).
 //!
 //! # Why a content hash, not `git describe`
 //!
@@ -88,13 +95,13 @@ fn normalize_path(rel: &Path) -> String {
 /// into `$OUT_DIR`, since WGSL has no `#include` and every one of those files assumes
 /// the prelude's symbols are already in scope.
 ///
-/// Finding G5 Part B: `shaders/transport_bounce.wgsl` -- the scene bindings plus the
+/// `shaders/transport_bounce.wgsl` -- the scene bindings plus the
 /// per-bounce `transport_bounce_step`/`transport_finalize_xyz` functions shared between
 /// the megakernel and the wavefront pipeline (see that file's own header comment) -- is
 /// ALSO concatenated in, for `spectral_transport.wgsl` and `wavefront_transport.wgsl`
 /// only: `transport_functions.wgsl` (Tier 2's standalone per-function kernels) never
-/// calls either shared function or needs their scene bindings, so its concatenation is
-/// unchanged from before this finding.
+/// calls either shared function or needs their scene bindings, so it is not
+/// concatenated there.
 ///
 /// Deliberately writes into `$OUT_DIR` (under `target/`), never under `src/`: the
 /// content hash below walks `src/**/*.wgsl` on disk, and a generated file leaked into
@@ -217,12 +224,14 @@ fn main() {
     let source_hash = format!("{hash:016x}");
     println!("cargo:rustc-env=INDICATRIX_SOURCE_HASH={source_hash}");
 
-    // The handshake identity is keyed on the crate VERSION, not on the source hash: a
-    // worker built on Linux and a viewer built on Windows from the same release must
-    // pair even when their checkouts differ in metadata, docs, or platform-only code.
-    // The physics-parity guarantee therefore rests on the release rule "bump the
-    // version whenever anything under src/ that affects a traced sample changes"; the
-    // source hash above stays available as `indicatrix::SOURCE_HASH` for diagnostics.
+    // The PRIMARY handshake identity is keyed on the crate VERSION, not on the source
+    // hash: a worker built on Linux and a viewer built on Windows from the same release
+    // must pair even when their checkouts differ in metadata, docs, or platform-only
+    // code. That guarantee rests on the release rule "bump the version whenever
+    // anything under src/ that affects a traced sample changes" -- a promise nothing
+    // enforces, which is exactly why `verify_compatible` ALSO compares the source hash
+    // above (`indicatrix::SOURCE_HASH`) as a second, finer check when both peers can
+    // establish it (see `indicatrix-net::handshake`'s module doc comment).
     // `CARGO_PKG_VERSION` is the package's resolved version: cargo substitutes a
     // `version = { workspace = true }` inheritance before running this script, and
     // `cargo package` writes the literal version into the published manifest, so a

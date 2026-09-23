@@ -118,8 +118,8 @@ that client's key.
 
 ### Other properties worth knowing
 
-- **`serve` needs `ca.key` when enrollment is enabled**, which it did not before —
-  minting a certificate requires signing. `--no-enroll` avoids this entirely.
+- **`serve` needs `ca.key` when enrollment is enabled** — minting a certificate
+  requires signing. `--no-enroll` avoids this entirely.
 - **A `serve` restart drops every pending enrollment.** Fail-closed, and intended:
   pending bundles live only in memory.
 - **`cert issue-token` is honoured only from a loopback peer**, enforced against the real

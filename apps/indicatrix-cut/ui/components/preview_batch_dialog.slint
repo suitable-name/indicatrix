@@ -28,9 +28,9 @@ import { BatchModel } from "../models/batch.slint";
 // progress any more, so `local_active`/`local_lane_total` report a plain busy-count
 // instead (see `gui::preview_batch`'s module doc comment's "Progress with N local lanes
 // (plus remote) in flight" section). `remote_title`/`remote_active` describe the REMOTE
-// lane's own in-flight item, UNCHANGED from before -- remote stays a single dispatcher,
-// with no numeric sub-index since a single preview render is one blocking request with
-// nothing observable in between (same module's own doc comment).
+// lane's own in-flight item -- remote stays a single dispatcher, with no numeric
+// sub-index since a single preview render is one blocking request with nothing
+// observable in between (same module's own doc comment).
 export component PreviewBatchDialog inherits Rectangle {
     in property <bool> confirming: BatchModel.preview_confirming;
     in property <int> offer_count: BatchModel.preview_offer_count;

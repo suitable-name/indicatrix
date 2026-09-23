@@ -166,7 +166,8 @@ impl Database {
 
     /// Saves the details of a facet diagram, first deleting any existing detail,
     /// angle settings, and attached files for `entry_id` so the row set stays fresh
-    /// and duplicate-free.
+    /// and duplicate-free. Also bumps `entry_id`'s `diagram_entries.updated_at` (see
+    /// [`Self::bump_entry_updated_at`]) for the "recently edited" sort.
     ///
     /// # Performance: one transaction per design, not one per row
     ///
@@ -273,6 +274,7 @@ impl Database {
 
         Self::save_angle_settings(&tx, detail_id, &detail.angle_settings_table)?;
         Self::save_attached_files(&tx, detail_id, &detail.attached_files)?;
+        Self::bump_entry_updated_at(&tx, entry_id)?;
 
         tx.commit().context(format!(
             "Failed to commit save transaction for entry_id: {entry_id}"
@@ -282,6 +284,27 @@ impl Database {
             "Successfully saved diagram detail and associated data for entry_id: {}",
             entry_id
         );
+        Ok(())
+    }
+
+    /// Bumps `entry_id`'s `diagram_entries.updated_at` to now, inside `conn` (the
+    /// in-progress [`Self::save_diagram_detail`] transaction) for the "recently
+    /// edited" sort: a full detail re-sync is at least as much a content
+    /// change as the hand-corrections [`Self::update_diagram_metadata`] already bumps
+    /// for. Split out purely to keep `save_diagram_detail` under clippy's
+    /// function-length lint, not because this is reused elsewhere.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `UPDATE` fails.
+    fn bump_entry_updated_at(conn: &Connection, entry_id: i64) -> Result<()> {
+        conn.execute(
+            "UPDATE diagram_entries SET updated_at = ?1 WHERE id = ?2",
+            params![unix_now(), entry_id],
+        )
+        .context(format!(
+            "Failed to bump updated_at for entry_id: {entry_id}"
+        ))?;
         Ok(())
     }
 
@@ -421,10 +444,7 @@ impl Database {
         if let Some(row) = rows.next()? {
             let detail_id_opt: Option<i64> = row.get(4)?;
 
-            let mut angles = Vec::new();
-            let mut files = Vec::new();
-
-            if let Some(detail_id) = detail_id_opt {
+            let (angles, files) = if let Some(detail_id) = detail_id_opt {
                 let mut stmt_angles = self.conn.prepare(
                     "SELECT facet, angle, index_val, notes, order_idx
                      FROM angle_settings
@@ -440,9 +460,12 @@ impl Database {
                         order_index: arow.get(4)?,
                     })
                 })?;
-                for a in a_rows.flatten() {
-                    angles.push(a);
-                }
+                let angles: Vec<_> =
+                    a_rows
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                        .context(format!(
+                            "Failed to decode an angle setting row for detail_id: {detail_id}"
+                        ))?;
 
                 let mut stmt_files = self.conn.prepare(
                     "SELECT name, url, content
@@ -456,10 +479,17 @@ impl Database {
                         content: frow.get(2)?,
                     })
                 })?;
-                for f in f_rows.flatten() {
-                    files.push(f);
-                }
-            }
+                let files: Vec<_> =
+                    f_rows
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                        .context(format!(
+                            "Failed to decode an attached-file row for detail_id: {detail_id}"
+                        ))?;
+
+                (angles, files)
+            } else {
+                (Vec::new(), Vec::new())
+            };
 
             return Ok(Some(crate::model::entry::FullDiagramRecord {
                 entry_id: row.get(0)?,
@@ -507,7 +537,11 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// Returns an error under the same conditions as [`Self::get_diagram_full`].
+    /// Returns an error if any underlying query fails. Unlike [`Self::get_diagram_full`],
+    /// a row that fails to decode in the angle-settings/attached-files loops here is
+    /// silently skipped rather than propagated -- this method's callers (a remote
+    /// library listing) have historically relied on that, and fixing it is out of this
+    /// pass's scope (only `get_diagram_full` itself was in the finding this addresses).
     pub fn get_diagram_full_meta(
         &self,
         entry_id: i64,
@@ -627,7 +661,9 @@ impl Database {
     }
 
     /// Renames a diagram entry -- the "Organize" library operation, works on any
-    /// entry regardless of `source_id`.
+    /// entry regardless of `source_id`. Bumps `updated_at` for the "recently
+    /// edited" sort: a rename is a content edit to the entry, the same
+    /// category of change [`Self::update_diagram_metadata`] already bumps for.
     ///
     /// # Errors
     ///
@@ -641,8 +677,8 @@ impl Database {
         let changed = self
             .conn
             .execute(
-                "UPDATE diagram_entries SET title = ?1 WHERE id = ?2",
-                params![trimmed, entry_id],
+                "UPDATE diagram_entries SET title = ?1, updated_at = ?2 WHERE id = ?3",
+                params![trimmed, unix_now(), entry_id],
             )
             .context(format!("Failed to rename diagram entry {entry_id}"))?;
         if changed == 0 {
@@ -715,8 +751,8 @@ impl Database {
             ));
         }
 
-        // Bumps `diagram_entries.updated_at` for the "recently edited" sort (CAD audit
-        // item 191) -- best-effort: a hand-correction to metadata having gone through
+        // Bumps `diagram_entries.updated_at` for the "recently edited" sort --
+        // best-effort: a hand-correction to metadata having gone through
         // above is the change that matters, so a failure here is logged rather than
         // rolled back into an error the caller would otherwise treat as "nothing was
         // saved."
@@ -730,8 +766,8 @@ impl Database {
     }
 
     /// Updates `entry_id`'s own `url` directly, by id, and bumps `updated_at` -- for a
-    /// caller (CAD audit items 92/96: Save Native's catalogue write-back) that already
-    /// knows exactly which row to update and must not risk [`Self::save_diagram_entry`]'s
+    /// caller (Save Native's catalogue write-back) that already knows exactly which
+    /// row to update and must not risk [`Self::save_diagram_entry`]'s
     /// url-keyed upsert silently creating a SECOND row when the design's file name (and
     /// so its synthetic `local://` url) changed since this row was created -- e.g. "Save
     /// Native As..." to a new file name for a design that already has a catalogue row.
@@ -759,7 +795,7 @@ impl Database {
     }
 
     /// The `derived_from_entry_id` of `entry_id`'s row -- the entry it was recorded as
-    /// derived from at import time (CAD audit item 186), or `None` when unknown/not
+    /// derived from at import time, or `None` when unknown/not
     /// applicable. `None` is also returned for a nonexistent `entry_id` rather than an
     /// error, matching this column's own "unknown provenance" meaning.
     ///
@@ -781,9 +817,9 @@ impl Database {
     }
 
     /// `entry_id`'s recorded source row's own id and title -- the one query a
-    /// "Derived from: <title>" badge/link needs (CAD audit item 186's
-    /// remaining half: `set_derived_from_entry_id` already records provenance
-    /// at import time, but nothing yet reads it back for display). `None`
+    /// "Derived from: <title>" badge/link needs: `set_derived_from_entry_id`
+    /// already records provenance at import time, and this reads it back for
+    /// display. `None`
     /// when `entry_id` has no recorded source, or when the recorded source
     /// row no longer exists (e.g. it was since deleted) -- a caller renders
     /// nothing rather than a dangling reference either way.
@@ -808,7 +844,7 @@ impl Database {
     }
 
     /// Records that `entry_id` was derived from `derived_from`, e.g. an
-    /// export-then-reimport of an existing catalogue design (CAD audit item 186). Pass
+    /// export-then-reimport of an existing catalogue design. Pass
     /// `None` to clear a previously recorded value. Deliberately takes an explicit,
     /// already-known source id rather than inferring one -- see
     /// `migrate_diagram_entries_provenance`'s doc comment for why this crate never
@@ -841,6 +877,15 @@ impl Database {
     /// Sets or clears `entry_id`'s `ignored` flag, backing
     /// `crate::model::filter::RangeFilter::include_ignored`'s exclude-by-default
     /// search behaviour. Works on any entry regardless of `source_id`.
+    ///
+    /// Deliberately does NOT bump `diagram_entries.updated_at` (unlike
+    /// [`Self::rename_diagram_entry`]/[`Self::save_diagram_detail`]/
+    /// [`Self::update_diagram_metadata`]): "recently edited" means
+    /// a change to the design's own recorded content, and hiding/restoring a design
+    /// from the library view changes neither its title nor its detail data -- treating
+    /// an ignore/un-ignore toggle as an "edit" would let a cutter's Show/Hide clicks
+    /// reorder the catalogue's recently-edited list with no actual content change
+    /// behind any of the moves.
     ///
     /// # Errors
     ///
@@ -886,7 +931,7 @@ impl Database {
 }
 
 /// The current wall-clock time as Unix seconds, for `diagram_entries.created_at`/
-/// `updated_at` (CAD audit item 191). Same `SystemTime`-based approach this crate
+/// `updated_at`. Same `SystemTime`-based approach this crate
 /// already uses for `diagram_tilt_curves.generated_at`/`diagram_previews.preview_generated_at`
 /// (see those tables' save methods), just computed here instead of taken as a caller
 /// parameter -- `save_diagram_entry`/`update_diagram_metadata` are existing public

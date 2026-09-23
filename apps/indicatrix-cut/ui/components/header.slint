@@ -23,64 +23,74 @@ export component HeaderToolbar inherits Rectangle {
         || Math.abs(LibraryModel.facets_filter_min - LibraryModel.facets_bounds_min) > 0.0001
         || Math.abs(LibraryModel.facets_filter_max - LibraryModel.facets_bounds_max) > 0.0001;
 
-    height: 64px;
+    // 64px -> 48px -> 40px, every control/font below shrunk to
+    // match. See the flattened `VerticalLayout`/`HorizontalLayout` below for how the
+    // logo/title/status-badge stack fits one line at this height.
+    height: 40px;
     background: Theme.bg-card;
     border-radius: Theme.radius-md;
     border-width: 1px;
     border-color: Theme.border-subtle;
 
     HorizontalLayout {
-        padding-left: 16px;
-        padding-right: 16px;
+        padding-left: 10px;
+        padding-right: 10px;
         alignment: space-between;
 
         // Logo & Title Area
         HorizontalLayout {
-            spacing: 12px;
+            spacing: 8px;
             alignment: start;
 
             Rectangle {
-                width: 36px;
-                height: 36px;
+                // 36px -> 26px -> 22px, matching the bar's own shrink.
+                width: 22px;
+                height: 22px;
                 background: #1e3a8a;
-                border-radius: 8px;
+                border-radius: 6px;
                 border-width: 1px;
                 border-color: Theme.accent-cyan;
 
                 Image {
                     source: @image-url("../icons/gem.svg");
                     colorize: Theme.accent-cyan;
-                    width: 18px;
-                    height: 18px;
+                    width: 12px;
+                    height: 12px;
                     horizontal-alignment: center;
                 }
             }
 
-            VerticalLayout {
+            // Title, status dot/message, and the remote-library badge share ONE row
+            // so every label fits without stacking across two lines in the
+            // bar's 40px height.
+            HorizontalLayout {
                 alignment: center;
-                spacing: 2px;
+                spacing: 8px;
 
                 Text {
-                    text: "Facet Diagrams Studio";
-                    font-size: 15px;
+                    text: "Indicatrix Cut";
+                    font-size: 13px;
                     font-weight: 700;
                     color: Theme.text-primary;
+                    vertical-alignment: center;
                 }
 
                 HorizontalLayout {
                     spacing: 6px;
+                    alignment: center;
                     Rectangle {
-                        width: 7px;
-                        height: 7px;
-                        border-radius: 3.5px;
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 3px;
                         background: LibraryModel.is_busy ? Theme.accent-amber : Theme.accent-emerald;
-                            }
+                    }
                     Text {
                         text: LibraryModel.status_message;
                         font-size: 11px;
                         color: LibraryModel.is_busy ? Theme.accent-amber : Theme.text-muted;
                         overflow: elide;
-                        max-width: 260px;
+                        max-width: 220px;
+                        vertical-alignment: center;
                     }
                 }
 
@@ -90,14 +100,14 @@ export component HeaderToolbar inherits Rectangle {
                 // obvious even with that panel closed. See this component's own
                 // `library_source_label`/`library_is_remote` doc comment.
                 Rectangle {
-                    height: 20px;
-                    border-radius: 10px;
+                    height: 18px;
+                    border-radius: 9px;
                     background: RemoteWorkerModel.library_is_remote ? Theme.accent-cyan-surface : Theme.bg-elevated;
                     border-width: 1px;
                     border-color: RemoteWorkerModel.library_is_remote ? Theme.accent-cyan : Theme.border-subtle;
                     HorizontalLayout {
-                        padding-left: 8px;
-                        padding-right: 8px;
+                        padding-left: 7px;
+                        padding-right: 7px;
                         spacing: 4px;
                         alignment: center;
                         Rectangle {
@@ -118,7 +128,8 @@ export component HeaderToolbar inherits Rectangle {
             }
         }
 
-        // Search & Filter Controls
+        // Search & Filter Controls. Every control below is 28px tall (38px -> 32px ->
+        // 28px across both passes), matching the bar's own shrink to 40px.
         HorizontalLayout {
             spacing: 10px;
             alignment: center;
@@ -126,7 +137,7 @@ export component HeaderToolbar inherits Rectangle {
             // Search Bar with icon
             Rectangle {
                 width: 260px;
-                height: 38px;
+                height: 28px;
                 background: Theme.bg-input;
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
@@ -180,7 +191,7 @@ export component HeaderToolbar inherits Rectangle {
             // Shape Selector
             Rectangle {
                 width: 160px;
-                height: 38px;
+                height: 28px;
 
                 Tooltip { text: @markdown("Filter the catalogue to one shape classification."); }
 
@@ -194,7 +205,7 @@ export component HeaderToolbar inherits Rectangle {
             // Gear Selector
             Rectangle {
                 width: 130px;
-                height: 38px;
+                height: 28px;
 
                 Tooltip { text: @markdown("Filter to designs cut on this index gear (number of teeth)."); }
 
@@ -205,14 +216,19 @@ export component HeaderToolbar inherits Rectangle {
                 }
             }
 
-            // Sort Selector (CAD audit item 190's sort half -- the tag/collection half
-            // is deliberately out of scope). Index<->order mapping happens once, in
+            // Sort Selector -- tag/collection sorting is out of scope here.
+            // Index<->order mapping happens once, in
             // Rust, at `gui::library::search::read_sort_order`, the same convention
             // the Shape/Gear selectors above and the tilt-performance combo boxes in
             // `filter_panel.slint` already use for their own index-coded fields.
+            //
+            // `gui::library::search::refresh_diagram_list_remote` sends this
+            // selector's order on the wire (`LibraryRequest::Search::order`)
+            // and `apps/indicatrix-worker::serve::library` applies it, so a remote
+            // library sorts exactly like a local one.
             Rectangle {
                 width: 140px;
-                height: 38px;
+                height: 28px;
 
                 Tooltip { text: @markdown("Sort the catalogue by title, or by when a design was added or last edited."); }
 
@@ -226,7 +242,7 @@ export component HeaderToolbar inherits Rectangle {
             // Advanced Range Filters Toggle
             Rectangle {
                 width: 84px;
-                height: 38px;
+                height: 28px;
                 background: root.filters_open ? Theme.accent-cyan : (filters_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
@@ -272,13 +288,13 @@ export component HeaderToolbar inherits Rectangle {
             // Import your own `.asc` file(s) into the local library.
             Rectangle {
                 width: import_btn.preferred-width;
-                height: 38px;
+                height: 28px;
                 Tooltip { text: @markdown("Import one .asc file or a whole folder into your local library."); }
                 import_btn := Button {
                     text: "Import";
                     icon: @image-url("../icons/folder.svg");
                     colorize-icon: true;
-                    height: 38px;
+                    height: 28px;
                     clicked => {
                         if (import_popup.is-open) {
                             import_popup.close();
@@ -292,13 +308,13 @@ export component HeaderToolbar inherits Rectangle {
             // Remote rendering: opens the worker-list panel.
             Rectangle {
                 width: remote_btn.preferred-width;
-                height: 38px;
+                height: 28px;
                 Tooltip { text: @markdown("Configure and connect to a remote render worker."); }
                 remote_btn := Button {
                     text: "Remote";
                     icon: @image-url("../icons/gem.svg");
                     colorize-icon: true;
-                    height: 38px;
+                    height: 28px;
                     clicked => {
                         if (remote_popup.is-open) {
                             remote_popup.close();

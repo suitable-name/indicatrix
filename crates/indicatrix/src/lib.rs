@@ -35,10 +35,17 @@ pub const BUILD_ID: &str = env!("INDICATRIX_BUILD_ID");
 /// This crate's version, as the handshake identity is derived from it.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Deterministic content hash of this crate's source tree, a diagnostic only.
+/// Deterministic content hash of this crate's source tree.
 ///
 /// Covers `src/**/*.rs`, `src/**/*.wgsl` and `Cargo.toml`; 16 lowercase hex chars,
 /// stable across OS, toolchain, line endings and `.git` state for byte-identical
-/// source. Log it to tell two builds of the same version apart; the handshake does
-/// not compare it.
+/// source. Catches a physics-affecting edit that didn't bump [`VERSION`] (which
+/// [`BUILD_ID`] is keyed on, and [`BUILD_ID`] disagreeing is always a hard handshake
+/// refusal): `indicatrix_net::handshake::verify_compatible` sends this value on both
+/// sides and, when BOTH sides could establish their own hash, a disagreement is
+/// ALSO a hard refusal (`Incompatible::SourceHash`) -- not a diagnostic-only field.
+/// When either side's hash is unknown (e.g. a build that skipped this crate's
+/// `build.rs` hashing step), that side's check is skipped and logged at `warn!`
+/// instead, since an unknown hash is not itself evidence of a mismatch; see that
+/// module's own doc comment for the full two-tier rationale.
 pub const SOURCE_HASH: &str = env!("INDICATRIX_SOURCE_HASH");

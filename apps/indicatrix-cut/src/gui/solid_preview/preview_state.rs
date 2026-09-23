@@ -24,21 +24,16 @@
 //!
 //! `resolve_dirty` was measured at 1.89s for a single-tier edit on the 103-tier
 //! "CrackOtto-Step" design, and calling it on the UI thread would freeze the editor
-//! that long on every keystroke. [`ReplanRequest`] (behind the `editor` feature)
-//! carries everything [`super::live_update::plan_preview`] needs (a `Design`
-//! clone, dirty tier set, previous solve, camera/size/selection/RI/view-mode). The
+//! that long on every keystroke. [`ReplanRequest`] carries everything
+//! [`super::live_update::plan_preview`] needs (a `Design` clone, dirty tier set,
+//! previous solve, camera/size/selection/RI/view-mode). The
 //! UI thread never blocks on any of that; [`PreviewSink::apply`] hands the result
 //! back asynchronously.
 //!
-//! # Two workers: planning vs. rendering (CAD audit item 110)
+//! # Two workers: planning vs. rendering
 //!
-//! A single worker used to do BOTH the solve/`resolve_dirty` call and the
-//! mesh-build/rasterize call, one after the other, for every request -- so a
-//! `Reproject` (a camera orbit/zoom frame, no `Design` to plan against) submitted
-//! while a `Replan`'s multi-second solve was already running sat queued behind it,
-//! freezing the viewport for exactly as long as that solve took. Splitting the two
-//! across separate threads/gates fixes this without changing either one's own
-//! cost:
+//! Splitting `solve`/`resolve_dirty` and mesh-build/rasterize across separate
+//! threads prevents `Reproject` requests from stalling behind slow solves.
 //!
 //! - The **PLAN worker** ([`SolidPreviewState::spawn_plan_worker`]) is the ONLY
 //!   thread that ever calls [`build_planned_frame`]/`live_update::plan_preview` --
@@ -57,17 +52,10 @@
 //!   last-known planes immediately, exactly like an ordinary `Reproject` always
 //!   has.
 //!
-//! The one piece of the old single-call `plan_and_style` that still needs a
-//! `MeshCache` (CAD audit item 63's tier-named "Unbounded: ... never close the
-//! solid" banner, which requires actually attempting the mesh build) is therefore
-//! split across the boundary too: [`build_planned_frame`] (PLAN worker) computes
-//! everything else and leaves [`PlannedFrame::style`] undimmed and
-//! [`PlannedFrame::unsolvable_status`] as the only status this thread can already
-//! decide (no mesh check needed for `Freshness::Unsolvable`); [`resolve_planned_state`]
-//! (RENDER worker) finishes the job once it knows whether THIS frame's own
-//! arrangement actually closes, using the exact same `mesh_cache.get_or_build`
-//! call `render_request`'s own tail immediately re-queries with the identical
-//! planes right afterward -- always a guaranteed cache hit, never a second build.
+//! The mesh check for "Unbounded" status is split: [`build_planned_frame`]
+//! (PLAN worker) does everything else; [`resolve_planned_state`] (RENDER worker)
+//! finishes once it knows whether the arrangement closes, reusing the exact same
+//! `mesh_cache.get_or_build` call immediately after -- guaranteed cache hit.
 //!
 //! The PLAN worker hands a finished [`PlannedFrame`] to the RENDER worker through
 //! [`SolidPreviewState::submit`] -- the SAME lazy-spawn-and-wake path a
@@ -95,12 +83,12 @@
 use super::{
     diagram2d::{self, DiagramConfig, DiagramStyle, PanelKind},
     edges_layer::render_edges_layer,
+    facet_map::FacetMap,
+    live_update,
     mesh_cache::{CachedMesh, MeshCache},
     raster::{SolidRasterizer, SolidStyle},
     to_diagram_pixel_buffer, to_pixel_buffer,
 };
-#[cfg(feature = "editor")]
-use super::{facet_map::FacetMap, live_update};
 use glam::Vec3;
 use indicatrix::{
     geometry::{
@@ -113,10 +101,7 @@ use std::sync::{
     Arc, Mutex, PoisonError,
     mpsc::{self, Sender},
 };
-// Only `SolidPreviewState::self_weak` (CAD audit item 110's plan/render worker
-// split) needs this, and that field/its use are both `editor`-feature-gated --
-// see `SolidPreviewState`'s own doc comment.
-#[cfg(feature = "editor")]
+// Only `SolidPreviewState::self_weak` needs this for the plan/render worker split.
 use std::sync::Weak;
 
 use crate::bridge::render_thread::RedrawGate;
@@ -143,9 +128,8 @@ pub struct CameraPose {
 
 /// A facet-id-keyed highlight update.
 ///
-/// Identifies one facet under the cursor (#20), one facet a click resolved within
-/// its tier (#18), or lists every facet belonging to a multi-selected set of tiers
-/// (#19).
+/// Identifies one facet under the cursor, one facet a click resolved within
+/// its tier, or lists every facet belonging to a multi-selected set of tiers.
 ///
 /// Every field names facet ids directly rather than tier indices, so applying an
 /// update never needs a `Design`/`facet_map::FacetMap` on the worker thread -- the
@@ -231,8 +215,8 @@ enum RedrawRequest {
         /// can offer -- see its own doc comment).
         gear: Option<(u32, f32)>,
     },
-    /// A facet-id-keyed highlight update (#18/#19/#20, see [`FacetOverlay`]'s doc
-    /// comment) with no new camera/planes/size of its own -- the worker re-renders
+    /// A facet-id-keyed highlight update (see [`FacetOverlay`]'s doc comment)
+    /// with no new camera/planes/size of its own -- the worker re-renders
     /// at whatever it last used for a [`Self::Reproject`]/[`Self::Planned`] request
     /// (remembered in [`WorkerMemory`]), exactly the same "cheap camera-follow"
     /// shape [`Self::Reproject`] already has, just following a facet id instead of
@@ -240,27 +224,20 @@ enum RedrawRequest {
     /// `SolidRasterizer::pick_at`/`DiagramFrame::pick_at`, or (`multi_selected`)
     /// from whatever tier->facet lookup the caller already had on hand.
     UpdateFacetOverlay(FacetOverlay),
-    /// A finished replan from the PLAN worker (CAD audit item 110), ready for the
-    /// RENDER worker to finish (the one remaining mesh-dependent status check,
-    /// see [`resolve_planned_state`]) and rasterize -- never built directly from a
-    /// `RedrawRequest::Replan`-style request any more; see this module's doc
-    /// comment, "Two workers: planning vs. rendering". Boxed for the same
-    /// `clippy::large_enum_variant` reason the old `Replan` variant was: a
-    /// [`PlannedFrame`] carries a whole `Design` plus its solved masts, several
-    /// times larger than the plain `Reproject`/`UpdateFacetOverlay` variants.
-    #[cfg(feature = "editor")]
+    /// A finished replan from the PLAN worker, ready for the RENDER worker to
+    /// finish and rasterize. Boxed for `clippy::large_enum_variant` since
+    /// [`PlannedFrame`] carries a whole `Design` plus its solved masts.
     Planned(Box<PlannedFrame>),
 }
 
 /// [`SolidPreviewState::request_replan`]'s payload: bundles everything
-/// [`super::live_update::plan_preview`] and the facet-overlay build need.
+/// [`super::live_update::plan_preview`] needs.
 ///
-/// `design` is cloned by the caller: cheap relative to the solve it might trigger,
-/// and it lets the worker thread own its own copy without holding the UI thread's
+/// `design` is an `Arc` clone: cheap (refcount bump, not a deep clone) and lets
+/// the worker thread own its handle without holding the UI thread's
 /// `Rc<RefCell<EditorState>>` borrow open across the async round trip.
-#[cfg(feature = "editor")]
 pub struct ReplanRequest {
-    pub design: indicatrix_cut_core::Design,
+    pub design: Arc<indicatrix_cut_core::Design>,
     /// The tier index/indices the triggering edit touched. An edit that cannot be
     /// described as "these tiers changed" (`Undo`/`Redo`, a gear remap, a
     /// symmetry/mirror change) should pass `last_solved: None` instead.
@@ -284,21 +261,16 @@ pub struct ReplanRequest {
     pub view_mode: u8,
     /// `gui::editor::state::EditorState::generation`'s value at the moment this
     /// request was submitted (`gui::editor::view::submit_preview_replan`) --
-    /// echoed onto the finished [`PreviewFrame`] unchanged (see
-    /// [`PreviewFrame::generation`]'s own doc comment) so the sink that
-    /// eventually receives it can tell a still-current result from one a later
-    /// edit has already superseded, WITHOUT this module or `live_update`
-    /// needing to know anything about `EditorState` itself -- a plain `u64`
-    /// crosses the worker-thread boundary same as every other field here
-    /// (`cad_todo.md` #73).
+    /// Echoed onto the finished [`PreviewFrame`] unchanged so the sink can tell
+    /// a still-current result from one a later edit has superseded.
     pub generation: u64,
-    /// `SolidPreviewModel.show_preform_planes`'s value at request time (P1 item
-    /// 29's preform-visibility toggle): whether the rough-bounding preform
-    /// facets (`facet_map::FacetMap::preform_plane_count`) should render at all
+    /// `SolidPreviewModel.show_preform_planes`'s value at request time: the
+    /// preform-visibility toggle, whether the rough-bounding preform facets
+    /// (`facet_map::FacetMap::preform_plane_count`) should render at all
     /// rather than being hidden so only the schedule's own cut facets show.
     pub show_preform: bool,
     /// `SolidPreviewModel.diagram_enlarged_panel`'s raw value at request time
-    /// (P1 item 29's "enlarge this panel" mode): `0`/`1`/`2` for Crown/Pavilion/
+    /// (the "enlarge this panel" mode): `0`/`1`/`2` for Crown/Pavilion/
     /// Profile, anything else (in particular the property's own `-1` default)
     /// for "no panel enlarged." A plain `i32` (rather than `Option<diagram2d::
     /// PanelKind>`) purely so this module's caller does not need a
@@ -312,7 +284,6 @@ pub struct ReplanRequest {
 /// matching [`diagram2d::PanelKind`]'s declaration order (`0` = Crown, `1` =
 /// Pavilion, `2` = Profile) -- anything else (including the property's own
 /// `-1` "nothing enlarged" default) is `None`.
-#[cfg(feature = "editor")]
 const fn panel_kind_from_index(index: i32) -> Option<PanelKind> {
     match index {
         0 => Some(PanelKind::Crown),
@@ -375,12 +346,9 @@ pub struct PreviewFrame {
     /// space, so a click on any panel maps to the correct facet through the exact
     /// same `facet_map::FacetMap` lookups the solid view's hover/click already use.
     pub diagram_pick: Option<PickBuffer>,
-    /// The index wheel's own per-pixel tooth-picking buffer (#121, `cad_todo.md`
-    /// item 121's remaining half) -- a SEPARATE buffer from `diagram_pick` above
-    /// (different hit regions: a wheel tick's small box, not a facet's fill), but
-    /// the same `PickBuffer` shape and `+1`/`0` encoding, reusing `facet_at` to
-    /// mean "tooth at" for this buffer. `None` exactly when `diagram_pick` is
-    /// (no diagram requested, or the arrangement did not close).
+    /// The index wheel's own per-pixel tooth-picking buffer. A SEPARATE buffer
+    /// from `diagram_pick` (different hit regions), using the same `PickBuffer`
+    /// encoding. `None` when no diagram or arrangement did not close.
     pub diagram_tooth_pick: Option<PickBuffer>,
     /// Facet id -> full hover tooltip text (`facet_map::FacetMap::hover_text`),
     /// built alongside the diagram image so the UI thread can resolve a diagram
@@ -401,35 +369,31 @@ pub struct PreviewFrame {
     /// `bridge::render_thread::RenderContext::active_planes` alongside the image
     /// swap.
     ///
-    /// #30: before this existed, a `Replan` frame's own (freshly re-solved) planes
-    /// never reached `RenderContext`, which only `gui::editor::view::
-    /// refresh_viewport`/`gui::editor::auto_solve` wrote directly -- neither of
-    /// which runs for an ordinary in-budget edit (`submit_preview_replan`). The
-    /// next camera orbit then re-issued `RenderContext`'s stale, PRE-EDIT
+    /// Only `gui::editor::view::refresh_viewport`/`gui::editor::auto_solve` write
+    /// `RenderContext::active_planes` directly, and neither runs for an ordinary
+    /// in-budget edit (`submit_preview_replan`) -- so publishing every frame's own
+    /// `planes` here, with the sink overwriting `RenderContext::active_planes`
+    /// only when they actually differ, is what keeps the two in sync without
+    /// `gui::editor` needing to remember to do it itself. Otherwise the next
+    /// camera orbit would re-issue `RenderContext`'s stale, PRE-EDIT
     /// `active_planes` (`render::camera_lighting::resubmit_at_current_pose`),
-    /// snapping the shown geometry back until the next explicit Solve. Publishing
-    /// every frame's own `planes` here -- and letting the sink only overwrite
-    /// `RenderContext::active_planes` when they actually differ -- keeps the two
-    /// in sync without needing `gui::editor` to remember to do it itself.
+    /// snapping the shown geometry back until the next explicit Solve.
     pub planes: Vec<(Vec3, f32)>,
     /// Facet id -> full hover tooltip text (`facet_map::FacetMap::hover_text`),
     /// valid for EVERY view mode -- the Solid view's own counterpart to
     /// `diagram_hover_text`, which is only populated for Diagram-mode requests.
     ///
-    /// #22: before this existed, the Solid view's hover/click callbacks
-    /// (`gui::editor::callbacks::tier_actions::setup_solid_facet_hover_callback`/
-    /// `setup_solid_facet_click_callback`) rebuilt a fresh `facet_map::FacetMap`
-    /// from `EditorState`'s `Design` on every mouse move -- an O(plane-count^2)
-    /// candidate/dedup pass -- and matched it against whatever `pick` buffer
-    /// `SlintSolidSink` happened to have stored, which can be a stale generation
-    /// right after an `AddTier`/`RemoveTier`/`Undo` (the two id spaces only agree
-    /// once the next replan lands). This table travels WITH the same frame as
-    /// `pick`, computed once on the worker thread
-    /// (`update_diagram_memory_from_design`, unconditionally run for every
-    /// `Replan` since #24), so indexing it can never disagree with the displayed
-    /// frame's own facet ids. See `hover_text`'s handoff note at its
-    /// `SlintSolidSink` storage site (`gui::mod`) for what still needs to change
-    /// in `tier_actions.rs` to actually use it.
+    /// Rebuilding a fresh `facet_map::FacetMap` from `EditorState`'s `Design` on
+    /// every mouse move would be an O(plane-count^2) candidate/dedup pass, and
+    /// matching it against whatever `pick` buffer `SlintSolidSink` happened to
+    /// have stored risks a stale generation right after an
+    /// `AddTier`/`RemoveTier`/`Undo` (the two id spaces only agree once the next
+    /// replan lands). This table travels WITH the same frame as `pick`, computed
+    /// once on the worker thread (`update_diagram_memory_from_design`,
+    /// unconditionally run for every `Replan`), so indexing it can never disagree
+    /// with the displayed frame's own facet ids. See `hover_text`'s handoff note
+    /// at its `SlintSolidSink` storage site (`gui::mod`) for what still needs to
+    /// change in `tier_actions.rs` to actually use it.
     pub hover_text: Vec<String>,
     /// Facet id -> owning tier index (`facet_map::FacetMap::tier_of`), the Solid
     /// view's own counterpart to `diagram_facet_tier` -- see `hover_text`'s doc
@@ -442,13 +406,10 @@ pub struct PreviewFrame {
     /// has ever received a `Replan`. Lets a real [`PreviewSink`] recognize a
     /// frame whose already-solved [`Self::solved`] masts still describe the
     /// LIVE design, and rebuild the tier table's rows from them directly
-    /// instead of leaving that to a second, separately dispatched
-    /// `Design::solve()` (`cad_todo.md` #73) -- see
-    /// `gui::editor::auto_solve::take_matching_design`'s own doc comment for
-    /// the exact staleness check this enables.
+    /// instead of leaving that to a second, separately dispatched `Design::solve()`.
     pub generation: u64,
     /// The current solid's own bounding radius (`mesh_cache::CachedMesh::
-    /// bounding_radius`, #118) -- whichever mesh this frame actually rendered
+    /// bounding_radius`) -- whichever mesh this frame actually rendered
     /// from (a fresh build, or the dimmed `last_closed` fallback [`render_request`]
     /// uses when the live arrangement does not close), or
     /// [`DEFAULT_MESH_BOUNDING_RADIUS`] before anything has ever closed. Lets a
@@ -486,7 +447,7 @@ struct DiagramMemory {
     /// mirror`]'s own doc comment for what it draws.
     mirror: bool,
     /// `SolidPreviewModel.diagram_enlarged_panel`'s value at the last `Replan`
-    /// (P1 item 29's "enlarge this panel" mode), carried forward exactly like
+    /// (the "enlarge this panel" mode), carried forward exactly like
     /// `gear_teeth` above -- `None` (the default) means the ordinary
     /// three-column [`diagram2d::render_diagram`] layout;
     /// `Some(panel)` means [`build_diagram_outputs`] instead calls
@@ -520,8 +481,8 @@ impl Default for DiagramMemory {
 /// one `&mut` parameter instead of growing past clippy's argument-count lint every
 /// time a `Reproject` request needs one more piece of carried-forward state.
 ///
-/// `solved_masts` and `planes` exist for [`RedrawRequest::Reproject`]'s sake (#21,
-/// #25): a plain camera drag/zoom/pose-button redraw has no `Design` to replan
+/// `solved_masts` and `planes` exist for [`RedrawRequest::Reproject`]'s sake: a
+/// plain camera drag/zoom/pose-button redraw has no `Design` to replan
 /// against, so it must reuse the WORKER's own memory of the last real
 /// [`RedrawRequest::Planned`] rather than reporting "nothing solved" or leaking a
 /// previous design's leftover style.
@@ -569,20 +530,12 @@ struct WorkerMemory {
 /// module's tests can force the `Stale` branch deterministically (`Duration::ZERO`,
 /// which a real `resolve_dirty` call can never finish within).
 ///
-/// `pending_tier` is `plan.freshness`'s `Stale.pending` set's first member
-/// (`overlay_flags` only accepts one tier to outline) -- in practice always exactly
-/// one, since every edit callback's `dirty` set names a single edited tier.
+/// The full `plan.freshness`'s `Stale.pending` set is forwarded to `overlay_flags`
+/// unchanged; a batch nudge/offset can dirty several tiers at once, all outlined.
 ///
-/// Dims `style` for a held-over solid that is not this frame's own fresh result --
-/// a flatter, greyed base shading so it reads as visibly not current rather than
-/// indistinguishable from a genuinely fresh one. Shared by [`resolve_planned_state`]
-/// (a [`live_update::Freshness::Unsolvable`] frame, which reuses the SAME planes as
-/// the last successful one) and [`render_request`] (an `Unbounded`/`Degenerate`
-/// frame, which shows [`MeshCache::last_closed`] instead -- CAD audit item 63).
-/// Keeps every facet-overlay field (`flagged`/`pending`/`selected`/hover/etc.)
-/// from `style` untouched, only overriding the base shading. NOT gated on the
-/// `editor` feature -- unlike `resolve_planned_state`, [`render_request`]'s own use
-/// of this (the `last_closed` fallback) runs in every build.
+/// Dims `style` for a held-over solid that is not this frame's fresh result,
+/// using flatter, greyed base shading to read as visibly not current.
+/// Keeps every facet-overlay field untouched.
 fn dim_style(style: SolidStyle) -> SolidStyle {
     SolidStyle {
         base_color: [120, 122, 128],
@@ -597,7 +550,6 @@ fn dim_style(style: SolidStyle) -> SolidStyle {
 /// matching the tier table's own `#` column), or the raw `"plane <n>"` fallback
 /// when `Design::tier_for_plane_index` can't place it (a preform plane, or an
 /// index past the arrangement -- see that method's own doc comment for both).
-#[cfg(feature = "editor")]
 fn escaping_tier_label(
     design: &indicatrix_cut_core::Design,
     solved: &[SolvedTier],
@@ -622,18 +574,10 @@ fn escaping_tier_label(
         )
 }
 
-/// [`SolidPreviewState::request_replan`]'s payload once handed off to the PLAN
-/// worker (CAD audit item 110) -- the same fields [`ReplanRequest`] carries, just
-/// renamed to mark that this is now an internal cross-thread message rather than
-/// the public entry point, PLUS `tier_cutoff` (CAD audit item 211): unlike every
-/// other field here, it is NOT copied from a same-named [`ReplanRequest`] field
-/// (there is no such field there yet -- see [`SolidPreviewState::set_tier_cutoff`]'s
-/// doc comment for why) but read fresh off [`SolidPreviewState`]'s own cache at
-/// [`SolidPreviewState::request_replan`] time. See this module's doc comment,
-/// "Two workers: planning vs. rendering".
-#[cfg(feature = "editor")]
+/// [`SolidPreviewState::request_replan`]'s payload for the PLAN worker. Same
+/// fields as [`ReplanRequest`] plus `tier_cutoff`, read fresh from cache.
 struct PlanJob {
-    design: indicatrix_cut_core::Design,
+    design: Arc<indicatrix_cut_core::Design>,
     dirty: std::collections::BTreeSet<usize>,
     last_solved: Option<Vec<SolvedTier>>,
     camera: CameraPose,
@@ -647,15 +591,11 @@ struct PlanJob {
     tier_cutoff: Option<usize>,
 }
 
-/// [`build_planned_frame`]'s result -- everything the RENDER worker needs to
-/// finish and rasterize a replan without ever calling `live_update::plan_preview`
-/// itself. `style` is still UNDIMMED here: whether this frame ends up "holding
-/// over" a stale/unbounded result is decided by [`resolve_planned_state`], the
-/// only place with a [`MeshCache`] to check the arrangement's own closure against
-/// (CAD audit item 110's plan/render split -- see this module's doc comment).
-#[cfg(feature = "editor")]
+/// [`build_planned_frame`]'s result: everything the RENDER worker needs to
+/// finish and rasterize without calling `live_update::plan_preview` itself.
+/// `style` is undimmed; [`resolve_planned_state`] decides if it's held-over.
 struct PlannedFrame {
-    design: indicatrix_cut_core::Design,
+    design: Arc<indicatrix_cut_core::Design>,
     planes: Vec<(Vec3, f32)>,
     style: SolidStyle,
     /// The mast list to chain forward as the next call's `last_solved` -- already
@@ -679,23 +619,19 @@ struct PlannedFrame {
 }
 
 /// Runs `live_update::plan_preview` (the expensive, potentially multi-second
-/// half CAD audit item 110 moves off the render worker's own queue) and builds
-/// the facet-level [`SolidStyle`] (flagged/pending/selected) from its result via
-/// `facet_map::FacetMap::overlay_flags` -- called ONLY from
-/// [`SolidPreviewState::spawn_plan_worker`]'s loop in production.
+/// call) and builds facet-level [`SolidStyle`] from its result via
+/// `facet_map::FacetMap::overlay_flags`.
 ///
 /// `budget` is a parameter (rather than always `live_update::DEFAULT_PREVIEW_BUDGET`
 /// inline) so this module's tests can force the `Stale` branch deterministically
 /// (`Duration::ZERO`, which a real `resolve_dirty` call can never finish within).
 ///
-/// `pending_tier` is `plan.freshness`'s `Stale.pending` set's first member
-/// (`overlay_flags` only accepts one tier to outline) -- in practice always exactly
-/// one, since every edit callback's `dirty` set names a single edited tier.
+/// The full `plan.freshness`'s `Stale.pending` set is forwarded unchanged.
+/// All tiers in a batch edit are outlined as pending.
 ///
 /// Deliberately does NOT decide `Unbounded` vs. closed -- that needs a
 /// [`MeshCache`], which this (PLAN-worker-only) function never touches; see
 /// [`resolve_planned_state`] for the render-side half that finishes the job.
-#[cfg(feature = "editor")]
 fn build_planned_frame(job: PlanJob, budget: std::time::Duration) -> PlannedFrame {
     let PlanJob {
         design,
@@ -719,24 +655,24 @@ fn build_planned_frame(job: PlanJob, budget: std::time::Duration) -> PlannedFram
         &live_update::RealSolver,
         tier_cutoff,
     );
-    let pending_tier = match &plan.freshness {
-        live_update::Freshness::Stale { pending } => pending.iter().next().copied(),
-        _ => None,
+    // Use the WHOLE pending set, not just its first member. `empty_pending` gives
+    // the non-`Stale` arm something to borrow.
+    let empty_pending = std::collections::BTreeSet::new();
+    let pending_tiers = match &plan.freshness {
+        live_update::Freshness::Stale { pending } => pending,
+        _ => &empty_pending,
     };
     let facet_map = FacetMap::from_design(&design, plan.solved.as_deref().unwrap_or(&[]));
-    let overlay = facet_map.overlay_flags(&design, n_d, selected_tier, pending_tier);
+    let overlay = facet_map.overlay_flags(&design, n_d, selected_tier, pending_tiers);
     let unsolvable_status = match &plan.freshness {
         live_update::Freshness::Unsolvable(err) => {
             Some(format!("Preview cannot be solved: {err}."))
         }
         _ => None,
     };
-    // No `MeshCache` on this (PLAN worker) thread -- CAD audit item 63's
-    // tier-named `Unbounded` banner and the resulting dim-or-not decision are
-    // finished by [`resolve_planned_state`] on the RENDER worker instead, the
-    // only place that can actually attempt the mesh build. `style` below is
-    // therefore UNDIMMED regardless of whether this frame turns out unbounded --
-    // only a genuine `Unsolvable` (no mesh check needed at all) is reflected here.
+    // No `MeshCache` on this thread. The `Unbounded` check is done by
+    // [`resolve_planned_state`] on the RENDER worker. `style` below is UNDIMMED
+    // regardless of whether this frame turns out unbounded.
     let is_unsolvable = unsolvable_status.is_some();
     let preform_plane_count = facet_map.preform_plane_count();
     let style = SolidStyle {
@@ -779,7 +715,6 @@ fn build_planned_frame(job: PlanJob, budget: std::time::Duration) -> PlannedFram
 /// keep that function short. `solid_style` is the SAME [`SolidStyle`]
 /// [`resolve_planned_state`] just finished, so the diagram's flagged/pending/selected
 /// overlay is guaranteed to agree with the ordinary Solid view's.
-#[cfg(feature = "editor")]
 fn update_diagram_memory_from_design(
     last_diagram: &mut DiagramMemory,
     design: &indicatrix_cut_core::Design,
@@ -804,9 +739,9 @@ fn update_diagram_memory_from_design(
         pending: solid_style.pending.clone(),
         selected: solid_style.selected.clone(),
         facet_labels: labels,
-        // P1 item 29: the index-wheel radial-line pass's facet->tooth lookup,
-        // and the meet-point markers -- both need nothing beyond `facet_map`,
-        // already built above for the label/hover/tier tables.
+        // The index-wheel radial-line pass's facet->tooth lookup, and the
+        // meet-point markers -- both need nothing beyond `facet_map`, already
+        // built above for the label/hover/tier tables.
         facet_index_on_gear,
         meet_marker_pairs: facet_map.meeting_facet_pairs(design),
         ..DiagramStyle::default()
@@ -816,8 +751,8 @@ fn update_diagram_memory_from_design(
 }
 
 /// [`build_diagram_outputs`]'s return: the diagram image, whether it was actually
-/// built, its own facet pick buffer, the index-wheel's own tooth pick buffer
-/// (#121), and the facet-id-indexed hover-text/tier tables -- see
+/// built, its own facet pick buffer, the index-wheel's own tooth pick buffer,
+/// and the facet-id-indexed hover-text/tier tables -- see
 /// [`PreviewFrame`]'s matching fields for what each means.
 type DiagramOutputs = (
     Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>,
@@ -859,9 +794,9 @@ fn build_diagram_outputs(
                     symmetry_order: last_diagram.symmetry_order,
                     mirror: last_diagram.mirror,
                 };
-                // P1 item 29's "enlarge this panel" mode: draw just that one panel
-                // filling the whole frame instead of the ordinary three-column
-                // layout -- see `DiagramMemory::enlarged_panel`'s own doc comment.
+                // The "enlarge this panel" mode: draw just that one panel filling
+                // the whole frame instead of the ordinary three-column layout --
+                // see `DiagramMemory::enlarged_panel`'s own doc comment.
                 let diagram_frame = last_diagram.enlarged_panel.map_or_else(
                     || diagram2d::render_diagram(&cached.mesh, &config, &last_diagram.style),
                     |panel| {
@@ -874,7 +809,7 @@ fn build_diagram_outputs(
                     },
                 );
                 let image = to_diagram_pixel_buffer(&diagram_frame);
-                // #121: the index wheel's own tooth pick buffer, threaded through
+                // The index wheel's own tooth pick buffer, threaded through
                 // exactly like `pick` (the facet buffer) above -- both are the SAME
                 // `+1`/`0`-encoded shape (`DiagramFrame::tooth`'s own doc comment),
                 // so `diagram_wiring`'s hover/click callbacks can query "which
@@ -918,8 +853,7 @@ const fn apply_reproject_gear(last_diagram: &mut DiagramMemory, gear: Option<(u3
 /// [`RedrawRequest`] into, for [`render_request`] to actually draw. The last field is
 /// the ready-to-show unsolvable-status message, always `None` for a
 /// [`RedrawRequest::Reproject`] request (it never plans, so it can never be
-/// unsolvable) -- a plain `String` (not gated on the `editor` feature) so this type
-/// stays usable in a non-editor, `Reproject`-only build.
+/// unsolvable).
 type RequestState = (
     Vec<(Vec3, f32)>,
     CameraPose,
@@ -933,17 +867,16 @@ type RequestState = (
 );
 
 /// The request-kind `match` half of [`render_request`] -- split out purely to keep
-/// that function under clippy's function-length lint. See [`WorkerMemory`]'s doc
-/// comment for what each of its fields is carried forward for. `mesh_cache` is
-/// only touched by the `Planned` arm (via [`resolve_planned_state`], CAD audit item
-/// 63/110) -- the SAME cache [`render_request`] itself queries right afterward with
-/// the identical planes, so that later call is always a cache hit, never a second
-/// build.
+/// `mesh_cache` is only touched by the `Planned` arm via [`resolve_planned_state`].
+/// The same cache [`render_request`] queries afterward, so it's always a cache hit.
+///
+/// Returns `None` if an [`RedrawRequest::UpdateFacetOverlay`] arrives before the
+/// first `Planned`/`Reproject` request (`memory.size` still `None`).
 fn resolve_request_state(
     memory: &mut WorkerMemory,
     mesh_cache: &mut MeshCache,
     request: RedrawRequest,
-) -> RequestState {
+) -> Option<RequestState> {
     match request {
         RedrawRequest::Reproject {
             planes,
@@ -957,11 +890,11 @@ fn resolve_request_state(
             // `gui::editor::view::refresh_viewport`), not only a camera drag/zoom --
             // so when the incoming plane arrangement differs from the worker's own
             // last-known one, a genuinely different geometry just replaced the old
-            // one (#25). Reset the leftover flagged/pending/selected style and
-            // diagram labels rather than let them leak onto a design that never
-            // produced them: loading design B after editing A must not show B with
-            // some of A's facets still tinted. An ordinary orbit/zoom always
-            // resubmits the SAME planes, so this never fires mid-drag.
+            // one. Reset the leftover flagged/pending/selected style and diagram
+            // labels rather than let them leak onto a design that never produced
+            // them: loading design B after editing A must not show B with some of
+            // A's facets still tinted. An ordinary orbit/zoom always resubmits the
+            // SAME planes, so this never fires mid-drag.
             if memory.planes.as_deref() != Some(planes.as_slice()) {
                 memory.style = SolidStyle::default();
                 memory.diagram = DiagramMemory::default();
@@ -970,7 +903,7 @@ fn resolve_request_state(
             memory.camera = Some(camera);
             memory.size = Some(size);
             memory.view_mode = Some(view_mode);
-            (
+            Some((
                 planes,
                 camera,
                 size,
@@ -980,19 +913,22 @@ fn resolve_request_state(
                 false,
                 None,
                 memory.generation,
-            )
+            ))
         }
         // See `FacetOverlay`'s and this variant's own doc comments -- no `Design`,
         // no new camera/planes/size, just an id-keyed style tweak re-rendered at
         // whatever the worker last used.
         RedrawRequest::UpdateFacetOverlay(overlay) => {
+            // `memory.size` is `None` only before the first `Planned`/`Reproject`
+            // frame. Bail out before touching style fields; they're recomputed anyway.
+            memory.size?;
             memory.style.hovered = overlay.hovered;
             memory.style.selected_facet = overlay.selected_facet;
             memory.style.multi_selected = overlay.multi_selected.clone();
             memory.diagram.style.hovered = overlay.hovered;
             memory.diagram.style.selected_facet = overlay.selected_facet;
             memory.diagram.style.multi_selected = overlay.multi_selected;
-            (
+            Some((
                 memory.planes.clone().unwrap_or_default(),
                 memory.camera.unwrap_or(CameraPose {
                     yaw: 0.0,
@@ -1006,23 +942,15 @@ fn resolve_request_state(
                 false,
                 None,
                 memory.generation,
-            )
+            ))
         }
-        #[cfg(feature = "editor")]
-        RedrawRequest::Planned(frame) => resolve_planned_state(memory, mesh_cache, *frame),
+        RedrawRequest::Planned(frame) => Some(resolve_planned_state(memory, mesh_cache, *frame)),
     }
 }
 
-/// [`RedrawRequest::Planned`]'s own half of [`resolve_request_state`], run on the
-/// RENDER worker (CAD audit item 110) -- split out purely to keep that function
-/// under clippy's function-length lint. Finishes what [`build_planned_frame`]
-/// (the PLAN worker) could not: whether `frame`'s own arrangement actually closes
-/// (needs [`MeshCache`], which only this thread owns), the resulting CAD audit
-/// item 63 tier-named `Unbounded` status when it doesn't, and the corresponding
-/// dim-or-not [`SolidStyle`] decision -- then updates `memory` exactly like the
-/// old single-call `plan_and_style`/`resolve_replan_state` pair used to, in one
-/// synchronous step, before this item split planning off onto its own thread.
-#[cfg(feature = "editor")]
+/// [`RedrawRequest::Planned`]'s half of [`resolve_request_state`], run on the
+/// RENDER worker. Finishes what [`build_planned_frame`] could not: whether the
+/// arrangement closes, and the resulting `Unbounded` status.
 fn resolve_planned_state(
     memory: &mut WorkerMemory,
     mesh_cache: &mut MeshCache,
@@ -1042,13 +970,8 @@ fn resolve_planned_state(
         n_d,
         enlarged_panel,
     } = frame;
-    // The design solved fine (`unsolvable_status` is `None`), but THIS frame's own
-    // plane arrangement may still not close -- an unfinished multi-digit angle
-    // edit widening a gap mid-keystroke, say. Name the tier whose facet escapes
-    // instead of leaving `MeshCache::status_message`'s raw plane-index fallback on
-    // screen (CAD audit item 63). Cheap even though it looks like a second mesh
-    // build: `mesh_cache` is keyed by plane hash, so `render_request`'s own later
-    // `get_or_build(&planes)` call is a guaranteed cache hit here.
+    // This frame's arrangement may not close. Name the tier whose facet escapes.
+    // Cheap even though it looks like a second mesh build: guaranteed cache hit.
     let closes = mesh_cache.get_or_build(&planes).is_some();
     let unbounded_status = if unsolvable_status.is_none() && !closes {
         match mesh_cache.status() {
@@ -1092,10 +1015,10 @@ fn resolve_planned_state(
     memory.diagram.symmetry_order = design.meta.symmetry_order;
     memory.diagram.mirror = design.meta.mirror;
     memory.diagram.enlarged_panel = panel_kind_from_index(enlarged_panel);
-    // Unconditional (dropped the earlier `view_mode == 3` gate, #24): an edit made
-    // while Solid/Both is on screen must still leave the diagram's label/hover/
-    // tier tables fresh, so switching to Diagram mode afterward (a `Reproject`,
-    // which has no `Design` to rebuild them from) shows a live, correct diagram
+    // Unconditional -- not gated on `view_mode == 3`: an edit made while
+    // Solid/Both is on screen must still leave the diagram's label/hover/tier
+    // tables fresh, so switching to Diagram mode afterward (a `Reproject`, which
+    // has no `Design` to rebuild them from) shows a live, correct diagram
     // immediately instead of empty/no-op hover and click until the next
     // Diagram-active edit.
     update_diagram_memory_from_design(&mut memory.diagram, &design, solved.as_deref(), &style, n_d);
@@ -1114,25 +1037,27 @@ fn resolve_planned_state(
 
 /// Renders one request against `mesh_cache`/`rasterizer`/`edges_rasterizer`, all
 /// three owned by the worker thread for the process lifetime, plus `memory` --
-/// see [`WorkerMemory`]'s doc comment. `memory.solved_masts` matters most (#21):
-/// before this, a `Reproject` request (every camera drag/zoom/pose button, and
-/// every `Both`/`Diagram` redraw that isn't a fresh edit) reported `solved: None`,
-/// and `SlintSolidSink::apply` stores whatever `solved` it is handed with no
-/// `Some`-check -- so simply orbiting the stone wiped the shared `last_solved`
-/// cache the NEXT edit needs for a cheap subgraph `resolve_dirty`, silently
-/// downgrading it to a full `Design::solve()` (also zeroing every mast a
-/// same-normal-direction facet lookup depends on). Chaining the worker's own
-/// last-known masts forward on every `Reproject` fixes this without touching the
-/// cache's writer at all.
+/// see [`WorkerMemory`]'s doc comment. `memory.solved_masts` matters most: a
+/// `Reproject` request (every camera drag/zoom/pose button, and every
+/// `Both`/`Diagram` redraw that isn't a fresh edit) chains the worker's own
+/// last-known masts forward as its `solved` rather than reporting `None` --
+/// `SlintSolidSink::apply` stores whatever `solved` it is handed with no
+/// `Some`-check, so simply orbiting the stone would otherwise wipe the shared
+/// `last_solved` cache the NEXT edit needs for a cheap subgraph `resolve_dirty`,
+/// silently downgrading it to a full `Design::solve()` (also zeroing every mast a
+/// same-normal-direction facet lookup depends on).
+///
+/// Returns `None` if an `UpdateFacetOverlay` arrives before the first real frame
+/// (nothing to redraw, so no frame is returned).
 fn render_request(
     mesh_cache: &mut MeshCache,
     rasterizer: &mut SolidRasterizer,
     edges_rasterizer: &mut SolidRasterizer,
     memory: &mut WorkerMemory,
     request: RedrawRequest,
-) -> PreviewFrame {
+) -> Option<PreviewFrame> {
     let (planes, camera_pose, size, view_mode, style, solved, stale, unsolvable_status, generation) =
-        resolve_request_state(memory, mesh_cache, request);
+        resolve_request_state(memory, mesh_cache, request)?;
 
     rasterizer.resize(size.0, size.1);
     let camera = Camera::new(
@@ -1145,11 +1070,8 @@ fn render_request(
         rasterizer.render_prepared(cached, &camera, &style);
         (to_pixel_buffer(rasterizer), true, String::new())
     } else if let Some(cached) = mesh_cache.last_closed() {
-        // CAD audit item 63: this frame's own arrangement doesn't close (a
-        // mid-keystroke Unbounded/Degenerate edit), but a real solid was built
-        // before -- show THAT, dimmed, rather than blanking the viewport. `status`
-        // still carries the reason (overridden below by `unsolvable_status` when
-        // there is one).
+        // This frame's arrangement doesn't close, but a real solid was built
+        // before. Show that, dimmed, rather than blanking the viewport.
         let dimmed = dim_style(style.clone());
         rasterizer.render_prepared(cached, &camera, &dimmed);
         (
@@ -1200,14 +1122,14 @@ fn render_request(
         diagram_hover_text,
         diagram_facet_tier,
     ) = build_diagram_outputs(mesh_cache, &planes, size, view_mode, &memory.diagram);
-    // #22: the Solid view's own hover/tier tables -- the SAME ones `diagram_hover_text`/
+    // The Solid view's own hover/tier tables -- the SAME ones `diagram_hover_text`/
     // `diagram_facet_tier` above carry, just handed out unconditionally (not only
     // for a `view_mode == 3` request) since every view mode's facet ids come from
     // the same `FacetMap`. See `PreviewFrame::hover_text`'s doc comment.
     let hover_text = memory.diagram.hover_text.clone();
     let facet_tier = memory.diagram.facet_tier.clone();
 
-    // #118: mirrors the `mesh_cache.get_or_build(&planes).or_else(last_closed)`
+    // Mirrors the `mesh_cache.get_or_build(&planes).or_else(last_closed)`
     // fallback chain the image itself was rendered from above, so the distance
     // clamp always describes the SAME solid the viewport is actually showing --
     // never the live (possibly not-yet-closing) arrangement when a dimmed
@@ -1224,7 +1146,7 @@ fn render_request(
         .or_else(|| mesh_cache.last_closed().map(CachedMesh::bounding_radius))
         .unwrap_or(DEFAULT_MESH_BOUNDING_RADIUS);
 
-    PreviewFrame {
+    Some(PreviewFrame {
         image,
         has_solid,
         status,
@@ -1243,28 +1165,24 @@ fn render_request(
         facet_tier,
         generation,
         mesh_bounding_radius,
-    }
+    })
 }
 
 /// The editor-side controller described in this module's doc comment.
 pub struct SolidPreviewState {
     sink: Arc<dyn PreviewSink>,
-    /// Consumed only by the RENDER worker ([`Self::spawn_worker`]) -- CAD audit
-    /// item 110's two-worker split, see the module doc comment.
+    /// Consumed only by the RENDER worker ([`Self::spawn_worker`]) -- the
+    /// two-worker split, see the module doc comment.
     gate: Arc<RedrawGate<RedrawRequest>>,
     /// Wake channel for the RENDER worker, created lazily on the first
     /// `request_*`/finished-plan call. `None` until then, so a `SolidPreviewState`
     /// never asked to redraw never spawns a thread.
     wake: Mutex<Option<Sender<()>>>,
     /// Consumed only by the PLAN worker ([`Self::spawn_plan_worker`]) -- a
-    /// SEPARATE queue from `gate` so a slow solve queued here can never block a
-    /// `Reproject`/`UpdateFacetOverlay` request sitting in `gate` (CAD audit item
-    /// 110).
-    #[cfg(feature = "editor")]
+    /// Separate queue from `gate` so a slow solve never blocks `Reproject` requests.
     plan_gate: Arc<RedrawGate<PlanJob>>,
     /// [`Self::wake`]'s counterpart for the PLAN worker, created lazily the same
     /// way on the first [`Self::request_replan`] call.
-    #[cfg(feature = "editor")]
     plan_wake: Mutex<Option<Sender<()>>>,
     /// A weak handle to this same value, filled in immediately after
     /// construction -- lets the PLAN worker (which holds no other reference back
@@ -1273,18 +1191,9 @@ pub struct SolidPreviewState {
     /// call already uses, rather than duplicating that contract a second time.
     /// `Weak`, not `Arc`: the PLAN worker thread must never be the reason a
     /// `SolidPreviewState` outlives every caller's own handle to it.
-    #[cfg(feature = "editor")]
     self_weak: Mutex<Weak<Self>>,
-    /// CAD audit item 211's "show through tier N" viewport slider: `Some(n)` makes
-    /// every SUBSEQUENT [`Self::request_replan`] truncate the drawn plane
-    /// arrangement to `design.tiers[..=n]` (preform planes always kept) via
-    /// [`live_update::plan_preview`]'s own `tier_cutoff` parameter. Cached here
-    /// (rather than added as a [`ReplanRequest`] field) because the slider lives in
-    /// `solid_viewport.slint`/`ui/models/solid_preview.slint` -- outside this
-    /// module's file ownership -- so [`Self::set_tier_cutoff`] is the one call this
-    /// state exposes for that UI to reach once its own property/callback exists;
-    /// see that method's doc comment for the exact remaining wiring.
-    #[cfg(feature = "editor")]
+    /// "Show through tier N" slider: `Some(n)` truncates the plane arrangement
+    /// to `design.tiers[..=n]`. Cached here for UI access via [`Self::set_tier_cutoff`].
     tier_cutoff: Mutex<Option<usize>>,
 }
 
@@ -1297,22 +1206,15 @@ impl SolidPreviewState {
             sink,
             gate: Arc::new(RedrawGate::new()),
             wake: Mutex::new(None),
-            #[cfg(feature = "editor")]
             plan_gate: Arc::new(RedrawGate::new()),
-            #[cfg(feature = "editor")]
             plan_wake: Mutex::new(None),
-            #[cfg(feature = "editor")]
             self_weak: Mutex::new(Weak::new()),
-            #[cfg(feature = "editor")]
             tier_cutoff: Mutex::new(None),
         });
-        #[cfg(feature = "editor")]
-        {
-            *state
-                .self_weak
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner) = Arc::downgrade(&state);
-        }
+        *state
+            .self_weak
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Arc::downgrade(&state);
         state
     }
 
@@ -1371,8 +1273,8 @@ impl SolidPreviewState {
         });
     }
 
-    /// Submits a facet-id-keyed highlight update (#18 "which facet did I click",
-    /// #19 multi-select, #20 hover) -- see [`FacetOverlay`]'s doc comment. Re-renders
+    /// Submits a facet-id-keyed highlight update ("which facet did I click", multi-
+    /// select, hover) -- see [`FacetOverlay`]'s doc comment. Re-renders
     /// at whatever camera/planes/size/`view_mode` the worker last used for a
     /// [`Self::request_redraw_with_gear`]/[`Self::request_replan`] call, exactly
     /// like an ordinary camera-follow reproject, so a caller that already has a
@@ -1383,12 +1285,8 @@ impl SolidPreviewState {
         self.submit(RedrawRequest::UpdateFacetOverlay(overlay));
     }
 
-    /// Submits a full replan-on-edit request to the PLAN worker (CAD audit item
-    /// 110) -- see [`ReplanRequest`]'s doc comment for its fields;
-    /// `live_update::plan_preview` never runs on the UI thread, and (since this
-    /// item) never blocks the RENDER worker's own queue either -- see the module
-    /// doc comment, "Two workers: planning vs. rendering".
-    #[cfg(feature = "editor")]
+    /// Submits a replan-on-edit request to the PLAN worker.
+    /// `live_update::plan_preview` never runs on the UI thread.
     pub fn request_replan(&self, request: ReplanRequest) {
         let tier_cutoff = *self
             .tier_cutoff
@@ -1410,29 +1308,19 @@ impl SolidPreviewState {
         });
     }
 
-    /// Sets CAD audit item 211's "show through tier N" cutoff: `Some(n)` makes every
-    /// subsequent [`Self::request_replan`] draw only `design.tiers[..=n]` (preform
-    /// planes always kept); `None` (the default) shows every tier, unchanged from
-    /// before this existed.
+    /// Sets the "show through tier N" cutoff: `Some(n)` truncates to
+    /// `design.tiers[..=n]`. Does NOT trigger a redraw; the caller must submit
+    /// [`Self::request_replan`] afterwards.
     ///
-    /// Does NOT itself trigger a redraw -- exactly like every other per-replan
-    /// setting `SolidPreviewState` does not own a redraw timer for (`n_d`,
-    /// `selected_tier`, `show_preform`, ...): the caller must still submit a
-    /// [`Self::request_replan`] afterwards for the change to actually reach the
-    /// screen.
-    ///
-    /// HANDOFF (not this module's file ownership): nothing calls this yet.
-    /// `ui/models/solid_preview.slint` needs an `in-out property <int> tier_cutoff:
-    /// -1;` (Slint has no `Option<int>`; `-1` is "no cutoff", matching this
+    /// Called from `gui::editor::view::submit_preview_replan_for`, which reads
+    /// `SolidPreviewModel.tier_cutoff` (`-1` means "no cutoff", matching this
     /// crate's existing `-1`-means-`None` convention for e.g.
-    /// `diagram_enlarged_panel`), a slider in `solid_viewport.slint` bound to it,
-    /// and `gui::editor::view::submit_preview_replan` calling
-    /// `preview_state.set_tier_cutoff((cutoff >= 0).then_some(cutoff as usize))`
-    /// before `request_replan` -- the same three-file shape `show_preform_planes`/
+    /// `diagram_enlarged_panel`) and converts it with
+    /// `usize::try_from(cutoff).ok()` before calling this and then
+    /// `request_replan` -- the same three-file shape `show_preform_planes`/
     /// `diagram_enlarged_panel` already went through, just with the read happening
     /// here instead of as a `ReplanRequest` field (see this state's own
     /// `tier_cutoff` field doc comment for why).
-    #[cfg(feature = "editor")]
     pub fn set_tier_cutoff(&self, cutoff: Option<usize>) {
         *self
             .tier_cutoff
@@ -1467,13 +1355,9 @@ impl SolidPreviewState {
         }
     }
 
-    /// Spawns the RENDER worker thread and returns its wake channel's sending
-    /// half. Called at most once, guarded by `wake` being `Some` after. Never
-    /// calls `live_update::plan_preview`/`Design::solve` itself -- every request
-    /// it handles (`Reproject`, `UpdateFacetOverlay`, and the PLAN worker's own
-    /// finished `Planned` frame) is cheap relative to a real solve (CAD audit
-    /// item 110), which is exactly why a slow solve queued on [`Self::plan_gate`]
-    /// can never block this worker's own queue.
+    /// Spawns the RENDER worker thread. Called at most once, guarded by `wake`.
+    /// Never calls `live_update::plan_preview` itself; every request it handles
+    /// is cheap relative to a real solve.
     fn spawn_worker(&self) -> Sender<()> {
         let (tx, rx) = mpsc::channel::<()>();
         let sink = Arc::clone(&self.sink);
@@ -1490,26 +1374,29 @@ impl SolidPreviewState {
                 let Some(request) = gate.take() else {
                     continue;
                 };
-                let frame = render_request(
+                // `None` means an `UpdateFacetOverlay` arrived before the first
+                // real frame; nothing is pushed to the sink.
+                let Some(frame) = render_request(
                     &mut mesh_cache,
                     &mut rasterizer,
                     &mut edges_rasterizer,
                     &mut memory,
                     request,
-                );
+                ) else {
+                    continue;
+                };
                 sink.apply(frame);
             }
         });
         tx
     }
 
-    /// [`Self::submit`]'s counterpart for the PLAN worker (CAD audit item 110):
-    /// lazily spawns it, then pushes `job` through [`Self::plan_gate`] (coalescing
+    /// [`Self::submit`]'s counterpart for the PLAN worker: lazily spawns it, then
+    /// pushes `job` through [`Self::plan_gate`] (coalescing
     /// exactly like a `Reproject`/overlay update -- a burst of edits against a
     /// slow design collapses to "whichever solve is running, then the latest one
     /// queued behind it," never a pile of concurrent solves) and wakes it if this
     /// call won the race.
-    #[cfg(feature = "editor")]
     fn submit_plan(&self, job: PlanJob) {
         let tx = {
             let mut guard = self
@@ -1528,18 +1415,13 @@ impl SolidPreviewState {
         }
     }
 
-    /// Spawns the PLAN worker thread and returns its wake channel's sending half.
-    /// Called at most once, guarded by `plan_wake` being `Some` after. This is the
-    /// ONLY thread that ever calls [`build_planned_frame`]/`live_update::
-    /// plan_preview` -- CAD audit item 110's fix: splitting it from
-    /// [`Self::spawn_worker`] means a `Reproject`/`UpdateFacetOverlay` request
-    /// queued on the RENDER worker's own, separate gate is never stuck behind a
-    /// multi-second solve here.
+    /// Spawns the PLAN worker thread. Called at most once, guarded by `plan_wake`.
+    /// This is the only thread that calls [`build_planned_frame`], so render
+    /// requests never block on slow solves.
     ///
     /// Hands each finished [`PlannedFrame`] to the RENDER worker through
     /// [`Self::submit`] via `self_weak` -- see that field's own doc comment for
     /// why a weak handle rather than capturing `self` directly.
-    #[cfg(feature = "editor")]
     fn spawn_plan_worker(&self) -> Sender<()> {
         let (tx, rx) = mpsc::channel::<()>();
         let plan_gate = Arc::clone(&self.plan_gate);
@@ -1693,10 +1575,8 @@ mod tests {
         assert!(status.contains("Unbounded"), "got: {status}");
     }
 
-    /// CAD audit item 63: once a real solid has been shown, an edit that
-    /// temporarily stops closing (typing '4' on the way to '41', say) must keep
-    /// showing that last solid (dimmed) rather than blanking the viewport --
-    /// `has_solid` stays `true` and the reason still reaches `status`.
+    /// Once a real solid has closed, a temporary unbounded state must keep
+    /// showing the last solid, dimmed, not blank the viewport.
     #[test]
     fn an_unbounded_request_after_a_closed_one_keeps_showing_the_last_solid() {
         let sink = FakeSink::new();
@@ -1716,7 +1596,7 @@ mod tests {
         assert!(status.contains("Unbounded"), "got: {status}");
     }
 
-    /// #18/#19/#20: a facet-overlay update carries no camera/planes/`Design` of its
+    /// A facet-overlay update carries no camera/planes/`Design` of its
     /// own -- it must re-render at whatever the worker already used for its last
     /// `Reproject`/`Replan`, and apply to BOTH the solid and diagram styles so
     /// whichever view is on screen picks it up.
@@ -1740,6 +1620,10 @@ mod tests {
             &mut memory,
             &mut mesh_cache,
             RedrawRequest::UpdateFacetOverlay(overlay.clone()),
+        )
+        .expect(
+            "memory.size is Some, so this is not the no-op case of a facet-overlay update \
+             arriving before the first Planned/Reproject request",
         );
 
         assert_eq!(planes, box_planes(0.6), "must reuse the last-known planes");
@@ -1758,17 +1642,18 @@ mod tests {
 
     /// A `Reproject` request with an unchanged plane arrangement (an ordinary
     /// camera drag/zoom) must leave a previously-set facet overlay in place --
-    /// only a genuinely different design (#25's plane-change check) clears it.
+    /// only a genuinely different design (the plane-change check) clears it.
     #[test]
     fn an_ordinary_reproject_does_not_clear_a_facet_overlay() {
         let mut memory = WorkerMemory::default();
         let mut mesh_cache = MeshCache::default();
-        resolve_request_state(
+        // `memory.size` is still `None`; this is a no-op before the first frame.
+        let _ = resolve_request_state(
             &mut memory,
             &mut mesh_cache,
             RedrawRequest::UpdateFacetOverlay(FacetOverlay::default()),
         );
-        resolve_request_state(
+        let _ = resolve_request_state(
             &mut memory,
             &mut mesh_cache,
             RedrawRequest::Reproject {
@@ -1779,7 +1664,7 @@ mod tests {
                 gear: None,
             },
         );
-        resolve_request_state(
+        let _ = resolve_request_state(
             &mut memory,
             &mut mesh_cache,
             RedrawRequest::UpdateFacetOverlay(FacetOverlay {
@@ -1798,7 +1683,8 @@ mod tests {
                 view_mode: 0,
                 gear: None,
             },
-        );
+        )
+        .expect("a Reproject request always resolves");
         assert_eq!(
             style.hovered,
             Some(7),
@@ -1806,7 +1692,42 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "editor")]
+    /// An `UpdateFacetOverlay` arriving before this worker has ever resolved a
+    /// `Planned`/`Reproject` request must be a REAL no-op -- no frame at all, not
+    /// a background-colored 1x1 placeholder rendered and pushed to the sink as if
+    /// it were real. See `WorkerMemory::size`'s own doc comment.
+    #[test]
+    fn update_facet_overlay_before_any_frame_resolves_to_nothing() {
+        let mut memory = WorkerMemory::default();
+        let mut mesh_cache = MeshCache::default();
+        assert!(
+            resolve_request_state(
+                &mut memory,
+                &mut mesh_cache,
+                RedrawRequest::UpdateFacetOverlay(FacetOverlay {
+                    hovered: Some(3),
+                    ..FacetOverlay::default()
+                }),
+            )
+            .is_none(),
+            "no Planned/Reproject frame has ever resolved, so there is nothing to redraw"
+        );
+
+        let mut rasterizer = SolidRasterizer::new(1, 1);
+        let mut edges_rasterizer = SolidRasterizer::new(1, 1);
+        assert!(
+            render_request(
+                &mut mesh_cache,
+                &mut rasterizer,
+                &mut edges_rasterizer,
+                &mut memory,
+                RedrawRequest::UpdateFacetOverlay(FacetOverlay::default()),
+            )
+            .is_none(),
+            "render_request must not synthesize a 1x1 placeholder frame either"
+        );
+    }
+
     mod replan {
         use super::*;
         use indicatrix::geometry::meet_solver::MeetConstraint;
@@ -1919,7 +1840,7 @@ mod tests {
         fn plan_job(design: Design) -> PlanJob {
             let n_d = design.effective_refractive_index();
             PlanJob {
-                design,
+                design: Arc::new(design),
                 dirty: std::collections::BTreeSet::new(),
                 last_solved: None,
                 camera: CAMERA,
@@ -1941,6 +1862,52 @@ mod tests {
             assert_ne!(frame.planes, Vec::<(Vec3, f32)>::new());
             assert_eq!(frame.solved.map(|s| s.len()), Some(2));
             assert!(!frame.stale, "a pinned design never goes over budget");
+        }
+
+        /// `ReplanRequest`/`PlanJob`/`PlannedFrame` carry `Arc<Design>` end to
+        /// end, reusing the same allocation across the full path instead of
+        /// cloning repeatedly. Verifies via `Arc::ptr_eq`.
+        #[test]
+        fn build_planned_frame_carries_the_same_design_allocation_through_to_planned_frame() {
+            let design = Arc::new(closed_design());
+            let job = PlanJob {
+                design: Arc::clone(&design),
+                ..plan_job(closed_design())
+            };
+            let frame = build_planned_frame(job, live_update::DEFAULT_PREVIEW_BUDGET);
+            assert!(
+                Arc::ptr_eq(&design, &frame.design),
+                "build_planned_frame must not clone the design -- PlannedFrame::design \
+                 should be the exact same Arc allocation ReplanRequest/PlanJob were handed"
+            );
+        }
+
+        /// Same fixture ("RBC-445"-style, the standard round-brilliant `closed_design`
+        /// this module's other `PlannedFrame` tests already use), proving the
+        /// `Arc<Design>` plumbing above changed nothing about what actually gets
+        /// planned: a real closed solid, all 8 tiers solved, never stale -- byte-
+        /// for-byte the same shape [`render_request_carries_solved_and_freshness_
+        /// through_to_the_worker_frame`] below already asserts end to end through
+        /// `render_request` too.
+        #[test]
+        fn build_planned_frame_output_for_the_round_brilliant_fixture_is_unchanged() {
+            let design = closed_design();
+            let frame = build_planned_frame(plan_job(design), live_update::DEFAULT_PREVIEW_BUDGET);
+            assert!(
+                !frame.stale,
+                "a pinned round-brilliant design never goes over budget"
+            );
+            assert!(frame.unsolvable_status.is_none());
+            assert_eq!(
+                frame.solved.map(|s| s.len()),
+                Some(8),
+                "every one of the fixture's 8 tiers must solve"
+            );
+            assert_ne!(
+                frame.planes,
+                Vec::<(Vec3, f32)>::new(),
+                "a closed round-brilliant design must produce a real plane arrangement"
+            );
         }
 
         #[test]
@@ -1982,13 +1949,8 @@ mod tests {
             );
         }
 
-        /// CAD audit item 63: [`resolve_planned_state`]'s `Unbounded` banner must name the
-        /// escaping plane's owning tier, not the raw index -- exercised directly
-        /// against `escaping_tier_label` rather than via a real failing
-        /// `build_solid_mesh` call, since every `PreformSpec::planes` is
-        /// documented to be closed on its own (see that method's own doc
-        /// comment), so nothing here can assert a specific fixture ends up
-        /// `Unbounded`.
+        /// The `Unbounded` banner must name the escaping plane's owning tier,
+        /// not the raw index.
         #[test]
         fn escaping_tier_label_names_the_owning_tier() {
             let design = pinned_design();
@@ -2046,13 +2008,7 @@ mod tests {
             );
         }
 
-        /// CAD audit item 211: a `PlanJob.tier_cutoff` of `Some(0)` must truncate
-        /// `build_planned_frame`'s drawn planes to `pinned_design`'s first tier
-        /// ("Table") only, dropping the second ("Pavilion") -- exercised through
-        /// `build_planned_frame` (production's own entry point for a `PlanJob`)
-        /// rather than `live_update::plan_preview` directly, since this is the
-        /// boundary [`SolidPreviewState::request_replan`] actually threads the
-        /// cached cutoff across.
+        /// A `tier_cutoff` of `Some(0)` truncates planes to the first tier only.
         #[test]
         fn tier_cutoff_truncates_the_planned_frame() {
             let design = pinned_design();
@@ -2098,11 +2054,8 @@ mod tests {
             assert_eq!(cached(), None);
         }
 
-        /// Builds a [`RedrawRequest::Planned`] request the way production code
-        /// does since CAD audit item 110 split planning off the render worker's
-        /// own queue: [`build_planned_frame`] on a `PlanJob` for `design`, then
-        /// boxed into the request `render_request` accepts. A test-only stand-in
-        /// for the two real worker threads, kept synchronous and deterministic.
+        /// Builds a [`RedrawRequest::Planned`] request: [`build_planned_frame`] on
+        /// a `PlanJob`, then boxed. A test-only stand-in kept synchronous.
         fn planned_request(
             design: Design,
             view_mode: u8,
@@ -2135,7 +2088,8 @@ mod tests {
                 &mut edges_rasterizer,
                 &mut memory,
                 planned_request(design, 0, (16, 16), 7),
-            );
+            )
+            .expect("a Planned request always resolves");
             assert!(frame.has_solid);
             assert!(!frame.stale);
             assert_eq!(frame.solved.map(|s| s.len()), Some(8));
@@ -2167,7 +2121,8 @@ mod tests {
                 &mut edges_rasterizer,
                 &mut memory,
                 planned_request(design, 2, (16, 16), 0),
-            );
+            )
+            .expect("a Planned request always resolves");
             assert!(frame.edges_image.is_some());
             assert!(
                 frame.diagram_image.is_none(),
@@ -2193,16 +2148,17 @@ mod tests {
                 &mut edges_rasterizer,
                 &mut memory,
                 planned_request(design, 3, (240, 120), 0),
-            );
+            )
+            .expect("a Planned request always resolves");
             assert!(frame.has_diagram);
             assert!(frame.diagram_image.is_some());
             let pick = frame
                 .diagram_pick
                 .expect("view_mode 3 must produce a diagram pick buffer");
             assert_eq!((pick.width, pick.height), (240, 120));
-            // #121: the index wheel's own tooth pick buffer must be threaded
-            // through alongside the facet one, at the SAME size (both are built
-            // from the same `DiagramFrame`).
+            // The index wheel's own tooth pick buffer must be threaded through
+            // alongside the facet one, at the SAME size (both are built from the
+            // same `DiagramFrame`).
             let tooth_pick = frame
                 .diagram_tooth_pick
                 .expect("view_mode 3 must also produce a tooth pick buffer");
@@ -2220,7 +2176,7 @@ mod tests {
             assert!(hover_text.iter().any(|t| t.contains("Table")));
         }
 
-        /// #118: every frame -- not just Diagram-mode ones -- must carry a real,
+        /// Every frame -- not just Diagram-mode ones -- must carry a real,
         /// positive bounding radius once a solid has closed, so `render::
         /// camera_lighting`'s orbit-zoom clamp/"Fit" pose never reads the
         /// [`DEFAULT_MESH_BOUNDING_RADIUS`] placeholder for a design that
@@ -2239,18 +2195,14 @@ mod tests {
                 &mut edges_rasterizer,
                 &mut memory,
                 planned_request(design, 0, (16, 16), 0),
-            );
+            )
+            .expect("a Planned request always resolves");
             assert!(frame.has_solid);
             assert!(frame.mesh_bounding_radius > 0.0);
         }
 
-        /// `cad_todo.md` #73: a `Reproject`/`UpdateFacetOverlay` frame (an ordinary
-        /// camera drag, or a hover/click highlight update) carries no `generation`
-        /// of its own -- it must reuse whichever generation the LAST `Replan`
-        /// recorded into `WorkerMemory`, exactly like `solved_masts`/`planes`
-        /// already are, so a camera orbit right after an in-budget edit does not
-        /// make `gui::SlintSolidSink::apply` think the design regressed to "no
-        /// generation yet."
+        /// A `Reproject`/`UpdateFacetOverlay` frame carries no generation of its
+        /// own; it must reuse the last `Replan`'s generation.
         #[test]
         fn a_reproject_frame_carries_forward_the_last_replans_generation() {
             let design = closed_design();
@@ -2265,7 +2217,8 @@ mod tests {
                 &mut edges_rasterizer,
                 &mut memory,
                 planned_request(design, 0, (16, 16), 42),
-            );
+            )
+            .expect("a Planned request always resolves");
             assert_eq!(replan_frame.generation, 42);
 
             let reproject_frame = render_request(
@@ -2280,7 +2233,8 @@ mod tests {
                     view_mode: 0,
                     gear: None,
                 },
-            );
+            )
+            .expect("a Reproject request always resolves");
             assert_eq!(
                 reproject_frame.generation, 42,
                 "a camera-follow reproject must not lose the last replan's generation"

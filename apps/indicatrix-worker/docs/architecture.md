@@ -22,9 +22,9 @@ That has two consequences worth stating, because both are easy to get wrong:
   when the feature compiled. A client checks before sending.
 - **The contract is advisory, not enforcement.** Nothing prevents a peer from sending
   a `RenderRequest` to a library-only server anyway, so the dispatch answers with a
-  protocol error rather than treating the case as impossible. It was once an
-  `unreachable!()`, which would have panicked a connection thread on peer-controlled
-  input.
+  protocol error rather than treating the case as impossible: treating it as
+  impossible (e.g. via `unreachable!()`) would panic a connection thread on
+  peer-controlled input.
 
 Everything below describes the render path specifically; the library path is a plain
 request/response on the same loop, with no streaming, no `request_id` epochs and no
@@ -172,10 +172,10 @@ outcome, not an error, and happens for three reasons: no usable adapter on this
 machine, `--only-cpu`, or an **HDR environment map** (the megakernel has no
 `env_mode` for it).
 
-Biaxial materials (Alexandrite, Topaz, Tanzanite) do **not** decline any more.
+Biaxial materials (Alexandrite, Topaz, Tanzanite) do **not** decline.
 The `BiaxialIndicatrix` machinery is ported to WGSL and verified at the same
 Tier 2 / Tier 3 bar as every other material, so `GemMaterial::gpu_supported()` is
-now unconditionally `true` — see that method's own doc comment, and
+unconditionally `true` — see that method's own doc comment, and
 `indicatrix::renderer::gpu_backend`'s module doc comment for the authoritative
 decline list.
 
@@ -189,7 +189,7 @@ map arriving in a `SceneState`) still falls back silently for that request alone
 | Flag | Effect |
 |---|---|
 | `--only-gpu` | GPU only, on both subcommands — never splits work onto the CPU tracer (see "Hybrid CPU+GPU" below), even when the split would otherwise have been offered a share. Still falls back to the CPU tracer for a request/sub-batch the GPU itself declines. Rejected at parse time without the `gpu` feature. |
-| `--only-cpu` | Runtime opt-out on both subcommands. For A/B comparison against the CPU tracer, and for routing around a misbehaving adapter without recompiling. What `--no-gpu` (removed) used to do. |
+| `--only-cpu` | Runtime opt-out on both subcommands. For A/B comparison against the CPU tracer, and for routing around a misbehaving adapter without recompiling. |
 | `--threads` | Still means **CPU** threads. Ignored by GPU dispatch (one compute-pipeline dispatch, not a thread fan-out), but it still governs the CPU fallback — so it remains worth setting even with the GPU active. |
 | (neither `--only-*` flag) | Default: hybrid CPU+GPU — see "Hybrid CPU+GPU" below. |
 
@@ -220,12 +220,9 @@ absolute, buffers are summed rather than averaged, and `indicatrix`'s own Tier 3
 check validates CPU and GPU tracing *disjoint* ranges of the same image and
 merging the result.
 
-> **This section used to say the opposite**, and was correct when written: the
-> WGSL kernels then predated several CPU-side physics corrections, so enabling
-> them would have produced silently wrong output. That is no longer true — the
-> port is complete through Phase 3 and verified against a real adapter (Tier 2
-> per-function ULP budgets at max genuine ULP = 0, energy-conservation furnace
-> anchors, Tier 3 statistical image comparison, uniaxial birefringence). Run
-> `cargo run --release -p indicatrix --features gpu --example gpu_equivalence_harness`
-> to confirm on your own hardware.
+The GPU port is verified against a real adapter (Tier 2 per-function ULP
+budgets at max genuine ULP = 0, energy-conservation furnace anchors, Tier 3
+statistical image comparison, uniaxial birefringence). Run
+`cargo run --release -p indicatrix --features gpu --example gpu_equivalence_harness`
+to confirm on your own hardware.
 

@@ -1,5 +1,8 @@
 use super::*;
-use crate::{design::Design, preform::PreformSpec};
+use crate::{
+    design::{Design, TierId},
+    preform::PreformSpec,
+};
 use indicatrix::geometry::{
     meet_solver::{MeetConstraint, SolvedTier},
     stone_metrics::SolidStatus,
@@ -277,13 +280,69 @@ fn a_freshly_imported_design_has_nothing_to_flag_for_cut_order() {
     assert_eq!(check_cut_order(&design), Vec::new());
 }
 
+// --- check_meet_name_asc_safety ---
+
+/// A `MeetNamed` target containing a space must be flagged -- it would split
+/// into two unrelated tokens on a plain `.asc` re-parse.
+#[test]
+fn a_meet_name_with_whitespace_is_flagged_unsafe() {
+    let mut design = Design::fresh(PreformSpec::block(1.0, 1.0, 2.0), 96, 4, 1.62);
+    design.tiers.push(tier(
+        "A",
+        30.0,
+        MeetConstraint::MeetNamed(vec!["Crown Main".to_string()]),
+        &[0.0, 24.0, 48.0, 72.0],
+    ));
+    let warnings = check_meet_name_asc_safety(&design);
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    assert!(matches!(
+        &warnings[0],
+        ManufacturabilityWarning::MeetNameNotAscSafe { tier_index: 0, unsafe_names, .. }
+            if unsafe_names == &["Crown Main".to_string()]
+    ));
+}
+
+/// A plain alphanumeric `MeetNamed` target must never be flagged.
+#[test]
+fn a_plain_meet_name_is_not_flagged() {
+    let mut design = Design::fresh(PreformSpec::block(1.0, 1.0, 2.0), 96, 4, 1.62);
+    design.tiers.push(tier(
+        "A",
+        30.0,
+        MeetConstraint::MeetNamed(vec!["Girdle".to_string()]),
+        &[0.0, 24.0, 48.0, 72.0],
+    ));
+    assert_eq!(check_meet_name_asc_safety(&design), Vec::new());
+}
+
+/// `check_manufacturability_available` with no solve state must include this
+/// check alongside the other two mast-free ones.
+#[test]
+fn check_manufacturability_available_includes_unsafe_meet_names_with_no_solve() {
+    let mut design = Design::fresh(PreformSpec::block(1.0, 1.0, 2.0), 96, 4, 1.62);
+    design.tiers.push(tier(
+        "A",
+        30.0,
+        MeetConstraint::MeetNamed(vec!["Main'".to_string()]),
+        &[0.0, 24.0, 48.0, 72.0],
+    ));
+    let warnings =
+        check_manufacturability_available(&design, None, DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2);
+    assert!(
+        warnings
+            .iter()
+            .any(|w| matches!(w, ManufacturabilityWarning::MeetNameNotAscSafe { .. })),
+        "{warnings:?}"
+    );
+}
+
 // --- check_manufacturability_available ---
 
 /// A design with no `ScaleReference` anchor at all (so `Design::solve` itself
-/// returns `MissingAnchor`) must still report its mast-free warnings -- the exact
-/// case the "mast-free checks are dropped entirely on `MissingAnchor`" finding is
-/// about. `solved: None` must not fall back to an empty `Vec` the way an editor
-/// early-returning on `design.solve().is_err()` used to.
+/// returns `MissingAnchor`) must still report its mast-free warnings, not drop
+/// them entirely just because there is no anchor to solve against. `solved: None`
+/// must not fall back to an empty `Vec`, unlike an editor that early-returns on
+/// `design.solve().is_err()`.
 #[test]
 fn reports_mast_free_warnings_even_with_no_anchor_to_solve() {
     let mut design = Design::fresh(PreformSpec::block(1.0, 1.0, 2.0), 96, 4, 1.62);
@@ -332,12 +391,14 @@ fn delegates_to_check_manufacturability_when_solved_masts_are_available() {
 fn tier_index_reads_back_every_variants_own_field() {
     let vanishing = ManufacturabilityWarning::VanishingFacet {
         tier_index: 3,
+        tier_id: TierId(3),
         tier_name: "V".to_string(),
         vanished: 1,
         total: 2,
     };
     let undersized = ManufacturabilityWarning::UndersizedFacet {
         tier_index: 4,
+        tier_id: TierId(4),
         tier_name: "U".to_string(),
         facet_plane_index: 7,
         area: 0.001,
@@ -346,6 +407,7 @@ fn tier_index_reads_back_every_variants_own_field() {
     };
     let fractional = ManufacturabilityWarning::FractionalIndex {
         tier_index: 5,
+        tier_id: TierId(5),
         tier_name: "F".to_string(),
         requested: 24.5,
         achievable: 25.0,
@@ -353,14 +415,23 @@ fn tier_index_reads_back_every_variants_own_field() {
     };
     let out_of_order = ManufacturabilityWarning::OutOfOrderMeet {
         tier_index: 6,
+        tier_id: TierId(6),
         tier_name: "O".to_string(),
         target_tier_index: 9,
         target_tier_name: "T".to_string(),
+    };
+    let unsafe_meet_name = ManufacturabilityWarning::MeetNameNotAscSafe {
+        tier_index: 7,
+        tier_id: TierId(7),
+        tier_name: "M".to_string(),
+        unsafe_names: vec!["Crown Main".to_string()],
     };
     assert_eq!(vanishing.tier_index(), 3);
     assert_eq!(undersized.tier_index(), 4);
     assert_eq!(fractional.tier_index(), 5);
     assert_eq!(out_of_order.tier_index(), 6);
+    assert_eq!(unsafe_meet_name.tier_index(), 7);
+    assert_eq!(unsafe_meet_name.facet_plane_index(), None);
 }
 
 /// Only `UndersizedFacet` names a facet plane to highlight -- every other variant
@@ -369,6 +440,7 @@ fn tier_index_reads_back_every_variants_own_field() {
 fn facet_plane_index_is_only_some_for_undersized_facet() {
     let undersized = ManufacturabilityWarning::UndersizedFacet {
         tier_index: 0,
+        tier_id: TierId(0),
         tier_name: "U".to_string(),
         facet_plane_index: 7,
         area: 0.001,
@@ -379,6 +451,7 @@ fn facet_plane_index_is_only_some_for_undersized_facet() {
 
     let out_of_order = ManufacturabilityWarning::OutOfOrderMeet {
         tier_index: 0,
+        tier_id: TierId(0),
         tier_name: "O".to_string(),
         target_tier_index: 1,
         target_tier_name: "T".to_string(),
@@ -386,16 +459,17 @@ fn facet_plane_index_is_only_some_for_undersized_facet() {
     assert_eq!(out_of_order.facet_plane_index(), None);
 }
 
-// --- Display: 1-based tier numbers (CAD audit item 159) ---
+// --- Display: 1-based tier numbers ---
 
 /// `tier_index()` (used to attribute a warning to a row) must stay 0-based, but
 /// the `Display` text a cutter actually reads must match the tier table's own
-/// 1-based row numbers -- previously off by one against every other on-screen
-/// reference to the same tier.
+/// 1-based row numbers, matching every other on-screen reference to the same
+/// tier.
 #[test]
 fn display_numbers_tiers_1_based_while_tier_index_stays_0_based() {
     let vanishing = ManufacturabilityWarning::VanishingFacet {
         tier_index: 0,
+        tier_id: TierId(0),
         tier_name: "Table".to_string(),
         vanished: 1,
         total: 2,
@@ -408,6 +482,7 @@ fn display_numbers_tiers_1_based_while_tier_index_stays_0_based() {
 
     let out_of_order = ManufacturabilityWarning::OutOfOrderMeet {
         tier_index: 2,
+        tier_id: TierId(2),
         tier_name: "Crown Main".to_string(),
         target_tier_index: 5,
         target_tier_name: "Pavilion Main".to_string(),
@@ -429,6 +504,7 @@ fn undersized_facet_display_reports_a_percentage_of_stone_width() {
     let half_threshold_area = threshold / 4.0; // sqrt(area) is half of sqrt(threshold)
     let undersized = ManufacturabilityWarning::UndersizedFacet {
         tier_index: 1,
+        tier_id: TierId(1),
         tier_name: "Girdle Facet".to_string(),
         facet_plane_index: 3,
         area: half_threshold_area,

@@ -13,12 +13,11 @@ export global SolidPreviewModel {
     in-out property <length> viewport_width: 800px;
     in-out property <length> viewport_height: 600px;
     // The Live Render tab's OWN viewport size (`gem_viewport.slint`) -- a SEPARATE
-    // pair of properties from `viewport_width`/`viewport_height` above (#26): both
-    // components used to push their layout size into those same two properties,
-    // so whichever viewport resized last silently overwrote the other's pending
-    // redraw size (e.g. undocking/resizing the Live Render window while the Edit
-    // tab was open left the Edit tab's next redraw sized to the Live tab's
-    // viewport, or vice versa). `render::camera_lighting::resubmit_at_current_pose`/
+    // pair of properties from `viewport_width`/`viewport_height` above. Keeping them
+    // separate stops whichever viewport resizes last from silently overwriting the
+    // other's pending redraw size (e.g. undocking/resizing the Live Render window
+    // while the Edit tab is open would otherwise size the Edit tab's next redraw to
+    // the Live tab's viewport, or vice versa). `render::camera_lighting::resubmit_at_current_pose`/
     // `resubmit_live_solid` read these for the Live tab, `viewport_width`/
     // `viewport_height` for the Edit tab.
     in-out property <length> live_viewport_width: 800px;
@@ -26,7 +25,7 @@ export global SolidPreviewModel {
     // Fired (debounced ~50ms, see `solid_viewport.slint`'s `resize_pulse`) after
     // `viewport_width`/`viewport_height` settle on a new value -- a resize/maximise
     // otherwise left the shown image rescaled and the pick buffer misaligned from
-    // the cursor until the next orbit/zoom redraw (#26). Handled in `gui::mod`'s
+    // the cursor until the next orbit/zoom redraw. Handled in `gui::mod`'s
     // `build_main_window`, which calls `render::camera_lighting::
     // resubmit_at_current_pose` deferred by one event-loop turn (so it reads the
     // post-layout size), the same call `detached_render.rs`'s tab-switch handler
@@ -41,8 +40,8 @@ export global SolidPreviewModel {
     // Whether `edges_image` was built from the SAME plane arrangement as
     // `ViewportModel.render_image` -- `solid_viewport.slint` only composites the
     // edges layer over the render when this holds, otherwise it dims the render
-    // and explains why (#32). Defaults to `true` so "Both" mode behaves exactly as
-    // before until a real plane-generation comparison sets it. Set from `gui::mod`'s
+    // and explains why. Defaults to `true` so "Both" mode composites normally
+    // until a real plane-generation comparison sets it otherwise. Set from `gui::mod`'s
     // `SlintSolidSink::apply` (a finished solid-preview frame) and from the path
     // tracer's own frame-push closure (also in `gui::mod::build_main_window`) --
     // see `planes_generations_match`'s doc comment for how the two sides agree.
@@ -57,17 +56,18 @@ export global SolidPreviewModel {
     in property <string> diagram_hover_text: "";
     callback diagram_facet_hover(length, length);
     callback diagram_facet_click(length, length);
-    // #121: the index wheel's own tooth pick buffer, threaded from the diagram
+    // The index wheel's own tooth pick buffer, threaded from the diagram
     // frame through `gui::solid_preview::preview_state`/`diagram_wiring` --
     // `diagram_facet_hover`/`diagram_facet_click` above now also check it
     // whenever the SAME `(x, y)` misses every facet (a wheel tick, not a facet
     // fill). `-1` means "nothing", exactly like `EditorModel.selected_tier_index`'s
-    // own convention. `hovered` is transient (mirrors `diagram_hover_text`,
-    // cleared back to `-1` whenever the cursor moves elsewhere); `clicked` is a
-    // one-shot report of the last tooth actually clicked, for a future lane to
-    // act on (this pass only wires the buffer through, see `diagram_wiring`'s own
-    // doc comment).
-    in property <int> diagram_hovered_tooth: -1;
+    // own convention. A one-shot report of the last tooth actually clicked; only
+    // the buffer is wired through here, see `diagram_wiring`'s own doc comment.
+    // There is no `..._hovered_tooth` sibling: a hovered tooth's index is already
+    // named in `diagram_hover_text` itself ("Index {t}", see
+    // `diagram_wiring::setup_diagram_hover_and_click_callbacks`), so a separate
+    // property for it would carry no information a reader of the tooltip text
+    // doesn't already have.
     in property <int> diagram_clicked_tooth: -1;
     // Hover tooltip text and the picking callbacks driving it (`solid_viewport.slint`'s
     // `facet_hover`/`facet_click`/`hover_text`).
@@ -79,27 +79,27 @@ export global SolidPreviewModel {
     callback view_mode_changed(int);
     changed view_mode => { view_mode_changed(view_mode); }
 
-    // #122: whether the Solid view's rasterizer (`gui::solid_preview::raster`)
+    // Whether the Solid view's rasterizer (`gui::solid_preview::raster`)
     // draws the rough's own bounding (preform) planes -- toggled by
     // `solid_viewport.slint`'s "Preform" pill. `true` (the default) keeps every
     // preform facet visible, tinted rather than invisible (see
     // `raster::SolidStyle::show_preform`'s own doc comment); `false` hides them
     // entirely so a cutter can see through the rough to the actual cut.
     //
-    // HANDOFF (not this pass's file ownership): `gui::solid_preview::
+    // Not implemented in this file: `gui::solid_preview::
     // preview_state`'s Solid-view style builder needs to read this and set
     // `SolidStyle::show_preform`/`preform_plane_count` (the latter from
     // `facet_map::FacetMap::preform_plane_count()`, already computed there)
     // accordingly -- see this crate's `raster.rs` for both fields.
     in-out property <bool> show_preform_planes: true;
 
-    // #29 (P1): which diagram panel, if any, is shown enlarged (filling the
+    // Which diagram panel, if any, is shown enlarged (filling the
     // whole Diagram-mode image) instead of `solid_viewport.slint`'s ordinary
     // three-column layout. `-1` (the default) means "all three, side by side";
     // `0`/`1`/`2` mean Crown/Pavilion/Profile respectively, matching
     // `gui::solid_preview::diagram2d::PanelKind`'s own tag order.
     //
-    // HANDOFF (not this pass's file ownership): `gui::solid_preview::
+    // Not implemented in this file: `gui::solid_preview::
     // preview_state`'s `build_diagram_outputs` needs to read this and call
     // `diagram2d::render_diagram_single_panel(mesh, config, style, panel)`
     // instead of `diagram2d::render_diagram` whenever it is not `-1`; picking
@@ -107,7 +107,7 @@ export global SolidPreviewModel {
     // identically from either render function).
     in-out property <int> diagram_enlarged_panel: -1;
 
-    // CAD audit item 211: draw the stone as it stands after this many tiers of the
+    // Draws the stone as it stands after this many tiers of the
     // schedule, so a cutter can see what the next course actually lands on. `-1` is
     // "the whole design", matching `diagram_enlarged_panel` just above -- Slint has
     // no `Option<int>`. Read in `gui::editor::view::submit_preview_replan` and

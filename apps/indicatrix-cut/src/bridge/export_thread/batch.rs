@@ -32,7 +32,7 @@ const TARGET_BATCHES: u32 = 40;
 /// The local lane's claim size for [`SampleCursor::claim_local`]. Derived from the
 /// export's OVERALL `samples_per_pixel`, not local's dynamically-decided share, so a
 /// `LocalOnly` export's batch granularity (and progress-reporting/cancellation
-/// latency) stays byte-for-byte identical to before remote existed. When remote is
+/// latency) stays the same whether or not a remote worker is in play. When remote is
 /// claiming a share of the budget, local just runs fewer same-sized claims.
 pub(super) fn local_chunk_size(samples_per_pixel: u32) -> u32 {
     (samples_per_pixel / TARGET_BATCHES).max(1)
@@ -53,6 +53,14 @@ pub(super) struct ExportCtx<'a> {
     pub(super) scene: &'a SceneSnapshot,
     pub(super) gpu: &'a GpuBackend,
     pub(super) gpu_scene: &'a GpuSceneRef<'a>,
+    /// Set once a joined GPU-thread panic is observed in [`hybrid_batch`]
+    /// and never cleared for the rest of this export -- `GpuBackend` itself only
+    /// retires its own internal `lost` flag on a cleanly-reported `DeviceLost`, which a
+    /// raw thread panic never reaches. Every `ctx.gpu.try_accumulate` call site in this
+    /// module checks this FIRST, so a panic mid-export retires the backend for every
+    /// later batch (both the hybrid split and the single-engine fallback in
+    /// [`run_local_batches`]), not just the one batch it happened in.
+    pub(super) gpu_retired: &'a AtomicBool,
 }
 
 /// Times one real export sample per pixel on each engine (GPU, then CPU -- both
@@ -74,6 +82,12 @@ pub(super) fn calibrate_split(
     gpu_accum: &mut [Vec3],
     cancel: &AtomicBool,
 ) -> Option<f64> {
+    // A prior batch's joined GPU-thread panic retired the backend for the
+    // rest of this export -- decline exactly like a normal `try_accumulate` decline,
+    // without touching the (possibly corrupted) renderer again.
+    if ctx.gpu_retired.load(Ordering::Relaxed) {
+        return None;
+    }
     // Untimed warm-up sample: a real export sample (counted below), just not the one
     // whose wall-clock cost feeds the split.
     if !ctx
@@ -142,7 +156,16 @@ pub(super) fn hybrid_batch(
     accum: &mut [Vec3],
     gpu_accum: &mut [Vec3],
 ) {
-    let frac = gpu_frac.unwrap_or(0.0);
+    // A prior batch's joined GPU-thread panic retired the backend for the
+    // rest of this export -- force this batch entirely onto the CPU (like a normal
+    // decline) and stop offering the GPU any future share, rather than dispatching
+    // into the renderer state a panic may have left mapped/corrupted.
+    let frac = if ctx.gpu_retired.load(Ordering::Relaxed) {
+        *gpu_frac = None;
+        0.0
+    } else {
+        gpu_frac.unwrap_or(0.0)
+    };
     let gpu_share = (f64::from(this_batch) * frac).round() as u32;
     let gpu_share = gpu_share.min(this_batch);
     let cpu_share = this_batch - gpu_share;
@@ -186,10 +209,20 @@ pub(super) fn hybrid_batch(
                 accum,
             );
             let cpu_elapsed = cpu_start.elapsed();
-            let (gpu_ok, gpu_elapsed) = gpu_task
-                .join()
-                .unwrap_or((false, std::time::Duration::ZERO));
-            (gpu_ok, gpu_elapsed, cpu_elapsed)
+            if let Ok((gpu_ok, gpu_elapsed)) = gpu_task.join() {
+                (gpu_ok, gpu_elapsed, cpu_elapsed)
+            } else {
+                // The GPU thread panicked rather than returning normally --
+                // distinct from a plain decline. Retire the backend for the REST of
+                // this export (every later batch, via `ctx.gpu_retired`), not just
+                // clear this batch's own `gpu_frac` split.
+                tracing::error!(
+                    "GPU export thread panicked mid-batch; retiring the GPU \
+                     backend for the rest of this export"
+                );
+                ctx.gpu_retired.store(true, Ordering::Relaxed);
+                (false, std::time::Duration::ZERO, cpu_elapsed)
+            }
         })
     };
 
@@ -228,7 +261,7 @@ pub(super) fn hybrid_batch(
 ///
 /// `local_chunk_size` is derived from the export's OVERALL `samples_per_pixel` (see
 /// [`local_chunk_size`]), not from whatever the cursor has left, keeping a local-only
-/// export's batch granularity byte-for-byte identical to before remote existed.
+/// export's batch granularity the same whether or not a remote worker is in play.
 ///
 /// # Knowing when to stop
 ///
@@ -282,10 +315,16 @@ pub(super) fn run_local_batches(
 
         if gpu_frac.is_some() {
             hybrid_batch(ctx, start, count, gpu_frac, accum, gpu_accum);
-        } else if !ctx
-            .gpu
-            .try_accumulate(ctx.gpu_scene, start, count, gpu_accum)
+        } else if ctx.gpu_retired.load(Ordering::Relaxed)
+            || !ctx
+                .gpu
+                .try_accumulate(ctx.gpu_scene, start, count, gpu_accum)
         {
+            // `ctx.gpu_retired` short-circuits `try_accumulate` entirely
+            // once a prior batch's GPU-thread panic retired the backend -- this is the
+            // single-engine path a later batch takes once `hybrid_batch` has already
+            // cleared `gpu_frac` back to `None`, and it must not call back into the
+            // renderer a panic may have left mapped/corrupted.
             render_batch(
                 ctx.width, ctx.height, count, start, ctx.camera, ctx.scene, accum,
             );
@@ -309,7 +348,7 @@ pub(super) fn run_local_batches(
 /// per-row slices behind a `Mutex<Vec<Option<&mut [Vec3]>>>`; a thread claims row `y`,
 /// locks just long enough to `Option::take` that row's slice, then accumulates the
 /// whole row without the lock held. Every row is claimed by exactly one thread, so
-/// per-pixel sums stay bit-identical to the old contiguous split.
+/// per-pixel sums stay bit-identical regardless of which thread renders which row.
 // `pub`, not `pub(super)`: `bridge::preview_render` reuses this exact tracer for its
 // own CPU fallback rather than re-deriving the same per-pixel jitter/hero-wavelength
 // sampling -- one implementation, not two that could drift apart.

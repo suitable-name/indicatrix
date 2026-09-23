@@ -2,6 +2,7 @@ import { LineEdit, ScrollView } from "std-widgets.slint";
 import { DiagramItem, PreviewThumbnails } from "../types.slint";
 import { Theme } from "../theme.slint";
 import { LibraryModel } from "../models/library.slint";
+import { RemoteWorkerModel } from "../models/remote_worker.slint";
 
 export component CollapsedLibraryRail inherits Rectangle {
     width: 40px;
@@ -55,8 +56,14 @@ export component CollapsedLibraryRail inherits Rectangle {
 
 export component DiagramListView inherits Rectangle {
     property <int> keyboard_focus_index: -1;
-    property <int> list_length: LibraryModel.diagram_list.length;
-    changed list_length => { root.keyboard_focus_index = -1; }
+    // Tracks the WHOLE list, not just its length -- a same-length result
+    // set (e.g. switching to a different filter that happens to match the same count)
+    // must also drop stale keyboard focus, not leave the focus ring (and Return) on
+    // whatever card previously sat at this index. `apply_diagram_list_to_ui` always
+    // replaces `LibraryModel.diagram_list` with a brand-new model on every refresh
+    // (never mutates one in place), so this fires on every real list update.
+    property <[DiagramItem]> tracked_diagram_list: LibraryModel.diagram_list;
+    changed tracked_diagram_list => { root.keyboard_focus_index = -1; }
 
     callback collapse_requested();
     collapse_requested => {
@@ -84,9 +91,9 @@ export component DiagramListView inherits Rectangle {
 
             Text {
                 // Shown page vs. the real match count, not the whole-catalogue total
-                // (CAD audit item 193 -- see `LibraryModel.matched_count`'s doc
-                // comment, and `filter_panel.slint`'s `match_summary` for the fuller
-                // wording of the same fix).
+                // -- see `LibraryModel.matched_count`'s doc comment, and
+                // `filter_panel.slint`'s `match_summary` for the fuller wording of
+                // the same explanation.
                 text: "Catalog (" + LibraryModel.diagram_list.length + " of " + LibraryModel.matched_count + ")";
                 font-size: 12px;
                 font-weight: 700;
@@ -102,7 +109,7 @@ export component DiagramListView inherits Rectangle {
                     color: Theme.accent-amber;
                 }
 
-                // Task 3: collapse the panel down to a thin rail -- see
+                // Collapses the panel down to a thin rail -- see
                 // `collapse_requested`'s own doc comment above.
                 Rectangle {
                     width: 20px;
@@ -124,15 +131,23 @@ export component DiagramListView inherits Rectangle {
             }
         }
 
-        // CAD audit item 187's batch case: while `recent_import_filter` restricts
-        // the list to a just-completed multi-file import, say so explicitly and
-        // offer an obvious way back to the full catalogue -- otherwise a cutter who
-        // doesn't immediately notice the (N of M) count shrank would have no idea
-        // why their other designs seem to have vanished.
+        // While `recent_import_filter` restricts the list to a just-completed
+        // multi-file import, say so explicitly and offer an obvious way back to the
+        // full catalogue -- otherwise a cutter who doesn't immediately notice the
+        // (N of M) count shrank would have no idea why their other designs seem to
+        // have vanished.
+        //
+        // This restriction is local-import-only by construction (a remote-sourced
+        // search never populates it, and switching library source clears it -- see
+        // `gui::library::diagram_list::reset_search_and_filter_ui_inputs`), but the
+        // row is greyed out and its "Clear" click disabled while
+        // `RemoteWorkerModel.library_is_remote` too, defensively, rather than relying
+        // solely on that being true today.
         if LibraryModel.recent_import_filter.length > 0: Rectangle {
             background: Theme.surface-info;
             border-radius: Theme.radius-sm;
             height: 26px;
+            opacity: RemoteWorkerModel.library_is_remote ? 0.45 : 1.0;
             HorizontalLayout {
                 padding-left: 8px;
                 padding-right: 8px;
@@ -150,6 +165,7 @@ export component DiagramListView inherits Rectangle {
                     color: Theme.accent-cyan;
                     vertical-alignment: center;
                     TouchArea {
+                        enabled: !RemoteWorkerModel.library_is_remote;
                         clicked => {
                             LibraryModel.recent_import_filter = [];
                             LibraryModel.filters_changed();
@@ -225,7 +241,7 @@ export component DiagramListView inherits Rectangle {
                 spacing: 6px;
 
                 for item[idx] in LibraryModel.diagram_list: card := Rectangle {
-                    // Ignored rows (Task 3, shown only while "Show ignored designs" is
+                    // Ignored rows (shown only while "Show ignored designs" is
                     // on -- see `RangeFilter::include_ignored`) render visually
                     // distinct from a normal row: a dimmed background/opacity plus a
                     // dashed-looking amber border, so they never look like an ordinary
@@ -243,18 +259,17 @@ export component DiagramListView inherits Rectangle {
                         ? Theme.primary
                         : (item.ignored ? Theme.accent-amber : (LibraryModel.selected_entry_id == item.id ? Theme.accent-cyan : (item_touch.has-hover ? Theme.border-medium : transparent)));
 
-                    // Rendered front/top previews for this row (Task: rendered design
-                    // previews) -- looked up once per card via the cache-backed
-                    // callback declared above; see this property's own use below for
-                    // the fixed-size-box-or-placeholder rule that keeps a row with no
-                    // previews yet from ever showing a broken/stretched image or
-                    // shifting this card's layout relative to a row that has them.
+                    // Rendered front/top previews for this row -- looked up once per
+                    // card via the cache-backed callback declared above; see this
+                    // property's own use below for the fixed-size-box-or-placeholder
+                    // rule that keeps a row with no previews yet from ever showing a
+                    // broken/stretched image or shifting this card's layout relative
+                    // to a row that has them.
                     property <PreviewThumbnails> preview: LibraryModel.get_preview_thumbnails(item.id, LibraryModel.preview_cache_version);
 
-                    // CAD audit item 190: the "Add tag..." context-menu entry opens
-                    // this inline text field rather than a modal dialog -- same
-                    // idiom as `detail_header.slint`'s inline rename
-                    // (`renaming`/`rename_draft`).
+                    // The "Add tag..." context-menu entry opens this inline text
+                    // field rather than a modal dialog -- same idiom as
+                    // `detail_header.slint`'s inline rename (`renaming`/`rename_draft`).
                     property <bool> adding_tag: false;
                     property <string> tag_draft: "";
 
@@ -264,10 +279,10 @@ export component DiagramListView inherits Rectangle {
                         }
                     }
 
-                    // Task 4, trigger #3: an unobtrusive per-design "regenerate
-                    // previews" action -- a builtin native context menu (cursor
-                    // positioning, outside-click dismissal, and OS-native rendering
-                    // all handled by Slint itself -- see `i-slint-compiler`'s
+                    // An unobtrusive per-design "regenerate previews" action -- a
+                    // builtin native context menu (cursor positioning, outside-click
+                    // dismissal, and OS-native rendering all handled by Slint itself --
+                    // see `i-slint-compiler`'s
                     // `widgets/common/menus.slint`/`internal-components.slint` for the
                     // `ContextMenuArea`/`Menu`/`MenuItem` this uses directly, no
                     // hand-rolled equivalent needed). `expands_to_parent_geometry`
@@ -303,18 +318,92 @@ export component DiagramListView inherits Rectangle {
                         }
                     }
 
-                    // Also item: a "⋮" hover affordance -- the context menu above is
-                    // otherwise only reachable by knowing to right-click, with nothing
-                    // on screen suggesting it exists. Visual only (right-click still
-                    // opens the menu via `ContextMenuArea` above; this doesn't add a
-                    // second click target of its own).
-                    if item_touch.has-hover: Text {
-                        x: card.width - self.width - 8px;
-                        y: 6px;
-                        text: "⋮";
-                        font-size: 16px;
-                        font-weight: 700;
-                        color: Theme.text-muted;
+                    // The "⋮" is a real button: clicking it opens the same four
+                    // actions in a small floating menu, since Slint's
+                    // `ContextMenuArea`/`Menu` (used by the right-click path above)
+                    // has no API in this version to open programmatically from a
+                    // left click.
+                    property <bool> kebab_open: false;
+                    if item_touch.has-hover || card.kebab_open: Rectangle {
+                        x: card.width - self.width - 4px;
+                        y: 2px;
+                        width: 20px;
+                        height: 20px;
+                        border-radius: 3px;
+                        background: kebab_touch.has-hover || card.kebab_open ? Theme.bg-card-hover : transparent;
+                        Text {
+                            text: "⋮";
+                            font-size: 16px;
+                            font-weight: 700;
+                            color: Theme.text-muted;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                        kebab_touch := TouchArea {
+                            clicked => { card.kebab_open = !card.kebab_open; }
+                        }
+                        Tooltip { text: @markdown("More actions (also available via right-click)."); }
+                    }
+                    if card.kebab_open: Rectangle {
+                        // Backdrop -- dismisses the menu on an outside click.
+                        x: -2000px;
+                        y: -2000px;
+                        width: 4000px;
+                        height: 4000px;
+                        z: 90;
+                        TouchArea { clicked => { card.kebab_open = false; } }
+                    }
+                    if card.kebab_open: Rectangle {
+                        x: card.width - self.width - 4px;
+                        y: 24px;
+                        z: 91;
+                        width: 150px;
+                        height: kebab_menu_col.preferred-height;
+                        background: Theme.surface-dialog;
+                        border-radius: Theme.radius-sm;
+                        border-width: 1px;
+                        border-color: Theme.border-dialog;
+                        drop-shadow-blur: 10px;
+                        drop-shadow-color: Theme.modal-shadow;
+                        clip: true;
+                        kebab_menu_col := VerticalLayout {
+                            Rectangle {
+                                height: 24px;
+                                background: kebab_item1.has-hover ? Theme.bg-card-hover : transparent;
+                                Text { text: "Generate Previews"; font-size: 9px; color: Theme.text-primary; x: 8px; vertical-alignment: center; }
+                                kebab_item1 := TouchArea {
+                                    clicked => { card.kebab_open = false; LibraryModel.generate_previews_for_entry(item.id); }
+                                }
+                            }
+                            Rectangle {
+                                height: 24px;
+                                background: kebab_item2.has-hover ? Theme.bg-card-hover : transparent;
+                                Text { text: "Compute Tilt Curves"; font-size: 9px; color: Theme.text-primary; x: 8px; vertical-alignment: center; }
+                                kebab_item2 := TouchArea {
+                                    clicked => { card.kebab_open = false; LibraryModel.compute_tilt_curves_for_entry(item.id); }
+                                }
+                            }
+                            Rectangle {
+                                height: 24px;
+                                background: kebab_item3.has-hover ? Theme.bg-card-hover : transparent;
+                                Text { text: item.ignored ? "Un-ignore" : "Ignore"; font-size: 9px; color: Theme.text-primary; x: 8px; vertical-alignment: center; }
+                                kebab_item3 := TouchArea {
+                                    clicked => { card.kebab_open = false; LibraryModel.toggle_ignored(item.id); }
+                                }
+                            }
+                            Rectangle {
+                                height: 24px;
+                                background: kebab_item4.has-hover ? Theme.bg-card-hover : transparent;
+                                Text { text: "Add tag..."; font-size: 9px; color: Theme.text-primary; x: 8px; vertical-alignment: center; }
+                                kebab_item4 := TouchArea {
+                                    clicked => {
+                                        card.kebab_open = false;
+                                        card.tag_draft = "";
+                                        card.adding_tag = true;
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     VerticalLayout {
@@ -439,10 +528,10 @@ export component DiagramListView inherits Rectangle {
                                 }
                             }
 
-                            // Source badge (CAD audit item 189): distinguishes the
-                            // cutter's own locally-imported designs from the wider
-                            // scraped corpus, the same way the shape/Ignored badges
-                            // above already flag their own conditions.
+                            // Source badge: distinguishes the cutter's own
+                            // locally-imported designs from the wider scraped corpus,
+                            // the same way the shape/Ignored badges above already
+                            // flag their own conditions.
                             if item.is_local: Rectangle {
                                 background: #065f46;
                                 border-radius: 3px;
@@ -461,14 +550,13 @@ export component DiagramListView inherits Rectangle {
                             }
                         }
 
-                        // Tag chips (CAD audit item 190) -- the whole chip is the
-                        // "remove" target (a `TouchArea` sibling covering the chip
-                        // Rectangle, same idiom as `item_touch` covering the whole
-                        // card two levels up), not just its "x" glyph, so the hit
-                        // target is comfortably larger than the 9px text. Hidden
-                        // entirely for a row with no tags and the inline entry not
-                        // open, so an untagged catalogue (the common case today)
-                        // shows no empty row.
+                        // Tag chips -- the whole chip is the "remove" target (a
+                        // `TouchArea` sibling covering the chip Rectangle, same idiom
+                        // as `item_touch` covering the whole card two levels up), not
+                        // just its "x" glyph, so the hit target is comfortably larger
+                        // than the 9px text. Hidden entirely for a row with no tags
+                        // and the inline entry not open, so an untagged catalogue
+                        // (the common case today) shows no empty row.
                         if item.tags.length > 0 || card.adding_tag: HorizontalLayout {
                             spacing: 4px;
                             alignment: start;

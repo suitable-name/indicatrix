@@ -78,7 +78,7 @@ use indicatrix::optics::{
     raytracer::{Camera, EnvironmentSource, FacetFinish},
 };
 use metrics::{MetricsCache, compute_or_reuse_metrics};
-use slint::{ComponentHandle, Weak};
+use slint::Weak;
 use std::{
     sync::{Arc, Mutex},
     thread,
@@ -99,10 +99,14 @@ use std::{
 /// against, unlike when that cost was paid synchronously on this thread.
 const DENOISE_MIN_INTERVAL: Duration = Duration::from_millis(120);
 
+/// Timeout for the convergence wait at [`display.busy()`]. À-Trous cycles run in
+/// the 100ms-1s range, so 5s is generous for a healthy display thread.
+const DISPLAY_BUSY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+
 use frame_helpers::{
-    AccumulationBuffers, SuspensionFlags, combined_sample_offset, push_metrics_to_ui,
-    remote_suspends_local, resolve_remote_ownership, should_combine_remote,
-    update_accumulation_state,
+    AccumulationBuffers, FrameActivityFlags, SuspensionFlags, TraceActivitySink,
+    combined_sample_offset, push_metrics_to_ui, remote_suspends_local, resolve_remote_ownership,
+    should_combine_remote, update_accumulation_state,
 };
 
 #[expect(
@@ -111,18 +115,23 @@ use frame_helpers::{
               progressive accumulation, UI callbacks); splitting it apart risks changing \
               GUI render-thread behaviour verifiable only by launching the app"
 )]
-pub fn spawn_render_thread<T, F, M>(
+pub fn spawn_render_thread<T, F, M, S>(
     ui_weak: Weak<T>,
     ctx: Arc<Mutex<RenderContext>>,
     update_image: F,
     update_metrics: M,
+    update_gpu_status: S,
 ) where
-    T: ComponentHandle + 'static,
+    // `TraceActivitySink` lets this function stay generic over `T`.
+    T: TraceActivitySink + 'static,
     F: Fn(&T, slint::SharedPixelBuffer<slint::Rgba8Pixel>) + Send + 'static + Clone,
     M: Fn(&T, f32, f32, f32, f32, f32, [f32; 19], [f32; 19], [f32; 19], f32)
         + Send
         + 'static
         + Clone,
+    // Callback to push GPU status messages to the UI. `slint::SharedString` must
+    // outlive the `upgrade_in_event_loop` closure.
+    S: Fn(&T, slint::SharedString) + Send + 'static + Clone,
 {
     thread::spawn(move || {
         let mut last_width = 0;
@@ -140,6 +149,9 @@ pub fn spawn_render_thread<T, F, M>(
         // display cycle's input (see `should_combine_remote`'s call site below).
         // Reused across cycles like the buffers above; stays empty when nothing combines.
         let mut combined_scratch: Vec<Vec3> = Vec::new();
+        // The combined remote sample count last sent to `display`, used for the
+        // "local has converged" check in the loop.
+        let mut last_displayed_remote_samples: u32 = 0;
         let mut accum_samples: u32 = 0;
         // Cadence gate for handing a display cycle to `display` -- see
         // `DENOISE_MIN_INTERVAL`. `None` forces an immediate send (first frame, or any
@@ -150,19 +162,16 @@ pub fn spawn_render_thread<T, F, M>(
         // are worth doing exactly once. Declines on a machine with no usable GPU,
         // which is not an error -- see `ViewportGpu`.
         let mut gpu_backend = ViewportGpu::acquire();
+        // Last GPU status message pushed to UI, cached to avoid redundant writes.
+        let mut last_gpu_status: Option<String> = None;
         let mut hybrid_pacing = HybridPacing::new();
         // Recomputed only when the active design's geometry actually changes.
         let mut girdle_cache = GirdleFinishCache::new();
         let mut stone_width_cache = StoneWidthCache::new();
-        // Denoise+tonemap+push runs on this dedicated thread instead of blocking the
-        // trace loop below -- see `display_thread`'s doc comment. Every full-frame UI
-        // push happens exclusively on the display thread's side of the hand-off.
-        //
-        // `ui_weak`/`update_metrics` are cloned (both cheap: a weak pointer, an `Fn`
-        // closure bounded `Clone`) rather than moved wholesale, so this loop keeps its
-        // own copies for the metrics-only push on the suspended path below (CAD audit
-        // item 60) -- that path deliberately bypasses `display` entirely so an
-        // invisible tab never pays for a denoise+tonemap cycle nobody can see.
+        // Denoise+tonemap+push runs on a dedicated thread. This loop keeps copies
+        // of `ui_weak`/`update_metrics` for the metrics-only push on the suspended
+        // path, which bypasses `display` so invisible tabs don't pay for
+        // denoise+tonemap cycles.
         let ui_weak_metrics_only = ui_weak.clone();
         let update_metrics_metrics_only = update_metrics.clone();
         let display = spawn_display_thread(ui_weak, update_image, update_metrics);
@@ -266,8 +275,12 @@ pub fn spawn_render_thread<T, F, M>(
             // Captured before `update_accumulation_state` overwrites `last_width`/
             // `last_height` -- invalidates the denoise cadence cache immediately on any
             // reset rather than leaving a stale frame on screen for up to
-            // `DENOISE_MIN_INTERVAL` longer.
-            let accumulation_reset = dirty || width != last_width || height != last_height;
+            // `DENOISE_MIN_INTERVAL` longer. `dimensions_changed` is the narrower of
+            // the two: `update_accumulation_state` only reallocates the first-hit guide
+            // buffers on a dimension change (see its own doc comment), never on a plain
+            // `dirty`, which only clears `accum`.
+            let dimensions_changed = width != last_width || height != last_height;
+            let accumulation_reset = dirty || dimensions_changed;
 
             update_accumulation_state(
                 width,
@@ -283,6 +296,12 @@ pub fn spawn_render_thread<T, F, M>(
                 &mut last_width,
                 &mut last_height,
             );
+            if dimensions_changed {
+                // The guide buffers were just reallocated to fresh,
+                // unrelated-to-any-key contents -- the GPU's cached `applied_guide_key`
+                // must not be trusted to still describe what they hold.
+                gpu_backend.invalidate_guide_cache();
+            }
 
             if accumulation_reset {
                 last_denoise_at = None;
@@ -304,7 +323,7 @@ pub fn spawn_render_thread<T, F, M>(
                 material_unresolved: material_unresolved.is_some(),
             };
             if suspension.tracing_suspended() {
-                // CAD audit item 60: an invisible tab alone (the Edit tab's default
+                // An invisible tab alone (the Edit tab's default
                 // Solid view mode) must not also freeze the gemological HUD/tilt-dialog
                 // metrics while the cutter keeps editing -- only a hard suspend does
                 // (see `SuspensionFlags::metrics_suspended`). `compute_or_reuse_metrics`
@@ -378,12 +397,31 @@ pub fn spawn_render_thread<T, F, M>(
             // Enough samples accumulated in still mode: sleep to conserve power.
             // Combined against remote's contribution too (`0` whenever not combining) --
             // once local plus remote reach the target, further local tracing is wasted.
-            if accum_samples + remote_samples_done_now >= target_samples && !dirty {
+            //
+            // In `LiveComputeTarget::Both`, a converged local half must not
+            // stall the display forever at whatever combined count it last actually
+            // sent. `remote_samples_done_now` rising past `last_displayed_remote_samples`
+            // also catches `RemoteUpdate::Done`, with no separate check needed: `Done`
+            // never clears `remote_active` (`resolve_remote_ownership`'s doc comment),
+            // so `should_combine_remote` keeps reading true, and the accumulator's own
+            // FINAL `samples_done()` is itself a rise past whatever was last shown. So
+            // whenever remote has moved on, fall through to send ONE more display cycle
+            // below with no new local tracing, instead of sleeping on a stale image;
+            // sleep only when local is converged AND remote has nothing new to show.
+            let remote_advanced = should_combine_remote(remote_active, live_compute_target)
+                && remote_samples_done_now > last_displayed_remote_samples;
+            let local_converged = accum_samples + remote_samples_done_now >= target_samples;
+            if local_converged && !dirty && !remote_advanced {
                 thread::sleep(std::time::Duration::from_millis(60));
                 continue;
             }
+            // Nothing left for LOCAL tracing to usefully add -- this iteration only
+            // exists to refresh the display with remote's latest contribution.
+            let skip_local_tracing = local_converged && !dirty;
 
-            accum_samples += spp;
+            if !skip_local_tracing {
+                accum_samples += spp;
+            }
 
             // Optical metrics: analytical raytracing from the camera PoV accounting for
             // light direction. Expensive (single-threaded); result depends only on
@@ -411,7 +449,7 @@ pub fn spawn_render_thread<T, F, M>(
             // through to the CPU path (`render_frame_scanlines`) on a decline, but that
             // is the same generic per-frame fallback every other scene gets (no
             // adapter, device lost, `gpu` feature off), not an HDR-specific one -- see
-            // `docs/history/indicatrix-cut.md` for the CPU-only HDR path this replaced.
+            // `docs/history/indicatrix-cut.md` for the CPU-only HDR path.
             let environment = env_map.as_deref().map_or_else(
                 || {
                     lighting_preset
@@ -421,47 +459,68 @@ pub fn spawn_render_thread<T, F, M>(
                 EnvironmentSource::HdrMap,
             );
 
-            // Frosted girdle: `&[]` at the off position reproduces the pre-existing
-            // all-polished behaviour.
+            // Frosted girdle: `&[]` at the off position means all-polished.
             let facet_finishes: &[FacetFinish] = if girdle_frosted {
                 girdle_cache.ensure(&active_planes)
             } else {
                 &[]
             };
 
-            accumulate_frame_samples(
-                &mut gpu_backend,
-                &BackendFrame {
-                    width,
-                    height,
-                    yaw,
-                    pitch,
-                    distance,
-                    camera: &camera,
-                    planes: &active_planes,
-                    facet_finishes,
-                    material: &current_mat,
-                    max_bounces,
-                    environment,
-                    spp,
-                    // Shifted past whatever `remote_reserved_samples` reserves (`0`
-                    // whenever not combining) -- the disjointness guarantee: local's
-                    // sample index (the jitter/RNG seed) never falls inside remote's
-                    // assigned range. See this module's doc comment.
-                    sample_offset: combined_sample_offset(
-                        remote_reserved_samples,
-                        current_sample_count - spp,
-                    ),
-                },
-                &mut FrameOutputs {
-                    accum: &mut accum_buffer,
-                    depth: &mut first_hit_depth,
-                    normal: &mut first_hit_normal,
-                    facet_id: &mut first_hit_facet_id,
-                },
-                &mut hybrid_pacing,
-                local_compute_target,
-            );
+            // Skipped when this iteration exists only to refresh the
+            // display with remote's latest contribution -- see `skip_local_tracing`'s
+            // own comment above. `accum_samples` was left un-incremented for exactly
+            // this case, so `accum_buffer`'s sample count stays accurate.
+            if !skip_local_tracing {
+                accumulate_frame_samples(
+                    &mut gpu_backend,
+                    &BackendFrame {
+                        width,
+                        height,
+                        yaw,
+                        pitch,
+                        distance,
+                        camera: &camera,
+                        planes: &active_planes,
+                        facet_finishes,
+                        material: &current_mat,
+                        max_bounces,
+                        environment,
+                        spp,
+                        // Shifted past whatever `remote_reserved_samples` reserves (`0`
+                        // whenever not combining) -- the disjointness guarantee: local's
+                        // sample index (the jitter/RNG seed) never falls inside remote's
+                        // assigned range. See this module's doc comment.
+                        sample_offset: combined_sample_offset(
+                            remote_reserved_samples,
+                            current_sample_count - spp,
+                        ),
+                    },
+                    &mut FrameOutputs {
+                        accum: &mut accum_buffer,
+                        depth: &mut first_hit_depth,
+                        normal: &mut first_hit_normal,
+                        facet_id: &mut first_hit_facet_id,
+                    },
+                    &mut hybrid_pacing,
+                    local_compute_target,
+                );
+            }
+
+            // Push `ViewportGpu`'s current self-healing
+            // status to the UI whenever it actually changed -- see
+            // `ViewportGpu::status_message`'s own doc comment for when this is
+            // `Some` (transiently re-acquiring, or permanently on CPU fallback) vs
+            // `None` (healthy, or nothing traced this iteration to change it).
+            // Compared as `&str` so an unchanged `Some("...")` costs one comparison,
+            // not a clone, on every iteration.
+            if gpu_backend.status_message() != last_gpu_status.as_deref() {
+                last_gpu_status = gpu_backend.status_message().map(str::to_string);
+                let text: slint::SharedString = last_gpu_status.as_deref().unwrap_or("").into();
+                let update_gpu_status = update_gpu_status.clone();
+                let _ = ui_weak_metrics_only.upgrade_in_event_loop(move |ui| {
+                    update_gpu_status(&ui, text);
+                });
+            }
 
             // Denoise on the READBACK path only -- `accum_buffer` stays the raw running
             // sum (never overwritten), so the progressive estimator stays unbiased;
@@ -491,10 +550,27 @@ pub fn spawn_render_thread<T, F, M>(
                 // `converged_now` must always display exactly once, so that send waits
                 // out any in-flight cycle instead of skipping.
                 let can_send = if converged_now {
+                    // Bounded, not an unconditional spin -- a display
+                    // thread that has stopped finishing cycles (e.g. it died mid-panic)
+                    // must not hang this loop forever; give up on THIS cycle instead.
+                    let wait_start = Instant::now();
+                    let mut timed_out = false;
                     while display.busy() {
+                        if wait_start.elapsed() >= DISPLAY_BUSY_WAIT_TIMEOUT {
+                            timed_out = true;
+                            break;
+                        }
                         thread::sleep(display_thread::CONVERGENCE_WAIT_POLL);
                     }
-                    true
+                    if timed_out {
+                        tracing::warn!(
+                            timeout_secs = DISPLAY_BUSY_WAIT_TIMEOUT.as_secs(),
+                            "display thread still busy after the convergence wait \
+                             timeout; skipping this display cycle instead of blocking \
+                             the render thread forever"
+                        );
+                    }
+                    !timed_out
                 } else {
                     !display.busy()
                 };
@@ -512,11 +588,17 @@ pub fn spawn_render_thread<T, F, M>(
                             let acc = remote_acc
                                 .lock()
                                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+                            let remote_done = acc.samples_done();
                             combined_scratch.clear();
                             combined_scratch.extend(
                                 accum_buffer.iter().zip(acc.buffer()).map(|(a, b)| *a + *b),
                             );
-                            (&combined_scratch, current_sample_count + acc.samples_done())
+                            drop(acc);
+                            // Records what THIS cycle actually displayed,
+                            // so the "local converged" check above knows remote has
+                            // nothing new the next time it reads a bigger count.
+                            last_displayed_remote_samples = remote_done;
+                            (&combined_scratch, current_sample_count + remote_done)
                         } else {
                             (&accum_buffer, current_sample_count)
                         };
@@ -540,6 +622,14 @@ pub fn spawn_render_thread<T, F, M>(
                             graph_extinction,
                             graph_windowing,
                             cam_pitch_deg,
+                        },
+                        // `push_frame_to_ui`'s own activity start/finish reads
+                        // these straight off this cycle's already-computed
+                        // `camera_moving`/`converged_now` -- see
+                        // `frame_helpers::FrameActivityFlags`'s own doc comment.
+                        FrameActivityFlags {
+                            camera_moving,
+                            converged: converged_now,
                         },
                     );
                     display.send(work);

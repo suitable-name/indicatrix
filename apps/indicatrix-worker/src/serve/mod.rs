@@ -56,12 +56,17 @@
 //!   builds) and [`connection::handle_connection`] (library-only builds) for where the
 //!   deadline is cleared once `HELLO` arrives.
 //! - `--max-connections` (default 64, see [`ConnectionLimiter`]) bounds how many
-//!   connections this worker handles at once, one cap shared by the one listener
-//!   regardless of build mode (library-only or `worker`) or transport (TLS or
+//!   AUTHENTICATED connections this worker handles at once, one cap shared by the one
+//!   listener regardless of build mode (library-only or `worker`) or transport (TLS or
 //!   `--insecure-no-tls`) -- see [`ConnectionLimiter`]'s doc comment. A connection over
 //!   the cap is still accepted and given a definitive `<- ERROR` refusal (see
 //!   [`connection::refuse_for_capacity`]) rather than left to hang or being reset
-//!   without explanation.
+//!   without explanation. For `Transport::Tls`, this real slot is acquired only AFTER
+//!   [`accept_tls`] succeeds, so a peer that never completes TLS can't hold
+//!   it; a second, wider [`ConnectionLimiter`] (see [`PRE_AUTH_HANDSHAKE_MULTIPLIER`])
+//!   bounds bare, not-yet-authenticated connections in flight regardless of transport,
+//!   so a flood of those can't grow this worker's thread count without bound either --
+//!   refused there silently (no wire reply attempted; TLS may not have even begun).
 
 use std::{
     net::{SocketAddr, TcpListener, TcpStream},
@@ -184,7 +189,12 @@ fn tune_accepted_socket(stream: &TcpStream, peer: Option<SocketAddr>) {
 /// library-only [`connection::handle_connection`]'s doc comments), so it never bounds
 /// anything the connection loop itself does afterward -- that loop has its own,
 /// different timeout story (see `stream_emit::TimeoutCache`).
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
+///
+/// `pub(crate)` so `crate::enroll`'s connection handling can apply the same bound to its
+/// own TLS-handshake-then-one-message exchange -- that listener has no
+/// mutual-TLS authentication step at all (see its own module doc comment), so it needs a
+/// deadline at least as much as this one does.
+pub(crate) const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Applies [`HANDSHAKE_TIMEOUT`] to `stream`'s read and write timeouts. Best-effort,
 /// like [`tune_accepted_socket`]: a failure is logged at `debug` and never aborts the
@@ -199,22 +209,30 @@ fn apply_handshake_timeout(stream: &TcpStream, peer: Option<SocketAddr>) {
     }
 }
 
-/// Caps how many connections this worker handles at once (`--max-connections`, default
-/// 64). One instance, owned by [`run`], shared by every accepted connection regardless
+/// Caps how many connections this worker handles at once (`--max-connections`, default 64).
+///
+/// One instance, owned by [`run`], shared by every accepted connection regardless
 /// of transport (TLS or `--insecure-no-tls`) or build mode (library-only or `worker`) --
-/// there is exactly one listener in this codebase (see this module's own doc comment),
-/// so one shared cap is the whole design here: there is no separate library-only
-/// listener to give its own cap to. The token-based enrollment listener
-/// (`crate::enroll`) is a genuinely separate listener/concern (bootstrapping trust, not
-/// serving render/library requests) and is deliberately not covered by this cap.
-#[derive(Debug)]
-struct ConnectionLimiter {
+/// there is exactly one RENDER/LIBRARY listener in this codebase (see this module's own
+/// doc comment), so one shared cap covers it entirely: there is no separate library-only
+/// listener to give its own cap to.
+///
+/// `Clone` (cheap: `active` is already an `Arc`) so [`run`] can also hand a clone to the
+/// token-based enrollment listener (`crate::enroll`) -- a genuinely separate
+/// listener/concern (bootstrapping trust, not serving render/library requests), but one
+/// whose TLS accept requires no client certificate at all (see that module's own doc
+/// comment), so unauthenticated connections there need the same bound.
+#[derive(Debug, Clone)]
+pub struct ConnectionLimiter {
     active: Arc<AtomicUsize>,
     max: usize,
 }
 
 impl ConnectionLimiter {
-    fn new(max: usize) -> Self {
+    /// `pub(crate)` (not just used by [`run`]) so other listeners sharing this cap --
+    /// `crate::enroll`'s own tests build a throwaway one the same way `run` does --
+    /// can construct one without going through a full `serve` startup.
+    pub(crate) fn new(max: usize) -> Self {
         Self {
             active: Arc::new(AtomicUsize::new(0)),
             max,
@@ -231,7 +249,13 @@ impl ConnectionLimiter {
     /// line); the slot this call provisionally reserved to make that observation is
     /// released again immediately, so a refused connection never itself counts against
     /// the cap.
-    fn try_acquire(&self) -> Result<ConnectionSlot, usize> {
+    ///
+    /// # Errors
+    ///
+    /// `Err(active)` when this cap is already reached, carrying the active count
+    /// observed at the moment of refusal -- not a "hard" error, just this call's own
+    /// verdict for the caller to act on (typically [`connection::refuse_for_capacity`]).
+    pub fn try_acquire(&self) -> Result<ConnectionSlot, usize> {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         if active > self.max {
             self.active.fetch_sub(1, Ordering::SeqCst);
@@ -244,13 +268,34 @@ impl ConnectionLimiter {
     }
 }
 
-/// RAII handle for one reserved [`ConnectionLimiter`] slot. Held by a connection thread
-/// for the lifetime of [`connection::handle_connection`]/[`connection::handle_connection_with_gpu`]
-/// (moved into the `thread::spawn` closure alongside everything else that connection
-/// needs); [`Drop::drop`] releases the slot regardless of how that call returns --
-/// normally, via `?`, or via a caught panic.
+/// How many bare, not-yet-authenticated connections [`run`]'s accept loop allows in
+/// flight at once, as a multiple of `--max-connections`: `handshake_limiter` in [`run`]
+/// is a second, separate [`ConnectionLimiter`] with this larger cap.
+///
+/// The real slot in the REAL `--max-connections` limiter is deliberately reserved only
+/// AFTER `accept_tls` succeeds (see [`spawn_connection_handler`]'s doc comment), not in
+/// the accept loop before `accept_tls` ever runs: reserving it earlier would let 64 bare
+/// TCP connects that never send a `ClientHello` hold every slot for up to
+/// [`HANDSHAKE_TIMEOUT`] (20s), locking out every certificate-holding viewer with
+/// `CONNECTION_LIMIT_REACHED_CODE`, while the accept loop keeps spawning threads over the
+/// cap regardless (bounding neither threads nor authenticated work). Even with the real
+/// slot's acquisition deferred to AFTER `accept_tls` succeeds, an unauthenticated peer
+/// can still pin a thread for up to `HANDSHAKE_TIMEOUT` just by connecting, so a second,
+/// wider cap bounds THAT too: 4x headroom is enough that a real burst of
+/// `--max-connections` legitimate viewers reconnecting at once is never refused by this
+/// counter, while still bounding a flood of bare connects to a multiple of the real cap
+/// rather than the entire OS thread budget.
+const PRE_AUTH_HANDSHAKE_MULTIPLIER: usize = 4;
+
+/// RAII handle for one reserved [`ConnectionLimiter`] slot.
+///
+/// Held by a connection thread for the lifetime of
+/// [`connection::handle_connection`]/[`connection::handle_connection_with_gpu`] (moved
+/// into the `thread::spawn` closure alongside everything else that connection needs);
+/// [`Drop::drop`] releases the slot regardless of how that call returns -- normally, via
+/// `?`, or via a caught panic.
 #[derive(Debug)]
-struct ConnectionSlot {
+pub struct ConnectionSlot {
     active: Arc<AtomicUsize>,
 }
 
@@ -275,10 +320,11 @@ impl Drop for ConnectionSlot {
 /// `Sync`) -- `OnlyCpu` forces `GpuBackend::disabled`; `Hybrid`/`OnlyGpu` acquire a
 /// real one.
 ///
-/// Also builds this call's one [`ConnectionLimiter`] from `args.max_connections`
-/// (default 64) and applies [`HANDSHAKE_TIMEOUT`] to every accepted socket before
-/// dispatching it -- see both items' doc comments, and this module's own "Robustness"
-/// section.
+/// Also builds this call's real [`ConnectionLimiter`] from `args.max_connections`
+/// (default 64) plus a second, wider one bounding not-yet-authenticated connections
+/// (see [`PRE_AUTH_HANDSHAKE_MULTIPLIER`]), and applies [`HANDSHAKE_TIMEOUT`]
+/// to every accepted socket before dispatching it -- see all three items' doc comments,
+/// and this module's own "Robustness" section.
 ///
 /// # Errors
 ///
@@ -307,6 +353,12 @@ pub fn run(args: &ServeArgs) -> Result<(), String> {
     // connection opens its own.
     drop(open_library_database(&db_path)?);
     let limiter = ConnectionLimiter::new(args.max_connections);
+    // Second, wider cap bounding bare (not-yet-authenticated) connections -- see
+    // PRE_AUTH_HANDSHAKE_MULTIPLIER's doc comment.
+    let handshake_limiter = ConnectionLimiter::new(
+        args.max_connections
+            .saturating_mul(PRE_AUTH_HANDSHAKE_MULTIPLIER),
+    );
 
     #[cfg(feature = "worker")]
     let gpu = Arc::new(match args.compute_mode {
@@ -335,8 +387,10 @@ pub fn run(args: &ServeArgs) -> Result<(), String> {
     );
 
     // Token-based enrollment runs its own separate listener, never a mode of the render
-    // listener above, so it can't accidentally relax mutual TLS for everyone.
-    enroll::maybe_start_from_serve_args(args, bind_addr)?;
+    // listener above, so it can't accidentally relax mutual TLS for everyone. Shares
+    // `limiter`: that listener's TLS accept requires no client certificate,
+    // so unauthenticated connections there need the same cap bare render connections do.
+    enroll::maybe_start_from_serve_args(args, bind_addr, limiter.clone())?;
 
     for incoming in listener.incoming() {
         match incoming {
@@ -344,13 +398,37 @@ pub fn run(args: &ServeArgs) -> Result<(), String> {
                 let peer = stream.peer_addr().ok();
                 tune_accepted_socket(&stream, peer);
                 apply_handshake_timeout(&stream, peer);
-                let slot = limiter.try_acquire();
+
+                // Bounds bare, not-yet-authenticated connections regardless of
+                // transport -- checked before spawning a thread at all, so
+                // a flood of bare connects can't grow this worker's thread count
+                // without bound even before TLS (if any) begins.
+                let Ok(handshake_slot) = handshake_limiter.try_acquire() else {
+                    tracing::warn!(
+                        "connection {peer:?}: refusing -- too many not-yet-authenticated connections in \
+                         flight (see --max-connections)"
+                    );
+                    continue;
+                };
+
+                // For `Transport::Insecure` (loopback only, see `build_transport`)
+                // there is no authentication step to wait for, so the REAL
+                // `--max-connections` slot is reserved right here. For `Transport::Tls`,
+                // reserving it here would let an unauthenticated peer hold a real slot
+                // merely by connecting -- it is instead acquired inside the spawned
+                // thread, only after `accept_tls` succeeds (handshake AND allowlist);
+                // see `spawn_connection_handler`'s doc comment.
+                let pre_acquired_slot =
+                    matches!(transport, Transport::Insecure).then(|| limiter.try_acquire());
+
                 #[cfg(feature = "worker")]
                 spawn_connection_handler(
                     stream,
                     peer,
                     &transport,
-                    slot,
+                    handshake_slot,
+                    pre_acquired_slot,
+                    limiter.clone(),
                     &ConnectionContext {
                         db_path: &db_path,
                         threads: args.threads,
@@ -365,7 +443,9 @@ pub fn run(args: &ServeArgs) -> Result<(), String> {
                     peer,
                     &transport,
                     &db_path,
-                    slot,
+                    handshake_slot,
+                    pre_acquired_slot,
+                    limiter.clone(),
                     args.max_connections,
                 );
             }
@@ -392,22 +472,30 @@ struct ConnectionContext<'a> {
 /// plaintext) and spawns its own thread running [`connection::handle_connection_with_gpu`]
 /// (`worker` builds) or [`connection::handle_connection`] otherwise.
 ///
-/// `slot` is [`ConnectionLimiter::try_acquire`]'s verdict for this connection, decided
-/// back in [`run`]'s accept loop (before the transport-specific work below, so refusing
-/// a connection never pays for a database open or GPU handle clone it won't use). `Ok`
-/// moves the [`ConnectionSlot`] into the spawned thread, held for the connection's whole
-/// lifetime; `Err(active)` skips straight to [`connection::refuse_for_capacity`] instead
-/// of ever calling [`connection::handle_connection_with_gpu`] -- for a TLS listener,
-/// only after [`accept_tls`] itself has already succeeded (handshake AND allowlist),
-/// per that function's doc comment on why an unauthenticated peer must not learn
-/// capacity state first; for `--insecure-no-tls`, immediately, since there is no
-/// authentication step to wait for.
+/// `handshake_slot` is [`run`]'s second, wider [`ConnectionLimiter`] verdict (see
+/// [`PRE_AUTH_HANDSHAKE_MULTIPLIER`]) -- already `Ok` by construction (checked in the
+/// accept loop before this is ever called) -- held for the whole spawned thread's
+/// lifetime regardless of transport or outcome, bounding bare connections in flight.
+///
+/// `pre_acquired_slot` is the REAL `--max-connections` [`ConnectionLimiter::try_acquire`]
+/// verdict, decided back in [`run`]'s accept loop -- but only for `Transport::Insecure`
+/// (`Some`), where there is no authentication step to wait for. For `Transport::Tls`
+/// (`None` here), that same real cap is instead acquired from `limiter` INSIDE this
+/// function, only after [`accept_tls`] itself has already succeeded (handshake AND
+/// allowlist): reserving it any earlier would let a burst of bare TCP connects
+/// that never complete a TLS handshake hold every real slot for up to
+/// [`HANDSHAKE_TIMEOUT`], locking out certificate-holding viewers. Either way, `Ok`
+/// moves the resulting [`ConnectionSlot`] into the rest of the connection's lifetime;
+/// `Err(active)` skips straight to [`connection::refuse_for_capacity`] instead of ever
+/// calling [`connection::handle_connection_with_gpu`].
 #[cfg(feature = "worker")]
 fn spawn_connection_handler(
     stream: TcpStream,
     peer: Option<SocketAddr>,
     transport: &Transport,
-    slot: Result<ConnectionSlot, usize>,
+    handshake_slot: ConnectionSlot,
+    pre_acquired_slot: Option<Result<ConnectionSlot, usize>>,
+    limiter: ConnectionLimiter,
     ctx: &ConnectionContext<'_>,
 ) {
     let db_path = ctx.db_path.to_path_buf();
@@ -421,7 +509,11 @@ fn spawn_connection_handler(
                 "--insecure-no-tls: accepted PLAINTEXT connection from {peer:?} -- no TLS, no \
                  authentication"
             );
+            let slot = pre_acquired_slot.expect(
+                "run's accept loop always pre-acquires the real slot for Transport::Insecure",
+            );
             thread::spawn(move || {
+                let _handshake_slot = handshake_slot; // held for this thread's whole lifetime
                 let mut stream = stream;
                 match slot {
                     Ok(_slot) => {
@@ -450,10 +542,13 @@ fn spawn_connection_handler(
             let config = Arc::clone(config);
             let auth = auth.clone();
             thread::spawn(move || {
+                let _handshake_slot = handshake_slot; // held for this thread's whole lifetime
                 let Some(mut tls_stream) = accept_tls(stream, &config, &auth, peer) else {
                     return; // accept_tls already logged why
                 };
-                match slot {
+                // The real slot is acquired only now that accept_tls has
+                // already succeeded, never before.
+                match limiter.try_acquire() {
                     Ok(_slot) => {
                         let Some(db) = open_connection_database(&db_path, peer) else {
                             return;
@@ -485,14 +580,16 @@ fn spawn_connection_handler(
 
 /// Same dispatch as the `worker` overload, minus the GPU/thread-count plumbing a
 /// library-only build has nothing to pass. See that overload's doc comment for what
-/// `slot`/`max_connections` do.
+/// `handshake_slot`/`pre_acquired_slot`/`limiter`/`max_connections` do.
 #[cfg(not(feature = "worker"))]
 fn spawn_connection_handler(
     stream: TcpStream,
     peer: Option<SocketAddr>,
     transport: &Transport,
     db_path: &std::path::Path,
-    slot: Result<ConnectionSlot, usize>,
+    handshake_slot: ConnectionSlot,
+    pre_acquired_slot: Option<Result<ConnectionSlot, usize>>,
+    limiter: ConnectionLimiter,
     max_connections: usize,
 ) {
     let db_path = db_path.to_path_buf();
@@ -502,7 +599,11 @@ fn spawn_connection_handler(
                 "--insecure-no-tls: accepted PLAINTEXT connection from {peer:?} -- no TLS, no \
                  authentication"
             );
+            let slot = pre_acquired_slot.expect(
+                "run's accept loop always pre-acquires the real slot for Transport::Insecure",
+            );
             thread::spawn(move || {
+                let _handshake_slot = handshake_slot; // held for this thread's whole lifetime
                 let mut stream = stream;
                 match slot {
                     Ok(_slot) => {
@@ -525,10 +626,13 @@ fn spawn_connection_handler(
             let config = Arc::clone(config);
             let auth = auth.clone();
             thread::spawn(move || {
+                let _handshake_slot = handshake_slot; // held for this thread's whole lifetime
                 let Some(mut tls_stream) = accept_tls(stream, &config, &auth, peer) else {
                     return; // accept_tls already logged why
                 };
-                match slot {
+                // The real slot is acquired only now that accept_tls has
+                // already succeeded, never before.
+                match limiter.try_acquire() {
                     Ok(_slot) => {
                         let Some(db) = open_connection_database(&db_path, peer) else {
                             return;

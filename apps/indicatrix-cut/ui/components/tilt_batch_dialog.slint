@@ -2,7 +2,7 @@ import { Theme } from "../theme.slint";
 import { Button, ScrollView } from "std-widgets.slint";
 import { BatchModel } from "../models/batch.slint";
 
-// Batch tilt-performance-curve computation (Task 4). One component, two states, the
+// Batch tilt-performance-curve computation. One component, two states, the
 // exact same shape `preview_batch_dialog.slint` already established for the preview
 // batch -- see that file's own doc comment for the `confirming`/running-or-done split
 // this mirrors line for line. Kept as a SEPARATE component rather than a generalized
@@ -13,13 +13,11 @@ import { BatchModel } from "../models/batch.slint";
 // remote" section), pulling designs off one shared queue -- so `design_index` is a
 // COMPLETED count, not a current-item cursor. With N local lanes each possibly
 // mid-design at once, no single title/axis-index pair can describe "the" local lane's
-// progress any more (there used to be exactly one local lane, back when this dialog's
-// within-design bar tracked axis `j` of 4 -- `indicatrix::color::metrics::
-// PROFILE_AZIMUTHS_DEG` -- for that one lane), so `local_active`/`local_lane_total`
+// progress any more, so `local_active`/`local_lane_total`
 // report a plain busy-count instead (see `gui::tilt_batch`'s module doc comment's
 // "Progress with N local lanes (plus remote) in flight" section). `remote_title`/
-// `remote_active` describe the REMOTE lane's own in-flight design, UNCHANGED from
-// before -- remote stays a single dispatcher, with no numeric sub-progress since a
+// `remote_active` describe the REMOTE lane's own in-flight design -- remote stays a
+// single dispatcher, with no numeric sub-progress since a
 // remote dispatch is one blocking request covering all 4 axes at once, with nothing
 // observable in between (same module's own doc comment).
 export component TiltBatchDialog inherits Rectangle {

@@ -530,8 +530,8 @@ address = "10.0.0.9:9443"
         assert_eq!(AppSettings::default().remote_render_samples, 512);
     }
 
-    /// A settings file predating this control must still load, defaulting to the same
-    /// `512` the constant used to be hardcoded to.
+    /// A settings file predating this control must still load, defaulting to
+    /// [`DEFAULT_REMOTE_RENDER_SAMPLES`].
     #[test]
     fn a_settings_file_predating_remote_render_samples_still_loads_with_512_defaulted() {
         let toml_str = "[settings]\nexposure = 1.2\n";

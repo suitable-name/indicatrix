@@ -33,7 +33,7 @@
 //!   exactly** -- real recovered fragments include `"meet 3"`, `"level girdle"`,
 //!   `"set girdle position"`, `"set girdle thickness"`, and `"cut stone
 //!   outline"`, which is the same domain [`crate::asc::MeetInstruction`] parses
-//!   out of `.asc`'s `G` field (and matches this task's own example: "size stone,
+//!   out of `.asc`'s `G` field (e.g. "size stone,
 //!   start level girdle" is exactly this style of text).
 //! - **Design title and author strings are recoverable, usually as the last two
 //!   or three fragments in the file**, and were checked against this crate's

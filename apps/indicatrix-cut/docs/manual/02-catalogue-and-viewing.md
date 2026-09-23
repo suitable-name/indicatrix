@@ -190,7 +190,7 @@ Open **Settings** from the viewport toolbar for:
   physical stone size in millimetres, and an HDR environment map loader
   (which, once loaded, replaces the studio lighting controls and forces
   CPU-only rendering).
-- **Reset to Defaults** at the bottom of Settings now asks for
+- **Reset to Defaults** at the bottom of Settings asks for
   confirmation before it wipes every rendering setting back to its
   default — click it once to see "Reset everything?", then **Confirm** (or
   **Cancel** to back out without changing anything).

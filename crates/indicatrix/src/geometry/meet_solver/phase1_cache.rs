@@ -9,9 +9,9 @@
 // Phase 1 incremental candidate-vertex cache
 // ====================================================================
 //
-// Phase 1's constructive pass used to rebuild the settled-tier plane list
-// and call `enumerate_candidate_vertices` (cubic in plane count) at every
-// settle attempt of every tier. This is sound to cache because a phase-1
+// Without this cache, phase 1's constructive pass would need to rebuild the
+// settled-tier plane list and call `enumerate_candidate_vertices` (cubic in
+// plane count) at every settle attempt of every tier. This is sound to cache because a phase-1
 // tier's mast never changes once settled, so the candidate-vertex set for
 // "blanks + every settled tier's planes" only ever *grows* -- a candidate
 // already classified feasible-or-single-violator stays that way and only

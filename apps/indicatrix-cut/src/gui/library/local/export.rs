@@ -74,70 +74,110 @@ pub fn setup_export_asc_callback(
         let default_file_name =
             existing_name.clone().unwrap_or_else(|| format!("{}.asc", sanitize_filename(&full.title)));
 
-        let mut dialog = rfd::FileDialog::new()
-            .set_file_name(&default_file_name)
-            .add_filter(".asc design", &["asc"]);
+        // The save-as picker runs off the UI thread via `gui::pickers::pick` --
+        // everything below (the byte-for-byte export or the reconstruct-and-write
+        // path) stays synchronous, running once the picker's continuation lands
+        // back on the UI thread.
         let default_dir = std::path::Path::new("exports");
-        if default_dir.is_dir() {
-            dialog = dialog.set_directory(default_dir);
-        }
-        // Blocking `rfd::FileDialog`, invoked directly on the Slint UI/event-loop
-        // thread -- see `apps/indicatrix-cut/Cargo.toml`'s `rfd` dependency comment for
-        // why that's the supported way to call it here.
-        let Some(dest_path) = dialog.save_file() else {
-            let msg = "Export cancelled.".to_string();
-            ui.global::<LibraryModel>().set_status_message(msg.clone().into());
-            show_toast(&ui, &msg, "info");
-            return;
-        };
-
-        if let Some(name) = existing_name {
-            match crate::gui::library::detail::export_diagram_file(
-                &db_export,
-                i64::from(entry_id),
-                &name,
-                &dest_path,
-            ) {
-                Ok(msg) => {
-                    ui.global::<LibraryModel>().set_status_message(msg.clone().into());
-                    show_toast(&ui, &msg, "success");
-                }
-                Err(e) => show_toast(&ui, &e, "error"),
-            }
-            return;
-        }
-
-        let Some(schedule) = local::reconstruct_asc_schedule(
-            &full.title,
-            full.refractive_index.as_deref(),
-            full.index_gear.as_deref(),
-            &full.angle_settings,
-        ) else {
-            show_toast(&ui, "No cutting-schedule data to export for this diagram.", "error");
-            return;
-        };
-
-        let text = indicatrix_formats::asc::to_asc_string(&schedule);
-        if let Some(parent) = dest_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        match std::fs::write(&dest_path, text) {
-            Ok(()) => {
-                let msg = format!(
-                    "Exported reconstructed schedule to {} \
-                     (mast distances are placeholders -- see the file's RECONSTRUCTED header).",
-                    dest_path.display()
+        let db_for_pick = Arc::clone(&db_export);
+        crate::gui::pickers::pick(
+            &ui,
+            crate::gui::pickers::PickerRequest {
+                kind: crate::gui::pickers::PickerKind::SaveFile,
+                title: None,
+                filters: vec![crate::gui::pickers::PickerFilter {
+                    label: ".asc design".to_string(),
+                    extensions: vec!["asc".to_string()],
+                }],
+                default_file_name: Some(default_file_name),
+                starting_dir: default_dir.is_dir().then(|| default_dir.to_path_buf()),
+            },
+            move |ui, dest_path| {
+                finish_export_asc(
+                    ui,
+                    &db_for_pick,
+                    entry_id,
+                    &full,
+                    existing_name,
+                    dest_path,
                 );
-                ui.global::<LibraryModel>().set_status_message(msg.clone().into());
-                show_toast(&ui, &msg, "success");
-            }
-            Err(e) => show_toast(
-                &ui,
-                &format!("Failed to write {}: {e}", dest_path.display()),
-                "error",
-            ),
-        }
+            },
+        );
     });
+}
+
+/// [`setup_export_asc_callback`]'s own picker continuation -- split out purely
+/// to keep that function under clippy's function-length lint. `dest_path` is
+/// `None` for a cancelled/dismissed picker; every other parameter is exactly
+/// what the callback body already had in scope before this split.
+fn finish_export_asc(
+    ui: &MainWindow,
+    db: &Arc<Mutex<Database>>,
+    entry_id: i32,
+    full: &indicatrix_vault::model::entry::FullDiagramRecord,
+    existing_name: Option<String>,
+    dest_path: Option<std::path::PathBuf>,
+) {
+    let Some(dest_path) = dest_path else {
+        let msg = "Export cancelled.".to_string();
+        ui.global::<LibraryModel>()
+            .set_status_message(msg.clone().into());
+        show_toast(ui, &msg, "info");
+        return;
+    };
+
+    if let Some(name) = existing_name {
+        match crate::gui::library::detail::export_diagram_file(
+            db,
+            i64::from(entry_id),
+            &name,
+            &dest_path,
+        ) {
+            Ok(msg) => {
+                ui.global::<LibraryModel>()
+                    .set_status_message(msg.clone().into());
+                show_toast(ui, &msg, "success");
+            }
+            Err(e) => show_toast(ui, &e, "error"),
+        }
+        return;
+    }
+
+    let Some(schedule) = local::reconstruct_asc_schedule(
+        &full.title,
+        full.refractive_index.as_deref(),
+        full.index_gear.as_deref(),
+        &full.angle_settings,
+    ) else {
+        show_toast(
+            ui,
+            "No cutting-schedule data to export for this diagram.",
+            "error",
+        );
+        return;
+    };
+
+    let text = indicatrix_formats::asc::to_asc_string(&schedule);
+    if let Some(parent) = dest_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::write(&dest_path, text) {
+        Ok(()) => {
+            let msg = format!(
+                "Exported reconstructed schedule to {} \
+                 (mast distances are placeholders -- see the file's RECONSTRUCTED header).",
+                dest_path.display()
+            );
+            ui.global::<LibraryModel>()
+                .set_status_message(msg.clone().into());
+            show_toast(ui, &msg, "success");
+        }
+        Err(e) => show_toast(
+            ui,
+            &format!("Failed to write {}: {e}", dest_path.display()),
+            "error",
+        ),
+    }
 }
 
 /// Strips characters Windows (and, incidentally, every other common filesystem)
@@ -146,7 +186,7 @@ pub fn setup_export_asc_callback(
 /// `pub`, not private (`export` is itself a private module, so this stays
 /// crate-internal regardless -- `clippy::redundant_pub_crate` prefers plain `pub`
 /// here over `pub(crate)` for exactly that reason): `gui::editor::native_io`'s own
-/// Export/Save-Native dialogs reuse this exact rule (Item 176) for a slugged-first-
+/// Export/Save-Native dialogs reuse this exact rule for a slugged-first-
 /// header default file name, so a title with a `:` or `/` in it (a real `GemCad`
 /// header, e.g. "Round Brilliant: 57 facets") sanitizes identically whichever dialog
 /// offered it.

@@ -52,13 +52,12 @@ pub(super) struct PoseAndGeometry<'a> {
 /// events from one in-progress render).
 ///
 /// No Slint/GUI types in the signature -- exercised directly by this module's own unit
-/// tests without a window, a socket, or a worker. This function itself still
-/// runs the full (multi-second at 4K) denoise pass synchronously -- it is no longer
-/// called directly from `super::tick::redraw_from_accumulator` for that reason (that
-/// would block the Slint UI thread, which is literally where `redraw_from_accumulator`
-/// runs, being invoked from inside `handle_remote_update`'s `upgrade_in_event_loop`
-/// closure). It is now called from `super::generation::spawn_denoise_generation`'s
-/// background thread instead, with a throwaway `GuideCache` pre-seeded via
+/// tests without a window, a socket, or a worker. This function itself still runs the
+/// full (multi-second at 4K) denoise pass synchronously, so it is called only from
+/// `super::generation::spawn_denoise_generation`'s background thread, never directly
+/// from `super::tick::redraw_from_accumulator` (which runs on the Slint UI thread,
+/// invoked from inside `handle_remote_update`'s `upgrade_in_event_loop` closure, and
+/// would block it). The background thread pre-seeds a throwaway `GuideCache` via
 /// [`GuideCache::adopt`] so its own internal `guide_cache.ensure` call is a guaranteed
 /// cache hit rather than a synchronous regenerate -- see that function's doc comment.
 pub(super) fn render_merged_frame(

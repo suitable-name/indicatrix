@@ -210,6 +210,16 @@ pub(super) fn handle_remote_update(
 /// milliseconds even at 4K) and defers the expensive pass to a background thread via
 /// `spawn_denoise_generation`, swapping in its result on a later redraw once
 /// `adopt_ready_denoise` confirms it is ready and still valid for the pose on screen.
+///
+/// `state`'s lock is taken TWICE here, briefly, rather than once for the whole function
+/// -- never held across the plain tonemap below (see `Orchestrator::last_redraw_at`'s
+/// "tens of milliseconds even at 4K, not free" doc comment). Holding one lock end to end
+/// across that tonemap call would stall `handle_remote_update`'s own rate-limit check
+/// (this same lock, taken SYNCHRONOUSLY on the connection thread, before it ever queues
+/// a UI-thread closure -- see its own call site) for exactly as long as the tonemap
+/// took, contrary to `connection::run`/`run_connection`'s documented "O(1) between
+/// reads" liveness argument (`bridge/remote/remote_render/connection/mod.rs`'s module
+/// doc comment).
 fn redraw_from_accumulator(
     ui: &MainWindow,
     accumulator: &Arc<Mutex<Accumulator>>,
@@ -236,82 +246,101 @@ fn redraw_from_accumulator(
     };
     let desired_key = GuideCache::key_for(width, height, yaw, pitch, distance, &planes);
 
-    let mut orch = lock(state);
-
-    let bytes = if denoise_enabled {
-        // A fresher generation just finished -- adopt it as the new "last known good"
-        // for this pose. Only clear the slot on adoption; otherwise it's still
-        // legitimately in flight.
-        if let Some(fresh) = adopt_ready_denoise(&desired_key, orch.pending_denoise_gen.as_ref()) {
-            orch.pending_denoise_gen = None;
-            orch.last_denoised = Some((desired_key.clone(), fresh));
-        }
-
-        // Show the freshest denoised frame for this pose if we have one (even if a
-        // newer generation is still cooking -- a few-samples-stale denoised image
-        // beats flickering back to noise every redraw), otherwise the plain tonemap.
-        match orch.last_denoised.as_ref() {
-            Some((key, bytes)) if *key == desired_key => bytes.clone(),
-            _ => {
-                orch.last_denoised = None;
-                tonemap_running_average(width, height, samples_done, &buffer)
+    // First (brief) lock: adopt any freshly finished background denoise for this pose,
+    // and read out a cached denoised frame if one is already valid -- both O(1) next to
+    // the tonemap below, so held only long enough for that.
+    let cached_denoised = {
+        let mut orch = lock(state);
+        if denoise_enabled {
+            // A fresher generation just finished -- adopt it as the new "last known
+            // good" for this pose. Only clear the slot on adoption; otherwise it's
+            // still legitimately in flight.
+            if let Some(fresh) =
+                adopt_ready_denoise(&desired_key, orch.pending_denoise_gen.as_ref())
+            {
+                orch.pending_denoise_gen = None;
+                orch.last_denoised = Some((desired_key.clone(), fresh));
             }
+            // Show the freshest denoised frame for this pose if we have one (even if a
+            // newer generation is still cooking -- a few-samples-stale denoised image
+            // beats flickering back to noise every redraw); otherwise fall through to
+            // the plain tonemap below, UNLOCKED.
+            match orch.last_denoised.as_ref() {
+                Some((key, bytes)) if *key == desired_key => Some(bytes.clone()),
+                _ => {
+                    orch.last_denoised = None;
+                    None
+                }
+            }
+        } else {
+            orch.pending_denoise_gen = None;
+            orch.last_denoised = None;
+            None
         }
-    } else {
-        orch.pending_denoise_gen = None;
-        orch.last_denoised = None;
-        tonemap_running_average(width, height, samples_done, &buffer)
     };
 
-    // Keep exactly one background denoise generation in flight per pose: dispatch a
-    // fresh one whenever denoising is on and nothing is already running for the
-    // current pose (`pending_denoise_gen`'s key not matching `desired_key` covers
-    // "nothing dispatched yet", "the one just adopted above", and "pose changed since
-    // the last dispatch" identically). Needs guides for this pose already ready --
-    // otherwise there is nothing to hand the background thread yet; a later redraw,
-    // once the guide prepass lands, dispatches then.
-    if denoise_enabled {
-        let pending_matches = orch
-            .pending_denoise_gen
-            .as_ref()
-            .is_some_and(|p| p.key == desired_key);
-        if !pending_matches {
-            let Orchestrator {
-                guide_cache,
-                pending_guide_gen,
-                ..
-            } = &mut *orch;
-            if adopt_ready_guides(&desired_key, guide_cache, pending_guide_gen.as_ref()) {
-                let guides = guide_cache
-                    .ensure(width, height, yaw, pitch, distance, &planes)
-                    .clone();
-                orch.pending_denoise_gen = Some(spawn_denoise_generation(
-                    desired_key,
-                    DenoiseGenerationJob {
-                        width,
-                        height,
-                        samples_done,
-                        buffer,
-                        guides,
-                        yaw,
-                        pitch,
-                        distance,
-                        // `DenoiseGenerationJob::planes` is a plain `Vec` (a one-shot
-                        // background job's own owned copy, not `RenderContext`'s hot-path
-                        // per-frame snapshot) -- `Arc::clone` above kept the read cheap;
-                        // this is the one place that copy actually has to happen.
-                        planes: planes.as_ref().clone(),
-                    },
-                ));
+    // The plain tonemap -- "tens of milliseconds even at 4K, not free" -- runs with NO
+    // lock held at all: `handle_remote_update`'s rate-limit check takes this same
+    // `state` lock synchronously on the connection thread, and must never wait out
+    // a redraw's tonemap to get it.
+    let bytes = cached_denoised
+        .unwrap_or_else(|| tonemap_running_average(width, height, samples_done, &buffer));
+
+    // Second (brief) lock: dispatch a fresh background denoise generation if warranted,
+    // and stamp the redraw timestamp the rate limit reads.
+    {
+        let mut orch = lock(state);
+
+        // Keep exactly one background denoise generation in flight per pose: dispatch a
+        // fresh one whenever denoising is on and nothing is already running for the
+        // current pose (`pending_denoise_gen`'s key not matching `desired_key` covers
+        // "nothing dispatched yet", "the one just adopted above", and "pose changed
+        // since the last dispatch" identically). Needs guides for this pose already
+        // ready -- otherwise there is nothing to hand the background thread yet; a
+        // later redraw, once the guide prepass lands, dispatches then.
+        if denoise_enabled {
+            let pending_matches = orch
+                .pending_denoise_gen
+                .as_ref()
+                .is_some_and(|p| p.key == desired_key);
+            if !pending_matches {
+                let Orchestrator {
+                    guide_cache,
+                    pending_guide_gen,
+                    ..
+                } = &mut *orch;
+                if adopt_ready_guides(&desired_key, guide_cache, pending_guide_gen.as_ref()) {
+                    let guides = guide_cache
+                        .ensure(width, height, yaw, pitch, distance, &planes)
+                        .clone();
+                    orch.pending_denoise_gen = Some(spawn_denoise_generation(
+                        desired_key,
+                        DenoiseGenerationJob {
+                            width,
+                            height,
+                            samples_done,
+                            buffer,
+                            guides,
+                            yaw,
+                            pitch,
+                            distance,
+                            // `DenoiseGenerationJob::planes` is a plain `Vec` (a
+                            // one-shot background job's own owned copy, not
+                            // `RenderContext`'s hot-path per-frame snapshot) --
+                            // `Arc::clone` above kept the read cheap; this is the one
+                            // place that copy actually has to happen.
+                            planes: planes.as_ref().clone(),
+                        },
+                    ));
+                }
             }
         }
-    }
 
-    // Stamps the moment this redraw happened so the pre-enqueue check can rate-limit
-    // the next Frame/Preview-triggered one. Set unconditionally, since every path
-    // above produced a fresh `bytes` to show.
-    orch.last_redraw_at = Some(Instant::now());
-    drop(orch);
+        // Stamps the moment this redraw happened so the pre-enqueue check can
+        // rate-limit the next Frame/Preview-triggered one. Set unconditionally, since
+        // every path above produced a fresh `bytes` to show.
+        orch.last_redraw_at = Some(Instant::now());
+    }
 
     let mut fb = crate::bridge::pixel_buffer::FramebufferTransfer::new(width, height);
     let image = fb.copy_from_gpu_slice(&bytes);
@@ -363,8 +392,9 @@ mod tests {
     }
 
     /// A whole burst of updates arriving within one interval must only ever find one of
-    /// them due -- the time-based half of the fix (`RedrawGate` separately bounds the
-    /// queue to one pending closure; this bounds how often a redraw is even attempted).
+    /// them due -- the time-based half of rate-limiting redraws (`RedrawGate`
+    /// separately bounds the queue to one pending closure; this bounds how often a
+    /// redraw is even attempted).
     #[test]
     fn a_burst_of_updates_within_one_interval_finds_at_most_one_due() {
         let start = Instant::now();

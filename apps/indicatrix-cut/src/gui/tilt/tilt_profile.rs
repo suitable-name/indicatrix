@@ -39,7 +39,7 @@
 //! four fixed azimuths).
 
 use crate::{
-    MainWindow, TiltModel,
+    ActivityModel, MainWindow, TiltModel,
     bridge::render_thread::{RenderContext, hash_planes, resolve_material_with_override},
     gui::optics::curve_path::full_axis_curve_path,
 };
@@ -130,10 +130,13 @@ fn handle_request_tilt_profile_axes(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
     launched_key: &Arc<Mutex<Option<AxesCacheKey>>>,
+    completed_key: &Arc<Mutex<Option<AxesCacheKey>>>,
     generation: &Arc<AtomicU64>,
 ) {
     let (planes, material_name, material_override, custom_materials, light_yaw, light_pitch) = {
-        let ctx = render_ctx.lock().unwrap();
+        let ctx = render_ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         (
             ctx.active_planes.clone(),
             ctx.material_name.clone(),
@@ -147,10 +150,10 @@ fn handle_request_tilt_profile_axes(
     // identity and to hand the same resolved value to the worker thread below
     // rather than re-resolving it there from a name that could resolve to
     // something else by the time the thread runs.
-    // Prefers the editor's fully resolved material over a name lookup (CAD audit
-    // items 57/61): a catalogue custom material or a typed RI override has no
-    // built-in name to find, so the sweep used to run against whatever the name
-    // happened to resolve to -- silently a different stone from the one being edited.
+    // Prefers the editor's fully resolved material over a name lookup: a
+    // catalogue custom material or a typed RI override has no built-in name to
+    // find, so resolving by name alone would silently sweep a different stone
+    // from the one being edited.
     let material = resolve_material_with_override(
         &GemMaterial::all_materials(),
         &custom_materials,
@@ -164,29 +167,95 @@ fn handle_request_tilt_profile_axes(
         material: material.clone(),
         planes_hash: hash_planes(&planes),
     };
+    // Whether the curves already on screen (`completed_key`, the last sweep that
+    // actually FINISHED and pushed `graph_*` rows -- as opposed to `launched_key`
+    // below, which flips as soon as a sweep merely STARTS) still describe these
+    // exact inputs. Pushed unconditionally, even when the dedup check just below
+    // decides nothing needs to run: a stale curve stays stale until a fresh sweep
+    // actually completes, it doesn't clear itself just because nothing new was
+    // launched this time.
+    let stale_now = should_recompute_axes(
+        completed_key
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref(),
+        &key,
+    );
+    ui.global::<TiltModel>().set_curves_stale(stale_now);
     {
         let mut launched = launched_key.lock().unwrap();
         if !should_recompute_axes(launched.as_ref(), &key) {
             // Already computed (or currently computing) for these exact inputs.
             return;
         }
-        *launched = Some(key);
+        *launched = Some(key.clone());
     }
 
     let my_generation = generation.fetch_add(1, Ordering::SeqCst) + 1;
     let generation = generation.clone();
     ui.global::<TiltModel>().set_extra_axes_loading(true);
+    // This ~1.36s sweep reports no completion fraction (see the module doc
+    // comment), so it registers indeterminate -- `ui/models/activity.slint`'s own
+    // doc comment on `start_external`/`finish_external` explains why this crosses
+    // through the Slint global rather than `gui::editor::activity::
+    // ActivityRegistry` directly (this module is outside `gui::editor`'s module
+    // tree). Not cancellable: the sweep has no cancel probe of its own, only
+    // supersession via `generation`.
+    let activity_id = ui.global::<ActivityModel>().invoke_start_external(
+        "tilt_curve".into(),
+        "Computing tilt curves".into(),
+        false,
+    );
     let ui_weak_bg = ui.as_weak();
 
     spawn_tilt_profile_sweep(
-        planes,
-        material,
-        light_yaw,
-        light_pitch,
-        generation,
-        my_generation,
+        SweepRequest {
+            planes,
+            material,
+            light_yaw,
+            light_pitch,
+            key,
+        },
+        SweepBookkeeping {
+            generation,
+            my_generation,
+            completed_key: Arc::clone(completed_key),
+            activity_id,
+        },
         ui_weak_bg,
     );
+}
+
+/// The per-sweep inputs [`spawn_tilt_profile_sweep`] needs, bundled so that
+/// function's own signature stays under clippy's `too_many_arguments` threshold --
+/// see [`SweepBookkeeping`] for the other half.
+struct SweepRequest {
+    planes: Arc<Vec<GpuFacetPlane>>,
+    material: GemMaterial,
+    light_yaw: f32,
+    light_pitch: f32,
+    /// The exact [`AxesCacheKey`] this sweep was launched for -- stamped into
+    /// [`SweepBookkeeping::completed_key`] once the sweep actually lands, so a
+    /// later staleness check (`handle_request_tilt_profile_axes`'s own
+    /// `stale_now`) compares against what ACTUALLY finished, not merely what was
+    /// last launched.
+    key: AxesCacheKey,
+}
+
+/// The generation/activity/cache-key bookkeeping [`spawn_tilt_profile_sweep`] needs
+/// beyond the sweep's own inputs -- see [`SweepRequest`].
+struct SweepBookkeeping {
+    generation: Arc<AtomicU64>,
+    my_generation: u64,
+    /// Set to `Some(request.key)` once this sweep's results are actually pushed --
+    /// see [`SweepRequest::key`]'s own doc comment.
+    completed_key: Arc<Mutex<Option<AxesCacheKey>>>,
+    /// The [`crate::ActivityModel`] id [`handle_request_tilt_profile_axes`]
+    /// registered for this sweep via `invoke_start_external` -- finished here
+    /// regardless of whether the result is applied or dropped as stale (an
+    /// abandoned sweep's own activity must not linger in the status strip
+    /// forever).
+    activity_id: i32,
 }
 
 /// The background-thread half of [`handle_request_tilt_profile_axes`]: runs the full
@@ -195,14 +264,23 @@ fn handle_request_tilt_profile_axes(
 /// (see `generation`'s own doc comment on `setup_tilt_profile_callback`). Split out
 /// purely to keep that caller under clippy's function-length lint.
 fn spawn_tilt_profile_sweep(
-    planes: Arc<Vec<GpuFacetPlane>>,
-    material: GemMaterial,
-    light_yaw: f32,
-    light_pitch: f32,
-    generation: Arc<AtomicU64>,
-    my_generation: u64,
+    request: SweepRequest,
+    bookkeeping: SweepBookkeeping,
     ui_weak_bg: slint::Weak<MainWindow>,
 ) {
+    let SweepRequest {
+        planes,
+        material,
+        light_yaw,
+        light_pitch,
+        key,
+    } = request;
+    let SweepBookkeeping {
+        generation,
+        my_generation,
+        completed_key,
+        activity_id,
+    } = bookkeeping;
     std::thread::spawn(move || {
         let (brilliance_rows, extinction_rows, windowing_rows) =
             sweep_all_axes(&planes, &material, light_yaw, light_pitch);
@@ -229,6 +307,11 @@ fn spawn_tilt_profile_sweep(
         };
 
         let _ = ui_weak_bg.upgrade_in_event_loop(move |ui| {
+            // Finished regardless of whether this result is superseded below --
+            // an abandoned sweep still stops "running" from the status strip's
+            // point of view.
+            ui.global::<ActivityModel>()
+                .invoke_finish_external(activity_id);
             if generation.load(Ordering::SeqCst) != my_generation {
                 // Superseded by a newer request -- drop this stale result rather
                 // than overwriting whatever the newer computation lands.
@@ -247,6 +330,12 @@ fn spawn_tilt_profile_sweep(
             ui.global::<TiltModel>()
                 .set_graph_windowing_extra_paths(ModelRc::new(VecModel::from(windowing_paths)));
             ui.global::<TiltModel>().set_extra_axes_loading(false);
+            // See `SweepRequest::key`'s own doc comment: this is what a LATER
+            // sweep's own staleness check compares against.
+            *completed_key
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(key);
+            ui.global::<TiltModel>().set_curves_stale(false);
         });
     });
 }
@@ -268,19 +357,34 @@ pub(in crate::gui) fn setup_tilt_profile_callback(
     // `on_rerender_curve_with_current_material` needs its own handle to force a fresh
     // sweep regardless of what the dedup check thinks.
     let launched_key_for_rerender = Arc::clone(&launched_key);
+    // `Some(key)` once a sweep for exactly these inputs has actually LANDED (as
+    // opposed to `launched_key`, which flips the instant one merely starts) --
+    // see `TiltModel.curves_stale`'s own staleness check in
+    // `handle_request_tilt_profile_axes`.
+    let completed_key: Arc<Mutex<Option<AxesCacheKey>>> = Arc::new(Mutex::new(None));
     // Bumped on every newly-launched computation; a background thread checks its own
     // snapshot against the latest value before applying results, so a stale
     // computation is silently dropped instead of overwriting fresher data.
     let generation = Arc::new(AtomicU64::new(0));
 
     let ui_weak = ui.as_weak();
-    let render_ctx = render_ctx.clone();
+    // `render_ctx` is cloned into its OWN binding for the closure below, rather
+    // than shadowing the outer `render_ctx`: shadowing it would move the outer
+    // binding into the closure, leaving nothing for `setup_video_export_callback`
+    // below to borrow.
+    let render_ctx_axes = render_ctx.clone();
     ui.global::<TiltModel>()
         .on_request_tilt_profile_axes(move || {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            handle_request_tilt_profile_axes(&ui, &render_ctx, &launched_key, &generation);
+            handle_request_tilt_profile_axes(
+                &ui,
+                &render_ctx_axes,
+                &launched_key,
+                &completed_key,
+                &generation,
+            );
         });
 
     // The decision-logic callback `performance_graph_dialog.slint`'s `cache_is_stale`
@@ -312,6 +416,12 @@ pub(in crate::gui) fn setup_tilt_profile_callback(
                 ui.global::<TiltModel>().invoke_request_tilt_profile_axes();
             }
         });
+
+    // The tilt-video export's own wiring is registered from here rather than
+    // `gui::mod::run_gui` directly, piggy-backing on the fact that
+    // `setup_tilt_profile_callback` is already invoked once from there at
+    // startup -- see `video_export`'s own module doc comment.
+    super::video_export::setup_video_export_callback(ui, render_ctx);
 }
 
 /// Whether the tilt-curve/preview data currently cached for this design was rendered

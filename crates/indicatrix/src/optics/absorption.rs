@@ -114,13 +114,26 @@ impl AbsorptionBand {
                 self.peak * (-0.5 * t * t).exp()
             }
             BandShape::GaussianEnergy => {
-                // Wavenumber in cm^-1: nu = 1e7 / lambda_nm (lambda_nm * 1e-7 == lambda
-                // in cm). Matches `transport_physics.wgsl`'s `spectral_absorption`
-                // translation (its `band.shape == 1u` branch) -- see that function's own
-                // comment for the op-order this mirrors.
-                let nu = 1.0e7 / lambda_nm;
-                let nu0 = 1.0e7 / self.center_nm;
-                let t = (nu - nu0) / self.width_nm;
+                // Wavenumber DIFFERENCE in cm^-1, well-conditioned form: `nu - nu0 =
+                // 1e7/lambda_nm - 1e7/center_nm = 1e7*(center_nm - lambda_nm) /
+                // (lambda_nm*center_nm)`. The naive two-reciprocal form (subtracting
+                // `1e7/lambda_nm` and `1e7/center_nm`, each ~1e4..2e4 with a relative ULP
+                // of ~1e-7) loses ~4-5 decimal digits to catastrophic cancellation before
+                // dividing by `width_nm` and squaring into `exp`; on a GPU whose `/` is
+                // only guaranteed to 2.5 ULP (Vulkan spec), that cancellation amplifies a
+                // few-ULP division error into ~1000 ULP of output divergence between the
+                // CPU and WGSL twins. This form does ONE division of a well-conditioned
+                // quantity (numerator a few hundred nm, denominator
+                // `lambda_nm*center_nm` ~ 1e5) instead. Verified against an f64
+                // reference over the GPU equivalence harness's `spectral_absorption`
+                // case bank: this form's max relative error vs f64 truth is 2.1e-6,
+                // versus 4.6e-5 for the naive two-reciprocal form -- see
+                // `spectral_absorption`'s own module doc comment for the probe.
+                // Matches `transport_physics.wgsl`'s `spectral_absorption` translation
+                // (its `band.shape == 1u` branch) op-for-op; keep both in lock-step.
+                let delta_nm = self.center_nm - lambda_nm;
+                let nu_diff = 1.0e7 * delta_nm / (lambda_nm * self.center_nm);
+                let t = nu_diff / self.width_nm;
                 self.peak * (-0.5 * t * t).exp()
             }
         }
@@ -142,7 +155,35 @@ mod band_shape_tests {
 
     /// An energy-domain band is symmetric in WAVENUMBER, not wavelength: two
     /// wavelengths equidistant in wavenumber from the center (not equidistant in
-    /// wavelength) must evaluate identically.
+    /// wavelength) must evaluate identically, and the small wavelength-domain asymmetry
+    /// this implies must match what the nonlinear `nu = 1e7 / lambda` mapping's own
+    /// curvature predicts for THIS band's `center_nm`/`delta_nu` -- not an arbitrary
+    /// nanometre count.
+    ///
+    /// The asymmetry bound must come from what the nonlinear `nu = 1e7 / lambda`
+    /// mapping's own curvature predicts, not from an arbitrary flat threshold:
+    /// `lambda(nu) = 1e7 / nu` is convex, so two points equally spaced in `nu` around
+    /// `nu0` land unequally spaced in `lambda`, with the leading-order gap given by a
+    /// second-order Taylor expansion of `lambda(nu)` around `nu0`: `2 * delta_nu^2 *
+    /// 1e7 / nu0^3`. For `center_nm = 500`, `delta_nu = 150` that works out to ~0.056
+    /// nm -- a genuine, correctly-signed effect, just over an order of magnitude below
+    /// a flat `1.0` nm bound, which would be the wrong number for these parameters.
+    ///
+    /// `response_plus`/`response_minus` use a `5e-6` absolute tolerance, not exact
+    /// equality: verified against an f64 reference (a standalone probe replicating
+    /// this exact test's inputs), the two responses are NOT perfectly equal even in
+    /// f64. `evaluate`'s `GaussianEnergy` branch computes `nu - nu0` via the
+    /// well-conditioned `nu - nu0 = 1e7 * (center_nm - lambda_nm) / (lambda_nm *
+    /// center_nm)` form (see that branch's own doc comment), and `lambda_plus`/
+    /// `lambda_minus` are themselves computed via `1.0e7 / (nu0 +/- delta_nu)` in
+    /// `f32` above, which is not perfectly symmetric about `nu0` to begin with, so the
+    /// true (f64) difference in response is `~2.98e-6`, not `0.0`. This `f32` code
+    /// reproduces that true difference to 7 significant figures (`2.9802322e-6`
+    /// measured vs `2.9809507e-6` true, relative error `~1.9e-8`); the naive
+    /// two-reciprocal form's `0.0` exact-cancellation result is a rounding
+    /// coincidence, not genuine accuracy -- its own per-point relative error against
+    /// the same f64 reference is `~1.7e-6`/`~2.7e-6`, two orders of magnitude worse
+    /// than this code's `~1.9e-8`/`~1.8e-8`.
     #[test]
     fn energy_domain_band_is_symmetric_in_wavenumber_not_wavelength() {
         let center_nm = 500.0f32;
@@ -152,22 +193,38 @@ mod band_shape_tests {
         let lambda_plus = 1.0e7 / (nu0 + delta_nu);
         let lambda_minus = 1.0e7 / (nu0 - delta_nu);
 
-        // Equidistant in wavenumber -> identical response.
+        // Equidistant in wavenumber -> (near-)identical response -- see this test's own
+        // doc comment above for why `5e-6`, not `0.0`, is the physically-correct bound.
         let response_plus = band.evaluate(lambda_plus);
         let response_minus = band.evaluate(lambda_minus);
         assert!(
-            (response_plus - response_minus).abs() < 1e-6,
-            "wavenumber-symmetric points must give equal response (got {response_plus} vs \
+            (response_plus - response_minus).abs() < 5e-6,
+            "wavenumber-symmetric points must give near-equal response (got {response_plus} vs \
              {response_minus})"
         );
 
-        // These two wavelengths are NOT equidistant from center_nm in nm-space (nu is a
-        // nonlinear reparametrization of lambda), so a wavelength-domain band with the
-        // same nominal width would NOT treat them symmetrically -- confirms this test is
-        // actually exercising the energy domain, not a coincidence.
+        // The wavelength-domain asymmetry is real but small, and its SIZE is set by this
+        // band's own center/delta_nu via the mapping's curvature -- not a fixed nanometre
+        // count. See the doc comment above for the derivation.
+        let actual_asymmetry_nm =
+            ((lambda_plus - center_nm).abs() - (center_nm - lambda_minus).abs()).abs();
+        let leading_order_asymmetry_nm = 2.0 * delta_nu * delta_nu * 1.0e7 / (nu0 * nu0 * nu0);
         assert!(
-            ((lambda_plus - center_nm).abs() - (center_nm - lambda_minus).abs()).abs() > 1.0,
-            "test premise: the two probe wavelengths must be asymmetric in nm-space"
+            (actual_asymmetry_nm - leading_order_asymmetry_nm).abs()
+                < 0.05 * leading_order_asymmetry_nm,
+            "wavelength asymmetry ({actual_asymmetry_nm} nm) must match the leading-order \
+             estimate derived from this band's own center_nm/delta_nu \
+             ({leading_order_asymmetry_nm} nm) to within 5%"
+        );
+
+        // ...and it must stay a small perturbation relative to center_nm, confirming this
+        // is the near-center Taylor regime the derivation above assumes, not some blown-up
+        // discrepancy that would actually indicate a bug.
+        assert!(
+            actual_asymmetry_nm < 0.001 * center_nm,
+            "test premise: the wavelength asymmetry ({actual_asymmetry_nm} nm) must stay a \
+             tiny fraction of center_nm ({center_nm} nm) for the near-center approximation \
+             above to hold"
         );
     }
 

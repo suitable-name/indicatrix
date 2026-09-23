@@ -1,4 +1,4 @@
-// Physics review, Task 2 (facet edge rounding): `shading_normal_near_edge` Tier 2
+// Facet edge rounding: `shading_normal_near_edge` Tier 2
 // kernel -- driven by `renderer::gpu::shading_normal_check`. A standalone file with its
 // own `planes` binding (bound to the SAME real 57-facet Standard Round Brilliant plane
 // set `intersect_polyhedron.wgsl`/`polyhedron_check` use), mirroring that file's own

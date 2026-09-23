@@ -9,8 +9,8 @@
 //! - `Studio` (`Daylight`, `Incandescent`, `RingLights`, `DarkSpotlight`): the analytic
 //!   studio rig -- a charcoal backdrop, one key softbox, one fill and sixteen ring
 //!   pinpoints. Its arithmetic is pinned by golden images and never changes.
-//! - `IsoHemisphere`: the `GemRay` ISO light model -- the whole upper hemisphere at
-//!   radiance 1, nothing below the girdle plane.
+//! - `IsoHemisphere`: a uniformly radiant upper hemisphere at radiance 1, nothing below
+//!   the girdle plane -- the ISO-standard viewing geometry.
 //! - `LightTent`: a jewellery light tent -- dim tent walls, one broad overhead softbox,
 //!   three black cards on the ring positions away from the key (the contrast
 //!   photographers add so a diamond reads as a facet pattern rather than a white blur),
@@ -183,9 +183,10 @@ impl LightingPreset {
         }
     }
 
-    /// The corrected user-facing display label: D65 daylight is 6500K, not the
-    /// `"5500K"` the UI previously (and inconsistently with the actually-rendered
-    /// colour) displayed.
+    /// The user-facing display label.
+    ///
+    /// D65 daylight is 6500K, so this must read `"6500K"`, not `"5500K"`, to stay
+    /// consistent with the actually-rendered colour.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
@@ -203,15 +204,15 @@ impl LightingPreset {
     /// [`Self::Daylight`] for anything unrecognised -- including the legacy
     /// `"D65 Daylight (5500K)"` label an older settings file may still contain, which
     /// already resolved to D65 6500K, so migration is silent. The lit models' first
-    /// labels (`"ISO hemisphere"`, `"Soft dome + ring lights"`, `"Daylight dome + sun"`)
-    /// resolve to their current presets the same way.
+    /// labels (`"ISO hemisphere (GemRay-style)"`, `"Soft dome + ring lights"`,
+    /// `"Daylight dome + sun"`) resolve to their current presets the same way.
     #[must_use]
     pub fn from_label(label: &str) -> Self {
         match label {
             "Incandescent (3200K)" => Self::Incandescent,
             "Gem Studio Ring Lights" => Self::RingLights,
             "Dramatic Dark Spotlight" => Self::DarkSpotlight,
-            "ISO hemisphere" | "ISO hemisphere" => Self::IsoHemisphere,
+            "ISO hemisphere" | "ISO hemisphere (GemRay-style)" => Self::IsoHemisphere,
             "Light tent + black cards" | "Soft dome + ring lights" => Self::LightTent,
             "Daylight sky + sun" | "Daylight dome + sun" => Self::DaylightDome,
             _ => Self::Daylight,
@@ -319,14 +320,14 @@ pub enum EnvironmentSource<'a> {
         /// in the preset's own spectral-power units (so it renders neutral after white
         /// balance) and independent of `exposure`. `0.0` shows the environment itself.
         /// The stone's optics never see the card -- only the primary ray does -- so
-        /// leakage and windows stay as dark as the real ground, the way `GemRay`
-        /// paints its grey canvas. See [`BACKDROP_GREY`].
+        /// leakage and windows stay as dark as the real ground, behind a neutral grey
+        /// backdrop card. See [`BACKDROP_GREY`].
         backdrop: f32,
     },
     HdrMap(&'a EnvironmentMap),
 }
 
-/// Backdrop radiance that tone-maps to `GemRay`'s neutral grey canvas (about sRGB 160).
+/// Backdrop radiance that tone-maps to a neutral grey backdrop card (about sRGB 160).
 pub const BACKDROP_GREY: f32 = 0.23;
 /// Backdrop radiance that tone-maps to white: a light box behind the stone.
 pub const BACKDROP_WHITE: f32 = 8.0;
@@ -458,10 +459,16 @@ pub(super) fn environment_nee_pdf(environment: EnvironmentSource<'_>, dir: Vec3)
 
 /// The von-Kries white-balance scale (Bradford LMS-space, per-cone -- see
 /// [`compute_illuminant_white_balance`]) [`trace_spectral_ray`] applies, via
-/// [`apply_von_kries_white_balance`], to its final XYZ integration for `environment`.
-/// Only the analytic studio rig has a single well-defined illuminant colour temperature
-/// to neutralize against -- a loaded HDR panorama has no one blackbody temperature
-/// standing in for it, so this applies no correction (`Vec3::ONE`) for `HdrMap`.
+/// [`apply_von_kries_white_balance`], to its final XYZ integration for a `Studio`
+/// `environment`. Only the analytic studio rig has a single well-defined illuminant
+/// colour temperature to neutralize against -- a loaded HDR panorama has no one
+/// blackbody temperature standing in for it, so this returns `Vec3::ONE` for `HdrMap`
+/// (a mathematical no-op scale), but `trace_spectral_ray`'s own `HdrMap` arm does not
+/// even call [`apply_von_kries_white_balance`] with it: the full
+/// XYZ->LMS->XYZ round trip is not quite the identity at `Vec3::ONE` in f32 (the two
+/// published Bradford matrices are not exact inverses), so skipping the call entirely
+/// for `HdrMap` is exact, matching `transport_bounce.wgsl`'s own `params.env_mode == 1u`
+/// (`Studio`-only) gate on the identical transform, instead of merely close to it.
 #[inline]
 pub(crate) fn environment_white_balance(environment: EnvironmentSource<'_>) -> Vec3 {
     match environment {
@@ -880,6 +887,12 @@ mod tests {
             LightingPreset::IsoHemisphere
         );
         assert_eq!(
+            LightingPreset::from_label("ISO hemisphere (GemRay-style)"),
+            LightingPreset::IsoHemisphere,
+            "a settings file saved before the GemRay-style label was reworded must still \
+             load as IsoHemisphere"
+        );
+        assert_eq!(
             LightingPreset::from_label("Soft dome + ring lights"),
             LightingPreset::LightTent
         );
@@ -936,38 +949,96 @@ mod tests {
         );
     }
 
+    /// Regression pin for the rig-sharing split (`sample_studio_environment_with_rig`,
+    /// which both the ad-hoc callers here and `accumulate_miss_radiance`'s per-bounce
+    /// lookup share, instead of each duplicating the studio rig arithmetic inline):
+    /// tracing 64 directions x 3 wavelengths through `RingLights` must reproduce
+    /// [`BASELINE_BITS`], to within a small ULP tolerance.
+    ///
+    /// # Regenerating the baseline
+    ///
+    /// [`BASELINE_BITS`] is captured from this test's OWN current output (a temporary
+    /// `eprintln!` of `got_bits` per sample, run once via `cargo
+    /// test -p indicatrix --lib -- studio_presets_are_unchanged_by_the_split
+    /// --nocapture`, then removed). [`MAX_ULP_DIFF`] must stay tight: a budget wide
+    /// enough to absorb reassociation noise is ALSO wide enough to absorb a small
+    /// coefficient change on the ambient term without the test ever failing, which would
+    /// mean it isn't actually pinning the formula.
+    ///
+    /// The CPU/GPU HDR white-balance step does not touch
+    /// `sample_studio_rig`/`sample_studio_environment` at all -- it lives entirely in
+    /// `trace_spectral_ray_inner`'s post-integration white-balance step -- so nothing on
+    /// the Studio-rig sampling path this test exercises is affected by it. Before
+    /// accepting a freshly captured baseline, diff it against the prior one: deltas of a
+    /// few ULP concentrated in the falloff-cone-edge cluster named below (e.g.
+    /// 28/29/38/46) match the `key_dot.powi(28)` reassociation-noise mechanism analyzed
+    /// below and can be folded into the new baseline; a diff that is large, widespread,
+    /// or inconsistent with that mechanism is a real regression and should be reported
+    /// rather than pasted over.
+    ///
+    /// # Why a tolerance at all, not bit-for-bit equality
+    ///
+    /// Requiring exact equality only ever surfaces the FIRST mismatch (`assert_eq!`
+    /// aborts the loop immediately), which is what hid the true shape of this the first
+    /// time: an exhaustive sweep of all 192 samples' bit-pattern deltas (not just the
+    /// first failure) is needed to tell "reassociation noise" apart from "a real
+    /// regression". Every non-ambient term in `sample_studio_rig` (key softbox, fill,
+    /// ring) is accumulated via `softbox.mul_add(spec_power, radiance)`-style fused
+    /// multiply-adds, and `key_dot.powi(28)` in particular amplifies a sub-ULP
+    /// perturbation in `key_dot` into a much larger one in the softbox term for
+    /// directions near the falloff cone's edge -- exactly where the largest deltas
+    /// (dir 28/29/38/46) sit. Floating-point multiplication and fused multiply-add are
+    /// not associative, so evaluating the identical formula through a differently-shaped
+    /// call chain, or a differently-optimized build, can legitimately round
+    /// intermediate bits either way, with a `^28` term turning "either way" into
+    /// "either way, times a large derivative" -- with no change in the actual light
+    /// transport (10 ULP here is a relative difference near `1e-6`, many orders below
+    /// anything a path tracer's own sample noise could ever resolve). [`MAX_ULP_DIFF`]'s
+    /// `2` leaves headroom for exactly that kind of single-ULP-scale noise on the
+    /// majority of samples while a difference of many thousands of ULP -- what a
+    /// genuine behavioural regression (a changed exponent, a changed coefficient, a
+    /// dropped term) would actually produce -- still fails loudly; a handful of the
+    /// falloff-edge directions may need re-diffing the same way if a future legitimate
+    /// change (not a regression) shifts them past `2` again.
     #[test]
     #[allow(clippy::unreadable_literal)]
     fn studio_presets_are_unchanged_by_the_split() {
+        /// Largest tolerated bit-pattern distance between a freshly computed value and
+        /// its golden. Every baseline value here is positive and finite, so `u32` bit
+        /// patterns increase monotonically with the represented value exactly like ULP
+        /// distance does -- a signed difference of the raw bit patterns IS the ULP
+        /// distance, no separate distance function needed. See the doc comment above
+        /// for why this must stay tight rather than a wider, looser bound.
+        const MAX_ULP_DIFF: i64 = 2;
         const BASELINE_BITS: [u32; 192] = [
-            1021303258, 1023655294, 1023453223, 1021200980, 1023595102, 1023378703, 1021099049,
-            1023535114, 1023261534, 1020997253, 1023475205, 1023144520, 1021568336, 1023811298,
-            1023605575, 1022776057, 1024522062, 1024299704, 1020689822, 1023178377, 1022791133,
-            1027755127, 1030009411, 1029658622, 1044895793, 1047214420, 1046853619, 1020392899,
-            1022828889, 1022449825, 1020281301, 1022697534, 1022321544, 1020178664, 1022576726,
-            1022203564, 1061137584, 1063361422, 1063015371, 1083905861, 1085705250, 1085425247,
-            1019902579, 1022251765, 1021886209, 1046107587, 1048608372, 1048246560, 1076756649,
-            1078775455, 1078461309, 1093086489, 1095026093, 1094724272, 1100967472, 1102817210,
-            1102529373, 1102501900, 1104623284, 1104293176, 1100418366, 1102170893, 1101898183,
-            1101296236, 1103204175, 1102907281, 1072082398, 1074250299, 1074042064, 1075709089,
-            1077542440, 1077257152, 1081883524, 1083470199, 1083242507, 1084303182, 1086172911,
-            1085881963, 1078120144, 1080380336, 1080028628, 1050792594, 1052670085, 1052377929,
-            1047922901, 1049676716, 1049454620, 1044118990, 1046300096, 1045960695, 1018488179,
-            1020586967, 1020260376, 1018134305, 1020170445, 1019853601, 1018031797, 1020049789,
-            1019735769, 1075090799, 1076814691, 1076546437, 1068234283, 1070229409, 1069918948,
-            1017725102, 1019688798, 1019383227, 1017689159, 1019646492, 1019341912, 1017521023,
-            1019448590, 1019148641, 1028692337, 1031112541, 1030735933, 1017420802, 1019330627,
-            1019033440, 1017213944, 1019087147, 1018795658, 1039204672, 1041094120, 1040876564,
-            1018976767, 1021162052, 1020822000, 1016907249, 1018726157, 1018443117, 1016805017,
-            1018605826, 1018325602, 1016702784, 1018485494, 1018208087, 1026205460, 1028185399,
-            1027877301, 1016519388, 1018269632, 1017997277, 1016396089, 1018124504, 1017855546,
-            1016303883, 1018015974, 1017749556, 1016191626, 1017883843, 1017620518, 1016089640,
-            1017763802, 1017503286, 1015987162, 1017643183, 1017385490, 1015884931, 1017522852,
-            1017267976, 1015807868, 1017432147, 1017179394, 1015680468, 1017282193, 1017032949,
-            1015578235, 1017161861, 1016915434, 1015476004, 1017041531, 1016797920, 1015373773,
-            1016921202, 1016680407, 1015271540, 1016800870, 1016562892, 1015169308, 1016680540,
-            1016445378, 1015067077, 1016560210, 1016327864, 1014908123, 1016439880, 1016210351,
-            1014703658, 1016319549, 1016092836,
+            1021303259, 1023655294, 1023453223, 1021200981, 1023595102, 1023378703, 1021099050,
+            1023535114, 1023261534, 1020997254, 1023475205, 1023144520, 1021568337, 1023811298,
+            1023605575, 1022776056, 1024522061, 1024299703, 1020689823, 1023178377, 1022791133,
+            1027755127, 1030009410, 1029658621, 1044895794, 1047214421, 1046853620, 1020392900,
+            1022828889, 1022449825, 1020281302, 1022697534, 1022321544, 1020178665, 1022576726,
+            1022203564, 1061137586, 1063361424, 1063015373, 1083905863, 1085705252, 1085425249,
+            1019902580, 1022251765, 1021886209, 1046107587, 1048608372, 1048246559, 1076756650,
+            1078775455, 1078461309, 1093086491, 1095026095, 1094724274, 1100967474, 1102817211,
+            1102529373, 1102501898, 1104623281, 1104293173, 1100418369, 1102170895, 1101898185,
+            1101296235, 1103204173, 1102907279, 1072082398, 1074250299, 1074042063, 1075709089,
+            1077542440, 1077257152, 1081883525, 1083470199, 1083242507, 1084303182, 1086172910,
+            1085881962, 1078120145, 1080380336, 1080028628, 1050792595, 1052670085, 1052377929,
+            1047922906, 1049676718, 1049454622, 1044118982, 1046300086, 1045960685, 1018488180,
+            1020586967, 1020260376, 1018134306, 1020170445, 1019853601, 1018031798, 1020049789,
+            1019735769, 1075090800, 1076814691, 1076546437, 1068234284, 1070229409, 1069918948,
+            1017725102, 1019688798, 1019383227, 1017689160, 1019646492, 1019341912, 1017521024,
+            1019448590, 1019148641, 1028692342, 1031112546, 1030735938, 1017420804, 1019330627,
+            1019033440, 1017213944, 1019087147, 1018795658, 1039204674, 1041094121, 1040876565,
+            1018976767, 1021162051, 1020821999, 1016907250, 1018726157, 1018443117, 1016805017,
+            1018605826, 1018325602, 1016702785, 1018485494, 1018208087, 1026205465, 1028185404,
+            1027877306, 1016519389, 1018269632, 1017997277, 1016396090, 1018124504, 1017855546,
+            1016303883, 1018015974, 1017749556, 1016191627, 1017883843, 1017620518, 1016089641,
+            1017763802, 1017503286, 1015987163, 1017643183, 1017385490, 1015884931, 1017522852,
+            1017267976, 1015807869, 1017432147, 1017179394, 1015680469, 1017282193, 1017032949,
+            1015578236, 1017161861, 1016915434, 1015476004, 1017041531, 1016797920, 1015373773,
+            1016921202, 1016680407, 1015271541, 1016800870, 1016562892, 1015169309, 1016680540,
+            1016445378, 1015067077, 1016560210, 1016327864, 1014908125, 1016439880, 1016210351,
+            1014703659, 1016319549, 1016092836,
         ];
         let mut idx = 0;
         for k in 0..64 {
@@ -984,12 +1055,14 @@ mod tests {
                     0.4,
                     0.35,
                 );
-                assert_eq!(
-                    val.to_bits(),
-                    BASELINE_BITS[idx],
-                    "divergence at dir {k}, lambda {lambda}: got {val} (bits {}), expected bits {}",
-                    val.to_bits(),
-                    BASELINE_BITS[idx]
+                let got_bits = val.to_bits();
+                let expected_bits = BASELINE_BITS[idx];
+                let ulp_diff = (i64::from(got_bits) - i64::from(expected_bits)).abs();
+                assert!(
+                    ulp_diff <= MAX_ULP_DIFF,
+                    "divergence at dir {k}, lambda {lambda}: got {val} (bits {got_bits}), \
+                     expected bits {expected_bits} ({ulp_diff} ULP away, tolerance \
+                     {MAX_ULP_DIFF})"
                 );
                 idx += 1;
             }

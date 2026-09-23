@@ -1,29 +1,26 @@
-// Finding G5 Part B: shared per-bounce physics -- scene bindings, the megakernel's
+// Shared per-bounce physics -- scene bindings, the megakernel's
 // helper functions (intersection, NEE, environment sampling, the biaxial/uniaxial
-// dispatch machinery declared local to the old `spectral_transport.wgsl`), and
-// `transport_bounce_step`, the ONE-BOUNCE body factored out of the megakernel's own
-// bounce loop so `spectral_transport.wgsl`'s `transport_main` (the megakernel) and
-// `wavefront_transport.wgsl`'s `wavefront_bounce` (the wavefront pipeline's per-bounce
-// kernel) call the SAME function -- literally the same compiled arithmetic, not two
-// texts that could drift, mirroring `transport_physics.wgsl`'s own rationale for why it
-// exists (see that file's header comment for the fault-injection story motivating this
-// pattern).
+// dispatch machinery), and `transport_bounce_step`, the ONE-BOUNCE body factored out of
+// the megakernel's own bounce loop so `spectral_transport.wgsl`'s `transport_main` (the
+// megakernel) and `wavefront_transport.wgsl`'s `wavefront_bounce` (the wavefront
+// pipeline's per-bounce kernel) call the SAME function -- literally the same compiled
+// arithmetic, not two texts that could drift, mirroring `transport_physics.wgsl`'s own
+// rationale for why it exists (see that file's header comment for the fault-injection
+// story motivating this pattern).
 //
-// # Why this file exists (and what moved here)
+// # Why this file exists
 //
-// Every one of these bindings/helpers used to live directly in `spectral_transport.wgsl`
-// ("megakernel-local", per several of their own doc comments below) because
-// `transport_main` was their only caller. Finding G5 Part B adds a second caller
-// (`wavefront_bounce`) that needs the exact same scene bindings and the exact same
+// `spectral_transport.wgsl`'s `transport_main` and `wavefront_transport.wgsl`'s
+// `wavefront_bounce` both need the exact same scene bindings and the exact same
 // `intersect_ray`/NEE/environment-sampling machinery `transport_bounce_step` calls, so
-// all of it moved here, into a file `build.rs` concatenates ahead of BOTH
+// all of it lives here, in a file `build.rs` concatenates ahead of BOTH
 // `spectral_transport.wgsl` and `wavefront_transport.wgsl` (see that file's own doc
 // comment for the concatenation lists) -- exactly the same "shared prelude" pattern
-// `transport_physics.wgsl` already establishes for the smaller, purely-functional
-// pieces. `spectral_transport.wgsl` itself now holds only `transport_main`: its
-// per-thread prologue (camera ray, hero wavelength, hoisted per-channel arrays), a loop
-// that calls `transport_bounce_step` once per bounce, and the final XYZ
-// integration/output-write tail.
+// `transport_physics.wgsl` establishes for the smaller, purely-functional pieces.
+// `spectral_transport.wgsl` itself holds only `transport_main`: its per-thread prologue
+// (camera ray, hero wavelength, hoisted per-channel arrays), a loop that calls
+// `transport_bounce_step` once per bounce, and the final XYZ integration/output-write
+// tail.
 //
 // # `transport_bounce_step`'s calling convention
 //
@@ -38,20 +35,19 @@
 // targeted the inner channel loop, never the outer bounce loop, so they stay ordinary
 // WGSL `continue` statements inside this function's own nested loops.
 //
-// Every free variable the old loop body referenced from the megakernel's per-ray
-// prologue is now an explicit parameter: read-only quantities (hoisted per-ray
-// constants: wavelengths, dispersion/absorption arrays, the biaxial axis frame, the
-// studio rig directions, the RNG seed) by value, exactly as the megakernel's own local
-// `let`s/`var`s held them; per-bounce MUTABLE state (the ray's origin/direction/wave
+// Every free variable this function's body references from the megakernel's per-ray
+// prologue is an explicit parameter: read-only quantities (hoisted per-ray constants:
+// wavelengths, dispersion/absorption arrays, the biaxial axis frame, the studio rig
+// directions, the RNG seed) are passed by value, exactly as the megakernel's own local
+// `let`s/`var`s hold them; per-bounce MUTABLE state (the ray's origin/direction/wave
 // normal, `inside_gem`/`is_extraordinary`, the Stokes/radiance/path_pdf/split_radiance/
-// compat arrays, `path_escaped`, `pending_light_mis`) as `ptr<function, T>` out
-// parameters, the same pattern this file's own `apply_frosted_bounce`/
-// `maybe_scatter_or_extinguish`/`narrow_compat` already use. The function BODY below
-// this point is otherwise the megakernel's old loop body verbatim -- every arithmetic
-// expression, comparison, and RNG draw is byte-for-byte what `transport_main` executed
-// before this extraction, just addressed through a pointer where it used to be a plain
-// local variable. This is what makes the extraction bit-identical by construction: no
-// value or evaluation order changed, only where each already-computed value lives.
+// compat arrays, `path_escaped`, `pending_light_mis`) is passed as `ptr<function, T>`
+// out parameters, the same pattern this file's own `apply_frosted_bounce`/
+// `maybe_scatter_or_extinguish`/`narrow_compat` already use. Every arithmetic
+// expression, comparison, and RNG draw in the function body below this point is
+// byte-for-byte what `transport_main` executes, addressed through a pointer rather than
+// a plain local variable. This is what makes the body bit-identical by construction: no
+// value or evaluation order changes, only where each already-computed value lives.
 //
 // Determinism (mirrors `spectral_transport.wgsl`'s own header comment, and the
 // invariant `wavefront_transport.wgsl` restates for its own kernels): every input this
@@ -279,7 +275,7 @@ struct FacetPlane {
     d: f32,
 }
 
-// Finding G6/G7: HdrEnvDims and GpuDistDims are defined in transport_physics.wgsl.
+// HdrEnvDims and GpuDistDims are defined in transport_physics.wgsl.
 
 @group(0) @binding(0) var<uniform> camera: GpuCameraParams;
 @group(0) @binding(1) var<uniform> params: GpuTransportParams;
@@ -299,13 +295,13 @@ struct FacetPlane {
 // same `write_debug_buffers`-gated, self-test-only contract as `out_radiance`/
 // `out_lambdas`/`out_path_pdf` above.
 @group(0) @binding(9) var<storage, read_write> out_compat: array<u32>;
-// Finding G6: `optics::raytracer::environment::EnvironmentSource::HdrMap`'s GPU-side
+// `optics::raytracer::environment::EnvironmentSource::HdrMap`'s GPU-side
 // texel storage -- row-major `vec4<f32>` (alpha unused/zero), uploaded by
 // `renderer::env_map_gpu::HdrEnvGpuData::upload`. See that module's doc comment for why
 // these two bindings are always present regardless of `params.env_mode`.
 @group(0) @binding(10) var<storage, read> hdr_texels: array<vec4<f32>>;
 @group(0) @binding(11) var<uniform> hdr_env_dims: HdrEnvDims;
-// Finding G7: renderer::env_map_gpu::HdrEnvGpuData's flattened Distribution2D -- see
+// renderer::env_map_gpu::HdrEnvGpuData's flattened Distribution2D -- see
 // that module's own doc comment ("Bindings 12/13/14's layout") for the exact layout.
 @group(0) @binding(12) var<storage, read> dist_func: array<f32>;
 @group(0) @binding(13) var<storage, read> dist_cdf: array<f32>;
@@ -313,7 +309,7 @@ struct FacetPlane {
 
 const FACET_FINISH_FROSTED: u32 = 1u;
 
-// Finding G5 Part A: register-pressure/divergence reduction -- workgroup-shared plane
+// Register-pressure/divergence reduction -- workgroup-shared plane
 // cache. `intersect_ray` (below) is the single hottest per-thread loop in this kernel:
 // every thread re-walks `planes[]` from a storage buffer on EVERY bounce (up to
 // `params.max_bounces` times), even though every thread in a workgroup is reading the
@@ -325,13 +321,13 @@ const FACET_FINISH_FROSTED: u32 = 1u;
 // reads `planes_shared` instead of re-issuing a storage load per bounce per thread.
 //
 // Bit-identical by construction: `plane_at` below reads the exact same `FacetPlane`
-// values in the exact same ascending index order either way -- `planes_shared[i]` was
+// values in the exact same ascending index order either way -- `planes_shared[i]` is
 // filled from the exact storage read `planes[i]` would otherwise perform, so which
 // address space serves the read never changes a single bit of the result.
 //
 // A polyhedron with more than `PLANES_SHARED_CAPACITY` facets (rare -- comfortably
-// above every existing cut gemstone's facet count) falls back to reading `planes[]`
-// directly, unchanged from before this change. The fallback decision (`plane_count <=
+// above every existing cut gemstone's facet count) reads `planes[]` directly instead.
+// The fallback decision (`plane_count <=
 // PLANES_SHARED_CAPACITY`) is uniform across the entire workgroup -- `arrayLength(&planes)`
 // is a dispatch-wide constant, never a per-thread quantity -- so branching on it is
 // uniform control flow, not divergence, and is safe on both sides of the
@@ -398,8 +394,8 @@ fn cranley_patterson_rotate(x: f32, offset: f32) -> f32 {
 // to shaders/environment.wgsl / shaders/furnace.wgsl. See that Rust function's own doc
 // comment for why a WGSL port must stay bit-identical: plain f32 arithmetic in a fixed
 // order (floor, fraction, `lo + (hi - lo) * t`), no mul_add/fma, no f64 intermediate
-// anywhere. P4: replaces the retired Wyman/Sloan/Shirley Gaussian-lobe fit, which
-// carried 1-3% XYZ error against the real tabulated observer (worst in the x_bar trough
+// anywhere. This uses the real tabulated observer rather than a Wyman/Sloan/Shirley
+// Gaussian-lobe fit, which carries 1-3% XYZ error against it (worst in the x_bar trough
 // around 495-510nm) -- see `color::cie1931`'s module doc comment.
 
 const CIE_15_2004_CMF_START_NM: f32 = 380.0;
@@ -734,7 +730,7 @@ fn sample_studio_environment_with_rig(
     );
 }
 
-// Finding G6: renderer::env_map::EnvironmentMap::{direction_to_uv, sample_bilinear,
+// renderer::env_map::EnvironmentMap::{direction_to_uv, sample_bilinear,
 // radiance_at} -- ported op-for-op, including the exact `mul_add`/`fma` chains, so this
 // stays within `environment_check`'s ULP budget for `hdr_env_radiance_at` (see that
 // module's standalone `env_map_radiance_main` self-test kernel, a duplicate of this same
@@ -950,7 +946,7 @@ fn shading_normal_near_edge(hit_point: vec3<f32>, hit_facet_idx: u32, hit_normal
 }
 
 // ---------------------------------------------------------------------------------
-// Finding G7: GPU Next-Event Estimation & Multiple Importance Sampling
+// GPU Next-Event Estimation & Multiple Importance Sampling
 // ---------------------------------------------------------------------------------
 
 fn dist1d_find_bucket(cdf_start: u32, n: u32, u: f32) -> u32 {
@@ -1051,12 +1047,22 @@ fn dist2d_pdf_uv(u: f32, v: f32) -> f32 {
     return pdf_u * pdf_v;
 }
 
+// renderer::env_map::EnvironmentMap::pdf -- `sin(theta)` off the unit direction
+// (`length(vec2(x, z))`, the CPU's `x.hypot(z)`), never `sin(acos(y))`; see that
+// function's own comment.
 fn dist2d_pdf(dir: vec3<f32>) -> f32 {
     let uv = hdr_direction_to_uv(dir);
     let pdf_uv = dist2d_pdf_uv(uv.x, uv.y);
-    return pdf_uv_to_solid_angle(pdf_uv, uv.y);
+    let d = normalize(dir);
+    let sin_theta = length(vec2<f32>(d.x, d.z));
+    return pdf_uv_to_solid_angle_from_sin(pdf_uv, sin_theta);
 }
 
+// optics::raytracer::scattering::nee_contribution_hg_scatter. `alphas` mirrors that
+// function's own explicit parameter; `sigma_s`/`absorption_path_scale`
+// and `facet_finishes` are read directly off the global
+// `material`/`facet_finishes` bindings instead, exactly as the megakernel's own scatter
+// call site above (`transport_bounce_step`) already does for the SAME quantities.
 fn nee_contribution_hg_scatter(
     lambdas: ptr<function, array<f32, 8>>,
     n_inside_hero: f32,
@@ -1067,6 +1073,7 @@ fn nee_contribution_hg_scatter(
     bounce: u32,
     stokes: ptr<function, array<vec4<f32>, 8>>,
     radiance: ptr<function, array<f32, 8>>,
+    alphas: array<f32, 8>,
 ) {
     let u0 = f32(hash_u32(rng_seed ^ hash_u32(bounce ^ NEE_ENV_DIR_U_STREAM))) / 4294967295.0;
     let u1 = f32(hash_u32(rng_seed ^ hash_u32(bounce ^ NEE_ENV_DIR_V_STREAM))) / 4294967295.0;
@@ -1078,6 +1085,12 @@ fn nee_contribution_hg_scatter(
     let probe_origin = scatter_point + sample.dir * 1e-4;
     let hit = intersect_ray(probe_origin, sample.dir);
     if (!hit.hit) {
+        return;
+    }
+    // A frosted exit facet has no well-defined specular Fresnel/refraction
+    // for this shadow ray to use -- `nee_contribution_frosted_exterior` already handles
+    // NEE for a frosted exit's own diffusely-sampled surface point.
+    if (hit.facet_idx < arrayLength(&facet_finishes) && facet_finishes[hit.facet_idx] == FACET_FINISH_FROSTED) {
         return;
     }
 
@@ -1099,10 +1112,29 @@ fn nee_contribution_hg_scatter(
         return;
     }
 
+    // The exterior direction this light sample actually leaves along --
+    // Snell's law at the exit facet, mirroring `refraction.wgsl`'s own
+    // `eta*k_hat + (eta*cos_i - cos_t)*normal` vector form with `sample.dir` playing
+    // the incident-direction role and (the inward-flipped) `-hit.normal` the surface
+    // normal. `sample.pdf` itself stays in the INTERIOR (pre-refraction) measure
+    // `dist2d_sample` sampled in -- only the radiance LOOKUP moves to the refracted
+    // direction.
+    let refracted_dir = normalize(n_inside_hero * sample.dir - fma(n_inside_hero, cos_i, -cos_t) * hit.normal);
+    let refracted_uv = hdr_direction_to_uv(refracted_dir);
+    let env_rgb = hdr_env_sample_bilinear(refracted_uv.x, refracted_uv.y);
+
+    // The medium transmittance a phase-sampled continuation reaching this
+    // same boundary would have paid -- the same per-channel `exp_poly(-(alphas[k]+sigma_s)*
+    // hit.t*path_scale)` `maybe_scatter_or_extinguish`'s survive branch applies
+    // (`exp_poly`, not the `exp()` builtin -- see that function's own doc comment,
+    // `transport_physics.wgsl`).
+    let hit_t_scaled = hit.t * material.absorption_path_scale;
+
     let nee_common = t_unpol * phase_val * mis_weight / sample.pdf;
     for (var k: u32 = 0u; k < 8u; k = k + 1u) {
-        let env_k = rgb_to_spectral_radiance(sample.rgb.x, sample.rgb.y, sample.rgb.z, (*lambdas)[k]);
-        (*radiance)[k] = fma((*stokes)[k].x * nee_common * env_k, 1.0, (*radiance)[k]);
+        let transmittance_k = exp_poly(-(alphas[k] + material.scattering_sigma_s) * hit_t_scaled);
+        let env_k = rgb_to_spectral_radiance(env_rgb.x, env_rgb.y, env_rgb.z, (*lambdas)[k]);
+        (*radiance)[k] = fma((*stokes)[k].x * transmittance_k * nee_common * env_k, 1.0, (*radiance)[k]);
     }
 }
 
@@ -1303,8 +1335,14 @@ fn transport_bounce_step(
     compat: ptr<function, array<u32, 8>>,
     path_escaped: ptr<function, bool>,
     pending_light_mis: ptr<function, f32>,
+    // The interior direction `pending_light_mis`'s phase pdf was evaluated
+    // at -- paired with it exactly like the CPU's `Option<(f32, Vec3)>` carry, and
+    // consumed the same way (`dist2d_pdf` below, instead of `(*current_dir)`, which by
+    // the time a transmit-out carry reaches here is the refracted EXTERIOR direction).
+    pending_light_mis_dir: ptr<function, vec3<f32>>,
 ) -> u32 {
         let phase_pdf_this_check = (*pending_light_mis);
+        let phase_dir_this_check = (*pending_light_mis_dir);
         (*pending_light_mis) = 0.0;
 
         let hit = intersect_ray((*current_origin), (*current_dir));
@@ -1320,7 +1358,7 @@ fn transport_bounce_step(
             }
             var mis_weight: f32 = 1.0;
             if (phase_pdf_this_check > 0.0 && params.env_mode == 2u) {
-                let light_pdf = dist2d_pdf((*current_dir));
+                let light_pdf = dist2d_pdf(phase_dir_this_check);
                 mis_weight = balance_heuristic(phase_pdf_this_check, light_pdf);
             }
             for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
@@ -1398,16 +1436,17 @@ fn transport_bounce_step(
                 if (params.env_mode == 2u) {
                     nee_contribution_hg_scatter(
                         lambdas, n_o_hero_seed, scatter_point, old_dir,
-                        material.scattering_g, seed0, bounce, stokes, radiance,
+                        material.scattering_g, seed0, bounce, stokes, radiance, alphas,
                     );
                     (*pending_light_mis) = henyey_greenstein_phase(dot(sc.new_dir, old_dir), material.scattering_g);
+                    (*pending_light_mis_dir) = sc.new_dir;
                 }
                 (*current_origin) = scatter_point;
                 (*current_dir) = sc.new_dir;
                 // A scattering event depolarizes, so `k` collapses to `S` going forward.
                 (*current_k) = sc.new_dir;
                 // Scattered Stokes vectors are already depolarized, so the previous
-                // plane of incidence is no longer physically meaningful -- reset it
+                // plane of incidence is not physically meaningful -- reset it
                 // like the pre-first-bounce state.
                 (*have_prev_plane_normal) = false;
 
@@ -1519,7 +1558,9 @@ fn transport_bounce_step(
                     // optics::raytracer::absorption::apply_absorption's own
                     // `path_len * ctx.material.absorption_path_scale` multiply exactly.
                     let scaled_hit_t = hit.t * material.absorption_path_scale;
-                    let trans_factor = exp(-alphas_interior[k] * scaled_hit_t);
+                    // `exp_poly`, not the `exp()` builtin --
+                    // `apply_absorption` calls `crate::simd::exp_f32x8`, not `f32::exp`.
+                    let trans_factor = exp_poly(-alphas_interior[k] * scaled_hit_t);
                     (*stokes)[k] = (*stokes)[k] * trans_factor;
                 }
             }
@@ -1721,6 +1762,11 @@ fn transport_bounce_step(
                         lambdas, ext_normal, seed0, bounce, stokes, radiance,
                     );
                     (*pending_light_mis) = dot(fb.new_dir, ext_normal) / PI;
+                    // `fb.new_dir` is already the true exterior propagation direction
+                    // here (a frosted transmit needs no further refraction before a
+                    // possible direct escape), mirroring `dispatch_bounce`'s identical
+                    // frosted-arm carry on the CPU side.
+                    (*pending_light_mis_dir) = fb.new_dir;
                 }
             }
             (*current_origin) = hit_point + fb.new_dir * RAY_EPS;
@@ -1757,14 +1803,17 @@ fn transport_bounce_step(
             // full uniaxial Fresnel (Lekner 1991): the closed-form o<->e-coupled
             // TIR reflectance -- mirrors
             // `optics::raytracer::refraction::apply_tir_bounce`'s own uniaxial branch
-            // bit-for-bit (including that function's own lack of a degenerate-axis
-            // guard, see `uniaxial_active`'s doc comment above -- this dispatch stays
-            // an EXACT mirror of the CPU function it replaces, not an independently
-            // "improved" one). `tir_exact_p_o` is the hero channel's own
-            // `R_o/(R_o+R_e)`, fed to `internal_mode_coupling_draw` below exactly as
-            // `apply_tir_bounce`'s own `exact_p_o` return value is on the CPU side.
+            // bit-for-bit, INCLUDING that function's own degenerate
+            // wave-normal-parallel-to-optic-axis guard: `uniaxial_nondegenerate`
+            // (not the plain `uniaxial_active`, which every OTHER dispatch arm in this
+            // function deliberately avoids for exactly this reason -- see that flag's
+            // own doc comment) falls through to the scalar branch below at that limit,
+            // exactly as the CPU's now-guarded `apply_tir_bounce` does. `tir_exact_p_o`
+            // is the hero channel's own `R_o/(R_o+R_e)`, fed to
+            // `internal_mode_coupling_draw` below exactly as `apply_tir_bounce`'s own
+            // `exact_p_o` return value is on the CPU side.
             var tir_exact_p_o: f32 = 0.5;
-            if (uniaxial_active) {
+            if (uniaxial_nondegenerate) {
                 for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
                     let n_inc_k = select(1.0, n_medium_ch[k], (*inside_gem));
                     let sol = internal_solve(n_inc_k, n_o_hoisted[k], n_e_raw_ch[k], c_axis, uframe, !(*is_extraordinary));
@@ -2052,6 +2101,13 @@ fn transport_bounce_step(
                     (*current_dir) = hero_refr_dir_i;
                     (*current_k) = hero_refr_dir_i;
                     (*inside_gem) = false;
+                    // This uniaxial closed-form branch is reached only when
+                    // `(*inside_gem)` was already true (the "---- INTERNAL ----" arm),
+                    // so a live incoming carry is always a genuine transmit-out here --
+                    // pass it through unchanged, mirroring `dispatch_bounce`'s identical
+                    // CPU-side carry-through for the generic (isotropic/biaxial) exit.
+                    (*pending_light_mis) = phase_pdf_this_check;
+                    (*pending_light_mis_dir) = phase_dir_this_check;
                 }
             }
         } else {
@@ -2059,7 +2115,7 @@ fn transport_bounce_step(
             // eigenmode (ordinary/mode-A vs extraordinary/mode-B) this path's single
             // geometric transmission event represents is decided HERE -- before the
             // reflect-vs-transmit draw below -- rather than inside the REFRACT arm's
-            // own transmit branch as it used to be. See
+            // own transmit branch. See
             // optics::raytracer::refraction::apply_partial_fresnel_bounce's doc
             // comment (CPU side) for the full two-part rationale: (P1) the
             // polarization-weighted selection (`entry_eigenmode_selection`) must be
@@ -2368,6 +2424,16 @@ fn transport_bounce_step(
                 (*current_origin) = hit_point + final_refr_dir * RAY_EPS;
                 (*current_dir) = final_refr_dir;
                 (*current_k) = new_k;
+                // `(*inside_gem)` still holds its PRE-bounce value here
+                // (flipped just below) -- true only for a genuine transmit-out (never
+                // true simultaneously with `entering_anisotropic`, which requires
+                // `!inside_gem`) -- so pass a live incoming carry through unchanged,
+                // mirroring `dispatch_bounce`'s identical CPU-side carry-through for
+                // this same generic (isotropic/biaxial) exit arm.
+                if ((*inside_gem)) {
+                    (*pending_light_mis) = phase_pdf_this_check;
+                    (*pending_light_mis_dir) = phase_dir_this_check;
+                }
                 (*inside_gem) = !(*inside_gem);
                 if (entering_anisotropic) {
                     (*is_extraordinary) = use_extraordinary;

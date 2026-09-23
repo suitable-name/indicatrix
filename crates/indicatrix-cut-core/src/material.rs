@@ -50,7 +50,7 @@
 //! specimen's known or estimated SG directly.
 
 use crate::optics_hints::critical_angle_deg;
-use indicatrix::optics::materials::GemMaterial;
+use indicatrix::optics::materials::{GemMaterial, OpticalCharacter};
 
 /// One material's specific gravity.
 ///
@@ -136,8 +136,10 @@ pub struct MaterialSelection {
 
 impl MaterialSelection {
     /// No preset selected and no override -- a brand-new design's starting point.
-    /// `const` (the derived `Default` impl is not) so [`crate::design::Design::new`]
-    /// can stay `const fn` while still defaulting this field.
+    /// `const` (the derived `Default` impl is not) for a cheap, allocation-free
+    /// default; [`crate::design::Design::new`] itself stopped being `const fn`
+    /// once it started allocating a fresh `Vec<TierId>` per call, but every other
+    /// caller of this constructor still benefits.
     #[must_use]
     pub const fn none() -> Self {
         Self {
@@ -180,8 +182,8 @@ impl MaterialSelection {
     /// Like [`Self::effective_specific_gravity`], but resolves `name` through
     /// `catalogue` (see [`MaterialLookup::specific_gravity`]) instead of only this
     /// crate's own built-in table, so a CUSTOM catalogue material's authored SG
-    /// reaches the carat-weight estimate too (CAD audit item 169). The per-design
-    /// override still wins over everything, exactly as in the built-ins-only path.
+    /// reaches the carat-weight estimate too. The per-design override still wins over
+    /// everything, exactly as in the built-ins-only path.
     #[must_use]
     pub fn effective_specific_gravity_with(&self, catalogue: &dyn MaterialLookup) -> Option<f64> {
         self.specific_gravity_override.or_else(|| {
@@ -246,12 +248,12 @@ pub trait MaterialLookup {
     /// this catalogue has nothing by that name.
     fn lookup(&self, name: &str) -> Option<GemMaterial>;
 
-    /// Looks up `name`'s specific gravity (CAD audit item 169), or `None` if this
-    /// catalogue has no SG on file for it. Defaults to `None` so an existing
-    /// implementor keeps compiling unchanged; a catalogue that actually stores
-    /// custom-material SG (e.g. the app's `EditorMaterialLookup`) overrides this to
-    /// read it back, the same way [`BuiltinMaterials`] overrides it for the
-    /// built-in table via [`built_in_specific_gravity`].
+    /// Looks up `name`'s specific gravity, or `None` if this catalogue has no SG
+    /// on file for it. Defaults to `None` so an existing implementor keeps compiling
+    /// unchanged; a catalogue that actually stores custom-material SG (e.g. the
+    /// app's `EditorMaterialLookup`) overrides this to read it back, the same way
+    /// [`BuiltinMaterials`] overrides it for the built-in table via
+    /// [`built_in_specific_gravity`].
     fn specific_gravity(&self, name: &str) -> Option<f64> {
         let _ = name;
         None
@@ -290,6 +292,173 @@ pub struct ResolvedMaterial {
     pub n_d: f64,
     /// [`crate::optics_hints::critical_angle_deg`] at `n_d`.
     pub critical_angle_deg: f64,
+}
+
+/// Where a [`MaterialEntry`] came from: one of [`GemMaterial::all_materials`]'s
+/// built-in presets, or a user-authored material from the vault's custom-material
+/// catalogue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaterialKind {
+    /// One of `GemMaterial::all_materials()`'s presets.
+    BuiltIn,
+    /// A user-authored material saved through the material editor dialog.
+    Custom,
+}
+
+/// One material a picker may offer.
+///
+/// Covers the CAD editor's design-settings combo, the New Design dialog, and the
+/// live-render viewport's Render Material combo -- enough of its optics is
+/// summarized here to describe it without re-deriving them from the resolved
+/// [`GemMaterial`] at every call site.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MaterialEntry {
+    /// Exactly the [`GemMaterial::name`] this entry resolves through
+    /// [`MaterialLookup::lookup`].
+    pub name: String,
+    /// Where this entry came from -- see [`MaterialKind`].
+    pub kind: MaterialKind,
+    /// Refractive index at the sodium D line (589.3nm) -- see [`ResolvedMaterial::n_d`].
+    pub ri_d: f64,
+    /// This material's specific gravity, when one is on file: the built-in table
+    /// ([`built_in_specific_gravity`]) for a [`MaterialKind::BuiltIn`] entry, or the
+    /// vault's saved figure (threaded through by [`MaterialCatalogue::build_with_sg`])
+    /// for a [`MaterialKind::Custom`] one. `None` for a built-in this crate has no SG
+    /// row for (a species added to `GemMaterial::all_materials()` after this table was
+    /// last extended) or a custom material saved with no SG recorded.
+    pub sg: Option<f64>,
+    /// Whether this material has any birefringence at all -- `false` only for an
+    /// isotropic material (cubic crystal system, or a custom material saved with zero
+    /// birefringence). Drives the same "is the crystal-axis control meaningful"
+    /// question `gui::startup_settings::is_c_axis_override_available` answers from a
+    /// resolved `GemMaterial` directly.
+    pub birefringent: bool,
+    /// Whether this material carries any absorption bands on any ray at all -- `false`
+    /// for the handful of built-ins with zero absorption (Diamond, Synthetic
+    /// Moissanite, Cubic Zirconia) and for any custom material saved with a fully
+    /// transparent (black) absorption color.
+    pub has_absorption: bool,
+}
+
+/// The single source of truth for "every material a picker may offer".
+///
+/// Every built-in [`GemMaterial::all_materials`] preset, in that function's own
+/// order, followed by every custom catalogue material, sorted by name
+/// (case-insensitive).
+///
+/// This type is the one list a caller on either side can build from. Both the
+/// live-render viewport's Render Material combo and the CAD editor's design-settings
+/// combo now read from this catalogue, so a species present in one picker and not the
+/// other cannot happen by construction.
+///
+/// [bpn]: ../../indicatrix_cut/gui/editor/state/fn.builtin_preset_names.html
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MaterialCatalogue {
+    entries: Vec<MaterialEntry>,
+}
+
+impl MaterialCatalogue {
+    /// Builds the catalogue from `custom` (already-resolved custom materials, e.g.
+    /// `RenderContext::custom_materials`/`EditorMaterialLookup`'s own source) --
+    /// built-ins first in [`GemMaterial::all_materials`]'s own order, then `custom`
+    /// sorted by name (case-insensitive; ties keep `custom`'s own relative order,
+    /// since [`Vec::sort_by`] is stable).
+    ///
+    /// A custom material's [`MaterialEntry::sg`] is always `None` here -- `custom`'s
+    /// own `GemMaterial` carries no specific-gravity field at all (see
+    /// `crate::material`'s module doc comment on why SG is this crate's own,
+    /// separate table). Use [`Self::build_with_sg`] when a caller also has the
+    /// vault's per-custom-material SG side channel on hand (e.g.
+    /// `RenderContext::custom_material_specific_gravity`) and wants it reflected.
+    #[must_use]
+    pub fn build(custom: &[GemMaterial]) -> Self {
+        Self::build_with_sg(custom, &[])
+    }
+
+    /// Like [`Self::build`], but resolves each custom entry's [`MaterialEntry::sg`]
+    /// from `custom_sg` -- a `(name, sg)` list matching `RenderContext::
+    /// custom_material_specific_gravity`'s own shape (case-insensitive name match,
+    /// first match wins).
+    #[must_use]
+    pub fn build_with_sg(custom: &[GemMaterial], custom_sg: &[(String, f64)]) -> Self {
+        let mut entries: Vec<MaterialEntry> = GemMaterial::all_materials()
+            .iter()
+            .map(|gem| {
+                let sg = built_in_specific_gravity(&gem.name).map(|sg| sg.representative);
+                material_entry(gem, MaterialKind::BuiltIn, sg)
+            })
+            .collect();
+        let mut customs: Vec<MaterialEntry> = custom
+            .iter()
+            .map(|gem| {
+                let sg = custom_sg
+                    .iter()
+                    .find(|(name, _)| name.eq_ignore_ascii_case(&gem.name))
+                    .map(|(_, sg)| *sg);
+                material_entry(gem, MaterialKind::Custom, sg)
+            })
+            .collect();
+        customs.sort_by_key(|entry| entry.name.to_ascii_lowercase());
+        entries.extend(customs);
+        Self { entries }
+    }
+
+    /// Every entry, in this catalogue's own stable order (built-ins, then customs
+    /// sorted by name).
+    #[must_use]
+    pub fn entries(&self) -> &[MaterialEntry] {
+        &self.entries
+    }
+
+    /// Just the names, in the same order as [`Self::entries`] -- what a `ComboBox`
+    /// model needs.
+    #[must_use]
+    pub fn names(&self) -> Vec<String> {
+        self.entries.iter().map(|e| e.name.clone()).collect()
+    }
+
+    /// Finds an entry by name, case-insensitively -- the same matching convention
+    /// [`BuiltinMaterials::lookup`]/`EditorMaterialLookup::lookup` already use.
+    #[must_use]
+    pub fn find(&self, name: &str) -> Option<&MaterialEntry> {
+        self.entries
+            .iter()
+            .find(|e| e.name.eq_ignore_ascii_case(name))
+    }
+
+    /// How many entries this catalogue holds.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether this catalogue has no entries at all -- only possible for a
+    /// hypothetical empty `GemMaterial::all_materials()`, since [`Self::build`]
+    /// always includes every built-in.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Builds one [`MaterialEntry`] from a resolved `gem`, shared by [`MaterialCatalogue::
+/// build_with_sg`]'s built-in and custom passes.
+fn material_entry(gem: &GemMaterial, kind: MaterialKind, sg: Option<f64>) -> MaterialEntry {
+    let has_absorption = !gem.absorption.o_ray.is_empty()
+        || !gem.absorption.e_ray.is_empty()
+        || gem
+            .absorption
+            .beta_ray
+            .as_ref()
+            .is_some_and(|bands| !bands.is_empty());
+    MaterialEntry {
+        name: gem.name.clone(),
+        kind,
+        ri_d: n_d_of(gem),
+        sg,
+        birefringent: gem.optical_character != OpticalCharacter::Isotropic,
+        has_absorption,
+    }
 }
 
 #[cfg(test)]
@@ -551,5 +720,98 @@ mod tests {
             m.effective_specific_gravity_with(&CustomOnlyLookup),
             Some(3.90)
         );
+    }
+
+    // --- MaterialCatalogue ---
+
+    /// Every one of `GemMaterial::all_materials()`'s built-ins must appear, in that
+    /// function's own order -- the whole point of this type: a species available on
+    /// the render side can no longer be missing from a picker built off this
+    /// catalogue.
+    #[test]
+    fn catalogue_lists_every_builtin_in_all_materials_order() {
+        let catalogue = MaterialCatalogue::build(&[]);
+        let expected: Vec<String> = GemMaterial::all_materials()
+            .into_iter()
+            .map(|m| m.name)
+            .collect();
+        assert_eq!(catalogue.names(), expected);
+        assert!(
+            catalogue
+                .entries()
+                .iter()
+                .all(|e| e.kind == MaterialKind::BuiltIn)
+        );
+    }
+
+    /// Customs are appended after every built-in, sorted by name case-insensitively
+    /// -- not in `custom`'s own (arbitrary, load-order) sequence.
+    #[test]
+    fn catalogue_appends_customs_sorted_by_name_after_every_builtin() {
+        let mut a = GemMaterial::diamond();
+        a.name = "Zircon-ish Garnet".to_string();
+        let mut b = GemMaterial::diamond();
+        b.name = "amber quartz".to_string();
+        let catalogue = MaterialCatalogue::build(&[a, b]);
+        let names = catalogue.names();
+        let builtin_count = GemMaterial::all_materials().len();
+        assert_eq!(names.len(), builtin_count + 2);
+        // Case-insensitive sort: "amber quartz" sorts before "Zircon-ish Garnet"
+        // despite its lowercase leading letter.
+        assert_eq!(names[builtin_count], "amber quartz");
+        assert_eq!(names[builtin_count + 1], "Zircon-ish Garnet");
+        assert_eq!(
+            catalogue.entries()[builtin_count].kind,
+            MaterialKind::Custom
+        );
+    }
+
+    #[test]
+    fn catalogue_find_is_case_insensitive() {
+        let catalogue = MaterialCatalogue::build(&[]);
+        let found = catalogue.find("diamond").expect("Diamond must resolve");
+        assert_eq!(found.name, "Diamond");
+        assert!(catalogue.find("Not A Real Material").is_none());
+    }
+
+    /// Every built-in entry's `ri_d`/`birefringent` must agree with the resolved
+    /// `GemMaterial` itself -- the catalogue must describe the real material, not an
+    /// approximation of it.
+    #[test]
+    fn catalogue_entries_carry_the_real_material_ri_and_birefringence() {
+        let catalogue = MaterialCatalogue::build(&[]);
+        let diamond = catalogue.find("Diamond").unwrap();
+        assert!((diamond.ri_d - 2.417).abs() < 0.01);
+        assert!(!diamond.birefringent, "Diamond is isotropic");
+        assert!(!diamond.has_absorption, "Diamond has no absorption bands");
+
+        let sapphire = catalogue.find("Sapphire").unwrap();
+        assert!(sapphire.birefringent, "Sapphire is uniaxial");
+        assert!(
+            sapphire.has_absorption,
+            "Sapphire carries real absorption bands"
+        );
+    }
+
+    /// A built-in the SG table covers reports it; a custom material with no SG side
+    /// channel reports `None` rather than a fabricated figure.
+    #[test]
+    fn catalogue_sg_is_populated_for_known_builtins_and_none_for_an_unrecorded_custom() {
+        let mut custom = GemMaterial::diamond();
+        custom.name = "My Garnet".to_string();
+        let catalogue = MaterialCatalogue::build(&[custom]);
+        assert_eq!(catalogue.find("Diamond").unwrap().sg, Some(3.52));
+        assert_eq!(catalogue.find("My Garnet").unwrap().sg, None);
+    }
+
+    /// [`MaterialCatalogue::build_with_sg`] resolves a custom entry's SG from the
+    /// caller-supplied side channel, case-insensitively.
+    #[test]
+    fn catalogue_build_with_sg_resolves_a_custom_materials_specific_gravity() {
+        let mut custom = GemMaterial::diamond();
+        custom.name = "My Garnet".to_string();
+        let sg_entries = [("my garnet".to_string(), 3.90)];
+        let catalogue = MaterialCatalogue::build_with_sg(&[custom], &sg_entries);
+        assert_eq!(catalogue.find("My Garnet").unwrap().sg, Some(3.90));
     }
 }

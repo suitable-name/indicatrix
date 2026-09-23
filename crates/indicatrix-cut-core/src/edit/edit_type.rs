@@ -4,7 +4,7 @@
 //! this whole crate's undo/redo rests on.
 
 use crate::{
-    design::{ConstraintTier, Design},
+    design::{ConstraintTier, Design, TierTarget},
     material::MaterialSelection,
     preform::PreformSpec,
 };
@@ -29,8 +29,8 @@ pub enum Edit {
     /// every tier strictly between the two positions by one slot -- exactly
     /// `Vec::remove(from)` followed by `Vec::insert(to)`, so `to` is a position in
     /// the ORIGINAL (pre-move) tier list, not a "gap" index in a shortened one.
-    /// One undo step, unlike the reorder-by-two-content-swaps an editor's own
-    /// "move up"/"move down" buttons used to apply.
+    /// One undo step, rather than multiple steps as a reorder-by-two-content-swaps
+    /// approach would require.
     ///
     /// A tier is renumbered, never renamed, by this: [`MeetConstraint::MeetNamed`]
     /// targets a tier by NAME (untouched), and [`ConstraintTier::detached`] is a
@@ -61,6 +61,13 @@ pub enum Edit {
     },
     /// Replaces the design's preform wholesale.
     SetPreform { preform: PreformSpec },
+    /// Replaces the design's [`crate::design::Design::preform_y_offset`] -- how far
+    /// the preform's own vertical span is shifted from centred. Its own variant
+    /// rather than folded into `SetPreform`: the offset is a `Design`-level anchor
+    /// `PreformSpec` itself does not carry (see that field's own doc comment for
+    /// why), so it needs a mast-preserving edit of its own, the same reasoning
+    /// `SetGirdleDiameterMm` already follows for the sibling real-world anchor.
+    SetPreformYOffset { y_offset: f64 },
     /// Replaces the design's real-world girdle diameter (millimetres) -- see
     /// [`crate::design::Design::girdle_diameter_mm`]. `None` clears the scale
     /// anchor entirely (back to "not anchored yet").
@@ -70,7 +77,7 @@ pub enum Edit {
     /// `ModifyTier`'s own reasoning. The RI override rides inside
     /// `MaterialSelection` itself -- no separate variant.
     SetMaterial { material: MaterialSelection },
-    /// Replaces the design's authorable, non-geometric header fields wholesale --
+    /// Replaces the design's authorable header fields wholesale --
     /// [`crate::design::ScheduleMeta::headers`] (the `.asc` `H` lines, the first of
     /// which the app treats as the design's title -- see the catalogue round-trip
     /// convention), [`crate::design::ScheduleMeta::footnotes`] and
@@ -78,8 +85,17 @@ pub enum Edit {
     /// zero-tooth offset). Deliberately its own variant rather than folded into
     /// `SetSchedule`: `SetSchedule`'s fields feed `solve_meet_points` and always
     /// force a full re-solve (see `crate::resolve`), while none of these three
-    /// affect geometry at all -- same "no mast could possibly have changed"
-    /// reasoning as `SetPreform`/`SetGirdleDiameterMm`/`SetMaterial`.
+    /// changes any tier's solved MAST -- same "no mast could possibly have
+    /// changed" reasoning as `SetPreform`/`SetGirdleDiameterMm`/`SetMaterial`, so
+    /// [`crate::resolve::resolve_after_edit`] never re-solves for this variant
+    /// either.
+    ///
+    /// **Not geometry-inert, though**: `gear_reference_angle` rotates every
+    /// solved plane's azimuth downstream of the solve itself
+    /// (`indicatrix::geometry::cuts`), so for a preform that is not
+    /// rotationally symmetric (a block, unlike a cylinder) the resulting mesh,
+    /// yield and manufacturability warnings DO change even though no mast
+    /// moved -- see [`crate::design::Design::planes_from_solved`].
     SetMeta {
         headers: Vec<String>,
         footnotes: Vec<String>,
@@ -96,6 +112,23 @@ pub enum Edit {
     SetCheaterOffset {
         index: usize,
         offset_deg: Option<f64>,
+    },
+    /// Sets (or, when `note` is `None`, clears) the tier currently at `index`'s
+    /// cutter-authored free-text note -- see
+    /// [`crate::design::Design::tier_notes`]'s own doc comment for why this lives
+    /// on `Design`, keyed by position, rather than on [`ConstraintTier`] itself.
+    /// Like `SetCheaterOffset`, replaces exactly one entry in place;
+    /// `AddTier`/`RemoveTier`/`MoveTier` renumber every OTHER entry so this one
+    /// never needs to.
+    SetTierNote { index: usize, note: Option<String> },
+    /// Sets (or, when `target` is `None`, clears) the tier currently at
+    /// `index`'s [`TierTarget`] -- see [`crate::design::Design::tier_targets`]'s
+    /// own doc comment for why this lives on `Design`, keyed by [`crate::design::TierId`],
+    /// rather than on [`ConstraintTier`] itself. Like `SetCheaterOffset`/
+    /// `SetTierNote`, replaces exactly one entry in place.
+    SetTierTarget {
+        index: usize,
+        target: Option<TierTarget>,
     },
     /// Replaces the design's index-gear tooth count, symmetry order and mirror
     /// flag wholesale, the schedule-wide counterpart to `SetMaterial`. Every
@@ -181,6 +214,9 @@ impl Edit {
                 )
             }
             Self::SetPreform { .. } => "Change preform".to_string(),
+            Self::SetPreformYOffset { y_offset } => {
+                format!("Set preform offset to {y_offset:.2}")
+            }
             Self::SetGirdleDiameterMm { girdle_diameter_mm } => girdle_diameter_mm.map_or_else(
                 || "Clear girdle diameter".to_string(),
                 |mm| format!("Set girdle diameter to {mm:.2} mm"),
@@ -194,6 +230,20 @@ impl Edit {
                 offset_deg.map_or_else(
                     || format!("Clear cheater offset for {label}"),
                     |deg| format!("Set cheater offset for {label} to {deg:.2} deg"),
+                )
+            }
+            Self::SetTierNote { index, note } => {
+                let label = tier_label_at(design, *index);
+                note.as_ref().map_or_else(
+                    || format!("Clear note for {label}"),
+                    |_| format!("Set note for {label}"),
+                )
+            }
+            Self::SetTierTarget { index, target } => {
+                let label = tier_label_at(design, *index);
+                target.map_or_else(
+                    || format!("Clear target for {label}"),
+                    |t| format!("Set target for {label} to {}", describe_tier_target(t)),
                 )
             }
             Self::SetSchedule { gear_teeth, .. } => format!("Set gear to {gear_teeth} teeth"),
@@ -239,6 +289,16 @@ fn describe_move_tier(from: usize, to: usize, design: &Design) -> String {
         std::cmp::Ordering::Less => format!("Move tier {label} up"),
         std::cmp::Ordering::Greater => format!("Move tier {label} down"),
         std::cmp::Ordering::Equal => format!("Move tier {label}"),
+    }
+}
+
+/// [`Edit::describe`]'s [`Edit::SetTierTarget`] arm: a short, unit-labelled
+/// description of one [`TierTarget`].
+fn describe_tier_target(target: TierTarget) -> String {
+    match target {
+        TierTarget::DepthMm(mm) => format!("{mm:.2} mm depth"),
+        TierTarget::GirdleThicknessMm(mm) => format!("{mm:.2} mm girdle thickness"),
+        TierTarget::TableWidthMm(mm) => format!("{mm:.2} mm table width"),
     }
 }
 

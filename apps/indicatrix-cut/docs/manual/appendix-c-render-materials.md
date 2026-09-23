@@ -64,9 +64,8 @@ only ones offered by older versions of the drop-down.
   is deliberately not included: it needs birefringence and dispersion
   magnitudes well outside the range this renderer's anisotropic optics
   have been verified against, so adding it would mean shipping unverified
-  numbers rather than a checked material (Chapter 12). Rutile, previously
-  excluded for the same reason, has since been added once the renderer's
-  anisotropic Fresnel solve was verified at its birefringence magnitude —
+  numbers rather than a checked material (Chapter 12). Rutile is included,
+  with its anisotropic Fresnel solve verified at its birefringence magnitude —
   see the `built_in_material_rutile` doc comment in
   `crates/indicatrix/src/optics/materials.rs`.
 

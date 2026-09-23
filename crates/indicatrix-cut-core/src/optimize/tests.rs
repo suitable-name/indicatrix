@@ -100,6 +100,7 @@ fn score_is_the_normalized_weighted_sum_with_tilt_brilliance_flipped_to_a_loss()
         windowing: 1.0,
         extinction: 1.0,
         tilt_brilliance: 1.0,
+        yield_weight: 0.0,
     };
     let components = ObjectiveComponents {
         windowing_pct: 10.0,
@@ -116,6 +117,7 @@ fn score_falls_back_to_equal_weights_when_all_weights_are_non_positive() {
         windowing: 0.0,
         extinction: 0.0,
         tilt_brilliance: 0.0,
+        yield_weight: 0.0,
     };
     let components = ObjectiveComponents {
         windowing_pct: 30.0,
@@ -137,13 +139,64 @@ fn score_only_depends_on_weight_ratios_not_absolute_scale() {
         windowing: 1.0,
         extinction: 2.0,
         tilt_brilliance: 3.0,
+        yield_weight: 0.0,
     };
     let b = ObjectiveWeights {
         windowing: 10.0,
         extinction: 20.0,
         tilt_brilliance: 30.0,
+        yield_weight: 0.0,
     };
     assert!((a.score(&components) - b.score(&components)).abs() < 1e-4);
+}
+
+// --- ObjectiveWeights::score_with_yield ---
+
+/// With the default `yield_weight` (`0.0`), `score_with_yield` must reproduce
+/// `score`'s own output bit for bit, REGARDLESS of what `yield_loss_pct` is
+/// passed -- a zero-weight term must never perturb the result.
+#[test]
+fn score_with_yield_at_default_weight_matches_score_bit_for_bit() {
+    let weights = ObjectiveWeights::default();
+    let components = ObjectiveComponents {
+        windowing_pct: 12.0,
+        extinction_pct: 8.0,
+        tilt_brilliance_pct: 60.0,
+    };
+    let plain = weights.score(&components);
+    for yield_loss_pct in [0.0, 25.0, 100.0] {
+        let with_yield = weights.score_with_yield(&components, yield_loss_pct);
+        assert_eq!(
+            plain.to_bits(),
+            with_yield.to_bits(),
+            "yield_loss_pct={yield_loss_pct} must not move the score at yield_weight=0.0"
+        );
+    }
+}
+
+/// A non-zero `yield_weight` must actually blend the yield term in: two
+/// candidates with identical optical components but different yield loss must
+/// score differently once `yield_weight > 0.0`, and the lower-yield-loss
+/// candidate must score better (lower).
+#[test]
+fn score_with_yield_prefers_lower_yield_loss_at_positive_weight() {
+    let weights = ObjectiveWeights {
+        windowing: 1.0,
+        extinction: 1.0,
+        tilt_brilliance: 1.0,
+        yield_weight: 1.0,
+    };
+    let components = ObjectiveComponents {
+        windowing_pct: 10.0,
+        extinction_pct: 10.0,
+        tilt_brilliance_pct: 80.0,
+    };
+    let low_loss = weights.score_with_yield(&components, 10.0);
+    let high_loss = weights.score_with_yield(&components, 90.0);
+    assert!(
+        low_loss < high_loss,
+        "low_loss={low_loss} must score better than high_loss={high_loss}"
+    );
 }
 
 // --- free_tier_indices ---
@@ -204,6 +257,25 @@ fn a_tier_authored_at_exactly_zero_may_move_either_direction() {
     assert!(candidate::candidate_angle_is_safe(0.0, -5.0));
 }
 
+/// `-0.0` is the crate's own pavilion-culet marker (see
+/// `ConstraintTier::standard_round_brilliant`'s culet), distinct from the side-less
+/// `+0.0` a table facet starts at. A `-0.0` origin must stay pinned to the negative
+/// side like any other negative angle.
+#[test]
+fn a_tier_authored_at_negative_zero_stays_pinned_to_the_negative_side() {
+    assert!(candidate::candidate_angle_is_safe(-0.0, -2.0));
+    assert!(!candidate::candidate_angle_is_safe(-0.0, 2.0));
+}
+
+/// A candidate must never land exactly on the girdle plane, from either side.
+/// The current check uses `signum` to distinguish between `0.0` and `-0.0`,
+/// ensuring that a step landing at zero is always rejected as required.
+#[test]
+fn a_candidate_landing_exactly_on_zero_is_never_safe() {
+    assert!(!candidate::candidate_angle_is_safe(5.0, 0.0));
+    assert!(!candidate::candidate_angle_is_safe(-5.0, -0.0));
+}
+
 #[test]
 fn a_candidate_past_the_vertical_bound_is_unsafe_even_on_the_same_side() {
     // Same sign as the original in both cases -- only the magnitude bound (the
@@ -253,9 +325,8 @@ fn select_candidate_directions_is_empty_when_both_directions_are_unsafe() {
 /// The pre-rejected case (both directions unsafe, see
 /// `select_candidate_directions_is_empty_when_both_directions_are_unsafe`) must
 /// short-circuit to the same `(None, 0)` a fully-evaluated-but-rejected pair would
-/// have produced -- but doing so without ever entering `std::thread::scope`, since
-/// there is nothing left to evaluate. Two threads used to be spawned here even when
-/// the guard had already rejected both candidates.
+/// produce -- without ever entering `std::thread::scope`, since there is nothing left
+/// to evaluate.
 #[test]
 fn evaluate_survivors_with_no_survivors_needs_no_thread_scope_and_matches_the_old_result() {
     let material = GemMaterial::diamond();
@@ -263,6 +334,7 @@ fn evaluate_survivors_with_no_survivors_needs_no_thread_scope_and_matches_the_ol
         windowing: 1.0,
         extinction: 1.0,
         tilt_brilliance: 1.0,
+        yield_weight: 0.0,
     };
     let baseline = candidate::BaselineWarningCounts::default();
     let ctx = candidate::SearchContext {
@@ -292,6 +364,7 @@ fn evaluate_survivors_with_one_survivor_evaluates_it_inline() {
         windowing: 1.0,
         extinction: 1.0,
         tilt_brilliance: 1.0,
+        yield_weight: 0.0,
     };
     let baseline = candidate::BaselineWarningCounts::default();
     let ctx = candidate::SearchContext {
@@ -321,6 +394,7 @@ fn evaluate_survivors_with_two_survivors_evaluates_both() {
         windowing: 1.0,
         extinction: 1.0,
         tilt_brilliance: 1.0,
+        yield_weight: 0.0,
     };
     let baseline = candidate::BaselineWarningCounts::default();
     let ctx = candidate::SearchContext {
@@ -357,7 +431,7 @@ fn seeded_permutation_differs_across_seeds_almost_always() {
     );
 }
 
-// --- SearchStage::to_code / from_code (CAD audit item 161) ---
+// --- SearchStage::to_code / from_code ---
 
 #[test]
 fn search_stage_code_round_trips_every_variant() {
@@ -376,7 +450,7 @@ fn search_stage_from_code_defaults_an_unknown_value_to_coordinate() {
     assert_eq!(SearchStage::from_code(255), SearchStage::Coordinate);
 }
 
-// --- inclusive_max_evaluations (CAD audit item 153) ---
+// --- inclusive_max_evaluations ---
 
 #[test]
 fn inclusive_max_evaluations_adds_the_polish_stage_s_default_cap() {
@@ -433,7 +507,7 @@ fn optimize_design_on_a_freshly_imported_design_spends_no_evaluations() {
     assert_eq!(outcome.before, outcome.after);
 }
 
-/// CAD audit items 153/161: `baseline_report`'s [`SearchStage::BaselineFull`]
+/// `baseline_report`'s [`SearchStage::BaselineFull`]
 /// report must fire even when there turns out to be nothing free to search over --
 /// otherwise a caller's progress ticker would show nothing at all for the one
 /// [`ObjectiveFidelity::Full`] scoring this path still performs. No
@@ -573,7 +647,7 @@ fn optimize_design_never_worsens_the_score_and_never_touches_a_pinned_tier() {
 
 /// [`apply_optimize_outcome`] must go through `History` -- an applied optimization
 /// is undoable as a single [`crate::edit::Edit::Batch`] step, exactly like any
-/// other edit (CAD audit item 79: it used to take one `Ctrl+Z` per tier).
+/// other edit, rather than one `Ctrl+Z` per tier.
 #[test]
 fn apply_optimize_outcome_is_undoable_through_history() {
     let design = rbc_445();
@@ -584,12 +658,14 @@ fn apply_optimize_outcome_is_undoable_through_history() {
             tilt_brilliance_pct: 80.0,
         },
         before_score: 10.0,
+        before_yield_loss_pct: 0.0,
         after: ObjectiveComponents {
             windowing_pct: 5.0,
             extinction_pct: 10.0,
             tilt_brilliance_pct: 80.0,
         },
         after_score: 5.0,
+        after_yield_loss_pct: 0.0,
         evaluations: 4,
         changes: vec![AngleChange {
             index: 7, // tier "A", MeetExisting, free
@@ -611,7 +687,7 @@ fn apply_optimize_outcome_is_undoable_through_history() {
     assert!((design.tiers[7].angle_deg - original_angle).abs() < 1e-9);
 }
 
-/// CAD audit item 79: an Optimize outcome touching several tiers must undo as
+/// An Optimize outcome touching several tiers must undo as
 /// ONE `Ctrl+Z`, not one press per changed tier. Applies a two-tier outcome and
 /// checks that a single [`History::undo`] restores BOTH angles at once.
 #[test]
@@ -626,12 +702,14 @@ fn apply_optimize_outcome_multi_tier_change_is_one_undo_step() {
             tilt_brilliance_pct: 80.0,
         },
         before_score: 10.0,
+        before_yield_loss_pct: 0.0,
         after: ObjectiveComponents {
             windowing_pct: 5.0,
             extinction_pct: 10.0,
             tilt_brilliance_pct: 80.0,
         },
         after_score: 5.0,
+        after_yield_loss_pct: 0.0,
         evaluations: 8,
         changes: vec![
             AngleChange {
@@ -664,7 +742,7 @@ fn apply_optimize_outcome_multi_tier_change_is_one_undo_step() {
     assert!(!history.undo(&mut design).unwrap());
 }
 
-/// CAD audit item 79: an [`AngleChange`] naming a tier index that no longer
+/// An [`AngleChange`] naming a tier index that no longer
 /// exists must leave `design` completely untouched -- no partial application
 /// of the changes that came before it in the batch.
 #[test]
@@ -679,12 +757,14 @@ fn apply_optimize_outcome_rejects_out_of_range_index_without_mutating_design() {
             tilt_brilliance_pct: 80.0,
         },
         before_score: 10.0,
+        before_yield_loss_pct: 0.0,
         after: ObjectiveComponents {
             windowing_pct: 5.0,
             extinction_pct: 10.0,
             tilt_brilliance_pct: 80.0,
         },
         after_score: 5.0,
+        after_yield_loss_pct: 0.0,
         evaluations: 8,
         changes: vec![
             AngleChange {

@@ -49,20 +49,19 @@ use std::{
 /// `bridge::render_thread::RenderContext::design_gear`'s doc comment for the full
 /// list of writers that keep it in sync with `active_planes`.
 ///
-/// #26: sizes to the Live Render tab's OWN `SolidPreviewModel.
+/// Sizes to the Live Render tab's OWN `SolidPreviewModel.
 /// live_viewport_width`/`live_viewport_height` while `on_live_tab`, never the Edit
-/// tab's `viewport_width`/`viewport_height` -- `gem_viewport.slint` and
-/// `solid_viewport.slint` used to push their layout size into the SAME two
-/// properties, so whichever viewport resized last silently overwrote the other's
-/// pending redraw size.
+/// tab's `viewport_width`/`viewport_height`: `gem_viewport.slint` and
+/// `solid_viewport.slint` each drive their own pair of properties, keeping one
+/// viewport's resize from silently overwriting the other's pending redraw size.
 ///
-/// #101: both dimensions are scaled by `ui.window().scale_factor()` so the solid
+/// Both dimensions are scaled by `ui.window().scale_factor()` so the solid
 /// rasterizer/diagram renderer produce a HiDPI-correct (physical-pixel) raster
 /// instead of a logical-pixel one Slint then has to upscale blurrily. The matching
 /// conversion on the input side multiplies the pointer's LOGICAL hover/click
 /// position by the same factor to reach the physical pixel it names in the pick
 /// buffer; it lives in `solid_preview::diagram_wiring` for the diagram and in
-/// `gui::editor::callbacks::tier_actions` for the solid view. Both are in place.
+/// `gui::editor::callbacks::tier_actions` for the solid view.
 pub(in crate::gui) fn resubmit_at_current_pose(
     ui: &MainWindow,
     ctx: &RenderContext,
@@ -96,7 +95,7 @@ pub(in crate::gui) fn resubmit_at_current_pose(
             (ui.global::<SolidPreviewModel>().get_viewport_width() * scale) as u32,
             (ui.global::<SolidPreviewModel>().get_viewport_height() * scale) as u32,
         );
-        // #117: Path-traced/Both letterbox the traced image to `ctx.width`/
+        // Path-traced/Both letterbox the traced image to `ctx.width`/
         // `ctx.height`'s own aspect ratio (`solid_viewport.slint`'s
         // `image-fit: contain`) whenever it differs from the viewport's -- see
         // `contained_request_size`'s own doc comment.
@@ -116,7 +115,7 @@ pub(in crate::gui) fn resubmit_at_current_pose(
 }
 
 /// Shrinks `viewport_size` to the rectangle Slint's `image-fit: contain` draws
-/// `render_size` into (#117, `cad_todo.md` item 117).
+/// `render_size` into.
 ///
 /// `solid_viewport.slint`'s Path-traced/Both `Image` elements (`ViewportModel.
 /// render_image`, `SolidPreviewModel.edges_image`) are both `image-fit: contain`
@@ -138,8 +137,8 @@ pub(in crate::gui) fn resubmit_at_current_pose(
 /// if either dimension is `0`, i.e. nothing to divide by, or nothing requested
 /// yet).
 ///
-/// HANDOFF: `gui::editor::view::scaled_viewport_size`'s own callers
-/// (`refresh_viewport`, `submit_preview_replan` -- not this pass's file) compute
+/// `gui::editor::view::scaled_viewport_size`'s own callers
+/// (`refresh_viewport`, `submit_preview_replan`) compute
 /// the SAME viewport-sized request independently, for the post-edit/post-solve
 /// path this function's own caller (`resubmit_at_current_pose`) does not cover.
 /// They need the identical treatment: read `SolidPreviewModel.view_mode` and
@@ -172,8 +171,7 @@ pub(in crate::gui) fn contained_request_size(
     } else {
         // The traced image is taller/narrower than the viewport -- `contain`
         // fits its height and shrinks its width. Already the on-screen size
-        // whenever `render_aspect <= viewport_aspect` (the verifier's own
-        // correction on `cad_todo.md` item 117), so this branch is a near
+        // whenever `render_aspect <= viewport_aspect`, so this branch is a near
         // no-op in that case beyond rounding.
         let width = (viewport_height as f32 * render_aspect).round().max(1.0) as u32;
         (width, viewport_height)
@@ -186,17 +184,17 @@ pub(in crate::gui) fn contained_request_size(
 /// the "Fit" pose it computes would not match what ends up on screen.
 const CAMERA_FOV_DEG: f32 = 42.0;
 
-/// The orbit camera's zoom clamp for a solid with the given bounding radius
-/// (#118, `cad_todo.md` item 118) -- replaces the old fixed `[1.2, 8.0]` range,
-/// which clipped a large preform's facets out of the frame at minimum distance
-/// (`raster.rs` drops a whole facet whose ring has any point behind the near
-/// plane) and left a small one lost in mostly empty space at maximum.
+/// The orbit camera's zoom clamp for a solid with the given bounding radius. A
+/// fixed `[1.2, 8.0]` range clips a large preform's facets out of the frame at
+/// minimum distance (`raster.rs` drops a whole facet whose ring has any point
+/// behind the near plane) and leaves a small one lost in mostly empty space at
+/// maximum, so the clamp scales with the mesh instead.
 ///
 /// The two factors are chosen so a mesh at exactly
 /// [`super::super::solid_preview::preview_state::DEFAULT_MESH_BOUNDING_RADIUS`]
-/// (`1.5`, a standard round brilliant's own half-width) reproduces the OLD fixed
-/// range exactly (`1.5 * 0.8 == 1.2`, `1.5 * (16.0/3.0) == 8.0`), so the common
-/// case is unchanged -- only a design meaningfully larger or smaller than that
+/// (`1.5`, a standard round brilliant's own half-width) reproduces that same
+/// `[1.2, 8.0]` range exactly (`1.5 * 0.8 == 1.2`, `1.5 * (16.0/3.0) == 8.0`), so the
+/// common case is unchanged -- only a design meaningfully larger or smaller than that
 /// gets a clamp actually sized to it.
 #[must_use]
 pub(in crate::gui) fn orbit_distance_bounds(bounding_radius: f64) -> (f32, f32) {
@@ -208,7 +206,7 @@ pub(in crate::gui) fn orbit_distance_bounds(bounding_radius: f64) -> (f32, f32) 
 
 /// The orbit distance that frames a sphere of `bounding_radius` exactly at the
 /// vertical edges of the camera's own field of view (`CAMERA_FOV_DEG`), times a
-/// small margin so the "Fit" pose (#118) leaves a little breathing room instead
+/// small margin so the "Fit" pose leaves a little breathing room instead
 /// of touching the frame's edge exactly. Mirrors `Camera::generate_ray`'s own
 /// `v = ... * fov_tan` convention: a point at height `bounding_radius` and this
 /// distance subtends exactly `fov_tan` at the screen edge before the margin is
@@ -238,7 +236,7 @@ pub(in crate::gui) fn fit_distance_for_radius(bounding_radius: f64) -> f32 {
 /// `gui::mod`'s `on_live_view_mode_changed` handler (switching INTO Solid mode itself
 /// must show something immediately, not wait for a drag).
 ///
-/// #26/#101: always sizes to the Live Render tab's OWN `SolidPreviewModel.
+/// Always sizes to the Live Render tab's OWN `SolidPreviewModel.
 /// live_viewport_width`/`live_viewport_height` (never the Edit tab's
 /// `viewport_width`/`viewport_height` -- see [`resubmit_at_current_pose`]'s doc
 /// comment), scaled by `ui.window().scale_factor()` for a HiDPI-correct raster.
@@ -294,8 +292,8 @@ pub(in crate::gui) fn wrap_pitch(pitch: f32) -> f32 {
 /// Wires `ViewportModel.on_light_move`/`on_light_pos_changed`, persisting the
 /// result through the debounced `settings_store` exactly like every other pose
 /// callback in this module. Split out of [`setup_camera_and_lighting_callbacks`]
-/// purely to keep that function under clippy's function-length lint (#118 added
-/// the `mesh_bounding_radius` clamp there, pushing it over the limit) -- these two
+/// purely to keep that function under clippy's function-length lint (the
+/// `mesh_bounding_radius` clamp added there pushed it over the limit) -- these two
 /// callbacks are otherwise unrelated to the camera pose/distance ones that stayed
 /// behind.
 fn setup_light_callbacks(
@@ -308,7 +306,7 @@ fn setup_light_callbacks(
     ui.global::<ViewportModel>()
         .on_light_move(move |dx: f32, dy: f32| {
             let (light_yaw, light_pitch) = {
-                let mut ctx = render_ctx_light.lock().unwrap();
+                let mut ctx = RenderContext::lock(&render_ctx_light);
                 ctx.light_yaw = dx.mul_add(0.01, ctx.light_yaw);
                 ctx.light_pitch = dy.mul_add(0.01, ctx.light_pitch).clamp(0.15, 1.55);
                 ctx.dirty = true;
@@ -325,7 +323,7 @@ fn setup_light_callbacks(
     ui.global::<ViewportModel>()
         .on_light_pos_changed(move |yaw_deg: f32, pitch_deg: f32| {
             {
-                let mut ctx = render_ctx_light_pos.lock().unwrap();
+                let mut ctx = RenderContext::lock(&render_ctx_light_pos);
                 ctx.light_yaw = yaw_deg.to_radians();
                 ctx.light_pitch = pitch_deg.to_radians().clamp(0.15, 1.55);
                 ctx.dirty = true;
@@ -339,9 +337,8 @@ fn setup_light_callbacks(
 
 /// `ViewportModel.set_view`: `0` = Front (girdle edge-on, index 0 towards the
 /// viewer), `1` = Top (straight down onto the table, the batch previews' own top
-/// pose), `2` = Bottom, `3` = Left, `4` = Right (#118, `cad_todo.md` item 118 --
-/// there used to be no one-click pavilion/side view at all, the commonest
-/// inspection for windowing), and `5` = Fit, which uniquely leaves the CURRENT
+/// pose), `2` = Bottom, `3` = Left, `4` = Right (the commonest inspection for
+/// windowing), and `5` = Fit, which uniquely leaves the CURRENT
 /// orbit angle alone and only recomputes `distance` from the live mesh's own
 /// bounding radius (`mesh_bounding_radius`) via [`fit_distance_for_radius`], so a
 /// cutter who has orbited to an awkward angle can recover a usable framing
@@ -364,7 +361,7 @@ fn setup_set_view_callback(
         let Some(ui) = ui_weak.upgrade() else {
             return;
         };
-        let mut ctx = render_ctx.lock().unwrap();
+        let mut ctx = RenderContext::lock(&render_ctx);
         if kind == 5 {
             let radius = *mesh_bounding_radius.lock().unwrap();
             let (min, max) = orbit_distance_bounds(radius);
@@ -409,7 +406,7 @@ pub(in crate::gui) fn setup_camera_and_lighting_callbacks(
                 return;
             };
             let (yaw, pitch) = {
-                let mut ctx = render_ctx_orbit.lock().unwrap();
+                let mut ctx = RenderContext::lock(&render_ctx_orbit);
                 // Horizontal drag is INVERTED relative to vertical: dragging right turns
                 // the stone's right side toward the viewer, as though the hand were on the
                 // gem rather than on the camera. Vertical keeps its sign, which already
@@ -438,9 +435,9 @@ pub(in crate::gui) fn setup_camera_and_lighting_callbacks(
                 return;
             };
             let distance = {
-                let mut ctx = render_ctx_zoom.lock().unwrap();
-                // #118: the clamp is now sized to the CURRENT solid's own
-                // bounding radius rather than a fixed `[1.2, 8.0]` range -- see
+                let mut ctx = RenderContext::lock(&render_ctx_zoom);
+                // The clamp is sized to the CURRENT solid's own bounding radius
+                // rather than a fixed `[1.2, 8.0]` range -- see
                 // `orbit_distance_bounds`'s own doc comment.
                 let radius = *mesh_bounding_radius_zoom.lock().unwrap();
                 let (min, max) = orbit_distance_bounds(radius);
@@ -471,19 +468,18 @@ pub(in crate::gui) fn setup_camera_and_lighting_callbacks(
             return;
         };
         {
-            let mut ctx = render_ctx_reset.lock().unwrap();
+            let mut ctx = RenderContext::lock(&render_ctx_reset);
             ctx.yaw = 0.60;
             ctx.pitch = 0.45;
             ctx.distance = 2.4;
             ctx.light_yaw = 0.85;
             ctx.light_pitch = 0.95;
             ctx.dirty = true;
-            // #118: this used to stop at writing `RenderContext` -- nothing ever
-            // re-issued a redraw at the new pose, so both viewports (the Edit
-            // tab's Solid preview and, when it was showing the solid raster,
-            // the Live Render tab) kept displaying the OLD pose until some
-            // UNRELATED trigger (a camera drag, a view-mode switch) happened to
-            // redraw next.
+            // Immediately resubmits at the new pose so both viewports (the Edit
+            // tab's Solid preview and, when it is showing the solid raster, the
+            // Live Render tab) show the reset pose right away, rather than
+            // continuing to display the old pose until some unrelated trigger (a
+            // camera drag, a view-mode switch) happens to redraw next.
             resubmit_at_current_pose(&ui, &ctx, &preview_state_reset);
             // Explicit: releases the `RenderContext` mutex before
             // `settings_store_reset.update` below, rather than leaving it held
@@ -503,7 +499,7 @@ pub(in crate::gui) fn setup_camera_and_lighting_callbacks(
 /// Wires up the HDR environment-map load/clear callbacks. Path is a plain typed text
 /// field (`settings_dialog.slint`'s "Environment Map (HDR)" section) with no native
 /// picker of its own -- unlike `gui::library::setup_import_callback`'s `.asc`
-/// pickers, which use `rfd::FileDialog` (see that module's doc comment). Split out of
+/// pickers, which go through `gui::pickers`. Split out of
 /// `run_gui` purely to keep that function under clippy's function-length lint.
 pub(in crate::gui) fn setup_environment_map_callbacks(
     ui: &MainWindow,
@@ -521,13 +517,12 @@ pub(in crate::gui) fn setup_environment_map_callbacks(
             let path = raw_path.to_string();
             // `load_env_map` never panics -- a missing, unreadable, or malformed file
             // returns `Err` and `RenderContext::env_map`/the settings file are left exactly
-            // as they were, per this task's own requirement (see that function's doc
-            // comment).
+            // as they were (see that function's doc comment).
             match load_env_map(&path) {
                 Ok(map) => {
                     let status = env_map_status_text(&map, &path);
                     {
-                        let mut ctx = render_ctx_load.lock().unwrap();
+                        let mut ctx = RenderContext::lock(&render_ctx_load);
                         ctx.env_map = Some(map);
                         ctx.dirty = true;
                     }
@@ -535,15 +530,11 @@ pub(in crate::gui) fn setup_environment_map_callbacks(
                     ui.global::<SettingsModel>()
                         .set_env_map_status(status.clone().into());
                     ui.global::<SettingsModel>().set_env_map_loaded(true);
-                    // Loading an environment map forces the switch to the (slower) CPU
-                    // tracer -- see `indicatrix::renderer::gpu_backend`'s module doc comment --
-                    // which must not leave the user wondering why rendering got slower with
-                    // no visible cause.
-                    show_toast(
-                        &ui,
-                        &format!("{status}. Rendering on CPU: the GPU backend has no HDR support."),
-                        "info",
-                    );
+                    // The GPU megakernel has its own `env_mode` for `HdrMap` and
+                    // renders it directly (see `render_thread::mod`'s module doc
+                    // comment), so there is no CPU-only restriction to warn about
+                    // here.
+                    show_toast(&ui, &status, "info");
                 }
                 Err(err) => {
                     show_toast(
@@ -563,7 +554,7 @@ pub(in crate::gui) fn setup_environment_map_callbacks(
             return;
         };
         {
-            let mut ctx = render_ctx_clear.lock().unwrap();
+            let mut ctx = RenderContext::lock(&render_ctx_clear);
             ctx.env_map = None;
             ctx.dirty = true;
         }
@@ -583,21 +574,38 @@ pub(in crate::gui) fn setup_environment_map_callbacks(
     // `on_load_env_map` above still does that, unchanged, whichever way the path got
     // typed in. Filtered to exactly `.hdr`: the only format `EnvironmentMap::from_hdr_file`
     // (crates/indicatrix/src/renderer/env_map.rs) decodes, via `image::ImageFormat::Hdr`.
-    // Returns the SAME text it was given when the user cancels, so the Slint-side
-    // assignment (`root.env_map_path = root.pick_hdr_file(root.env_map_path)`) is a
-    // no-op on cancel.
+    // `env_map_path` is simply left unchanged when the user cancels.
+    //
+    // `pick_hdr_file` is void (`ui/models/settings.slint`): Slint has no way to
+    // await a value-returning callback, so `settings_dialog.slint`'s click handler
+    // just fires it, the dialog itself runs off the UI thread through
+    // `gui::pickers::pick`, and this closure pushes the chosen path into
+    // `env_map_path` from the completion continuation once the picker returns.
+    let ui_weak_pick_hdr = ui.as_weak();
     ui.global::<SettingsModel>()
-        .on_pick_hdr_file(|current: SharedString| {
-            let mut dialog = rfd::FileDialog::new().add_filter("Radiance HDR", &["hdr"]);
-            if let Some(dir) = crate::gui::starting_dir_from_picker_field(current.as_str()) {
-                dialog = dialog.set_directory(dir);
-            }
-            // Blocking `rfd::FileDialog`, invoked directly on the Slint UI/event-loop
-            // thread -- see `apps/indicatrix-cut/Cargo.toml`'s `rfd` dependency comment for
-            // why that's the supported way to call it here.
-            dialog
-                .pick_file()
-                .map_or(current, |path| path.display().to_string().into())
+        .on_pick_hdr_file(move |current: SharedString| {
+            use crate::gui::pickers::{PickerFilter, PickerKind, PickerRequest, pick};
+
+            let Some(ui) = ui_weak_pick_hdr.upgrade() else {
+                return;
+            };
+            let starting_dir = crate::gui::starting_dir_from_picker_field(current.as_str());
+            let request = PickerRequest {
+                kind: PickerKind::OpenFile,
+                title: None,
+                filters: vec![PickerFilter {
+                    label: "Radiance HDR".to_string(),
+                    extensions: vec!["hdr".to_string()],
+                }],
+                default_file_name: None,
+                starting_dir,
+            };
+            pick(&ui, request, |ui, picked| {
+                if let Some(path) = picked {
+                    ui.global::<SettingsModel>()
+                        .set_env_map_path(path.display().to_string().into());
+                }
+            });
         });
 }
 
@@ -609,7 +617,7 @@ mod tests {
 
     #[test]
     fn solid_and_diagram_modes_are_untouched() {
-        // #117: only Path-traced (1) and Both (2) show `render_image` at all --
+        // Only Path-traced (1) and Both (2) show `render_image` at all --
         // Solid (0) and Diagram (3) must keep the viewport's own raw size.
         for mode in [0, 3] {
             assert_eq!(
@@ -631,9 +639,8 @@ mod tests {
 
     #[test]
     fn narrower_render_than_viewport_is_already_the_on_screen_size() {
-        // A 4:3 render in a wider viewport: per the verifier's own correction on
-        // `cad_todo.md` item 117, `contain` fits the height here and the two
-        // layers already agree pixel-for-pixel, so this is a no-op beyond
+        // A 4:3 render in a wider viewport: `contain` fits the height here and the
+        // two layers already agree pixel-for-pixel, so this is a no-op beyond
         // reproducing the exact viewport height.
         let (width, height) = contained_request_size(1, (900, 500), (640, 480));
         assert_eq!(height, 500);
@@ -658,8 +665,8 @@ mod tests {
 
     #[test]
     fn default_bounding_radius_reproduces_the_old_fixed_clamp() {
-        // #118: 1.5 is `DEFAULT_MESH_BOUNDING_RADIUS` -- the common case must
-        // keep the exact old `[1.2, 8.0]` behavior.
+        // 1.5 is `DEFAULT_MESH_BOUNDING_RADIUS` -- the common case must
+        // keep the exact `[1.2, 8.0]` clamp behavior.
         let (min, max) = orbit_distance_bounds(1.5);
         assert!((min - 1.2).abs() < 1e-6, "got {min}");
         assert!((max - 8.0).abs() < 1e-6, "got {max}");

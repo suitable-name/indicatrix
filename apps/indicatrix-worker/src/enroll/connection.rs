@@ -14,14 +14,41 @@ use std::{
 
 pub(super) type EnrollTlsStream = rustls::StreamOwned<rustls::ServerConnection, TcpStream>;
 
+/// Hard cap on the encoded size of an [`EnrollRequest`], enforced by
+/// [`handle_enroll_connection`]'s [`indicatrix_net::messages::read_message_bounded`]
+/// call. An `EnrollRequest` is at most a `Claim`'s
+/// [`indicatrix_net::token::SECRET_LEN`]-byte secret plus a handful of bytes of postcard
+/// overhead -- comfortably under 4 KiB even with slack for a generously long `--name`.
+const MAX_ENROLL_REQUEST_LEN: u32 = 4096;
+
 /// Completes the TLS handshake for one just-accepted enrollment connection. No
 /// client-certificate check follows (unlike `crate::serve::accept_tls`) -- this listener
 /// never requires one; see the module doc comment.
+///
+/// Applies `crate::serve::HANDSHAKE_TIMEOUT` to the raw socket's read/write timeouts
+/// BEFORE `complete_io`: unlike the render listener's mutual-TLS accept,
+/// this listener requires no client certificate at all, so without a deadline here a
+/// peer that opens a connection and never completes the TLS handshake pins this
+/// connection's thread open indefinitely. Left in place afterward (not cleared, unlike
+/// `serve::handle_connection_with_gpu`'s post-`HELLO` reset): [`handle_enroll_connection`]
+/// handles exactly one request/response and returns, so there is no long-lived loop this
+/// deadline would wrongly bound.
 pub(super) fn accept_enroll_tls(
     stream: TcpStream,
     config: &Arc<rustls::ServerConfig>,
     peer: Option<SocketAddr>,
 ) -> Option<EnrollTlsStream> {
+    if let Err(e) = stream.set_read_timeout(Some(crate::serve::HANDSHAKE_TIMEOUT)) {
+        tracing::debug!(
+            "enrollment connection {peer:?}: failed to set handshake read timeout: {e}"
+        );
+    }
+    if let Err(e) = stream.set_write_timeout(Some(crate::serve::HANDSHAKE_TIMEOUT)) {
+        tracing::debug!(
+            "enrollment connection {peer:?}: failed to set handshake write timeout: {e}"
+        );
+    }
+
     let conn = match rustls::ServerConnection::new(Arc::clone(config)) {
         Ok(c) => c,
         Err(e) => {
@@ -43,6 +70,14 @@ pub(super) fn accept_enroll_tls(
 /// Generic over `Read + Write` so this crate's tests can drive it over an in-memory
 /// duplex, like `crate::serve::handle_connection` does.
 ///
+/// Reads the request via [`indicatrix_net::messages::read_message_bounded`] with
+/// [`MAX_ENROLL_REQUEST_LEN`] rather than plain [`indicatrix_net::messages::read_message`]:
+/// this listener accepts a connection from anyone (no client-certificate
+/// requirement -- see the module doc comment), so a peer that never authenticates at all
+/// must not be able to make this process attempt a
+/// [`indicatrix_net::framing::MAX_FRAME_LEN`]-sized (512 MiB) allocation with a single
+/// 4-byte length prefix.
+///
 /// # Errors
 ///
 /// A human-readable message for a transport-level failure decoding the request or
@@ -57,7 +92,8 @@ pub(super) fn handle_enroll_connection<S: Read + Write>(
     peer: Option<SocketAddr>,
 ) -> Result<(), String> {
     let request: EnrollRequest =
-        indicatrix_net::messages::read_message(&mut stream).map_err(|e| e.to_string())?;
+        indicatrix_net::messages::read_message_bounded(&mut stream, MAX_ENROLL_REQUEST_LEN)
+            .map_err(|e| e.to_string())?;
 
     match request {
         EnrollRequest::Issue { name } => {

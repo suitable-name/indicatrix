@@ -20,7 +20,27 @@ use crate::{
 use indicatrix_vault::{db::sqlite::Database, model::filter::AttributeRanges};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::sync::{Arc, Mutex};
-use tracing::info;
+use tracing::{info, warn};
+
+/// Clears the search box, shape/gear dropdown selections, tag chip filter and
+/// just-imported restriction back to their defaults -- shared by every
+/// "start browsing a library from scratch" entry point
+/// ([`load_filter_options_and_initial_list`], and
+/// `gui::library::remote::load_filter_options_and_initial_list_remote`) so the box/
+/// dropdowns/chip the cutter sees on screen always match the literal `""`/
+/// `"All Shapes"`/`"All Gears"` filter values those callers then query with, instead
+/// of the query silently running against different values than what's displayed
+/// (stale text in the box, a stale `selected_shape_index` into a since-changed
+/// options model, `current_filtered_entry_ids` reading a batch action against a
+/// different set than what's on screen).
+pub(in crate::gui) fn reset_search_and_filter_ui_inputs(ui: &MainWindow) {
+    let model = ui.global::<LibraryModel>();
+    model.set_search_text(SharedString::new());
+    model.set_selected_shape_index(0);
+    model.set_selected_gear_index(0);
+    model.set_active_tag_filter_name(SharedString::new());
+    model.set_recent_import_filter(ModelRc::new(VecModel::from(Vec::<i32>::new())));
+}
 
 /// Loads the shape/gear filter dropdown options and the initial diagram list from
 /// the database. Split out of `run_gui` purely to keep that function under clippy's
@@ -29,6 +49,10 @@ pub(in crate::gui) fn load_filter_options_and_initial_list(
     ui: &MainWindow,
     db: &Arc<Mutex<Database>>,
 ) {
+    // This is also called on switching back to the local library
+    // (`remote::setup_library_source_callbacks`'s `idx < 0` branch), where the box/
+    // dropdowns/chip may still show whatever the just-left remote session had.
+    reset_search_and_filter_ui_inputs(ui);
     {
         let db_guard = db.lock().unwrap();
         let mut shape_opts = vec!["All Shapes".to_string()];
@@ -59,13 +83,27 @@ pub(in crate::gui) fn load_filter_options_and_initial_list(
     sync_tag_vocabulary_to_ui(ui, db);
     refresh_diagram_list(ui, db, "", "All Shapes", "All Gears");
 
-    let total_count = db.lock().unwrap().get_total_count().unwrap_or(0);
-    ui.global::<LibraryModel>()
-        .set_status_message(format!("Database loaded: {total_count} diagrams available.").into());
+    // A failed `get_total_count` is handled explicitly rather than swallowed into a
+    // plain `0`, which would read back as "the library is empty" rather than "the
+    // count query failed" -- indistinguishable from a genuinely empty database.
+    let total_count_result = db.lock().unwrap().get_total_count();
+    match total_count_result {
+        Ok(total_count) => {
+            ui.global::<LibraryModel>().set_status_message(
+                format!("Database loaded: {total_count} diagrams available.").into(),
+            );
+        }
+        Err(e) => {
+            warn!("get_total_count failed during initial load: {e}");
+            ui.global::<LibraryModel>().set_status_message(
+                "Database loaded, but the diagram count is unavailable.".into(),
+            );
+        }
+    }
 }
 
 /// Pushes the full catalogue tag vocabulary (names only, alphabetical) into
-/// `LibraryModel.all_tags` -- CAD audit item 190's chip filter row and the "Add
+/// `LibraryModel.all_tags` -- the chip filter row and the "Add
 /// tag..." picker both read this rather than each running their own
 /// `Database::list_tags` query. Called at startup and after any write that could
 /// have created or emptied a tag (see
@@ -78,14 +116,6 @@ pub(in crate::gui) fn load_filter_options_and_initial_list(
 /// create-or-reuse lookup) -- see `read_tag_filter`'s own doc comment for why. That
 /// keeps the Slint side needing no new struct type at all, just one more `[string]`
 /// property alongside `shape_options`/`gear_options`.
-///
-/// # Note on `LibraryModel.all_tags`/`active_tag_filter_name`
-///
-/// These are hub properties this crate's owning session must add to
-/// `ui/models/library.slint` -- see this campaign's handoff notes. Until they land,
-/// this call (and every other `all_tags`/`active_tag_filter_name` reference in
-/// `gui::library`) fails to compile; that is the expected, documented state for
-/// this item.
 pub(in crate::gui) fn sync_tag_vocabulary_to_ui(ui: &MainWindow, db: &Arc<Mutex<Database>>) {
     let tags = db
         .lock()
@@ -119,12 +149,10 @@ pub(in crate::gui) fn sync_tag_vocabulary_to_ui(ui: &MainWindow, db: &Arc<Mutex<
 /// would compile here and silently leave those sliders stale there.
 ///
 /// Recovers rather than panics on a poisoned `db` mutex (`unwrap_or_else(
-/// std::sync::PoisonError::into_inner)`, not a bare `.unwrap()`) -- this used to be
-/// the one call site in this path that didn't, which meant a panic anywhere else
-/// while holding the lock (e.g. mid-import -- see `gui::library`'s BUG 1 write-up)
-/// poisoned it and then took this call down too, on the very next library-change
-/// refresh. Matches the poison-recovery convention `gui::library` already uses
-/// throughout.
+/// std::sync::PoisonError::into_inner)`, not a bare `.unwrap()`) -- a panic anywhere
+/// else while holding the lock (e.g. mid-import) would otherwise poison it and take
+/// this call down too, on the very next library-change refresh. Matches the
+/// poison-recovery convention `gui::library` already uses throughout.
 pub fn sync_range_bounds_to_ui(ui: &MainWindow, db: &Arc<Mutex<Database>>) {
     let Some(ranges) = fetch_attribute_ranges(db) else {
         return;
@@ -132,7 +160,7 @@ pub fn sync_range_bounds_to_ui(ui: &MainWindow, db: &Arc<Mutex<Database>>) {
     apply_attribute_ranges_to_ui(ui, &ranges);
 }
 
-/// [`sync_range_bounds_to_ui`]'s Item 188 counterpart -- fetches then applies via
+/// [`sync_range_bounds_to_ui`]'s counterpart -- fetches then applies via
 /// [`apply_attribute_range_bounds_preserving_filters`] instead of the reset variant.
 /// The right call after a write a cutter did not ask to have their range filters
 /// cleared for (e.g. `gui::library::detail`'s own metadata-save refresh).
@@ -162,10 +190,10 @@ pub fn fetch_attribute_ranges(db: &Arc<Mutex<Database>>) -> Option<AttributeRang
 /// unfiltered) from an already-fetched [`AttributeRanges`].
 ///
 /// Only ever called where a full reset is actually wanted: the initial load (nothing
-/// to preserve yet) and, until Item 188's own audit finding, every post-write refresh
-/// too -- see [`apply_attribute_range_bounds_preserving_filters`] for the version that
-/// updates the sliders' scale WITHOUT silently discarding whatever a cutter had
-/// already narrowed them to.
+/// to preserve yet) and the range panel's own explicit Reset button -- see
+/// [`apply_attribute_range_bounds_preserving_filters`] for the version every other
+/// refresh uses, which updates the sliders' scale WITHOUT silently discarding whatever
+/// a cutter had already narrowed them to.
 pub fn apply_attribute_ranges_to_ui(ui: &MainWindow, ranges: &AttributeRanges) {
     ui.global::<LibraryModel>()
         .set_ri_bounds_min(ranges.ri.0 as f32);
@@ -222,7 +250,7 @@ fn clamp_filter_range(current: (f32, f32), bounds: (f32, f32)) -> (f32, f32) {
     if min > max { (max, max) } else { (min, max) }
 }
 
-/// [`apply_attribute_ranges_to_ui`]'s Item 188 counterpart: updates the `*_bounds_*`
+/// [`apply_attribute_ranges_to_ui`]'s counterpart: updates the `*_bounds_*`
 /// properties (the sliders' scale) from a freshly re-queried [`AttributeRanges`] the
 /// same way, but CLAMPS the existing `*_filter_*` values into the new bounds instead
 /// of resetting them to the full range. Used by every refresh that follows a write a
@@ -284,7 +312,7 @@ pub fn apply_attribute_range_bounds_preserving_filters(ui: &MainWindow, ranges: 
 /// `refresh_diagram_list` these handlers called before this dispatch existed, so nothing
 /// changes here until a user actually switches sources.
 /// Clears the "show these N just-imported designs" restriction a batch import can
-/// leave on `LibraryModel.recent_import_filter` (CAD audit item 187's batch case) --
+/// leave on `LibraryModel.recent_import_filter` --
 /// called from the top of every real search/filter-change handler below so that
 /// view never outlives the one refresh it was created for. A no-op (cheap: setting
 /// an already-empty model) when no batch view is active, so every handler can call
@@ -568,13 +596,107 @@ pub(in crate::gui) fn setup_diagram_selection_and_export_callbacks(
         });
 }
 
+/// Wires `LibraryModel::regenerate_previews_for_filtered_set`/
+/// `regenerate_tilt_curves_for_filtered_set` -- the owner's "regenerate library
+/// previews/tilt curves for designs already in the catalogue" request,
+/// for the panel's currently active search/filter set rather than a
+/// single design or the whole catalogue.
+///
+/// Each callback resolves [`super::search::current_filtered_entry_ids`] and hands
+/// the result straight to the existing per-batch confirm-step opener
+/// (`gui::batch::preview::offer_batch_confirmation`/`gui::batch::tilt::
+/// offer_batch_confirmation`) -- the same dialog, progress, and cancel machinery
+/// every other trigger of these two batches already uses; this adds no second copy
+/// of either batch's generation logic. Refuses (with a toast) under a
+/// [`LibrarySource::Remote`] session, since [`Database::matching_entry_ids`] only
+/// ever sees the local catalogue -- silently running it there would offer to
+/// regenerate an unrelated, likely empty or wrong, local id set for whatever the
+/// panel is showing from the remote worker.
+///
+/// Also a no-op (with a toast, not a silent nothing) when the filtered set is
+/// empty, since [`offer_batch_confirmation`](crate::gui::batch::preview::offer_batch_confirmation)
+/// itself only skips silently -- a cutter who just pressed the button deserves to
+/// know why nothing opened.
+pub(in crate::gui) fn setup_regenerate_filtered_set_callbacks(
+    ui: &MainWindow,
+    db: &Arc<Mutex<Database>>,
+    source: &Arc<Mutex<LibrarySource>>,
+) {
+    let db_previews = Arc::clone(db);
+    let source_previews = Arc::clone(source);
+    let ui_weak_previews = ui.as_weak();
+    ui.global::<LibraryModel>()
+        .on_regenerate_previews_for_filtered_set(move || {
+            let Some(ui) = ui_weak_previews.upgrade() else {
+                return;
+            };
+            let Some(ids) = resolve_filtered_set_or_toast(&ui, &db_previews, &source_previews)
+            else {
+                return;
+            };
+            crate::gui::batch::preview::offer_batch_confirmation(&ui, &ids);
+        });
+
+    let db_tilt = Arc::clone(db);
+    let source_tilt = Arc::clone(source);
+    let ui_weak_tilt = ui.as_weak();
+    ui.global::<LibraryModel>()
+        .on_regenerate_tilt_curves_for_filtered_set(move || {
+            let Some(ui) = ui_weak_tilt.upgrade() else {
+                return;
+            };
+            let Some(ids) = resolve_filtered_set_or_toast(&ui, &db_tilt, &source_tilt) else {
+                return;
+            };
+            crate::gui::batch::tilt::offer_batch_confirmation(&ui, &ids);
+        });
+}
+
+/// Shared body of both `setup_regenerate_filtered_set_callbacks` handlers: the
+/// remote-source guard, the actual [`super::search::current_filtered_entry_ids`]
+/// query, and the "nothing matched"/query-failure toasts -- pulled out so neither
+/// handler duplicates this five-way branch.
+fn resolve_filtered_set_or_toast(
+    ui: &MainWindow,
+    db: &Arc<Mutex<Database>>,
+    source: &Arc<Mutex<LibrarySource>>,
+) -> Option<Vec<i64>> {
+    if source
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_remote()
+    {
+        show_toast(
+            ui,
+            "Switch to the local library to regenerate designs for the filtered set.",
+            "error",
+        );
+        return None;
+    }
+    match super::search::current_filtered_entry_ids(ui, db) {
+        Ok(ids) if ids.is_empty() => {
+            show_toast(ui, "No designs match the current filters.", "info");
+            None
+        }
+        Ok(ids) => Some(ids),
+        Err(e) => {
+            show_toast(
+                ui,
+                &format!("Could not resolve the filtered set: {e}"),
+                "error",
+            );
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::clamp_filter_range;
 
     #[test]
     fn clamp_filter_range_leaves_an_already_inside_filter_untouched() {
-        // The common Item 188 case: an import widened the catalogue's own bounds,
+        // The common case: an import widened the catalogue's own bounds,
         // but the cutter's existing filter is still inside them and must not move.
         assert_eq!(clamp_filter_range((1.5, 2.0), (1.3, 2.9)), (1.5, 2.0));
     }

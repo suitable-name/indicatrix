@@ -38,7 +38,9 @@ impl Design {
     /// start uses a struct-update literal or applies
     /// `Edit::SetGirdleDiameterMm`/`Edit::SetMaterial` afterward through `History`.
     #[must_use]
-    pub const fn new(preform: PreformSpec, meta: ScheduleMeta, tiers: Vec<ConstraintTier>) -> Self {
+    pub fn new(preform: PreformSpec, meta: ScheduleMeta, tiers: Vec<ConstraintTier>) -> Self {
+        let tier_ids: Vec<super::TierId> = (0..tiers.len() as u64).map(super::TierId).collect();
+        let next_tier_id = tier_ids.len() as u64;
         Self {
             preform,
             meta,
@@ -46,7 +48,11 @@ impl Design {
             girdle_diameter_mm: None,
             preform_y_offset: 0.0,
             cheater_offsets_deg: BTreeMap::new(),
+            tier_notes: BTreeMap::new(),
             material: MaterialSelection::none(),
+            tier_ids,
+            next_tier_id,
+            tier_targets: BTreeMap::new(),
         }
     }
 
@@ -73,7 +79,11 @@ impl Design {
             girdle_diameter_mm: None,
             preform_y_offset: 0.0,
             cheater_offsets_deg: BTreeMap::new(),
+            tier_notes: BTreeMap::new(),
             material: spec.material,
+            tier_ids: Vec::new(),
+            next_tier_id: 0,
+            tier_targets: BTreeMap::new(),
         }
     }
 
@@ -162,7 +172,9 @@ impl Design {
                     detached: Vec::new(),
                 }
             })
-            .collect();
+            .collect::<Vec<ConstraintTier>>();
+        let tier_ids: Vec<super::TierId> = (0..tiers.len() as u64).map(super::TierId).collect();
+        let next_tier_id = tier_ids.len() as u64;
 
         Self {
             preform,
@@ -182,7 +194,14 @@ impl Design {
             girdle_diameter_mm: None,
             preform_y_offset: 0.0,
             cheater_offsets_deg: BTreeMap::new(),
+            tier_notes: BTreeMap::new(),
             material: MaterialSelection::none(),
+            // A fresh id per imported tier -- see `Design::from_asc_schedule`'s own
+            // doc comment note under `TierId`'s module docs: `.asc` import assigns
+            // fresh ids (the format has no concept of a stable tier identity).
+            tier_ids,
+            next_tier_id,
+            tier_targets: BTreeMap::new(),
         }
     }
 }

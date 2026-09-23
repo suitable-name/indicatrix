@@ -102,10 +102,94 @@ pub fn windowing_risk(tier_angle_deg: f64, n: f64) -> Risk {
 /// modeled here.
 #[must_use]
 pub fn retarget_angle_deg(tier_angle_deg: f64, n_from: f64, n_to: f64) -> f64 {
-    let sign = if tier_angle_deg < 0.0 { -1.0 } else { 1.0 };
+    // `is_sign_negative`, not `< 0.0`: this crate's own templates author a
+    // pavilion culet at exactly `-0.0` to record its side (see
+    // `ConstraintTier::standard_round_brilliant`). Since `-0.0 < 0.0` is `false`,
+    // using `<` would drop that marker and retarget it to `+new_theta` (a crown
+    // angle) instead of preserving the pavilion side.
+    let sign = if tier_angle_deg.is_sign_negative() {
+        -1.0
+    } else {
+        1.0
+    };
     let theta = tier_angle_deg.abs();
     let new_theta = critical_angle_deg(n_to) + (theta - critical_angle_deg(n_from));
     sign * new_theta
+}
+
+/// The crown's own windowing estimate.
+///
+/// How many degrees of margin remain at a PAVILION facet
+/// (angle `pavilion_angle_deg`, from the girdle) for light that entered
+/// through a CROWN facet (angle `crown_angle_deg`, from the girdle) rather
+/// than straight down through the table, at refractive index `n`.
+///
+/// # Derivation (Snell's law)
+///
+/// Both angles are read as magnitudes (see the module doc comment's "Angle
+/// convention"): a facet tilted `theta` degrees from the (horizontal) girdle
+/// plane has its own normal tilted `theta` degrees from the vertical viewing
+/// axis -- the same reading [`tier_margin_deg`] already gives the plain
+/// (table-only) pavilion model.
+///
+/// Follow one ray, in the 2-D radial cross-section through one crown facet and
+/// the pavilion facet on the same azimuthal index: it starts vertical (straight
+/// down, in air), hits the crown facet at incidence angle `c = crown_angle_deg`
+/// from the crown facet's own normal (since that normal sits `c` degrees off
+/// vertical), and refracts per Snell's law,
+/// `sin(c) = n * sin(r)`, so `r = asin(sin(c) / n)`.
+///
+/// Because refraction bends the ray TOWARD the normal (entering the denser
+/// stone), the ray's new direction is tilted `(c - r)` degrees from vertical
+/// (less than the crown facet's own `c`, never zero) -- a vertical ray only ever
+/// picks up tilt by refracting through a facet that is not flat, and `r < c` for
+/// any `n > 1`.
+///
+/// That ray then reaches the pavilion facet, whose own normal sits
+/// `p = pavilion_angle_deg` degrees off vertical, tilted toward the SAME side
+/// the crown bent the ray toward (the two facets face each other across one
+/// radial cross-section). Resolving both directions as unit vectors in that
+/// plane and taking their dot product gives the angle of incidence at the
+/// pavilion directly: `theta_pavilion = p + (c - r)` (see this module's own
+/// tests for the vector algebra spelled out numerically). Compare that against
+/// [`critical_angle_deg`] exactly as [`tier_margin_deg`] compares the plain
+/// table-only incidence angle `p` -- entering through a tilted crown facet
+/// only ever ADDS incidence angle over the straight-through-the-table case
+/// (`c - r >= 0`), so this margin is never smaller than the table-only
+/// pavilion margin at the same `p`.
+///
+/// # This is an estimate, not a full ray trace
+///
+/// This follows exactly one ray (vertical incidence on the crown, in the
+/// crown/pavilion facets' own shared meridian plane) and ignores every other
+/// path light actually takes through a real stone -- internal reflections off
+/// OTHER facets, the crown facet's own azimuthal curvature away from that one
+/// meridian, dispersion (every wavelength refracts by a slightly different
+/// `r`), and any facet that is not radially opposite the one being typed. A
+/// caller-facing label should say "estimate", never "risk" alone -- see the
+/// module doc comment's own crown caveat, which this function narrows but does
+/// not remove.
+#[must_use]
+pub fn crown_window_margin_deg(pavilion_angle_deg: f64, crown_angle_deg: f64, n: f64) -> f64 {
+    let c = crown_angle_deg.abs();
+    let p = pavilion_angle_deg.abs();
+    let r = (c.to_radians().sin() / n).asin().to_degrees();
+    (p + (c - r)) - critical_angle_deg(n)
+}
+
+/// [`crown_window_margin_deg`] classified into the same three [`Risk`] bands as
+/// [`windowing_risk`] -- an ESTIMATE (see that function's own doc comment), not
+/// a full ray trace.
+#[must_use]
+pub fn crown_windowing_risk(pavilion_angle_deg: f64, crown_angle_deg: f64, n: f64) -> Risk {
+    let margin = crown_window_margin_deg(pavilion_angle_deg, crown_angle_deg, n);
+    if margin < 0.0 {
+        Risk::Windows
+    } else if margin < 2.0 {
+        Risk::Marginal
+    } else {
+        Risk::Safe
+    }
 }
 
 #[cfg(test)]
@@ -210,5 +294,83 @@ mod tests {
         let n = 1.62;
         let angle = -38.5;
         assert!((retarget_angle_deg(angle, n, n) - angle).abs() < 1e-9);
+    }
+
+    /// A culet authored at exactly `-0.0` (this crate's own
+    /// pavilion-side marker -- see `ConstraintTier::standard_round_brilliant`)
+    /// must retarget to a NEGATIVE (pavilion) angle, not `+new_theta`: a plain
+    /// `tier_angle_deg < 0.0` test is `false` for `-0.0`, which would silently drop
+    /// the marker.
+    #[test]
+    fn retarget_preserves_the_negative_zero_pavilion_marker() {
+        let n_from = 2.417;
+        let n_to = 1.544;
+        let new_angle = retarget_angle_deg(-0.0, n_from, n_to);
+        assert!(
+            new_angle.is_sign_negative(),
+            "a -0.0 (pavilion) origin must retarget to a negative angle: {new_angle}"
+        );
+    }
+
+    // --- crown_window_margin_deg / crown_windowing_risk ---
+
+    /// A classic 41-degree pavilion / 34-degree crown round brilliant is a real,
+    /// working (non-windowing) cut in both quartz and sapphire -- the "known-good
+    /// case" this function must not falsely flag, in EITHER material.
+    #[test]
+    fn crown_window_reports_safe_for_a_standard_41_34_round_brilliant() {
+        for n in [1.544_f64, 1.76_f64] {
+            let risk = crown_windowing_risk(41.0, 34.0, n);
+            assert_eq!(
+                risk,
+                Risk::Safe,
+                "n={n}: margin={}",
+                crown_window_margin_deg(41.0, 34.0, n)
+            );
+        }
+    }
+
+    /// A flat (0-degree) crown -- i.e. a table-only path -- must reduce exactly
+    /// to the plain table-only pavilion margin: `r = asin(sin(0)/n) = 0`, so
+    /// `theta_pavilion = p + (0 - 0) = p`, identical to [`tier_margin_deg`].
+    #[test]
+    fn crown_window_margin_reduces_to_the_table_only_margin_at_zero_crown_angle() {
+        let n = 1.62;
+        let p = 40.75;
+        let table_only = tier_margin_deg(-p, n);
+        let via_crown = crown_window_margin_deg(p, 0.0, n);
+        assert!(
+            (table_only - via_crown).abs() < 1e-9,
+            "table_only={table_only} via_crown={via_crown}"
+        );
+    }
+
+    /// Entering through ANY tilted crown facet must never report a SMALLER
+    /// margin than the table-only path at the same pavilion angle -- the
+    /// derivation's own `c - r >= 0` property (refraction only ever adds
+    /// incidence angle here, never removes it).
+    #[test]
+    fn crown_window_margin_is_never_below_the_table_only_margin() {
+        let n = 1.76;
+        let p = 38.0;
+        let table_only = tier_margin_deg(-p, n);
+        for c in [5.0, 15.0, 25.0, 34.0, 40.0] {
+            let via_crown = crown_window_margin_deg(p, c, n);
+            assert!(
+                via_crown >= table_only - 1e-9,
+                "c={c}: via_crown={via_crown} < table_only={table_only}"
+            );
+        }
+    }
+
+    /// Sign-agnostic on the pavilion angle, matching [`tier_margin_deg`]'s own
+    /// convention -- a pavilion tier's authored `angle_deg` is negative.
+    #[test]
+    fn crown_window_margin_is_symmetric_in_the_pavilion_angles_sign() {
+        let n = 1.7;
+        assert_eq!(
+            crown_window_margin_deg(41.0, 34.0, n),
+            crown_window_margin_deg(-41.0, 34.0, n)
+        );
     }
 }

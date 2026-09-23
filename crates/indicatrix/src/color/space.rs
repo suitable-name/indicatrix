@@ -4,21 +4,25 @@
 //! P3, Rec.2020, and `ACEScg`, plus [`ColorSpace::encode`] -- a single entry point
 //! carrying a CIE XYZ radiance sample to encoded 8-bit output.
 //!
-//! # Intended wiring (not performed by this module)
+//! # Wiring
 //!
-//! `optics::raytracer::xyz_to_srgb_gamma` performs this pipeline inline (XYZ -> linear
-//! sRGB, gamut compression, ACES tone mapping, flat 1/2.2 gamma). This module is a
-//! generalised, self-contained replacement, not yet wired into the renderer:
+//! `optics::raytracer::xyz_to_srgb_gamma` (every render's actual output path, via
+//! `renderer::tonemap`) is a thin wrapper around `xyz_to_rgb_in_space`, which itself is
+//! exactly [`ColorSpace::Srgb.encode`](ColorSpace::encode) with ACES filmic tone
+//! mapping at `exposure: 1.0`:
 //!
 //! ```ignore
-//! // old:
-//! let pixel = xyz_to_srgb_gamma(xyz);
-//! // new:
-//! let pixel = ColorSpace::Srgb.encode(xyz, ToneMap::AcesFilmic { exposure: 1.0 });
+//! pub fn xyz_to_srgb_gamma(xyz: Vec3) -> [u8; 4] {
+//!     ColorSpace::Srgb.encode(xyz, ToneMap::AcesFilmic { exposure: 1.0 })
+//! }
 //! ```
 //!
-//! Matches gamut- and tone-mapping exactly; the one difference is the true piecewise
-//! sRGB curve instead of flat 1/2.2 gamma (see `tests/color_tests.rs` for the deviation).
+//! So every pixel this crate renders already goes through [`ColorSpace::encode`] --
+//! this module is not a self-contained, unwired replacement. `xyz_to_srgb_gamma`'s
+//! caller-visible behavior is the true piecewise sRGB curve, not flat 1/2.2 gamma (see
+//! `tests/color_tests.rs` for the deviation); Display P3, Rec.2020 and `ACEScg` are
+//! reachable via `xyz_to_rgb_in_space` but no caller currently picks a `space` other
+//! than `Srgb` (see that function's own doc comment).
 
 use glam::Vec3;
 
@@ -140,8 +144,10 @@ impl ColorSpace {
     ///
     /// # Sources
     ///
-    /// - **sRGB**: bit-identical to `optics::raytracer::xyz_to_linear_srgb`'s constants
-    ///   (Bruce-Lindbloom-rounded sRGB D65 matrix, IEC 61966-2-1 primaries/white).
+    /// - **sRGB**: Bruce-Lindbloom-rounded sRGB D65 matrix, IEC 61966-2-1
+    ///   primaries/white -- the canonical copy; `optics::raytracer::xyz_to_srgb_gamma`
+    ///   reaches these same constants through [`ColorSpace::encode`] rather than
+    ///   keeping its own.
     /// - **Display P3**: primaries R(0.680, 0.320) G(0.265, 0.690) B(0.150, 0.060), D65
     ///   white, per SMPTE EG 432-1; cross-checked against `colour-science`.
     /// - **Rec.2020**: primaries R(0.708, 0.292) G(0.170, 0.797) B(0.131, 0.046), D65

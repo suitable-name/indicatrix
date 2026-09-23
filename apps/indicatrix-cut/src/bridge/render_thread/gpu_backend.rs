@@ -27,8 +27,8 @@ pub(super) struct BackendFrame<'a> {
     pub(super) distance: f32,
     pub(super) camera: &'a Camera,
     pub(super) planes: &'a [GpuFacetPlane],
-    /// Frosted girdle: `&[]` when `RenderContext::girdle_frosted` is off, reproducing
-    /// the pre-existing all-polished behaviour on both backends.
+    /// Frosted girdle: `&[]` when `RenderContext::girdle_frosted` is off, which both
+    /// backends treat as all-polished.
     pub(super) facet_finishes: &'a [FacetFinish],
     pub(super) material: &'a GemMaterial,
     pub(super) max_bounces: u32,
@@ -62,6 +62,29 @@ pub(super) struct ViewportGpu {
     /// Key of the guide buffers currently copied into the render loop's buffers, so an
     /// unchanged pose copies nothing rather than memcpying ~10 MB every frame.
     applied_guide_key: Option<crate::bridge::frame_cache::guide_pass::GuideKey>,
+    /// Set once a joined GPU-thread panic is observed (see [`hybrid_frame`])
+    /// and never cleared -- `GpuBackend` itself only retires its OWN `lost` flag on a
+    /// cleanly-reported [`indicatrix::renderer::gpu::GpuFrameError::DeviceLost`], which
+    /// a raw thread panic never reaches (the panic unwinds past the normal return path
+    /// entirely). Without this, a panic observed only through `hybrid_frame`'s joined
+    /// thread left the single-engine path at [`accumulate_frame_samples`] free to call
+    /// [`Self::try_accumulate`] again next frame, straight back into the wgpu state
+    /// that produced the panic.
+    gpu_retired: bool,
+    /// True once a post-loss re-acquire attempt (see
+    /// [`Self::try_accumulate`]'s own doc comment) has ALSO failed -- permanently
+    /// falls back to the CPU tracer for the rest of this session, mirroring
+    /// [`Self::gpu_retired`]'s "never cleared" policy for a different trigger
+    /// (`GpuBackend::is_lost` rather than a joined thread panic).
+    cpu_fallback: bool,
+    /// User-facing status text for the viewport's own status pill
+    /// (`ui/components/gem_viewport.slint`'s `ViewportModel.gpu_status_text`) --
+    /// `None` while healthy or on a CPU-only build (nothing to report), `Some` while
+    /// transiently re-acquiring or once [`Self::cpu_fallback`] is permanent. The
+    /// render loop polls [`Self::status_message`] once per frame and only pushes a
+    /// Slint property write when it actually changed -- see `spawn_render_thread`'s
+    /// own `last_gpu_status` local.
+    status_message: Option<String>,
 }
 
 impl ViewportGpu {
@@ -70,14 +93,71 @@ impl ViewportGpu {
             gpu: GpuBackend::acquire(),
             guides: crate::bridge::frame_cache::guide_pass::GuideCache::new(),
             applied_guide_key: None,
+            gpu_retired: false,
+            cpu_fallback: false,
+            status_message: None,
         }
+    }
+
+    /// Permanently stops this session's GPU frames after a joined GPU-thread panic --
+    /// mirrors the policy `GpuBackend::try_accumulate_cancellable`
+    /// already applies to its own `lost` flag (`Declined` forever, never retried), just
+    /// tracked here too since a raw thread panic never reaches that code path.
+    fn retire(&mut self) {
+        self.gpu_retired = true;
+        self.status_message = Some("CPU fallback (GPU render thread panicked)".to_string());
+    }
+
+    /// The viewport's current GPU status text, if there is anything to show -- see
+    /// [`Self::status_message`]'s own doc comment.
+    pub(super) fn status_message(&self) -> Option<&str> {
+        self.status_message.as_deref()
+    }
+
+    /// Invalidates the cached guide-buffer key so the NEXT GPU frame recopies its guide
+    /// buffers unconditionally, even if the pose/geometry key it would compute matches
+    /// the one last applied.
+    ///
+    /// Must be called whenever something OTHER than [`Self::try_accumulate`] has just
+    /// written `depth`/`normal`/`facet_id` -- a CPU scanline frame
+    /// (`render_frame_scanlines`, taking any of [`accumulate_frame_samples`]'s non-GPU
+    /// branches) or a resize/dirty reallocation
+    /// (`frame_helpers::update_accumulation_state`, called from the render loop) -- since
+    /// either leaves guide data in the buffers that does NOT match
+    /// `self.applied_guide_key`'s cached pose/geometry association, which
+    /// [`Self::try_accumulate`]'s `self.applied_guide_key.as_ref() != Some(&key)` check
+    /// would otherwise treat as already up to date and skip recopying, serving a stale
+    /// depth/normal/facet-id triple to the denoiser on the next GPU frame.
+    pub(super) const fn invalidate_guide_cache(&mut self) {
+        self.applied_guide_key = None;
     }
 
     /// Accumulates one frame's samples on the GPU and refreshes the guide buffers.
     ///
-    /// Returns `false` without touching `out` if the GPU declines, in which case the
-    /// caller must run the CPU path for this frame.
+    /// Returns `false` without touching `out` if the GPU declines OR this backend was
+    /// already [`Self::retire`]d/has permanently fallen back to the CPU tracer, in
+    /// which case the caller must run the CPU path for this frame.
+    ///
+    /// # Self-healing a lost device
+    ///
+    /// `GpuBackend::try_accumulate` (crate-level) correctly stops dispatching into a
+    /// lost device, but nothing above it on its own tells the user or tries to recover --
+    /// left unhandled, the viewport would just stop updating forever, with no crash
+    /// (this app installs no `tracing` subscriber, so even the crate's own
+    /// `tracing::warn!` goes nowhere). So a decline is checked against
+    /// [`GpuBackend::is_lost`]: an ORDINARY decline
+    /// (unsupported material/environment, or no adapter at all -- neither sets `lost`)
+    /// still just falls back to the CPU for this one frame, no status change, exactly
+    /// as before. A decline caused by a genuine loss drops the poisoned backend and
+    /// re-acquires a fresh [`GpuBackend`] ONCE, retrying THIS SAME frame against it
+    /// (see [`Self::reacquire_after_loss`]) -- if that also fails, this session gives
+    /// up on the GPU for good ([`Self::cpu_fallback`]). Either way
+    /// [`Self::status_message`] carries a user-visible reason for the viewport's own
+    /// status pill, and clears back to `None` the moment a GPU frame succeeds again.
     fn try_accumulate(&mut self, frame: &BackendFrame<'_>, out: &mut FrameOutputs<'_>) -> bool {
+        if self.gpu_retired || self.cpu_fallback {
+            return false;
+        }
         let scene = GpuSceneRef {
             camera: frame.camera,
             width: frame.width,
@@ -88,13 +168,63 @@ impl ViewportGpu {
             max_bounces: frame.max_bounces,
             environment: frame.environment,
         };
-        if !self
+        if self
             .gpu
             .try_accumulate(&scene, frame.sample_offset, frame.spp, out.accum)
         {
+            self.status_message = None;
+            self.copy_guides(frame, out);
+            return true;
+        }
+        if !self.gpu.is_lost() {
+            // An ordinary per-call decline -- not a loss, nothing to heal.
             return false;
         }
+        self.reacquire_after_loss(&scene, frame, out)
+    }
 
+    /// The self-healing path [`Self::try_accumulate`] takes once [`GpuBackend::is_lost`]
+    /// confirms this frame's decline was a genuine device loss rather than an ordinary
+    /// one. Split out purely to keep `try_accumulate` under clippy's function-length
+    /// limit; see that function's own doc comment for the full sequence.
+    fn reacquire_after_loss(
+        &mut self,
+        scene: &GpuSceneRef<'_>,
+        frame: &BackendFrame<'_>,
+        out: &mut FrameOutputs<'_>,
+    ) -> bool {
+        let reason = self
+            .gpu
+            .last_lost_reason()
+            .unwrap_or_else(|| "unknown reason".to_string());
+        tracing::warn!(%reason, "GPU renderer lost; dropping it and re-acquiring once");
+        self.status_message = Some("GPU renderer lost \u{2014} reacquiring\u{2026}".to_string());
+        self.gpu = GpuBackend::acquire();
+        if self
+            .gpu
+            .try_accumulate(scene, frame.sample_offset, frame.spp, out.accum)
+        {
+            tracing::info!(%reason, "GPU renderer re-acquired successfully after loss");
+            self.status_message = None;
+            self.copy_guides(frame, out);
+            return true;
+        }
+        tracing::warn!(
+            %reason,
+            "GPU re-acquire failed (or was lost again immediately); falling back to the \
+             CPU tracer for the rest of this session"
+        );
+        self.cpu_fallback = true;
+        self.status_message = Some(format!("CPU fallback (GPU lost: {reason})"));
+        false
+    }
+
+    /// Copies the guide buffers for `frame`'s pose/geometry into `out` if they are not
+    /// already the ones last applied -- see [`Self::applied_guide_key`]'s own doc
+    /// comment. Split out of [`Self::try_accumulate`] so both the first GPU attempt and
+    /// the post-re-acquire retry in [`Self::reacquire_after_loss`] share one copy of
+    /// this logic instead of two copies that could drift.
+    fn copy_guides(&mut self, frame: &BackendFrame<'_>, out: &mut FrameOutputs<'_>) {
         let key = crate::bridge::frame_cache::guide_pass::GuideCache::key_for(
             frame.width,
             frame.height,
@@ -117,8 +247,6 @@ impl ViewportGpu {
             out.facet_id.copy_from_slice(&guides.facet_id);
             self.applied_guide_key = Some(key);
         }
-
-        true
     }
 }
 
@@ -135,9 +263,9 @@ impl ViewportGpu {
 ///   decline exactly like `CpuGpu`'s single-engine path.
 ///
 /// The CPU fallback is not exceptional: it runs whenever the `gpu` feature is off, no
-/// adapter exists, or the device is otherwise unavailable -- an HDR-mapped environment
-/// is no longer a special case, since the GPU megakernel renders HDR maps directly (see
-/// `docs/history/indicatrix-cut.md` for the CPU-only HDR path this replaced). Both
+/// adapter exists, or the device is otherwise unavailable. An HDR-mapped environment is
+/// not a special case here either, since the GPU megakernel renders HDR maps directly
+/// (see `docs/history/indicatrix-cut.md` for the CPU-only HDR path). Both
 /// backends add into the same buffer with the same sample-counter
 /// meaning, so switching between them mid-render (including a live
 /// `local_compute_target` change) continues a correct running average.
@@ -152,6 +280,9 @@ pub(super) fn accumulate_frame_samples(
     if local_compute_target == LocalComputeTarget::Cpu {
         let start = std::time::Instant::now();
         render_frame_scanlines(frame, frame.spp, frame.sample_offset + frame.spp, outputs);
+        // This CPU frame just wrote `outputs`' guide buffers directly --
+        // the GPU's cached `applied_guide_key` no longer describes what they hold.
+        backend.invalidate_guide_cache();
         hybrid.observe_cpu_only(frame.spp, start.elapsed());
         return;
     }
@@ -179,6 +310,9 @@ pub(super) fn accumulate_frame_samples(
     }
     let start = std::time::Instant::now();
     render_frame_scanlines(frame, frame.spp, frame.sample_offset + frame.spp, outputs);
+    // The GPU declined above, so this CPU retrace is what actually wrote
+    // `outputs`' guide buffers this frame.
+    backend.invalidate_guide_cache();
     hybrid.observe_cpu_only(frame.spp, start.elapsed());
 }
 
@@ -189,6 +323,20 @@ pub(super) fn accumulate_frame_samples(
 /// accumulation only after both engines join, so they never write one buffer
 /// concurrently. If the GPU declines mid-session, its share is retraced on the CPU and
 /// hybrid stops offering it work.
+///
+/// # A joined GPU-thread panic retires the backend, not just the hybrid split
+///
+/// `hybrid.gpu_dead = true` alone only stops THIS function from offering the GPU
+/// another share -- `accumulate_frame_samples`'s single-engine path
+/// (`backend.try_accumulate`, reached whenever hybrid pacing is still measuring, or for
+/// `LocalComputeTarget::Gpu`) does not consult `hybrid.gpu_dead` at all, so it would
+/// call straight back into the SAME `GpuFrameRenderer` a panic just unwound out of
+/// mid-dispatch -- exactly the "queued caller then panics with 'is still mapped'"
+/// pattern `crates/indicatrix`'s own half of this handling describes. A DECLINE (the GPU
+/// returning `false` normally) is harmless to retry; a PANIC means the renderer's
+/// staging buffers may be left mapped, so only that case calls [`ViewportGpu::retire`],
+/// which makes every later [`ViewportGpu::try_accumulate`] call -- hybrid or
+/// single-engine alike -- decline without touching the renderer again.
 fn hybrid_frame(
     backend: &mut ViewportGpu,
     frame: &BackendFrame<'_>,
@@ -199,7 +347,7 @@ fn hybrid_frame(
     let cpu_share = frame.spp - gpu_share;
     let pixel_count = (frame.width as usize) * (frame.height as usize);
     hybrid.reset_scratch(pixel_count);
-    let (gpu_ok, gpu_time, cpu_time) = {
+    let (gpu_ok, gpu_time, cpu_time, gpu_panicked) = {
         let cpu_scratch = &mut hybrid.cpu_scratch;
         let cpu_depth = &mut hybrid.scratch_depth;
         let cpu_normal = &mut hybrid.scratch_normal;
@@ -227,8 +375,15 @@ fn hybrid_frame(
                 },
             );
             let cpu_time = start.elapsed();
-            let (gpu_ok, gpu_time) = gpu_task.join().unwrap_or((false, cpu_time));
-            (gpu_ok, gpu_time, cpu_time)
+            match gpu_task.join() {
+                Ok((gpu_ok, gpu_time)) => (gpu_ok, gpu_time, cpu_time, false),
+                // The GPU-thread panicked rather than returning normally -- see this
+                // function's own doc comment ("A joined GPU-thread panic..."). Distinct
+                // from a plain decline: `cpu_time` fills the unmeasured `gpu_time` slot
+                // (never observed into `hybrid`'s rate, since `gpu_panicked` skips that
+                // below) purely so the tuple stays total.
+                Err(_) => (false, cpu_time, cpu_time, true),
+            }
         })
     };
     for (px, extra) in outputs.accum.iter_mut().zip(&hybrid.cpu_scratch) {
@@ -239,7 +394,19 @@ fn hybrid_frame(
         return;
     }
     hybrid.gpu_dead = true;
+    if gpu_panicked {
+        tracing::error!(
+            "GPU render thread panicked mid-frame; retiring the GPU backend for the \
+             rest of this session"
+        );
+        backend.retire();
+    }
     render_frame_scanlines(frame, gpu_share, frame.sample_offset + gpu_share, outputs);
+    // This CPU retrace of the GPU's declined/panicked share just wrote
+    // `outputs`' guide buffers directly -- note the GPU share above (when `gpu_ok`)
+    // already refreshed `applied_guide_key` itself inside `try_accumulate`, so this
+    // call is reached only on the path that did NOT.
+    backend.invalidate_guide_cache();
 }
 
 /// Adaptive pacing state for the viewport's hybrid CPU+GPU accumulation:
@@ -344,5 +511,117 @@ impl HybridPacing {
         }
         let rate = f64::from(spp) / elapsed.as_secs_f64().max(1e-9);
         *slot = Some(slot.map_or(rate, |prev| prev.mul_add(0.7, rate * 0.3)));
+    }
+}
+
+/// Hardware tests driving the app's OWN [`ViewportGpu::
+/// try_accumulate`] directly -- `indicatrix`'s own
+/// `renderer::gpu_backend::tests::viewport_frames_with_camera_changes_never_poison_the_backend`
+/// covers the crate-level `GpuBackend` entry point this wraps, but not this wrapper's
+/// own self-healing/guide-buffer logic. Reaches `ViewportGpu`'s private fields
+/// directly, which is why these live here rather than in `indicatrix`'s own test
+/// module. Each test acquires its OWN `ViewportGpu` and prints a note and returns (a
+/// clean skip, not a failure) when no GPU adapter is available.
+#[cfg(all(test, feature = "gpu"))]
+mod gpu_hardware_tests {
+    use super::*;
+    use indicatrix::{
+        geometry::cuts::StandardGemCuts, optics::raytracer::LightingPreset,
+        renderer::gpu_backend::GpuPipelineKind,
+    };
+
+    /// Drives `ViewportGpu::try_accumulate` across 12 simulated viewport frames, each
+    /// with a DIFFERENT camera pose (as `on_camera_orbit` produces on every drag
+    /// `moved` event) and an advancing `sample_offset` (as the render loop's
+    /// `accum_samples` does), for the given pipeline kind. Every call must succeed
+    /// (`true`), and `status_message()` must stay `None` throughout -- any `Some` means
+    /// a turn was declared `DeviceLost` and the self-healing path in
+    /// `ViewportGpu::try_accumulate`/`reacquire_after_loss` had to react, which is
+    /// exactly the poisoning this bug report describes.
+    fn assert_twelve_rotated_frames_never_lose_the_device(pipeline_kind: GpuPipelineKind) {
+        let mut viewport = ViewportGpu::acquire();
+        if viewport.gpu.adapter_label().is_none() {
+            println!(
+                "skipping assert_twelve_rotated_frames_never_lose_the_device({pipeline_kind:?}): \
+                 no GPU adapter"
+            );
+            return;
+        }
+        viewport.gpu.set_pipeline_kind(pipeline_kind);
+
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = GemMaterial::by_name("Spinel").expect("Spinel is a built-in cubic material");
+        let environment = LightingPreset::Daylight.studio(1.0, 0.4, 0.35);
+        let (width, height) = (480u32, 360u32);
+        let spp = 2u32;
+        let pixel_count = (width * height) as usize;
+        let mut accum = vec![Vec3::ZERO; pixel_count];
+        let mut depth = vec![1.0e6; pixel_count];
+        let mut normal = vec![Vec3::ZERO; pixel_count];
+        let mut facet_id = vec![-1i32; pixel_count];
+
+        for frame in 0..12u32 {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "frame index is tiny; precision loss is not a concern in this test"
+            )]
+            let yaw = (frame as f32).mul_add(0.29, 0.1);
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "frame index is tiny; precision loss is not a concern in this test"
+            )]
+            let pitch = (frame as f32).mul_add(0.13, 0.2).clamp(-1.4, 1.4);
+            let camera = Camera::new(yaw, pitch, 5.0, 18.0);
+            let backend_frame = BackendFrame {
+                width,
+                height,
+                yaw,
+                pitch,
+                distance: 5.0,
+                camera: &camera,
+                planes: &planes,
+                facet_finishes: &[],
+                material: &material,
+                max_bounces: 4,
+                environment,
+                spp,
+                sample_offset: frame * spp,
+            };
+            let ok = viewport.try_accumulate(
+                &backend_frame,
+                &mut FrameOutputs {
+                    accum: &mut accum,
+                    depth: &mut depth,
+                    normal: &mut normal,
+                    facet_id: &mut facet_id,
+                },
+            );
+            assert!(
+                ok,
+                "frame {frame} ({pipeline_kind:?}, yaw={yaw}, pitch={pitch}) declined -- \
+                 status: {:?}",
+                viewport.status_message()
+            );
+            assert_eq!(
+                viewport.status_message(),
+                None,
+                "frame {frame} ({pipeline_kind:?}) left a self-healing status behind -- \
+                 the device was lost at some point during this run"
+            );
+        }
+        assert!(
+            accum.iter().any(|v| v.length_squared() > 0.0),
+            "a lit studio-rig scene traced over 12 frames must leave SOME nonzero radiance"
+        );
+    }
+
+    #[test]
+    fn twelve_rotated_frames_never_lose_the_device_megakernel() {
+        assert_twelve_rotated_frames_never_lose_the_device(GpuPipelineKind::Megakernel);
+    }
+
+    #[test]
+    fn twelve_rotated_frames_never_lose_the_device_wavefront() {
+        assert_twelve_rotated_frames_never_lose_the_device(GpuPipelineKind::Wavefront);
     }
 }

@@ -24,7 +24,7 @@ pub struct CustomMaterialParams<'a> {
     /// this struct's own doc comment.
     pub per_axis_dispersion_json: Option<&'a str>,
     /// See `crate::model::material::CustomMaterialRow::specific_gravity`'s doc
-    /// comment (CAD audit item 169).
+    /// comment.
     pub specific_gravity: Option<f32>,
 }
 

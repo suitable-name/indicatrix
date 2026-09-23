@@ -1,0 +1,59 @@
+import { Theme } from "../theme.slint";
+
+// A coloured margin bar for
+// how far a facet's angle sits from the critical angle at the design's
+// effective refractive index -- pavilion tiers read the plain (table-only)
+// critical-angle margin; crown tiers read the crown-window ESTIMATE (see
+// `indicatrix_cut_core::crown_window_margin_deg`'s own doc comment for
+// exactly what that estimate does and does not model). `level` is `0` safe /
+// `1` marginal / `2` windows / `-1` nothing to show, matching
+// `gui::editor::state::tier_margin_and_risk`'s own convention -- the SAME
+// convention the tier table's MARGIN column already uses, so a bar shown here
+// and that column's cell never disagree about a saved tier.
+export component CriticalAngleBar inherits Rectangle {
+    in property <string> margin_text: "";
+    in property <int> level: -1;
+    in property <bool> is_estimate: false;
+
+    property <color> bar_color: root.level == 0 ? Theme.accent-emerald : (root.level == 1 ? Theme.accent-amber : Theme.accent-ruby);
+    property <string> reason: root.level == 2
+        ? "Below the critical angle -- light leaks through instead of reflecting back to the eye."
+        : (root.level == 1
+            ? "Within 2\u{b0} of the critical angle -- a thin margin for edits, tolerance or a material change."
+            : (root.level == 0 ? "Comfortably past the critical angle." : ""));
+
+    visible: root.level >= 0;
+    height: root.level >= 0 ? 22px : 0px;
+
+    VerticalLayout {
+        spacing: 2px;
+        Rectangle {
+            height: 6px;
+            border-radius: 3px;
+            background: Theme.bg-input;
+            Rectangle {
+                x: 0;
+                width: parent.width * (root.level == 0 ? 1.0 : (root.level == 1 ? 0.66 : 0.33));
+                height: 100%;
+                border-radius: 3px;
+                background: root.bar_color;
+            }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            Text {
+                text: root.margin_text + (root.is_estimate ? " (estimate)" : "");
+                font-size: 9px;
+                font-weight: 700;
+                color: root.bar_color;
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: root.reason;
+                font-size: 9px;
+                color: Theme.text-muted;
+                overflow: elide;
+            }
+        }
+    }
+}

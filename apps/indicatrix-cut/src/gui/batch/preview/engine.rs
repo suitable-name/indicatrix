@@ -150,6 +150,16 @@ pub(super) struct BatchContext<'a> {
         &'a [indicatrix_vault::model::material_match::RiPresetCandidate],
     pub(super) preview_size: u32,
     pub(super) preview_spp: u32,
+    /// Set once a caught local-render panic names a wgpu/mapped-buffer
+    /// failure (see [`catch_local_render`]) and never cleared for the rest of this
+    /// batch -- every local lane shares ONE `GpuBackend` (see this struct's own doc
+    /// comment on why it deliberately holds no `GpuBackend` itself), so a panic that
+    /// may have left the renderer's staging buffers mapped must stop EVERY lane from
+    /// dispatching into it again, not just the lane it happened on. A plain
+    /// `AtomicBool` (not a `GpuBackend::retire`/`mark_lost` call): `GpuBackend` itself
+    /// exposes no such method, and its own internal `lost` flag is set only on a
+    /// cleanly-reported `DeviceLost`, which a raw panic never reaches.
+    pub(super) gpu_retired: &'a AtomicBool,
 }
 
 /// One claimable unit of work: ONE view of ONE design -- see this group's `mod.rs` doc
@@ -250,14 +260,51 @@ fn catch_render(view: PreviewView, f: impl FnOnce() -> Option<Vec<u8>>) -> Optio
     })
 }
 
+/// Runs `f` (one LOCAL view's render) under `catch_unwind`, exactly like
+/// [`catch_render`], but ALSO retires the shared `GpuBackend` for the rest of this
+/// batch when the panic message names a wgpu/mapped-buffer failure -- the
+/// exact class of panic traced to a failed GPU chunk readback
+/// leaving a persistent staging buffer mapped, after which every LATER caller of the
+/// same renderer hits `Queue::submit ... is still mapped` too. Every local lane shares
+/// ONE `GpuBackend` for the whole batch (see [`BatchContext`]'s own doc comment), so
+/// without this, a second lane taking its own turn right after the first one panicked
+/// would dispatch straight into the same mapped state and panic again -- repeating for
+/// every remaining item, which is exactly the "N identical panic-log entries" shape
+/// a real crash log takes without this guard.
+fn catch_local_render(
+    view: PreviewView,
+    gpu_retired: &AtomicBool,
+    f: impl FnOnce() -> Option<Vec<u8>>,
+) -> Option<Vec<u8>> {
+    panic::catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|payload| {
+        let message = panic_message(&*payload);
+        if message.contains("wgpu") || message.contains("still mapped") {
+            tracing::error!(
+                "Preview render panicked for a {view:?} view with a GPU-fatal message; \
+                 retiring the shared GPU backend for the rest of this batch: {message}"
+            );
+            gpu_retired.store(true, Ordering::Relaxed);
+        } else {
+            warn!("Preview render panicked for a {view:?} view: {message}");
+        }
+        None
+    })
+}
+
 /// Renders `resolved`'s `view` on the LOCAL engine (GPU with CPU scanline fallback --
-/// `bridge::preview_render::render_view`'s own doc comment).
+/// `bridge::preview_render::render_view`'s own doc comment). Declines outright, without
+/// dispatching anything, once [`BatchContext::gpu_retired`] is set -- see
+/// [`catch_local_render`]'s own doc comment for why calling back into the renderer at
+/// that point risks repeating the same panic.
 fn render_item_local(
     ctx: &BatchContext<'_>,
     gpu: &GpuBackend,
     resolved: &ResolvedDesign,
     view: PreviewView,
 ) -> Option<Vec<u8>> {
+    if ctx.gpu_retired.load(Ordering::Relaxed) {
+        return None;
+    }
     let job = PreviewJob {
         planes: &resolved.planes,
         material: &resolved.material,
@@ -265,7 +312,9 @@ fn render_item_local(
         spp: ctx.preview_spp,
         max_bounces: PREVIEW_MAX_BOUNCES,
     };
-    catch_render(view, || preview_render::render_view(&job, view, gpu))
+    catch_local_render(view, ctx.gpu_retired, || {
+        preview_render::render_view(&job, view, gpu)
+    })
 }
 
 /// Renders `resolved`'s `view` against `worker` (`bridge::preview_render::
@@ -546,8 +595,8 @@ pub(super) fn run_local_lane(
 /// immediate shortfall (no attempt possible) rather than a connection failure, so this
 /// never touches the network in that case. `fallback_to_local` is `true` only for
 /// `LiveComputeTarget::Both` -- for `RemoteOnly` every failure is final and tallied
-/// `failed` directly, per this task's own "must not silently fall back to local"
-/// requirement.
+/// `failed` directly: a remote failure is reported as failed and never silently
+/// re-rendered locally.
 pub(super) fn run_remote_lane(
     shared: &LaneShared<'_>,
     ui_weak: &Weak<MainWindow>,

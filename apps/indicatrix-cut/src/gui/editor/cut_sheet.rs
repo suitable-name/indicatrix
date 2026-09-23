@@ -1,8 +1,6 @@
-//! `cad_todo.md` items 109 and 214: a design's printable cutting sequence as a
-//! single self-contained HTML file (the owner's decision, see that document's
-//! "Owner decisions" table -- printable HTML, no new dependency, prints from the
-//! browser), and the standalone 2D-diagram export that shares its rendering
-//! pipeline.
+//! A design's printable cutting sequence as a single self-contained HTML file --
+//! printable HTML, no new dependency, prints straight from the browser -- and the
+//! standalone 2D-diagram export that shares its rendering pipeline.
 //!
 //! # Pure-function-plus-thin-callback
 //!
@@ -45,12 +43,15 @@
 
 use crate::gui::solid_preview::diagram2d::{self, DiagramConfig, DiagramStyle};
 use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
-use indicatrix::geometry::{
-    meet_solver::{Block, SolvedTier, classify_blocks},
-    stone_metrics::{SolidStatus, build_solid_mesh},
+use indicatrix::{
+    geometry::{
+        meet_solver::{Block, SolvedTier, classify_blocks},
+        stone_metrics::{SolidStatus, build_solid_mesh},
+    },
+    optics::materials::GemMaterial,
 };
 use indicatrix_cut_core::{CutSheetRow, Design};
-use std::{fmt::Write as _, path::PathBuf};
+use std::{fmt::Write as _, path::Path};
 
 /// Three-panel diagram resolution embedded in a cutting sheet -- small enough
 /// that the resulting `data:` URI keeps the HTML file a reasonable size (a few
@@ -60,7 +61,7 @@ const SHEET_DIAGRAM_WIDTH: u32 = 900;
 /// See [`SHEET_DIAGRAM_WIDTH`].
 const SHEET_DIAGRAM_HEIGHT: u32 = 360;
 
-/// Item 214's standalone diagram export resolution -- print-quality (roughly
+/// The standalone diagram export's resolution -- print-quality (roughly
 /// 150 DPI at A4 landscape width) rather than the cutting sheet's own smaller
 /// embed, since this is the one path meant to be viewed/printed at full size on
 /// its own.
@@ -92,7 +93,7 @@ pub struct DiagramImage {
 /// rather than [`SolidStatus::Closed`]) -- there is no meaningful diagram to draw
 /// for a design that isn't currently a closed stone, the same condition the Edit
 /// tab's own Solid/Diagram viewport already handles by showing its last-good
-/// frame instead. A caller (a printed sheet, or item 214's standalone export)
+/// frame instead. A caller (a printed sheet, or a standalone diagram export)
 /// shows this design-not-closed message itself rather than a blank or stale
 /// image.
 ///
@@ -153,10 +154,10 @@ fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
 
 /// The standard (RFC 4648) base64 alphabet, padded -- this crate's own encoder
 /// rather than a new dependency (`base64` is not a workspace dependency
-/// anywhere in this repo, and the owner's whole reason for choosing HTML over a
-/// PDF library for item 109 was avoiding one). A `data:` URI is the only place
-/// this codebase needs base64 at all, so a ~20-line hand-rolled encoder is
-/// simpler than justifying a new crate for it.
+/// anywhere in this repo, and the whole reason for choosing HTML over a PDF
+/// library for the cutting sheet was avoiding one). A `data:` URI is the only
+/// place this codebase needs base64 at all, so a ~20-line hand-rolled encoder
+/// is simpler than justifying a new crate for it.
 const BASE64_ALPHABET: &[u8; 64] =
     b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
@@ -187,8 +188,8 @@ fn base64_encode(data: &[u8]) -> String {
 }
 
 /// Builds `image`'s `data:` URI -- what keeps [`cutting_sheet_html`]'s output a
-/// single self-contained file (the owner's explicit ask for item 109), rather
-/// than an HTML file plus a sibling PNG that a cutter could separate or lose.
+/// single self-contained file, rather than an HTML file plus a sibling PNG
+/// that a cutter could separate or lose.
 fn png_data_uri(image: &DiagramImage) -> String {
     format!("data:image/png;base64,{}", base64_encode(&image.png_bytes))
 }
@@ -266,8 +267,16 @@ fn format_index(index: f64) -> String {
 /// angle, index list, mast (model units, plus mm when
 /// [`Design::girdle_diameter_mm`] is set), and meet note.
 ///
-/// Pure: same `design`/`solved`/`diagram` in always produces the same string
-/// out, no file/dialog/clock access -- see this module's own doc comment.
+/// Pure: same `design`/`solved`/`diagram`/`custom` in always produces the same
+/// string out, no file/dialog/clock access -- see this module's own doc comment.
+///
+/// `custom` -- a caller's own resolved catalogue materials, e.g.
+/// `RenderContext::custom_materials` -- is consulted for the printed "Refractive
+/// index" line exactly like [`Design::cutting_sheet_with`]/
+/// [`Design::effective_refractive_index_with`], so a design on a CUSTOM catalogue
+/// material (not one of the built-ins) prints that material's own `n_D` rather than
+/// the legacy schedule RI. Pass `&[]` for a caller with no catalogue on hand (same
+/// built-ins-only behaviour as `Design::cutting_sheet`/`effective_refractive_index`).
 ///
 /// # Panics
 ///
@@ -278,13 +287,15 @@ pub fn cutting_sheet_html(
     design: &Design,
     solved: &[SolvedTier],
     diagram: Option<&DiagramImage>,
+    custom: &[GemMaterial],
 ) -> String {
-    let sheet = design.cutting_sheet(solved);
+    let sheet = design.cutting_sheet_with(solved, custom);
     let blocks = classify_blocks(&design.meet_tier_inputs());
     let mm_per_unit = design.yield_report(solved).mm_per_unit;
     let show_mm_column = design.girdle_diameter_mm.is_some();
-    // Item 213: only when some tier actually carries one -- an ordinary design's
-    // sheet should not gain a column of dashes for a feature it does not use.
+    // Shows the cheater-offset column only when some tier actually carries one --
+    // an ordinary design's sheet should not gain a column of dashes for a feature
+    // it does not use.
     let show_cheater_column = sheet
         .rows
         .iter()
@@ -293,7 +304,8 @@ pub fn cutting_sheet_html(
     let mut out = String::new();
     out.push_str(HTML_HEAD);
     out.push_str("<h1>Cutting Sheet</h1>\n");
-    push_header_block(&mut out, design);
+    push_header_block(&mut out, design, custom);
+    push_carat_weight_row(&mut out, design, solved);
     push_diagram_block(&mut out, diagram);
     push_tier_table(
         &mut out,
@@ -310,19 +322,14 @@ pub fn cutting_sheet_html(
 }
 
 /// [`cutting_sheet_html`]'s header meta table: material, refractive index,
-/// index gear/symmetry, and girdle diameter when set.
-fn push_header_block(out: &mut String, design: &Design) {
+/// index gear/symmetry, and girdle diameter when set. `custom` -- see
+/// [`cutting_sheet_html`]'s own doc comment -- decides which RI the "Refractive
+/// index" row prints for a CUSTOM catalogue material.
+fn push_header_block(out: &mut String, design: &Design, custom: &[GemMaterial]) {
     out.push_str("<table class=\"meta\">\n");
-    push_meta_row(
-        out,
-        "Material",
-        design.material.name.as_deref().unwrap_or("(unset)"),
-    );
-    push_meta_row(
-        out,
-        "Refractive index",
-        &format!("{:.4}", design.effective_refractive_index()),
-    );
+    let n_d = design.effective_refractive_index_with(custom);
+    push_meta_row(out, "Material", &material_header_text(design, n_d));
+    push_meta_row(out, "Refractive index", &format!("{n_d:.4}"));
     push_meta_row(
         out,
         "Index gear",
@@ -337,6 +344,44 @@ fn push_header_block(out: &mut String, design: &Design) {
         push_meta_row(out, "Girdle diameter", &format!("{mm:.3} mm"));
     }
     out.push_str("</table>\n");
+}
+
+/// [`cutting_sheet_html`]'s carat-weight line, when `solved` produces one --
+/// `None` under the same conditions
+/// [`indicatrix_cut_core::YieldReport::carat_weight`] itself is `None` (no
+/// girdle diameter set, or the design does not currently measure). Printed with
+/// the same understated-weight caveat
+/// [`indicatrix_cut_core::design::Design::cutting_sheet`]'s own header line
+/// carries: shown inline next to the number, not left to a doc comment nobody
+/// printing a sheet reads.
+fn push_carat_weight_row(out: &mut String, design: &Design, solved: &[SolvedTier]) {
+    let Some(carat) = design.yield_report(solved).carat_weight else {
+        return;
+    };
+    out.push_str("<table class=\"meta\">\n");
+    push_meta_row(
+        out,
+        "Carat weight (estimate)",
+        &format!("{carat:.3} ct -- assumes the authored facets reach the preform's own walls"),
+    );
+    out.push_str("</table>\n");
+}
+
+/// The cut sheet header's "Material" row text -- `design.material.name` when
+/// set, else the SAME nearest-n_D guess the editor's own material-guess badge
+/// shows. Formatted identically ("Sapphire? (from RI 1.76)") so a printed sheet
+/// and the editor never disagree about what is fact versus guess. "(unset)" when
+/// nothing built in is close enough to guess at all. Unlike the editor's badge,
+/// which shows nothing, a printed sheet always needs SOME text in this
+/// cell.
+fn material_header_text(design: &Design, n_d: f64) -> String {
+    if let Some(name) = design.material.name.as_deref() {
+        return name.to_string();
+    }
+    super::material_lookup::material_for_refractive_index(n_d).map_or_else(
+        || "(unset)".to_string(),
+        |(name, _)| format!("{name}? (from RI {n_d:.2})"),
+    )
 }
 
 /// Pushes one `<tr>` of [`push_header_block`]'s meta table -- `label` bold in
@@ -378,7 +423,7 @@ struct TierTableColumns {
     /// The mast repeated in millimetres -- only when a girdle diameter anchors a
     /// real scale.
     show_mm: bool,
-    /// The per-tier cheater/azimuth offset (item 213) -- only when some tier has one.
+    /// The per-tier cheater/azimuth offset -- only when some tier has one.
     show_cheater: bool,
 }
 
@@ -394,7 +439,8 @@ fn push_tier_table(
 ) {
     out.push_str("<table class=\"tiers\">\n<thead><tr>");
     out.push_str(
-        "<th>#</th><th>Tier</th><th>Block</th><th>Angle</th><th>Indices</th><th>Mast</th>",
+        "<th>#</th><th>Tier</th><th>Block</th><th>Angle</th><th>Elevation</th><th>Indices</th>\
+         <th>Mast</th>",
     );
     if columns.show_mm {
         out.push_str("<th>Mast (mm)</th>");
@@ -436,6 +482,7 @@ fn push_tier_row(
         block_label(block)
     );
     let _ = write!(out, "<td>{:+.2}&deg;</td>", row.angle_deg);
+    let _ = write!(out, "<td>{:.2}&deg;</td>", row.angle_of_elevation_deg);
     let _ = write!(out, "<td>{}</td>", format_indices_html(&row.indices));
     let _ = write!(out, "<td>{:.4}</td>", row.mast);
     if columns.show_mm {
@@ -509,62 +556,54 @@ const HTML_HEAD: &str = r#"<!DOCTYPE html>
 /// [`cutting_sheet_html`]'s closing half.
 const HTML_TAIL: &str = "</body>\n</html>\n";
 
-/// Item 109's "thin callback": builds `design`/`solved`'s cutting sheet (with an
-/// embedded diagram, when the design currently closes) and writes it to a
-/// cutter-chosen `.html` path, via the same blocking `rfd::FileDialog` pattern
-/// every other export in this tab uses (see `native_io::setup_export_asc_callback`).
+/// Builds `design`/`solved`'s cutting sheet (with an embedded diagram, when the
+/// design currently closes) and writes it to `dest`.
 ///
-/// `suggested_base_name` (no extension) seeds the save dialog's default file
-/// name -- pass the design's own recorded name when the caller has one (mirrors
-/// `native_io::suggested_file_name`'s own precedence: `EditorState::asc_filename`,
-/// else the schedule's first header line, else a fallback), so this stays
-/// callable with no `EditorState` dependency at all.
+/// The save-as file-picker dialog is handled by `native_io`'s own job
+/// (`native_io::pick_file`, on a background thread), so this stays callable with
+/// no `EditorState`/UI dependency at all, and safely callable from a background
+/// thread itself. The actual `std::fs::write` also belongs on a background thread.
+///
+/// `custom` is threaded straight through to [`cutting_sheet_html`] -- see that
+/// function's own doc comment.
 ///
 /// # Errors
 ///
-/// `Ok(None)` when the cutter dismissed the save dialog (no toast needed, same
-/// convention every other export callback here follows). `Err` names the write
-/// failure, ready to show as a toast.
+/// The write failure, ready to show as a toast.
 pub fn write_cutting_sheet_html(
     design: &Design,
     solved: &[SolvedTier],
-    suggested_base_name: &str,
-) -> Result<Option<PathBuf>, String> {
+    dest: &Path,
+    custom: &[GemMaterial],
+) -> Result<(), String> {
     let diagram = render_cut_diagram(design, solved, SHEET_DIAGRAM_WIDTH, SHEET_DIAGRAM_HEIGHT);
-    let html = cutting_sheet_html(design, solved, diagram.as_ref());
+    let html = cutting_sheet_html(design, solved, diagram.as_ref(), custom);
 
-    let Some(dest) = rfd::FileDialog::new()
-        .set_file_name(format!("{suggested_base_name}_cutting_sheet.html"))
-        .add_filter("Cutting sheet (HTML)", &["html"])
-        .save_file()
-    else {
-        return Ok(None);
-    };
     if let Some(parent) = dest.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    std::fs::write(&dest, html).map_err(|e| format!("Failed to write {}: {e}", dest.display()))?;
-    Ok(Some(dest))
+    std::fs::write(dest, html).map_err(|e| format!("Failed to write {}: {e}", dest.display()))
 }
 
-/// Item 214's "thin callback": [`write_cutting_sheet_html`]'s narrower sibling --
-/// the 2D diagram alone, at print resolution ([`DIAGRAM_EXPORT_WIDTH`] x
-/// [`DIAGRAM_EXPORT_HEIGHT`]), written to a cutter-chosen `.png` path. Shares
-/// [`render_cut_diagram`] with the cutting sheet rather than a second rendering
-/// path, per the owner's "share code with the cut sheet" instruction for this
-/// item.
+/// The "thin callback" half of the standalone diagram export:
+/// [`write_cutting_sheet_html`]'s narrower sibling -- the 2D diagram alone, at
+/// print resolution ([`DIAGRAM_EXPORT_WIDTH`] x [`DIAGRAM_EXPORT_HEIGHT`]),
+/// written to `dest`. Shares [`render_cut_diagram`] with the cutting sheet rather
+/// than a second rendering path.
+///
+/// The save-as file-picker is handled by `native_io`, not by this function --
+/// see [`write_cutting_sheet_html`]'s own doc comment.
 ///
 /// # Errors
 ///
 /// `Err` when `design` does not currently close to a solid (nothing to
 /// diagram -- named explicitly rather than silently saving a blank/stale
-/// image) or when the write itself fails. `Ok(None)` when the cutter dismissed
-/// the save dialog.
+/// image) or when the write itself fails.
 pub fn write_diagram_png(
     design: &Design,
     solved: &[SolvedTier],
-    suggested_base_name: &str,
-) -> Result<Option<PathBuf>, String> {
+    dest: &Path,
+) -> Result<(), String> {
     let Some(image) =
         render_cut_diagram(design, solved, DIAGRAM_EXPORT_WIDTH, DIAGRAM_EXPORT_HEIGHT)
     else {
@@ -573,25 +612,17 @@ pub fn write_diagram_png(
         );
     };
 
-    let Some(dest) = rfd::FileDialog::new()
-        .set_file_name(format!("{suggested_base_name}_diagram.png"))
-        .add_filter("Diagram (PNG)", &["png"])
-        .save_file()
-    else {
-        return Ok(None);
-    };
     if let Some(parent) = dest.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    std::fs::write(&dest, &image.png_bytes)
-        .map_err(|e| format!("Failed to write {}: {e}", dest.display()))?;
-    Ok(Some(dest))
+    std::fs::write(dest, &image.png_bytes)
+        .map_err(|e| format!("Failed to write {}: {e}", dest.display()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indicatrix_cut_core::{ConstraintTier, PreformSpec, ScheduleMeta};
+    use indicatrix_cut_core::{ConstraintTier, MaterialSelection, PreformSpec, ScheduleMeta};
 
     /// The same round-brilliant fixture `indicatrix_cut_core::cutting_sheet`'s
     /// own tests use: 8 tiers, all `ScaleReference`, always solves and closes --
@@ -604,6 +635,75 @@ mod tests {
         )
     }
 
+    fn custom_garnet(n_d: f32) -> GemMaterial {
+        let mut gem = GemMaterial::diamond();
+        gem.name = "My Garnet".to_string();
+        gem.dispersion = indicatrix::optics::dispersion::DispersionModel::Cauchy {
+            a: n_d,
+            b: 0.0,
+            c: 0.0,
+        };
+        gem
+    }
+
+    /// A design on a CUSTOM catalogue material must print that material's own
+    /// `n_D` in the printed sheet's "Refractive index" row when `custom` is
+    /// supplied -- the bug this module fixes. `&[]` (no catalogue) must still fall
+    /// back to the legacy schedule RI, matching the built-ins-only behaviour every
+    /// other test in this module already relies on.
+    #[test]
+    fn cutting_sheet_html_prints_a_custom_materials_own_refractive_index() {
+        let mut design = round_brilliant_design();
+        design.material = MaterialSelection {
+            name: Some("My Garnet".to_string()),
+            specific_gravity_override: None,
+            refractive_index_override: None,
+        };
+        let solved = design.solve().expect("every tier is pinned");
+        let custom = [custom_garnet(1.9)];
+
+        let with_catalogue = cutting_sheet_html(&design, &solved, None, &custom);
+        assert!(
+            with_catalogue.contains("<td>1.9000</td>"),
+            "{with_catalogue}"
+        );
+
+        let without_catalogue = cutting_sheet_html(&design, &solved, None, &[]);
+        assert!(
+            without_catalogue.contains(&format!("<td>{:.4}</td>", design.meta.refractive_index)),
+            "{without_catalogue}"
+        );
+    }
+
+    /// An unnamed design (every untouched import) whose effective RI sits at
+    /// sapphire's own must print the guess label "Sapphire? (from RI 1.76)",
+    /// never a bare number passed off as fact.
+    #[test]
+    fn material_header_text_shows_a_guess_for_an_unnamed_design_near_a_builtin() {
+        let mut design = round_brilliant_design();
+        design.meta.refractive_index = 1.76;
+        design.material = MaterialSelection::none();
+        let n_d = design.effective_refractive_index_with(&[]);
+        assert_eq!(
+            material_header_text(&design, n_d),
+            "Sapphire? (from RI 1.76)"
+        );
+    }
+
+    /// Once a material name IS set, the header must print it plainly -- no
+    /// guess wording once something is a stated fact.
+    #[test]
+    fn material_header_text_prints_the_name_plainly_once_set() {
+        let mut design = round_brilliant_design();
+        design.material = MaterialSelection {
+            name: Some("Sapphire".to_string()),
+            specific_gravity_override: None,
+            refractive_index_override: None,
+        };
+        let n_d = design.effective_refractive_index_with(&[]);
+        assert_eq!(material_header_text(&design, n_d), "Sapphire");
+    }
+
     /// The generated sheet must carry one row per tier, in cutting order, with
     /// the step number, tier name and formatted mast all present -- a basic
     /// "does the known schedule show up" check before the more targeted tests
@@ -612,7 +712,7 @@ mod tests {
     fn cutting_sheet_html_contains_expected_rows() {
         let design = round_brilliant_design();
         let solved = design.solve().expect("every tier is pinned");
-        let html = cutting_sheet_html(&design, &solved, None);
+        let html = cutting_sheet_html(&design, &solved, None, &[]);
 
         assert!(html.contains("<h1>Cutting Sheet</h1>"));
         assert!(html.contains("Table"));
@@ -628,6 +728,40 @@ mod tests {
         assert_eq!(tr_count, design.tiers.len());
     }
 
+    /// Every row must print an "Elevation" figure (the unsigned magnitude of its
+    /// angle) alongside the signed angle.
+    #[test]
+    fn elevation_column_prints_the_unsigned_angle_magnitude() {
+        let design = round_brilliant_design();
+        let solved = design.solve().expect("every tier is pinned");
+        let html = cutting_sheet_html(&design, &solved, None, &[]);
+        assert!(html.contains("<th>Elevation</th>"), "{html}");
+        // "Pavilion Main" is authored at -41.0 degrees; its elevation cell must
+        // print the unsigned magnitude, not the signed angle.
+        assert!(html.contains("<td>41.00&deg;</td>"), "{html}");
+    }
+
+    /// A carat-weight row must appear only once a girdle diameter anchors a real
+    /// mm scale -- matching the mm column's own gating.
+    #[test]
+    fn carat_weight_row_appears_only_when_girdle_diameter_is_set() {
+        let design_no_mm = round_brilliant_design();
+        let solved = design_no_mm.solve().expect("every tier is pinned");
+        let html_no_mm = cutting_sheet_html(&design_no_mm, &solved, None, &[]);
+        assert!(!html_no_mm.contains("Carat weight"));
+
+        let mut design_with_mm = round_brilliant_design();
+        design_with_mm.girdle_diameter_mm = Some(6.5);
+        // A carat weight needs a specific gravity too, so a material must be
+        // named -- the same fixture cut-core's own header test uses.
+        design_with_mm.material.name = Some("Diamond".to_string());
+        let html_with_mm = cutting_sheet_html(&design_with_mm, &solved, None, &[]);
+        assert!(
+            html_with_mm.contains("Carat weight (estimate)"),
+            "{html_with_mm}"
+        );
+    }
+
     /// The "Mast (mm)" column -- and any mm-formatted cell -- must appear only
     /// when `girdle_diameter_mm` is set, never derived from whether the mm
     /// conversion happens to resolve.
@@ -635,13 +769,13 @@ mod tests {
     fn mm_column_appears_only_when_girdle_diameter_is_set() {
         let design_no_mm = round_brilliant_design();
         let solved = design_no_mm.solve().expect("every tier is pinned");
-        let html_no_mm = cutting_sheet_html(&design_no_mm, &solved, None);
+        let html_no_mm = cutting_sheet_html(&design_no_mm, &solved, None, &[]);
         assert!(!html_no_mm.contains("Mast (mm)"));
 
         let mut design_with_mm = round_brilliant_design();
         design_with_mm.girdle_diameter_mm = Some(6.5);
         let solved_mm = design_with_mm.solve().expect("every tier is pinned");
-        let html_with_mm = cutting_sheet_html(&design_with_mm, &solved_mm, None);
+        let html_with_mm = cutting_sheet_html(&design_with_mm, &solved_mm, None, &[]);
         assert!(html_with_mm.contains("Mast (mm)"));
         assert!(html_with_mm.contains("Girdle diameter"));
     }
@@ -672,7 +806,7 @@ mod tests {
             ]
         );
 
-        let html = cutting_sheet_html(&design, &solved, None);
+        let html = cutting_sheet_html(&design, &solved, None, &[]);
         // "Culet" sits at angle `-0.0` -- a naive sign-of-the-formatted-string
         // check would call that Crown (`-0.0` formats with no visible sign in
         // some locales, or as positive zero); `classify_blocks`'s unsigned-zero
@@ -716,11 +850,11 @@ mod tests {
         let solved = design.solve().expect("every tier is pinned");
         let image = render_cut_diagram(&design, &solved, 64, 32).expect("closes to a solid");
 
-        let with_image = cutting_sheet_html(&design, &solved, Some(&image));
+        let with_image = cutting_sheet_html(&design, &solved, Some(&image), &[]);
         assert!(with_image.contains("data:image/png;base64,"));
         assert!(!with_image.contains(NOTICE));
 
-        let without_image = cutting_sheet_html(&design, &solved, None);
+        let without_image = cutting_sheet_html(&design, &solved, None, &[]);
         assert!(without_image.contains(NOTICE));
         assert!(!without_image.contains("data:image/png;base64,"));
     }

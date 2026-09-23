@@ -40,6 +40,9 @@ rustls = { workspace = true }
 rustls-pemfile = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }
+# `handshake::verify_compatible` logs (not refuses) an unknown `source_hash` on either
+# side of a pairing -- see that function's doc comment.
+tracing = { workspace = true }
 # `enroll`/`token` modules (token-based worker enrollment, shared by
 # `apps/indicatrix-worker`'s `cert claim` and `apps/indicatrix-cut`'s own token-redeem UI --
 # see `enroll`'s module doc comment for why both moved here): zeroizes the bearer

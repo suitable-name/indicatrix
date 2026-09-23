@@ -79,6 +79,23 @@ pub enum NativeMeetConstraint {
     ScaleReference { mast: f64 },
 }
 
+/// The on-disk mirror of a tier's authoring-level target.
+///
+/// Mirrors `indicatrix_cut_core::design::TierTarget` one-to-one, same
+/// lossless-mirror convention as [`NativeMeetConstraint`] -- "cut to 3.20 mm",
+/// "girdle 2.5% of width", "table 4.10 mm wide": girdle thickness and table
+/// size as authoring targets, not just readouts.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum NativeTierTarget {
+    /// Mirrors `TierTarget::DepthMm`.
+    DepthMm { mm: f64 },
+    /// Mirrors `TierTarget::GirdleThicknessMm`.
+    GirdleThicknessMm { mm: f64 },
+    /// Mirrors `TierTarget::TableWidthMm`.
+    TableWidthMm { mm: f64 },
+}
+
 /// The on-disk mirror of a preform's shape.
 ///
 /// Same lossless round trip as [`NativeMeetConstraint`], for the editor's own
@@ -102,7 +119,14 @@ pub struct PreformTable {
     pub half_width: f64,
     pub length_over_width: f64,
     pub depth: f64,
-    /// Keys a future build wrote that this build's three named fields above don't
+    /// How far the preform's own vertical span is shifted from centred, mirroring
+    /// `indicatrix_cut_core::design::Design::preform_y_offset` one-to-one.
+    /// `#[serde(default)]` so a file saved before this field existed
+    /// loads as `0.0` -- exactly the always-centred span every such file's preform
+    /// actually had.
+    #[serde(default)]
+    pub y_offset: f64,
+    /// Keys a future build wrote that this build's four named fields above don't
     /// claim -- see the module doc comment's "Unknown fields" section. Always empty
     /// when freshly built via [`PreformTable::new`]; only non-empty after parsing a
     /// newer file.
@@ -111,8 +135,9 @@ pub struct PreformTable {
 }
 
 impl PreformTable {
-    /// Builds a fresh table with no unknown/future fields carried over -- the shape
-    /// every freshly-authored (never parsed) table has. `shape`/`half_width`/
+    /// Builds a fresh table with no unknown/future fields carried over, and
+    /// `y_offset` at `0.0` (see [`Self::with_y_offset`]) -- the shape every
+    /// freshly-authored (never parsed) table has. `shape`/`half_width`/
     /// `length_over_width`/`depth` mirror an editor preform spec's own fields
     /// one-to-one; building the mirror from an actual spec is
     /// `indicatrix-cut-core`'s job (that crate has no reason to name
@@ -129,19 +154,29 @@ impl PreformTable {
             half_width,
             length_over_width,
             depth,
+            y_offset: 0.0,
             unknown: toml::Table::new(),
         }
     }
+
+    /// Attaches [`Self::y_offset`] -- see that field's own doc comment.
+    #[must_use]
+    pub const fn with_y_offset(mut self, y_offset: f64) -> Self {
+        self.y_offset = y_offset;
+        self
+    }
 }
 
-/// The `[material.custom]` snapshot: everything needed to reconstruct a custom
-/// catalogue material this design was on, if that name does not resolve on the
-/// machine that opens the file (CAD audit item 83 -- "Native file references a
-/// custom material by name only; elsewhere it becomes Diamond").
+/// The `[material.custom]` snapshot for a design's custom catalogue material.
+///
+/// Everything needed to reconstruct that material if its name does not resolve on
+/// the machine that opens the file -- without it, a native file referencing a
+/// custom material by name only falls back to Diamond elsewhere.
 ///
 /// Sharing a `.indicatrix.toml` + `.asc` pair naming a custom material (or simply
-/// reinstalling and losing the local database row) used to silently resolve that
-/// name to Diamond, with no warning. Every field here is a plain primitive, not
+/// reinstalling and losing the local database row) would otherwise silently
+/// resolve that name to Diamond, with no warning. Every field here is a plain
+/// primitive, not
 /// `indicatrix`'s own `GemMaterial` type: this crate has no dependency on
 /// `indicatrix` at all (see the module doc comment's "only pulls in what it
 /// needs" rule), so building this snapshot from a real `GemMaterial` -- and
@@ -205,7 +240,7 @@ pub struct MaterialTable {
     /// `None` rather than an error.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refractive_index_override: Option<f64>,
-    /// See [`CustomMaterialSnapshot`]'s own doc comment (CAD audit item 83).
+    /// See [`CustomMaterialSnapshot`]'s own doc comment.
     /// `#[serde(default)]` so a file written before this field existed loads with
     /// `None` rather than an error -- and so a design on a built-in material never
     /// grows one at all.
@@ -246,8 +281,8 @@ impl MaterialTable {
 /// The `[source]` table: the printed/measured proportions a catalogue row supplied
 /// when this design was loaded, if any.
 ///
-/// Item 178 ("Open Native resets `printed_proportions`, disabling Deep Solve for
-/// catalogue designs"). Every field mirrors one
+/// Without it, Open Native would reset `printed_proportions`, disabling Deep
+/// Solve for catalogue designs. Every field mirrors one
 /// `indicatrix::geometry::stone_metrics::ExternalProportions` figure one-to-one;
 /// building/reading the actual type is `indicatrix-cut-core`'s job (this crate has no
 /// dependency on `indicatrix` at all -- see the crate doc comment's "only pulls in
@@ -289,7 +324,7 @@ impl SourceTable {
 }
 
 /// The `[history]` table: a bounded, human-readable trail of edits made to this
-/// design since it was first saved natively (CAD audit item 172).
+/// design since it was first saved natively.
 ///
 /// Each entry is one already-formatted description (oldest first) -- building and
 /// bounding the list from the editor's own `History` stack of `Edit`s is
@@ -375,13 +410,36 @@ pub struct TierTable {
     /// [`Self::imported_meet`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_notes: Option<String>,
-    /// A cutter-authored free-text note for this tier (CAD audit item 172) --
+    /// A cutter-authored free-text note for this tier --
     /// unlike [`Self::original_notes`] (read-only imported `.asc` `G`-field text),
     /// this is a new authoring surface with no `.asc` counterpart to round-trip
     /// through, so it lives only here. `#[serde(default)]` so a file saved before
     /// this field existed still loads, as `None` (no note yet).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// A per-tier "cheater"/azimuth-offset annotation, in degrees -- mirrors
+    /// `indicatrix_cut_core::design::Design::cheater_offsets_deg`'s own map, keyed
+    /// by this tier's array position. Like [`Self::note`],
+    /// this is authored, undoable data with no `.asc` counterpart to round-trip
+    /// through, so it lives only here. `#[serde(default)]` so a file saved before
+    /// this field existed still loads, as `None` (no cheater offset recorded).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cheater_offset_deg: Option<f64>,
+    /// A stable per-tier identity, mirroring
+    /// `indicatrix_cut_core::design::TierId::value` --
+    /// `cheater_offset_deg`/`note` above are keyed by ARRAY POSITION
+    /// (this whole table already documents that), which renumbers on add/remove/
+    /// move; a `TierId` does not. `#[serde(default)]` so a file saved before this
+    /// field existed still loads, as `None` -- the loader is expected to assign a
+    /// fresh id to every such tier on load (old files have no stable identity to
+    /// recover, only a fresh one to start from).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier_id: Option<u64>,
+    /// This tier's authoring-level target, if any -- see [`NativeTierTarget`].
+    /// `#[serde(default)]` so a file saved before this field existed still loads,
+    /// as `None` (no target authored).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<NativeTierTarget>,
     /// See [`PreformTable::unknown`]'s doc comment -- the same rule, per tier.
     #[serde(flatten, default)]
     pub unknown: toml::Table,
@@ -389,10 +447,10 @@ pub struct TierTable {
 
 impl TierTable {
     /// Builds a fresh entry with no unknown/future fields, and no `angle_deg`/
-    /// `indices`/`imported_meet`/`original_notes` (all `None`) carried over -- see
-    /// [`PreformTable::new`]'s own doc comment for why this lives here rather than in
-    /// `indicatrix-cut-core`. A caller with one of those four to attach uses the
-    /// matching `with_*` method afterward.
+    /// `indices`/`imported_meet`/`original_notes`/`cheater_offset_deg` (all `None`)
+    /// carried over -- see [`PreformTable::new`]'s own doc comment for why this
+    /// lives here rather than in `indicatrix-cut-core`. A caller with one of those
+    /// five to attach uses the matching `with_*` method afterward.
     #[must_use]
     pub fn new(
         name: impl Into<String>,
@@ -408,8 +466,25 @@ impl TierTable {
             imported_meet: None,
             original_notes: None,
             note: None,
+            cheater_offset_deg: None,
+            tier_id: None,
+            target: None,
             unknown: toml::Table::new(),
         }
+    }
+
+    /// Attaches [`Self::tier_id`] -- see that field's own doc comment.
+    #[must_use]
+    pub const fn with_tier_id(mut self, tier_id: Option<u64>) -> Self {
+        self.tier_id = tier_id;
+        self
+    }
+
+    /// Attaches [`Self::target`] -- see that field's own doc comment.
+    #[must_use]
+    pub const fn with_target(mut self, target: Option<NativeTierTarget>) -> Self {
+        self.target = target;
+        self
     }
 
     /// Attaches [`Self::angle_deg`] -- see that field's own doc comment.
@@ -444,6 +519,13 @@ impl TierTable {
     #[must_use]
     pub fn with_note(mut self, note: Option<String>) -> Self {
         self.note = note;
+        self
+    }
+
+    /// Attaches [`Self::cheater_offset_deg`] -- see that field's own doc comment.
+    #[must_use]
+    pub const fn with_cheater_offset_deg(mut self, cheater_offset_deg: Option<f64>) -> Self {
+        self.cheater_offset_deg = cheater_offset_deg;
         self
     }
 }
@@ -496,7 +578,7 @@ pub struct NativeDesignFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub history: Option<HistoryTable>,
     /// The catalogue row this design was loaded from (or has since saved back to),
-    /// if any -- CAD audit item 178's still-open half: `[source]` carries a
+    /// if any -- `[source]` carries a
     /// catalogue row's PRINTED proportions, but not which row they came from, so a
     /// reopen can only ever replay the numbers as they were at save time, never
     /// notice that the row's own figures have since changed. A plain top-level
@@ -511,6 +593,20 @@ pub struct NativeDesignFile {
     /// one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalogue_entry_id: Option<i64>,
+    /// The AUTHORED (legacy schedule) refractive index, as last set directly or
+    /// imported from a `.asc` `I` line the design's material selection did not
+    /// override -- distinct from the EFFECTIVE refractive index (material/
+    /// override resolved) that `.asc` export always writes instead. `.asc`
+    /// has exactly one RI slot and export always
+    /// writes the effective value there, so re-importing that same file
+    /// overwrites the authored figure with whatever the effective one happened to
+    /// be -- this field is the native sidecar's own place to keep the authored
+    /// value distinct from that lossy round trip. `#[serde(default)]` so a file
+    /// saved before this field existed still loads, as `None` -- the loader then
+    /// falls back to whatever the paired `.asc`'s own `I` line says, exactly
+    /// today's (lossy) behavior for such a file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authored_refractive_index: Option<f64>,
     /// Top-level keys a future build wrote that none of the named fields above claim
     /// -- see [`PreformTable::unknown`]'s doc comment.
     #[serde(flatten, default)]
@@ -548,8 +644,20 @@ impl NativeDesignFile {
             source: None,
             history: None,
             catalogue_entry_id: None,
+            authored_refractive_index: None,
             unknown: toml::Table::new(),
         }
+    }
+
+    /// Attaches [`Self::authored_refractive_index`] -- see that field's own doc
+    /// comment.
+    #[must_use]
+    pub const fn with_authored_refractive_index(
+        mut self,
+        authored_refractive_index: Option<f64>,
+    ) -> Self {
+        self.authored_refractive_index = authored_refractive_index;
+        self
     }
 
     /// Attaches [`Self::draft`] -- see that field's own doc comment.

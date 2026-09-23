@@ -87,10 +87,9 @@ mod tests {
 
     /// Pins the key/fill/ring direction formulas at a fixed, representative pose
     /// against values computed independently by hand from the same formulas
-    /// `sample_studio_environment` and `evaluate_gem_optical_metrics` used to each
-    /// write out inline before this extraction. A future accidental change to
-    /// `StudioRig::new` that drifted from either original formula would fail this
-    /// test.
+    /// `sample_studio_environment` and `evaluate_gem_optical_metrics` each rely on.
+    /// A future accidental change to `StudioRig::new` that drifted from either
+    /// original formula would fail this test.
     #[test]
     fn key_fill_and_ring_directions_match_the_original_inline_formulas() {
         let light_yaw = 0.85f32;

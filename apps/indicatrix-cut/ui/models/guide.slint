@@ -1,0 +1,75 @@
+// An in-app "worked-example walkthrough" -- a step panel that opens beside the editor and highlights the
+// control for each step, driven by a static list derived from
+// `docs/manual/07-new-design-worked-example.md` (see
+// `apps/indicatrix-cut/src/gui/editor/guide.rs`, this global's only writer).
+//
+// Deliberately no general tour engine: `GuideStepData` is plain data (title,
+// body, which control to outline), `GuideModel` only tracks which step is
+// current and whether the panel is open, and every navigation callback below
+// is implemented ENTIRELY in this file (see this crate's own "SLINT FACTS":
+// a global's callback can be given a body directly in the file that declares
+// it) -- no Rust registration needed beyond pushing `steps` once at startup.
+export struct GuideStepData {
+    /// This step's heading, shown at the top of the guide panel.
+    title: string,
+    /// This step's body text, `@markdown`-rendered by `guide_panel.slint`.
+    body: string,
+    /// Which owned control to draw a 2px accent outline around while this step
+    /// is current -- `"tier_table"`/`"design_settings"`/`"new_design_dialog"`,
+    /// or `""` for a step with nothing to highlight (an introductory step, or
+    /// one whose target lives in a different file -- see
+    /// `guide.rs`'s own doc comment for the full list of recognized values and
+    /// which steps intentionally leave this blank).
+    highlight_target: string,
+}
+
+export global GuideModel {
+    /// Whether the guide panel is currently showing.
+    in-out property <bool> open: false;
+    /// The current step, 0-based into `steps`.
+    in-out property <int> step_index: 0;
+    /// The full step list -- pushed once at startup by
+    /// `gui::editor::guide::setup_guide` (`apps/indicatrix-cut/src/gui/editor/guide.rs`).
+    in property <[GuideStepData]> steps: [];
+
+    out property <int> total_steps: root.steps.length;
+    out property <bool> has_next: root.step_index + 1 < root.steps.length;
+    out property <bool> has_back: root.step_index > 0;
+    out property <GuideStepData> current: (root.step_index >= 0 && root.step_index < root.steps.length)
+        ? root.steps[root.step_index]
+        : { title: "", body: "", highlight_target: "" };
+
+    /// What `editor_tier_table.slint`/`editor_design_settings.slint` (and
+    /// `new_design_dialog.slint`, while it is open) check to decide whether to
+    /// draw their own highlight outline -- "" (closed, or a step with nothing
+    /// to highlight) never matches a real target name, so nothing outlines
+    /// itself in that case.
+    out property <string> highlight_target: root.open ? root.current.highlight_target : "";
+
+    /// Opens the panel at its first step -- called from the empty state's
+    /// "Open the Worked Example" card and from Help > Guide: New Design
+    /// Walkthrough.
+    callback start();
+    start => {
+        root.step_index = 0;
+        root.open = true;
+    }
+    callback next();
+    next => {
+        if root.has_next {
+            root.step_index += 1;
+        } else {
+            root.open = false;
+        }
+    }
+    callback back();
+    back => {
+        if root.has_back {
+            root.step_index -= 1;
+        }
+    }
+    callback close();
+    close => {
+        root.open = false;
+    }
+}

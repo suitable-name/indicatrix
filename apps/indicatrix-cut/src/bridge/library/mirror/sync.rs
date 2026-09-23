@@ -25,6 +25,7 @@ use std::{
     },
     thread,
 };
+use tracing::warn;
 
 /// Spawns the mirror-sync worker thread against `worker`'s design library, writing into
 /// `db`. `on_progress` is invoked on the UI event loop after each design examined;
@@ -187,7 +188,15 @@ pub fn run_mirror_sync(
         }
 
         let is_new = existing_state.is_none();
-        match sync_one_design(db, transport, source_id, options, &summary, &mut counts) {
+        match sync_one_design(
+            db,
+            transport,
+            source_id,
+            options,
+            &summary,
+            is_new,
+            &mut counts,
+        ) {
             Ok(()) => {
                 if is_new {
                     counts.new_count += 1;
@@ -221,12 +230,17 @@ pub fn run_mirror_sync(
 /// comment's protocol-limitation note -- so a per-design error UI would be noise; a
 /// failed design is simply retried on the next sync, same as one skipped for looking
 /// unchanged is not).
+///
+/// `is_new` (from [`run_mirror_sync`]'s own `existing_state.is_none()`) decides whether
+/// an UPDATED design's now-stale cached preview images/tilt curves are invalidated
+/// after the save below -- see that call site's own comment.
 fn sync_one_design(
     db: &Arc<Mutex<Database>>,
     transport: &impl LibraryTransport,
     source_id: &str,
     options: MirrorOptions,
     summary: &indicatrix_net::library::DesignSummary,
+    is_new: bool,
     counts: &mut MirrorCounts,
 ) -> Result<(), ()> {
     let design = match transport.request(&LibraryRequest::FetchDesign {
@@ -282,6 +296,19 @@ fn sync_one_design(
         facets_count: design.facets_count.clone(),
         shape: design.shape.clone(),
         designer_info: design.designer_info.clone(),
+        // `DesignRecord` carries these eight fields as of `PROTOCOL_VERSION` v6 (see
+        // that constant's doc comment). They must be mapped here: `save_diagram_detail`
+        // DELETES and re-inserts the whole detail row (`entries.rs`'s own doc comment),
+        // so leaving one out would blank it on every sync, even for a design that
+        // already had it from a prior local import/edit.
+        hw_ratio: design.hw_ratio.clone(),
+        tw_ratio: design.tw_ratio.clone(),
+        uw_ratio: design.uw_ratio.clone(),
+        pw_ratio: design.pw_ratio.clone(),
+        cw_ratio: design.cw_ratio.clone(),
+        symmetry_order: design.symmetry_order.clone(),
+        mirror_symmetry: design.mirror_symmetry,
+        designer: design.designer.clone(),
         ..FacetDiagramDetail::default()
     };
 
@@ -292,6 +319,28 @@ fn sync_one_design(
         };
         if db.save_diagram_detail(&detail, id).is_err() {
             return Err(());
+        }
+        // An UPDATED (not new) design just had its detail row replaced with fresh
+        // geometry/metadata -- any cached preview thumbnail/tilt curves rendered from
+        // the OLD geometry are now stale and must be invalidated, mirroring
+        // `gui::library::local::import`'s own re-import handling (`import/mod.rs`'s
+        // `is_collision` branch) rather than leaving performance filters and
+        // thumbnails silently describing the previous version of the design.
+        if !is_new {
+            if let Err(e) = db.delete_preview_images(id) {
+                warn!(
+                    "Mirror sync: failed to invalidate stale preview cache for entry \
+                     #{id} ({}): {e}",
+                    design.url
+                );
+            }
+            if let Err(e) = db.delete_tilt_curves(id) {
+                warn!(
+                    "Mirror sync: failed to invalidate stale tilt-curve cache for \
+                     entry #{id} ({}): {e}",
+                    design.url
+                );
+            }
         }
         // Only recorded once the local write above actually succeeded -- a design
         // that failed to save is never marked as synced, so the next sync retries
@@ -487,11 +536,8 @@ mod tests {
     /// ACROSS runs: a run that dies before cleanup (a panicking test, a killed
     /// `cargo test`) leaks its file, and the OS reuses process ids freely. A later run
     /// whose pid and counter both collide with a leaked file would open a
-    /// PRE-POPULATED database -- which is exactly what happened here: 685 leaked files
-    /// had accumulated in this machine's temp directory, and four tests in this module
-    /// (`a_second_sync_of_an_unchanged_catalogue_skips_every_design_and_makes_no_fetch_design_calls`
-    /// among them) failed once against a stale one before passing cleanly on a rerun.
-    /// Every assertion involved was correct; the fixture was not.
+    /// PRE-POPULATED database and fail spuriously against stale data, with the
+    /// assertions themselves innocent.
     ///
     /// Deleting any pre-existing file first removes the failure mode entirely, rather
     /// than merely making a collision less likely.

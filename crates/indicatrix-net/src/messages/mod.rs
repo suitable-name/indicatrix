@@ -2,8 +2,8 @@
 //! [`crate::framing`] stream.
 //!
 //! ```text
-//! -> HELLO    { protocol_version, build_hash }
-//! <- WELCOME  { protocol_version, build_hash, render: Option<RenderCapability>, library, tilt_curves }
+//! -> HELLO    { protocol_version, build_hash, source_hash }
+//! <- WELCOME  { protocol_version, build_hash, source_hash, render: Option<RenderCapability>, library, tilt_curves }
 //! -> <ClientMessage>  Cancel | Library(LibraryRequest) | RenderRequest | TiltCurvesRequest  (post-handshake, tagged)
 //! <- <StreamEvent>    Frame | Preview | Progress | Done | Error          (RENDER replies, tagged)
 //! <- <TiltCurvesResponse>  Curves | Cancelled | Error   (TILT_CURVES's single reply, not a stream)
@@ -29,7 +29,7 @@ mod stream;
 #[cfg(feature = "render")]
 mod tilt;
 
-pub use codec::{NetError, read_message, write_message};
+pub use codec::{NetError, read_message, read_message_bounded, write_message};
 pub use hello::{Backend, Hello, RenderCapability, Welcome};
 #[cfg(feature = "render")]
 pub use render::{PreviewConfig, RenderRequest, StreamConfig, TransferMode};
@@ -47,8 +47,9 @@ pub use tilt::{
 /// The wire protocol version this build of `indicatrix-net` speaks.
 ///
 /// Bumped only for changes to the MESSAGE SHAPES in this module. A change to `indicatrix`'s
-/// physics does not touch the wire format and is caught instead by the build-hash check
-/// in [`crate::handshake`].
+/// physics does not touch the wire format and is caught instead by the two-level identity
+/// check in [`crate::handshake`] (`build_hash`, and -- when both sides can establish it --
+/// `source_hash`).
 ///
 /// This is pre-release software: every peer runs its own private build, so there is no
 /// deployed fleet to stay wire-compatible with, and this crate carries no compatibility
@@ -84,15 +85,25 @@ pub use tilt::{
 ///     daylight sky). Same encoding, but a peer on 9 shades those scenes differently, so
 ///     tiles from mixed versions would not match.
 /// 11: `SceneState::backdrop` appended (the card the camera sees behind the stone).
-pub const PROTOCOL_VERSION: u16 = 11;
+/// 12: `Hello`/`Welcome` gained `source_hash`: `build_hash` alone is a
+///     hash of `indicatrix`'s crate VERSION, a release-process promise nothing enforces,
+///     so a viewer and worker whose physics differ but whose version didn't get bumped
+///     could pair silently. `source_hash` is a content hash of the actual `indicatrix`
+///     source tree; see [`crate::handshake`] for how the two fields are checked together.
+/// 13: `LibraryRequest::Search` gained `order` (`SortOrderWire`) and `tag_filter`:
+///     without them, the library panel's sort selector and tag chip are silently
+///     ignored in remote mode, even though
+///     `indicatrix-worker` could already honour both via
+///     `indicatrix_vault::db::sqlite::Database::search_diagrams_display`.
+pub const PROTOCOL_VERSION: u16 = 13;
 
 #[cfg(test)]
 mod tests {
     #[test]
     /// Pins the constant so a bump is always a deliberate, reviewed edit.
     ///
-    /// 11: `SceneState::backdrop` appended.
+    /// 13: `LibraryRequest::Search` gained `order`/`tag_filter`.
     fn protocol_version_matches_constant() {
-        assert_eq!(super::PROTOCOL_VERSION, 11);
+        assert_eq!(super::PROTOCOL_VERSION, 13);
     }
 }

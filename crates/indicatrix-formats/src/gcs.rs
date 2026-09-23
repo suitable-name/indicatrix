@@ -199,6 +199,17 @@ pub enum GcsParseError {
         /// The offending raw value.
         value: String,
     },
+    /// A `<render>` attribute was present but did not parse as a number. Absent
+    /// entirely is not an error (these fields are optional and default to `0.0`) --
+    /// only a garbled value present on the attribute goes through this fallible path,
+    /// same as [`Self::TierAttributeNotNumeric`].
+    RenderAttributeNotNumeric {
+        /// The attribute's name (`"refractive_index"`, `"dispersion"`, `"clarity"`, or
+        /// `"density"`).
+        attr: &'static str,
+        /// The offending raw value.
+        value: String,
+    },
     /// A `<tier>` or `<facet>` or `<render>` element was opened but the file ended
     /// (or the root closed) before its matching close tag appeared.
     UnterminatedElement {
@@ -255,6 +266,10 @@ impl fmt::Display for GcsParseError {
             } => write!(
                 f,
                 "tier #{tier_index}: vertex attribute {attr:?} value {value:?} is not numeric"
+            ),
+            Self::RenderAttributeNotNumeric { attr, value } => write!(
+                f,
+                "'<render>' attribute {attr:?} value {value:?} is not numeric"
             ),
             Self::UnterminatedElement { name } => {
                 write!(f, "'<{name}>' was opened but never closed")
@@ -627,9 +642,14 @@ fn parse_index_u32(tag: &RawTag, key: &'static str) -> Result<u32, GcsParseError
     // Values are written as plain integers in every sample, but parse via f64
     // first so a stray "4.0"-style decimal (as `.asc` tolerates on its own
     // integer fields) would not need a second code path here.
+    //
+    // Upper-bounded at `u32::MAX`: `as u32` on a finite `f64` outside that range
+    // SATURATES rather than erroring (stable Rust's documented float-to-int cast
+    // behavior), so e.g. "1e20" must be rejected rather than silently becoming
+    // `u32::MAX`.
     raw.parse::<f64>()
         .ok()
-        .filter(|v| v.is_finite() && *v >= 0.0)
+        .filter(|v| v.is_finite() && (0.0..=f64::from(u32::MAX)).contains(v))
         .map(|v| v.round() as u32)
         .ok_or_else(|| GcsParseError::IndexAttributeNotNumeric {
             attr: key,
@@ -686,6 +706,21 @@ fn vertex_f64(tag: &RawTag, tier_index: usize, key: &'static str) -> Result<f64,
             attr: key,
             value: raw.to_string(),
         })
+}
+
+/// Parses one `<render>` numeric attribute: `Ok(0.0)` when `key` is absent (these
+/// fields are optional -- not every real `.gcs` file's `<render>` element sets all of
+/// them), but returns an error rather than silently defaulting to `0.0` when `key` IS
+/// present and fails to parse. Garbage masquerading as "no data" deserves the same
+/// treatment as the corruption [`tier_f64`]'s fallible path catches for `<tier>`.
+fn render_f64(tag: &RawTag, key: &'static str) -> Result<f64, GcsParseError> {
+    tag.attr(key).map_or(Ok(0.0), |raw| {
+        raw.parse()
+            .map_err(|_| GcsParseError::RenderAttributeNotNumeric {
+                attr: key,
+                value: raw.to_string(),
+            })
+    })
 }
 
 /// Consumes tags from `tags[*pos..]` until (and including) the `</facet>` that
@@ -801,18 +836,10 @@ fn parse_tier(
 fn parse_render(tags: &[RawTag], pos: &mut usize) -> Result<GcsRender, GcsParseError> {
     let open = &tags[*pos];
     let material = open.attr("material").unwrap_or("").to_string();
-    let refractive_index = open
-        .attr("refractive_index")
-        .unwrap_or("0")
-        .parse()
-        .unwrap_or(0.0);
-    let dispersion = open
-        .attr("dispersion")
-        .unwrap_or("0")
-        .parse()
-        .unwrap_or(0.0);
-    let clarity = open.attr("clarity").unwrap_or("0").parse().unwrap_or(0.0);
-    let density = open.attr("density").unwrap_or("0").parse().unwrap_or(0.0);
+    let refractive_index = render_f64(open, "refractive_index")?;
+    let dispersion = render_f64(open, "dispersion")?;
+    let clarity = render_f64(open, "clarity")?;
+    let density = render_f64(open, "density")?;
     let lighting_model = open.attr("lighting_model").unwrap_or("").to_string();
     let self_closing = open.self_closing;
     *pos += 1;
@@ -1097,6 +1124,62 @@ mod tests {
             err,
             GcsParseError::TierAttributeNotNumeric { attr: "angle", .. }
         ));
+    }
+
+    /// `parse_index_u32` must reject a value bigger than `u32::MAX` rather
+    /// than silently saturating to it via `as u32`.
+    #[test]
+    fn rejects_an_index_attribute_larger_than_u32_max() {
+        let content = r#"<GemCutStudio version="1000">
+    <index gear="1e20" base="0" symmetry="4" mirror="0"/>
+</GemCutStudio>"#;
+        let err = parse_gcs(content).expect_err("must reject a gear value beyond u32::MAX");
+        assert!(
+            matches!(
+                err,
+                GcsParseError::IndexAttributeNotNumeric { attr: "gear", .. }
+            ),
+            "{err:?}"
+        );
+    }
+
+    /// A garbled (present but non-numeric) `<render>` attribute must be
+    /// reported, not silently treated as `0.0`.
+    #[test]
+    fn rejects_a_non_numeric_render_attribute() {
+        let content = r#"<GemCutStudio version="1000">
+    <index gear="64" base="0" symmetry="4" mirror="0"/>
+    <render material="Diamond" refractive_index="not-a-number" dispersion="0.02" clarity="100" density="3.5" lighting_model="Random">
+    </render>
+</GemCutStudio>"#;
+        let err = parse_gcs(content).expect_err("must reject a garbled refractive_index");
+        assert!(
+            matches!(
+                err,
+                GcsParseError::RenderAttributeNotNumeric {
+                    attr: "refractive_index",
+                    ..
+                }
+            ),
+            "{err:?}"
+        );
+    }
+
+    /// An ABSENT `<render>` numeric attribute is still not an error -- only a present
+    /// but garbled one is (see [`render_f64`]'s doc comment).
+    #[test]
+    fn a_missing_render_attribute_defaults_to_zero_without_erroring() {
+        let content = r#"<GemCutStudio version="1000">
+    <index gear="64" base="0" symmetry="4" mirror="0"/>
+    <render material="Diamond" lighting_model="Random">
+    </render>
+</GemCutStudio>"#;
+        let design = parse_gcs(content).expect("an absent render attribute must not error");
+        let render = design.render.expect("render element must still be parsed");
+        assert_eq!(render.refractive_index, 0.0);
+        assert_eq!(render.dispersion, 0.0);
+        assert_eq!(render.clarity, 0.0);
+        assert_eq!(render.density, 0.0);
     }
 
     #[test]

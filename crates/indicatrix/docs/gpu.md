@@ -20,8 +20,8 @@ and GPU."
 
 ## What is and isn't true about its state
 
-- **The physics exists and is verified — this is not "future work."** Treat
-  the GPU transport kernel as done, not as a phase still to be implemented.
+- **The physics is complete and verified**, covering camera-ray generation
+  through uniaxial birefringence as described above.
 - **It is wired into the viewer, behind a feature flag.**
   `renderer::gpu::frame::GpuFrameRenderer` is the general entry point: hand it a
   scene (camera, planes, material, environment) and it accumulates samples into
@@ -43,12 +43,12 @@ and GPU."
   at once and so leaves that path unexercised.
 - **Biaxial materials render on the GPU.** The `BiaxialIndicatrix` machinery is
   ported to WGSL and verified at the same Tier 2 / Tier 3 bar as every other
-  material, so `GemMaterial::gpu_supported()` now returns `true`
+  material, so `GemMaterial::gpu_supported()` returns `true`
   unconditionally — including for the three biaxial built-ins (Alexandrite,
   Topaz, Tanzanite). It remains a real per-scene routing predicate that a caller
   assembling a scene should call per material and require `true` from before
-  routing to the GPU backend, so a future incompatible material (or a
-  regression) can once again return `false`; it just never does today.
+  routing to the GPU backend, so a future incompatible material or a
+  regression can return `false`.
 - `renderer::pipeline` and `renderer::env_map_gpu` are unrelated, older dead
   scaffolding — see the README's "Key types and invariants" section — and say
   nothing about the transport kernel's state.

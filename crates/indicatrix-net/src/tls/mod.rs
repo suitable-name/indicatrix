@@ -332,11 +332,33 @@ impl Allowlist {
     }
 }
 
+/// Replaces `\r`, `\n`, and `#` in `label` with `_`.
+///
+/// So it can never inject a second allowlist line (`\r`/`\n`) or terminate the comment
+/// early / start a bogus one (`#`) when written into [`append_to_allowlist`]'s
+/// `"{fingerprint}  # {label}"` line. `label` ultimately comes from an operator-supplied
+/// `--name`/enrollment `name` (loopback-only, `cert issue-client`/`cert issue-token`'s
+/// CLI or the enrollment listener's `Issue` request) rather than an untrusted remote
+/// peer, so this is robustness against a typo or a copy-pasted stray newline, not a
+/// hardened attacker boundary -- but [`Allowlist::load`] treats any malformed line as a
+/// hard parse error (fail-closed), so a single bad label could otherwise corrupt every
+/// OTHER entry's availability, not just its own.
+///
+/// `pub`, not just used by [`append_to_allowlist`]: `apps/indicatrix-worker`'s
+/// `EnrollRegistry::issue` applies this same sanitization to the enrollment `name`
+/// before it is ever minted into a certificate's Subject Common Name, rather than
+/// re-implementing an equivalent scrub that could drift out of sync with this one.
+#[must_use]
+pub fn sanitize_allowlist_label(label: &str) -> String {
+    label.replace(['\r', '\n', '#'], "_")
+}
+
 /// Appends one `fingerprint  # label` line to the allowlist file at `path`, creating
 /// the file (and its parent directory) if it doesn't exist yet.
 ///
 /// Used by `indicatrix-worker cert issue-client` to enroll a freshly issued certificate
 /// automatically; removing trust later is still the manual one-line file edit above.
+/// `label` is sanitized via [`sanitize_allowlist_label`] before being written.
 ///
 /// # Errors
 ///
@@ -355,7 +377,13 @@ pub fn append_to_allowlist(path: &Path, fp: &Fingerprint, label: &str) -> Result
         .append(true)
         .open(path)
         .map_err(|e| io_err(path, e))?;
-    writeln!(file, "{}  # {label}", fingerprint_to_hex(fp)).map_err(|e| io_err(path, e))?;
+    writeln!(
+        file,
+        "{}  # {}",
+        fingerprint_to_hex(fp),
+        sanitize_allowlist_label(label)
+    )
+    .map_err(|e| io_err(path, e))?;
     Ok(())
 }
 
@@ -514,6 +542,47 @@ mod tests {
             matches!(err, TlsError::MalformedAllowlistLine { .. }),
             "{err}"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn sanitize_allowlist_label_replaces_line_breaking_and_comment_characters() {
+        assert_eq!(sanitize_allowlist_label("laptop"), "laptop");
+        assert_eq!(
+            sanitize_allowlist_label("evil\r\ndeadbeef  # injected"),
+            "evil__deadbeef  _ injected"
+        );
+        assert_eq!(sanitize_allowlist_label("a\nb"), "a_b");
+        assert_eq!(sanitize_allowlist_label("a#b"), "a_b");
+    }
+
+    /// A label containing `\r\n` must not be able to inject a second,
+    /// attacker-chosen allowlist line.
+    #[test]
+    fn append_to_allowlist_sanitizes_a_label_that_would_otherwise_inject_a_line() {
+        let dir = std::env::temp_dir().join(format!(
+            "indicatrix-net-allowlist-injection-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("allowlist.txt");
+        let fp: Fingerprint = std::array::from_fn(|i| i as u8);
+        let evil_fp: Fingerprint = std::array::from_fn(|i| (i as u8).wrapping_add(1));
+        let label = format!(
+            "laptop\r\n{}  # not really trusted",
+            fingerprint_to_hex(&evil_fp)
+        );
+
+        append_to_allowlist(&path, &fp, &label).unwrap();
+
+        // Loads clean (no MalformedAllowlistLine) and contains only the ONE fingerprint
+        // actually passed to append_to_allowlist -- the embedded fingerprint-shaped text
+        // inside the label never becomes its own trusted entry.
+        let list = Allowlist::load(&path).unwrap();
+        assert_eq!(list.len(), 1);
+        assert!(list.contains(&fp));
+        assert!(!list.contains(&evil_fp));
 
         std::fs::remove_dir_all(&dir).ok();
     }

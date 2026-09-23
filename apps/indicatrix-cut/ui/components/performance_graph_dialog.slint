@@ -1,7 +1,12 @@
-import { Button } from "std-widgets.slint";
+import { Button, ComboBox, LineEdit, SpinBox, Slider, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
-import { TiltModel } from "../models/tilt.slint";
+import { TiltModel, TiltVideoExportModel } from "../models/tilt.slint";
 import { ViewportModel } from "../models/viewport.slint";
+// Read-only reuse of the still-image export's own output folder (`ExportModel.directory`)
+// -- see `video_export::resolve_export_directory`'s own doc comment on why the video
+// export shares that folder rather than keeping a second, independent one.
+import { ExportModel } from "../models/export.slint";
+import { StaleBadge } from "stale_badge.slint";
 
 export component PerformanceGraphDialog inherits Rectangle {
     // Azimuth-0 ("canonical") sweep -- see `graph_*_extra_axes` below for the other
@@ -33,6 +38,13 @@ export component PerformanceGraphDialog inherits Rectangle {
     in property <[string]> graph_extinction_extra_paths: TiltModel.graph_extinction_extra_paths;
     in property <[string]> graph_windowing_extra_paths: TiltModel.graph_windowing_extra_paths;
     in property <bool> extra_axes_loading: TiltModel.extra_axes_loading;
+    // True whenever the swept geometry/material/light has moved since these curves
+    // last actually finished computing (`gui::tilt::tilt_profile`'s own
+    // `AxesCacheKey` comparison) -- a DIFFERENT signal from `cache_is_stale` below,
+    // which only compares the MATERIAL a database-cached preview image was
+    // rendered under, not this session's live sweep inputs. See
+    // `TiltModel.curves_stale`'s own doc comment.
+    in property <bool> curves_stale: TiltModel.curves_stale;
     in property <float> cam_pitch_deg: TiltModel.cam_pitch_deg;
     in property <string> material_name: ViewportModel.material_options[ViewportModel.selected_material_index];
 
@@ -72,7 +84,23 @@ export component PerformanceGraphDialog inherits Rectangle {
     // "All" overlay: draws all four azimuth sweeps of every visible channel at once,
     // fading every axis except `selected_axis_index`.
     in-out property <bool> show_all_axes: false;
+
+    // "Export tilt video" collapsible section (see near the footer, below the chart).
+    // Both reset every time this dialog is re-instantiated (`gem_viewport.slint`/
+    // `solid_viewport.slint` mount it fresh via `if TiltModel.dialog_open:
+    // PerformanceGraphDialog { ... }`), matching the task's own "collapsed on popup
+    // open, not persisted" requirement -- every OTHER video-export setting lives on
+    // `TiltVideoExportModel` instead, which DOES persist across re-opens, matching how
+    // `ExportModel`'s own quality settings persist for the still-image export dialog.
+    in-out property <bool> video_export_expanded: false;
+    // First click on a >2000-frame run only arms this (showing a confirmation banner);
+    // a second click actually starts the export. See the footer's Start button below.
+    in-out property <bool> confirmed_large_run: false;
+
     property <[string]> axis_labels: ["0° (length)", "45°", "90° (width)", "135°"];
+    // The three frame-rate pills' actual fps values, by index -- shared by the
+    // "Export Tilt Video" section's clip-length/estimate readout and its fps pill row.
+    property <[int]> video_fps_choices: [24, 30, 60];
     property <string> selected_axis_label: root.axis_labels[root.selected_axis_index];
     // X-axis tick labels for the chart canvas's +-90 deg (tilt-from-table-up) domain
     // -- 7 ticks, evenly spaced 30 deg apart.
@@ -131,7 +159,12 @@ export component PerformanceGraphDialog inherits Rectangle {
 
     callback close();
     close => { TiltModel.dialog_open = false; }
+    // Forwarded to `TiltModel.copy_curve_data()` (Rust: `gui::library::
+    // clipboard`) exactly like `rerender_curve_with_current_material`/
+    // `request_tilt_hover_preview` above, so the "Copy" button (bound at this
+    // dialog's `clicked => { root.copy_curve_data(); }` site below) works.
     callback copy_curve_data();
+    copy_curve_data => { TiltModel.copy_curve_data(); }
 
     // Full Viewport Modal Backdrop
     background: #00000088;
@@ -140,14 +173,42 @@ export component PerformanceGraphDialog inherits Rectangle {
         clicked => { root.close(); }
     }
 
+    // Escape closes the dialog -- same "guard against closing mid-export"
+    // `export_dialog.slint`'s own Escape handler uses, since closing this one
+    // while `TiltVideoExportModel.is_exporting`
+    // would abandon that export with the same graceless surprise. No Return
+    // binding: unlike `export_dialog.slint`/`retarget_dialog.slint`, this dialog
+    // is a read-only graph viewer with no single "primary" action for Return to
+    // trigger -- every other key is still swallowed (`accept`) so it cannot bubble
+    // to `global_shortcuts` and fire a shortcut on the design underneath.
+    key_scope := FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                if (!TiltVideoExportModel.is_exporting) {
+                    root.close();
+                }
+                return accept;
+            }
+            accept
+        }
+    }
+
     // Modal Card Container. Sized off the backdrop (`root`, pinned to the full
     // viewport by `gem_viewport.slint`) rather than a fixed pixel width.
     Rectangle {
         width: Math.min(960px, root.width - 80px);
-        // Content-driven height: without this, the default "expand to fill the
-        // parent" sizing would stretch this card to the bottom of the app instead of
-        // sizing to its content.
-        height: content.preferred-height;
+        // Bounded to the backdrop (`root`), NOT `content.preferred-height`: the
+        // "Export Tilt Video" section's expanded form can grow taller than the
+        // window, and binding height to content would push the "Start Video
+        // Export" row (and everything below it) off the bottom on a short
+        // window. Capped at `root.height - 80px` (a 40px top/bottom margin,
+        // matching the 40px each side `width` already uses above) and
+        // additionally at 720px so the card doesn't dwarf a very tall window
+        // either. Whatever doesn't fit scrolls inside the `body` ScrollView
+        // below, between the fixed title row and the fixed footer -- same idiom
+        // as `tilt_batch_dialog.slint`'s own card (see its `height` doc comment).
+        height: Math.min(720px, root.height - 80px);
         background: #0f1523;
         border-radius: Theme.radius-lg;
         border-width: 1px;
@@ -195,38 +256,37 @@ export component PerformanceGraphDialog inherits Rectangle {
                         text: "Between the 181 measured 1°-step points, the curve and hover readout are linearly interpolated, not additional raytracing.";
                         font-size: 11px;
                         font-italic: true;
-                        color: #475569;
+                        color: Theme.text-disabled;
                     }
-                    // CAD audit item 143: `crates/indicatrix-cut-core/src/optimize/
-                    // objective.rs` scores every fixed-pose measurement (including
-                    // Optimize's own before/after tilt-brilliance figures) under a
-                    // fixed CANONICAL light pose, while this curve is swept under
-                    // whatever light pose is CURRENTLY dialled into the viewport
+                    // `crates/indicatrix-cut-core/src/optimize/objective.rs` scores
+                    // every fixed-pose measurement (including Optimize's own
+                    // before/after tilt-brilliance figures) under a fixed CANONICAL
+                    // light pose, while this curve is swept under whatever light
+                    // pose is CURRENTLY dialled into the viewport
                     // (`RenderContext::light_yaw`/`light_pitch`, dragged with a
                     // right/Shift-drag) -- the two agree only until the light is
-                    // moved. Stated here (the honest half of the fix this lane's
-                    // file ownership can reach; Optimize's own result panel is
-                    // `gui::editor::view`, outside it) rather than left for a
-                    // cutter to notice as two "tilt brilliance" numbers disagreeing
-                    // with no stated reason.
+                    // moved. Stated here (the caption below; Optimize's own result
+                    // panel is `gui::editor::view`, outside this file) rather than
+                    // left for a cutter to notice as two "tilt brilliance" numbers
+                    // disagreeing with no stated reason.
                     Text {
                         text: "Optimize scores brilliance under a fixed light pose; this curve uses your current light -- if you've moved it, the two figures may disagree.";
                         font-size: 11px;
                         font-italic: true;
-                        color: #475569;
+                        color: Theme.text-disabled;
                     }
-                    // CAD audit item 234: the sweep and the hover-preview thumbnail
-                    // both trace an all-polished stone against the bare resolved
-                    // material (see `gui::tilt_hover_preview::render_hover_preview`'s
-                    // own doc comment) -- none of the live viewport's display
-                    // overrides apply here, so this curve/preview can look and
-                    // measure differently from the Live Render tab's image of the
-                    // SAME design. Stated here rather than left to read as a bug.
+                    // The sweep and the hover-preview thumbnail both trace an
+                    // all-polished stone against the bare resolved material (see
+                    // `gui::tilt_hover_preview::render_hover_preview`'s own doc
+                    // comment) -- none of the live viewport's display overrides
+                    // apply here, so this curve/preview can look and measure
+                    // differently from the Live Render tab's image of the SAME
+                    // design. Stated here rather than left to read as a bug.
                     Text {
                         text: "Excludes display overrides: inclusions, c-axis orientation, edge rounding, physical size and frosted girdle are not applied -- this shows " + root.material_name + " as an all-polished stone.";
                         font-size: 11px;
                         font-italic: true;
-                        color: #475569;
+                        color: Theme.text-disabled;
                     }
                 }
 
@@ -252,6 +312,19 @@ export component PerformanceGraphDialog inherits Rectangle {
             }
 
             Rectangle { height: 1px; background: #1e293b; }
+
+            // Scrollable body: everything between the fixed title row above and
+            // the fixed footer below (badges, channel/axis toggles, the chart,
+            // and the "Export Tilt Video" section) -- `vertical-stretch: 1` lets
+            // this take whatever room the card's now-bounded `height` leaves
+            // after the fixed header/divider/footer, and scrolls the rest
+            // rather than overflowing the window. The "Start Video Export" /
+            // Cancel / progress row (inside the video section below) is always
+            // reachable by scrolling here even when it doesn't fit on screen.
+            body := ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    spacing: 14px;
 
             // 2. Key Performance Metric Badges.
             // Read at TILT_ANGLES_DEG[90] (tilt 0 deg, the shared TABLE-UP pose every
@@ -330,6 +403,15 @@ export component PerformanceGraphDialog inherits Rectangle {
                         }
                     }
                 }
+            }
+
+            // Badges the curves themselves as stale against the live design --
+            // skipped while `cache_is_stale` already shows its own, more specific
+            // material-mismatch banner just below (never two staleness messages
+            // at once), and while a fresh sweep is already in flight
+            // (`extra_axes_loading`, whose own spinner already says "catching up").
+            if root.curves_stale && !root.cache_is_stale && !root.extra_axes_loading: StaleBadge {
+                recompute => { root.rerender_curve_with_current_material(); }
             }
 
             // 2.5. Stale-cached-curve prompt. Only appears once this design has a
@@ -598,10 +680,10 @@ export component PerformanceGraphDialog inherits Rectangle {
                 Rectangle { y: 10px + 140px * 0.50; width: 100%; height: 1px; background: #1e293b66; }
                 Rectangle { y: 10px + 140px * 0.75; width: 100%; height: 1px; background: #1e293b44; }
 
-                Text { x: 6px; y: 10px - 4px; text: "100%"; font-size: 11px; color: #475569; }
-                Text { x: 6px; y: 10px + 140px * 0.25 - 4px; text: "75%"; font-size: 11px; color: #475569; }
-                Text { x: 6px; y: 10px + 140px * 0.50 - 4px; text: "50%"; font-size: 11px; color: #475569; }
-                Text { x: 6px; y: 10px + 140px * 0.75 - 4px; text: "25%"; font-size: 11px; color: #475569; }
+                Text { x: 6px; y: 10px - 4px; text: "100%"; font-size: 11px; color: Theme.text-disabled; }
+                Text { x: 6px; y: 10px + 140px * 0.25 - 4px; text: "75%"; font-size: 11px; color: Theme.text-disabled; }
+                Text { x: 6px; y: 10px + 140px * 0.50 - 4px; text: "50%"; font-size: 11px; color: Theme.text-disabled; }
+                Text { x: 6px; y: 10px + 140px * 0.75 - 4px; text: "25%"; font-size: 11px; color: Theme.text-disabled; }
 
                 // Plot area the three line series are scaled into.
                 //
@@ -768,12 +850,12 @@ export component PerformanceGraphDialog inherits Rectangle {
                         root.request_tilt_hover_preview(root.selected_axis_index, self.tilt_deg);
                     }
 
-                    // CAD audit item 234: this mini preview is an all-polished
-                    // trace of the bare resolved material -- the same honesty this
-                    // dialog's own header caption states, repeated here since a
-                    // reader hovering the card may never scroll up to the header.
-                    // Not a layout child (Tooltip's own requirement) -- a sibling of
-                    // the VerticalLayout below, inside this Rectangle.
+                    // This mini preview is an all-polished trace of the bare
+                    // resolved material -- the same honesty this dialog's own
+                    // header caption states, repeated here since a reader hovering
+                    // the card may never scroll up to the header. Not a layout
+                    // child (Tooltip's own requirement) -- a sibling of the
+                    // VerticalLayout below, inside this Rectangle.
                     Tooltip { text: @markdown("All-polished preview: inclusions, c-axis orientation, edge rounding, physical size and frosted girdle are excluded."); }
 
                     VerticalLayout {
@@ -858,6 +940,541 @@ export component PerformanceGraphDialog inherits Rectangle {
                     }
                 }
             }
+
+            // 4.5. "Export Tilt Video" collapsible section -- collapsed every time this
+            // dialog is (re-)opened (see `video_export_expanded`'s own doc comment).
+            // Renders one high-quality frame per swept angle (posed exactly like this
+            // dialog's own curve/hover-preview -- `gui::tilt::video_export`), optionally
+            // overlaying the tilt performance values, then muxes an MP4/GIF. Every
+            // setting below lives on `TiltVideoExportModel` (persists across re-opens)
+            // except the section's own expanded state and its large-run confirmation
+            // guard, which live on `root` (reset fresh every open).
+            Rectangle {
+                border-radius: Theme.radius-md;
+                background: #0f172a;
+                border-width: 1px;
+                border-color: #1e293b;
+                clip: true;
+
+                VerticalLayout {
+                    Rectangle {
+                        height: 36px;
+                        background: video_header_touch.has-hover ? #1e293b : transparent;
+
+                        video_header_touch := TouchArea {
+                            clicked => { root.video_export_expanded = !root.video_export_expanded; }
+                        }
+
+                        HorizontalLayout {
+                            padding-left: 10px;
+                            padding-right: 10px;
+                            alignment: space-between;
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: root.video_export_expanded ? "▾" : "▸";
+                                    font-size: 12px;
+                                    color: Theme.text-secondary;
+                                    vertical-alignment: center;
+                                }
+                                Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-primary; width: 13px; height: 13px; vertical-alignment: center; }
+                                Text { text: "Export Tilt Video"; font-size: 12px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
+                            }
+
+                            Text {
+                                text: "Axis: " + root.selected_axis_label;
+                                font-size: 11px;
+                                color: Theme.text-muted;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    if root.video_export_expanded: video_content := VerticalLayout {
+                        padding: 12px;
+                        spacing: 12px;
+
+                        // Pure derived state for this section's own estimate/confirm
+                        // logic -- `computed_frame_count` calls into Rust
+                        // (`gui::tilt::video_export::params::frame_count`) rather than
+                        // re-deriving the floor/epsilon math in Slint, so this number
+                        // can never disagree with how many frames the export actually
+                        // renders.
+                        property <int> computed_frame_count: TiltVideoExportModel.frame_count(TiltVideoExportModel.start_angle_deg, TiltVideoExportModel.end_angle_deg, TiltVideoExportModel.step_deg);
+                        property <float> estimated_seconds: video_content.computed_frame_count * TiltVideoExportModel.last_frame_seconds;
+                        property <bool> needs_confirmation: video_content.computed_frame_count > 2000 && !root.confirmed_large_run;
+
+                        // Sweep
+                        VerticalLayout {
+                            spacing: 6px;
+                            // Plain `&`, not `&&`: Slint `Text.text` has no mnemonic
+                            // syntax that would need escaping (that's a Qt/GTK
+                            // convention this doesn't share), so a doubled
+                            // ampersand would render literally as "Angle Range &&
+                            // Step" instead of "Angle Range & Step".
+                            Text { text: "Angle Range & Step"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                            HorizontalLayout {
+                                spacing: 10px;
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "Start (°)"; font-size: 10px; color: Theme.text-muted; }
+                                    SpinBox { minimum: -90; maximum: 90; value <=> TiltVideoExportModel.start_angle_deg; }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "End (°)"; font-size: 10px; color: Theme.text-muted; }
+                                    SpinBox { minimum: -90; maximum: 90; value <=> TiltVideoExportModel.end_angle_deg; }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "Step (°, 0.01-5.0)"; font-size: 10px; color: Theme.text-muted; }
+                                    Rectangle {
+                                        height: 26px;
+                                        width: 84px;
+                                        background: #131b2e;
+                                        border-radius: Theme.radius-sm;
+                                        border-width: 1px;
+                                        border-color: #334155;
+                                        LineEdit {
+                                            width: 100%;
+                                            height: 100%;
+                                            text: "" + TiltVideoExportModel.step_deg;
+                                            edited(text) => { TiltVideoExportModel.step_deg = TiltVideoExportModel.parse_step_deg(text); }
+                                        }
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                for chip in [0.05, 0.1, 0.25, 0.5, 1.0]: Rectangle {
+                                    height: 20px;
+                                    border-radius: Theme.radius-sm;
+                                    background: Math.abs(TiltVideoExportModel.step_deg - chip) < 0.001 ? Theme.accent-cyan : #131b2e;
+                                    border-width: 1px;
+                                    border-color: Math.abs(TiltVideoExportModel.step_deg - chip) < 0.001 ? Theme.accent-cyan : #334155;
+
+                                    TouchArea { clicked => { TiltVideoExportModel.step_deg = chip; } }
+
+                                    HorizontalLayout {
+                                        padding-left: 6px;
+                                        padding-right: 6px;
+                                        alignment: center;
+                                        Text {
+                                            text: "" + chip;
+                                            font-size: 10px;
+                                            font-weight: 600;
+                                            color: Math.abs(TiltVideoExportModel.step_deg - chip) < 0.001 ? #0f172a : Theme.text-secondary;
+                                        }
+                                    }
+                                }
+                            }
+                            Text {
+                                text: "Frames: " + video_content.computed_frame_count
+                                    + "  ·  Clip: " + Math.round((video_content.computed_frame_count / Math.max(1, root.video_fps_choices[TiltVideoExportModel.fps_index])) * 10.0) / 10.0
+                                    + "s @ " + root.video_fps_choices[TiltVideoExportModel.fps_index] + " fps"
+                                    + (TiltVideoExportModel.last_frame_seconds > 0.0
+                                        ? "  ·  Est. render: ~" + Math.round(video_content.estimated_seconds / 60.0 * 10.0) / 10.0 + " min"
+                                        : "  ·  Est. render: available once rendering starts");
+                                font-size: 11px;
+                                color: Theme.text-muted;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #1e293b; }
+
+                        // Frame rate
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text { text: "Frame Rate"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                for label[idx] in ["24 fps", "30 fps", "60 fps"]: Rectangle {
+                                    horizontal-stretch: 1;
+                                    height: 26px;
+                                    border-radius: Theme.radius-sm;
+                                    background: TiltVideoExportModel.fps_index == idx ? Theme.accent-cyan : #131b2e;
+                                    border-width: 1px;
+                                    border-color: TiltVideoExportModel.fps_index == idx ? Theme.accent-cyan : #334155;
+
+                                    TouchArea { clicked => { TiltVideoExportModel.fps_index = idx; } }
+
+                                    Text {
+                                        text: label;
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        color: TiltVideoExportModel.fps_index == idx ? #0f172a : Theme.text-secondary;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #1e293b; }
+
+                        // Resolution -- square and 16:9 presets,
+                        // plus Custom (clamped to [128, 8192] per axis in Rust).
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text { text: "Resolution"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                            ComboBox {
+                                model: [
+                                    "128 x 128", "256 x 256", "512 x 512", "1024 x 1024", "2048 x 2048", "4096 x 4096", "8192 x 8192",
+                                    "1280 x 720 (720p)", "1920 x 1080 (1080p)", "2560 x 1440 (1440p)", "3840 x 2160 (4K)", "7680 x 4320 (8K)",
+                                    "Custom"
+                                ];
+                                current-index <=> TiltVideoExportModel.resolution_preset;
+                            }
+                            if TiltVideoExportModel.resolution_preset == TiltVideoExportModel.custom_resolution_index(): HorizontalLayout {
+                                spacing: 10px;
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "Width (px)"; font-size: 10px; color: Theme.text-muted; }
+                                    SpinBox { minimum: 128; maximum: 8192; step-size: 8; value <=> TiltVideoExportModel.custom_width; }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px;
+                                    Text { text: "Height (px)"; font-size: 10px; color: Theme.text-muted; }
+                                    SpinBox { minimum: 128; maximum: 8192; step-size: 8; value <=> TiltVideoExportModel.custom_height; }
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #1e293b; }
+
+                        // Quality -- same shape as the still-image export dialog's own
+                        // controls (power-of-two sample slider, bounce ladder, colour
+                        // space), kept as this section's OWN state (see
+                        // `TiltVideoExportModel`'s own doc comment on why).
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text { text: "Quality"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                            HorizontalLayout {
+                                alignment: space-between;
+                                Text { text: "Samples per pixel:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+                                Text { text: Math.round(Math.pow(2.0, Math.round(TiltVideoExportModel.sample_exponent_raw))); font-size: 12px; font-weight: 700; color: Theme.accent-cyan; }
+                            }
+                            Slider { minimum: 3; maximum: 15; step: 1; value <=> TiltVideoExportModel.sample_exponent_raw; }
+
+                            Text { text: "Max Ray Bounces"; font-size: 10px; color: Theme.text-muted; }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                for label[idx] in ["4", "8", "12", "24", "64", "128"]: Rectangle {
+                                    horizontal-stretch: 1;
+                                    height: 24px;
+                                    border-radius: Theme.radius-sm;
+                                    background: TiltVideoExportModel.selected_bounce_index == idx ? Theme.accent-cyan : #131b2e;
+                                    border-width: 1px;
+                                    border-color: TiltVideoExportModel.selected_bounce_index == idx ? Theme.accent-cyan : #334155;
+
+                                    TouchArea { clicked => { TiltVideoExportModel.selected_bounce_index = idx; } }
+
+                                    Text {
+                                        text: label;
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        color: TiltVideoExportModel.selected_bounce_index == idx ? #0f172a : Theme.text-secondary;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            Text { text: "Colour Space"; font-size: 10px; color: Theme.text-muted; }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                for label[idx] in ["sRGB", "Display P3", "Rec.2020"]: Rectangle {
+                                    horizontal-stretch: 1;
+                                    height: 24px;
+                                    border-radius: Theme.radius-sm;
+                                    background: TiltVideoExportModel.selected_color_space_index == idx ? Theme.accent-cyan : #131b2e;
+                                    border-width: 1px;
+                                    border-color: TiltVideoExportModel.selected_color_space_index == idx ? Theme.accent-cyan : #334155;
+
+                                    TouchArea { clicked => { TiltVideoExportModel.selected_color_space_index = idx; } }
+
+                                    Text {
+                                        text: label;
+                                        font-size: 10px;
+                                        font-weight: 600;
+                                        color: TiltVideoExportModel.selected_color_space_index == idx ? #0f172a : Theme.text-secondary;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #1e293b; }
+
+                        // Output -- shares the still-image export's own remembered
+                        // folder (`ExportModel.directory`); its OWN filename template,
+                        // which names a FOLDER (holding the numbered frames plus the
+                        // muxed video), not a single file.
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text { text: "Output"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+                            Text {
+                                text: "Folder: " + (ExportModel.directory == "" ? "chosen on first export..." : ExportModel.directory);
+                                font-size: 10px;
+                                color: Theme.text-muted;
+                                wrap: word-wrap;
+                            }
+                            Text { text: "Folder name template:"; font-size: 10px; color: Theme.text-muted; }
+                            Rectangle {
+                                height: 26px;
+                                background: #131b2e;
+                                border-radius: Theme.radius-sm;
+                                border-width: 1px;
+                                border-color: #334155;
+                                LineEdit {
+                                    width: 100%;
+                                    height: 100%;
+                                    text <=> TiltVideoExportModel.filename_template;
+                                }
+                            }
+                            Text {
+                                text: "{design} {designer} {shape} {material} {ri} {width} {height} {spp} {bounces} {colorspace} {axis} {fps} {step} {start} {end} {frames} {date} {time} {timestamp}";
+                                font-size: 11px;
+                                color: Theme.text-muted;
+                                wrap: word-wrap;
+                            }
+                            Text {
+                                text: "Resolves to: " + TiltVideoExportModel.preview_video_folder_name(TiltVideoExportModel.filename_template, root.selected_axis_index);
+                                font-size: 11px;
+                                font-weight: 600;
+                                color: Theme.accent-cyan;
+                                wrap: word-wrap;
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: #1e293b; }
+
+                        // Overlay -- which tilt-performance values (if any) get drawn
+                        // into every frame; the display type (numbers-only / short
+                        // labels / full labels) is chosen automatically from how many
+                        // are selected and the frame's own width -- see
+                        // `gui::tilt::video_export::overlay::select_overlay_layout`.
+                        VerticalLayout {
+                            spacing: 6px;
+                            HorizontalLayout {
+                                alignment: space-between;
+                                Text { text: "Show Performance Values"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; vertical-alignment: center; }
+                                Rectangle {
+                                    width: 36px;
+                                    height: 20px;
+                                    border-radius: 10px;
+                                    background: TiltVideoExportModel.show_values ? Theme.accent-cyan : #334155;
+
+                                    TouchArea { clicked => { TiltVideoExportModel.show_values = !TiltVideoExportModel.show_values; } }
+
+                                    Rectangle {
+                                        width: 16px;
+                                        height: 16px;
+                                        border-radius: 8px;
+                                        background: white;
+                                        y: 2px;
+                                        x: TiltVideoExportModel.show_values ? parent.width - self.width - 2px : 2px;
+                                        animate x { duration: 100ms; }
+                                    }
+                                }
+                            }
+
+                            if TiltVideoExportModel.show_values: HorizontalLayout {
+                                spacing: 6px;
+
+                                Rectangle {
+                                    height: 22px;
+                                    border-radius: Theme.radius-sm;
+                                    background: TiltVideoExportModel.metric_brilliance ? #0284c733 : #131b2e;
+                                    border-width: 1px;
+                                    border-color: TiltVideoExportModel.metric_brilliance ? Theme.accent-cyan : #334155;
+                                    TouchArea { clicked => { TiltVideoExportModel.metric_brilliance = !TiltVideoExportModel.metric_brilliance; } }
+                                    HorizontalLayout {
+                                        padding-left: 6px; padding-right: 6px; alignment: center;
+                                        Text { text: "Brilliance"; font-size: 10px; font-weight: 600; color: TiltVideoExportModel.metric_brilliance ? Theme.accent-cyan : Theme.text-muted; }
+                                    }
+                                }
+                                Rectangle {
+                                    height: 22px;
+                                    border-radius: Theme.radius-sm;
+                                    background: TiltVideoExportModel.metric_windowing ? #d9770633 : #131b2e;
+                                    border-width: 1px;
+                                    border-color: TiltVideoExportModel.metric_windowing ? Theme.accent-amber : #334155;
+                                    TouchArea { clicked => { TiltVideoExportModel.metric_windowing = !TiltVideoExportModel.metric_windowing; } }
+                                    HorizontalLayout {
+                                        padding-left: 6px; padding-right: 6px; alignment: center;
+                                        Text { text: "Windowing"; font-size: 10px; font-weight: 600; color: TiltVideoExportModel.metric_windowing ? Theme.accent-amber : Theme.text-muted; }
+                                    }
+                                }
+                                Rectangle {
+                                    height: 22px;
+                                    border-radius: Theme.radius-sm;
+                                    background: TiltVideoExportModel.metric_extinction ? #b91c1c33 : #131b2e;
+                                    border-width: 1px;
+                                    border-color: TiltVideoExportModel.metric_extinction ? #ef4444 : #334155;
+                                    TouchArea { clicked => { TiltVideoExportModel.metric_extinction = !TiltVideoExportModel.metric_extinction; } }
+                                    HorizontalLayout {
+                                        padding-left: 6px; padding-right: 6px; alignment: center;
+                                        Text { text: "Extinction"; font-size: 10px; font-weight: 600; color: TiltVideoExportModel.metric_extinction ? #ef4444 : Theme.text-muted; }
+                                    }
+                                }
+                                Rectangle {
+                                    height: 22px;
+                                    border-radius: Theme.radius-sm;
+                                    background: TiltVideoExportModel.metric_tilt_brilliance ? #a855f733 : #131b2e;
+                                    border-width: 1px;
+                                    border-color: TiltVideoExportModel.metric_tilt_brilliance ? Theme.accent-purple : #334155;
+                                    TouchArea { clicked => { TiltVideoExportModel.metric_tilt_brilliance = !TiltVideoExportModel.metric_tilt_brilliance; } }
+                                    HorizontalLayout {
+                                        padding-left: 6px; padding-right: 6px; alignment: center;
+                                        Text { text: "Tilt Brilliance"; font-size: 10px; font-weight: 600; color: TiltVideoExportModel.metric_tilt_brilliance ? Theme.accent-purple : Theme.text-muted; }
+                                    }
+                                }
+                                Rectangle {
+                                    height: 22px;
+                                    border-radius: Theme.radius-sm;
+                                    background: TiltVideoExportModel.metric_angle ? #33415577 : #131b2e;
+                                    border-width: 1px;
+                                    border-color: TiltVideoExportModel.metric_angle ? Theme.text-primary : #334155;
+                                    TouchArea { clicked => { TiltVideoExportModel.metric_angle = !TiltVideoExportModel.metric_angle; } }
+                                    HorizontalLayout {
+                                        padding-left: 6px; padding-right: 6px; alignment: center;
+                                        Text { text: "Angle"; font-size: 10px; font-weight: 600; color: TiltVideoExportModel.metric_angle ? Theme.text-primary : Theme.text-muted; }
+                                    }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                alignment: space-between;
+                                Text { text: "Keep PNG Frames After Muxing"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; vertical-alignment: center; }
+                                Rectangle {
+                                    width: 36px;
+                                    height: 20px;
+                                    border-radius: 10px;
+                                    background: TiltVideoExportModel.keep_frames ? Theme.accent-cyan : #334155;
+
+                                    TouchArea { clicked => { TiltVideoExportModel.keep_frames = !TiltVideoExportModel.keep_frames; } }
+
+                                    Rectangle {
+                                        width: 16px;
+                                        height: 16px;
+                                        border-radius: 8px;
+                                        background: white;
+                                        y: 2px;
+                                        x: TiltVideoExportModel.keep_frames ? parent.width - self.width - 2px : 2px;
+                                        animate x { duration: 100ms; }
+                                    }
+                                }
+                            }
+                        }
+
+                        // Large-run confirmation banner: appears once, after the first
+                        // Start click on a >2000-frame run; the Start button's own
+                        // label changes to prompt a second click (see below).
+                        if video_content.needs_confirmation && !TiltVideoExportModel.is_exporting: Rectangle {
+                            height: 40px;
+                            background: #7c2d1233;
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: #ea580c;
+                            HorizontalLayout {
+                                padding-left: 10px;
+                                padding-right: 10px;
+                                alignment: center;
+                                Text {
+                                    text: "This will render " + video_content.computed_frame_count + " frames -- click Start again to confirm.";
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                    color: #fdba74;
+                                    wrap: word-wrap;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+
+                        if TiltVideoExportModel.is_exporting: VerticalLayout {
+                            spacing: 4px;
+                            HorizontalLayout {
+                                alignment: space-between;
+                                Text { text: "Frame " + TiltVideoExportModel.current_frame + " / " + TiltVideoExportModel.total_frames; font-size: 11px; color: Theme.text-secondary; }
+                                Text { text: Math.round(TiltVideoExportModel.progress * 100) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+                            }
+                            Rectangle {
+                                height: 8px;
+                                border-radius: 4px;
+                                background: #131b2e;
+                                border-width: 1px;
+                                border-color: #334155;
+                                clip: true;
+                                Rectangle {
+                                    x: 0;
+                                    y: 0;
+                                    width: parent.width * TiltVideoExportModel.progress;
+                                    height: 100%;
+                                    background: Theme.accent-cyan;
+                                    animate width { duration: 150ms; }
+                                }
+                            }
+                        }
+
+                        if TiltVideoExportModel.status_message != "": Text {
+                            text: TiltVideoExportModel.status_message;
+                            font-size: 10px;
+                            color: TiltVideoExportModel.has_error ? #f87171 : Theme.accent-emerald;
+                            wrap: word-wrap;
+                        }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+
+                            if TiltVideoExportModel.is_exporting: Rectangle {
+                                horizontal-stretch: 1;
+                                height: 30px;
+                                border-radius: Theme.radius-sm;
+                                background: video_cancel_touch.has-hover ? #450a0a : #1f1111;
+                                border-width: 1px;
+                                border-color: #7f1d1d;
+
+                                video_cancel_touch := TouchArea { clicked => { TiltVideoExportModel.cancel_video_export(); } }
+
+                                Text { text: "Cancel"; font-size: 11px; font-weight: 600; color: #f87171; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+
+                            if !TiltVideoExportModel.is_exporting: Rectangle {
+                                horizontal-stretch: 1;
+                                height: 30px;
+                                border-radius: Theme.radius-sm;
+                                background: video_start_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
+
+                                video_start_touch := TouchArea {
+                                    clicked => {
+                                        if video_content.needs_confirmation {
+                                            root.confirmed_large_run = true;
+                                        } else {
+                                            TiltVideoExportModel.start_video_export(root.selected_axis_index);
+                                        }
+                                    }
+                                }
+
+                                Text {
+                                    text: video_content.needs_confirmation ? "Review " + video_content.computed_frame_count + " Frames" : "Start Video Export";
+                                    font-size: 11px;
+                                    font-weight: 700;
+                                    color: #0f172a;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+                } // end body's inner VerticalLayout
+            } // end body := ScrollView
 
             // 5. Footer Bar Actions
             HorizontalLayout {

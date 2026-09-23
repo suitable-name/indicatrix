@@ -28,11 +28,11 @@ and falls through to the CPU tracer whenever it declines:
 | No usable adapter on this machine | Logged once at startup; every frame then uses the CPU |
 | The environment is an HDR map | The megakernel has no `env_mode` for it |
 
-Biaxial materials (Alexandrite, Topaz, Tanzanite) are **not** on that list any
-more: the `BiaxialIndicatrix` machinery is ported to WGSL and verified at the
-same Tier 2 / Tier 3 bar as every other material, so `GemMaterial::gpu_supported`
-is now unconditionally `true`. See `indicatrix::renderer::gpu_backend`'s module doc
-comment for the authoritative decline list.
+All materials support the GPU path: the `BiaxialIndicatrix` machinery is ported to
+WGSL and verified at the same Tier 2 / Tier 3 bar as every other material, so
+`GemMaterial::gpu_supported` returns `true` for every material. See
+`indicatrix::renderer::gpu_backend`'s module doc comment for the authoritative
+decline list (which covers GPU adapter support, not materials).
 
 Both the viewport (`bridge::render_thread`) and the export worker
 (`bridge::export_thread`) go through the same `bridge::gpu_backend::FrameGpu`, so

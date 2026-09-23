@@ -2,11 +2,17 @@
 //!
 //! Adapter/device acquisition, a minimal compute-pipeline harness, buffer
 //! upload/readback helpers, and the struct-layout/RNG/self-determinism
-//! self-tests any physics port must pass before its output can be trusted.
-//! No real GPU raytracer exists yet
-//! (`renderer::pipeline::IndicatrixRaytracerPipeline` still panics
-//! unconditionally); this module is plumbing and verification for a future
-//! port of `optics::raytracer::trace_spectral_ray`.
+//! self-tests any physics port must pass before its output can be trusted --
+//! plus [`frame`], a REAL, production GPU port of
+//! `optics::raytracer::trace_spectral_ray` (the `transport_main` megakernel
+//! and the `Wavefront` pipeline alternative) that
+//! `renderer::gpu_backend::GpuBackend` dispatches scenes through today.
+//!
+//! `renderer::pipeline::IndicatrixRaytracerPipeline` is a SEPARATE,
+//! unrelated rasterized/hybrid preview path that still panics
+//! unconditionally (its shader is quarantined) and has never been wired to
+//! anything in this workspace -- unlike [`frame`], which every self-test
+//! below and `renderer::gpu_backend` exercise directly.
 //!
 //! # Modules
 //!
@@ -16,8 +22,11 @@
 //! - [`rng_check`]: RNG/integer bit-exactness test against the CPU.
 //! - [`determinism_check`]: GPU self-determinism test.
 //!
-//! `examples/gpu_equivalence_harness.rs` (gated on `gpu`, needs a real adapter
-//! so it isn't a `cargo test` target) runs all three self-tests together.
+//! `examples/gpu_equivalence_harness.rs` (gated on `gpu`, needs a real
+//! adapter so it isn't a `cargo test` target) runs every self-test in this
+//! module and its siblings (`camera_check`/`environment_check`/`furnace_check`/
+//! `polyhedron_check`/`estimator_check`/`transport_check`/`shading_normal_check`,
+//! plus [`frame`]'s own chunk/wavefront/specialisation equivalence checks).
 
 pub mod compute;
 pub mod context;
@@ -61,6 +70,7 @@ mod shader_validation_tests;
 pub mod hybrid;
 
 pub use context::{
-    GpuAcquireError, GpuContext, MEGAKERNEL_STORAGE_BUFFERS, WAVEFRONT_STORAGE_BUFFERS,
+    GpuAcquireError, GpuContext, MEGAKERNEL_STORAGE_BUFFERS, WAVEFRONT_BOUNCE_TOTAL_BUFFERS,
+    WAVEFRONT_STORAGE_BUFFERS,
 };
 pub use frame::{AccumulateOutcome, GpuFrameError, GpuFrameRenderer, GpuFrameScene};

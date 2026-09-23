@@ -18,6 +18,15 @@ description = "Editor-core library for a faceting cutting schedule: preform, tie
 # entry), never a copy; see `../../Cargo.toml`'s own note on the public/private split.
 indicatrix = { workspace = true }
 glam = { workspace = true }
+# `native/convert.rs`'s `stash_schedule_meta`/`unstash_schedule_meta` pack a
+# `ScheduleMeta` into `indicatrix_formats::native::NativeDesignFile::unknown` (a
+# `toml::Table`, the format's own sanctioned "a future build wrote this" extension
+# point) so a self-contained native-only save/load round trip
+# (`save_native_only`/`load_native_only`) has somewhere to carry the `.asc`-only
+# header fields (gear teeth, symmetry, mirror, the GemCad version banner,
+# headers/footnotes) that `indicatrix_formats::native`'s schema itself has no field
+# for. Same `toml` version the workspace already pins for `indicatrix-formats`.
+toml = { workspace = true }
 # `.asc` cutting-schedule read/write, AND (via `indicatrix_formats::native`) the on-disk schema,
 # TOML encode/decode, sidecar path rules, and paired-`.asc` fingerprint for the
 # `.indicatrix.toml` native design file (`native/` in this crate holds only the half
@@ -28,20 +37,21 @@ glam = { workspace = true }
 # `indicatrix::geometry::cuts::StandardGemCuts::from_asc_schedule`'s input are the
 # exact same type -- no import/export step, no second parser to keep in sync. Two real
 # dependencies only, same as `lib.rs`'s own doc comment has always framed it: no
-# renderer, no database, no GUI toolkit, and (since Phase 7's native-file split moved
-# the TOML/SHA-256 codec itself into `indicatrix-formats`) no text-file-format or hash-function
-# dependency living directly in this crate either.
+# renderer, no database, and no GUI toolkit. The TOML/SHA-256 codec itself lives
+# in `indicatrix-formats`, so there is no text-file-format or hash-function
+# dependency in this crate either.
 indicatrix-formats = { workspace = true }
 
 [dev-dependencies]
 # For `examples/manufacturability_corpus_probe.rs` only -- reads the user's real
-# `facet_diagrams.sqlite` catalogue read-only to measure Phase 4's four checks at
-# corpus scale, exactly the pattern `crates/indicatrix/examples/meet_solver_validation.rs`
-# already uses (see its own doc comment on why that lives in `examples/`, not the test
-# suite: it needs a real catalogue this repository does not ship, so a `#[test]` cannot
-# depend on it). A dev-dependency only -- never pulled into the library itself, so
-# `indicatrix-cut-core`'s own two-dependency (indicatrix, indicatrix-formats) footprint (see `lib.rs`'s crate doc
-# comment) is unchanged for every normal build.
+# `facet_diagrams.sqlite` catalogue read-only to measure the manufacturability
+# checks at corpus scale, exactly the pattern
+# `crates/indicatrix/examples/meet_solver_validation.rs` already uses (see its own
+# doc comment on why that lives in `examples/`, not the test suite: it needs a real
+# catalogue this repository does not ship, so a `#[test]` cannot depend on it). A
+# dev-dependency only -- never pulled into the library itself, so
+# `indicatrix-cut-core`'s own two-dependency (indicatrix, indicatrix-formats)
+# footprint (see `lib.rs`'s crate doc comment) is unchanged for every normal build.
 rusqlite = { workspace = true }
 
 [lints]

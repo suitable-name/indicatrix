@@ -125,7 +125,7 @@ fn report_phase1_layout_checks(ctx: &GpuContext) -> bool {
         ("GpuRay, 32 bytes", layout_check::run_ray),
         ("GpuHitRecord, 32 bytes", layout_check::run_hit_record),
         (
-            "facet_finish array<u32>, Task 2 girdle finish",
+            "facet_finish array<u32>, girdle finish",
             layout_check::run_facet_finish,
         ),
     ];
@@ -416,6 +416,47 @@ fn report_transport_params_layout_check(ctx: &GpuContext) -> bool {
     false
 }
 
+/// The struct-layout GPU echo tests for `GpuReduceParams`, `GpuWavefrontParams`,
+/// `GpuHdrEnvDims`, `GpuDistDims`: `layout_check::run` (Tier 1a, `GpuGemMaterial`) and
+/// [`report_transport_params_layout_check`] (`GpuTransportParams`) cover their own
+/// structs at the byte-exact level, but these four 16-byte scalar structs otherwise
+/// have no such check beyond "verified matching by eye"; see
+/// [`layout_check::run_reduce_params`]'s own doc comment. Same
+/// `[(&str, LayoutCheckFn); N]` shape as [`report_phase1_layout_checks`]. Returns
+/// whether ALL FOUR passed.
+fn report_phase2_layout_checks(ctx: &GpuContext) -> bool {
+    let checks: [(&str, LayoutCheckFn); 4] = [
+        ("GpuReduceParams, 16 bytes", layout_check::run_reduce_params),
+        (
+            "GpuWavefrontParams, 16 bytes",
+            layout_check::run_wavefront_params,
+        ),
+        ("GpuHdrEnvDims, 16 bytes", layout_check::run_hdr_env_dims),
+        ("GpuDistDims, 16 bytes", layout_check::run_dist_dims),
+    ];
+    let mut all_passed = true;
+    for (label, check_fn) in checks {
+        print!("[Tier 1] Phase 2 struct-layout echo test ({label}) ... ");
+        let result = check_fn(ctx);
+        if result.passed() {
+            println!("PASS");
+        } else {
+            all_passed = false;
+            println!(
+                "FAIL ({} byte(s) mismatched, showing up to 32)",
+                result.mismatches.len()
+            );
+            for m in &result.mismatches {
+                println!(
+                    "  byte offset {:>3}: expected 0x{:02x}, got 0x{:02x}",
+                    m.offset, m.expected, m.actual
+                );
+            }
+        }
+    }
+    all_passed
+}
+
 /// Generic Tier-2 ULP-budget check reporter, shared by every [`transport_check`]
 /// instance (its `UlpCheckResult` is a deliberate duplicate of `environment_check`'s,
 /// not the same type -- see `transport_check`'s own doc comment).
@@ -624,6 +665,7 @@ fn run_phase2_checks(ctx: &GpuContext) -> bool {
     println!();
     println!("== Phase 2: isotropic spectral estimator (cubic materials only) ==");
     let transport_layout_passed = report_transport_params_layout_check(ctx);
+    let phase2_layout_passed = report_phase2_layout_checks(ctx);
     let frame_rotation_passed = report_transport_ulp_check(
         "frame_rotation + apply_matrix",
         &transport_check::run_frame_rotation(ctx),
@@ -673,6 +715,7 @@ fn run_phase2_checks(ctx: &GpuContext) -> bool {
     let spectral_debug_passed = report_spectral_debug(ctx);
 
     transport_layout_passed
+        && phase2_layout_passed
         && frame_rotation_passed
         && fresnel_reflection_passed
         && fresnel_transmission_passed
@@ -868,7 +911,7 @@ fn run_phase4_checks(ctx: &GpuContext) -> bool {
 /// destroy it, on either engine.
 fn report_furnace_scattering(ctx: &GpuContext) -> bool {
     print!(
-        "[Furnace, scattering] Task 1 furnace anchor (lossless Henyey-Greenstein medium, \
+        "[Furnace, scattering] furnace anchor (lossless Henyey-Greenstein medium, \
          still energy-conserving) ... "
     );
     let result = estimator_check::run_furnace_scattering(ctx);
@@ -968,7 +1011,7 @@ fn run_p1_absorption_path_scale_checks(ctx: &GpuContext) -> bool {
 /// [`estimator_check::run_furnace_frosted_girdle`]'s doc comment.
 fn report_furnace_frosted_girdle(ctx: &GpuContext) -> bool {
     print!(
-        "[Furnace, frosted girdle] Task 2 furnace anchor (bruted girdle band, still \
+        "[Furnace, frosted girdle] furnace anchor (bruted girdle band, still \
          energy-conserving) ... "
     );
     let result = estimator_check::run_furnace_frosted_girdle(ctx);
@@ -1012,7 +1055,7 @@ fn report_furnace_frosted_girdle(ctx: &GpuContext) -> bool {
 /// for the same function-length reason as [`run_phase2_checks`]/[`run_phase3_checks`].
 fn run_task2_frosted_girdle_checks(ctx: &GpuContext) -> bool {
     println!();
-    println!("== Task 2 GPU port: frosted (bruted) girdle finish ==");
+    println!("== GPU port: frosted (bruted) girdle finish ==");
     let cosine_hemisphere_passed = report_transport_ulp_check(
         "cosine_weighted_hemisphere",
         &transport_check::run_cosine_hemisphere(ctx),
@@ -1043,7 +1086,7 @@ fn run_task2_frosted_girdle_checks(ctx: &GpuContext) -> bool {
 /// comment.
 fn report_furnace_edge_rounding(ctx: &GpuContext) -> bool {
     print!(
-        "[Furnace, edge rounding] Task 2 furnace anchor (rounded meet edges, still \
+        "[Furnace, edge rounding] furnace anchor (rounded meet edges, still \
          energy-conserving) ... "
     );
     let result = estimator_check::run_furnace_edge_rounding(ctx);
@@ -1162,7 +1205,7 @@ fn run_chunk_check() -> bool {
     }
 }
 
-/// Finding G5 Part B: the wavefront transport pipeline's own checks -- bit-identical
+/// The wavefront transport pipeline's own checks -- bit-identical
 /// `out_xyz` against the megakernel on the same fixture
 /// (`renderer::gpu::frame::run_pipeline_equivalence`), plus the wavefront pipeline's own
 /// two-runs-identical determinism check
@@ -1171,7 +1214,7 @@ fn run_chunk_check() -> bool {
 /// `GpuFrameRenderer` for the same reason `run_chunk_check` does.
 fn run_wavefront_pipeline_checks() -> bool {
     println!();
-    println!("== Finding G5 Part B: wavefront transport pipeline ==");
+    println!("== Wavefront transport pipeline ==");
     match indicatrix::renderer::gpu::GpuFrameRenderer::new() {
         Ok(mut renderer) => {
             let equiv = indicatrix::renderer::gpu::frame::run_pipeline_equivalence(&mut renderer);
@@ -1324,9 +1367,7 @@ fn run_phase0_and_phase1_checks(ctx: &GpuContext) -> bool {
 }
 
 fn report_furnace_nee_equality_scattering(ctx: &GpuContext) -> bool {
-    print!(
-        "[Furnace, NEE scattering] Finding G7 furnace anchor (HdrMap NEE + MIS on scattering medium) ... "
-    );
+    print!("[Furnace, NEE scattering] furnace anchor (HdrMap NEE + MIS on scattering medium) ... ");
     let result = estimator_check::run_furnace_nee_equality_scattering(ctx);
     let passed = result.passed_scattering();
     println!("{}", if passed { "PASS" } else { "FAIL" });
@@ -1358,9 +1399,7 @@ fn report_furnace_nee_equality_scattering(ctx: &GpuContext) -> bool {
 }
 
 fn report_furnace_nee_equality_frosted(ctx: &GpuContext) -> bool {
-    print!(
-        "[Furnace, NEE frosted] Finding G7 furnace anchor (HdrMap NEE + MIS on frosted girdle) ... "
-    );
+    print!("[Furnace, NEE frosted] furnace anchor (HdrMap NEE + MIS on frosted girdle) ... ");
     let result = estimator_check::run_furnace_nee_equality_frosted(ctx);
     let passed = result.passed_frosted_girdle();
     println!("{}", if passed { "PASS" } else { "FAIL" });
@@ -1391,11 +1430,11 @@ fn report_furnace_nee_equality_frosted(ctx: &GpuContext) -> bool {
     passed
 }
 
-/// Finding G7: Next-event estimation (NEE) with multiple importance sampling (MIS, balance heuristic)
+/// Next-event estimation (NEE) with multiple importance sampling (MIS, balance heuristic)
 /// and 1D/2D environment map distribution importance sampling.
 fn run_finding_g7_nee_checks(ctx: &GpuContext) -> bool {
     println!();
-    println!("== Finding G7: Next-event estimation (NEE) & MIS for HDR environment maps ==");
+    println!("== Next-event estimation (NEE) & MIS for HDR environment maps ==");
     let balance_heuristic_passed = report_transport_ulp_check(
         "balance_heuristic",
         &transport_check::run_balance_heuristic(ctx),
@@ -1433,6 +1472,17 @@ fn run_finding_g7_nee_checks(ctx: &GpuContext) -> bool {
 }
 
 fn main() {
+    // Without a subscriber, `GpuContext::acquire_async`'s `on_uncaptured_error` handler's
+    // `tracing::error!` call goes nowhere -- the actual wgpu validation/device error text
+    // that produces a `GpuFrameError::DeviceLost` report below would otherwise be
+    // unrecoverable from this binary's output. `warn` level (not `info`/`debug`) keeps
+    // this quiet on a clean run; `fmt().with_writer(stderr)` keeps it off the
+    // check-by-check `stdout` log this harness is meant to be grepped from.
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(std::io::stderr)
+        .init();
+
     println!("indicatrix::BUILD_ID = {}", indicatrix::BUILD_ID);
 
     let ctx = match GpuContext::acquire() {
@@ -1499,19 +1549,19 @@ fn main() {
              budget, Tier 3 statistical image comparison on Alexandrite, Topaz and Tanzanite -- \
              see optics::materials::GemMaterial::gpu_supported's own doc comment for whether this \
              verified port is actually enabled for a real render. \
-             Physics review Task 1 (inclusion/subsurface scattering) complete: HG phase/sampling \
+             Inclusion/subsurface scattering: HG phase/sampling \
              Tier 2 ULP budgets, maybe_scatter_or_extinguish Tier 2 ULP budget, lossless-scattering \
              energy-conservation furnace anchor, Tier 3 statistical image comparison on Ruby with \
-             scattering enabled. GPU port (frosted girdle finish) complete. Physics review \
-             Task 2 (facet edge rounding) complete: shading_normal_near_edge Tier 2 case-bank \
+             scattering enabled. Frosted girdle finish: GPU port verified. Facet edge \
+             rounding: shading_normal_near_edge Tier 2 case-bank \
              self-test, energy-conservation furnace anchor with rounded edges, Tier 3 statistical \
-             image comparison on Diamond with edge rounding enabled. P1 (absorption path scale) \
-             complete: maybe_scatter_or_extinguish Tier 2 ULP budget now covers non-1.0 \
-             path_scale cases, Tier 1 struct-layout echo covers the new GpuGemMaterial field, \
+             image comparison on Diamond with edge rounding enabled. Absorption path scale: \
+             maybe_scatter_or_extinguish Tier 2 ULP budget covers non-1.0 \
+             path_scale cases, Tier 1 struct-layout echo covers the GpuGemMaterial field, \
              Tier 3 statistical image comparison on Ruby at absorption_path_scale=3.0. \
              Production frame renderer wired up: chunked \
              dispatch (GpuTransportParams::pixel_offset) is bit-identical to a \
-             single whole-frame dispatch. Kernel specialisation (perf task, 2026-09-02): \
+             single whole-frame dispatch. Kernel specialisation: \
              each material-class-specialised pipeline GpuFrameRenderer::accumulate \
              dispatches through is self-deterministic (byte-identical across two runs), \
              and a Tier 3 statistical image comparison (the same z-score/clustering \

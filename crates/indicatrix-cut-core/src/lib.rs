@@ -78,19 +78,25 @@ pub mod optics_hints;
 pub mod optimize;
 pub mod orbit;
 pub mod preform;
+pub mod proportions_windows;
 pub mod resolve;
+pub mod templates;
 pub mod yield_metrics;
 
 pub use cutting_sheet::{CutSheetRow, CuttingSheet, TierDelta, diff_tiers};
-pub use design::{ConstraintTier, Design, FreshDesignSpec, MissingAnchor, ScheduleMeta};
+pub use design::{
+    ConstraintTier, Design, DesignSolveError, FreshDesignSpec, MissingAnchor, ScheduleMeta,
+    SolveMismatch, TargetResolveError, TierId, TierTarget,
+};
 pub use edit::{Edit, EditError, History, RemapRounding, remap_ratio};
 pub use manufacturability::{
     DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, ManufacturabilityWarning, check_manufacturability,
     degenerate_suspects,
 };
 pub use material::{
-    BuiltinMaterials, MaterialLookup, MaterialSelection, ResolvedMaterial, SpecificGravity,
-    built_in_refractive_index, built_in_specific_gravity,
+    BuiltinMaterials, MaterialCatalogue, MaterialEntry, MaterialKind, MaterialLookup,
+    MaterialSelection, ResolvedMaterial, SpecificGravity, built_in_refractive_index,
+    built_in_specific_gravity,
 };
 pub use native::{
     FingerprintCheck, LoadPairedError, LoadPairedResult, NativeDesignFile, PairedSave, SaveError,
@@ -98,7 +104,8 @@ pub use native::{
     save_paired,
 };
 pub use optics_hints::{
-    Risk, critical_angle_deg, retarget_angle_deg, tier_margin_deg, windowing_risk,
+    Risk, critical_angle_deg, crown_window_margin_deg, crown_windowing_risk, retarget_angle_deg,
+    tier_margin_deg, windowing_risk,
 };
 pub use optimize::{
     AngleChange, ObjectiveComponents, ObjectiveFidelity, ObjectiveWeights, OptimizeConfig,
@@ -107,6 +114,7 @@ pub use optimize::{
 };
 pub use orbit::{OrbitUnit, mirror_indices, orbit_units, rotate_indices};
 pub use preform::{PreformShape, PreformSpec};
+pub use proportions_windows::{MaterialClass, Metric as ProportionMetric, ShapeClass, Verdict};
 pub use resolve::resolve_after_edit;
 pub use yield_metrics::{
     PreformFit, StoneProportions, YieldReport, carat_weight, exceeds_preform, mm_per_unit,

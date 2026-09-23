@@ -85,7 +85,7 @@ fn echo_hit() {
     out_hit.normal = in_hit.normal;
 }
 
-// Task 2 GPU port (frosted girdle finish): renderer::buffers::facet_finish's
+// Frosted girdle finish GPU port: renderer::buffers::facet_finish's
 // `array<u32>` upload -- a runtime-sized array, unlike the four single-instance structs
 // above, so it gets its own workgroup-parallel entry point (one thread per element)
 // rather than reusing the `@workgroup_size(1)` single-instance echo pattern.

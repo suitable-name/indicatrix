@@ -52,7 +52,7 @@ fn read_common_view_fields(
     settings_store: &Arc<SettingsPersister>,
 ) -> CommonViewFields {
     let (light_yaw_deg, light_pitch_deg, exposure, lighting_rig, camera_distance) = {
-        let ctx = render_ctx.lock().unwrap();
+        let ctx = RenderContext::lock(render_ctx);
         (
             ctx.light_yaw.to_degrees(),
             ctx.light_pitch.to_degrees(),
@@ -151,7 +151,7 @@ fn setup_save_view_preset_callback(
         .on_save_view_preset(move |name: SharedString| {
             let fields = read_common_view_fields(&render_ctx_save, &settings_store_save);
             let (camera_yaw, camera_pitch) = {
-                let ctx = render_ctx_save.lock().unwrap();
+                let ctx = RenderContext::lock(&render_ctx_save);
                 (ctx.yaw, ctx.pitch)
             };
             let preset = SavedLightingPreset {
@@ -223,12 +223,20 @@ fn setup_apply_lighting_preset_callback(
             let env_map_result = preset.env_map_path.as_deref().map(load_env_map);
 
             {
-                let mut ctx = render_ctx_apply.lock().unwrap();
+                let mut ctx = RenderContext::lock(&render_ctx_apply);
                 ctx.light_yaw = preset.light_yaw_deg.to_radians();
                 ctx.light_pitch = preset.light_pitch_deg.to_radians().clamp(0.15, 1.55);
                 ctx.exposure = preset.exposure.clamp(0.2, 5.0);
                 ctx.lighting_preset = lighting_preset;
-                ctx.distance = preset.camera_distance.clamp(1.2, 8.0);
+                // The same dynamic zoom clamp the live orbit camera uses, sized to the
+                // current mesh's own bounding radius rather than a fixed `[1.2, 8.0]`
+                // range, so a preset saved while viewing a design larger/smaller than
+                // `DEFAULT_MESH_BOUNDING_RADIUS` reapplies at a distance that actually
+                // frames it.
+                let (min_distance, max_distance) = super::camera_lighting::orbit_distance_bounds(
+                    crate::gui::solid_preview::preview_state::DEFAULT_MESH_BOUNDING_RADIUS,
+                );
+                ctx.distance = preset.camera_distance.clamp(min_distance, max_distance);
                 // Camera pose: only when the preset actually carries one -- see this
                 // function's own doc comment. The same yaw/pitch clamps
                 // `gui::camera_lighting::on_camera_orbit` applies to a live drag, so a

@@ -229,11 +229,12 @@ impl StandardGemCuts {
     /// to full `f32` precision, rather than each being rounded to four decimals
     /// independently. That distinction matters here: `GemPolyhedron::from_planes`
     /// reconstructs vertices as 3-plane meets and welds ones closer than
-    /// `VERTEX_WELD_EPS` (1e-4); a hand-rounded profile previously left several such
-    /// intended-coincident points ~1.5e-4 apart -- just outside the weld radius -- which
-    /// produced a dozen extra sliver vertices (60 instead of the true 48) even though every
-    /// plane still contributed a facet and the volume was already correct. Deriving from
-    /// the profile in code makes the coincidence exact by construction instead of by luck.
+    /// `VERTEX_WELD_EPS` (1e-4); rounding this profile by hand instead can leave several
+    /// such intended-coincident points ~1.5e-4 apart -- just outside the weld radius --
+    /// which produces a dozen extra sliver vertices (60 instead of the true 48) even
+    /// though every plane still contributes a facet and the volume is already correct.
+    /// Deriving from the profile in code makes the coincidence exact by construction
+    /// instead of by luck.
     #[must_use]
     pub fn emerald_cut() -> Vec<GpuFacetPlane> {
         // -- Shared profile -------------------------------------------------------------
@@ -285,8 +286,8 @@ impl StandardGemCuts {
         // then step 2" -- the shallower/more-horizontal 53 degree tier belongs immediately
         // below the girdle (its crease lands on the girdle edge), while the steeper/more-
         // vertical 43 degree tier belongs next to the keel. Assigning 43 degrees to the
-        // girdle-adjacent tier (as this code previously did) leaves that tier's crease
-        // strictly outside the girdle radius, which is why it never touched the hull.
+        // girdle-adjacent tier instead would leave that tier's crease
+        // strictly outside the girdle radius, so it would never touch the hull.
         let p1 = 53.0f32.to_radians(); // girdle-adjacent (Pavilion Step 1)
         let p2 = 43.0f32.to_radians(); // keel-adjacent, crease-ring-adjacent (Pavilion Step 2)
         push_pavilion_tiers(
@@ -904,33 +905,45 @@ fn push_girdle_facets(planes: &mut Vec<GpuFacetPlane>, r_z: f32, r_x: f32, r_dia
 /// quantized-bin lookup: `P` is small (real schedules top out in the low hundreds of
 /// planes), so the quadratic cost is negligible, and it avoids the quantized
 /// approach's own failure mode -- two planes whose true values are close but land in
-/// ADJACENT bins (e.g. offsets half a quantum apart, straddling a bin edge) hashed to
-/// different keys and were kept as spurious distinct entries, which then made
+/// ADJACENT bins (e.g. offsets half a quantum apart, straddling a bin edge) hash to
+/// different keys and are kept as spurious distinct entries, which then makes
 /// `GemPolyhedron::from_planes` reject the schedule outright on coincident dual
-/// points. Iterating `planes` in its own original order and keeping the first
-/// occurrence (never the second) makes the result deterministic regardless of input
-/// order.
+/// points.
+///
+/// When two kept-and-new planes ARE recognized as the same half-space, the
+/// one with the smaller `|d|` (the tighter-fitting plane) survives, not simply whichever
+/// was seen first -- iterating `planes` in its own original order still makes the
+/// result deterministic regardless of input order, since the comparison itself (which
+/// of the two has the smaller `|d|`) does not depend on which arrived first.
 fn dedup_planes(planes: Vec<GpuFacetPlane>) -> Vec<GpuFacetPlane> {
-    // Same quantum the old quantized-bin dedup used (~5e-4, coarser than brep.rs's own
-    // coincidence epsilon) -- reused directly here as a genuine tolerance rather than
-    // a bin size, so two planes within one quantum of each other in every component
-    // are always recognized as the same half-space, including across what used to be
-    // a bin edge.
+    // A genuine tolerance rather than a bin size (~5e-4, coarser than
+    // brep.rs's own coincidence epsilon): two planes within one quantum of each
+    // other in offset are always recognized as the same half-space, including
+    // across a would-be bin edge.
     const QUANT: f32 = 1.0 / 2048.0;
     const OFFSET_EPSILON: f32 = QUANT;
-    const NORMAL_DOT_EPSILON: f32 = 1.0 - QUANT;
+    // Tightened to the f32 rounding scale: a true duplicate plane's
+    // normal survives sin/cos/normalize with rounding noise on the order of 1e-7,
+    // not a fraction of a degree. `1.0 - 1e-5` (~0.26 degrees) still catches genuine
+    // duplicates with margin while never merging two facets a real schedule intends to
+    // be distinct -- a looser epsilon like `1.0 - QUANT` (~1.79 degrees) would silently
+    // collapse two tiers at the same index/mast whose angles genuinely differ by as
+    // little as ~1 degree into a single facet, dropping a real half-space.
+    const NORMAL_DOT_EPSILON: f32 = 1.0 - 1e-5;
 
     let mut kept: Vec<GpuFacetPlane> = Vec::with_capacity(planes.len());
     for plane in planes {
-        let is_duplicate = kept.iter().any(|k| {
+        let duplicate_of = kept.iter().position(|k| {
             let dot = k.normal[0].mul_add(
                 plane.normal[0],
                 k.normal[1].mul_add(plane.normal[1], k.normal[2] * plane.normal[2]),
             );
             dot >= NORMAL_DOT_EPSILON && (k.d - plane.d).abs() <= OFFSET_EPSILON
         });
-        if !is_duplicate {
-            kept.push(plane);
+        match duplicate_of {
+            Some(idx) if plane.d.abs() < kept[idx].d.abs() => kept[idx] = plane,
+            Some(_) => {}
+            None => kept.push(plane),
         }
     }
     kept
@@ -1194,5 +1207,42 @@ mod tests {
         ];
         let deduped = dedup_planes(planes.clone());
         assert_eq!(deduped, planes);
+    }
+
+    /// Two facets at the same offset whose normals are genuinely ~1 degree
+    /// apart -- not a near-bit-identical duplicate -- must both survive.
+    ///
+    /// A looser epsilon (`1 - 1/2048`, ~1.79 degrees) would silently collapse these
+    /// into a single half-space; `NORMAL_DOT_EPSILON` (`1 - 1e-5`, ~0.26 degrees) does
+    /// not.
+    #[test]
+    fn dedup_keeps_planes_one_degree_apart() {
+        let normal_a = Vec3::new(0.0, 0.0, 1.0);
+        let angle = 1.0f32.to_radians();
+        let normal_b = Vec3::new(angle.sin(), 0.0, angle.cos());
+        let planes = vec![
+            GpuFacetPlane::new(normal_a, -1.0),
+            GpuFacetPlane::new(normal_b, -1.0),
+        ];
+        let deduped = dedup_planes(planes.clone());
+        assert_eq!(
+            deduped, planes,
+            "planes one degree apart must not be merged into a single half-space"
+        );
+    }
+
+    /// When two near-duplicate planes are merged, the tighter-fitting one
+    /// (smaller `|d|`) survives, regardless of which arrived first.
+    #[test]
+    fn dedup_keeps_the_plane_with_smaller_absolute_offset() {
+        let normal = Vec3::new(0.0, 0.0, 1.0);
+        let tighter = GpuFacetPlane::new(normal, -1.0);
+        let looser = GpuFacetPlane::new(normal, -1.0 - 1e-7);
+        let deduped = dedup_planes(vec![looser, tighter]);
+        assert_eq!(
+            deduped,
+            vec![tighter],
+            "the smaller-|d| plane must survive even when it arrives second"
+        );
     }
 }

@@ -2,7 +2,7 @@
 //! protecting the user from a design that solves geometrically but cannot
 //! actually be cut.
 //!
-//! Four checks, every one reported as a warning **on** the design, never as
+//! Five checks, every one reported as a warning **on** the design, never as
 //! an edit that silently "fixes" anything:
 //!
 //! 1. [`mesh_checks::check_vanishing_facets`]: a later cut erased an earlier facet entirely.
@@ -14,11 +14,15 @@
 //!    schedule than the tier itself -- geometrically solvable (the solver
 //!    doesn't care about file order, see `indicatrix::geometry::meet_solver`'s
 //!    module docs) but physically uncuttable in that order.
+//! 5. [`authored_checks::check_meet_name_asc_safety`]: a tier's stated meet target
+//!    NAME would not survive a plain `.asc` export/re-import --
+//!    geometrically fine today, but silently loses or mis-targets the reference
+//!    the moment the design round-trips through `.asc` text.
 //!
-//! [`check_manufacturability`] runs all four together over an
+//! [`check_manufacturability`] runs all five together over an
 //! **already-solved** [`crate::design::Design`] (see its own doc comment for why that
 //! matters) and returns every [`ManufacturabilityWarning`] found, in a fixed,
-//! deterministic order (checks 1-4, tier order within each) -- never a
+//! deterministic order (checks 1-5, tier order within each) -- never a
 //! `HashMap`/`HashSet` in the decision path, matching this crate's
 //! determinism contract.
 //!
@@ -31,15 +35,16 @@
 //! via `Design::planes_from_solved` (no second solve), then meshes it via
 //! [`indicatrix::geometry::stone_metrics::build_solid_mesh`] -- measured at 0.616ms
 //! for a 103-tier design, negligible next to the solve that already happened.
-//! Checks 3 and 4 need no mast at all (they read authored angle/index/constraint
-//! state directly), so they run even when the design has never been solved.
+//! Checks 3, 4 and 5 need no mast at all (they read authored angle/index/name/
+//! constraint state directly), so they run even when the design has never been
+//! solved.
 //!
 //! # Module layout
 //!
 //! [`warning`] is the one [`ManufacturabilityWarning`] type every check reports
 //! through; [`mesh_checks`] is [`check_manufacturability`] itself plus checks 1-2
-//! (the mesh-dependent pair); [`authored_checks`] is checks 3-4 (the mast-free
-//! pair).
+//! (the mesh-dependent pair); [`authored_checks`] is checks 3-5 (the mast-free
+//! trio).
 
 mod authored_checks;
 mod mesh_checks;
@@ -50,7 +55,7 @@ mod warning;
 use crate::design::Design;
 use indicatrix::geometry::meet_solver::SolvedTier;
 
-pub use authored_checks::{check_cut_order, check_gear_quantization};
+pub use authored_checks::{check_cut_order, check_gear_quantization, check_meet_name_asc_safety};
 pub use mesh_checks::{
     DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, check_manufacturability, degenerate_suspects,
 };
@@ -67,8 +72,9 @@ pub(crate) use mesh_checks::facet_plane_boundaries;
 /// available, rather than requiring a full solve up front the way
 /// [`check_manufacturability`] itself does.
 ///
-/// The two mast-free checks ([`check_gear_quantization`]/[`check_cut_order`]) need
-/// no mast at all and always run; the two mesh-based checks (reached through
+/// The three mast-free checks
+/// ([`check_gear_quantization`]/[`check_cut_order`]/[`check_meet_name_asc_safety`])
+/// need no mast at all and always run; the two mesh-based checks (reached through
 /// [`check_manufacturability`]) run only when `solved` is `Some`.
 ///
 /// Exists for a caller like the editor's own manufacturability panel that must
@@ -92,6 +98,7 @@ pub fn check_manufacturability_available(
         || {
             let mut warnings = check_gear_quantization(design);
             warnings.extend(check_cut_order(design));
+            warnings.extend(check_meet_name_asc_safety(design));
             warnings
         },
         |solved| check_manufacturability(design, solved, min_facet_area_fraction_of_w2),

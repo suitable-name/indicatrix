@@ -86,14 +86,30 @@ pub fn write_frame<W: Write>(writer: &mut W, payload: &[u8]) -> Result<(), Frami
 /// [`MAX_FRAME_LEN`], and [`FramingError::Io`] if the underlying reader fails or hits
 /// EOF before the declared payload length is filled.
 pub fn read_frame<R: Read>(reader: &mut R) -> Result<Vec<u8>, FramingError> {
+    read_frame_bounded(reader, MAX_FRAME_LEN)
+}
+
+/// Reads one length-prefixed frame exactly like [`read_frame`], but rejects any length
+/// prefix greater than `max` instead of [`MAX_FRAME_LEN`] -- before allocating anything
+/// for the payload.
+///
+/// For a listener that hasn't yet authenticated its peer (e.g. the enrollment
+/// listener's bare TLS accept, which requires no client certificate), the request
+/// shapes actually expected are a few dozen bytes; there is no reason to let an
+/// unauthenticated peer's length prefix commit this process to allocating anywhere near
+/// [`MAX_FRAME_LEN`] (512 MiB) before a single content byte has even arrived. [`read_frame`]
+/// is exactly this function called with `max = MAX_FRAME_LEN`.
+///
+/// # Errors
+///
+/// Returns [`FramingError::FrameTooLarge`] (`max` reported as the cap) if the length
+/// prefix exceeds `max`, and [`FramingError::Io`] if the underlying reader fails.
+pub fn read_frame_bounded<R: Read>(reader: &mut R, max: u32) -> Result<Vec<u8>, FramingError> {
     let mut len_bytes = [0u8; LEN_PREFIX_BYTES];
     reader.read_exact(&mut len_bytes)?;
     let len = u32::from_le_bytes(len_bytes);
-    if len > MAX_FRAME_LEN {
-        return Err(FramingError::FrameTooLarge {
-            len,
-            max: MAX_FRAME_LEN,
-        });
+    if len > max {
+        return Err(FramingError::FrameTooLarge { len, max });
     }
     let mut payload = vec![0u8; len as usize];
     reader.read_exact(&mut payload)?;
@@ -159,6 +175,43 @@ mod tests {
             read_frame(&mut cursor),
             Err(FramingError::FrameTooLarge { .. })
         ));
+    }
+
+    /// A hostile length prefix declaring far more than `max` must be
+    /// rejected from the 4-byte prefix alone, before `read_frame_bounded` ever attempts
+    /// `vec![0u8; len as usize]` -- proven here by a reader whose payload doesn't
+    /// actually contain `0x1FFF_FFFF` bytes at all; a pre-allocation would try to read
+    /// them and this test would hang/error on the reader instead of returning cleanly.
+    #[test]
+    fn read_frame_bounded_rejects_an_oversized_prefix_without_allocating() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&0x1FFF_FFFFu32.to_le_bytes());
+        // Deliberately no payload bytes follow -- if the length prefix were honored
+        // before the bound check, the subsequent `read_exact` would hit EOF instead of
+        // `read_frame_bounded` reporting `FrameTooLarge` immediately.
+        let mut cursor = Cursor::new(buf);
+        let err = read_frame_bounded(&mut cursor, 4096).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                FramingError::FrameTooLarge {
+                    len: 0x1FFF_FFFF,
+                    max: 4096
+                }
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn read_frame_bounded_accepts_a_frame_within_the_bound() {
+        let mut buf = Vec::new();
+        write_frame(&mut buf, b"small enough").unwrap();
+        let mut cursor = Cursor::new(buf);
+        assert_eq!(
+            read_frame_bounded(&mut cursor, 4096).unwrap(),
+            b"small enough"
+        );
     }
 
     /// A `Read` that only ever hands back a handful of bytes per call, however large

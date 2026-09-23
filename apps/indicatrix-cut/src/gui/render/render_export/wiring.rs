@@ -9,10 +9,10 @@ use super::queue::{
 };
 use crate::{
     ExportModel, LibraryModel, LightingPresetItem, MainWindow,
-    bridge::export_thread::{self, SceneSnapshot},
-    gui::show_toast,
-    settings::{LightingPreset as SavedLightingPreset, SettingsPersister},
+    bridge::export_thread::{self, ComputeTarget, ExportParams, SceneSnapshot},
+    settings::{LightingPreset as SavedLightingPreset, SettingsPersister, WorkerSettings},
 };
+use indicatrix::color::ColorSpace;
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::{
     cell::RefCell,
@@ -22,24 +22,19 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-// NOTE (found, not fixed -- pure code move only): in the pre-split `gui/mod.rs`, this
-// function had no doc comment of its own. A 9-paragraph doc comment describing "the
-// high-resolution export flow" sat immediately above `color_space_from_index` instead
-// (no blank line between them), so rustdoc actually attached it to THAT function --
-// see `color_space_from_index` in `gui/startup_settings.rs` (moved there from
-// `gui/mod.rs` in a later pure-structural pass), which still carries it verbatim.
-#[expect(
-    clippy::too_many_lines,
-    reason = "a flat sequence of dialog-lifecycle wiring (validate, export-directory \
-              resolution, preset-fan-out queue assembly, spawn, progress/done \
-              callbacks) -- the preset-fan-out and configurable-export-directory/\
-              -template plumbing added lines to an already-long function rather than \
-              introducing a separable concern; splitting further would just move the \
-              same line count into a wrapper, matching this crate's existing \
-              convention for this class of setup function (see `bridge::render_thread::\
-              spawn_render_thread`'s and `gui::mod::build_main_window`'s own identical \
-              `#[expect]`)"
-)]
+// NOTE: this function has no doc comment of its own. A 9-paragraph doc comment
+// describing "the high-resolution export flow" sits immediately above
+// `color_space_from_index` instead (no blank line between them), so rustdoc
+// actually attaches it to THAT function -- see `color_space_from_index` in
+// `gui/startup_settings.rs`, which carries it verbatim.
+//
+// The preset-fan-out/queue-assembly/spawn tail lives in its own function
+// ([`finish_start_export`]), which lets the export-directory picker run off the
+// UI thread and keeps this function under clippy's function-length lint. Left
+// unmarked rather than adding a speculative `#[expect(clippy::too_many_lines)]`:
+// if a future change grows this back past the limit, clippy's own warning is
+// the right signal to split again, not a standing `#[expect]` nobody is
+// watching.
 pub(in crate::gui) fn setup_render_export_callbacks(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<crate::bridge::render_thread::RenderContext>>,
@@ -93,144 +88,48 @@ pub(in crate::gui) fn setup_render_export_callbacks(
             // filename now), shown only when no directory has been chosen yet. Once
             // chosen, it's persisted immediately so every future export -- in this
             // session and every one after -- never prompts again.
-            let export_dir = {
-                let configured = settings_store_start.snapshot().settings.export_directory;
-                if configured.is_empty() {
-                    let Some(dir) = rfd::FileDialog::new()
-                        .set_title("Choose an export folder")
-                        .pick_folder()
-                    else {
-                        ui.global::<ExportModel>().set_has_error(false);
-                        ui.global::<ExportModel>()
-                            .set_status_message("Export cancelled.".into());
-                        return;
-                    };
-                    settings_store_start.update(|s| {
-                        s.settings.export_directory = dir.to_string_lossy().into_owned();
-                    });
-                    dir
-                } else {
-                    PathBuf::from(configured)
-                }
-            };
-            let template = settings_store_start
-                .snapshot()
-                .settings
-                .export_filename_template;
-
-            // The export's OWN (already-validated) bounce cap, not whatever the live
-            // viewport is set to -- see `apply_export_bounce_cap`'s own doc comment.
-            let base_scene = apply_export_bounce_cap(
-                SceneSnapshot::capture(&render_ctx_start),
-                params.max_bounces,
-            );
-
-            // ---- Preset fan-out ---------------------------------------------------------
-            // Only presets BOTH marked `export_usable` (the settings dialog's checkbox)
-            // AND checked in this dialog's own fan-out list -- see
-            // `GemViewportView.export_fanout_presets`'s own doc comment for why that's a
-            // separate, dialog-scoped list rather than a filtered view of the settings
-            // dialog's.
-            let selected_presets: Vec<SavedLightingPreset> = {
-                let snapshot = settings_store_start.snapshot();
-                ui.global::<ExportModel>()
-                    .get_fanout_presets()
-                    .iter()
-                    .filter(|item| item.selected)
-                    .filter_map(|item| {
-                        snapshot
-                            .presets
-                            .iter()
-                            .find(|p| p.name == item.name.as_str())
-                            .cloned()
-                    })
-                    .collect()
-            };
-            let hdr_preset_count = selected_presets
-                .iter()
-                .filter(|p| p.env_map_path.is_some())
-                .count();
-            if hdr_preset_count > 0 {
-                // An HDR environment map is one of the two remaining reasons
-                // `GpuBackend` declines (the other being no adapter) -- surfaced here,
-                // once, rather than letting the whole export look stalled while an
-                // HDR-carrying preset's render quietly runs the slower CPU-only path.
-                // See this group's/`bridge::export_thread::scene_snapshot`'s own doc
-                // comments for the mechanism.
-                show_toast(
-                    &ui,
-                    &format!(
-                        "{hdr_preset_count} selected preset{} carr{} an HDR environment \
-                         map, which renders on the slower CPU-only path.",
-                        if hdr_preset_count == 1 { "" } else { "s" },
-                        if hdr_preset_count == 1 { "ies" } else { "y" },
-                    ),
-                    "info",
-                );
-            }
-
-            let mut jobs = VecDeque::with_capacity(1 + selected_presets.len());
-            jobs.push_back(ExportJob {
-                scene: base_scene.clone(),
-                preset_label: String::new(),
-            });
-            for preset in &selected_presets {
-                jobs.push_back(ExportJob {
-                    scene: apply_preset_to_scene(base_scene.clone(), preset),
-                    preset_label: preset.name.clone(),
-                });
-            }
-            let total = jobs.len();
-
-            let detail = ui.global::<LibraryModel>().get_current_detail();
-
-            // Pause live-viewport tracing for the duration of the WHOLE queue -- see
-            // `RenderContext::export_active`'s own doc comment. Read the local CPU/GPU
-            // choice from the SAME short lock, so every job in this queue traces with
-            // the setting in force at the instant the export started (see the
-            // pre-fan-out version of this comment for why re-reading it mid-run would
-            // be wrong).
-            let local_compute = {
-                let mut guard = render_ctx_start
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                guard.export_active = true;
-                guard.local_compute_target
-            };
-
-            let queue = Arc::new(Mutex::new(ExportQueue {
-                jobs,
-                total,
-                current_index: 0,
-                completed: Vec::new(),
-                failures: Vec::new(),
-                cancelled: false,
-                current_handle: None,
-                export_dir,
-                template,
-                design: detail.title.to_string(),
-                designer: detail.designer.to_string(),
-                shape: detail.shape.to_string(),
-                ri: detail.ri.to_string(),
-                width: params.width,
-                height: params.height,
-                spp: params.samples_per_pixel,
-                bounces: params.max_bounces,
-                colorspace: colorspace_label(color_space).to_string(),
+            //
+            // The picker itself runs off the UI thread via `gui::pickers::pick`;
+            // everything that runs after it (preset fan-out, queue assembly, spawn)
+            // lives in [`finish_start_export`], its own continuation, bundled via
+            // [`StartExportContext`] purely to keep both functions under clippy's
+            // argument-count lint.
+            let configured = settings_store_start.snapshot().settings.export_directory;
+            let context = StartExportContext {
+                render_ctx: render_ctx_start.clone(),
+                settings_store: settings_store_start.clone(),
+                export_queue: export_queue_start.clone(),
                 params,
                 color_space,
                 compute_target,
                 workers,
-                local_compute,
-            }));
-
-            ui.global::<ExportModel>().set_is_exporting(true);
-            ui.global::<ExportModel>().set_has_error(false);
-            ui.global::<ExportModel>()
-                .set_status_message(String::new().into());
-
-            *export_queue_start.borrow_mut() = Some(queue.clone());
-            start_next_export_job(&ui, &render_ctx_start, &queue);
+            };
+            if configured.is_empty() {
+                crate::gui::pickers::pick(
+                    &ui,
+                    crate::gui::pickers::PickerRequest {
+                        kind: crate::gui::pickers::PickerKind::PickFolder,
+                        title: Some("Choose an export folder".to_string()),
+                        filters: Vec::new(),
+                        default_file_name: None,
+                        starting_dir: None,
+                    },
+                    move |ui, dir| {
+                        let Some(dir) = dir else {
+                            ui.global::<ExportModel>().set_has_error(false);
+                            ui.global::<ExportModel>()
+                                .set_status_message("Export cancelled.".into());
+                            return;
+                        };
+                        context.settings_store.update(|s| {
+                            s.settings.export_directory = dir.to_string_lossy().into_owned();
+                        });
+                        finish_start_export(ui, dir, context);
+                    },
+                );
+            } else {
+                finish_start_export(&ui, PathBuf::from(configured), context);
+            }
         },
     );
 
@@ -246,6 +145,134 @@ pub(in crate::gui) fn setup_render_export_callbacks(
             }
         }
     });
+}
+
+/// Everything [`finish_start_export`] needs beyond `ui`/the resolved export
+/// directory -- bundled into one struct (rather than six more parameters)
+/// purely to keep both it and [`setup_render_export_callbacks`] under
+/// clippy's argument-count lint, the same reasoning every other multi-field
+/// bundle in this crate uses (e.g. `gui::editor::callbacks::solve_actions::
+/// RunProvenance`).
+struct StartExportContext {
+    render_ctx: Arc<Mutex<crate::bridge::render_thread::RenderContext>>,
+    settings_store: Arc<SettingsPersister>,
+    export_queue: Rc<RefCell<Option<Arc<Mutex<ExportQueue>>>>>,
+    params: ExportParams,
+    color_space: ColorSpace,
+    compute_target: ComputeTarget,
+    workers: Vec<WorkerSettings>,
+}
+
+/// The rest of "Start Export", once the export directory is known -- split out
+/// of [`setup_render_export_callbacks`]'s `on_start_export` handler so the SAME
+/// preset-fan-out/queue-assembly/spawn logic runs whether the directory was
+/// already configured (synchronously) or just picked (from `gui::pickers::pick`'s
+/// own continuation, off the UI thread for the dialog itself).
+fn finish_start_export(ui: &MainWindow, export_dir: PathBuf, context: StartExportContext) {
+    let StartExportContext {
+        render_ctx,
+        settings_store,
+        export_queue,
+        params,
+        color_space,
+        compute_target,
+        workers,
+    } = context;
+
+    let template = settings_store.snapshot().settings.export_filename_template;
+
+    // The export's OWN (already-validated) bounce cap, not whatever the live
+    // viewport is set to -- see `apply_export_bounce_cap`'s own doc comment.
+    let base_scene =
+        apply_export_bounce_cap(SceneSnapshot::capture(&render_ctx), params.max_bounces);
+
+    // ---- Preset fan-out ---------------------------------------------------------
+    // Only presets BOTH marked `export_usable` (the settings dialog's checkbox)
+    // AND checked in this dialog's own fan-out list -- see
+    // `GemViewportView.export_fanout_presets`'s own doc comment for why that's a
+    // separate, dialog-scoped list rather than a filtered view of the settings
+    // dialog's.
+    let selected_presets: Vec<SavedLightingPreset> = {
+        let snapshot = settings_store.snapshot();
+        ui.global::<ExportModel>()
+            .get_fanout_presets()
+            .iter()
+            .filter(|item| item.selected)
+            .filter_map(|item| {
+                snapshot
+                    .presets
+                    .iter()
+                    .find(|p| p.name == item.name.as_str())
+                    .cloned()
+            })
+            .collect()
+    };
+    // An HDR environment map does NOT force this export onto a
+    // slower CPU-only path -- the GPU megakernel has its own `env_mode` for
+    // `HdrMap` and renders it directly (see `render_thread::mod`'s module doc
+    // comment), so there is nothing to warn the user about here.
+    let mut jobs = VecDeque::with_capacity(1 + selected_presets.len());
+    jobs.push_back(ExportJob {
+        scene: base_scene.clone(),
+        preset_label: String::new(),
+    });
+    for preset in &selected_presets {
+        jobs.push_back(ExportJob {
+            scene: apply_preset_to_scene(base_scene.clone(), preset),
+            preset_label: preset.name.clone(),
+        });
+    }
+    let total = jobs.len();
+
+    let detail = ui.global::<LibraryModel>().get_current_detail();
+
+    // Pause live-viewport tracing for the duration of the WHOLE queue -- see
+    // `RenderContext::export_active`'s own doc comment. Read the local CPU/GPU
+    // choice from the SAME short lock, so every job in this queue traces with
+    // the setting in force at the instant the export started (see the
+    // pre-fan-out version of this comment for why re-reading it mid-run would
+    // be wrong).
+    let local_compute = {
+        // A COUNT, not a bool -- see
+        // `RenderContext::export_active_count`'s doc comment.
+        let mut guard = crate::bridge::render_thread::RenderContext::lock(&render_ctx);
+        guard.export_active_count += 1;
+        guard.local_compute_target
+    };
+
+    let queue = Arc::new(Mutex::new(ExportQueue {
+        jobs,
+        total,
+        current_index: 0,
+        completed: Vec::new(),
+        failures: Vec::new(),
+        cancelled: false,
+        current_handle: None,
+        export_dir,
+        template,
+        design: detail.title.to_string(),
+        designer: detail.designer.to_string(),
+        shape: detail.shape.to_string(),
+        ri: detail.ri.to_string(),
+        width: params.width,
+        height: params.height,
+        spp: params.samples_per_pixel,
+        bounces: params.max_bounces,
+        colorspace: colorspace_label(color_space).to_string(),
+        params,
+        color_space,
+        compute_target,
+        workers,
+        local_compute,
+    }));
+
+    ui.global::<ExportModel>().set_is_exporting(true);
+    ui.global::<ExportModel>().set_has_error(false);
+    ui.global::<ExportModel>()
+        .set_status_message(String::new().into());
+
+    *export_queue.borrow_mut() = Some(queue.clone());
+    start_next_export_job(ui, &render_ctx, &queue);
 }
 
 /// Wires `check_remote_availability` (fired by `gem_viewport.slint`'s `changed
@@ -341,17 +368,28 @@ fn setup_export_output_location_callbacks(
             return;
         };
         let current = settings_store_dir.snapshot().settings.export_directory;
-        let mut dialog = rfd::FileDialog::new().set_title("Choose an export folder");
-        if !current.is_empty() {
-            dialog = dialog.set_directory(&current);
-        }
-        // Cancelling leaves the previously configured directory untouched -- same
-        // "declining changes nothing" convention `on_pick_hdr_file` already follows.
-        if let Some(dir) = dialog.pick_folder() {
-            let dir_string = dir.to_string_lossy().into_owned();
-            settings_store_dir.update(|s| s.settings.export_directory.clone_from(&dir_string));
-            ui.global::<ExportModel>().set_directory(dir_string.into());
-        }
+        let settings_store_dir = settings_store_dir.clone();
+        // The picker runs off the UI thread via `gui::pickers::pick`. Cancelling
+        // leaves the previously configured directory untouched -- same "declining
+        // changes nothing" convention this dialog's other pickers follow.
+        crate::gui::pickers::pick(
+            &ui,
+            crate::gui::pickers::PickerRequest {
+                kind: crate::gui::pickers::PickerKind::PickFolder,
+                title: Some("Choose an export folder".to_string()),
+                filters: Vec::new(),
+                default_file_name: None,
+                starting_dir: (!current.is_empty()).then(|| PathBuf::from(current)),
+            },
+            move |ui, dir| {
+                let Some(dir) = dir else {
+                    return;
+                };
+                let dir_string = dir.to_string_lossy().into_owned();
+                settings_store_dir.update(|s| s.settings.export_directory.clone_from(&dir_string));
+                ui.global::<ExportModel>().set_directory(dir_string.into());
+            },
+        );
     });
 
     let settings_store_template = settings_store.clone();
@@ -361,8 +399,8 @@ fn setup_export_output_location_callbacks(
                 .update(|s| s.settings.export_filename_template = text.to_string());
         });
 
-    // UI/UX review "Also" item: the filename template field had no live preview and
-    // no way to notice a typo'd placeholder before actually exporting. Both callbacks
+    // The filename template field needs a live preview and a way to flag a
+    // typo'd placeholder before actually exporting. Both callbacks
     // render against one fixed, clearly-labelled EXAMPLE `TemplateContext` (not the
     // live selected design) -- reusing `filename_template::render` here would mean
     // threading the real selected design/material/camera state down through

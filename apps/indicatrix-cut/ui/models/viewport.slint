@@ -35,13 +35,21 @@ export global ViewportModel {
 
     in property <[string]> material_options: ["Diamond", "Sapphire", "Ruby", "Emerald", "Zircon", "Tanzanite", "Moissanite", "Topaz", "Spinel", "Quartz"];
     in-out property <int> selected_material_index: 0;
+    // Keeps the material-editor pre-fill fields below fresh as the
+    // selection changes -- see `gui::optics::custom_materials::
+    // setup_selected_material_prefill_callback` (the Rust side of this boundary).
+    // Also directly invocable (with no args) by whatever opens the material editor,
+    // to force a refresh against the current selection without requiring the index
+    // to have actually changed since the last one.
+    callback selected_material_changed_for_editor_prefill();
+    changed selected_material_index => { selected_material_changed_for_editor_prefill(); }
     // While the Edit sub-tab is active, "linked to design" (default on) makes the
     // Render Material dropdown follow the design's own material instead of an
     // independent selection (`gui::editor::view::refresh_design_settings`). Off makes
     // it a plain display override again.
     in-out property <bool> viewport_material_linked: true;
 
-    // CAD audit item 59: the path-traced image describes the planes last pushed to
+    // The path-traced image describes the planes last pushed to
     // the render thread, which an ordinary tier edit does NOT refresh -- the trace
     // is expensive and only re-runs on a solve. Without this the picture just
     // silently went on showing the design as it was several edits ago, with nothing
@@ -51,6 +59,16 @@ export global ViewportModel {
     // two disagree.
     in property <bool> trace_stale: false;
     callback viewport_material_linked_changed(bool);
+
+    // Surfaces a lost GPU device instead of leaving the viewport silently frozen with
+    // no explanation. Set by the render thread's own `update_gpu_status` push (see
+    // `bridge::render_thread::gpu_backend::ViewportGpu::status_message`'s own doc
+    // comment for the exact sequence): empty while healthy, "GPU renderer lost —
+    // reacquiring…" for the brief re-acquire attempt, or a "CPU fallback: <reason>"
+    // message once re-acquiring has also failed and this session gives up on the GPU
+    // for good. `gem_viewport.slint` shows this as a small pill next to the pause
+    // pill, in Path-traced mode only -- Solid mode never touches the tracer at all.
+    in property <string> gpu_status_text: "";
 
     // This list is what actually reaches the ComboBox. ORDER is load-bearing: must
     // match `LightingPreset::ALL` (`Daylight`, `Incandescent`, `RingLights`,
@@ -89,9 +107,14 @@ export global ViewportModel {
     callback toggle_preset_export_usable(int, bool);
     callback copy_metrics();
     // name, ri, dispersion, birefringence, color_idx, crystal_system_idx,
-    // optical_character_idx, biaxial_delta_beta_alpha, apply_to_live_render -- see
-    // `MaterialEditorDialog.save_material`'s own callback doc comment.
-    // CAD audit items 87/88: whether the name currently typed in the material editor
+    // optical_character_idx, biaxial_delta_beta_alpha, specific_gravity,
+    // apply_to_live_render -- see `MaterialEditorDialog.save_material`'s own callback
+    // doc comment.
+    // `specific_gravity` (`0.0` = not recorded) is the tenth
+    // argument -- `gui::optics::custom_materials`'s `on_save_custom_material` handler
+    // persists it via `crystal_optics::save_gem_material`, so the dialog no longer
+    // silently drops a field it collects but has no slot to carry.
+    // Whether the name currently typed in the material editor
     // already names an existing CUSTOM material (so saving would overwrite it, and
     // Delete is a legitimate action) or a BUILT-IN one (so saving is refused
     // outright). Answered in Rust, where the authoritative lookups already live --
@@ -104,6 +127,35 @@ export global ViewportModel {
     // buttons that assign it directly.
     callback material_name_edited(string);
 
-    callback save_custom_material(string, float, float, float, int, int, int, float, bool);
+    callback save_custom_material(string, float, float, float, int, int, int, float, float, bool);
     callback delete_custom_material(string);
+
+    // Pre-fills the material editor from the viewport-selected
+    // CUSTOM material's own saved values, so opening the dialog on an existing
+    // custom material shows what it actually is instead of always the dialog's own
+    // "Custom Diamond" literal defaults. Read from the original saved row (`gui::
+    // optics::custom_materials::push_selected_custom_material_fields`, the Rust side
+    // of this boundary), not the converted `GemMaterial` the render context holds --
+    // that conversion is one-way (see `gui::optics::crystal_optics::
+    // save_gem_material`'s own doc comment), so only the original row still has the
+    // exact RI/dispersion/birefringence/absorption scalars the dialog's sliders edit.
+    //
+    // `selected_custom_material_valid` is false for a built-in selection or a name
+    // that no longer names any saved custom material -- there is nothing honest to
+    // pre-fill from either case, and every other property below is only meaningful
+    // while it is true. `material_editor_dialog.slint` assigns all eight of these
+    // into its own `mat_name`/`ri_val`/`disp_val`/`sg_val`/`biref_val`/
+    // `selected_crystal_system_idx`/`selected_optical_character_idx`/
+    // `biaxial_delta_beta_alpha_val` in one shot when it opens for a custom-material
+    // selection with this true -- never a name-only partial pre-fill (see that
+    // file's own doc comment for why: leaving the optics fields at the dialog's
+    // defaults would let Save silently overwrite a real custom material's optics).
+    in property <bool> selected_custom_material_valid: false;
+    in property <float> selected_custom_material_ri: 2.417;
+    in property <float> selected_custom_material_dispersion: 0.044;
+    in property <float> selected_custom_material_birefringence: 0.000;
+    in property <float> selected_custom_material_specific_gravity: 0.0;
+    in property <int> selected_custom_material_crystal_system_idx: 0;
+    in property <int> selected_custom_material_optical_character_idx: 0;
+    in property <float> selected_custom_material_biaxial_delta_beta_alpha: 0.0;
 }

@@ -1,5 +1,4 @@
-//! Storage for the catalogue's flat tag set (`tags`/`diagram_tag_links`) -- CAD audit
-//! item 190. See
+//! Storage for the catalogue's flat tag set (`tags`/`diagram_tag_links`). See
 //! [`Database::migrate_tag_tables`](super::Database::migrate_tag_tables)'s doc
 //! comment for the schema and why this is a side-table pair rather than a column on
 //! `diagram_entries`.
@@ -12,8 +11,8 @@ use std::collections::HashMap;
 
 impl Database {
     /// Every diagram entry's tag names, alphabetical within each entry, in ONE query
-    /// -- the library list's per-row chips need this for every visible row at once
-    /// (CAD audit item 190), and a `tags_for_entry` call per row would be an N+1
+    /// -- the library list's per-row chips need this for every visible row at once,
+    /// and a `tags_for_entry` call per row would be an N+1
     /// query against a catalogue that already tops out in the low thousands of rows.
     /// An entry with no tags simply has no key in the returned map (never an empty
     /// `Vec` -- the caller's own `unwrap_or_default()` on the lookup already reads

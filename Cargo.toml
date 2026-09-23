@@ -10,7 +10,7 @@ members = ["crates/indicatrix", "crates/indicatrix-net", "crates/indicatrix-form
 # connected by `indicatrix-net`'s wire protocol.
 
 [workspace.package]
-version = "0.3.3"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Suitable-Name"]
@@ -23,7 +23,12 @@ publish = true
 anyhow = "1.0.104"
 bytemuck = { version = "1.22", features = ["derive"] }
 chull = "0.2.4"                                        # or try parry3d if this fails
-glam = "0.33.7"
+# Pinned exactly: glam 0.33.8 reordered DMat3::determinant/inverse ("align with
+# Mat4", glam #828/#836/#837), and crates/indicatrix's SIMD twins
+# (simd/triple_solve.rs, geometry/meet_solver/candidates.rs) are checked bitwise
+# against the glam scalar sequence. Bumping glam means re-deriving those twins and
+# re-verifying every solver golden, not just editing this line.
+glam = "=0.33.7"
 # `default-features = false` MUST live here, not in the members: a member
 # inheriting a workspace dependency may only ADD features, never remove them,
 # and newer Cargo rejects a member that repeats `default-features = false`
@@ -41,8 +46,8 @@ postcard = { version = "1.1.3", features = ["alloc"] }
 # provider pin as `rustls` above -- `rcgen`'s "ring" feature implies its "crypto"
 # feature, no separate flag needed for that.
 rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pem", "x509-parser"] }
-# Native OS file/folder picker dialogs (Task: file-selection dialogs -- import/HDR/
-# cert-dir/export "Browse..." buttons in `apps/indicatrix-cut`). Default features kept
+# Native OS file/folder picker dialogs (import/HDR/cert-dir/export "Browse..."
+# buttons in `apps/indicatrix-cut`). Default features kept
 # on: the only default is `xdg-portal` (Linux/BSD), which talks to the desktop over
 # D-Bus at runtime and needs no C toolchain/dev-headers at BUILD time, unlike the
 # non-default `gtk3` feature -- so this stays a no-op for the Windows build (native
@@ -57,12 +62,12 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 # unlike `aws-lc-rs`). `tls12` is deliberately left out of rustls's feature list: this
 # workspace has no reason to ever negotiate down from TLS 1.3, so the TLS 1.2 code path
 # is excluded at compile time rather than merely unconfigured at runtime.
-rustls = { version = "0.23.44", default-features = false, features = ["std", "ring", "logging"] }
+rustls = { version = "0.23.45", default-features = false, features = ["std", "ring", "logging"] }
 rustls-pemfile = "2.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
-# N5: `SockRef::set_tcp_keepalive`/`TcpStream::set_nodelay` tuning for `apps/indicatrix-worker`'s
+# `SockRef::set_tcp_keepalive`/`TcpStream::set_nodelay` tuning for `apps/indicatrix-worker`'s
 # accepted connections (see that crate's `serve` module) -- `std::net::TcpStream` has no
 # keepalive API of its own, and `socket2::SockRef::from` borrows an existing standard-library
 # socket rather than requiring one be constructed through `socket2` from the start, so this
@@ -73,13 +78,13 @@ socket2 = { version = "0.6.5", features = ["all"] }
 # see that comment. Each member re-declares the feature set it actually wants:
 # `apps/indicatrix-cut` names slint's own defaults verbatim (unchanged behaviour),
 # `apps/indicatrix-web` names the trimmed wasm set.
-slint = { version = "1.18.0", default-features = false }
-slint-build = "1.18.0"
+slint = { version = "1.18.1", default-features = false }
+slint-build = "1.18.1"
 # `rcgen::CertificateParams::not_before`/`not_after` are `time::OffsetDateTime` --
 # needed directly (not re-exported by `rcgen`) to set certificate validity windows,
 # including the clock-skew backdating in `pki::not_before_with_skew_slack`.
 time = { version = "0.3", default-features = false, features = ["std"] }
-# Phase 7's native design-file format in `indicatrix_cut_core::native` (TOML on-disk encoding) and
+# The native design-file format in `indicatrix_cut_core::native` (TOML on-disk encoding) and
 # `apps/indicatrix-cut`'s settings persistence -- see each crate's own comment on its
 # `toml` dependency for why TOML was chosen there.
 toml = "1.1.4"
@@ -94,11 +99,11 @@ wgpu = { version = "30.0.1", default-features = false }
 winresource = "0.1.31"
 
 # Workspace members
-indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.3.3" }
-indicatrix = { path = "crates/indicatrix", version = "0.3.3" }
-indicatrix-net = { path = "crates/indicatrix-net", version = "0.3.3" }
-indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.3.3" }
-indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.3.3" }
+indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.4.0" }
+indicatrix = { path = "crates/indicatrix", version = "0.4.0" }
+indicatrix-net = { path = "crates/indicatrix-net", version = "0.4.0" }
+indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.4.0" }
+indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.4.0" }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

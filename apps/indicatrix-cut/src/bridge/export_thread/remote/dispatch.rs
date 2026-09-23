@@ -14,8 +14,9 @@
 //! The thread running this loop does nothing between chunks but claim the next one,
 //! dispatch it, and sum the result -- tens of milliseconds even at 4K -- so
 //! `last_update` is never compared against a stale value from being off doing
-//! something else. The real, reproduced false positive was the FIRST wait's deadline
-//! being too tight for a coarse worker cadence, which [`FIRST_EVENT_TIMEOUT`] fixes.
+//! something else. A coarse worker cadence can legitimately make the FIRST wait take
+//! longer than a steady-state one, which is why [`FIRST_EVENT_TIMEOUT`] grants it a
+//! longer deadline.
 
 use super::{
     capability::RemoteCapability,
@@ -58,14 +59,14 @@ const LIVENESS_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// Mirrors `bridge::remote::remote_render::connection`'s own `FIRST_EVENT_TIMEOUT`.
 ///
-/// # The false positive this closes
+/// # Why the first wait needs a longer grace
 ///
 /// Confirmed against a real export: at 4K with a worker cadence of 20 samples/tick, a
 /// calibration probe can legitimately take longer than [`LIVENESS_TIMEOUT`] to produce
-/// its first [`RemoteUpdate`] while genuinely still computing. Before this constant
-/// existed, `run_remote_batch`'s `last_update` clock was judged against the single,
-/// tighter `LIVENESS_TIMEOUT` for that entire first wait, so a calibration probe could
-/// be reported as "worker silent" while busy.
+/// its first [`RemoteUpdate`] while genuinely still computing. `run_remote_batch`'s
+/// `last_update` clock is judged against this longer deadline for that first wait
+/// specifically, so a calibration probe busy but slow to report isn't mistaken for
+/// "worker silent".
 const FIRST_EVENT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The slowest link this watchdog assumes when budgeting time for one full-resolution

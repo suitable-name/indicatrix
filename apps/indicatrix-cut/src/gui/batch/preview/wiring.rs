@@ -22,7 +22,7 @@ use std::{
     collections::HashMap,
     rc::Rc,
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -76,10 +76,12 @@ pub fn spawn_preview_batch(
         }
         impl Drop for BusyGuard {
             fn drop(&mut self) {
-                self.render_ctx
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .export_active = false;
+                // A COUNT, not a bool: the batch preview, the batch tilt
+                // sweep and a hi-res export queue can each be in flight at once, so
+                // this decrements its own claim rather than unconditionally clearing
+                // every job's -- see `RenderContext::export_active_count`'s doc
+                // comment.
+                RenderContext::lock(&self.render_ctx).export_active_count -= 1;
                 let ui_weak = self.ui_weak.clone();
                 let _ = ui_weak.upgrade_in_event_loop(move |ui| {
                     ui.global::<BatchModel>().set_preview_batch_running(false);
@@ -87,10 +89,7 @@ pub fn spawn_preview_batch(
             }
         }
 
-        {
-            let mut ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
-            ctx.export_active = true;
-        }
+        RenderContext::lock(&render_ctx).export_active_count += 1;
         let _busy_guard = BusyGuard {
             render_ctx: Arc::clone(&render_ctx),
             ui_weak: ui_weak.clone(),
@@ -104,6 +103,11 @@ pub fn spawn_preview_batch(
         // megakernel compilation are far too slow to repeat, same reasoning as
         // `export_thread::run_export`'s own single `GpuBackend::acquire` call.
         let gpu = GpuBackend::acquire();
+        // Shared by every local lane (via `BatchContext::gpu_retired`) so a
+        // caught wgpu-fatal panic in any ONE of them retires `gpu` for the rest of the
+        // batch, not just the lane it happened on -- see `engine::catch_local_render`'s
+        // own doc comment.
+        let gpu_retired = AtomicBool::new(false);
         // First configured worker only -- see this group's `mod.rs` doc comment's
         // "Local + remote" section, and `export_thread::remote::probe_remote`'s own doc
         // comment for the same "session-wide, first entry" convention this mirrors.
@@ -113,6 +117,7 @@ pub fn spawn_preview_batch(
             material_candidates: &material_candidates,
             preview_size: settings.preview_size,
             preview_spp: settings.preview_spp,
+            gpu_retired: &gpu_retired,
         };
 
         let queue = WorkQueue::new(build_items(&entry_ids));

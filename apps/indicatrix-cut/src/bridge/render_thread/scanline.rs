@@ -45,7 +45,7 @@ struct RowSlices<'a> {
 /// claiming row `y` locks `rows` just long enough to `Option::take` that row's slices
 /// (held per ROW, not per pixel), then processes the whole row without the lock held.
 /// `next_row.fetch_add` hands out each index exactly once, so results stay
-/// bit-identical to the old contiguous-band split -- only which thread renders which
+/// bit-identical to a contiguous-band split -- only which thread renders which
 /// row changes run to run.
 pub(super) fn render_frame_scanlines(
     frame: &BackendFrame<'_>,
@@ -83,8 +83,8 @@ pub(super) fn render_frame_scanlines(
     let rows = Mutex::new(rows);
     let next_row = AtomicUsize::new(0);
 
-    // Built ONCE per call rather than once per traced sample: `trace_spectral_ray_with_finish`
-    // (the old per-sample call below) rebuilds this SIMD arena from `frame.planes` on
+    // Built ONCE per call rather than once per traced sample: the non-SoA
+    // `trace_spectral_ray_with_finish` rebuilds this SIMD arena from `frame.planes` on
     // every invocation -- a heap allocation per (pixel, sample) tuple. `build_plane_soa`/
     // `trace_spectral_ray_with_finish_soa` are the caller-builds-the-arena-once pair
     // documented on `trace_spectral_ray_with_finish_soa` for exactly this case; results
@@ -158,7 +158,15 @@ pub(super) fn render_frame_scanlines(
                                 Some(&mut primary_hit),
                             );
 
-                            sample_sum += sample_xyz;
+                            // Defensive: no reachable NaN/Inf producer is
+                            // known in the CPU path today, but this accumulator adds
+                            // unconditionally into a buffer that never resets except on
+                            // a full scene change -- one non-finite sample would poison
+                            // every pixel's running average for the rest of the session
+                            // rather than just corrupting the one frame it came from.
+                            if sample_xyz.is_finite() {
+                                sample_sum += sample_xyz;
+                            }
                         }
 
                         acc_row[x] += sample_sum;

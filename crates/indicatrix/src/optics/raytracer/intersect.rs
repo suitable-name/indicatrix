@@ -38,11 +38,11 @@ pub fn intersect_polyhedron(ray: Ray, planes: &[GpuFacetPlane]) -> Option<HitRec
             // already outside that plane's half-space (`n.origin + d > 0`) -- since
             // `denom ~= 0` means `n.x + d` never changes along the ray, it can NEVER
             // enter this half-space, so it can never be inside every half-space
-            // simultaneously (the polyhedron intersection is empty for this ray). The
-            // standard slab-method guard, previously missing: a plane this near-parallel
-            // was silently skipped regardless of which side the origin was on, which
-            // could report a false hit through a still-eligible plane even though this
-            // one already rules the ray out entirely. Deliberately NOT applied to the
+            // simultaneously (the polyhedron intersection is empty for this ray). This is
+            // the standard slab-method guard: without it, a plane this near-parallel
+            // would be silently skipped regardless of which side the origin was on,
+            // which could report a false hit through a still-eligible plane even though
+            // this one already rules the ray out entirely. Deliberately NOT applied to the
             // `planes.is_empty()` case (the loop simply never runs then) -- see this
             // function's callers/tests for why that sentinel-hit behavior is relied on
             // elsewhere (the furnace kernel design).
@@ -260,8 +260,8 @@ mod intersect_polyhedron_parallel_ray_tests {
     /// `n.dot(origin) + d` when `n.dot(dir) == 0`. The pre-fix code silently skipped any
     /// plane with `|n.dot(dir)| <= 1e-7` without checking which side of it the origin
     /// was on, so it fell through to the remaining planes and reported a false hit
-    /// entering through the -X face at t=4.5 (the exact measurement from the physics
-    /// review) instead of correctly reporting no intersection.
+    /// entering through the -X face at t=4.5 (the exact pre-fix measured value)
+    /// instead of correctly reporting no intersection.
     #[test]
     fn ray_parallel_to_and_outside_a_face_never_hits() {
         let planes = unit_cube_planes();

@@ -12,8 +12,8 @@
 //! `compute_uniaxial_exit_transmission` are both module-private (not even
 //! `pub(super)`), and `narrow_compat` is `pub(super)` -- visible only within
 //! `optics::raytracer`, not from this crate's `renderer` tree. Widening any of their
-//! visibility would mean editing `refraction.rs`, which this task's own hard rules put
-//! on the coordinator-owned/protected list (`crates/indicatrix/src/optics/raytracer/
+//! visibility would mean editing `refraction.rs`, which is on the coordinator-owned/
+//! protected list (`crates/indicatrix/src/optics/raytracer/
 //! {refraction,transport,color}.rs`) -- not modifiable under any circumstance.
 //!
 //! `cpu_compute_channel_transmission`/`cpu_compute_uniaxial_exit_transmission`/
@@ -26,7 +26,7 @@
 //! arithmetic those private functions add on top is actually duplicated. This mirrors
 //! the precedent `transport_check/mod.rs`'s own doc comment already sets for a
 //! similarly unreachable CPU formula (the standalone scalar Fresnel-amplitude check it
-//! deliberately omits) -- the difference here is this task's brief explicitly asks for
+//! deliberately omits) -- the difference here is this module explicitly requires
 //! kernel-level coverage of these three functions, so rather than omitting the check
 //! entirely this module accepts the transcription as the closest achievable
 //! approximation to "the real CPU function" given the protected-file boundary.

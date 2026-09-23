@@ -84,6 +84,7 @@ pub use path::{
     native_path_for_asc,
 };
 pub use schema::{
-    FORMAT_VERSION, MaterialTable, NativeDesignFile, NativeFormatError, NativeMeetConstraint,
-    NativePreformShape, PreformTable, SourceTable, TierTable, from_toml_str, to_toml_string,
+    CustomMaterialSnapshot, FORMAT_VERSION, HistoryTable, MaterialTable, NativeDesignFile,
+    NativeFormatError, NativeMeetConstraint, NativePreformShape, NativeTierTarget, PreformTable,
+    SourceTable, TierTable, from_toml_str, to_toml_string,
 };

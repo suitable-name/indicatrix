@@ -150,7 +150,7 @@ impl Database {
     /// Deletes `entry_id`'s entire `diagram_previews` row (images, generation
     /// timestamp, AND the persisted `preview_material` choice), if one exists.
     ///
-    /// CAD audit item 97: `diagram_previews` is a side table keyed by `entry_id` (see
+    /// `diagram_previews` is a side table keyed by `entry_id` (see
     /// this module's own doc comment), so re-importing a `.asc` over an existing row
     /// -- which fully replaces `diagram_details` via
     /// [`Self::save_diagram_detail`](Database::save_diagram_detail) -- leaves whatever

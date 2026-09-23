@@ -37,7 +37,7 @@ pub(in crate::gui) fn setup_material_changed_callback(
     let ui_weak_mat = ui.as_weak();
     ui.global::<ViewportModel>()
         .on_material_changed(move |material: SharedString| {
-            let mut ctx = render_ctx_mat.lock().unwrap();
+            let mut ctx = RenderContext::lock(&render_ctx_mat);
             ctx.material_name = material.to_string();
             // Cleared, not left alone: `resolve_material_with_override` PREFERS
             // `material_override` over the name just written, and
@@ -119,7 +119,7 @@ pub(in crate::gui) fn setup_material_and_quality_callbacks(
     ui.global::<ViewportModel>()
         .on_lighting_changed(move |idx: i32| {
             let preset = LightingPreset::from_index(idx);
-            let mut ctx = render_ctx_lit.lock().unwrap();
+            let mut ctx = RenderContext::lock(&render_ctx_lit);
             ctx.lighting_preset = preset;
             ctx.dirty = true;
             drop(ctx);
@@ -138,7 +138,7 @@ pub(in crate::gui) fn setup_material_and_quality_callbacks(
     ui.global::<SettingsModel>()
         .on_target_samples_changed(move |exponent: i32| {
             let target_samples = exponent_to_count(u32::try_from(exponent).unwrap_or(0));
-            let mut ctx = render_ctx_samples.lock().unwrap();
+            let mut ctx = RenderContext::lock(&render_ctx_samples);
             ctx.target_samples = target_samples;
             ctx.dirty = true;
             drop(ctx);
@@ -161,7 +161,7 @@ pub(in crate::gui) fn setup_material_and_quality_callbacks(
     ui.global::<SettingsModel>()
         .on_resolution_changed(move |width: i32, height: i32| {
             let (width, height) = (width as u32, height as u32);
-            let mut ctx = render_ctx_res.lock().unwrap();
+            let mut ctx = RenderContext::lock(&render_ctx_res);
             ctx.width = width;
             ctx.height = height;
             ctx.dirty = true;
@@ -185,7 +185,7 @@ pub(in crate::gui) fn setup_material_and_quality_callbacks(
     ui.global::<SettingsModel>()
         .on_inclusion_changed(move |sigma_s: f32| {
             let clamped = sigma_s.clamp(0.0, 3.0);
-            let mut ctx = render_ctx_inc.lock().unwrap();
+            let mut ctx = RenderContext::lock(&render_ctx_inc);
             ctx.inclusion_sigma_s = clamped;
             ctx.dirty = true;
             drop(ctx);
@@ -197,7 +197,7 @@ pub(in crate::gui) fn setup_material_and_quality_callbacks(
     let render_ctx_pause = render_ctx.clone();
     ui.global::<ViewportModel>()
         .on_pause_toggled(move |paused: bool| {
-            let mut ctx = render_ctx_pause.lock().unwrap();
+            let mut ctx = RenderContext::lock(&render_ctx_pause);
             ctx.paused = paused;
         });
 
@@ -214,7 +214,7 @@ pub(in crate::gui) fn setup_material_and_quality_callbacks(
     ui.global::<SettingsModel>()
         .on_bounces_changed(move |bounces: i32| {
             let clamped = (bounces as u32).max(1);
-            let mut ctx = render_ctx_bnc.lock().unwrap();
+            let mut ctx = RenderContext::lock(&render_ctx_bnc);
             ctx.max_bounces = clamped;
             ctx.dirty = true;
             drop(ctx);
@@ -226,7 +226,7 @@ pub(in crate::gui) fn setup_material_and_quality_callbacks(
     ui.global::<SettingsModel>()
         .on_exposure_changed(move |exposure: f32| {
             let clamped = exposure.clamp(0.2, 5.0);
-            let mut ctx = render_ctx_exp.lock().unwrap();
+            let mut ctx = RenderContext::lock(&render_ctx_exp);
             ctx.exposure = clamped;
             ctx.dirty = true;
             drop(ctx);
@@ -257,7 +257,7 @@ fn setup_local_render_path_callbacks(
     ui.global::<SettingsModel>()
         .on_local_preview_scale_changed(move |index: i32| {
             let scale = local_preview_scale_from_index(index);
-            render_ctx_preview.lock().unwrap().local_preview_scale = scale;
+            RenderContext::lock(&render_ctx_preview).local_preview_scale = scale;
             settings_store_preview.update(|s| s.settings.local_preview_scale = scale);
         });
 
@@ -272,10 +272,7 @@ fn setup_local_render_path_callbacks(
     ui.global::<SettingsModel>()
         .on_local_compute_target_changed(move |index: i32| {
             let target = local_compute_target_from_index(index);
-            render_ctx_local_compute
-                .lock()
-                .unwrap()
-                .local_compute_target = target;
+            RenderContext::lock(&render_ctx_local_compute).local_compute_target = target;
             settings_store_local_compute.update(|s| s.settings.local_compute_target = target);
         });
 }
@@ -301,7 +298,7 @@ pub(in crate::gui) fn setup_material_effect_override_callbacks(
         move |tilt_deg: f32, azimuth_deg: f32| {
             let tilt_deg = tilt_deg.clamp(0.0, 90.0);
             let azimuth_deg = azimuth_deg.clamp(0.0, 360.0);
-            let mut ctx = render_ctx_axis_angles.lock().unwrap();
+            let mut ctx = RenderContext::lock(&render_ctx_axis_angles);
             ctx.c_axis_override = Some(angles_to_c_axis(tilt_deg, azimuth_deg));
             ctx.dirty = true;
             drop(ctx);
@@ -322,7 +319,7 @@ pub(in crate::gui) fn setup_material_effect_override_callbacks(
     let ui_weak_axis_toggle = ui.as_weak();
     ui.global::<SettingsModel>()
         .on_c_axis_override_changed(move |enabled: bool| {
-            let mut ctx = render_ctx_axis_toggle.lock().unwrap();
+            let mut ctx = RenderContext::lock(&render_ctx_axis_toggle);
             if enabled {
                 let base = resolve_material(
                     &GemMaterial::all_materials(),
@@ -357,7 +354,7 @@ pub(in crate::gui) fn setup_material_effect_override_callbacks(
     let settings_store_girdle = settings_store.clone();
     ui.global::<SettingsModel>()
         .on_girdle_frosted_changed(move |frosted: bool| {
-            let mut ctx = render_ctx_girdle.lock().unwrap();
+            let mut ctx = RenderContext::lock(&render_ctx_girdle);
             ctx.girdle_frosted = frosted;
             ctx.dirty = true;
             drop(ctx);
@@ -372,7 +369,7 @@ pub(in crate::gui) fn setup_material_effect_override_callbacks(
     ui.global::<SettingsModel>()
         .on_edge_rounding_changed(move |radius: f32| {
             let clamped = radius.clamp(0.0, 0.03);
-            let mut ctx = render_ctx_edge.lock().unwrap();
+            let mut ctx = RenderContext::lock(&render_ctx_edge);
             ctx.edge_rounding_radius = clamped;
             ctx.dirty = true;
             drop(ctx);
@@ -389,7 +386,7 @@ pub(in crate::gui) fn setup_material_effect_override_callbacks(
     ui.global::<SettingsModel>()
         .on_stone_width_changed(move |width_mm: f32| {
             let clamped = width_mm.max(0.0);
-            let mut ctx = render_ctx_stone.lock().unwrap();
+            let mut ctx = RenderContext::lock(&render_ctx_stone);
             ctx.stone_width_mm = clamped;
             ctx.dirty = true;
             drop(ctx);
@@ -410,7 +407,7 @@ pub(in crate::gui) fn setup_backdrop_callback(
     ui.global::<SettingsModel>()
         .on_backdrop_changed(move |index: i32| {
             let backdrop = crate::settings::model::Backdrop::from_index(index);
-            let mut ctx = render_ctx.lock().unwrap();
+            let mut ctx = RenderContext::lock(&render_ctx);
             ctx.backdrop = backdrop;
             ctx.dirty = true;
             drop(ctx);

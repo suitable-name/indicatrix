@@ -18,7 +18,7 @@ use std::{
     cell::RefCell,
     rc::Rc,
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread,
@@ -62,10 +62,12 @@ pub fn spawn_tilt_batch(
         }
         impl Drop for BusyGuard {
             fn drop(&mut self) {
-                self.render_ctx
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .export_active = false;
+                // A COUNT, not a bool: the batch preview, the batch tilt sweep and a
+                // hi-res export queue can each be in flight at once, so
+                // this decrements its own claim rather than unconditionally clearing
+                // every job's -- see `RenderContext::export_active_count`'s doc
+                // comment.
+                RenderContext::lock(&self.render_ctx).export_active_count -= 1;
                 let ui_weak = self.ui_weak.clone();
                 let _ = ui_weak.upgrade_in_event_loop(move |ui| {
                     ui.global::<BatchModel>().set_tilt_batch_running(false);
@@ -73,10 +75,7 @@ pub fn spawn_tilt_batch(
             }
         }
 
-        {
-            let mut ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
-            ctx.export_active = true;
-        }
+        RenderContext::lock(&render_ctx).export_active_count += 1;
         let _busy_guard = BusyGuard {
             render_ctx: Arc::clone(&render_ctx),
             ui_weak: ui_weak.clone(),
@@ -225,7 +224,13 @@ fn start_batch(
 /// for `ids` -- mirrors `gui::batch::preview::offer_batch_confirmation` exactly, just
 /// against the `tilt_offer_*`/`tilt_batch_*` property names instead of the preview
 /// batch's own. A no-op for an empty `ids`.
-fn offer_batch_confirmation(ui: &MainWindow, ids: &[i64]) {
+///
+/// `pub` (re-exported by `super::mod`'s `pub use`): the owner's "regenerate tilt
+/// curves for the filtered set" library action (`gui::library`) opens this exact
+/// same confirm step for the currently-filtered id set, the same way
+/// `gui::batch::preview::offer_batch_confirmation` is already `pub` for its own
+/// "regenerate previews" counterpart.
+pub fn offer_batch_confirmation(ui: &MainWindow, ids: &[i64]) {
     if ids.is_empty() {
         return;
     }

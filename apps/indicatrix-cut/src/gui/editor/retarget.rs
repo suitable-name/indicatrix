@@ -30,15 +30,16 @@
 //! `Edit::RetargetAngles` -- trust runtime state, not a caller's claimed previous
 //! value. This also means a proposal is safe to apply even if the design moved
 //! slightly between building it and pressing Apply; a row naming a tier index the
-//! design no longer has is dropped rather than panicking.
+//! design names is dropped rather than panicking.
 
 use indicatrix::{
     geometry::meet_solver::{Block, MeetConstraint, classify_blocks},
     optics::materials::GemMaterial,
 };
 use indicatrix_cut_core::{
-    AngleChange, Design, Edit, MissingAnchor, OptimizeConfig, ResolvedMaterial, Risk, SearchHooks,
-    critical_angle_deg, optimize_design, retarget_angle_deg, tier_margin_deg, windowing_risk,
+    AngleChange, Design, DesignSolveError, Edit, OptimizeConfig, ResolvedMaterial, Risk,
+    SearchHooks, critical_angle_deg, optimize_design, retarget_angle_deg, tier_margin_deg,
+    windowing_risk,
 };
 
 /// The optimizer's own safety bound: no retarget proposal -- from either mode --
@@ -112,7 +113,7 @@ pub struct RetargetProposal {
 pub enum RetargetError {
     /// `RetargetMode::Optimize` needs a real solved baseline before it can search
     /// at all -- propagated from `optimize_design`/`Design::solve` verbatim.
-    Solve(MissingAnchor),
+    Solve(DesignSolveError),
     /// `RetargetMode::Optimize` was asked to retarget one or more tiers currently
     /// `ScaleReference` (so `optimize_design` can never move them). `(tier_index,
     /// name)` per anchored tier, in schedule order.
@@ -304,12 +305,11 @@ fn row_for(design: &Design, index: usize, block: Block, new_angle: f64, n_to: f6
 ///
 /// `target.n_d` is the "to" index. The "from" index resolves through
 /// [`Design::effective_refractive_index_with`] against `custom_materials`, NOT the
-/// built-ins-only [`Design::effective_refractive_index`] (CAD audit item 53): a
-/// design on a custom catalogue material (say "Garnet 1.74") must be retargeted
-/// against its own real recorded index, not whatever the built-ins-only fallback
-/// would silently substitute -- the design's legacy schedule RI, or 1.54. Every
-/// proposed angle is a shift from that number, so getting it wrong moves every
-/// facet on the stone.
+/// built-ins-only [`Design::effective_refractive_index`]. A design on a custom
+/// catalogue material (e.g., "Garnet 1.74") must retarget against its own real
+/// recorded index, not whatever the built-ins fallback would substitute (the
+/// legacy schedule RI or 1.54). Every proposed angle shifts from that number, so
+/// an error moves every facet on the stone.
 ///
 /// Pass `&[]` only when there is genuinely no catalogue in scope -- which, outside
 /// this module's own tests, there never is.
@@ -385,10 +385,9 @@ fn build_proposal_impl(
 /// `target.gem`, then reads back the final angle for each `scope` tier (the seeded
 /// angle, overridden by `AngleChange::to_deg` for whichever tiers actually moved).
 ///
-/// `n_from` is the caller's already-resolved (custom-material-aware, CAD audit
-/// item 53) source index -- this used to re-resolve it itself via the plain
-/// built-ins-only `Design::effective_refractive_index()`, which silently seeded
-/// the search from the wrong index whenever `design` was on a custom catalogue
+/// `n_from` is the caller's already-resolved source index (custom-material-aware).
+/// Recomputing it here via the built-ins-only `Design::effective_refractive_index()`
+/// would silently seed from the wrong index for a design on a custom catalogue
 /// material.
 ///
 /// # Errors
@@ -894,8 +893,8 @@ mod tests {
         assert!(text.contains("RBC-445"));
     }
 
-    // --- CAD audit item 53: build_proposal resolves a custom
-    //     catalogue material's real RI instead of the built-ins-only fallback ---
+    // --- build_proposal resolves a custom catalogue material's real RI instead
+    //     of the built-ins-only fallback ---
 
     #[test]
     fn build_proposal_uses_the_custom_materials_own_ri() {

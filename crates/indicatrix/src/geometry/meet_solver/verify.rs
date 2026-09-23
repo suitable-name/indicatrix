@@ -11,7 +11,7 @@
 //! the best-scoring configuration found.
 
 use super::{
-    MAX_PLANES, MeetConstraint, MeetTierInput, SolvedTier,
+    MAX_PLANES, MeetConstraint, MeetTierInput, SolveControl, SolveError, SolvedTier,
     solve::{PipelineResult, SolveContext},
 };
 use crate::geometry::stone_metrics::ExternalProportions;
@@ -175,7 +175,11 @@ pub struct VerifiedSolveReport {
 ///
 /// Latency: each repair run costs one full pipeline solve, `O(P^3)` per
 /// refinement sweep in the plane count `P`; see the module docs' "Cost
-/// envelope" section and `VERIFY_RUN_BUDGET` for the measured figures.
+/// envelope" section and `VERIFY_RUN_BUDGET` for the measured figures. Never
+/// cancels and reports no progress -- a thin wrapper over
+/// [`solve_meet_points_verified_with`] passing a no-op [`SolveControl`], and
+/// above [`MAX_PLANES`] it keeps the legacy behavior of returning an all-
+/// [`super::SolveStrategy::Failed`] result instead of an error.
 #[must_use]
 pub fn solve_meet_points_verified(
     gear_teeth_abs: u32,
@@ -183,18 +187,64 @@ pub fn solve_meet_points_verified(
     targets: &ExternalProportions,
     adjustable_anchors: &[usize],
 ) -> (Vec<SolvedTier>, VerifiedSolveReport) {
+    match solve_meet_points_verified_with(
+        gear_teeth_abs,
+        tiers,
+        targets,
+        adjustable_anchors,
+        &SolveControl::default(),
+    ) {
+        Ok(result) => result,
+        Err(SolveError::TooManyPlanes { .. }) => {
+            let ctx = SolveContext::new(gear_teeth_abs, tiers);
+            let report = VerifiedSolveReport {
+                initial_score: f64::INFINITY,
+                score_after_calibration: f64::INFINITY,
+                final_score: f64::INFINITY,
+                accepted: false,
+                overrides_applied: 0,
+                anchor_moves_applied: 0,
+                pipeline_runs: 0,
+            };
+            (ctx.failed_solved(), report)
+        }
+        Err(SolveError::Cancelled) => {
+            unreachable!("SolveControl::default() never sets cancel")
+        }
+    }
+}
+
+/// Cancellable, progress-reporting sibling of [`solve_meet_points_verified`].
+///
+/// Same search and same determinism guarantee: an unused `control` reproduces
+/// [`solve_meet_points_verified`] exactly. Every pipeline run the repair
+/// search performs -- the coarse anchor grid, and every greedy-round trial --
+/// is itself a natural cancel point and progress source: each goes through
+/// [`super::solve::SolveContext::run_pipeline`] with `control` threaded
+/// through it, so a cancel or [`super::SolveProgress`] report from deep inside
+/// one repair-search run surfaces exactly the way a plain
+/// [`super::solve_meet_points_with`] solve's does. No separate
+/// verified-search-level progress unit.
+///
+/// # Errors
+///
+/// [`SolveError::TooManyPlanes`] when the design has more than [`MAX_PLANES`]
+/// facet-plane instances (checked before any solving starts);
+/// [`SolveError::Cancelled`] the first time `control`'s cancel flag is
+/// observed set, from inside whichever pipeline run was in flight.
+pub fn solve_meet_points_verified_with(
+    gear_teeth_abs: u32,
+    tiers: &[MeetTierInput],
+    targets: &ExternalProportions,
+    adjustable_anchors: &[usize],
+    control: &SolveControl<'_>,
+) -> Result<(Vec<SolvedTier>, VerifiedSolveReport), SolveError> {
     let ctx = SolveContext::new(gear_teeth_abs, tiers);
     if ctx.total_planes > MAX_PLANES {
-        let report = VerifiedSolveReport {
-            initial_score: f64::INFINITY,
-            score_after_calibration: f64::INFINITY,
-            final_score: f64::INFINITY,
-            accepted: false,
-            overrides_applied: 0,
-            anchor_moves_applied: 0,
-            pipeline_runs: 0,
-        };
-        return (ctx.failed_solved(), report);
+        return Err(SolveError::TooManyPlanes {
+            planes: ctx.total_planes,
+            max: MAX_PLANES,
+        });
     }
 
     let adjustable: Vec<usize> = {
@@ -234,7 +284,7 @@ pub fn solve_meet_points_verified(
         .collect();
 
     let level_overrides: BTreeMap<usize, usize> = BTreeMap::new();
-    let best = ctx.run_pipeline(&level_overrides, &anchor_values);
+    let best = ctx.run_pipeline(&level_overrides, &anchor_values, control)?;
     let best_score = ctx.config_score(&best.mast, targets);
     let initial_score = best_score;
 
@@ -250,10 +300,10 @@ pub fn solve_meet_points_verified(
         runs: 1,
         anchor_moves: 0,
     };
-    search.coarse_anchor_grid();
+    search.coarse_anchor_grid(control)?;
     let score_after_calibration = search.best_score;
     for _ in 0..max_rounds {
-        if !search.greedy_round() {
+        if !search.greedy_round(control)? {
             break;
         }
     }
@@ -267,7 +317,7 @@ pub fn solve_meet_points_verified(
         anchor_moves_applied: search.anchor_moves,
         pipeline_runs: search.runs,
     };
-    (ctx.to_solved(&search.best), report)
+    Ok((ctx.to_solved(&search.best), report))
 }
 
 /// Mutable state of one verified repair search, shared by its phases (the
@@ -298,7 +348,12 @@ impl VerifiedSearch<'_, '_> {
     /// Coarse anchor-calibration grid: per adjustable anchor (ascending), try
     /// [`ANCHOR_GRID`] multiples of its current value against the fixed level
     /// state, committing every improvement as it is found.
-    fn coarse_anchor_grid(&mut self) {
+    ///
+    /// # Errors
+    ///
+    /// [`SolveError::Cancelled`] the first time `control`'s cancel flag is
+    /// observed set inside a trial pipeline run.
+    fn coarse_anchor_grid(&mut self, control: &SolveControl<'_>) -> Result<(), SolveError> {
         for ai in self.adjustable {
             let base = self.anchor_values[ai];
             if base <= 1e-9 {
@@ -306,11 +361,13 @@ impl VerifiedSearch<'_, '_> {
             }
             for &mult in &ANCHOR_GRID {
                 if self.done() {
-                    return;
+                    return Ok(());
                 }
                 let mut trial_anchors = self.anchor_values.clone();
                 trial_anchors.insert(*ai, base * mult);
-                let trial = self.ctx.run_pipeline(&self.level_overrides, &trial_anchors);
+                let trial =
+                    self.ctx
+                        .run_pipeline(&self.level_overrides, &trial_anchors, control)?;
                 self.runs += 1;
                 let score = self.ctx.config_score(&trial.mast, self.targets);
                 if score < self.best_score {
@@ -321,6 +378,7 @@ impl VerifiedSearch<'_, '_> {
                 }
             }
         }
+        Ok(())
     }
 
     /// Every candidate move of one greedy round, in deterministic order: level
@@ -366,9 +424,14 @@ impl VerifiedSearch<'_, '_> {
     /// One greedy round: score every candidate move, commit the single best
     /// improvement (or exit early on an accepted trial). Returns whether the
     /// search should continue with another round.
-    fn greedy_round(&mut self) -> bool {
+    ///
+    /// # Errors
+    ///
+    /// [`SolveError::Cancelled`] the first time `control`'s cancel flag is
+    /// observed set inside a trial pipeline run.
+    fn greedy_round(&mut self, control: &SolveControl<'_>) -> Result<bool, SolveError> {
         if self.done() {
-            return false;
+            return Ok(false);
         }
         let moves = self.candidate_moves();
         let mut round_best: Option<(usize, PipelineResult, f64)> = None;
@@ -388,20 +451,22 @@ impl VerifiedSearch<'_, '_> {
                     (self.level_overrides.clone(), a)
                 }
             };
-            let trial = self.ctx.run_pipeline(&trial_levels, &trial_anchors);
+            let trial = self
+                .ctx
+                .run_pipeline(&trial_levels, &trial_anchors, control)?;
             self.runs += 1;
             let score = self.ctx.config_score(&trial.mast, self.targets);
             if score <= VERIFY_ACCEPT_TOL {
                 self.commit(mv);
                 self.best = trial;
                 self.best_score = score;
-                return false;
+                return Ok(false);
             }
             if score < self.best_score && round_best.as_ref().is_none_or(|r| score < r.2) {
                 round_best = Some((mi, trial, score));
             }
         }
-        match round_best {
+        Ok(match round_best {
             Some((mi, result, score)) if score < self.best_score - VERIFY_MIN_GAIN => {
                 self.commit(&moves[mi]);
                 self.best = result;
@@ -409,7 +474,7 @@ impl VerifiedSearch<'_, '_> {
                 self.runs < self.max_runs
             }
             _ => false,
-        }
+        })
     }
 }
 

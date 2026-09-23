@@ -14,15 +14,29 @@ impl Database {
     /// splits `facets_count` (e.g. `"55+6"`) into new `facets`/`girdle_facets` INTEGER
     /// columns, leaving `facets_count` in place for display.
     ///
-    /// Idempotent: gated on whether `facets` already exists. Runs in one transaction,
-    /// rolling back atomically on failure.
+    /// Idempotent: gated on `refractive_index`'s ACTUAL column type, read via `PRAGMA
+    /// table_info` ([`Self::column_sql_type`]), not on whether `facets` exists. A fresh
+    /// database's `diagram_details` (see `create_tables_if_not_exist`) already declares
+    /// `refractive_index`/`lw_ratio`/`volume`/`index_gear` as REAL/INTEGER and already
+    /// has `facets`/`girdle_facets` -- gating on column presence alone would still run
+    /// the full DROP-COLUMN/RENAME-COLUMN retype cycle (`retype_text_column_to_numeric`)
+    /// against columns that were never TEXT to begin with, on every single fresh
+    /// install. Gating on the type itself makes that a no-op read instead, while an old
+    /// database whose columns are genuinely still TEXT is unaffected and still migrates.
+    /// Runs in one transaction, rolling back atomically on failure.
     ///
     /// # Errors
     ///
-    /// Returns an error if checking for the `facets` column, or any step fails.
+    /// Returns an error if checking `refractive_index`'s column type, or any migration
+    /// step, fails.
     pub(super) fn migrate_numeric_columns(&self) -> Result<()> {
-        if Self::column_exists(&self.conn, "diagram_details", "facets")? {
-            debug!("Numeric column migration already applied; skipping.");
+        if Self::column_sql_type(&self.conn, "diagram_details", "refractive_index")?
+            .is_some_and(|sql_type| !sql_type.eq_ignore_ascii_case("text"))
+        {
+            debug!(
+                "Numeric column migration already applied (refractive_index is already typed); \
+                 skipping."
+            );
             return Ok(());
         }
 
@@ -320,9 +334,9 @@ impl Database {
     }
 
     /// Creates `tags`/`diagram_tag_links` for a database created before the catalogue
-    /// had a tagging system -- CAD audit item 190's flat-tag half (deliberately NOT
-    /// folders/collections; see [`super::search::SortOrder`]'s own doc comment for the
-    /// sort half this pairs with).
+    /// had a tagging system -- a flat-tag set (deliberately NOT folders/collections;
+    /// see [`super::search::SortOrder`]'s own doc comment for the sort half this
+    /// pairs with).
     ///
     /// A tag is its own row (`tags.name`, unique case-insensitively so "Competition"
     /// and "competition" can't silently become two different tags) rather than a free
@@ -453,9 +467,9 @@ impl Database {
 
     /// Adds `custom_gem_materials.specific_gravity`, a nullable REAL column holding
     /// the material's density relative to water, so a custom material can carry its
-    /// own SG the way the thirteen built-in species already do (see CAD audit item
-    /// 169: without it, Est. Carat Weight stays empty for a custom material unless
-    /// the cutter separately types an SG override for every design).
+    /// own SG the way the thirteen built-in species already do: without it, Est.
+    /// Carat Weight stays empty for a custom material unless the cutter separately
+    /// types an SG override for every design.
     ///
     /// Purely additive and nullable, same idiom as
     /// [`Self::migrate_per_axis_dispersion_column`]: `NULL` means "no SG recorded"
@@ -480,7 +494,7 @@ impl Database {
 
     /// Adds `diagram_entries.created_at`/`updated_at` (both nullable `INTEGER` Unix
     /// seconds) for a database created before this crate recorded when a design was
-    /// added or last changed -- see CAD audit item 191 and
+    /// added or last changed -- see
     /// [`Self::migrate_diagram_entries_provenance`] for the column it's paired with.
     ///
     /// Both `NULL`, not backfilled: a pre-existing row's real creation/edit time is
@@ -513,9 +527,9 @@ impl Database {
 
     /// Adds `diagram_entries.derived_from_entry_id` (nullable `INTEGER`, no
     /// `FOREIGN KEY`) for a database created before this crate recorded provenance
-    /// between rows -- see CAD audit item 186: an export-then-reimport of an existing
-    /// catalogue design currently lands as an indistinguishable second row, since a
-    /// different `url` means `INSERT`, not `UPDATE` (`Database::save_diagram_entry`).
+    /// between rows: without it, an export-then-reimport of an existing catalogue
+    /// design lands as an indistinguishable second row, since a different `url`
+    /// means `INSERT`, not `UPDATE` (`Database::save_diagram_entry`).
     ///
     /// This migration only adds the column and leaves every row's value `NULL`; it
     /// does not attempt to backfill provenance for existing rows by guessing from
@@ -549,16 +563,36 @@ impl Database {
     /// Returns an error if `table` is not a valid SQL identifier (see
     /// [`sql_identifier`]) or the `PRAGMA table_info` query fails.
     pub(super) fn column_exists(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+        Ok(Self::column_sql_type(conn, table, column)?.is_some())
+    }
+
+    /// `table.column`'s declared SQL type (e.g. `"TEXT"`, `"REAL"`, `"INTEGER"`) via
+    /// `PRAGMA table_info`, or `None` if `table` has no such column. Lets a migration
+    /// gate itself on what a column actually IS rather than merely whether it exists
+    /// -- see [`Self::migrate_numeric_columns`] for why that distinction matters: a
+    /// fresh database can already have every column a migration would otherwise add or
+    /// retype, already in its final shape, and presence alone can't tell those two
+    /// cases apart.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `table` is not a valid SQL identifier (see
+    /// [`sql_identifier`]) or the `PRAGMA table_info` query fails.
+    pub(super) fn column_sql_type(
+        conn: &Connection,
+        table: &str,
+        column: &str,
+    ) -> Result<Option<String>> {
         let table = sql_identifier(table)?;
         let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
         let mut rows = stmt.query([])?;
         while let Some(row) = rows.next()? {
             let name: String = row.get("name")?;
             if name == column {
-                return Ok(true);
+                return Ok(Some(row.get("type")?));
             }
         }
-        Ok(false)
+        Ok(None)
     }
 }
 
@@ -681,7 +715,7 @@ fn split_facets_count_column(tx: &Transaction<'_>) -> Result<()> {
 /// LEADING column of a primary key, so without this pair both lookups below degrade to a
 /// full table scan *per candidate design*:
 ///
-/// - `angle_settings (detail_id)` -- CAD audit item 228's `EXISTS (... WHERE a.detail_id
+/// - `angle_settings (detail_id)` -- serves the `EXISTS (... WHERE a.detail_id
 ///   = dd.id AND a.notes LIKE ?)` notes match. This table holds one row per TIER (50,817
 ///   rows against 3,299 designs on the owner's catalogue), so the scan is ~168 million
 ///   row visits, and `gui::library::search::refresh_diagram_list` issues three such

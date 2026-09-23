@@ -45,8 +45,17 @@ pub(super) fn current_pose(ctx: &Mutex<RenderContext>) -> Pose {
 /// its `on_update` closure (constructed there, but must be `Send` to cross into
 /// `bridge::remote_render`'s worker thread as the closure argument). `Arc<Mutex<_>>`
 /// rather than the `Rc<RefCell<_>>` most other UI-thread-only state in this crate uses,
-/// for exactly that reason; every actual access still only happens on the Slint event
-/// loop, so the lock is never contended.
+/// for exactly that reason.
+///
+/// One access does NOT happen on the Slint event loop: `tick::update::
+/// handle_remote_update`'s rate-limit/gate check for a `Frame`/`Preview` event takes
+/// this lock synchronously on the connection thread, before it ever queues a UI-thread
+/// closure (see `bridge::remote::remote_render::connection::mod`'s module doc comment,
+/// "Why a busy consumer can never make either deadline fire early"). That access is an
+/// O(1) check-and-mutate, so it is only ever held briefly -- which is exactly why
+/// `redraw_from_accumulator` (the Slint-event-loop side) must never hold this SAME lock
+/// across its own tonemap/denoise work: doing so would stall that connection-thread
+/// access for however long the redraw took.
 pub(super) struct Orchestrator {
     pub(super) handoff: HandoffMachine,
     pub(super) remote_handle: Option<RemoteRenderHandle>,

@@ -9,14 +9,16 @@ use crate::{
     gui::{
         is_c_axis_override_available,
         optics::crystal_optics::{
-            crystal_system_from_index, is_biaxial, optical_character_from_index, save_gem_material,
+            crystal_system_from_index, crystal_system_to_index,
+            custom_material_specific_gravity_from_rows, gem_material_from_row, is_biaxial,
+            optical_character_from_index, optical_character_to_index, save_gem_material,
         },
         refresh_material_options, show_toast,
     },
 };
 use indicatrix::optics::materials::GemMaterial;
 use indicatrix_vault::db::sqlite::Database;
-use slint::{ComponentHandle, SharedString};
+use slint::{ComponentHandle, Model, SharedString};
 use std::sync::{Arc, Mutex};
 
 /// `name`'s real built-in [`GemMaterial`] name (`Some`) iff it collides
@@ -54,8 +56,12 @@ struct CustomMaterialForm {
     /// The biaxial delta/beta/alpha field (meaningful only for the two biaxial
     /// optical characters -- see [`apply_custom_material_save`]'s own body).
     biaxial_delta_beta_alpha: f32,
-    /// Item 243: whether this save should also switch the live render's
-    /// selected material, rather than only writing the database/in-memory
+    /// The specific-gravity slider field, `0.0` meaning "not recorded" -- see
+    /// [`apply_custom_material_save`]'s own body for how that sentinel becomes
+    /// `None` rather than a literal zero-density material.
+    specific_gravity: f32,
+    /// Whether this save should also switch the live render's selected
+    /// material, rather than only writing the database/in-memory
     /// custom-material list. `false` lets a cutter create or correct a custom
     /// material without disturbing whatever the viewport is currently showing.
     apply_to_live_render: bool,
@@ -75,9 +81,14 @@ struct SavedCustomMaterial {
     c_axis_available: Option<bool>,
     /// The refreshed custom-material list to push into the material combo.
     custom_list: Arc<Vec<GemMaterial>>,
-    /// Item 243: whether this save also switched the live render's material,
-    /// for the toast wording below.
+    /// Whether this save also switched the live render's material, for the
+    /// toast wording below.
     applied_to_live_render: bool,
+    /// The specific gravity now on file for this material, read back from
+    /// `RenderContext::custom_material_specific_gravity` -- `None` when the
+    /// dialog's SG slider was left at its "not recorded" sentinel, in which
+    /// case the toast says nothing about it.
+    specific_gravity: Option<f64>,
 }
 
 /// Validates `form` (blank name, or one colliding with a built-in material),
@@ -100,6 +111,7 @@ fn apply_custom_material_save(
         crystal_system_idx,
         optical_character_idx,
         biaxial_delta_beta_alpha,
+        specific_gravity,
         apply_to_live_render,
     } = form;
     let abs_rgb = match color_idx {
@@ -157,23 +169,16 @@ fn apply_custom_material_save(
     // significant-`Drop` temporary in an `if let` scrutinee stays alive for
     // the whole arm, which has already caused one real panic in this codebase
     // from a lock held longer than intended.
-    // CAD audit item 169: no specific gravity reaches here yet -- `CustomMaterialForm`
-    // has no `sg` field because `ViewportModel.save_custom_material` (Slint, owned
-    // outside `gui/optics`) does not pass one. See `save_gem_material`'s own doc
-    // comment for the exact one-line change this becomes once that lands.
-    let save_result = save_gem_material(
-        &db.lock().unwrap(),
-        &new_mat,
-        ri,
-        disp,
-        biref,
-        abs_rgb,
-        None,
-    );
+    // `0.0` (the slider's own "not recorded" sentinel, matching
+    // `material_editor_dialog.slint`'s `sg_val` doc comment) is stored as `None`
+    // rather than a literal zero-density material.
+    let sg = (specific_gravity > 0.0001).then_some(specific_gravity);
+    let save_result =
+        save_gem_material(&db.lock().unwrap(), &new_mat, ri, disp, biref, abs_rgb, sg);
     if let Err(e) = save_result {
         return Err(format!("Could not save '{trimmed}': {e}"));
     }
-    // Item 243: only an "apply" save selects the material just saved (see
+    // Only an "apply" save selects the material just saved (see
     // `ctx.material_name` below) -- a plain "Save" writes the database/
     // in-memory list without touching whatever the live render currently
     // shows, so the crystal-axis control's availability (which tracks the
@@ -181,7 +186,20 @@ fn apply_custom_material_save(
     // before `new_mat` moves into `custom_materials` below.
     let c_axis_available = apply_to_live_render.then(|| is_c_axis_override_available(&new_mat));
 
-    let mut ctx = render_ctx.lock().unwrap();
+    // Re-reads every custom material's SG straight from the
+    // database (rather than hand-patching the in-memory side channel) so it can
+    // never drift from what was actually just written -- the database, not this
+    // struct, is the single source of truth for it. Read before locking
+    // `render_ctx` below so the `db`/`render_ctx` locks are never held nested.
+    let sg_rows = db
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_custom_materials()
+        .unwrap_or_default();
+
+    let mut ctx = render_ctx
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // `Arc::make_mut`: clones the underlying `Vec` only if some other snapshot
     // (e.g. a render-thread `FrameInputs` snapshot mid-flight) still holds a
     // reference to it; mutates in place otherwise. Keeps the common case (no
@@ -201,6 +219,14 @@ fn apply_custom_material_save(
     } else {
         materials.push(new_mat);
     }
+    ctx.custom_material_specific_gravity =
+        Arc::new(custom_material_specific_gravity_from_rows(&sg_rows));
+    // Reads the just-saved SG back OUT of the side channel
+    // (rather than trusting the locally-computed `sg` above) so the toast confirms
+    // the FULL round trip -- dialog -> database -> `RenderContext`'s side channel --
+    // actually worked, the same lookup [`crate::gui::editor::material_lookup::
+    // EditorMaterialLookup::specific_gravity`] uses for the carat-weight estimate.
+    let saved_specific_gravity = ctx.custom_specific_gravity(&trimmed);
     if apply_to_live_render {
         ctx.material_name.clone_from(&trimmed);
         ctx.dirty = true;
@@ -215,6 +241,7 @@ fn apply_custom_material_save(
         c_axis_available,
         custom_list,
         applied_to_live_render: apply_to_live_render,
+        specific_gravity: saved_specific_gravity,
     })
 }
 
@@ -253,8 +280,20 @@ fn apply_custom_material_delete(
     if let Err(e) = delete_result {
         return Err(format!("Could not delete '{name}': {e}"));
     }
+    // Re-reads every remaining custom material's SG straight
+    // from the database -- see `apply_custom_material_save`'s matching comment for
+    // why this re-derives rather than hand-patches the in-memory side channel.
+    // Read before locking `render_ctx` below so the `db`/`render_ctx` locks are
+    // never held nested.
+    let sg_rows = db
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_custom_materials()
+        .unwrap_or_default();
 
-    let mut ctx = render_ctx.lock().unwrap();
+    let mut ctx = render_ctx
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     // See `apply_custom_material_save`'s matching comment for why `Arc::make_mut`
     // rather than a bare in-place mutation. `delete_custom_material` itself
     // reports no affected row count (a nonexistent name deletes zero rows
@@ -265,8 +304,23 @@ fn apply_custom_material_delete(
     let materials = Arc::make_mut(&mut ctx.custom_materials);
     let existed = materials.iter().any(|m| m.name.eq_ignore_ascii_case(name));
     materials.retain(|m| !m.name.eq_ignore_ascii_case(name));
-    if ctx.material_name.eq_ignore_ascii_case(name) {
+    ctx.custom_material_specific_gravity =
+        Arc::new(custom_material_specific_gravity_from_rows(&sg_rows));
+    // The deleted material can be the live selection either by
+    // `material_name` OR by `material_override` (which `resolve_material_with_override`
+    // prefers over the name -- see `render::material_quality::setup_material_changed_callback`'s
+    // matching comment) -- checked here the same case-insensitive way, so a delete
+    // never leaves `material_override` pointing at a `GemMaterial` the custom-material
+    // list no longer has, which every downstream reader (viewport, HUD, tilt sweep,
+    // hover preview, export) would otherwise keep rendering.
+    let override_matches_deleted = ctx
+        .material_override
+        .as_ref()
+        .is_some_and(|m| m.name.eq_ignore_ascii_case(name));
+    if ctx.material_name.eq_ignore_ascii_case(name) || override_matches_deleted {
         ctx.material_name = "Diamond".to_string();
+        ctx.material_override = None;
+        ctx.material_unresolved = None;
     }
     ctx.dirty = true;
     // Deleting the currently selected custom material falls back to
@@ -290,8 +344,8 @@ fn apply_custom_material_delete(
 
 /// Wires up the save/delete custom gemstone material callbacks. Split out of
 /// `run_gui` purely to keep that function under clippy's function-length lint.
-/// Answers the material editor's two name-collision questions (CAD audit items
-/// 87/88) as the cutter types, against the same sources the authoritative save-time
+/// Answers the material editor's two name-collision questions as the cutter types,
+/// against the same sources the authoritative save-time
 /// checks use: [`built_in_name_collision`] and the live `custom_materials` list.
 ///
 /// Lives here rather than in Slint because Slint can neither loop over a list inside
@@ -323,12 +377,93 @@ fn setup_material_name_probe(ui: &MainWindow, render_ctx: &Arc<Mutex<RenderConte
         });
 }
 
+/// Pushes `selected_name`'s own saved values into `ViewportModel.selected_custom_
+/// material_*`, the material editor's pre-fill source.
+///
+/// Reads the ORIGINAL `CustomMaterialRow`, not the converted `GemMaterial` the
+/// render context's `custom_materials` list holds: `GemMaterial::new_custom`'s
+/// RI/dispersion/absorption-RGB scalar inputs cannot be recovered from the material
+/// they expand into (see `crystal_optics::save_gem_material`'s own doc comment) --
+/// only the original row still has them. Crystal system/optical character/biaxial
+/// delta are read off [`gem_material_from_row`]'s OWN reconstruction rather than the
+/// row's raw (possibly-`None`) fields directly, so a legacy row with no explicit
+/// crystal-optics columns still pre-fills with `new_custom`'s real inferred values
+/// instead of a wrong "Cubic/Isotropic" default.
+///
+/// Sets `selected_custom_material_valid` false -- leaving every other property at
+/// whatever it last was -- for a built-in selection, or a name no longer present
+/// (e.g. deleted out from under an open combo): there is nothing honest to pre-fill
+/// from either case, and `material_editor_dialog.slint`
+/// must gate its own one-time pre-fill assignment on this flag, never assign from a
+/// stale previous value while it reads `false`.
+fn push_selected_custom_material_fields(
+    ui: &MainWindow,
+    db: &Arc<Mutex<Database>>,
+    selected_name: &str,
+) {
+    let row = db
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_custom_materials()
+        .unwrap_or_default()
+        .into_iter()
+        .find(|r| r.name.eq_ignore_ascii_case(selected_name));
+
+    let model = ui.global::<ViewportModel>();
+    let Some(row) = row else {
+        model.set_selected_custom_material_valid(false);
+        return;
+    };
+    let material = gem_material_from_row(&row);
+    model.set_selected_custom_material_valid(true);
+    model.set_selected_custom_material_ri(row.refractive_index);
+    model.set_selected_custom_material_dispersion(row.dispersion);
+    model.set_selected_custom_material_birefringence(row.birefringence);
+    model.set_selected_custom_material_specific_gravity(row.specific_gravity.unwrap_or(0.0));
+    model.set_selected_custom_material_crystal_system_idx(crystal_system_to_index(
+        material.crystal_system,
+    ));
+    model.set_selected_custom_material_optical_character_idx(optical_character_to_index(
+        material.optical_character,
+    ));
+    model.set_selected_custom_material_biaxial_delta_beta_alpha(
+        material.biaxial_delta_beta_alpha.unwrap_or(0.0),
+    );
+}
+
+/// Wires `ViewportModel::selected_material_changed_for_editor_prefill` (fired by that
+/// global's own `changed selected_material_index` handler -- see `viewport.slint`'s
+/// doc comment) to [`push_selected_custom_material_fields`], keeping the material
+/// editor's pre-fill source fresh as the viewport's material selection changes.
+/// `material_editor_dialog.slint` may also invoke the same callback directly right
+/// before opening, to force a refresh against whatever is currently selected without
+/// requiring the selection to have actually changed since the last one.
+fn setup_selected_material_prefill_callback(ui: &MainWindow, db: &Arc<Mutex<Database>>) {
+    let db = Arc::clone(db);
+    let ui_weak = ui.as_weak();
+    ui.global::<ViewportModel>()
+        .on_selected_material_changed_for_editor_prefill(move || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let idx = usize::try_from(ui.global::<ViewportModel>().get_selected_material_index())
+                .unwrap_or(0);
+            let name = ui
+                .global::<ViewportModel>()
+                .get_material_options()
+                .row_data(idx)
+                .unwrap_or_default();
+            push_selected_custom_material_fields(&ui, &db, &name);
+        });
+}
+
 pub(in crate::gui) fn setup_custom_material_callbacks(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
     db: &Arc<Mutex<Database>>,
 ) {
     setup_material_name_probe(ui, render_ctx);
+    setup_selected_material_prefill_callback(ui, db);
     let render_ctx_save = render_ctx.clone();
     let db_save = db.clone();
     let ui_weak_save = ui.as_weak();
@@ -341,6 +476,7 @@ pub(in crate::gui) fn setup_custom_material_callbacks(
               crystal_system_idx: i32,
               optical_character_idx: i32,
               biaxial_delta_beta_alpha: f32,
+              specific_gravity: f32,
               apply_to_live_render: bool| {
             // The actual save (or its validation failure) always runs, whether or
             // not the window handle below still upgrades -- only the toast/UI
@@ -358,6 +494,7 @@ pub(in crate::gui) fn setup_custom_material_callbacks(
                     crystal_system_idx,
                     optical_character_idx,
                     biaxial_delta_beta_alpha,
+                    specific_gravity,
                     apply_to_live_render,
                 },
             );
@@ -367,19 +504,17 @@ pub(in crate::gui) fn setup_custom_material_callbacks(
             match result {
                 Ok(outcome) => {
                     refresh_material_options(&ui, &outcome.custom_list);
-                    // Item 243: a plain "Save" leaves the live render's material
+                    // A plain "Save" leaves the live render's material
                     // untouched, so the crystal-axis control (which tracks that
                     // selection) is only refreshed when the save also applied.
                     if let Some(c_axis_available) = outcome.c_axis_available {
                         ui.global::<SettingsModel>()
                             .set_c_axis_override_available(c_axis_available);
                     }
-                    // This toast used to append a "(biaxial: CPU-only render, no GPU
-                    // acceleration)" variant, branching on `GemMaterial::gpu_supported()`.
-                    // That branch was both dead and wrong: `gpu_supported()` is
+                    // This toast carries no biaxial-vs-GPU caveat: `gpu_supported()` is
                     // unconditionally `true` since the `BiaxialIndicatrix` WGSL port (see
                     // its own doc comment), so a biaxial custom material renders on the GPU
-                    // like any other and the warning could only ever mislead.
+                    // like any other.
                     let verb = if outcome.overwrote_existing {
                         "Overwrote"
                     } else {
@@ -390,9 +525,20 @@ pub(in crate::gui) fn setup_custom_material_callbacks(
                     } else {
                         ""
                     };
+                    // Confirms the SG the cutter typed actually made
+                    // it all the way through to the carat-weight estimate's own side
+                    // channel -- see `outcome.specific_gravity`'s own doc comment for why
+                    // this is read back rather than echoed from the form.
+                    let sg_suffix = outcome
+                        .specific_gravity
+                        .map(|sg| format!(" (SG {sg:.2})"))
+                        .unwrap_or_default();
                     show_toast(
                         &ui,
-                        &format!("{verb}{suffix} custom material '{}'", outcome.trimmed_name),
+                        &format!(
+                            "{verb}{suffix} custom material '{}'{sg_suffix}",
+                            outcome.trimmed_name
+                        ),
                         "success",
                     );
                 }

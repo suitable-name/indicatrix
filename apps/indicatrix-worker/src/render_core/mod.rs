@@ -341,12 +341,12 @@ pub fn trace_samples_with_gpu_cancellable(
 ///
 /// Rows through the stone cost far more than background rows, so this claims rows
 /// dynamically through a shared `AtomicUsize` counter (`fetch_add` per row) rather than
-/// splitting the frame into `num_threads` contiguous bands, mirroring the same fix in
-/// `apps/indicatrix-cut`'s scanline/batch renderers. `buffer` is pre-split into per-row
-/// slices behind a `Mutex<Vec<Option<&mut [Vec3]>>>`; a thread claims row `y`, locks
-/// just long enough to take that row's slice, then traces it without the lock held.
-/// Every row is claimed by exactly one thread, so per-pixel sums stay bit-identical to
-/// the old contiguous split.
+/// splitting the frame into `num_threads` contiguous bands, the same load-balancing
+/// approach `apps/indicatrix-cut`'s scanline/batch renderers use. `buffer` is pre-split
+/// into per-row slices behind a `Mutex<Vec<Option<&mut [Vec3]>>>`; a thread claims row
+/// `y`, locks just long enough to take that row's slice, then traces it without the
+/// lock held. Every row is claimed by exactly one thread, so per-pixel sums stay
+/// bit-identical regardless of how rows are distributed across threads.
 fn trace_into(
     scene: &SceneState,
     first_sample: u32,
@@ -437,7 +437,7 @@ fn trace_into(
                                 draws.jitter_y,
                             );
 
-                            sample_sum += trace_spectral_ray_with_finish_soa(
+                            let sample = trace_spectral_ray_with_finish_soa(
                                 ray,
                                 planes,
                                 plane_soa,
@@ -449,6 +449,16 @@ fn trace_into(
                                 draws.hero_rand,
                                 None,
                             );
+                            // Defensive: no reachable NaN/Inf producer is known in this
+                            // CPU path, but a single non-finite sample
+                            // summed in would poison this pixel's accumulator
+                            // permanently (NaN propagates through every future `+=`,
+                            // including across later chunks/requests that reuse this
+                            // buffer) -- cheap enough to guard unconditionally rather
+                            // than trust that no future change ever introduces one.
+                            if sample.is_finite() {
+                                sample_sum += sample;
+                            }
                         }
 
                         *pixel += sample_sum;

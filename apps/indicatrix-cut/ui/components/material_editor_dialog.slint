@@ -4,11 +4,10 @@ import { ViewportModel } from "../models/viewport.slint";
 import { ConfirmActionDialog } from "confirm_action_dialog.slint";
 
 export component MaterialEditorDialog inherits Rectangle {
-    // Delete used to be a single, unconfirmed click that permanently removed a
-    // custom material (with any design referencing it silently falling back to a
-    // built-in of the same name, or Diamond) -- this gates it behind an explicit
-    // "Are you sure" step instead, the same modal idiom `ConfirmActionDialog` is
-    // already used for elsewhere.
+    // Delete gates behind an explicit "Are you sure" step, the same modal idiom
+    // `ConfirmActionDialog` is already used for elsewhere -- a design referencing
+    // this custom material would otherwise silently fall back to a built-in of
+    // the same name, or Diamond.
     property <bool> confirm_delete_open: false;
     // A blank (or whitespace-only) name can never be saved or deleted -- the
     // authoritative check still lives in Rust (`gui::optics::custom_materials`,
@@ -16,14 +15,13 @@ export component MaterialEditorDialog inherits Rectangle {
     // empty-string case is cheap to also reject right here so Save/Delete visibly
     // disable instead of silently no-op-ing against the database.
     property <bool> name_is_blank: root.mat_name == "";
-    // CAD audit items 87/88: the authoritative built-in/existing-custom name
-    // checks still live in Rust (`gui::optics::custom_materials`) -- a built-in
-    // collision is refused outright there, and an existing-custom collision's own
-    // success toast says "Overwrote" rather than "Saved". These two `in`
-    // properties let THIS dialog also disable/prompt proactively instead of only
-    // reacting after the fact, but neither is wired yet: `gem_viewport.slint`
-    // (owned by another lane) still mounts `MaterialEditorDialog { ... }` with no
-    // property bindings at all (see this file's own handoff note), so both
+    // The authoritative built-in/existing-custom name checks live in Rust
+    // (`gui::optics::custom_materials`) -- a built-in collision is refused
+    // outright there, and an existing-custom collision's own success toast says
+    // "Overwrote" rather than "Saved". These two properties let THIS dialog also
+    // disable/prompt proactively instead of only reacting after the fact, but
+    // neither is wired yet: `gem_viewport.slint` still mounts
+    // `MaterialEditorDialog { ... }` with no property bindings at all, so both
     // default to `[]` and every check below against them is vacuously
     // permissive until that wiring lands.
     // Both answers come from Rust (`gui::optics::custom_materials`), recomputed
@@ -35,20 +33,20 @@ export component MaterialEditorDialog inherits Rectangle {
     property <bool> name_is_existing_custom: ViewportModel.material_name_is_existing_custom;
     property <bool> name_collides_with_builtin: ViewportModel.material_name_collides_with_builtin;
 
-    // Item 87: Delete must only ever be enabled for a name that actually names an
-    // existing custom material -- previously gated on "non-blank" alone, so
-    // typing an arbitrary new name and pressing Delete looked like a legitimate
-    // action right up until the DB layer reported it removed zero rows.
-    // Item 88: a name that already names a BUILT-IN material can never be saved
-    // (the Rust layer refuses it outright) -- disabling Save proactively means
-    // the cutter sees why immediately instead of getting an error toast only
-    // after clicking.
+    // Delete must only ever be enabled for a name that actually names an
+    // existing custom material -- gating on "non-blank" alone would let typing
+    // an arbitrary new name and pressing Delete look like a legitimate action
+    // right up until the DB layer reported it removed zero rows.
+    // A name that already names a BUILT-IN material can never be saved (the
+    // Rust layer refuses it outright) -- disabling Save proactively means the
+    // cutter sees why immediately instead of getting an error toast only after
+    // clicking.
     property <bool> can_save: root.optics_valid && !root.name_is_blank && !root.name_collides_with_builtin;
 
-    // Item 88: saving over an EXISTING custom name silently overwrites it today
-    // (the Rust layer allows it, only distinguishing "Saved" from "Overwrote" in
-    // its own success toast afterward) -- this intercepts both Save buttons with
-    // an explicit "Overwrite?" step first, the same modal idiom already used for
+    // Saving over an EXISTING custom name silently overwrites it (the Rust layer
+    // allows it, only distinguishing "Saved" from "Overwrote" in its own success
+    // toast afterward) -- this intercepts both Save buttons with an explicit
+    // "Overwrite?" step first, the same modal idiom already used for
     // Delete/discard below. `pending_apply` remembers which of the two Save
     // buttons was pressed (plain Save vs. Save & Apply) so the confirmation's
     // own `primary` handler can forward the right `apply` flag.
@@ -78,25 +76,74 @@ export component MaterialEditorDialog inherits Rectangle {
         }
     }
 
-    // Item 170: a stray click on the backdrop used to silently discard adjustments
-    // to all five sliders/combos. This dialog is recreated fresh (all `in-out`
-    // properties back at their literal defaults below) every time `if
+    // A stray click on the backdrop must not silently discard adjustments to all
+    // five sliders/combos. This dialog is recreated fresh every time `if
     // ViewportModel.material_editor_open: MaterialEditorDialog { ... }`
-    // (`gem_viewport.slint`, owned by another lane) turns the condition true again --
-    // it never carries an existing custom material's own values in -- so "the state
-    // the dialog opened with" IS those literal defaults, compared here directly
-    // rather than snapshotted at `init` (there is no earlier value to snapshot from).
-    property <bool> is_dirty: root.mat_name != "Custom Diamond"
-        || Math.abs(root.ri_val - 2.417) > 0.0001
-        || Math.abs(root.disp_val - 0.044) > 0.0001
-        || Math.abs(root.sg_val) > 0.0001
-        || Math.abs(root.biref_val) > 0.0001
-        || root.selected_color_preset != 0
-        || root.selected_template_idx != 0
-        || root.selected_crystal_system_idx != 0
-        || root.selected_optical_character_idx != 0
-        || Math.abs(root.biaxial_delta_beta_alpha_val) > 0.0001;
+    // (`gem_viewport.slint`) turns the condition true again, so "the state the
+    // dialog opened with" is either the literal defaults below, or a pre-filled
+    // custom material's own saved values -- `init` below snapshots whichever one
+    // actually applies into these `baseline_*`
+    // properties, and `is_dirty` compares against THOSE rather than the literal
+    // defaults directly, so opening the editor on an existing custom material and
+    // immediately cancelling never misreports it as dirty.
+    property <string> baseline_mat_name: "Custom Diamond";
+    property <float> baseline_ri_val: 2.417;
+    property <float> baseline_disp_val: 0.044;
+    property <float> baseline_sg_val: 0.0;
+    property <float> baseline_biref_val: 0.000;
+    property <int> baseline_color_preset: 0;
+    property <int> baseline_template_idx: 0;
+    property <int> baseline_crystal_system_idx: 0;
+    property <int> baseline_optical_character_idx: 0;
+    property <float> baseline_biaxial_delta_beta_alpha_val: 0.0;
+    property <bool> is_dirty: root.mat_name != root.baseline_mat_name
+        || Math.abs(root.ri_val - root.baseline_ri_val) > 0.0001
+        || Math.abs(root.disp_val - root.baseline_disp_val) > 0.0001
+        || Math.abs(root.sg_val - root.baseline_sg_val) > 0.0001
+        || Math.abs(root.biref_val - root.baseline_biref_val) > 0.0001
+        || root.selected_color_preset != root.baseline_color_preset
+        || root.selected_template_idx != root.baseline_template_idx
+        || root.selected_crystal_system_idx != root.baseline_crystal_system_idx
+        || root.selected_optical_character_idx != root.baseline_optical_character_idx
+        || Math.abs(root.biaxial_delta_beta_alpha_val - root.baseline_biaxial_delta_beta_alpha_val) > 0.0001;
     property <bool> discard_confirm_open: false;
+
+    // Pre-fills every optics field from the currently selected
+    // CUSTOM material's own saved values the moment this dialog is created for that
+    // selection -- `ViewportModel.selected_custom_material_*`, kept fresh by
+    // `gui::optics::custom_materials::push_selected_custom_material_fields`
+    // (reading the ORIGINAL database row, not the lossy converted `GemMaterial` --
+    // see that function's own doc comment for why) every time the render-material
+    // selection changes, and once more right before `gem_viewport.slint` opens this
+    // dialog. `selected_custom_material_valid` false (a built-in selection, or a
+    // custom material deleted out from under an open combo) leaves every property at
+    // its literal default above instead -- deliberately never a name-only partial
+    // pre-fill: leaving the optics fields at those defaults while only the name
+    // changed would let Save silently overwrite a real custom material's optics with
+    // wrong values, which two earlier lanes already rejected for the same reason.
+    // `mat_name` reads the render-material combo's own current entry rather than a
+    // ninth `ViewportModel` property, since that combo already names exactly what is
+    // selected.
+    init => {
+        if (ViewportModel.selected_custom_material_valid) {
+            root.mat_name = ViewportModel.material_options[ViewportModel.selected_material_index];
+            root.ri_val = ViewportModel.selected_custom_material_ri;
+            root.disp_val = ViewportModel.selected_custom_material_dispersion;
+            root.sg_val = ViewportModel.selected_custom_material_specific_gravity;
+            root.biref_val = ViewportModel.selected_custom_material_birefringence;
+            root.selected_crystal_system_idx = ViewportModel.selected_custom_material_crystal_system_idx;
+            root.selected_optical_character_idx = ViewportModel.selected_custom_material_optical_character_idx;
+            root.biaxial_delta_beta_alpha_val = ViewportModel.selected_custom_material_biaxial_delta_beta_alpha;
+            root.baseline_mat_name = root.mat_name;
+            root.baseline_ri_val = root.ri_val;
+            root.baseline_disp_val = root.disp_val;
+            root.baseline_sg_val = root.sg_val;
+            root.baseline_biref_val = root.biref_val;
+            root.baseline_crystal_system_idx = root.selected_crystal_system_idx;
+            root.baseline_optical_character_idx = root.selected_optical_character_idx;
+            root.baseline_biaxial_delta_beta_alpha_val = root.biaxial_delta_beta_alpha_val;
+        }
+    }
 
     function request_close() {
         if root.is_dirty {
@@ -119,13 +166,13 @@ export component MaterialEditorDialog inherits Rectangle {
     changed mat_name => { ViewportModel.material_name_edited(self.mat_name); }
     in-out property <float> ri_val: 2.417;        // Refractive Index (1.30 - 3.20)
     in-out property <float> disp_val: 0.044;      // Dispersion (0.000 - 0.120)
-    // CAD audit item 169: specific gravity, needed for Est. Carat Weight -- `0.0`
+    // Specific gravity, needed for Est. Carat Weight -- `0.0`
     // means "not recorded" (this dialog has no preset SG data to seed the "Load
     // Preset Template" combo above with, so every preset still leaves this blank
-    // rather than guessing a number). Depends on a `specific_gravity` column/
-    // migration in `crates/indicatrix-vault` and a `MaterialLookup::
-    // specific_gravity` addition in `crates/indicatrix-cut-core`, neither of which
-    // this lane owns -- see this file's own handoff note for the exact additions.
+    // rather than guessing a number). Saved through to the `specific_gravity` column
+    // (`crates/indicatrix-vault`) via `ViewportModel.save_custom_material`'s tenth
+    // argument and `gui::optics::custom_materials`, and read back for the carat
+    // estimate via `crates/indicatrix-cut-core`'s `MaterialLookup::specific_gravity`.
     in-out property <float> sg_val: 0.0;          // Specific Gravity (0 = not recorded)
     in-out property <float> biref_val: 0.000;     // Birefringence (-0.050 - +0.100)
     in-out property <int> selected_color_preset: 0; // 0=Clear, 1=Blue, 2=Red, 3=Green, 4=Violet, 5=Yellow, 6=Pink, 7=Teal, 8=Amber
@@ -195,22 +242,18 @@ export component MaterialEditorDialog inherits Rectangle {
     close => { ViewportModel.material_editor_open = false; }
     // name, ri, dispersion, birefringence, color_idx, crystal_system_idx,
     // optical_character_idx, biaxial_delta_beta_alpha, apply_to_live_render --
-    // Item 243: the last argument gates whether the save also switches the live
+    // The last argument gates whether the save also switches the live
     // render's material (`custom_materials.rs`'s `ctx.material_name`/`ctx.dirty`),
     // so a cutter preparing several custom materials in a row can save each one
     // without re-rendering the viewport with it.
-    // CAD audit item 169: `sg` (specific gravity from the new slider below, `0.0` =
-    // not recorded) is collected here and threaded through this dialog's own
-    // `save_material` callback, but NOT YET passed on to `ViewportModel.
-    // save_custom_material` below -- that global still only takes nine arguments
-    // (`ui/models/viewport.slint`, not owned by this lane), and calling it with a
-    // tenth would fail the whole crate's Slint build for every lane, not just this
-    // one. See this file's own handoff note for the exact `ViewportModel`/
-    // `gui::optics::custom_materials` additions this is waiting on, and the
-    // one-line change to make here (add `sg` to the call below) once they land.
+    // `sg` (specific gravity from the slider above, `0.0` = not recorded) is
+    // collected here and threaded straight through to `ViewportModel.
+    // save_custom_material`, which carries it as its own tenth argument --
+    // `gui::optics::custom_materials`'s handler persists it via `crystal_optics::
+    // save_gem_material`, so a typed SG is never silently dropped.
     callback save_material(string, float, float, float, int, int, int, float, float, bool);
     save_material(name, ri, disp, biref, color_idx, crystal_system_idx, optical_character_idx, biaxial_delta_beta_alpha, sg, apply) => {
-        ViewportModel.save_custom_material(name, ri, disp, biref, color_idx, crystal_system_idx, optical_character_idx, biaxial_delta_beta_alpha, apply);
+        ViewportModel.save_custom_material(name, ri, disp, biref, color_idx, crystal_system_idx, optical_character_idx, biaxial_delta_beta_alpha, sg, apply);
         ViewportModel.material_editor_open = false;
     }
     callback delete_material(string);
@@ -228,8 +271,14 @@ export component MaterialEditorDialog inherits Rectangle {
 
     // Escape = ask-then-cancel, same `init => { self.focus(); }` + `key-pressed`
     // idiom `new_design_dialog.slint`/`ui/app.slint`'s `global_shortcuts` use.
+    // Return = the primary action
+    // (plain Save, `request_save(false)` -- already a no-op via `can_save`'s own
+    // guard when the form is invalid, so this needs no separate check here). Safe
+    // to bind unconditionally regardless of which field has focus: every field in
+    // this dialog is a single-line numeric/text input or a combo/slider, never a
+    // multi-line `TextEdit` that would want Return to insert a newline instead.
     //
-    // CAD audit item 199: `accept` (not `reject`) for every other key -- otherwise
+    // `accept` (not `reject`) for every other key -- otherwise
     // an unhandled key bubbles past this dialog to `global_shortcuts` and fires a
     // shortcut (Ctrl+S, etc.) on the design underneath it.
     key_scope := FocusScope {
@@ -237,6 +286,10 @@ export component MaterialEditorDialog inherits Rectangle {
         key-pressed(event) => {
             if event.text == Key.Escape {
                 root.request_close();
+                return accept;
+            }
+            if event.text == Key.Return {
+                root.request_save(false);
                 return accept;
             }
             accept
@@ -503,7 +556,7 @@ export component MaterialEditorDialog inherits Rectangle {
                 }
             }
 
-            // CAD audit item 169: specific gravity -- without this, a custom
+            // Specific gravity -- without this, a custom
             // material's Est. Carat Weight stays empty unless a cutter separately
             // types an SG override in the Yield panel for every design that uses it.
             // `0.0` reads as "not recorded" on the Rust side (see `sg_val`'s own doc
@@ -608,13 +661,10 @@ export component MaterialEditorDialog inherits Rectangle {
                     maximum: Math.max(root.biref_val, 0.0001);
                     value <=> root.biaxial_delta_beta_alpha_val;
                 }
-                // No GPU consequence to warn about any more. This slot used to carry
-                // an amber "renders on the CPU only" warning, because
-                // `GemMaterial::gpu_supported()` returned false whenever
-                // `biaxial_delta_beta_alpha` was set. The `BiaxialIndicatrix`
-                // machinery is now ported to WGSL and verified at the same
-                // Tier 2 / Tier 3 bar as every other material, so `gpu_supported()`
-                // is unconditionally true and a biaxial custom material is dispatched
+                // No GPU consequence to warn about: the `BiaxialIndicatrix` machinery
+                // is ported to WGSL and verified at the same Tier 2 / Tier 3 bar as
+                // every other material, so `GemMaterial::gpu_supported()` is
+                // unconditionally true and a biaxial custom material is dispatched
                 // exactly like any other -- see `indicatrix::renderer::gpu_backend`'s
                 // module doc comment for the current decline list.
             }
@@ -627,7 +677,7 @@ export component MaterialEditorDialog inherits Rectangle {
                 wrap: word-wrap;
             }
 
-            // Item 88: proactive collision warning -- disables Save (see `can_save`)
+            // Proactive collision warning -- disables Save (see `can_save`)
             // rather than letting the cutter find out only from an error toast
             // after clicking.
             if root.name_collides_with_builtin: Text {
@@ -651,7 +701,7 @@ export component MaterialEditorDialog inherits Rectangle {
                         width: 40px; height: 26px; border-radius: Theme.radius-sm;
                         background: root.selected_color_preset == 0 ? #e2e8f0 : #94a3b844;
                         border-width: root.selected_color_preset == 0 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 0 ? Theme.accent-cyan : #475569;
+                        border-color: root.selected_color_preset == 0 ? Theme.accent-cyan : Theme.border-control;
                         TouchArea { clicked => { root.selected_color_preset = 0; } }
                         Text { text: "Clear"; font-size: 9px; font-weight: 700; color: root.selected_color_preset == 0 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                     }
@@ -755,9 +805,9 @@ export component MaterialEditorDialog inherits Rectangle {
                     border-width: 1px;
                     border-color: Theme.danger-border;
 
-                    // Item 87: only enabled for a name that actually names an
-                    // existing custom material -- see `name_is_existing_custom`'s
-                    // own doc comment.
+                    // Only enabled for a name that actually names an existing
+                    // custom material -- see `name_is_existing_custom`'s own doc
+                    // comment.
                     del_touch := TouchArea {
                         enabled: root.name_is_existing_custom;
                         clicked => { root.confirm_delete_open = true; }
@@ -787,7 +837,7 @@ export component MaterialEditorDialog inherits Rectangle {
                     Text { text: "Cancel"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                 }
 
-                // Save Button (Item 243): saves/overwrites the custom material in the
+                // Save Button: saves/overwrites the custom material in the
                 // database and the in-memory material list WITHOUT touching the live
                 // render's selected material -- lets a cutter prepare several custom
                 // materials in a row without re-rendering the viewport with each one.
@@ -824,12 +874,12 @@ export component MaterialEditorDialog inherits Rectangle {
                     save_apply_touch := TouchArea {
                         enabled: root.can_save;
                         // `save_material`'s own handler (above) already sets
-                        // `ViewportModel.material_editor_open = false` -- Item 170: a
-                        // second `root.close()` here was a no-op that happened to
-                        // work only because both write the same property to the
-                        // same value. Item 88: routed through `request_save`, which
-                        // interposes an "Overwrite?" confirmation when `mat_name`
-                        // already names an existing custom material.
+                        // `ViewportModel.material_editor_open = false`, so a second
+                        // `root.close()` here would be redundant -- both write the
+                        // same property to the same value. Routed through
+                        // `request_save`, which interposes an "Overwrite?"
+                        // confirmation when `mat_name` already names an existing
+                        // custom material.
                         clicked => { root.request_save(true); }
                     }
 
@@ -864,7 +914,7 @@ export component MaterialEditorDialog inherits Rectangle {
         cancel => { root.confirm_delete_open = false; }
     }
 
-    // Item 88: confirms before overwriting an EXISTING custom material -- see
+    // Confirms before overwriting an EXISTING custom material -- see
     // `request_save`'s own doc comment for when this opens instead of saving
     // straight away.
     if root.confirm_overwrite_open: ConfirmActionDialog {

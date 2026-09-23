@@ -457,11 +457,18 @@ const _: () = {
 ///
 /// # Layout
 ///
+/// This struct is 80 bytes. The `offset_of!`/`size_of!` asserts right below this
+/// `impl` block are what actually pin the layout; this paragraph is descriptive, kept in
+/// sync with them by hand.
+///
 /// The ten leading scalars pack into 40 bytes; `pixel_offset`/`write_debug_buffers` bring
 /// that to 48 (a multiple of 16), so `white_balance` (`vec3<f32>`) needs no padding
-/// before it. The struct's own alignment is 16, and 60 is not a multiple of it, so WGSL
-/// rounds the size up to 64; `studio_use_d65` fills that trailing slot as a real field
-/// rather than padding.
+/// before it, landing at offset 48 and ending at 60. `studio_use_d65` (offset 60) fills
+/// the remaining 4 bytes of that 16-byte block, bringing the running total to 64 --
+/// exactly what the struct WOULD be without the two fields below. `studio_model` (64)
+/// and `backdrop` (68) add one more 16-byte block; `_pad_backdrop`
+/// (72, 8 bytes of genuine padding -- not a field WGSL's `GpuTransportParams` reads)
+/// rounds that block out to the struct's own 16-byte alignment, for 80 bytes total.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuTransportParams {
@@ -522,7 +529,7 @@ pub mod studio_model {
 pub mod transport_env_mode {
     pub const UNIFORM_FURNACE: u32 = 0;
     pub const STUDIO_RIG: u32 = 1;
-    /// Finding G6: `EnvironmentSource::HdrMap`.
+    /// `EnvironmentSource::HdrMap`.
     ///
     /// Sampled via `hdr_env_radiance_at` against the `hdr_texels`/`hdr_env_dims`
     /// storage/uniform buffers (bindings 10/11) instead of the analytic studio rig. See
@@ -843,7 +850,7 @@ pub fn encode_facet_finishes(finishes: &[FacetFinish], num_planes: usize) -> Vec
         .collect()
 }
 
-// Finding G5 Part B: the wavefront transport pipeline (`shaders/wavefront_transport.wgsl`,
+// The wavefront transport pipeline (`shaders/wavefront_transport.wgsl`,
 // `renderer::gpu::frame`'s `GpuPipelineKind::Wavefront` path) -- an alternative to the
 // megakernel above, not a replacement.
 
@@ -903,9 +910,10 @@ mod tests {
         assert_eq!(size_of::<GpuWavefrontParams>(), 16);
     }
 
-    /// [`offset_of!`] pinned as ordinary `#[test]`s too (see the comment above), for the
-    /// two structs P6 touched: a wrong offset here is exactly the "looks right, isn't"
-    /// bug class `renderer::gpu::layout_check` exists to catch on the GPU side, but a
+    /// [`offset_of!`] pinned as ordinary `#[test]`s too (see the comment above), for
+    /// `GpuAbsorptionBand` and `GpuGemMaterial`: a wrong offset here is exactly the
+    /// "looks right, isn't" bug class `renderer::gpu::layout_check` exists to catch
+    /// on the GPU side, but a
     /// plain assertion catches the CPU-side half of it for free on every `cargo test`.
     #[test]
     fn gpu_absorption_band_offsets_match_documented_wgsl_layout() {
@@ -929,7 +937,7 @@ mod tests {
     /// this guards against is the shape ending up defaulted (always
     /// `GAUSSIAN_WAVELENGTH`) regardless of what the CPU-side band actually specified,
     /// which would silently make `GaussianEnergy` materials render correctly on the CPU
-    /// but not on the GPU (the exact P6 finding this field exists to fix).
+    /// but not on the GPU -- the exact bug this field exists to fix.
     #[test]
     fn encode_bands_maps_shape_correctly() {
         let bands = vec![

@@ -133,35 +133,40 @@ pub struct EnrollConfig {
     /// CA-signed client is already trusted), so a successful claim skips that step.
     pub allowlist_path: Option<PathBuf>,
     pub tls_config: Arc<rustls::ServerConfig>,
+    /// The render listener's own connection cap, shared here so this listener's
+    /// unauthenticated connections are bounded too -- see
+    /// [`crate::serve::ConnectionLimiter`]'s doc comment.
+    pub limiter: crate::serve::ConnectionLimiter,
 }
 
 impl EnrollConfig {
     /// Builds an [`EnrollConfig`] from the same `serve --ca/--cert/--key` paths, plus
-    /// the resolved allowlist path. `enroll_bind` is `--enroll-bind` if given, else the
-    /// same host as `bind_addr` on the next port up.
+    /// the resolved allowlist path and the render listener's [`crate::serve::ConnectionLimiter`]
+    /// to share. `enroll_bind` is `--enroll-bind` if given, else the same host as
+    /// `bind_addr` on the next port up.
     ///
     /// # Errors
     ///
-    /// A human-readable message if `enroll_bind` doesn't parse as a socket address, if
-    /// it's non-loopback without `allow_remote`, or if the TLS config can't be built
-    /// (see [`build_enroll_server_config`]).
+    /// A human-readable message if `args.enroll_bind` doesn't parse as a socket
+    /// address, if it's non-loopback without `args.allow_remote`, or if the TLS config
+    /// can't be built (see [`build_enroll_server_config`]).
     pub fn build(
         bind_addr: SocketAddr,
-        enroll_bind: Option<&str>,
-        allow_remote: bool,
+        args: &crate::cli::ServeArgs,
         ca_path: &Path,
         cert_path: &Path,
         key_path: &Path,
         allowlist_path: Option<PathBuf>,
+        limiter: crate::serve::ConnectionLimiter,
     ) -> Result<Self, String> {
-        let enroll_addr_str = enroll_bind.map_or_else(
+        let enroll_addr_str = args.enroll_bind.as_deref().map_or_else(
             || format!("{}:{}", bind_addr.ip(), bind_addr.port().saturating_add(1)),
             str::to_string,
         );
         let enroll_bind_addr: SocketAddr = enroll_addr_str
             .parse()
             .map_err(|e| format!("invalid --enroll-bind address {enroll_addr_str:?}: {e}"))?;
-        if !enroll_bind_addr.ip().is_loopback() && !allow_remote {
+        if !enroll_bind_addr.ip().is_loopback() && !args.allow_remote {
             return Err(format!(
                 "refusing to bind non-loopback enrollment address {enroll_bind_addr} without --allow-remote -- \
                  exposing the enrollment listener beyond localhost must be explicit, same as --bind (see --help)"
@@ -180,6 +185,7 @@ impl EnrollConfig {
             pki_dir,
             allowlist_path,
             tls_config,
+            limiter,
         })
     }
 }
@@ -192,12 +198,17 @@ impl EnrollConfig {
 /// `crate::serve::build_transport` would and hands everything to
 /// [`EnrollConfig::build`] then [`spawn_enroll_listener`].
 ///
+/// `limiter` is the render listener's own [`crate::serve::ConnectionLimiter`], shared
+/// (not a fresh one) so this listener's unauthenticated connections count against the
+/// same `--max-connections` cap -- see that type's doc comment.
+///
 /// # Errors
 ///
 /// Whatever [`EnrollConfig::build`] or [`spawn_enroll_listener`] returns.
 pub fn maybe_start_from_serve_args(
     args: &crate::cli::ServeArgs,
     bind_addr: SocketAddr,
+    limiter: crate::serve::ConnectionLimiter,
 ) -> Result<(), String> {
     if args.insecure_no_tls || args.no_enroll {
         return Ok(());
@@ -217,12 +228,12 @@ pub fn maybe_start_from_serve_args(
     };
     let config = EnrollConfig::build(
         bind_addr,
-        args.enroll_bind.as_deref(),
-        args.allow_remote,
+        args,
         ca_path,
         cert_path,
         key_path,
         allowlist_path,
+        limiter,
     )?;
     spawn_enroll_listener(config).map(|_bound_addr| ())
 }
@@ -259,6 +270,7 @@ pub fn spawn_enroll_listener(config: EnrollConfig) -> Result<SocketAddr, String>
     let tls_config = config.tls_config;
     let pki_dir = config.pki_dir;
     let allowlist_path = config.allowlist_path;
+    let limiter = config.limiter;
 
     thread::spawn(move || {
         for incoming in listener.incoming() {
@@ -269,10 +281,23 @@ pub fn spawn_enroll_listener(config: EnrollConfig) -> Result<SocketAddr, String>
                     let registry = Arc::clone(&registry);
                     let pki_dir = pki_dir.clone();
                     let allowlist_path = allowlist_path.clone();
+                    let limiter = limiter.clone();
                     thread::spawn(move || {
                         let Some(tls_stream) =
                             connection::accept_enroll_tls(stream, &tls_config, peer)
                         else {
+                            return;
+                        };
+                        // The slot is acquired only AFTER the TLS handshake succeeds
+                        // (mirroring the render listener's own connection-acquisition
+                        // order), so a bare connect that never completes TLS never holds
+                        // a slot; this listener's own `HANDSHAKE_TIMEOUT` (applied inside
+                        // `accept_enroll_tls`) already bounds how long that can take.
+                        let Ok(_slot) = limiter.try_acquire() else {
+                            tracing::warn!(
+                                "enrollment connection {peer:?}: refusing -- this worker is already at \
+                                 --max-connections capacity (shared with the render/library listener)"
+                            );
                             return;
                         };
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

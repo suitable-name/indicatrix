@@ -26,9 +26,9 @@ pub mod transport;
 pub mod uniaxial_fresnel;
 
 /// Number of spectral channels `trace_spectral_ray` traces per ray (8-channel
-/// stratified hero-wavelength sampling). Module-level (rather than a `const` local to
-/// `trace_spectral_ray`, as it used to be) so the per-bounce helper functions extracted
-/// from that function can also reference it.
+/// stratified hero-wavelength sampling). Module-level, not a `const` local to
+/// `trace_spectral_ray`, so the per-bounce helper functions extracted from that
+/// function can also reference it.
 const NUM_CHANNELS: usize = 8;
 
 // Re-exports below preserve paths reachable directly off `raytracer` before the module

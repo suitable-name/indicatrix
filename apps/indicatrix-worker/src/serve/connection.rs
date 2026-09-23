@@ -194,8 +194,8 @@ fn serve_until_render_request_or_eof<S: Read + Write>(
 pub trait ClearHandshakeTimeout {
     /// Best-effort, like `serve::tune_accepted_socket`: a failed `set_*_timeout` call is
     /// swallowed rather than turned into a connection-ending error, since the loop ahead
-    /// works fine either way -- it would just no longer be bounded by a timeout, same as
-    /// today before this deadline existed.
+    /// works fine either way -- it would just run unbounded by a timeout, the same as a
+    /// connection this deadline was never applied to.
     fn clear_handshake_timeout(&mut self);
 }
 
@@ -257,6 +257,7 @@ pub fn handle_connection<S: Read + Write + ClearHandshakeTimeout>(
     let welcome = Welcome {
         protocol_version: PROTOCOL_VERSION,
         build_hash: indicatrix_net::handshake::UNKNOWN_BUILD_HASH,
+        source_hash: indicatrix_net::handshake::UNKNOWN_BUILD_HASH,
         render: None,
         library: true,
         tilt_curves: false,
@@ -268,7 +269,9 @@ pub fn handle_connection<S: Read + Write + ClearHandshakeTimeout>(
 
 #[cfg(feature = "worker")]
 mod worker {
-    use super::{BUILD_MISMATCH_CODE, Database, handle_non_render_message};
+    use super::{
+        BUILD_MISMATCH_CODE, Database, NO_RENDER_CAPACITY_CODE, handle_non_render_message,
+    };
     use crate::{
         cli::ComputeMode,
         render_core,
@@ -281,7 +284,7 @@ mod worker {
         handshake,
         messages::{
             Backend, ClientMessage, ErrorMsg, Hello, NetError, PROTOCOL_VERSION, RenderCapability,
-            RenderRequest, StreamEvent, TiltCurvesRequest, Welcome,
+            RenderRequest, StreamEvent, TiltCurvesRequest, TiltCurvesResponse, Welcome,
         },
     };
     use std::{
@@ -318,15 +321,22 @@ mod worker {
 
     /// Handles one connection end to end.
     ///
-    /// First the `HELLO`/`WELCOME` handshake, refusing on a build-hash or
+    /// First the `HELLO`/`WELCOME` handshake, refusing on a build-hash/source-hash or
     /// protocol-version mismatch (per [`handshake::verify_compatible`]) -- the one code
     /// path that runs the full build-compatibility gate; the library-only
-    /// [`super::handle_connection`] never does, having no build to compare. Then a loop
-    /// dispatching `Cancel`/`Library`/`RenderRequest`/`TiltCurvesRequest` until the peer
-    /// closes. Each `RenderRequest` usually comes from a fresh [`read_next_message`]
-    /// call, but may already be in hand if the client pipelined it ahead of the
-    /// previous request's `DONE` (handed back by [`stream_emit::run_stream`]).
-    /// `TiltCurvesRequest` supports no pipelining and goes straight to
+    /// [`super::handle_connection`] never does, having no build to compare. A peer whose
+    /// `HELLO` reports [`handshake::UNKNOWN_BUILD_HASH`] (e.g. a library-only client with
+    /// no `indicatrix` build to report at all -- see `indicatrix_net::library`'s module
+    /// doc comment) is a special case (see
+    /// [`pair_as_library_only_if_unknown_build`]): rather than being refused by
+    /// [`handshake::verify_compatible`]'s "an unknown build is never compatible" rule,
+    /// it is paired as library-only, exactly like [`super::handle_connection`] pairs
+    /// one -- see [`serve_library_only_connection`]. Then a loop dispatching
+    /// `Cancel`/`Library`/`RenderRequest`/`TiltCurvesRequest` until the peer closes. Each
+    /// `RenderRequest` usually comes from a fresh [`read_next_message`] call, but may
+    /// already be in hand if the client pipelined it ahead of the previous request's
+    /// `DONE` (handed back by [`stream_emit::run_stream`]). `TiltCurvesRequest` supports
+    /// no pipelining and goes straight to
     /// [`crate::serve::tilt::handle_tilt_curves_request`] as a single request/response
     /// call, unlike `RenderRequest`'s validate-then-stream handling below.
     ///
@@ -371,25 +381,14 @@ mod worker {
         let _ = stream.set_write_timeout(None);
         let local_hello = handshake::local_hello();
 
+        if let Some(result) =
+            pair_as_library_only_if_unknown_build(&mut stream, &local_hello, &remote_hello, db)
+        {
+            return result;
+        }
+
         if let Err(incompatible) = handshake::verify_compatible(&local_hello, &remote_hello) {
-            let message = format!(
-                "refusing to pair: worker build_hash={:02x?} protocol_version={}, viewer build_hash={:02x?} \
-                 protocol_version={} ({incompatible})",
-                local_hello.build_hash,
-                local_hello.protocol_version,
-                remote_hello.build_hash,
-                remote_hello.protocol_version
-            );
-            tracing::warn!("{message}");
-            // Best-effort: the peer may already have hung up; the handshake refusal
-            // logged above is the meaningful outcome regardless.
-            let _ = indicatrix_net::messages::write_message(
-                &mut stream,
-                &ErrorMsg {
-                    code: BUILD_MISMATCH_CODE,
-                    message,
-                },
-            );
+            refuse_incompatible_handshake(&mut stream, &local_hello, &remote_hello, incompatible);
             return Ok(());
         }
 
@@ -402,6 +401,7 @@ mod worker {
         let welcome = Welcome {
             protocol_version: PROTOCOL_VERSION,
             build_hash: local_hello.build_hash,
+            source_hash: local_hello.source_hash,
             render: Some(RenderCapability {
                 backend,
                 max_pixels: validate::MAX_PIXELS,
@@ -432,7 +432,7 @@ mod worker {
                 },
             };
 
-            let request: RenderRequest = match next {
+            let mut request: RenderRequest = match next {
                 NextRequest::Render(r) => r,
                 NextRequest::TiltCurves(tilt_request) => {
                     // A single request/response call (its own validation, catch_unwind,
@@ -442,10 +442,14 @@ mod worker {
                 }
             };
 
+            // `validate_stream_config` takes `&mut request.stream` (it
+            // clamps `cadence_ms` in place) alongside `&request.scene` -- two disjoint
+            // field borrows of the same `request`, not a whole-struct borrow, so this
+            // compiles despite the apparent mutable/shared overlap.
             if let Err(msg) =
                 validate::validate_request(&request.scene, request.first_sample, request.samples)
                     .and_then(|()| {
-                        validate::validate_stream_config(&request.stream, &request.scene)
+                        validate::validate_stream_config(&mut request.stream, &request.scene)
                     })
             {
                 indicatrix_net::messages::write_stream_event(
@@ -487,6 +491,130 @@ mod worker {
                         }),
                         None,
                     )?;
+                }
+            }
+        }
+    }
+
+    /// Logs why [`handshake::verify_compatible`] refused `local_hello`/`remote_hello`
+    /// and writes an `ErrorMsg` in place of `WELCOME` -- best-effort, like
+    /// [`super::refuse_for_capacity`]: the peer may already have hung up, but the
+    /// warning logged here is the meaningful outcome either way.
+    fn refuse_incompatible_handshake<S: Write>(
+        stream: &mut S,
+        local_hello: &Hello,
+        remote_hello: &Hello,
+        incompatible: handshake::Incompatible,
+    ) {
+        let message = format!(
+            "refusing to pair: worker build_hash={:02x?} protocol_version={}, viewer build_hash={:02x?} \
+             protocol_version={} ({incompatible})",
+            local_hello.build_hash,
+            local_hello.protocol_version,
+            remote_hello.build_hash,
+            remote_hello.protocol_version
+        );
+        tracing::warn!("{message}");
+        let _ = indicatrix_net::messages::write_message(
+            stream,
+            &ErrorMsg {
+                code: BUILD_MISMATCH_CODE,
+                message,
+            },
+        );
+    }
+
+    /// Pairs `stream` as library-only when `remote_hello` understands this
+    /// worker's protocol version but declares no `indicatrix` build at all
+    /// (`build_hash == handshake::UNKNOWN_BUILD_HASH`, e.g. a library-only client -- see
+    /// `indicatrix_net::library`'s module doc comment).
+    ///
+    /// `Some` means this connection is now fully handled and the caller
+    /// ([`handle_connection_with_gpu`]) should return the inner `Result` immediately;
+    /// `None` means this peer is NOT a library-only downgrade case, and the caller
+    /// should continue on to the normal [`handshake::verify_compatible`] gate. Checked
+    /// before that gate so its "an unknown build is never compatible with anything"
+    /// rule -- correct for two peers that both want to render -- never fires here:
+    /// instead of refusing, this sends a `WELCOME` with no render capacity and serves
+    /// only `Cancel`/`Library` from here on ([`serve_library_only_connection`]).
+    fn pair_as_library_only_if_unknown_build<S: Read + Write>(
+        stream: &mut S,
+        local_hello: &Hello,
+        remote_hello: &Hello,
+        db: &Database,
+    ) -> Option<Result<(), NetError>> {
+        if remote_hello.protocol_version != local_hello.protocol_version
+            || remote_hello.build_hash != handshake::UNKNOWN_BUILD_HASH
+        {
+            return None;
+        }
+        let welcome = Welcome {
+            protocol_version: PROTOCOL_VERSION,
+            build_hash: local_hello.build_hash,
+            source_hash: local_hello.source_hash,
+            render: None,
+            library: true,
+            tilt_curves: false,
+        };
+        Some(
+            indicatrix_net::messages::write_message(stream, &welcome)
+                .and_then(|()| serve_library_only_connection(stream, db)),
+        )
+    }
+
+    /// Serves a peer whose `HELLO` reported [`handshake::UNKNOWN_BUILD_HASH`] (a
+    /// library-only client -- see [`handle_connection_with_gpu`]'s doc comment)
+    /// after this worker has already sent it a `WELCOME` advertising no render
+    /// capacity for this connection. Dispatches `Cancel`/`Library` exactly like
+    /// [`handle_connection_with_gpu`]'s own loop (via [`handle_non_render_message`]); a
+    /// `RenderRequest` or `TiltCurvesRequest` is refused with [`NO_RENDER_CAPACITY_CODE`]
+    /// instead of ever reaching the tracer, since this worker already told the peer it
+    /// has no render capacity here.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NetError`] for a transport-level failure. `Ok(())` (not an error) for a
+    /// clean EOF.
+    fn serve_library_only_connection<S: Read + Write>(
+        stream: &mut S,
+        db: &Database,
+    ) -> Result<(), NetError> {
+        loop {
+            let msg: ClientMessage = match indicatrix_net::messages::read_message(stream) {
+                Ok(m) => m,
+                Err(NetError::Framing(FramingError::Io(e)))
+                    if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+                {
+                    return Ok(());
+                }
+                Err(e) => return Err(e),
+            };
+            match msg {
+                ClientMessage::RenderRequest(_) => {
+                    indicatrix_net::messages::write_stream_event(
+                        stream,
+                        &StreamEvent::Error(ErrorMsg {
+                            code: NO_RENDER_CAPACITY_CODE,
+                            message: "this connection was paired as library-only (HELLO reported \
+                                      no indicatrix build) and cannot render"
+                                .to_string(),
+                        }),
+                        None,
+                    )?;
+                }
+                ClientMessage::TiltCurvesRequest(_) => {
+                    indicatrix_net::messages::write_message(
+                        stream,
+                        &TiltCurvesResponse::Error(ErrorMsg {
+                            code: NO_RENDER_CAPACITY_CODE,
+                            message: "this connection was paired as library-only (HELLO reported \
+                                      no indicatrix build) and cannot compute tilt curves"
+                                .to_string(),
+                        }),
+                    )?;
+                }
+                other @ (ClientMessage::Cancel(_) | ClientMessage::Library(_)) => {
+                    handle_non_render_message(stream, &other, db)?;
                 }
             }
         }

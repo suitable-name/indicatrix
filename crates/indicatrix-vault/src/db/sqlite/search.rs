@@ -22,8 +22,8 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error if the underlying `COUNT` query fails (e.g. a broken or
-    /// inaccessible database) -- previously swallowed into a silent `0`, which made a
-    /// broken database indistinguishable from a genuinely empty one.
+    /// inaccessible database). This allows a broken database to be distinguished
+    /// from a genuinely empty one.
     pub fn get_total_count(&self) -> Result<usize> {
         let count: i64 = self
             .conn
@@ -242,9 +242,10 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// Returns an error if preparing or running the assembled `SELECT` query fails, if a
-    /// row fails to decode into a `DiagramListItem`, or (when `range.performance` is
-    /// non-empty) if loading or decoding a candidate's tilt curves fails.
+    /// Returns an error if preparing or running the assembled `SELECT` query fails, or
+    /// if a row fails to decode into a `DiagramListItem`. A candidate whose tilt-curve
+    /// BLOB fails to decode is never an error here -- see
+    /// [`Self::item_satisfies_performance_filters`].
     pub fn search_diagrams_page(
         &self,
         query: &str,
@@ -281,7 +282,7 @@ impl Database {
             cursor = raw_page.last().map(|item| item.id);
 
             for item in raw_page {
-                if self.item_satisfies_performance_filters(item.id, &range.performance)? {
+                if self.item_satisfies_performance_filters(item.id, &range.performance) {
                     matched.push(item);
                 }
             }
@@ -424,31 +425,37 @@ impl Database {
             })
         })?;
 
-        let mut list = Vec::new();
-        for item in rows.flatten() {
-            list.push(item);
-        }
-        Ok(list)
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("Failed to decode a row while running a diagram-list query")
     }
 
     /// The exact, per-design half of the two-stage performance-filter design (see
     /// [`build_search_predicate`]): loads `entry_id`'s tilt curves and tests every
-    /// filter in `filters` against them, `true` only if all pass. A design with no
-    /// stored curves returns `false` without error, never treated as a failure.
+    /// filter in `filters` against them, `true` only if all pass.
     ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying `Database::get_tilt_curves` call fails (a
-    /// genuine I/O or decode error, never "no curves").
+    /// A design with no stored curves, OR whose stored curve BLOB fails to decode
+    /// (e.g. a length mismatch -- see [`crate::model::tilt_curves::TiltPerformanceCurves::from_bytes`]),
+    /// is treated identically: `false`, logged at `warn!` in the decode-failure case so
+    /// the condition is visible without aborting the caller's whole search. A single
+    /// corrupt row failing every performance-filtered search outright (the previous
+    /// behaviour) would be far worse than that one row silently not matching.
     fn item_satisfies_performance_filters(
         &self,
         entry_id: i64,
         filters: &[crate::model::performance::PerformanceFilter],
-    ) -> Result<bool> {
-        let Some(curves) = self.get_tilt_curves(entry_id)? else {
-            return Ok(false);
+    ) -> bool {
+        let curves = match self.get_tilt_curves(entry_id) {
+            Ok(Some(curves)) => curves,
+            Ok(None) => return false,
+            Err(e) => {
+                warn!(
+                    "entry_id {entry_id}: failed to load/decode stored tilt curves ({e:#}); \
+                     treating as having no curves rather than failing the whole search"
+                );
+                return false;
+            }
         };
-        Ok(filters.iter().all(|f| curves.matches_performance_filter(f)))
+        filters.iter().all(|f| curves.matches_performance_filter(f))
     }
 
     /// [`Self::search_diagrams`], plus a count of how many otherwise-matching designs
@@ -495,7 +502,7 @@ impl Database {
     /// [`Self::search_diagrams_with_performance_exclusions`], plus a caller-chosen
     /// [`SortOrder`] and an opt-in restriction to the cutter's own, locally-imported
     /// designs (`local_only`) -- the display query behind the library panel's sort
-    /// selector and "My designs" toggle (items 189/190/191 of the CAD audit). Capped at
+    /// selector and "My designs" toggle. Capped at
     /// [`SEARCH_RESULT_CAP`] like every other display-facing search in this module.
     ///
     /// Unlike [`Self::search_diagrams_page`], this does not expose a keyset cursor: it
@@ -537,7 +544,127 @@ impl Database {
         }
 
         let limit_usize = usize::try_from(SEARCH_RESULT_CAP).unwrap_or(0);
-        let mut matched: Vec<crate::model::entry::DiagramListItem> = Vec::new();
+        // `exhaustive: false` -- a solo display fetch doesn't need the exact total, so
+        // the walk stops as soon as a capped page's worth of matches is found. A
+        // caller that DOES want the exact total alongside this same page should use
+        // [`Self::search_diagrams_display_with_count`] instead, which walks once for
+        // both rather than decoding every candidate's tilt curves twice.
+        let (matched, _) = self.walk_matching_candidates(
+            query,
+            shape_filter,
+            gear_filter,
+            range,
+            filters,
+            CandidateWalkOptions {
+                order: filters.order,
+                display_cap: limit_usize,
+                exhaustive: false,
+            },
+        )?;
+
+        let excluded =
+            self.count_missing_curve_exclusions(query, shape_filter, gear_filter, range, filters)?;
+        Ok(PerformanceSearchResult {
+            items: matched,
+            excluded_for_missing_curves: excluded,
+        })
+    }
+
+    /// [`Self::search_diagrams_display`] and [`Self::count_matching_diagrams`] combined
+    /// into one candidate walk -- a single-pass fix.
+    ///
+    /// Calling those two separately (as the library panel's `fetch_diagram_list_with_options`
+    /// once did) decodes every active-performance-filter candidate's tilt-curve BLOB
+    /// twice: once in each method's own walk over
+    /// [`Self::search_diagrams_page_raw_ordered`]. This method walks the SQL-narrowed
+    /// candidate set exactly once via [`Self::walk_matching_candidates`], decoding each
+    /// candidate's curve at most once, and returns both the capped display page (in
+    /// `filters.order`, same shape as [`Self::search_diagrams_display`]'s result) and
+    /// the exact, uncapped match count (same value [`Self::count_matching_diagrams`]
+    /// would return for the same arguments).
+    ///
+    /// When `range.performance` is empty neither query decodes any curve at all, so
+    /// this just delegates to the two existing cheap SQL queries -- there is nothing to
+    /// merge.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error under the same conditions as [`Self::search_diagrams_display`]
+    /// and [`Self::count_matching_diagrams`].
+    pub fn search_diagrams_display_with_count(
+        &self,
+        query: &str,
+        shape_filter: &str,
+        gear_filter: &str,
+        range: &RangeFilter,
+        filters: DisplayFilters<'_>,
+    ) -> Result<(PerformanceSearchResult, usize)> {
+        if range.performance.is_empty() {
+            let display =
+                self.search_diagrams_display(query, shape_filter, gear_filter, range, filters)?;
+            let total =
+                self.count_matching_diagrams(query, shape_filter, gear_filter, range, filters)?;
+            return Ok((display, total));
+        }
+
+        let limit_usize = usize::try_from(SEARCH_RESULT_CAP).unwrap_or(0);
+        // `exhaustive: true` -- unlike the solo display fetch above, the exact total
+        // returned here must be the real total, so every raw page is walked to
+        // completion regardless of how early the display cap is reached.
+        let (matched, total) = self.walk_matching_candidates(
+            query,
+            shape_filter,
+            gear_filter,
+            range,
+            filters,
+            CandidateWalkOptions {
+                order: filters.order,
+                display_cap: limit_usize,
+                exhaustive: true,
+            },
+        )?;
+
+        let excluded =
+            self.count_missing_curve_exclusions(query, shape_filter, gear_filter, range, filters)?;
+        Ok((
+            PerformanceSearchResult {
+                items: matched,
+                excluded_for_missing_curves: excluded,
+            },
+            total,
+        ))
+    }
+
+    /// The shared candidate walk behind [`Self::search_diagrams_display`],
+    /// [`Self::count_matching_diagrams`], and
+    /// [`Self::search_diagrams_display_with_count`] -- walks every SQL-narrowed
+    /// candidate for `query`/`shape_filter`/`gear_filter`/`range` in `options.order`,
+    /// testing each one's exact match via [`Self::item_satisfies_performance_filters`],
+    /// so a candidate's tilt curves are decoded at most once per call regardless of
+    /// whether the caller wants the display page, the exact count, or both.
+    ///
+    /// Returns every genuine match up to `options.display_cap` (`0` for a count-only
+    /// caller that never wants the page collected -- nothing is ever pushed onto the
+    /// returned `Vec` in that case) alongside the exact match count. Further matches
+    /// beyond `display_cap` are still tallied into that count even when not collected.
+    /// See [`CandidateWalkOptions`]'s own field docs for `exhaustive`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if preparing or running the underlying `SELECT` query fails, or
+    /// if a row fails to decode into a `DiagramListItem`.
+    fn walk_matching_candidates(
+        &self,
+        query: &str,
+        shape_filter: &str,
+        gear_filter: &str,
+        range: &RangeFilter,
+        filters: DisplayFilters<'_>,
+        options: CandidateWalkOptions,
+    ) -> Result<(Vec<crate::model::entry::DiagramListItem>, usize)> {
+        let limit_usize = usize::try_from(SEARCH_RESULT_CAP).unwrap_or(0);
+        let mut matched = Vec::new();
+        let mut total = 0usize;
         let mut offset = 0i64;
         loop {
             let raw_page = self.search_diagrams_page_raw_ordered(
@@ -546,7 +673,7 @@ impl Database {
                 gear_filter,
                 range,
                 DisplayPage {
-                    order: filters.order,
+                    order: options.order,
                     local_only: filters.local_only,
                     tag_filter: filters.tag_filter,
                     id_filter: filters.id_filter,
@@ -558,23 +685,19 @@ impl Database {
             offset += raw_page.len() as i64;
 
             for item in raw_page {
-                if self.item_satisfies_performance_filters(item.id, &range.performance)? {
-                    matched.push(item);
+                if self.item_satisfies_performance_filters(item.id, &range.performance) {
+                    total += 1;
+                    if matched.len() < options.display_cap {
+                        matched.push(item);
+                    }
                 }
             }
 
-            if matched.len() >= limit_usize || !raw_page_was_full {
+            if !raw_page_was_full || (!options.exhaustive && matched.len() >= options.display_cap) {
                 break;
             }
         }
-        matched.truncate(limit_usize);
-
-        let excluded =
-            self.count_missing_curve_exclusions(query, shape_filter, gear_filter, range, filters)?;
-        Ok(PerformanceSearchResult {
-            items: matched,
-            excluded_for_missing_curves: excluded,
-        })
+        Ok((matched, total))
     }
 
     /// How many otherwise-matching designs (every `range` filter except performance)
@@ -612,23 +735,25 @@ impl Database {
     }
 
     /// The real, uncapped count of designs matching `query`/`shape_filter`/
-    /// `gear_filter`/`range`/`filters` -- fixes the library panel's "N of M designs
-    /// match" reading the whole-catalogue total instead of the actual match count (CAD
-    /// audit item 193). Distinct from [`Self::get_total_count`] (the entire catalogue)
-    /// and from a display query's `items.len()` (capped at [`SEARCH_RESULT_CAP`]).
+    /// `gear_filter`/`range`/`filters` -- gives the actual match count distinct from
+    /// the entire catalogue [`Self::get_total_count`] and a display query's capped result.
     ///
     /// When `range.performance` is empty this is one `COUNT(*)` over
     /// [`build_search_predicate`]'s own predicate. Otherwise -- since a performance
     /// filter's exact test only runs once a candidate's curve is decoded in Rust, see
     /// that function's doc comment -- this walks every SQL-narrowed candidate via
-    /// [`Self::search_diagrams_page_raw_ordered`] and tallies exact matches, unbounded
-    /// by `SEARCH_RESULT_CAP` (unlike the capped page a caller actually displays).
+    /// [`Self::walk_matching_candidates`] and tallies exact matches, unbounded by
+    /// `SEARCH_RESULT_CAP` (unlike the capped page a caller actually displays).
+    ///
+    /// A caller that also wants the capped display page for these same arguments
+    /// should use [`Self::search_diagrams_display_with_count`] instead of calling this
+    /// alongside [`Self::search_diagrams_display`]: doing so separately decodes every
+    /// candidate's tilt curves twice.
     ///
     /// # Errors
     ///
-    /// Returns an error if preparing or running the underlying query fails, or (when
-    /// `range.performance` is non-empty) if loading or decoding a candidate's tilt
-    /// curves fails.
+    /// Returns an error if preparing or running the underlying query fails, or if a
+    /// row fails to decode into a `DiagramListItem`.
     pub fn count_matching_diagrams(
         &self,
         query: &str,
@@ -648,8 +773,54 @@ impl Database {
             return Ok(count as usize);
         }
 
+        // `display_cap: 0` -- nothing is ever collected into the walk's `Vec`, only
+        // the exact total is wanted here. `exhaustive: true` -- every raw page is
+        // walked to completion, since a bare count has no "enough for the page"
+        // early-out.
+        let (_, total) = self.walk_matching_candidates(
+            query,
+            shape_filter,
+            gear_filter,
+            range,
+            filters,
+            CandidateWalkOptions {
+                order: SortOrder::CatalogueOrder,
+                display_cap: 0,
+                exhaustive: true,
+            },
+        )?;
+        Ok(total)
+    }
+
+    /// Every entry id matching `query`/`shape_filter`/`gear_filter`/`range`/`filters`,
+    /// with NO [`SEARCH_RESULT_CAP`] truncation -- the library's "regenerate previews/
+    /// tilt curves for the whole filtered set" batch action needs the REAL match set,
+    /// not just the capped page a display query shows (`Self::search_diagrams_display`)
+    /// or a bare count (`Self::count_matching_diagrams`).
+    ///
+    /// Walks the whole match set via the same offset-paginated
+    /// [`Self::search_diagrams_page_raw_ordered`]/exact-performance-filter-recheck
+    /// shape [`Self::count_matching_diagrams`] already uses for its own uncapped walk,
+    /// just collecting ids instead of tallying a count -- so the two can never
+    /// disagree on what "matching" means. `SortOrder::CatalogueOrder` throughout: the
+    /// caller is about to batch-process this set, not display it in the panel's
+    /// currently-chosen order, so `filters.order` is deliberately not threaded in
+    /// here.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if preparing or running the underlying query fails, or if a
+    /// row fails to decode into a `DiagramListItem`.
+    pub fn matching_entry_ids(
+        &self,
+        query: &str,
+        shape_filter: &str,
+        gear_filter: &str,
+        range: &RangeFilter,
+        filters: DisplayFilters<'_>,
+    ) -> Result<Vec<i64>> {
         let limit_usize = usize::try_from(SEARCH_RESULT_CAP).unwrap_or(0);
-        let mut matched = 0usize;
+        let mut ids = Vec::new();
         let mut offset = 0i64;
         loop {
             let raw_page = self.search_diagrams_page_raw_ordered(
@@ -668,22 +839,23 @@ impl Database {
             )?;
             let raw_page_was_full = raw_page.len() == limit_usize;
             offset += raw_page.len() as i64;
-            for item in &raw_page {
-                if self.item_satisfies_performance_filters(item.id, &range.performance)? {
-                    matched += 1;
+            for item in raw_page {
+                if range.performance.is_empty()
+                    || self.item_satisfies_performance_filters(item.id, &range.performance)
+                {
+                    ids.push(item.id);
                 }
             }
             if !raw_page_was_full {
                 break;
             }
         }
-        Ok(matched)
+        Ok(ids)
     }
 }
 
 /// Sort order for [`Database::search_diagrams_display`] -- the library panel's sort
-/// selector (CAD audit item 190's sort half; the tag/collection half is deliberately
-/// out of scope).
+/// selector (the tag/collection half is deliberately out of scope here).
 ///
 /// `#[default]` is [`Self::CatalogueOrder`], the same `de.id ASC` every other search in
 /// this module has always used, so a caller that never sets a sort preference sees no
@@ -695,11 +867,11 @@ pub enum SortOrder {
     CatalogueOrder,
     /// Case-insensitive title, A-Z.
     Title,
-    /// Most recently created first (`diagram_entries.created_at`, CAD audit item 191).
+    /// Most recently created first (`diagram_entries.created_at`).
     /// A row that predates that column (`NULL`) sorts last -- SQLite already orders
     /// `NULL` after every non-null value in `DESC`, so no extra `CASE` is needed.
     Newest,
-    /// Most recently edited first (`diagram_entries.updated_at`, CAD audit item 191).
+    /// Most recently edited first (`diagram_entries.updated_at`).
     /// Same `NULL`-sorts-last behaviour as [`Self::Newest`].
     RecentlyEdited,
 }
@@ -727,12 +899,12 @@ impl SortOrder {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DisplayFilters<'a> {
     pub order: SortOrder,
-    /// "My designs" restriction (CAD audit item 189).
+    /// "My designs" restriction.
     pub local_only: bool,
-    /// Tag chip restriction (CAD audit item 190's tag half), `None` for no
+    /// Tag chip restriction, `None` for no
     /// restriction.
     pub tag_filter: Option<i64>,
-    /// "Show these N" restriction to an explicit id set (CAD audit item 187's batch
+    /// "Show these N" restriction to an explicit id set (the batch
     /// case), `None`/empty for no restriction.
     pub id_filter: Option<&'a [i64]>,
 }
@@ -745,11 +917,11 @@ pub struct DisplayFilters<'a> {
 struct DisplayPage<'a> {
     order: SortOrder,
     local_only: bool,
-    /// Restricts the page to designs carrying this tag id (CAD audit item 190's tag
-    /// half), `None` for no tag restriction. See [`build_search_predicate`]'s own doc
+    /// Restricts the page to designs carrying this tag id, `None` for no tag
+    /// restriction. See [`build_search_predicate`]'s own doc
     /// comment for the predicate this adds.
     tag_filter: Option<i64>,
-    /// Restricts the page to exactly these entry ids (CAD audit item 187's "show
+    /// Restricts the page to exactly these entry ids (the "show
     /// these N" batch-import case), `None`/empty for no restriction. Borrowed, not
     /// owned: every caller already holds the id list (`imported_ids`, or a UI
     /// property read once per query) for at least as long as the query runs, so
@@ -758,6 +930,29 @@ struct DisplayPage<'a> {
     id_filter: Option<&'a [i64]>,
     offset: i64,
     limit: i64,
+}
+
+/// Bundles [`Database::walk_matching_candidates`]'s per-call knobs, purely to keep
+/// that function under clippy's `too_many_arguments` lint -- same convention as
+/// [`DisplayPage`].
+#[derive(Debug, Clone, Copy)]
+struct CandidateWalkOptions {
+    /// Sort order for the underlying raw pages -- irrelevant to which rows match, only
+    /// to the order the returned `Vec` (and so the caller's display page) comes back in.
+    order: SortOrder,
+    /// Collect at most this many genuine matches into the walk's returned `Vec`. `0`
+    /// for a count-only caller that never wants the page collected -- nothing is ever
+    /// pushed in that case, so no wasted allocation for an unbounded count walk.
+    display_cap: usize,
+    /// `false` stops the walk as soon as `display_cap` matches have been collected, so
+    /// the returned count is then only a lower bound and must not be surfaced as the
+    /// real total (matches the pre-finding-17 [`Database::search_diagrams_display`]
+    /// behaviour: a solo display fetch doesn't need the exact total). `true` always
+    /// walks every raw page to completion, required whenever the exact total returned
+    /// alongside it is actually surfaced to a caller
+    /// ([`Database::count_matching_diagrams`],
+    /// [`Database::search_diagrams_display_with_count`]).
+    exhaustive: bool,
 }
 
 /// Maximum rows [`Database::search_diagrams`] and friends will return.
@@ -817,7 +1012,7 @@ fn build_search_predicate(
         id_filter,
         order: _order,
     } = filters;
-    let q_pattern = format!("%{}%", query.trim());
+    let q_pattern = format!("%{}%", escape_like_pattern(query.trim()));
     let mut sql = String::from(
         "SELECT de.id, de.title, de.url, de.design_id,
                 dd.shape, CAST(dd.index_gear AS TEXT), dd.facets_count, dd.designer_info,
@@ -834,17 +1029,22 @@ fn build_search_predicate(
     if query.trim().is_empty() {
         sql.push_str(" AND (1=1 OR ?1 IS NULL) ");
     } else {
-        // CAD audit item 228: the search tooltip/placeholder (header.slint) has
-        // always promised "title, designer or notes", but until now this predicate
-        // never actually looked at a stored note -- see that item's own STATUS
-        // write-up. `angle_settings.notes` is per-TIER (one design has many rows),
+        // The search tooltip/placeholder (header.slint) promises "title, designer
+        // or notes", and this predicate matches a stored note accordingly.
+        // `angle_settings.notes` is per-TIER (one design has many rows),
         // so matching it needs an `EXISTS` subquery rather than a plain joined
         // column, which would otherwise duplicate a design once per matching tier.
+        //
+        // `ESCAPE '\'` on every LIKE here, paired with `escape_like_pattern` above:
+        // without it, a literal `%`/`_` a user typed (both appear in real titles and
+        // designer names) is read as a SQL wildcard instead of the character it looks
+        // like -- an unescaped `_` alone matches every row's title.
         sql.push_str(
-            " AND (de.title LIKE ?1 OR dd.designer_info LIKE ?1 OR de.design_id LIKE ?1
+            " AND (de.title LIKE ?1 ESCAPE '\\' OR dd.designer_info LIKE ?1 ESCAPE '\\'
+                   OR de.design_id LIKE ?1 ESCAPE '\\'
                    OR EXISTS (
                        SELECT 1 FROM angle_settings a
-                       WHERE a.detail_id = dd.id AND a.notes LIKE ?1
+                       WHERE a.detail_id = dd.id AND a.notes LIKE ?1 ESCAPE '\\'
                    )) ",
         );
     }
@@ -912,7 +1112,7 @@ fn build_search_predicate(
         sql.push_str(" AND de.ignored = 0 ");
     }
 
-    // "My designs" restriction (CAD audit item 189) -- no bound parameter: the
+    // "My designs" restriction -- no bound parameter: the
     // `local://` prefix is a fixed literal this crate itself writes (see
     // `crate::local::import_asc`), never caller-supplied text.
     if local_only {
@@ -939,8 +1139,8 @@ fn build_search_predicate(
     (sql, params)
 }
 
-/// Appends [`build_search_predicate`]'s tag-chip (CAD audit item 190) and "show
-/// these N" (CAD audit item 187) restrictions -- split out purely to keep that
+/// Appends [`build_search_predicate`]'s tag-chip and "show
+/// these N" restrictions -- split out purely to keep that
 /// function under clippy's `too_many_lines` limit, not because these two are a
 /// cohesive concept; see [`build_search_predicate`]'s own doc comment for the
 /// predicate as a whole.
@@ -974,6 +1174,28 @@ fn append_tag_and_id_filters(
             params.push(Box::new(id));
         }
     }
+}
+
+/// Escapes `\`, `%` and `_` in `raw` so it matches only as a literal substring once
+/// wrapped in `%...%` -- paired with `ESCAPE '\'` on every `LIKE ?1` clause
+/// [`build_search_predicate`] builds.
+///
+/// Without this, a character a user typed as ordinary text is silently read as a SQL
+/// wildcard instead: real titles and designer names in the catalogue contain both `%`
+/// and `_`, so an unescaped `_` alone matches every row's title (any single character),
+/// and `50%` degrades to "contains `50` followed by anything" rather than a literal
+/// percent sign. `\` itself is escaped first (into `\\`) so a literal backslash already
+/// present in the query text isn't misread as the start of an escape sequence once
+/// `ESCAPE '\'` is in effect.
+fn escape_like_pattern(raw: &str) -> String {
+    let mut escaped = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped
 }
 
 /// Linear-interpolation percentile (the same "linear" method `numpy.percentile`

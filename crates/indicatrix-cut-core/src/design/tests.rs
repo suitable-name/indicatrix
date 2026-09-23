@@ -5,8 +5,8 @@ use crate::{
     preform::{PreformShape, PreformSpec},
 };
 use indicatrix::geometry::meet_solver::{
-    Block, MeetConstraint, MeetTierInput, SolveStrategy, SolvedTier, classify_blocks,
-    meet_tier_inputs_from_asc, solve_meet_points,
+    Block, MeetConstraint, MeetTierInput, SolveControl, SolveError, SolveStrategy, SolvedTier,
+    classify_blocks, meet_tier_inputs_from_asc, solve_meet_points,
 };
 
 /// A fresh design (preform, no tiers) must already be a closed, positive-
@@ -89,7 +89,10 @@ fn solve_reports_the_missing_anchor_block_rather_than_a_silent_default() {
         detached: Vec::new(),
     });
     let err = design.solve().expect_err("crown has no scale reference");
-    assert_eq!(err.blocks, vec![Block::Crown]);
+    let DesignSolveError::MissingAnchor(missing) = err else {
+        panic!("expected MissingAnchor, got {err:?}");
+    };
+    assert_eq!(missing.blocks, vec![Block::Crown]);
     assert!(
         !design.is_closed(),
         "planes()/status() must fail closed too"
@@ -665,6 +668,126 @@ fn resolve_dirty_touches_only_the_edited_tier_and_non_anchor_tiers() {
     }
 }
 
+// --- solve_with / resolve_dirty_with (cancellation) and the panic-to-error
+// conversion of the `previous`-alignment check ---
+
+/// A small hand-built three-anchor design (one `ScaleReference` tier per
+/// crown/pavilion/girdle block), for the `solve_with`/`resolve_dirty_with`
+/// tests below -- the same shape [`resolve_dirty_touches_only_the_edited_tier_and_non_anchor_tiers`]
+/// uses, factored out so those tests don't each repeat the construction.
+fn three_anchor_design() -> Design {
+    let mut design = Design::fresh(PreformSpec::block(1.0, 1.0, 2.0), 96, 4, 1.62);
+    design.tiers.push(ConstraintTier {
+        angle_deg: 30.0,
+        name: "A".to_string(),
+        indices: vec![0.0, 24.0, 48.0, 72.0],
+        constraint: MeetConstraint::ScaleReference(0.5),
+        imported_meet: None,
+        original_notes: None,
+        detached: Vec::new(),
+    });
+    design.tiers.push(ConstraintTier {
+        angle_deg: 45.0,
+        name: "B".to_string(),
+        indices: vec![0.0, 24.0, 48.0, 72.0],
+        constraint: MeetConstraint::MeetNamed(vec!["A".to_string()]),
+        imported_meet: None,
+        original_notes: None,
+        detached: Vec::new(),
+    });
+    design.tiers.push(ConstraintTier {
+        angle_deg: -30.0,
+        name: "C".to_string(),
+        indices: vec![],
+        constraint: MeetConstraint::ScaleReference(0.4),
+        imported_meet: None,
+        original_notes: None,
+        detached: Vec::new(),
+    });
+    design
+}
+
+/// `solve_with` with a default (no-op) [`SolveControl`] must reproduce
+/// [`Design::solve`] bit for bit -- an unused control changes nothing.
+#[test]
+fn solve_with_a_default_control_matches_solve_bitwise() {
+    let design = three_anchor_design();
+    let plain = design.solve().expect("hand-built design must solve");
+    let via_with = design
+        .solve_with(&SolveControl::default())
+        .expect("a default control never cancels");
+    assert_eq!(plain.len(), via_with.len());
+    for (a, b) in plain.iter().zip(&via_with) {
+        assert_eq!(a.mast.to_bits(), b.mast.to_bits());
+        assert_eq!(a.strategy, b.strategy);
+    }
+}
+
+/// `resolve_dirty_with` must return [`DesignSolveError::Mismatch`] (naming
+/// both the expected and the actual tier count) instead of panicking when
+/// `previous` is the wrong length; `resolve_dirty` itself must still
+/// `panic!` on the exact same input.
+#[test]
+fn resolve_dirty_with_reports_a_mismatch_instead_of_panicking() {
+    let design = three_anchor_design();
+    let bogus_previous: Vec<SolvedTier> = Vec::new();
+    let dirty = std::collections::BTreeSet::from([0]);
+    let control = SolveControl::default();
+    let err = design
+        .resolve_dirty_with(&bogus_previous, &dirty, &control)
+        .expect_err("empty previous list must not align with 3 tiers");
+    match err {
+        DesignSolveError::Mismatch(m) => {
+            assert_eq!(m.expected_tiers, design.tiers.len());
+            assert_eq!(m.got_tiers, 0);
+        }
+        other => panic!("expected DesignSolveError::Mismatch, got {other:?}"),
+    }
+}
+
+#[test]
+#[should_panic(expected = "resolve_dirty: `previous`")]
+fn resolve_dirty_still_panics_on_a_mismatch() {
+    let design = three_anchor_design();
+    let bogus_previous: Vec<SolvedTier> = Vec::new();
+    let dirty = std::collections::BTreeSet::from([0]);
+    let _ = design.resolve_dirty(&bogus_previous, &dirty);
+}
+
+/// A hand-built design has far too few planes to ever hit `MAX_PLANES`; a
+/// synthetic design with one massively-indexed tier does. Above the cap,
+/// `solve_with` must surface `DesignSolveError::Solve(SolveError::TooManyPlanes)`
+/// as a real error, while the legacy `solve` keeps returning its old silent
+/// all-`Failed` result (mirroring `indicatrix::geometry::meet_solver`'s own
+/// `solve_meet_points`/`solve_meet_points_with` split) -- the two entry
+/// points must never disagree about what counts as "too many planes".
+#[test]
+fn solve_with_reports_too_many_planes_above_the_cap_while_solve_keeps_the_legacy_fallback() {
+    let mut design = Design::fresh(PreformSpec::block(2.0, 1.0, 2.0), 401, 4, 1.62);
+    design.tiers.push(ConstraintTier {
+        angle_deg: 90.0,
+        name: "G".to_string(),
+        indices: (0..401).map(f64::from).collect(),
+        constraint: MeetConstraint::ScaleReference(1.0),
+        imported_meet: None,
+        original_notes: None,
+        detached: Vec::new(),
+    });
+
+    match design.solve_with(&SolveControl::default()) {
+        Err(DesignSolveError::Solve(SolveError::TooManyPlanes { planes, max })) => {
+            assert!(planes > max, "planes: {planes}, max: {max}");
+        }
+        other => panic!("expected DesignSolveError::Solve(TooManyPlanes), got {other:?}"),
+    }
+
+    let legacy = design
+        .solve()
+        .expect("legacy solve never errors on plane cap");
+    assert_eq!(legacy.len(), 1);
+    assert_eq!(legacy[0].strategy, SolveStrategy::ScaleReference);
+}
+
 /// Speed, on a real, large design: PC 05.115 "CrackOtto-Step", 103 tiers, pulled
 /// read-only from the user's own `facet_diagrams.sqlite` catalogue's attached `.asc`
 /// file (see [`large_fixture`] for provenance) -- a full [`Design::solve`] against
@@ -813,6 +936,61 @@ fn resolve_dirty_speed_on_a_large_real_design() {
          {half_full_time:?}, subgraph resolve {half_subgraph_time:?} ({:.1}x)",
         half_full_time.as_secs_f64() / half_subgraph_time.as_secs_f64().max(1e-12)
     );
+}
+
+/// Cancellation proof, on the same real, expensive (5.9-second-class) fixture
+/// [`resolve_dirty_speed_on_a_large_real_design`] benchmarks: [`Design::solve_with`]
+/// started on a background thread must notice a cancellation flag set 50 ms
+/// in and return [`indicatrix::geometry::meet_solver::SolveError::Cancelled`]
+/// within 500 ms of that -- `indicatrix::geometry::meet_solver`'s cancel
+/// points (once per constructive-pass sweep, once per candidate-enumeration
+/// chunk, once per refinement sweep -- see that crate's module docs,
+/// "Cancellation and progress") are far finer-grained than the whole solve,
+/// so this holds regardless of build profile or how long the *uncancelled*
+/// solve would have taken.
+///
+/// Deliberately NOT `#[ignore]`d, unlike the timing benchmark above: this is
+/// a correctness check on cancel latency, not a performance measurement, and
+/// it must stay fast in the default suite -- `rx.recv_timeout` below returns
+/// as soon as the cancellation is observed, it does not wait for the
+/// (possibly much slower, in a debug build) solve to have run to completion.
+#[test]
+fn cancel_stops_a_large_real_solve_quickly() {
+    let design =
+        design_with_real_meet_structure("CrackOtto-Step", large_fixture::PC_05_115_CRACKOTTO_STEP);
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    std::thread::scope(|scope| {
+        // Bind local references first and `move` those (cheap, `Copy`) into
+        // the spawned closure, rather than `&design`/`&cancel` themselves --
+        // `tx` has to be moved in (`mpsc::Sender` is `Send` but not `Sync`,
+        // so a non-`move` closure capturing `&tx` would not compile), and a
+        // `move` closure moves every capture, which would otherwise try to
+        // move `design`/`cancel` themselves out from under the assertions
+        // below that still need them.
+        let design_ref = &design;
+        let cancel_ref = &cancel;
+        scope.spawn(move || {
+            let control = SolveControl::with_cancel(cancel_ref);
+            let result = design_ref.solve_with(&control);
+            let _ = tx.send(result);
+        });
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        let result = rx
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .expect(
+                "Design::solve_with must observe cancellation and return within 500ms of it \
+                 being set -- see indicatrix::geometry::meet_solver's cancel-point granularity",
+            );
+        assert!(
+            matches!(result, Err(DesignSolveError::Solve(SolveError::Cancelled))),
+            "expected a cancelled DesignSolveError, got {result:?}"
+        );
+    });
 }
 
 /// The one large (103-tier) real fixture [`resolve_dirty_speed_on_a_large_real_design`]

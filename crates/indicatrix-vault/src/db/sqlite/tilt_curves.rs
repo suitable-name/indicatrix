@@ -176,7 +176,7 @@ impl Database {
 
     /// Deletes `entry_id`'s entire `diagram_tilt_curves` row, if one exists.
     ///
-    /// CAD audit item 97: like `diagram_previews`, this is a side table keyed by
+    /// Like `diagram_previews`, this is a side table keyed by
     /// `entry_id` that survives a `diagram_details` re-sync (see
     /// [`Self::save_diagram_detail`](Database::save_diagram_detail)'s own doc
     /// comment) -- so re-importing a `.asc` over an existing row, which changes the

@@ -1,0 +1,124 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { GuideModel } from "../models/guide.slint";
+
+// The worked-example
+// walkthrough's step panel -- opens beside the editor (see `app.slint`'s
+// `edit_row`, this component's own mount point, a third column alongside the
+// viewport and `EditorView`). Bounded to the window's own height (`window_height`,
+// the same `in property <length>` pattern `detail_header.slint` already uses for
+// the identical reason -- see this app's own Slint window-sizing rule: content
+// must never reach back up to force `MainWindow` bigger) and internally
+// scrollable, since a step's body text has no fixed length.
+export component GuidePanel inherits Rectangle {
+    in property <length> window_height: 900px;
+
+    width: 260px;
+    // `root.height - 80px` leaves headroom for the
+    // status strip below this column and the app bar above it, the same
+    // "bound any new panel against the content tree's own height" rule
+    // `detail_header.slint`'s `window_height`-derived clamps already follow.
+    height: max(160px, min(420px, root.window_height - 80px));
+    background: Theme.bg-card;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.accent-cyan;
+    clip: true;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        HorizontalLayout {
+            spacing: 6px;
+            Text {
+                horizontal-stretch: 1;
+                text: "Guide -- Step " + (GuideModel.step_index + 1) + " of " + GuideModel.total_steps;
+                font-size: 10px;
+                font-weight: 700;
+                color: Theme.accent-cyan;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                width: 18px;
+                height: 18px;
+                border-radius: 3px;
+                background: close_touch.has-hover ? Theme.bg-card-hover : transparent;
+                Text {
+                    text: "\u{2715}";
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                close_touch := TouchArea { clicked => { GuideModel.close(); } }
+                Tooltip { text: @markdown("Close the guide. Reopen any time from Help > Guide: New Design Walkthrough."); }
+            }
+        }
+
+        Text {
+            text: GuideModel.current.title;
+            font-size: 13px;
+            font-weight: 700;
+            color: Theme.text-primary;
+            wrap: word-wrap;
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                Text {
+                    text: GuideModel.current.body;
+                    font-size: 11px;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        if GuideModel.current.highlight_target == "": Text {
+            text: "(This step's control lives in a panel this guide does not outline -- see its own description above for where to look.)";
+            font-size: 9px;
+            font-italic: true;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+            Rectangle {
+                width: back_txt.preferred-width + 16px;
+                height: 26px;
+                border-radius: Theme.radius-sm;
+                background: GuideModel.has_back ? (back_touch.has-hover ? Theme.bg-elevated : Theme.bg-input) : Theme.bg-darkest;
+                back_txt := Text {
+                    text: "Back";
+                    font-size: 10px;
+                    color: GuideModel.has_back ? Theme.text-secondary : Theme.text-muted;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                back_touch := TouchArea {
+                    enabled: GuideModel.has_back;
+                    clicked => { GuideModel.back(); }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Rectangle {
+                width: next_txt.preferred-width + 16px;
+                height: 26px;
+                border-radius: Theme.radius-sm;
+                background: next_touch.has-hover ? Theme.primary-glow : Theme.primary;
+                next_txt := Text {
+                    text: GuideModel.has_next ? "Next" : "Finish";
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: Theme.text-on-primary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                next_touch := TouchArea { clicked => { GuideModel.next(); } }
+            }
+        }
+    }
+}

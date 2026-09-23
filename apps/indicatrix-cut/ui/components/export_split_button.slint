@@ -1,0 +1,102 @@
+import { Theme } from "../theme.slint";
+import { EditorModel } from "../models/editor.slint";
+
+// "Export Cutting Sheet" and "Export Diagram" live on one "Export..." split
+// button on the command bar, next to Save Native, instead of as separate
+// File menu entries. Mounted with one line in `editor_command_bar.slint`.
+//
+// Keeps the existing callback names -- `EditorModel.export_cutting_sheet()`/
+// `export_diagram()`, unchanged from the File menu's own `activated` handlers.
+export component ExportSplitButton inherits Rectangle {
+    property <bool> menu_open: false;
+
+    width: btn_row.preferred-width;
+    height: 26px;
+
+    btn_row := HorizontalLayout {
+        Rectangle {
+            width: main_txt.preferred-width + 16px;
+            background: main_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+            border-radius: Theme.radius-sm;
+            main_txt := Text {
+                text: "Export...";
+                font-size: 11px;
+                font-weight: 600;
+                color: Theme.text-primary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            main_touch := TouchArea {
+                clicked => { root.menu_open = !root.menu_open; }
+            }
+            Tooltip { text: @markdown("Export the Cutting Sheet (HTML) or the Diagram (PNG)."); }
+        }
+    }
+
+    if root.menu_open: Rectangle {
+        // Backdrop -- dismisses the menu on an outside click, matching
+        // `header.slint`'s own floating-panel convention (`filter_popup`/
+        // `import_popup`), the closest existing analogue in this app to a
+        // click-to-open dropdown that is not a native `ContextMenuArea`.
+        x: -2000px;
+        y: -2000px;
+        width: 4000px;
+        height: 4000px;
+        z: 49;
+        TouchArea { clicked => { root.menu_open = false; } }
+    }
+
+    if root.menu_open: Rectangle {
+        x: 0px;
+        y: root.height + 2px;
+        z: 50;
+        width: 190px;
+        height: menu_col.preferred-height;
+        background: Theme.surface-dialog;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.border-dialog;
+        drop-shadow-blur: 12px;
+        drop-shadow-color: Theme.modal-shadow;
+        clip: true;
+
+        menu_col := VerticalLayout {
+            Rectangle {
+                height: 26px;
+                background: item1_touch.has-hover ? Theme.bg-card-hover : transparent;
+                Text {
+                    text: "Export Cutting Sheet (HTML)...";
+                    font-size: 10px;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                    x: 8px;
+                }
+                item1_touch := TouchArea {
+                    clicked => {
+                        root.menu_open = false;
+                        EditorModel.export_cutting_sheet();
+                    }
+                }
+            }
+            Rectangle {
+                height: 26px;
+                background: item2_touch.has-hover ? Theme.bg-card-hover : transparent;
+                Text {
+                    text: "Export Diagram (PNG)...";
+                    font-size: 10px;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                    x: 8px;
+                }
+                item2_touch := TouchArea {
+                    clicked => {
+                        root.menu_open = false;
+                        EditorModel.export_diagram();
+                    }
+                }
+            }
+        }
+    }
+}

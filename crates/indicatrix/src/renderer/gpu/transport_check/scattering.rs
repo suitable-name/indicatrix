@@ -35,26 +35,93 @@ pub struct HgPhaseCase {
 /// same "pow needs headroom" lesson `blackbody_spectrum`'s own ULP budget already
 /// establishes (29 raw ULP observed on real hardware for a single `powi` chain plus two
 /// divisions).
-/// Measured directly on real hardware: even after softening the case bank's most
+///
+/// This is the budget for EVERY case except the near-degenerate corner
+/// [`HG_PHASE_NEAR_DEGENERATE_ULP_BUDGET`] covers instead -- see
+/// [`is_hg_phase_near_degenerate`] for the split and that constant's own doc comment for
+/// why the corner needs so much more headroom. A single 16384-ULP budget across the
+/// WHOLE case bank would rely on a claim this module's
+/// own megakernel contradicts (see [`HG_PHASE_NEAR_DEGENERATE_ULP_BUDGET`]'s doc
+/// comment) -- 64 is this file's ordinary "pow needs headroom" margin, matching
+/// [`HG_SAMPLE_ULP_BUDGET`]'s own order of magnitude for a comparably composite
+/// function.
+const HG_PHASE_ULP_BUDGET: u32 = 64;
+
+/// The widened budget for [`is_hg_phase_near_degenerate`]'s corner ONLY --
+/// both `g` and `cos_theta` within 0.05 of the SAME sign's extreme (`+1` or `-1`), where
+/// the denominator `1 + g^2 - 2*g*cos_theta` sits within ~1e3x of its `1e-6` clamp
+/// floor. Measured directly on real hardware: even after softening the case bank's most
 /// razor's-edge near-singular point (see [`build_hg_phase_cases`]'s own comment), the
-/// remaining strongly forward-peaked cases (`g` and `cos_theta` both close to +-1, so
-/// the denominator sits within ~1e3x of its `1e-6` clamp floor) still measured up to
-/// ~5800 raw ULP -- `pow(x, 1.5)` at a small `x` amplifies even a tiny difference in how
-/// CPU `f32::mul_add` and GPU `fma` round the numerator before the clamp. The absolute
-/// difference at that same point was ~0.19 out of a ~394 value (~0.05% relative), and
-/// this raw phase value is NEVER evaluated by the shipped estimator itself (see
-/// `optics::raytracer::henyey_greenstein_phase`'s doc comment: `maybe_scatter_or_extinguish`
-/// samples EXACTLY this distribution, so `phase / pdf` cancels to `1.0` and this
-/// function is only reachable from this Tier 2 self-test) -- so a wide budget here
-/// accepts a real, physically-inherent numerical sensitivity rather than masking a
-/// porting bug that could ever actually reach a rendered pixel.
-const HG_PHASE_ULP_BUDGET: u32 = 16384;
+/// remaining strongly forward-peaked cases in this corner still measured up to ~5800 raw
+/// ULP -- `pow(x, 1.5)` at a small `x` amplifies even a tiny difference in how CPU
+/// `f32::mul_add` and GPU `fma` round the numerator before the clamp. The absolute
+/// difference at that same point was ~0.19 out of a ~394 value (~0.05% relative).
+///
+/// This budget does NOT get to hide a porting bug on the path that matters. The raw
+/// phase value goes unevaluated by the shipped estimator only along the
+/// BSDF-sampling path, where
+/// `maybe_scatter_or_extinguish` samples exactly this distribution so `phase / pdf`
+/// cancels to `1.0` -- but the NEE (next-event-estimation) shadow-ray path evaluates it
+/// directly, as its own competing-technique density for the balance heuristic: CPU
+/// `optics::raytracer::scattering` calls `henyey_greenstein_phase` around its NEE
+/// shadow-ray weighting function, and `transport_bounce.wgsl`'s NEE path does the same.
+/// A real porting error of this budget's size would therefore bias every HDR scattering
+/// scene's MIS weight and still pass Tier 2 -- confining the wide budget to this one
+/// corner (rather than the whole case bank) is what keeps that NEE path
+/// covered by [`HG_PHASE_ULP_BUDGET`]'s much tighter 64-ULP floor instead.
+const HG_PHASE_NEAR_DEGENERATE_ULP_BUDGET: u32 = 16384;
+
 /// Near `cos_theta -> 1, g -> 1` the denominator `(1 + g^2 - 2*g*cos_theta)` approaches
 /// its `1e-6` floor and the phase value spikes sharply -- both engines clamp identically,
 /// but the exact spike VALUE is numerically sensitive there, so a small absolute floor
 /// keeps that regime from dominating the ULP budget the way `environment_check`'s own
-/// `CMF_ABS_FLOOR` documents for a similar "correct but numerically touchy" case.
+/// `CMF_ABS_FLOOR` documents for a similar "correct but numerically touchy" case. Shared
+/// by both [`HG_PHASE_ULP_BUDGET`] and [`HG_PHASE_NEAR_DEGENERATE_ULP_BUDGET`]'s
+/// accumulators -- the floor is about how close to zero the COMPARED VALUE is, not about
+/// which ULP budget applies to it.
 const HG_PHASE_ABS_FLOOR: f32 = 1e-3;
+
+/// `true` for the corner [`HG_PHASE_NEAR_DEGENERATE_ULP_BUDGET`] covers --
+/// both `g` and `cos_theta` at least 0.9 in absolute value. See that constant's own doc
+/// comment for why this corner alone needs the wide budget.
+///
+/// The comparison uses `>= 0.9` rather than the tighter, seemingly equivalent
+/// `(v - 1.0).abs() <= 0.05 || (v + 1.0).abs() <= 0.05` (`|v| >= 0.95`,
+/// modulo rounding): a case bank entry at EXACTLY `g = -0.95` could land on the wrong
+/// side of that boundary: `-0.95f32 + 1.0` does not round to exactly `0.05` (f32 addition
+/// is not exact here), so the comparison against `0.05` could evaluate `false` for the
+/// one case name it exists to catch. `>= 0.9` gives the boundary a comfortable margin --
+/// wide enough that no case bank entry this crate generates can straddle it by rounding
+/// error -- while staying well short of `0.0` (never misclassifies an ordinary-regime
+/// case as degenerate).
+fn is_hg_phase_near_degenerate(case: &HgPhaseCase) -> bool {
+    fn near_an_extreme(v: f32) -> bool {
+        v.abs() >= 0.9
+    }
+    near_an_extreme(case.g) && near_an_extreme(case.cos_theta)
+}
+
+/// Merges the near-degenerate-corner accumulator's [`UlpCheckResult`] into
+/// the ordinary-budget one, so [`run_hg_phase`] can still report a single result to its
+/// caller despite comparing the two case groups against two different budgets. `primary`
+/// (the ordinary [`HG_PHASE_ULP_BUDGET`] run) supplies the reported `label`/`budget`/
+/// `abs_floor`; counts are summed, and the worse (higher-ULP) `argmax` wins -- whichever
+/// group's worst offender is further from ITS OWN budget is the more useful diagnostic
+/// to surface first.
+fn merge_hg_phase_results(
+    mut primary: UlpCheckResult<HgPhaseCase>,
+    secondary: UlpCheckResult<HgPhaseCase>,
+) -> UlpCheckResult<HgPhaseCase> {
+    primary.total_comparisons += secondary.total_comparisons;
+    primary.over_budget_count += secondary.over_budget_count;
+    primary.exempted_count += secondary.exempted_count;
+    primary.max_raw_ulp = primary.max_raw_ulp.max(secondary.max_raw_ulp);
+    if secondary.max_ulp > primary.max_ulp {
+        primary.max_ulp = secondary.max_ulp;
+        primary.argmax = secondary.argmax;
+    }
+    primary
+}
 
 fn build_hg_phase_cases() -> Vec<HgPhaseCase> {
     let mut cases = Vec::new();
@@ -146,15 +213,30 @@ pub fn run_hg_phase(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<Hg
     );
     let gpu_out: Vec<f32> = compute::readback(&ctx.device, &ctx.queue, &out_buf, total);
 
-    let mut acc = UlpAccumulator::new(
+    // Two accumulators, not one -- the near-degenerate corner
+    // (`is_hg_phase_near_degenerate`) is checked against the wide budget, every other
+    // case against the tight one, so a real porting error on the path that matters
+    // (the NEE path, see `HG_PHASE_NEAR_DEGENERATE_ULP_BUDGET`'s doc comment) cannot
+    // hide behind headroom the corner alone needs.
+    let mut ordinary = UlpAccumulator::new(
         "henyey_greenstein_phase",
         HG_PHASE_ULP_BUDGET,
         HG_PHASE_ABS_FLOOR,
     );
+    let mut near_degenerate = UlpAccumulator::new(
+        "henyey_greenstein_phase (near g,cos_theta -> +-1)",
+        HG_PHASE_NEAR_DEGENERATE_ULP_BUDGET,
+        HG_PHASE_ABS_FLOOR,
+    );
     for (idx, case) in cases.iter().enumerate() {
+        let acc = if is_hg_phase_near_degenerate(case) {
+            &mut near_degenerate
+        } else {
+            &mut ordinary
+        };
         acc.record(case, "phase", cpu_hg_phase(case), gpu_out[idx]);
     }
-    acc.finish()
+    merge_hg_phase_results(ordinary.finish(), near_degenerate.finish())
 }
 
 // ---------------------------------------------------------------------------------

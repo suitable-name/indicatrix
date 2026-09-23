@@ -3,10 +3,25 @@
 Terms used throughout this manual, gathered in one place. Cutting-schedule
 terms are introduced fully in Chapter 3; optical terms in Chapters 2 and 6.
 
+**A note on interchangeable terms.** The app's own UI is not perfectly
+consistent about a few of these. "Mast," "depth," and "scale value" all
+refer to the same underlying number in different places: **mast** is what
+a cutting machine's gauge reads and what the tier list's MAST column
+shows; **scale value** is what you type into an **Exact scale value**
+tier's own field; and **depth** shows up in prose (including this manual)
+as a plain-language stand-in for either. They are the same number, not
+three different measurements. Similarly, "block" and "tier group" both
+sometimes describe the crown/pavilion/girdle split — this manual always
+uses **block** for that.
+
 **Anchor** — A tier whose scale is stated directly (Meets: **Exact scale
 value**) rather than derived from meeting other facets. Every block (crown,
 pavilion, girdle) needs at least one anchor, or its overall size has
 nothing to be measured against.
+
+**Block** — One of the three vertical sections of a stone: crown,
+pavilion, or girdle. A tier's block is determined by its angle, not by
+what you intended it to be (Chapter 3).
 
 **Birefringence** — The property of some materials that splits light
 entering them into two rays travelling at slightly different refractive
@@ -16,8 +31,19 @@ those two indices at the sodium D line. Zero for an isotropic material.
 **Brilliance** — The percentage of light returned to the eye by a rendered
 stone; one of the app's optical performance readouts.
 
+**Cheater offset** — A small azimuth (index-wheel) adjustment recorded
+against a tier, used when a facet needs to sit slightly off its
+mathematically exact index position to actually meet its neighbours
+correctly on the real stone. Shown in the cutting sheet (Chapter 11)
+alongside the tier's ordinary index.
+
 **Chromophore** — The trace element or defect in a gem material responsible
 for its colour (for example, Cr3+ in ruby, Fe2+ in aquamarine).
+
+**Compare (to Snapshot)** — The dialog that diffs the current design's
+tiers and masts against the last Snapshot taken in this session (Chapter
+14). Not a comparison against the catalogue's printed proportions — see
+Deep Solve for that.
 
 **Critical angle** — The angle, measured from a facet's normal, beyond
 which light hitting that facet from inside the stone reflects internally
@@ -46,12 +72,19 @@ a few entries, directly as Δn(F–C).
 **Extinction** — The percentage of a stone's face reading as dark, dead
 shadow rather than bright; one of the app's optical performance readouts.
 
+**Facet** — One flat cut face of a stone. A single tier normally describes
+a whole symmetric family of identical facets (an orbit), not just one.
+
 **Fire** — A unitless index of spectral flare (the rainbow-coloured flashes
 caused by dispersion); one of the app's optical performance readouts.
 
 **Free tier** — A tier whose Meets constraint is **Unspecified vertex** or
 **Named facet(s)** — its depth is derived by the solver from where its
 plane meets its neighbours, rather than stated directly.
+
+**Gear** — The cutting machine's dividing head: the number of possible
+index positions around the stone (96, 80, 77, 72, 64, 120, or a custom
+count). Changing a design's gear remaps every tier's indices (Chapter 6).
 
 **Girdle** — The narrow band at a stone's widest point, separating crown
 from pavilion.
@@ -80,6 +113,10 @@ angles to improve windowing, extinction, and tilt brilliance (Chapter 8).
 **Pavilion** — The block of a stone below the girdle, usually culminating
 in a culet or point.
 
+**Pin** — The button that freezes a tier's current solved mast as a new
+**Exact scale value** anchor, converting a free tier back into a pinned
+one — the reverse of Adopt (Chapter 3, Chapter 8).
+
 **Pinned tier** — A tier whose Meets constraint is **Exact scale value** —
 its size is a stated number, not derived. Every tier loaded from a real
 `.asc` file starts pinned.
@@ -99,6 +136,11 @@ app's render materials, uses the sodium D line, 589.3nm, written n_D).
 design's pavilion and crown angles to a different material, reviewed in a
 dialog before anything is applied (Chapter 6).
 
+**Snapshot** — An in-memory-only capture of the current design's tiers and
+solved masts, taken by **Snapshot Design**, for diffing against with
+**Compare to Snapshot** later in the same session. Never saved to disk
+(Chapter 14).
+
 **Scintillation** — The percentage measure of sparkle as light and stone
 move relative to each other; one of the app's optical performance
 readouts.
@@ -108,6 +150,12 @@ against its current tier list; it becomes "stale" the moment any further
 edit changes that tier list, until Solve runs again (Chapter 5).
 
 **Table** — The large, flat facet at the top of the crown.
+
+**Yield** — What fraction of the rough preform's volume ends up in the
+finished stone, and the resulting estimated carat weight — the inspector's
+Preform tab computes both after a girdle diameter and a yield material are
+set (Chapter 4). A separate control from the Design Settings panel's own
+Material combo (Chapter 6).
 
 **Tier** — One row of the cutting schedule: one facet, or one symmetric
 family of identical facets cut at the same angle and depth.

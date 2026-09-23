@@ -4,7 +4,7 @@
 
 use super::helpers::refresh_after_library_change;
 use crate::{
-    DiagramDetailData, LibraryModel, MainWindow,
+    LibraryModel, MainWindow,
     bridge::{
         library::source::LibrarySource,
         render_thread::{PlanesOwner, RenderContext},
@@ -13,7 +13,7 @@ use crate::{
 };
 use indicatrix::geometry::cuts::StandardGemCuts;
 use indicatrix_vault::{db::sqlite::Database, model::metadata_update::MetadataUpdate};
-use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Model, SharedString};
 use std::sync::{Arc, Mutex};
 
 /// Wires the per-design "Ignore"/"Un-ignore" context-menu toggle --
@@ -158,15 +158,6 @@ pub fn setup_rename_callback(
 /// data (see `super::import::apply_measured_metadata`, which derives them once at
 /// import from the design's own geometry), and re-deriving them on an unrelated shape
 /// edit would be both wasted work and a chance to disagree with the stored value.
-///
-/// This used to be considerably worse. `FullDiagramRecord` was once a strict subset
-/// of `FacetDiagramDetail`, missing a dozen columns, so a read-modify-write through
-/// `save_diagram_detail` silently erased them -- including the very proportions and
-/// symmetry values the import step had just computed. The workaround was to re-parse
-/// the design's original `.asc` attachment on every shape edit to recover them, with a
-/// lossy fallback for designs that had no attachment. Both the subset gap and the
-/// workaround are gone: the record now carries every column, and this method writes
-/// only what it is given.
 fn set_diagram_shape(db: &Database, entry_id: i64, new_shape: &str) -> Result<(), String> {
     let full = db
         .get_diagram_full(entry_id)
@@ -281,8 +272,8 @@ pub fn setup_set_shape_callback(
         });
 }
 
-/// Wires up the "Add tag..." context-menu entry (`diagram_list.slint`, CAD audit
-/// item 190) -> `add_tag_to_entry`. Creates the tag if it doesn't already exist
+/// Wires up the "Add tag..." context-menu entry (`diagram_list.slint`)
+/// -> `add_tag_to_entry`. Creates the tag if it doesn't already exist
 /// (case-insensitively) and attaches it to `entry_id` -- see
 /// `Database::add_tag_to_entry`'s own doc comment for the exact create-or-reuse
 /// rule. A blank name (whitespace-only) is rejected with a toast rather than
@@ -429,42 +420,18 @@ pub fn setup_delete_callback(
         };
         match result {
             Ok(()) => {
-                ui.global::<LibraryModel>()
-                    .set_current_detail(DiagramDetailData {
-                        id: -1,
-                        title: SharedString::default(),
-                        url: SharedString::default(),
-                        designer: SharedString::default(),
-                        shape: SharedString::default(),
-                        gear: SharedString::default(),
-                        facets: SharedString::default(),
-                        lw_ratio: SharedString::default(),
-                        ri: SharedString::default(),
-                        volume: SharedString::default(),
-                        competition: SharedString::default(),
-                        image_name: SharedString::default(),
-                        has_image: false,
-                        is_local: false,
-                        hw_ratio: SharedString::default(),
-                        cw_ratio: SharedString::default(),
-                        pw_ratio: SharedString::default(),
-                        symmetry_order: SharedString::default(),
-                        mirror_symmetry: false,
-                    });
-                ui.global::<LibraryModel>().set_selected_entry_id(-1);
-                ui.global::<LibraryModel>()
-                    .set_current_angles(ModelRc::new(VecModel::from(Vec::new())));
-                ui.global::<LibraryModel>()
-                    .set_current_files(ModelRc::new(VecModel::from(Vec::new())));
+                // This design is genuinely gone, not merely filtered out
+                // of the current list -- see
+                // `crate::gui::library::detail::clear_current_detail_display`'s own doc
+                // comment for the (narrower) case that function was pulled out for.
+                crate::gui::library::detail::clear_current_detail_display(&ui);
                 {
                     let mut ctx = render_ctx_delete
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    // CAD audit items 58 and 145: deleting a row used to reset the
-                    // traced geometry to the demo brilliant no matter what was on
-                    // screen, so deleting an unrelated catalogue row threw away the
-                    // design being edited. Only reset when the deleted row is the
-                    // one whose planes are actually loaded.
+                    // Only reset the traced geometry when the deleted row is the
+                    // one whose planes are actually loaded -- resetting unconditionally
+                    // would throw away an unrelated design being edited in the viewport.
                     let owns_deleted_row = matches!(
                         ctx.planes_owner,
                         PlanesOwner::Catalogue { entry_id: owned } if owned == i64::from(entry_id)
@@ -497,8 +464,8 @@ mod tests {
     /// `indicatrix-vault` already proves `update_diagram_metadata` writes only the
     /// columns it is handed; this proves the wiring on THIS side hands it all of them.
     /// Omitting one field from the `MetadataUpdate` literal would compile fine and
-    /// silently blank that column on every shape edit -- exactly the class of data loss
-    /// the re-parse workaround this function replaced existed to avoid.
+    /// silently blank that column on every shape edit -- the kind of data loss a
+    /// narrow, explicit `UPDATE` is designed to prevent.
     #[test]
     fn set_diagram_shape_changes_only_the_shape() {
         let path = temp_db_path_for_test("set_shape");
@@ -538,10 +505,10 @@ mod tests {
             .expect("read back")
             .expect("row exists");
         assert_eq!(after.shape.as_deref(), Some("Cushion"), "shape must change");
-        // Every other field must be exactly what it was. `pw_ratio`/`cw_ratio`/
-        // `hw_ratio`/`symmetry_order`/`mirror_symmetry` are the ones the old
-        // `FullDiagramRecord` could not carry at all, so they are the load-bearing
-        // assertions here.
+        // Every other field must be exactly what it was; `pw_ratio`/`cw_ratio`/
+        // `hw_ratio`/`symmetry_order`/`mirror_symmetry` are the load-bearing
+        // assertions here since a narrow `UPDATE` must preserve every column it
+        // wasn't asked to change.
         assert_eq!(after.refractive_index.as_deref(), Some("1.762"));
         assert_eq!(after.index_gear.as_deref(), Some("96"));
         assert_eq!(after.facets_count.as_deref(), Some("57"));

@@ -104,7 +104,7 @@
 //! it never mutates a [`Design`] itself. [`apply_optimize_outcome`] turns that
 //! outcome into one [`crate::edit::Edit::Batch`] of `ModifyTier` sub-edits applied
 //! via a single [`crate::edit::History::apply`] call, so an applied optimization is
-//! undoable as ONE step regardless of how many tiers it touched (CAD audit item 79).
+//! undoable as ONE step regardless of how many tiers it touched.
 //!
 //! # Determinism
 //!

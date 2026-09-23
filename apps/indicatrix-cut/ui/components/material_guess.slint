@@ -1,0 +1,38 @@
+import { Button } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { EditorModel } from "../models/editor.slint";
+
+// A small inline badge for
+// `EditorModel.material_guess_text` (e.g. "Sapphire? (from RI 1.76)"), with a
+// one-click "Set material" that confirms the guess
+// (`EditorModel.set_material_from_guess`) and a tooltip listing every other
+// built-in within tolerance (`EditorModel.material_guess_other_candidates_text`).
+// Renders nothing while there is no guess to show (an already-named material,
+// or nothing built in close enough) -- see `EditorModel.material_guess_text`'s
+// own doc comment.
+export component MaterialGuessBadge inherits HorizontalLayout {
+    spacing: 6px;
+    visible: EditorModel.material_guess_text != "";
+
+    Rectangle {
+        width: guess_lbl.preferred-width + 10px;
+        height: guess_lbl.preferred-height + 6px;
+        background: Theme.accent-amber.with-alpha(0.14);
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.accent-amber;
+        guess_lbl := Text {
+            text: EditorModel.material_guess_text;
+            font-size: 10px;
+            font-italic: true;
+            color: Theme.accent-amber;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        if EditorModel.material_guess_other_candidates_text != "": Tooltip { text: @markdown("\{EditorModel.material_guess_other_candidates_text}"); }
+    }
+    Button {
+        text: "Set material";
+        clicked => { EditorModel.set_material_from_guess(EditorModel.material_guess_name); }
+    }
+}

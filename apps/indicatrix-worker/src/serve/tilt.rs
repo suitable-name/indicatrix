@@ -102,7 +102,7 @@ fn poll_for_cancel<S: Read + TimeoutRead>(
     };
 
     // At least one byte of a message has arrived -- commit to reading the rest of it
-    // under a bounded timeout (N11), not `None` (see this function's own doc comment).
+    // under a bounded timeout, not `None` (see this function's own doc comment).
     stream
         .set_read_timeout(Some(crate::stream_emit::FRAME_REMAINDER_TIMEOUT))
         .map_err(|e| NetError::Framing(indicatrix_net::framing::FramingError::Io(e)))?;
@@ -156,6 +156,16 @@ fn poll_for_cancel<S: Read + TimeoutRead>(
 /// scene is reported as [`TiltCurvesResponse::Error`] with
 /// `super::connection::TRACE_PANIC_CODE`, not a crashed connection.
 ///
+/// Restores `stream`'s read timeout to `None` (blocking) before returning, on every
+/// return path: [`poll_for_cancel`] leaves either [`CANCEL_POLL_TIMEOUT`]
+/// or [`crate::stream_emit::FRAME_REMAINDER_TIMEOUT`] applied to the socket, and this
+/// connection's next `read_message` call (`super::connection`'s request loop) assumes a
+/// blocking read exactly like every other message on this connection, same as before
+/// this request started. A thin wrapper around [`handle_tilt_curves_request_inner`],
+/// which does the actual work and may return early from several places -- restoring the
+/// timeout once, here, after it returns (however it returns) is simpler and less
+/// error-prone than duplicating the restore at each of those sites.
+///
 /// # Errors
 ///
 /// Returns [`NetError`] for a transport-level failure while polling for `CANCEL` or
@@ -168,6 +178,22 @@ fn poll_for_cancel<S: Read + TimeoutRead>(
 /// fixed-size array is unreachable by construction (the `debug_assert_eq!` above the
 /// loop pins the two independently-defined axis counts equal in every debug build).
 pub(super) fn handle_tilt_curves_request<S: Read + Write + TimeoutRead>(
+    stream: &mut S,
+    request: &TiltCurvesRequest,
+) -> Result<(), NetError> {
+    let result = handle_tilt_curves_request_inner(stream, request);
+    // Best-effort, like `serve::apply_handshake_timeout`: a failed `set_read_timeout`
+    // call is logged neither here nor there -- the inner result (the meaningful outcome
+    // either way) is returned regardless, and a socket that can't have its timeout
+    // changed will surface that on the connection's very next read.
+    let _ = stream.set_read_timeout(None);
+    result
+}
+
+/// The actual `TILT_CURVES` handling [`handle_tilt_curves_request`] wraps -- see that
+/// function's doc comment for everything except the timeout-restore responsibility,
+/// which deliberately lives in the wrapper, not here.
+fn handle_tilt_curves_request_inner<S: Read + Write + TimeoutRead>(
     stream: &mut S,
     request: &TiltCurvesRequest,
 ) -> Result<(), NetError> {
@@ -435,6 +461,63 @@ mod tests {
             duplex.out.is_empty(),
             "a peer that already closed the connection gets no reply written"
         );
+    }
+
+    /// Every return path must restore the socket's read timeout to `None`
+    /// (blocking) before returning, since `poll_for_cancel` leaves a short timeout
+    /// applied and this connection's next `read_message` call assumes a blocking read.
+    /// Covers the three paths [`handle_tilt_curves_request_inner`] can take: a normal
+    /// completion (this test), an invalid scene, and an honored `CANCEL`.
+    #[test]
+    fn read_timeout_is_restored_to_blocking_after_a_normal_completion() {
+        let request = TiltCurvesRequest {
+            request_id: 9,
+            scene: valid_scene(),
+        };
+        let mut duplex = DuplexHalf::new(Vec::new());
+
+        handle_tilt_curves_request(&mut duplex, &request).unwrap();
+
+        assert!(
+            !duplex.timeout_active,
+            "the read timeout must be restored to None (blocking) once this request is done"
+        );
+    }
+
+    #[test]
+    fn read_timeout_is_restored_to_blocking_after_a_validation_failure() {
+        let mut scene = valid_scene();
+        scene.planes.clear();
+        let request = TiltCurvesRequest {
+            request_id: 10,
+            scene,
+        };
+        let mut duplex = DuplexHalf::new(Vec::new());
+
+        handle_tilt_curves_request(&mut duplex, &request).unwrap();
+
+        assert!(!duplex.timeout_active);
+    }
+
+    #[test]
+    fn read_timeout_is_restored_to_blocking_after_an_honored_cancel() {
+        let request = TiltCurvesRequest {
+            request_id: 11,
+            scene: valid_scene(),
+        };
+        let mut cancel_bytes = Vec::new();
+        write_message(
+            &mut cancel_bytes,
+            &indicatrix_net::messages::ClientMessage::Cancel(indicatrix_net::messages::Cancel {
+                request_id: 11,
+            }),
+        )
+        .unwrap();
+        let mut duplex = DuplexHalf::new(cancel_bytes);
+
+        handle_tilt_curves_request(&mut duplex, &request).unwrap();
+
+        assert!(!duplex.timeout_active);
     }
 
     /// Pins that `poll_for_cancel` tolerates a `WriteZero` (which a real TLS stream can

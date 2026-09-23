@@ -75,9 +75,41 @@ const SCATTERING_FURNACE_CONVERGENCE_TOLERANCE: f32 = 0.08;
 /// (0.06) rather than inventing a new number.
 const EDGE_ROUNDING_FURNACE_CONVERGENCE_TOLERANCE: f32 = 0.06;
 
+/// Every furnace anchor except the lossless-scattering ones below runs at this bounce
+/// budget -- see [`SCATTERING_FURNACE_MAX_BOUNCES`]'s doc comment for the bounce-cap
+/// measurement this budget is sized against.
+const FURNACE_DEFAULT_MAX_BOUNCES: u32 = 12;
+
+/// [`run_furnace_scattering`] and
+/// [`run_furnace_nee_equality_scattering`] both trace `furnace_material().with_scattering(1.2,
+/// 0.4)` -- `sigma_a == 0.0`, so nothing along the path is ever absorbed, only redirected;
+/// a path only stops via a direct escape or hitting [`FURNACE_DEFAULT_MAX_BOUNCES`]. That
+/// makes the bounce cap itself a real, if unsurprising, truncation of the estimator (not a
+/// CPU/WGSL twin bug) -- and, because CPU and GPU truncate at slightly different points
+/// along the SAME nominally-identical-but-not-bit-identical-after-thousands-of-ops paths,
+/// the truncation bias also shows up as a CPU-vs-GPU divergence, not just an
+/// undershoot-vs-analytic-target one.
+///
+/// Measured on this adapter (AMD Radeon(TM) Graphics, Vulkan), `sigma_s=1.2, g=0.4`,
+/// 614400 samples/side:
+///
+/// | `max_bounces` | CPU rel. err | GPU rel. err | CPU-vs-GPU pooled `z` (X,Y,Z) |
+/// | --- | --- | --- | --- |
+/// | 12 (`FURNACE_DEFAULT_MAX_BOUNCES`) | 0.0402 | 0.0447 | (-10.89, -10.92, -10.80) |
+/// | 48 (this constant) | 0.00015 | 0.00003 | (0.28, 0.25, 0.30) |
+///
+/// Both engines' relative error shrinks by ~270x and the pooled `z` drops from "off the
+/// scale" to well inside [`FURNACE_Z_GATE`] as the bounce budget grows -- exactly the
+/// signature of bounce-cap truncation, not a remaining energy bug in either twin (a real
+/// twin divergence would not shrink like this; see this constant's own doc comment,
+/// which is the read-back-later record of that measurement). `48` (4x the default) is
+/// itself generous, not the minimum that works -- picked to leave headroom rather than
+/// chase the exact convergence knee.
+const SCATTERING_FURNACE_MAX_BOUNCES: u32 = 48;
+
 #[must_use]
 pub fn run_furnace(ctx: &crate::renderer::gpu::GpuContext) -> FurnaceResult {
-    run_furnace_for(ctx, &furnace_material(), &[])
+    run_furnace_for(ctx, &furnace_material(), &[], FURNACE_DEFAULT_MAX_BOUNCES)
 }
 
 /// Same energy-conservation furnace anchor as [`run_furnace`], but with the girdle
@@ -95,6 +127,7 @@ pub fn run_furnace_frosted_girdle(ctx: &crate::renderer::gpu::GpuContext) -> Fur
         ctx,
         &furnace_material(),
         &bruted_girdle_finishes(num_planes),
+        FURNACE_DEFAULT_MAX_BOUNCES,
     )
 }
 
@@ -106,10 +139,15 @@ pub fn run_furnace_frosted_girdle(ctx: &crate::renderer::gpu::GpuContext) -> Fur
 /// scattering redirects energy via the free-path sampler's albedo/unity-survival
 /// identities (`maybe_scatter_or_extinguish`'s doc, hazard 2) but must never create or
 /// destroy it, on either engine.
+///
+/// Uses [`SCATTERING_FURNACE_MAX_BOUNCES`], not [`FURNACE_DEFAULT_MAX_BOUNCES`] -- see
+/// that constant's own doc comment (T3) for the measurement establishing why a lossless
+/// scattering medium needs the wider bounce budget to converge tightly enough for
+/// [`FURNACE_Z_GATE`], on EITHER engine, let alone to agree with each other.
 #[must_use]
 pub fn run_furnace_scattering(ctx: &crate::renderer::gpu::GpuContext) -> FurnaceResult {
     let material = furnace_material().with_scattering(1.2, 0.4);
-    run_furnace_for(ctx, &material, &[])
+    run_furnace_for(ctx, &material, &[], SCATTERING_FURNACE_MAX_BOUNCES)
 }
 
 /// Same furnace anchor as [`run_furnace`], but with a nonzero `edge_rounding_radius`.
@@ -121,7 +159,7 @@ pub fn run_furnace_scattering(ctx: &crate::renderer::gpu::GpuContext) -> Furnace
 #[must_use]
 pub fn run_furnace_edge_rounding(ctx: &crate::renderer::gpu::GpuContext) -> FurnaceResult {
     let material = furnace_material().with_edge_rounding(0.03);
-    run_furnace_for(ctx, &material, &[])
+    run_furnace_for(ctx, &material, &[], FURNACE_DEFAULT_MAX_BOUNCES)
 }
 
 /// Same furnace anchor as [`run_furnace_scattering`] with NEE explicitly enabled.
@@ -129,12 +167,17 @@ pub fn run_furnace_edge_rounding(ctx: &crate::renderer::gpu::GpuContext) -> Furn
 /// Dispatched on the GPU (`env_mode = HDR_MAP`) against a uniform HDR environment map,
 /// proving that the GPU's next-event estimation with balance-heuristic MIS preserves energy
 /// conservation on scattering media.
+///
+/// Also uses [`SCATTERING_FURNACE_MAX_BOUNCES`] -- see that constant's own doc comment;
+/// the same lossless-medium truncation applies whether or not NEE is enabled, since NEE
+/// only adds a direct-light estimate alongside the phase-sampled continuation, it does
+/// not change how many bounces that continuation itself needs to converge.
 #[must_use]
 pub fn run_furnace_nee_equality_scattering(
     ctx: &crate::renderer::gpu::GpuContext,
 ) -> FurnaceResult {
     let material = furnace_material().with_scattering(1.2, 0.4);
-    run_furnace_for_env(ctx, &material, &[], true)
+    run_furnace_for_env(ctx, &material, &[], true, SCATTERING_FURNACE_MAX_BOUNCES)
 }
 
 /// Same furnace anchor as [`run_furnace_frosted_girdle`] with NEE explicitly enabled.
@@ -150,6 +193,7 @@ pub fn run_furnace_nee_equality_frosted(ctx: &crate::renderer::gpu::GpuContext) 
         &furnace_material(),
         &bruted_girdle_finishes(num_planes),
         true,
+        FURNACE_DEFAULT_MAX_BOUNCES,
     )
 }
 
@@ -157,8 +201,9 @@ fn run_furnace_for(
     ctx: &crate::renderer::gpu::GpuContext,
     material: &GemMaterial,
     facet_finishes: &[FacetFinish],
+    max_bounces: u32,
 ) -> FurnaceResult {
-    run_furnace_for_env(ctx, material, facet_finishes, false)
+    run_furnace_for_env(ctx, material, facet_finishes, false, max_bounces)
 }
 
 fn run_furnace_for_env(
@@ -166,13 +211,13 @@ fn run_furnace_for_env(
     material: &GemMaterial,
     facet_finishes: &[FacetFinish],
     use_hdr_nee: bool,
+    max_bounces: u32,
 ) -> FurnaceResult {
     let camera = test_camera();
     let (width, height) = (32u32, 32u32);
     let planes = round_brilliant_planes();
     let gpu_material = GpuGemMaterial::encode(material);
     let gpu_finishes = encode_facet_finishes(facet_finishes, planes.len());
-    let max_bounces = 12u32;
     let l0 = 2.5f32;
     let cpu_samples_per_pixel = 600u32;
     let gpu_samples_per_pixel = 600u32;

@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 /// as a parameter so a caller who disagrees can override it.
 pub const DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2: f64 = 1e-4;
 
-/// Runs all four checks over `design`'s current authored state.
+/// Runs all five checks over `design`'s current authored state.
 ///
 /// Uses `solved` (an already-[`Design::solve`]'d, or [`Design::resolve_dirty`]'d,
 /// mast list -- see this module's doc comment for why a second solve is not
@@ -36,7 +36,7 @@ pub const DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2: f64 = 1e-4;
 /// expressed as a fraction of the solid's measured width squared -- pass
 /// [`DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2`] for the reasoned default.
 ///
-/// Checks 3/4 always run (they need no mast at all). Checks 1/2 run only when
+/// Checks 3/4/5 always run (they need no mast at all). Checks 1/2 run only when
 /// `solved` actually closes into a real solid ([`SolidStatus::Closed`]) -- an
 /// unbounded or degenerate arrangement has no well-defined facet set to check.
 ///
@@ -52,6 +52,7 @@ pub fn check_manufacturability(
 ) -> Vec<ManufacturabilityWarning> {
     let mut warnings = super::authored_checks::check_gear_quantization(design);
     warnings.extend(super::authored_checks::check_cut_order(design));
+    warnings.extend(super::authored_checks::check_meet_name_asc_safety(design));
 
     let planes = design.planes_from_solved(solved);
     if let SolidStatus::Closed(mesh) = build_solid_mesh(&planes) {
@@ -162,6 +163,7 @@ fn check_vanishing_facets(
         if vanished > 0 {
             warnings.push(ManufacturabilityWarning::VanishingFacet {
                 tier_index,
+                tier_id: design.tier_id_at_or_synthetic(tier_index),
                 tier_name: tier.name.clone(),
                 vanished,
                 total,
@@ -198,6 +200,7 @@ fn check_undersized_facets(
                 if area < threshold {
                     warnings.push(ManufacturabilityWarning::UndersizedFacet {
                         tier_index,
+                        tier_id: design.tier_id_at_or_synthetic(tier_index),
                         tier_name: tier.name.clone(),
                         facet_plane_index: plane_index,
                         area,

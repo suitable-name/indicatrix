@@ -1,6 +1,8 @@
 import { Theme } from "../theme.slint";
 import { LineEdit, ComboBox } from "std-widgets.slint";
 import { EditorModel } from "../models/editor.slint";
+import { GuideModel } from "../models/guide.slint";
+import { TemplateGallery } from "template_gallery.slint";
 
 // New design dialog replacing the bare "New" action --
 // preform, gear, symmetry, mirror and starting material all named up front,
@@ -11,25 +13,24 @@ import { EditorModel } from "../models/editor.slint";
 // Same full-viewport modal backdrop + centered content-sized card convention as
 // metadata_editor_dialog.slint/material_editor_dialog.slint.
 export component NewDesignDialog inherits Rectangle {
-    // CAD audit item 207 -- the owner's decision (cad_todo.md's "Owner
-    // decisions" table has no row for this one directly, but the item's own
-    // note records it): a "Start from" template locks gear/symmetry/mirror to
-    // match the built-in tier table (96/8/mirror-on) rather than trying to
-    // remap the table onto whatever gear/symmetry the cutter already chose --
-    // remapping was explicitly rejected elsewhere in this pass as too costly.
+    // A "Start from" template locks gear/symmetry/mirror to match the built-in
+    // tier table (96/8/mirror-on) rather than trying to remap the table onto
+    // whatever gear/symmetry the cutter already chose -- remapping is
+    // significantly more costly to implement for no real benefit, since a
+    // cutter picking a template wants its known-good angles as-is.
     // `0` = Empty (today's only behavior), `1` = Standard Round Brilliant.
     //
-    // IMPORTANT -- this locks the VISIBLE fields (and is genuinely useful on
-    // its own: the resulting design at least starts on the same gear/
-    // symmetry/mirror the template's angles assume), but does NOT yet seed
-    // the actual eight-tier table (`ConstraintTier::standard_round_brilliant`,
-    // `crates/indicatrix-cut-core/src/design/tier.rs:210`) -- doing that needs a
-    // new parameter on `EditorModel.new_design_create` (`ui/models/editor.slint`,
-    // not this lane's file), so today "Create" with this template selected
-    // still yields an EMPTY tier list on the locked gear/symmetry/mirror. See
-    // this task's final report for the exact handoff (the Rust half is a
-    // three-line addition to `tier_actions::do_new_design_create`, already
-    // this lane's file, once the callback signature grows the one parameter).
+    // This locks the VISIBLE fields to match the template's own tier table --
+    // genuinely useful on its own, since the resulting design starts on the
+    // same gear/symmetry/mirror the template's angles assume. `Create` with
+    // this template selected ALSO seeds the actual eight-tier table
+    // (`ConstraintTier::standard_round_brilliant`,
+    // `crates/indicatrix-cut-core/src/design/tier.rs`) --
+    // `gui::editor::callbacks::tier_actions::do_new_design_create` sets
+    // `st.design.tiers = ConstraintTier::standard_round_brilliant()` right
+    // after replacing the design, keyed on the same `new_template_index`
+    // this dialog already threads through `new_design_create`'s trailing
+    // argument.
     property <bool> template_locks_fields: EditorModel.new_template_index == 1;
 
     function apply_template_lock() {
@@ -47,8 +48,7 @@ export component NewDesignDialog inherits Rectangle {
     // `parse_new_design_form`) and is surfaced there via a toast on Create; these
     // mirror that crate's own ">0" rule so a cutter sees the offending field
     // highlighted before clicking Create, without this dialog needing a new
-    // `EditorModel` property to carry per-field error text back from Rust (that
-    // model is owned by another lane -- see this file's own handoff note).
+    // `EditorModel` property to carry per-field error text back from Rust.
     property <bool> half_width_valid: EditorModel.new_preform_half_width.to-float() > 0;
     property <bool> length_over_width_valid: EditorModel.new_preform_length_over_width.to-float() > 0;
     property <bool> depth_valid: EditorModel.new_preform_depth.to-float() > 0;
@@ -90,16 +90,25 @@ export component NewDesignDialog inherits Rectangle {
         clicked => { root.cancel(); }
     }
 
+    // The worked-example guide's step 1 targets this dialog --
+    // `GuideModel.highlight_target == "new_design_dialog"` while that step is
+    // current. The guide only ever opens once a design already exists (see
+    // `guide.rs`'s own step list), so this outline is mostly cosmetic today
+    // (the dialog that matters is the one the empty state's "Open the Worked
+    // Example" card bypasses entirely) but is wired for when a cutter opens
+    // this dialog manually mid-guide.
+    property <bool> guide_highlighted: GuideModel.highlight_target == "new_design_dialog";
+
     // Enter = Create (while the form validates), Escape = Cancel -- same
     // `init => { self.focus(); }` + `key-pressed` idiom `ui/app.slint`'s
     // `global_shortcuts` and `editor_tier_table.slint`'s row editor already use.
     //
-    // CAD audit item 199: every other key used to `reject`, which let it bubble
+    // Every other key must `accept`, not `reject`: `reject` would let it bubble
     // past this dialog to `ui/app.slint`'s `global_shortcuts` FocusScope -- so
-    // Ctrl+S while this dialog was open (freshly opened, before any field had
-    // stolen focus) fired Save Native on the design underneath it. `accept` for
-    // everything else swallows the key here instead, exactly like a native modal
-    // would.
+    // Ctrl+S while this dialog is open (freshly opened, before any field has
+    // stolen focus) would fire Save Native on the design underneath it. `accept`
+    // for everything else swallows the key here instead, exactly like a native
+    // modal would.
     key_scope := FocusScope {
         init => { self.focus(); }
         key-pressed(event) => {
@@ -119,8 +128,8 @@ export component NewDesignDialog inherits Rectangle {
         height: content.preferred-height;
         background: Theme.surface-dialog;
         border-radius: Theme.radius-md;
-        border-width: 1px;
-        border-color: Theme.border-dialog;
+        border-width: root.guide_highlighted ? 2px : 1px;
+        border-color: root.guide_highlighted ? Theme.accent-cyan : Theme.border-dialog;
         drop-shadow-blur: 24px;
         drop-shadow-color: Theme.modal-shadow;
         clip: true;
@@ -138,9 +147,8 @@ export component NewDesignDialog inherits Rectangle {
                 color: Theme.text-primary;
             }
             Text {
-                // cad_todo.md #241: used to name the Rust entry point
-                // (`Design::fresh_from_spec`) instead of telling a cutter anything
-                // about the fields below -- the preform dimensions are in this
+                // Tells the cutter about the fields below, not the Rust entry point
+                // (`Design::fresh_from_spec`) -- the preform dimensions are in this
                 // codebase's own "mast unit" scale (see `PreformSpec`'s own doc
                 // comment: the same scale a facet's own angle-table offset uses),
                 // not an arbitrary unitless number.
@@ -155,15 +163,14 @@ export component NewDesignDialog inherits Rectangle {
                 Tooltip { text: @markdown("Standard Round Brilliant locks the gear, symmetry and mirror settings below to match its built-in tier table."); }
                 template_lbl := Text { text: "Start From"; font-size: 10px; color: Theme.text-muted; }
             }
-            ComboBox {
-                model: ["Empty", "Standard Round Brilliant"];
-                current-index <=> EditorModel.new_template_index;
-                selected(choice) => { root.apply_template_lock(); }
+            TemplateGallery {
+                selected_index <=> EditorModel.new_template_index;
+                selected => { root.apply_template_lock(); }
             }
             if root.template_locks_fields: Text {
-                text: "Locks Index Gear to 96, Symmetry Order to 8 and Mirror on, to match this template's tier table -- facet seeding itself is not wired up yet, so Create still starts with an empty tier list on those settings.";
+                text: "Locks Index Gear to 96, Symmetry Order to 8 and Mirror on, and seeds the standard round-brilliant's eight tiers -- Create yields a design that solves immediately.";
                 font-size: 8px;
-                color: Theme.accent-amber;
+                color: Theme.text-muted;
                 wrap: word-wrap;
             }
 
@@ -183,7 +190,7 @@ export component NewDesignDialog inherits Rectangle {
                         Tooltip { text: @markdown("Half the rough's width, in mast units -- the same scale a facet's own mast offset uses (1.0 = where the finished girdle will sit)."); }
                         hw_lbl := Text { text: "Half-Width"; font-size: 9px; color: Theme.text-muted; }
                     }
-                    LineEdit { text <=> EditorModel.new_preform_half_width; }
+                    LineEdit { text <=> EditorModel.new_preform_half_width; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                     Text { text: root.half_width_valid ? "" : "must be > 0"; font-size: 8px; color: Theme.accent-ruby; }
                 }
                 VerticalLayout {
@@ -193,7 +200,7 @@ export component NewDesignDialog inherits Rectangle {
                         Tooltip { text: @markdown("Ratio of the rough's length to its width -- 1.0 is square/round, higher values give an elongated oval or rectangular rough."); }
                         lw_lbl := Text { text: "Length / Width"; font-size: 9px; color: Theme.text-muted; }
                     }
-                    LineEdit { text <=> EditorModel.new_preform_length_over_width; }
+                    LineEdit { text <=> EditorModel.new_preform_length_over_width; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                     Text { text: root.length_over_width_valid ? "" : "must be > 0"; font-size: 8px; color: Theme.accent-ruby; }
                 }
                 VerticalLayout {
@@ -203,7 +210,7 @@ export component NewDesignDialog inherits Rectangle {
                         Tooltip { text: @markdown("The rough's total top-to-bottom extent (table to culet), in the same mast units as Half-Width."); }
                         depth_lbl := Text { text: "Depth"; font-size: 9px; color: Theme.text-muted; }
                     }
-                    LineEdit { text <=> EditorModel.new_preform_depth; }
+                    LineEdit { text <=> EditorModel.new_preform_depth; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                     Text { text: root.depth_valid ? "" : "must be > 0"; font-size: 8px; color: Theme.accent-ruby; }
                 }
             }
@@ -229,7 +236,7 @@ export component NewDesignDialog inherits Rectangle {
                 if EditorModel.new_gear_index == 6 && !root.template_locks_fields: VerticalLayout {
                     spacing: 2px;
                     Text { text: "Custom Teeth"; font-size: 9px; color: Theme.text-muted; }
-                    LineEdit { text <=> EditorModel.new_gear_custom_text; }
+                    LineEdit { text <=> EditorModel.new_gear_custom_text; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                     Text { text: root.custom_gear_valid ? "" : "must be > 0"; font-size: 8px; color: Theme.accent-ruby; }
                 }
             }
@@ -243,7 +250,7 @@ export component NewDesignDialog inherits Rectangle {
                         Tooltip { text: root.template_locks_fields ? @markdown("Locked to 8 by the Standard Round Brilliant template.") : @markdown("How many repeats the design has around the stone -- an 8-fold design repeats every 45 degrees."); }
                         sym_lbl := Text { text: "Symmetry Order"; font-size: 9px; color: Theme.text-muted; }
                     }
-                    LineEdit { text <=> EditorModel.new_symmetry_order_text; enabled: !root.template_locks_fields; }
+                    LineEdit { text <=> EditorModel.new_symmetry_order_text; enabled: !root.template_locks_fields; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                     Text { text: root.symmetry_valid ? "" : "must be a positive whole number"; font-size: 8px; color: Theme.accent-ruby; }
                 }
                 VerticalLayout {
@@ -260,7 +267,7 @@ export component NewDesignDialog inherits Rectangle {
                             width: 36px;
                             height: 20px;
                             border-radius: 10px;
-                            background: EditorModel.new_mirror ? (root.template_locks_fields ? Theme.border-medium : Theme.accent-cyan) : #334155;
+                            background: EditorModel.new_mirror ? (root.template_locks_fields ? Theme.border-medium : Theme.accent-cyan) : Theme.border-dialog;
                             opacity: root.template_locks_fields ? 0.6 : 1.0;
                             TouchArea {
                                 enabled: !root.template_locks_fields;
@@ -270,7 +277,11 @@ export component NewDesignDialog inherits Rectangle {
                                 width: 16px;
                                 height: 16px;
                                 border-radius: 8px;
-                                background: white;
+                                // Uses `Theme.text-on-primary`, not a bare `white`
+                                // literal -- `editor_design_settings.slint`'s own
+                                // Mirror toggle knob already uses this token for the
+                                // identical role.
+                                background: Theme.text-on-primary;
                                 x: EditorModel.new_mirror ? parent.width - self.width - 2px : 2px;
                                 y: 2px;
                                 animate x { duration: 120ms; }
@@ -288,7 +299,13 @@ export component NewDesignDialog inherits Rectangle {
                 mat_lbl := Text { text: "Starting Material"; font-size: 9px; color: Theme.text-muted; }
             }
             ComboBox {
-                model: ["(none)", "Diamond", "Sapphire", "Ruby", "Emerald", "Zircon", "Alexandrite", "Topaz", "Spinel", "Quartz", "Tourmaline", "Tanzanite", "Synthetic Moissanite", "Cubic Zirconia"];
+                // `EditorModel.new_material_options` is pushed from
+                // `gui::editor::state::builtin_preset_names` (built from
+                // `indicatrix_cut_core::MaterialCatalogue`, so it covers every
+                // renderer built-in) the same way `view.rs`'s existing
+                // `design_material_options` already is -- not a hard-coded literal
+                // that could drift from the real list.
+                model: EditorModel.new_material_options;
                 current-index <=> EditorModel.new_material_index;
             }
 
@@ -299,7 +316,7 @@ export component NewDesignDialog inherits Rectangle {
                     width: cancel_txt.preferred-width + 20px;
                     height: 30px;
                     border-radius: Theme.radius-sm;
-                    background: cancel_touch.has-hover ? #334155 : #1e293b;
+                    background: cancel_touch.has-hover ? Theme.border-dialog : Theme.surface-raised;
                     cancel_txt := Text {
                         text: "Cancel";
                         color: Theme.text-secondary;
@@ -316,7 +333,7 @@ export component NewDesignDialog inherits Rectangle {
                     create_txt := Text {
                         text: "Create";
                         font-weight: 700;
-                        color: root.form_valid ? #0b1220 : Theme.text-muted;
+                        color: root.form_valid ? Theme.text-on-accent : Theme.text-muted;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }

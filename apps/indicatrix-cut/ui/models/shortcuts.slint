@@ -1,0 +1,38 @@
+// "Shortcut sheet" -- the
+// in-app overlay's own data, pushed once at startup from
+// `gui::editor::shortcuts::setup_shortcuts_overlay`
+// (`apps/indicatrix-cut/src/gui/editor/shortcuts.rs`), the SAME
+// `gui::editor::shortcuts::SHORTCUTS` table that feeds the generated section of
+// `docs/manual/appendix-b-keyboard-shortcuts.md` -- see that module's own doc
+// comment for how the two are kept from drifting apart.
+export struct ShortcutItem {
+    /// The key combination, exactly as shown in the manual (e.g. "Ctrl+Shift+S").
+    keys: string,
+    /// What the shortcut does.
+    action: string,
+    /// The display heading for this shortcut's group -- "Global" or "The tier
+    /// list" today (`gui::editor::shortcuts::Context::heading`).
+    context: string,
+}
+
+export global ShortcutsModel {
+    in-out property <bool> open: false;
+    in property <[ShortcutItem]> shortcuts: [];
+
+    callback toggle();
+    toggle => {
+        root.open = !root.open;
+    }
+    callback close();
+    close => {
+        root.open = false;
+    }
+
+    // Copies the SAME Markdown
+    // table `docs/manual/appendix-b-keyboard-shortcuts.md`'s generated blocks
+    // are checked against (`gui::editor::shortcuts::render_markdown_section`)
+    // to the system clipboard, so a cutter can paste the current shortcut list
+    // into their own notes without retyping it -- a real, non-test caller for
+    // that function.
+    callback copy_markdown();
+}

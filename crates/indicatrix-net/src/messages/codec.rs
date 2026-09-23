@@ -82,6 +82,27 @@ pub fn read_message<R: std::io::Read, T: DeserializeOwned>(reader: &mut R) -> Re
     Ok(msg)
 }
 
+/// Reads one length-prefixed frame and `postcard`-decodes it as `T`, exactly like
+/// [`read_message`], but bounded.
+///
+/// Uses [`framing::read_frame_bounded`] instead of [`framing::read_frame`] -- rejecting
+/// a length prefix over `max` before allocating anything for the payload. See
+/// [`framing::read_frame_bounded`]'s doc comment for why an unauthenticated listener
+/// wants this instead of [`framing::MAX_FRAME_LEN`]'s generic cap.
+///
+/// # Errors
+///
+/// Returns [`NetError::Framing`] if reading the frame fails (including exceeding
+/// `max`), or [`NetError::Postcard`] if the frame's bytes don't decode as `T`.
+pub fn read_message_bounded<R: std::io::Read, T: DeserializeOwned>(
+    reader: &mut R,
+    max: u32,
+) -> Result<T, NetError> {
+    let bytes = framing::read_frame_bounded(reader, max)?;
+    let msg = postcard::from_bytes(&bytes)?;
+    Ok(msg)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -111,6 +132,7 @@ mod tests {
         let hello = Hello {
             protocol_version: PROTOCOL_VERSION,
             build_hash: [7; 8],
+            source_hash: [9; 8],
         };
         let mut buf = Vec::new();
         write_message(&mut buf, &hello).unwrap();
@@ -118,5 +140,38 @@ mod tests {
         let mut reader = Dribble { data: buf, pos: 0 };
         let decoded: Hello = read_message(&mut reader).unwrap();
         assert_eq!(decoded, hello);
+    }
+
+    #[test]
+    fn read_message_bounded_decodes_a_message_within_the_bound() {
+        let hello = Hello {
+            protocol_version: PROTOCOL_VERSION,
+            build_hash: [1; 8],
+            source_hash: [2; 8],
+        };
+        let mut buf = Vec::new();
+        write_message(&mut buf, &hello).unwrap();
+
+        let mut reader = std::io::Cursor::new(buf);
+        let decoded: Hello = read_message_bounded(&mut reader, 4096).unwrap();
+        assert_eq!(decoded, hello);
+    }
+
+    #[test]
+    fn read_message_bounded_rejects_a_frame_over_the_bound() {
+        let hello = Hello {
+            protocol_version: PROTOCOL_VERSION,
+            build_hash: [1; 8],
+            source_hash: [2; 8],
+        };
+        let mut buf = Vec::new();
+        write_message(&mut buf, &hello).unwrap();
+
+        let mut reader = std::io::Cursor::new(buf);
+        let err = read_message_bounded::<_, Hello>(&mut reader, 2).unwrap_err();
+        assert!(matches!(
+            err,
+            NetError::Framing(crate::framing::FramingError::FrameTooLarge { max: 2, .. })
+        ));
     }
 }

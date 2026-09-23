@@ -26,7 +26,16 @@ use crate::optics::raytracer::FacetFinish;
 /// facet (~5e-8 measured). `1e-3` clears that noise floor with margin below
 /// the shallowest real non-girdle facet in either built-in cut (SRB
 /// `|y| ~= 0.737`; `emerald_cut` `|y| ~= 0.602`).
-const GIRDLE_NORMAL_Y_EPSILON: f32 = 1e-3;
+///
+/// Also backs [`super::stone_metrics::measure_solid`]'s own girdle-thickness
+/// threshold -- that function's planes come from the SAME `GpuFacetPlane` f32
+/// normals (widened to `f64` via [`super::plane::GpuFacetPlane::to_halfspace_f64`],
+/// which does not add precision, only represent the existing rounding noise in a
+/// wider type), so a second, independently-tuned threshold there could
+/// disagree with this one on a facet in the gap between the two -- `is_girdle_plane`
+/// would classify it as girdle (frosted) while `measure_solid` excluded it from the
+/// girdle-thickness band. One shared constant makes that impossible by construction.
+pub(super) const GIRDLE_NORMAL_Y_EPSILON: f32 = 1e-3;
 
 /// True iff `plane`'s normal is close enough to horizontal (perpendicular to the
 /// stone's `+Y` symmetry axis) to count as a girdle facet. See

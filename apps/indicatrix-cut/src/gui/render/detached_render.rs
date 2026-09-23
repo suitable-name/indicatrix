@@ -26,11 +26,10 @@
 //! and what prevents a stale/frozen frame from being the first thing shown on either
 //! side of a dock/undock.
 //!
-//! `RenderContext::tab_visible` used to be driven by one signal (`active_tab == 0`).
-//! With the render now visible in a separate OS window regardless of which
-//! main-window tab is selected, and with the Live Render/Edit sub-tabs each gaining
-//! their own Solid/Path-traced view-mode toggle, this became a five-way decision --
-//! [`render_is_visible`] is the pure function encoding it, and every writer (three
+//! `RenderContext::tab_visible` is driven by a five-way decision: the render can be
+//! visible in a separate OS window regardless of which main-window tab is selected,
+//! and each of the Live Render/Edit sub-tabs also carries its own Solid/Path-traced
+//! view-mode toggle. [`render_is_visible`] is the pure function encoding it, and every writer (three
 //! Slint signals wired inside [`setup_live_render_visibility_callbacks`], plus the two
 //! view-mode toggles' own settings-persistence callbacks in `gui::mod`) recomputes it
 //! through the shared [`recompute_tab_visible`] helper, so no call site's formula can
@@ -74,9 +73,9 @@ pub(super) type FrameTarget = Arc<Mutex<Option<Weak<DetachedRenderWindow>>>>;
 ///   viewport shows the flat-shaded CPU rasterizer instead, and the spectral tracer
 ///   must not burn GPU/remote compute time on a frame nobody is looking at.
 /// - Edit tab (`render_view_tab == 1`): visible in Path-traced (`1`) or Both (`2`)
-///   mode (`SolidPreviewModel.view_mode`), not Solid (`0`) or Diagram (`3`). Before
-///   this gate existed, `render_view_tab == 1` alone suspended tracing unconditionally
-///   -- so the Edit tab's own "Path-traced"/"Both" pills showed a stale, frozen frame
+///   mode (`SolidPreviewModel.view_mode`), not Solid (`0`) or Diagram (`3`) --
+///   `render_view_tab == 1` alone must not suspend tracing unconditionally, or the
+///   Edit tab's own "Path-traced"/"Both" pills would show a stale, frozen frame
 ///   instead of a live one. This makes them trace live, matching what they claim to
 ///   show.
 #[must_use]
@@ -113,7 +112,7 @@ pub(in crate::gui) fn recompute_tab_visible(
         ui.global::<ViewportModel>().get_live_view_mode(),
         ui.global::<SolidPreviewModel>().get_view_mode(),
     );
-    render_ctx.lock().unwrap().tab_visible = visible;
+    RenderContext::lock(render_ctx).tab_visible = visible;
 }
 
 /// Applies always-on-top to `win`'s underlying OS window -- see this module's doc
@@ -231,9 +230,8 @@ fn open_detached_window(
     recompute_tab_visible(ui, render_ctx);
 }
 
-/// Wires the "Live Render"/"Edit" sub-tab change, the pop-out toggle, and (moved here
-/// from `gui::material_quality`, see that module's own comment at the old call site)
-/// the outer `active_tab_changed` -- three of the five signals [`render_is_visible`]
+/// Wires the "Live Render"/"Edit" sub-tab change, the pop-out toggle, and the outer
+/// `active_tab_changed` -- three of the five signals [`render_is_visible`]
 /// combines (the other two, `ViewportModel.live_view_mode` and `SolidPreviewModel.
 /// view_mode`, are wired in `gui::mod` itself, since both already have their own
 /// settings-persistence callback to hang `recompute_tab_visible` off). Returns the
@@ -275,13 +273,12 @@ pub(in crate::gui) fn setup_live_render_visibility_callbacks(
             // logic (see its own doc comment), so this reuses it rather than
             // duplicating it.
             //
-            // #26: deferred by one event-loop turn (`slint::Timer::single_shot`)
-            // rather than called synchronously right here -- this handler used to
-            // resubmit before the newly instantiated `SolidViewportView`/
-            // `GemViewportView` had pushed its own `changed width`/`changed height`
-            // size, so the very first frame after a tab switch was sized to
-            // whichever viewport's size properties happened to be left over from
-            // before.
+            // Deferred by one event-loop turn (`slint::Timer::single_shot`) rather
+            // than called synchronously right here -- resubmitting immediately would
+            // run before the newly instantiated `SolidViewportView`/`GemViewportView`
+            // has pushed its own `changed width`/`changed height` size, so the very
+            // first frame after a tab switch would be sized to whichever viewport's
+            // size properties happen to be left over from before.
             let render_ctx_deferred = render_ctx_rv.clone();
             let preview_state_deferred = Arc::clone(&preview_state_rv);
             let ui_weak_deferred = ui.as_weak();
@@ -347,19 +344,18 @@ mod tests {
         // Solid mode (0): the flat-shaded CPU raster is shown instead -- the spectral
         // tracer must not burn GPU/remote time on a frame nobody is looking at.
         assert!(!render_is_visible(0, 0, false, 0, 0));
-        // Path-traced mode (1): visible, matching this tab's sole behaviour before
-        // `live_view_mode` existed.
+        // Path-traced mode (1): visible.
         assert!(render_is_visible(0, 0, false, 1, 0));
     }
 
     #[test]
     fn docked_edit_sub_tab_traces_only_in_path_traced_or_both_mode() {
         // Solid (0) and Diagram (3): no path-traced image is shown there, so tracing
-        // stays suspended -- unchanged from before this gate existed.
+        // stays suspended.
         assert!(!render_is_visible(0, 1, false, 1, 0));
         assert!(!render_is_visible(0, 1, false, 1, 3));
-        // Path-traced (1) and Both (2): these pills must now trace LIVE rather than
-        // showing whatever frame was last rendered before the Edit tab suspended it.
+        // Path-traced (1) and Both (2): these pills trace LIVE, showing a fresh frame
+        // rather than a stale, frozen one.
         assert!(render_is_visible(0, 1, false, 1, 1));
         assert!(render_is_visible(0, 1, false, 1, 2));
     }

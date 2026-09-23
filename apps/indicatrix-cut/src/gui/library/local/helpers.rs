@@ -13,8 +13,9 @@ use crate::{
     gui::library::{
         diagram_list::{apply_attribute_range_bounds_preserving_filters, fetch_attribute_ranges},
         search::{
-            DisplaySearchOptions, apply_diagram_list_to_ui, fetch_diagram_list_with_options,
-            read_id_filter, read_local_only, read_range_filter, read_sort_order, read_tag_filter,
+            DisplaySearchOptions, apply_diagram_list_to_ui, bump_search_seq,
+            fetch_diagram_list_with_options, is_current_search, read_id_filter, read_local_only,
+            read_range_filter, read_sort_order, read_tag_filter,
         },
     },
 };
@@ -27,9 +28,8 @@ use std::{
 use tracing::warn;
 
 /// Re-reads the search/shape/gear filters currently showing in `ui` and re-runs the
-/// catalogue query -- the same "refresh everything that could have changed" step
-/// `gui::mod`'s old sync-complete handler used to do, now shared by import/
-/// rename/delete/shape-change.
+/// catalogue query -- the shared "refresh everything that could have changed" step
+/// used by import/rename/delete/shape-change.
 ///
 /// Import/rename/delete only ever touch the LOCAL database (rename/delete refuse
 /// outright while browsing remote -- see `setup_rename_callback`/`setup_delete_callback`'s
@@ -52,7 +52,7 @@ use tracing::warn;
 /// crate's own `perf_probe_refresh_after_library_change_cost` test measures
 /// `get_attribute_ranges` + an unfiltered `search_diagrams` at tens of milliseconds
 /// combined, long enough on the UI thread to read as a second freeze right after a big
-/// import finishes (see this task's BUG 1 write-up).
+/// import finishes.
 pub fn refresh_after_library_change(
     ui: &MainWindow,
     db: &Arc<Mutex<Database>>,
@@ -64,7 +64,7 @@ pub fn refresh_after_library_change(
         .clone();
     match current {
         LibrarySource::Local => {
-            // CAD audit item 190: a write that can create/empty a tag (add/remove
+            // A write that can create/empty a tag (add/remove
             // tag) needs the chip filter row's own vocabulary refreshed alongside
             // the list -- cheap enough (one query) to run synchronously here rather
             // than threading it through `spawn_local_refresh`'s worker thread.
@@ -84,13 +84,20 @@ pub fn refresh_after_library_change(
                 .row_data(gear_idx)
                 .unwrap_or_default()
                 .to_string();
-            // Same reasoning as item 188's filter preservation just below: this
+            // Same reasoning as the filter-preservation step just below: this
             // refresh follows a WRITE, not a request to go back to the default
             // view, so the cutter's own range filters, sort and "My designs"
             // choices all have to survive it. Every one is read here, on the UI
             // thread, since the fetch itself runs on a worker that has no
             // `MainWindow` to read them from.
+            //
+            // Bumped here, BEFORE the background fetch is even spawned,
+            // and carried through as `query.seq` so `spawn_local_refresh`'s own
+            // completion closure can check it before touching the UI -- see that
+            // function's own doc comment.
+            let seq = bump_search_seq();
             let query = DiagramListQuery {
+                seq,
                 search,
                 shape,
                 gear,
@@ -133,6 +140,11 @@ pub fn refresh_after_library_change(
 /// [`spawn_local_refresh`]'s own call site for why it has to be snapshotted on the
 /// UI thread rather than re-read (it cannot be) on the worker.
 struct DiagramListQuery {
+    /// Captured by [`refresh_after_library_change`] at dispatch time -- the
+    /// same `bump_search_seq`/`is_current_search` staleness guard
+    /// `gui::library::search::dispatch_background_search` already uses for its own
+    /// async dispatch.
+    seq: u64,
     search: String,
     shape: String,
     gear: String,
@@ -143,12 +155,18 @@ struct DiagramListQuery {
     id_filter: Option<Vec<i64>>,
 }
 
+/// A keystroke/filter change that lands while this background refresh is
+/// still in flight takes the FAST synchronous path (`refresh_diagram_list`) and
+/// displays first; without the [`crate::gui::library::search::is_current_search`]
+/// check below, this closure's own (now-stale) results would then land right on top
+/// of it moments later, silently reverting the list to the OLD search text/filters.
 fn spawn_local_refresh(
     ui_weak: Weak<MainWindow>,
     db: Arc<Mutex<Database>>,
     query: DiagramListQuery,
 ) {
     thread::spawn(move || {
+        let seq = query.seq;
         let ranges = fetch_attribute_ranges(&db);
         let list_result = fetch_diagram_list_with_options(
             &db,
@@ -164,11 +182,14 @@ fn spawn_local_refresh(
             },
         );
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            if !is_current_search(seq) {
+                return;
+            }
             if let Some(ranges) = ranges {
-                // Item 188: this refresh follows a WRITE (import/rename/delete/
+                // This refresh follows a WRITE (import/rename/delete/
                 // shape-change), not a request to clear the cutter's own range
                 // filters -- see `apply_attribute_range_bounds_preserving_filters`'s
-                // own doc comment for why this is no longer the reset variant.
+                // own doc comment for why it preserves them rather than resetting.
                 apply_attribute_range_bounds_preserving_filters(&ui, &ranges);
             }
             match list_result {
@@ -243,7 +264,7 @@ mod tests {
     use indicatrix_vault::db::sqlite::Database;
     use std::path::Path;
 
-    /// Manual perf probe for BUG 1's third suspect: `refresh_after_library_change`
+    /// Manual perf probe: `refresh_after_library_change`
     /// re-queries the whole catalogue synchronously on the UI thread after every
     /// import. Opens the user's real ~3,187-design `facet_diagrams.sqlite`
     /// READ-ONLY (never as a test fixture to write into -- see this crate's own
@@ -284,7 +305,6 @@ mod tests {
             items.len(),
         );
         // Not a hard perf assertion (machine-dependent) -- this is a measurement
-        // probe, not a regression gate. See this test's own report in the task
-        // write-up for the numbers actually observed.
+        // probe, not a regression gate.
     }
 }

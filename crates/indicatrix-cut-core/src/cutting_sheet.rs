@@ -21,11 +21,12 @@
 //! imports.
 
 use crate::{
-    design::{ConstraintTier, Design},
+    design::{ConstraintTier, Design, SolveMismatch},
     edit::EditError,
 };
-use indicatrix::geometry::meet_solver::{
-    MeetConstraint, MeetNameResolver, MeetTierInput, SolvedTier,
+use indicatrix::{
+    geometry::meet_solver::{MeetConstraint, MeetNameResolver, MeetTierInput, SolvedTier},
+    optics::materials::GemMaterial,
 };
 use std::fmt::Write as _;
 
@@ -65,10 +66,25 @@ pub struct CutSheetRow {
     pub meets_tiers: Vec<usize>,
     /// This row's own cheater/azimuth offset (degrees), from
     /// [`Design::cheater_offset_deg`] -- `None` when the tier has no recorded
-    /// offset (the common case). See that method's own doc comment (CAD
-    /// audit item 213) for why a cutter needs this printed alongside the
-    /// angle/index/mast figures already here.
+    /// offset (the common case). A cutter needs this printed alongside the
+    /// angle/index/mast figures. Since [`crate::design::export`]'s
+    /// `apply_cheater_offsets` rotates this tier's own facet plane(s) by this
+    /// figure, the printed sheet and the picture the solid/facet map/tracer show
+    /// agree.
     pub cheater_offset_deg: Option<f64>,
+    /// This facet's angle of elevation from the girdle plane, unsigned -- the
+    /// magnitude of [`Self::angle_deg`], for a cutter reading a machine's dial
+    /// (which has no notion of crown/pavilion sign, only "how far up from
+    /// level").
+    pub angle_of_elevation_deg: f64,
+    /// This facet's cutting depth in real millimetres, via
+    /// [`crate::yield_metrics::mm_per_unit`] -- `None` whenever
+    /// [`Design::girdle_diameter_mm`] is unset or the design does not currently
+    /// measure as a closed solid (the same conditions
+    /// [`crate::yield_metrics::YieldReport::mm_per_unit`] itself returns `None`
+    /// under). The cut sheet shows "depth in mm and dial readings", not just the
+    /// dimensionless mast.
+    pub depth_mm: Option<f64>,
 }
 
 /// A design's printable cutting sequence: every tier, in cutting order, with
@@ -119,9 +135,14 @@ impl CuttingSheet {
             // `write!` into a `String` is infallible; nothing to propagate.
             let _ = write!(
                 out,
-                "{:>3}. {name:<16} angle {:>7.2} deg  indices [{indices}]  mast {:>8.4}  meet: {}",
-                row.sequence, row.angle_deg, row.mast, row.meet_instruction
+                "{:>3}. {name:<16} angle {:>7.2} deg (elevation {:>6.2} deg)  indices [{indices}]  \
+                 mast {:>8.4}",
+                row.sequence, row.angle_deg, row.angle_of_elevation_deg, row.mast
             );
+            if let Some(depth_mm) = row.depth_mm {
+                let _ = write!(out, "  depth {depth_mm:>6.2} mm");
+            }
+            let _ = write!(out, "  meet: {}", row.meet_instruction);
             if let Some(cheater) = row.cheater_offset_deg {
                 let _ = write!(out, "  cheater: {cheater:+.2} deg");
             }
@@ -243,6 +264,11 @@ impl Design {
     /// Never solves again itself, same reasoning as
     /// [`Self::to_asc_schedule_from_solved`].
     ///
+    /// Built-ins-only for the printed "Refractive index" line -- see
+    /// [`Self::effective_refractive_index`]'s own doc comment. A caller with a
+    /// resolved custom catalogue on hand should call [`Self::cutting_sheet_with`]
+    /// instead.
+    ///
     /// # Panics
     ///
     /// Same alignment contract as [`Self::to_asc_schedule_from_solved`]:
@@ -250,14 +276,67 @@ impl Design {
     /// same order.
     #[must_use]
     pub fn cutting_sheet(&self, solved: &[SolvedTier]) -> CuttingSheet {
-        assert_eq!(
-            solved.len(),
-            self.tiers.len(),
-            "cutting_sheet: `solved` ({} masts) is not aligned with this design's current {} \
-             tier(s)",
-            solved.len(),
-            self.tiers.len()
-        );
+        self.cutting_sheet_with(solved, &[])
+    }
+
+    /// Catalogue-aware sibling of [`Self::cutting_sheet`]: also consults `custom` --
+    /// see [`Self::effective_refractive_index_with`] -- so the printed "Refractive
+    /// index" line reflects a CUSTOM catalogue material's own `n_D` instead of
+    /// silently falling back to the legacy schedule RI. Passing `&[]` behaves
+    /// exactly like [`Self::cutting_sheet`] (that method's own implementation, in
+    /// fact).
+    ///
+    /// # Panics
+    ///
+    /// Same alignment contract as [`Self::cutting_sheet`].
+    #[must_use]
+    pub fn cutting_sheet_with(
+        &self,
+        solved: &[SolvedTier],
+        custom: &[GemMaterial],
+    ) -> CuttingSheet {
+        self.try_cutting_sheet_with(solved, custom)
+            .unwrap_or_else(|e| {
+                panic!(
+                    "cutting_sheet: `solved` ({} masts) is not aligned with this design's current \
+                 {} tier(s)",
+                    e.got_tiers, e.expected_tiers
+                )
+            })
+    }
+
+    /// Fallible sibling of [`Self::cutting_sheet`]: returns [`SolveMismatch`]
+    /// instead of panicking when `solved` is not aligned with
+    /// [`Self::tiers`]. Identical construction otherwise.
+    ///
+    /// # Errors
+    ///
+    /// [`SolveMismatch`] when `solved.len() != self.tiers.len()`.
+    pub fn try_cutting_sheet(&self, solved: &[SolvedTier]) -> Result<CuttingSheet, SolveMismatch> {
+        self.try_cutting_sheet_with(solved, &[])
+    }
+
+    /// Catalogue-aware, fallible sibling of [`Self::cutting_sheet_with`] -- returns
+    /// [`SolveMismatch`] instead of panicking, exactly like
+    /// [`Self::try_cutting_sheet`] but also consulting `custom` for the printed
+    /// "Refractive index" line (see [`Self::effective_refractive_index_with`]).
+    /// Every other cutting-sheet entry point in this impl ultimately calls through
+    /// here, so this is the one place that line is actually decided.
+    ///
+    /// # Errors
+    ///
+    /// [`SolveMismatch`] when `solved.len() != self.tiers.len()`.
+    pub fn try_cutting_sheet_with(
+        &self,
+        solved: &[SolvedTier],
+        custom: &[GemMaterial],
+    ) -> Result<CuttingSheet, SolveMismatch> {
+        if solved.len() != self.tiers.len() {
+            return Err(SolveMismatch {
+                expected_tiers: self.tiers.len(),
+                got_tiers: solved.len(),
+            });
+        }
 
         let mut header = vec![format!(
             "Material: {}",
@@ -265,7 +344,7 @@ impl Design {
         )];
         header.push(format!(
             "Refractive index: {:.3}",
-            self.effective_refractive_index()
+            self.effective_refractive_index_with(custom)
         ));
         header.push(format!(
             "Index gear: {} teeth, symmetry {}{}",
@@ -276,6 +355,21 @@ impl Design {
         if let Some(mm) = self.girdle_diameter_mm {
             header.push(format!("Girdle diameter: {mm:.3} mm"));
         }
+        // Carat weight, with the same understated-weight caveat
+        // `crate::yield_metrics::report`'s own module doc comment documents
+        // (facets that don't reach the preform's own walls leave `width_axis`
+        // reading as the PREFORM's width, not the actual narrower girdle) --
+        // shown next to the number instead of only in a doc comment nobody
+        // printing a sheet ever reads.
+        let yield_report = self.yield_report(solved);
+        if let Some(carat) = yield_report.carat_weight {
+            header.push(format!(
+                "Carat weight (estimate): {carat:.3} ct -- assumes the authored facets reach \
+                 the preform's own walls; a stone left smaller than its rough reads lighter \
+                 than this"
+            ));
+        }
+        let mm_per_unit = yield_report.mm_per_unit;
 
         let inputs = meet_tier_inputs(&self.tiers);
         let resolver = MeetNameResolver::new(&inputs);
@@ -293,10 +387,12 @@ impl Design {
                 meet_instruction: meet_instruction(tier),
                 meets_tiers: resolve_meets(tier, &resolver),
                 cheater_offset_deg: self.cheater_offset_deg(i),
+                angle_of_elevation_deg: tier.angle_deg.abs(),
+                depth_mm: mm_per_unit.map(|scale| solved_tier.mast * scale),
             })
             .collect();
 
-        CuttingSheet { header, rows }
+        Ok(CuttingSheet { header, rows })
     }
 }
 
@@ -423,7 +519,7 @@ pub fn diff_tiers(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{design::ScheduleMeta, preform::PreformSpec};
+    use crate::{design::ScheduleMeta, material::MaterialSelection, preform::PreformSpec};
 
     fn round_brilliant_design() -> Design {
         Design::new(
@@ -431,6 +527,53 @@ mod tests {
             ScheduleMeta::standard_round_brilliant(),
             ConstraintTier::standard_round_brilliant(),
         )
+    }
+
+    fn custom_garnet(n_d: f32) -> GemMaterial {
+        let mut gem = GemMaterial::diamond();
+        gem.name = "My Garnet".to_string();
+        gem.dispersion = indicatrix::optics::dispersion::DispersionModel::Cauchy {
+            a: n_d,
+            b: 0.0,
+            c: 0.0,
+        };
+        gem
+    }
+
+    /// A design on a CUSTOM catalogue material must print that material's own
+    /// `n_D` in the "Refractive index" header line via `cutting_sheet_with` -- the
+    /// bug this module fixes. The built-ins-only `cutting_sheet` must still print
+    /// the legacy schedule RI for the exact same design.
+    #[test]
+    fn cutting_sheet_with_resolves_a_custom_materials_own_refractive_index() {
+        let mut design = round_brilliant_design();
+        design.material = MaterialSelection {
+            name: Some("My Garnet".to_string()),
+            specific_gravity_override: None,
+            refractive_index_override: None,
+        };
+        let custom = [custom_garnet(1.9)];
+        let solved = design
+            .solve()
+            .expect("every tier is pinned via ScaleReference");
+
+        let with_catalogue = design.cutting_sheet_with(&solved, &custom);
+        assert!(
+            with_catalogue
+                .header
+                .iter()
+                .any(|l| l == "Refractive index: 1.900"),
+            "{:?}",
+            with_catalogue.header
+        );
+
+        let built_ins_only = design.cutting_sheet(&solved);
+        assert!(
+            built_ins_only
+                .header
+                .iter()
+                .any(|l| l == &format!("Refractive index: {:.3}", design.meta.refractive_index))
+        );
     }
 
     /// `cutting_sheet` must produce one row per tier, in tier order, with
@@ -481,6 +624,76 @@ mod tests {
             .find(|l| l.trim_start().starts_with("1."))
             .expect("row 1 must be printed");
         assert!(!row0_line.contains("cheater"), "{row0_line}");
+    }
+
+    /// Every row's `angle_of_elevation_deg` is the unsigned magnitude of
+    /// its `angle_deg`.
+    #[test]
+    fn angle_of_elevation_is_the_unsigned_angle_magnitude() {
+        let design = round_brilliant_design();
+        let solved = design
+            .solve()
+            .expect("every tier is pinned via ScaleReference");
+        let sheet = design.cutting_sheet(&solved);
+        for row in &sheet.rows {
+            assert_eq!(row.angle_of_elevation_deg, row.angle_deg.abs());
+        }
+    }
+
+    /// `depth_mm` is `None` for every row until `girdle_diameter_mm` is set,
+    /// and `Some` (mast times `mm_per_unit`) once it is.
+    #[test]
+    fn depth_mm_is_populated_only_once_a_girdle_diameter_anchors_a_real_scale() {
+        let mut design = round_brilliant_design();
+        let solved = design
+            .solve()
+            .expect("every tier is pinned via ScaleReference");
+        let unanchored = design.cutting_sheet(&solved);
+        assert!(unanchored.rows.iter().all(|r| r.depth_mm.is_none()));
+
+        design.girdle_diameter_mm = Some(6.5);
+        let anchored = design.cutting_sheet(&solved);
+        let scale = design
+            .yield_report(&solved)
+            .mm_per_unit
+            .expect("a closed design with a girdle diameter set must measure a scale");
+        for (row, solved_tier) in anchored.rows.iter().zip(&solved) {
+            let expected = solved_tier.mast * scale;
+            assert!((row.depth_mm.expect("mm scale resolved") - expected).abs() < 1e-9);
+        }
+    }
+
+    /// The header must carry a "Carat weight" line once a girdle diameter
+    /// anchors a real scale, and must not otherwise.
+    #[test]
+    fn header_carries_a_carat_weight_line_only_once_anchored() {
+        let mut design = round_brilliant_design();
+        let solved = design
+            .solve()
+            .expect("every tier is pinned via ScaleReference");
+        let unanchored = design.cutting_sheet(&solved);
+        assert!(
+            !unanchored
+                .header
+                .iter()
+                .any(|l| l.starts_with("Carat weight"))
+        );
+
+        design.girdle_diameter_mm = Some(6.5);
+        design.material = MaterialSelection {
+            name: Some("Diamond".to_string()),
+            specific_gravity_override: None,
+            refractive_index_override: None,
+        };
+        let anchored = design.cutting_sheet(&solved);
+        assert!(
+            anchored
+                .header
+                .iter()
+                .any(|l| l.starts_with("Carat weight (estimate):")),
+            "{:?}",
+            anchored.header
+        );
     }
 
     /// `facet_meets` must resolve a `MeetNamed` reference through the real
@@ -597,5 +810,33 @@ mod tests {
         assert_eq!(deltas.len(), 1);
         assert!(deltas[0].mast_before.is_none());
         assert!(deltas[0].mast_after.is_none());
+    }
+
+    /// `try_cutting_sheet` must return [`SolveMismatch`] (naming both the
+    /// expected and the actual tier count) instead of panicking when
+    /// `solved` is the wrong length; `cutting_sheet` itself must still
+    /// `panic!` on the exact same input (Finding: the four solved-list
+    /// alignment `panic!`s stay in place for `apps/**` callers, with a
+    /// `try_*`/`_with` fallible sibling next to each).
+    #[test]
+    fn try_cutting_sheet_reports_a_mismatch_instead_of_panicking() {
+        let design = round_brilliant_design();
+        let bogus_solved: Vec<SolvedTier> = Vec::new();
+        let err = design
+            .try_cutting_sheet(&bogus_solved)
+            .expect_err("empty solved list must not align with 8 tiers");
+        assert_eq!(err.expected_tiers, design.tiers.len());
+        assert_eq!(err.got_tiers, 0);
+    }
+
+    /// `cutting_sheet` (the original, panicking entry point) must still
+    /// panic on the exact misalignment `try_cutting_sheet` now reports as
+    /// an error -- no behavior change for existing callers.
+    #[test]
+    #[should_panic(expected = "cutting_sheet: `solved`")]
+    fn cutting_sheet_still_panics_on_a_mismatch() {
+        let design = round_brilliant_design();
+        let bogus_solved: Vec<SolvedTier> = Vec::new();
+        let _ = design.cutting_sheet(&bogus_solved);
     }
 }

@@ -10,10 +10,10 @@
 use super::{
     BLANK_DOMINATION_FACTOR, DEFAULT_PLAUSIBLE_SCALE, EPS_INCIDENT, LEVEL_TOL,
     MAX_CONSTRUCTIVE_SWEEPS, MAX_PLANES, MAX_REFINE_SWEEPS, MeetConstraint, MeetTierInput,
-    SolveStrategy, SolvedTier,
+    SolveControl, SolveError, SolvePhase, SolveProgress, SolveStrategy, SolvedTier,
     blocks::{Block, classify_blocks, tier_sides},
     candidates::{
-        CandidateVertex, SolvePlane, blank_planes, enumerate_candidate_vertices,
+        CandidateVertex, SolvePlane, blank_planes, enumerate_candidate_vertices_cancellable,
         filter_levels_by_instance_support, group_levels, tier_normals,
     },
     names::MeetNameResolver,
@@ -113,15 +113,55 @@ pub(super) struct PipelineResult {
 /// hashed iteration and no convex-hull library anywhere in this path.
 ///
 /// Latency: `O(P^3)` per refinement sweep in the plane count `P`; see the
-/// module docs' "Cost envelope" section for the measured figures.
+/// module docs' "Cost envelope" section for the measured figures. Never
+/// cancels and reports no progress -- see [`solve_meet_points_with`] for
+/// that; this is a thin wrapper passing a no-op [`SolveControl`], and above
+/// [`MAX_PLANES`] it keeps the legacy behavior of returning an all-
+/// [`SolveStrategy::Failed`] result instead of an error.
 #[must_use]
 pub fn solve_meet_points(gear_teeth_abs: u32, tiers: &[MeetTierInput]) -> Vec<SolvedTier> {
+    match solve_meet_points_with(gear_teeth_abs, tiers, &SolveControl::default()) {
+        Ok(solved) => solved,
+        Err(SolveError::TooManyPlanes { .. }) => {
+            SolveContext::new(gear_teeth_abs, tiers).failed_solved()
+        }
+        Err(SolveError::Cancelled) => {
+            unreachable!("SolveControl::default() never sets cancel")
+        }
+    }
+}
+
+/// Cancellable, progress-reporting sibling of [`solve_meet_points`].
+///
+/// Same algorithm and same determinism guarantee: an unused `control`, i.e.
+/// [`SolveControl::default`], reproduces [`solve_meet_points`] exactly, bit
+/// for bit. Checks `control` at every cancel point (see the module docs,
+/// "Cancellation and progress") and reports a [`SolveProgress`] at every
+/// point that has one.
+///
+/// # Errors
+///
+/// [`SolveError::TooManyPlanes`] when the design has more than [`MAX_PLANES`]
+/// facet-plane instances (checked before any solving starts, so this returns
+/// immediately); [`SolveError::Cancelled`] the first time `control`'s cancel
+/// flag is observed set.
+pub fn solve_meet_points_with(
+    gear_teeth_abs: u32,
+    tiers: &[MeetTierInput],
+    control: &SolveControl<'_>,
+) -> Result<Vec<SolvedTier>, SolveError> {
     let ctx = SolveContext::new(gear_teeth_abs, tiers);
     if ctx.total_planes > MAX_PLANES {
-        return ctx.failed_solved();
+        return Err(SolveError::TooManyPlanes {
+            planes: ctx.total_planes,
+            max: MAX_PLANES,
+        });
     }
-    let result = ctx.run_pipeline(&BTreeMap::new(), &BTreeMap::new());
-    ctx.to_solved(&result)
+    if control.is_cancelled() {
+        return Err(SolveError::Cancelled);
+    }
+    let result = ctx.run_pipeline(&BTreeMap::new(), &BTreeMap::new(), control)?;
+    Ok(ctx.to_solved(&result))
 }
 
 /// Precomputed, immutable per-design solve state: everything every pipeline run
@@ -242,6 +282,13 @@ impl<'a> SolveContext<'a> {
     // for a [`MeetConstraint::ScaleReference`] anchor without mutating the tier
     // list -- the knob the calibrated search turns to adjust an estimated anchor.
     // Empty maps reproduce the plain solve exactly.
+    //
+    // `control` (see the module docs, "Cancellation and progress") is checked
+    // once per constructive-pass sweep, once per candidate-enumeration chunk
+    // inside phase 3's `enumerate_candidate_vertices_cancellable` call (the
+    // measured long pole), and once per refinement sweep; an unused
+    // (`SolveControl::default`) control never observes cancel and this
+    // reproduces the old infallible pipeline's result exactly.
     #[expect(
         clippy::too_many_lines,
         reason = "three sequential phases of one algorithm (constructive pass, \
@@ -255,7 +302,8 @@ impl<'a> SolveContext<'a> {
         &self,
         overrides: &BTreeMap<usize, usize>,
         anchor_values: &BTreeMap<usize, f64>,
-    ) -> PipelineResult {
+        control: &SolveControl<'_>,
+    ) -> Result<PipelineResult, SolveError> {
         let tiers: &[MeetTierInput] = self.tiers;
         let n = tiers.len();
         let normals = &self.normals;
@@ -294,11 +342,33 @@ impl<'a> SolveContext<'a> {
                 phase1_cache.add_tier(j, &normals[j], mast[j]);
             }
         }
-        for _pass in 0..MAX_CONSTRUCTIVE_SWEEPS {
+        let mut last_constructive_sweep = 1u32;
+        for pass_idx in 0..MAX_CONSTRUCTIVE_SWEEPS {
+            if control.is_cancelled() {
+                return Err(SolveError::Cancelled);
+            }
+            last_constructive_sweep = (pass_idx + 1) as u32;
+            control.report(SolveProgress {
+                phase: SolvePhase::Constructive,
+                sweep: last_constructive_sweep,
+                max_sweeps: MAX_CONSTRUCTIVE_SWEEPS as u32,
+                blocks_done: settled.iter().filter(|&&s| s).count() as u32,
+                blocks_total: n as u32,
+            });
             let mut progress = false;
             for i in 0..n {
                 if settled[i] {
                     continue;
+                }
+                // Also checked per unsettled tier, not just once per pass:
+                // measured necessary on the real 103-tier fixture in an
+                // unoptimized build -- a single pass's cumulative
+                // `phase1_cache` filtering cost across every still-unsettled
+                // tier can itself exceed a caller's cancel-latency budget
+                // even though phase 1 as a whole is the cheap, non-cubic
+                // path (see the module docs, "Cancellation and progress").
+                if control.is_cancelled() {
+                    return Err(SolveError::Cancelled);
                 }
                 let refs = &resolved_named[i];
                 let refs_settled: Vec<usize> =
@@ -395,8 +465,31 @@ impl<'a> SolveContext<'a> {
                 break;
             }
         }
+        // Final constructive-phase report: the loop above can `break` as soon
+        // as every tier settles, mid-pass, without another iteration's
+        // pre-pass report ever reflecting that -- so report the actual final
+        // settled count once more here (a no-op duplicate of the last
+        // in-loop report when the loop instead ran out its full sweep cap
+        // without settling everything).
+        control.report(SolveProgress {
+            phase: SolvePhase::Constructive,
+            sweep: last_constructive_sweep,
+            max_sweeps: MAX_CONSTRUCTIVE_SWEEPS as u32,
+            blocks_done: settled.iter().filter(|&&s| s).count() as u32,
+            blocks_total: n as u32,
+        });
 
         // ---- Phase 2: per-block estimates for everything still unsettled. ----
+        if control.is_cancelled() {
+            return Err(SolveError::Cancelled);
+        }
+        control.report(SolveProgress {
+            phase: SolvePhase::LeastSquares,
+            sweep: 1,
+            max_sweeps: 1,
+            blocks_done: 0,
+            blocks_total: n as u32,
+        });
         for i in 0..n {
             if settled[i] {
                 continue;
@@ -416,7 +509,17 @@ impl<'a> SolveContext<'a> {
         // ---- Phase 3: nearest-level refinement sweeps over the full arrangement. ----
         let mut refine_sweeps = 0usize;
         let mut converged = false;
-        for _ in 0..MAX_REFINE_SWEEPS {
+        for sweep_idx in 0..MAX_REFINE_SWEEPS {
+            if control.is_cancelled() {
+                return Err(SolveError::Cancelled);
+            }
+            control.report(SolveProgress {
+                phase: SolvePhase::Refine,
+                sweep: (sweep_idx + 1) as u32,
+                max_sweeps: MAX_REFINE_SWEEPS as u32,
+                blocks_done: 0,
+                blocks_total: n as u32,
+            });
             refine_sweeps += 1;
             // Re-enumerated from scratch every sweep: caching the triples (either
             // just their inverses, or the whole candidate evaluation) was tried
@@ -431,7 +534,13 @@ impl<'a> SolveContext<'a> {
                     });
                 }
             }
-            let cands = enumerate_candidate_vertices(&planes, 6);
+            // The measured long pole (see the module docs): checks `control`
+            // once per outer-plane chunk internally, so a cancel lands well
+            // before this whole `O(P^3)` scan finishes.
+            let Some(cands) = enumerate_candidate_vertices_cancellable(&planes, 6, control.cancel)
+            else {
+                return Err(SolveError::Cancelled);
+            };
             let mut new_mast = mast.clone();
 
             for i in 0..n {
@@ -512,6 +621,13 @@ impl<'a> SolveContext<'a> {
                     }
                 }
             }
+            control.report(SolveProgress {
+                phase: SolvePhase::Refine,
+                sweep: (sweep_idx + 1) as u32,
+                max_sweeps: MAX_REFINE_SWEEPS as u32,
+                blocks_done: n as u32,
+                blocks_total: n as u32,
+            });
 
             let max_rel_change = mast
                 .iter()
@@ -525,14 +641,14 @@ impl<'a> SolveContext<'a> {
             }
         }
 
-        PipelineResult {
+        Ok(PipelineResult {
             mast,
             origin,
             last_pick,
             named_cause,
             refine_sweeps,
             converged,
-        }
+        })
     }
 
     /// Maps one pipeline run's raw result to the per-tier [`SolvedTier`] reports.
@@ -812,5 +928,194 @@ mod tests {
             assert_eq!(x.strategy, y.strategy);
             assert_eq!(x.detail, y.detail);
         }
+    }
+
+    /// The named-meet fixture above, run through [`solve_meet_points_with`]
+    /// with a plain [`SolveControl::default`], must reproduce
+    /// [`solve_meet_points`] bit for bit -- an unused control must change
+    /// nothing about the result.
+    #[test]
+    fn solve_meet_points_with_a_default_control_matches_solve_meet_points_bitwise() {
+        let gear = 4;
+        let tiers = vec![
+            MeetTierInput {
+                angle_deg: 90.0,
+                indices: vec![0.0, 1.0, 2.0, 3.0],
+                constraint: MeetConstraint::ScaleReference(1.0),
+                names: vec![],
+            },
+            MeetTierInput {
+                angle_deg: 0.0,
+                indices: vec![],
+                constraint: MeetConstraint::ScaleReference(0.6),
+                names: vec![],
+            },
+            MeetTierInput {
+                angle_deg: -0.0,
+                indices: vec![],
+                constraint: MeetConstraint::ScaleReference(0.6),
+                names: vec![],
+            },
+            MeetTierInput {
+                angle_deg: 45.0,
+                indices: vec![0.5],
+                constraint: MeetConstraint::MeetExisting,
+                names: vec![],
+            },
+        ];
+        let plain = solve_meet_points(gear, &tiers);
+        let via_with = solve_meet_points_with(gear, &tiers, &SolveControl::default())
+            .expect("a default control never cancels and this fixture is under MAX_PLANES");
+        assert_eq!(plain.len(), via_with.len());
+        for (a, b) in plain.iter().zip(&via_with) {
+            assert_eq!(a.mast.to_bits(), b.mast.to_bits());
+            assert_eq!(a.strategy, b.strategy);
+            assert_eq!(a.detail, b.detail);
+        }
+    }
+
+    /// A control whose cancel flag is already set before the solve starts
+    /// must return `Err(SolveCancelled)` (i.e. [`SolveError::Cancelled`])
+    /// immediately, without needing a slow fixture or a background thread --
+    /// the deterministic half of the cancellation contract. The
+    /// wall-clock-latency half (cancelling mid-solve, on the real 103-tier
+    /// fixture) is proven at the `indicatrix-cut-core` level, where that
+    /// fixture lives -- see `design::tests::cancel_stops_a_large_real_solve_quickly`.
+    #[test]
+    fn solve_meet_points_with_a_precancelled_control_returns_cancelled() {
+        let gear = 4;
+        let tiers = vec![
+            MeetTierInput {
+                angle_deg: 90.0,
+                indices: vec![0.0, 1.0, 2.0, 3.0],
+                constraint: MeetConstraint::ScaleReference(1.0),
+                names: vec![],
+            },
+            MeetTierInput {
+                angle_deg: 45.0,
+                indices: vec![0.5],
+                constraint: MeetConstraint::MeetExisting,
+                names: vec![],
+            },
+        ];
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+        let control = SolveControl::with_cancel(&cancel);
+        let result = solve_meet_points_with(gear, &tiers, &control);
+        assert!(matches!(result, Err(SolveError::Cancelled)), "{result:?}");
+    }
+
+    /// Above [`MAX_PLANES`], `solve_meet_points_with` must return a distinct
+    /// [`SolveError::TooManyPlanes`] naming the actual plane count and the
+    /// cap, while the legacy `solve_meet_points` keeps its old silent
+    /// behavior (every tier `SolveStrategy::Failed`, except the anchor,
+    /// which keeps its given mast) -- the two must never diverge on what
+    /// counts as "too many planes".
+    #[test]
+    fn solve_meet_points_with_reports_too_many_planes_above_the_cap() {
+        let gear = 400;
+        // One tier with 401 index instances -- one plane instance over
+        // MAX_PLANES all by itself (`total_planes = 6 blank + 401`).
+        let indices: Vec<f64> = (0..401).map(f64::from).collect();
+        let tiers = vec![MeetTierInput {
+            angle_deg: 90.0,
+            indices,
+            constraint: MeetConstraint::ScaleReference(1.0),
+            names: vec![],
+        }];
+
+        let via_with = solve_meet_points_with(gear, &tiers, &SolveControl::default());
+        match via_with {
+            Err(SolveError::TooManyPlanes { planes, max }) => {
+                assert_eq!(max, MAX_PLANES);
+                assert!(planes > MAX_PLANES, "planes: {planes}");
+            }
+            other => panic!("expected SolveError::TooManyPlanes, got {other:?}"),
+        }
+
+        let legacy = solve_meet_points(gear, &tiers);
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].strategy, SolveStrategy::ScaleReference);
+        assert!((legacy[0].mast - 1.0).abs() < 1e-12);
+    }
+
+    /// The progress callback must report [`SolvePhase::Constructive`] before
+    /// [`SolvePhase::LeastSquares`] before [`SolvePhase::Refine`] (the fixed
+    /// phase order the module docs describe), `sweep` must never decrease
+    /// within one phase's own run of reports, and every phase must reach
+    /// `blocks_done == blocks_total` at least once (each phase fully
+    /// processes every tier, or reports zero-work-to-do, before moving on).
+    #[test]
+    fn solve_meet_points_with_reports_monotonic_progress_reaching_every_phases_total() {
+        let schedule = indicatrix_formats::asc::parse_asc(
+            "GemCad 5.0\n\
+             g 96 0.0\n\
+             y 6 y\n\
+             I 1.72\n\
+             H PC 45.149  Round Trichecker-12\n\
+             a -41.000000 0.64991234 92 n 1 84 76 68 60 52 44 36 28 20 12 4\n\
+             a -90.000000 1.07325092 92 n 2 84 76 68 60 52 44 36 28 20 12 4\n\
+             a 29.730000 0.65249790 4 n A 12 20 28 36 44 52 60 68 76 84 92\n\
+             a 25.000000 0.59508784 96 n B 16 32 48 64 80\n\
+             a 10.000000 0.48799664 96 n C 16 32 48 64 80\n",
+        )
+        .expect("must parse");
+        let mut tiers = super::super::meet_tier_inputs_from_asc(&schedule);
+        tiers[0].constraint = MeetConstraint::ScaleReference(schedule.tiers[0].mast);
+        tiers[1].constraint = MeetConstraint::ScaleReference(schedule.tiers[1].mast);
+        tiers[2].constraint = MeetConstraint::ScaleReference(schedule.tiers[2].mast);
+
+        let reports: std::cell::RefCell<Vec<SolveProgress>> = std::cell::RefCell::new(Vec::new());
+        let record = |p: SolveProgress| reports.borrow_mut().push(p);
+        let control = SolveControl::default().reporting(&record);
+        let _ = solve_meet_points_with(schedule.gear_teeth_abs(), &tiers, &control)
+            .expect("under MAX_PLANES, never cancelled");
+
+        let reports = reports.into_inner();
+        assert!(!reports.is_empty(), "no progress reported at all");
+
+        // Fixed phase order, no phase revisited once left.
+        let phase_rank = |p: SolvePhase| match p {
+            SolvePhase::Constructive => 0,
+            SolvePhase::LeastSquares => 1,
+            SolvePhase::Refine => 2,
+        };
+        let mut last_rank = 0;
+        let mut last_sweep_in_phase = 0u32;
+        let mut reached_total: std::collections::BTreeSet<i32> = std::collections::BTreeSet::new();
+        for r in &reports {
+            let rank = phase_rank(r.phase);
+            assert!(
+                rank >= last_rank,
+                "phase went backwards: {:?} after rank {last_rank}",
+                r.phase
+            );
+            if rank != last_rank {
+                last_sweep_in_phase = 0;
+            }
+            assert!(
+                r.sweep >= last_sweep_in_phase,
+                "sweep decreased within {:?}: {} after {last_sweep_in_phase}",
+                r.phase,
+                r.sweep
+            );
+            last_sweep_in_phase = r.sweep;
+            last_rank = rank;
+            assert!(
+                r.blocks_done <= r.blocks_total,
+                "blocks_done exceeded blocks_total: {r:?}"
+            );
+            assert_eq!(r.blocks_total, tiers.len() as u32);
+            if r.blocks_done == r.blocks_total {
+                reached_total.insert(rank);
+            }
+        }
+        assert!(
+            reached_total.contains(&0),
+            "Constructive phase never reported blocks_done == blocks_total: {reports:?}"
+        );
+        assert!(
+            reached_total.contains(&2),
+            "Refine phase never reported blocks_done == blocks_total: {reports:?}"
+        );
     }
 }

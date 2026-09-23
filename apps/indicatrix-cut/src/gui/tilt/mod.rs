@@ -8,3 +8,4 @@
 
 pub mod tilt_hover_preview;
 pub mod tilt_profile;
+pub mod video_export;

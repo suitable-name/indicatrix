@@ -1,14 +1,14 @@
-import { ScrollView, Button, LineEdit, ComboBox } from "std-widgets.slint";
+import { ScrollView, Button, LineEdit, ComboBox, CheckBox, Slider } from "std-widgets.slint";
 import { AngleItem, EditorTierItem, OptimizeResultRow } from "../types.slint";
 import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
-// CAD audit item 138: the optical-metrics readout `GemViewportView` already
-// shows (brilliance/windowing/extinction) -- read here too, read-only, so
-// judging whether an edit helped no longer means leaving the Edit tab for
-// Live Render. `ui/models/viewport.slint` is a different lane's file; only
-// reading its exported global from here, never editing it.
+// Optical metrics read-only from ViewportModel (brilliance, windowing,
+// extinction). Lets the user judge edit results without leaving the Edit tab.
 import { ViewportModel } from "../models/viewport.slint";
 import { SectionHeader } from "section_header.slint";
+import { VerdictChip } from "proportion_verdicts.slint";
+import { CriticalAngleBar } from "critical_angle_bar.slint";
+import { MaterialGuessBadge } from "material_guess.slint";
 
 component InspectorTabPill inherits Rectangle {
     in property <string> label;
@@ -48,13 +48,8 @@ component InspectorTabPill inherits Rectangle {
 // (which also re-expands the section, per each pill's own `clicked` below)
 // stays reachable even while collapsed.
 //
-// The Tier tab's Save/Add Tier row lives OUTSIDE the scrollable body, as a
-// pinned footer below it (see the trailing `if inspector_tab == 0` block at
-// the bottom of this component) -- it used to live inside the scroll view and
-// fall below the fold whenever the inspector was shorter than the form
-// (keyboard-to-do #103); pinning it outside the scroll area is the safer of
-// the two fixes offered, since it never depends on the Tier/Preform/Indices
-// fields' combined height fitting on screen.
+// The Tier tab's Save/Add Tier row is pinned outside the scrollable body so
+// it stays visible even when the inspector is shorter than the form.
 export component EditorInspector inherits Rectangle {
     // Header-row-only height while collapsed (the `SectionHeader`'s own 24px
     // plus this component's 8px top/bottom padding) -- see `EditorModel.
@@ -79,20 +74,13 @@ export component EditorInspector inherits Rectangle {
     property <string> tier_constraint_text: "";
     property <string> tier_name: "";
     property <string> tier_indices: "";
-    // CAD audit item 45: the per-facet chip row's own small scratch fields --
-    // the typed position for "+ Add" and the tooth count for "Rotate".
-    // Deliberately NOT covered by `form_dirty`/the five `changed` handlers below:
-    // these never touch `Design` until their own button is clicked (unlike the
-    // five fields above, which stage a whole tier edit), so leaving a stray
-    // digit in either box is not a loss the New/selection guard needs to protect.
+    // Per-facet scratch fields: typed position for "+ Add" and tooth count for
+    // "Rotate". Not covered by `form_dirty` since they don't commit to Design.
     property <string> new_facet_position: "";
     property <string> rotate_by_text: "1";
 
-    // CAD audit item 42: an in-progress "Add Tier" draft (or an in-progress edit
-    // to an existing tier) used to be silently discarded the instant any other row
-    // -- or, once the selection re-seed above ships, any 3D/diagram facet click --
-    // moved the selection. `form_dirty` tracks whether the five scratch properties
-    // above hold something the cutter typed that isn't reflected in `Design` yet;
+    // In-progress "Add Tier" draft or tier edit. `form_dirty` tracks whether the
+    // five fields above hold typed changes not yet reflected in the design.
     // `loaded_tier_index` tracks which tier (or `-1` for "Add") those FIVE fields
     // actually represent, which can now disagree with `EditorModel.
     // selected_tier_index` for as long as `show_dirty_warning` is up (see below) --
@@ -103,15 +91,15 @@ export component EditorInspector inherits Rectangle {
     // themselves assign the scratch properties, so seeding the form never marks
     // itself dirty.
     property <bool> form_dirty: false;
-    // CAD audit item 47: a narrow, purely-local slice of "mark the offending
-    // field, not just a toast/corner message" -- the one rule `to-float()`
-    // can check reliably without a round trip to Rust (see
-    // `loading::reject_angle_over_90`'s own doc comment for why this
-    // specific bound exists). The rest of item 47 (per-field state for
-    // EVERY field, and disabling Save with a reason) needs a new
-    // `EditorModel` property this lane cannot add -- see this file's own
-    // handoff note in this task's final report.
-    property <bool> angle_field_invalid: Math.abs(root.tier_angle.to-float()) > 90;
+    // Angle field invalid if > 90 degrees (locally checkable) or if Rust
+    // reported an angle-field error.
+    property <bool> angle_field_invalid: Math.abs(root.tier_angle.to-float()) > 90
+        || EditorModel.tier_form_error_field == "angle";
+    // Name, indices, and constraint fields: invalid if Rust-classified error
+    // for that field (rules that require Rust validation).
+    property <bool> name_field_invalid: EditorModel.tier_form_error_field == "name";
+    property <bool> indices_field_invalid: EditorModel.tier_form_error_field == "indices";
+    property <bool> constraint_field_invalid: EditorModel.tier_form_error_field == "constraint";
     property <int> loaded_tier_index: -1;
     property <bool> loading: false;
     // The selection `load_tier_into_form`/`request_new` deferred because the form
@@ -120,11 +108,54 @@ export component EditorInspector inherits Rectangle {
     property <int> pending_load_index: -1;
     property <bool> show_dirty_warning: false;
 
-    changed tier_angle => { if !root.loading { root.form_dirty = true; } }
-    changed tier_constraint_kind => { if !root.loading { root.form_dirty = true; } }
-    changed tier_constraint_text => { if !root.loading { root.form_dirty = true; } }
-    changed tier_name => { if !root.loading { root.form_dirty = true; } }
-    changed tier_indices => { if !root.loading { root.form_dirty = true; } }
+    // Each handler clears error markers when that field is retyped. This is
+    // an implicit "let me try again" (since a disabled Save button prevents
+    // retrying). Rust re-validates on the next save attempt.
+    changed tier_angle => {
+        if !root.loading {
+            root.form_dirty = true;
+            if EditorModel.tier_form_error_field == "angle" {
+                EditorModel.tier_form_error_field = "";
+                EditorModel.tier_form_error = "";
+            }
+        }
+    }
+    changed tier_constraint_kind => {
+        if !root.loading {
+            root.form_dirty = true;
+            if EditorModel.tier_form_error_field == "constraint" {
+                EditorModel.tier_form_error_field = "";
+                EditorModel.tier_form_error = "";
+            }
+        }
+    }
+    changed tier_constraint_text => {
+        if !root.loading {
+            root.form_dirty = true;
+            if EditorModel.tier_form_error_field == "constraint" {
+                EditorModel.tier_form_error_field = "";
+                EditorModel.tier_form_error = "";
+            }
+        }
+    }
+    changed tier_name => {
+        if !root.loading {
+            root.form_dirty = true;
+            if EditorModel.tier_form_error_field == "name" {
+                EditorModel.tier_form_error_field = "";
+                EditorModel.tier_form_error = "";
+            }
+        }
+    }
+    changed tier_indices => {
+        if !root.loading {
+            root.form_dirty = true;
+            if EditorModel.tier_form_error_field == "indices" {
+                EditorModel.tier_form_error_field = "";
+                EditorModel.tier_form_error = "";
+            }
+        }
+    }
 
     // The guarded entry point every selection change reaches (`EditorView`'s
     // `tracked_selected_tier_index` watcher, called AFTER `EditorModel.
@@ -148,6 +179,10 @@ export component EditorInspector inherits Rectangle {
 
     function apply_load(idx: int) {
         root.loading = true;
+        // Clear validation errors when loading a different tier, so error markers
+        // don't point at fields that now describe something else.
+        EditorModel.tier_form_error = "";
+        EditorModel.tier_form_error_field = "";
         EditorModel.selected_tier_index = idx;
         root.tier_angle = EditorModel.tiers[idx].angle_deg;
         // `suggested_constraint_kind >= 0` is the tier table's "Add Anchor" action
@@ -193,48 +228,24 @@ export component EditorInspector inherits Rectangle {
         EditorModel.selected_tier_index = -1;
     }
 
-    // CAD audit item 50: local, purely-Slint "has this section been
-    // typed/changed since its own Apply button last ran" flags -- not a new
-    // `EditorModel` property, since this is exactly the kind of UI-only state
-    // `hover_hint`/`inspector_tab` (`ui/models/editor.slint`) already keep on
-    // this side rather than round-tripping through Rust. Declared on `root`
-    // (not inline where they are used, several `VerticalLayout`s deep inside
-    // the Preform tab's `ScrollView`) so `root.preform_pending`/`root.
-    // yield_pending` resolve from anywhere in this component. Safe against
-    // item 52's own fix: a background refresh now only re-seeds these
-    // sections' fields when the underlying DESIGN value actually changed, so
-    // it can no longer silently flip `pending` back to `false` behind the
-    // cutter's back by reasserting the exact text they just typed.
-    // `editor_design_settings.slint`'s own three Apply buttons (Material/Gear/
-    // Symmetry) are a different lane's file and still need the identical
-    // treatment.
+    // Local "has this section been typed/changed since Apply" flags. Declared
+    // on `root` so they resolve from anywhere in the component. UI-only state
+    // kept on this side rather than round-tripping through Rust.
     property <bool> preform_pending: false;
     property <bool> yield_pending: false;
-    // `form_reset_pulse` (`ui/models/editor.slint`) already bumps on New/Load
-    // Selected/Open Native -- a whole different design underneath the form, at
-    // which point a leftover "pending" flag from the PREVIOUS design would be
-    // actively misleading rather than merely stale. The alias-plus-`changed`
-    // idiom, not a direct `changed EditorModel.form_reset_pulse`, for the same
-    // reason `tracked_selection_for_new` below uses it.
+    // Local backing state for the optimize preview checkbox. EditorModel.
+    // optimize_preview_toggled is a callback-only, not a two-way property.
+    property <bool> optimize_preview_checked: false;
+    // Bumps on New/Load Selected/Open Native. The alias-plus-changed idiom
+    // ensures the flag is relevant for the current design, not stale.
     property <int> tracked_form_reset_pulse: EditorModel.form_reset_pulse;
     changed tracked_form_reset_pulse => {
         root.preform_pending = false;
         root.yield_pending = false;
     }
 
-    // CAD audit item 219: keeps this form in sync with anything OUTSIDE this
-    // component that sets `EditorModel.selected_tier_index = -1` directly
-    // instead of calling `request_new`/`apply_new` itself -- the tier table's
-    // own "+ Add Tier" button and its existing Escape-to-clear-selection
-    // shortcut (CAD audit item 229) both do exactly that. Without this, the
-    // global selection would read "-1 = Add mode" while this form kept
-    // showing whichever tier was loaded before -- `load_tier_into_form`
-    // (called from `editor_view.slint`'s OWN selection watcher) deliberately
-    // no-ops for a negative index, since it only ever knows how to load a
-    // REAL tier. Guarded by `form_dirty` the same way a row click is, just
-    // entered from the opposite direction (the global selection has already
-    // moved to -1 by the time this fires, rather than `request_new` moving it
-    // there itself) -- a kept draft still shows its warning, only the table's
+    // Keeps form in sync when global selection moves to -1 directly (e.g., from
+    // tier table's "+ Add Tier" or Escape shortcut). Guarded by form_dirty.
     // own row highlight may already have cleared alongside it.
     property <int> tracked_selection_for_new: EditorModel.selected_tier_index;
     changed tracked_selection_for_new => {
@@ -269,6 +280,9 @@ export component EditorInspector inherits Rectangle {
     // confirmed, design-changing action of its own, not an incidental row click.
     public function clear_form() {
         root.loading = true;
+        // Clear validation errors so stale errors don't survive into "Add Tier" draft.
+        EditorModel.tier_form_error = "";
+        EditorModel.tier_form_error_field = "";
         root.tier_angle = "0.0";
         root.tier_constraint_kind = 0;
         root.tier_constraint_text = "";
@@ -281,23 +295,13 @@ export component EditorInspector inherits Rectangle {
         root.pending_load_index = -1;
     }
 
-    // Keyboard-to-do #102: the one place "commit the tier-edit form" is
-    // spelled, so the Save/Add Tier button and every field's own `accepted`
-    // handler (Enter) below all call the exact same thing -- previously only
-    // the RI override elsewhere in the app committed on Enter; these four
-    // fields did nothing until the button was clicked with the mouse.
-    // Commits whichever tier `loaded_tier_index` says the form currently
-    // represents -- NOT `EditorModel.selected_tier_index` directly, since the two
-    // can disagree for as long as `show_dirty_warning` is up (CAD audit item 42):
-    // reading the global selection here would let Save Tier write a kept draft's
-    // values onto whatever OTHER row the table's highlight had already moved to.
+    // Commits whichever tier `loaded_tier_index` says the form represents,
+    // not `EditorModel.selected_tier_index` directly. When dirty-warning is up,
+    // they can disagree; reading the global could write to the wrong tier.
     function save_form() {
         EditorModel.save_tier(root.loaded_tier_index, root.tier_angle, root.tier_constraint_kind, root.tier_constraint_text, root.tier_name, root.tier_indices);
-        // Optimistic: the cutter just explicitly committed these exact values, so
-        // there is nothing left this form holds that `Design` doesn't (or, on a
-        // validation failure, nothing NEW was lost -- the same text is still right
-        // here to fix and resubmit) -- this is not the silent, incidental-click
-        // loss CAD audit item 42 guards against.
+        // Optimistic: the cutter just committed these values, so the form is
+        // clean. On validation failure, the text is still here to fix and resubmit.
         root.form_dirty = false;
     }
 
@@ -357,10 +361,10 @@ export component EditorInspector inherits Rectangle {
             spacing: 6px;
             vertical-stretch: 1;
 
-            // CAD audit item 138: a compact always-visible readout of the
+            // A compact always-visible readout of the
             // shared viewport's current optical metrics, visible regardless of
-            // which inspector tab is open -- previously a cutter judging
-            // whether an angle change helped had to switch to the Live Render
+            // which inspector tab is open, so a cutter judging whether an
+            // angle change helped does not have to switch to the Live Render
             // tab and back. Only shown while that viewport is actually
             // following this design (`viewport_material_linked`); otherwise
             // the numbers would describe some unrelated display override.
@@ -384,9 +388,7 @@ export component EditorInspector inherits Rectangle {
                 if EditorModel.inspector_tab == 0: VerticalLayout {
                     spacing: 8px;
                     Text {
-                        // CAD audit item 232: names the tier being edited, not
-                        // just its position -- confirming "this is the row I
-                        // meant to touch" used to require reading the table.
+                        // Names the tier being edited, not just its position, for clarity.
                         text: root.loaded_tier_index < 0
                             ? "Add Tier"
                             : "Edit Tier #" + (root.loaded_tier_index + 1) + (root.tier_name == "" ? "" : " -- " + root.tier_name);
@@ -394,10 +396,8 @@ export component EditorInspector inherits Rectangle {
                         font-weight: 700;
                         color: Theme.text-primary;
                     }
-                    // CAD audit item 42: a kept draft whose selection has already
-                    // moved on (see `show_dirty_warning`'s own doc comment) --
-                    // offered right here rather than only in a transient popup, so
-                    // it stays visible for as long as the mismatch does.
+                    // Shows kept draft when table selection has moved. Stays visible
+                    // as long as the mismatch does, not just in a transient popup.
                     if root.show_dirty_warning: Rectangle {
                         background: Theme.bg-input;
                         border-radius: Theme.radius-sm;
@@ -433,11 +433,8 @@ export component EditorInspector inherits Rectangle {
                     Rectangle {
                         height: angle_lbl.preferred-height;
                         Tooltip { text: @markdown("Angle from the girdle plane in degrees. Negative is pavilion, zero or positive is crown. A signed zero (\"-0.0\") inherits the previous tier's side instead of defaulting to crown."); }
-                        // CAD audit item 134: a live side hint driven purely by the
-                        // sign of what's currently typed -- an approximation (it
-                        // cannot see the previous tier's side the way a real
-                        // signed-zero angle would inherit it), so an exact zero
-                        // shows neither word rather than guessing wrong.
+                        // Live side hint from the sign of typed value. An approximation
+                        // (can't see previous tier), so exact zero shows no hint.
                         angle_lbl := Text {
                             text: "Angle (deg)" + (root.tier_angle.to-float() < 0
                                 ? "  -- pavilion"
@@ -446,32 +443,37 @@ export component EditorInspector inherits Rectangle {
                             color: Theme.text-muted;
                         }
                     }
-                    // CAD audit item 47: a red border around the field itself
-                    // (not just a corner toast/single message under the whole
-                    // form) for the one rule this component can check live and
-                    // locally -- see `angle_field_invalid`'s own doc comment.
-                    // `LineEdit` itself exposes no `border-color` to bind, so
-                    // the border lives on this wrapping `Rectangle` instead,
-                    // the same convention the dirty-warning box above uses.
+                    // Red border on invalid angle (the one local check possible).
+                    // LineEdit has no border-color, so border lives on this wrapper.
                     Rectangle {
                         border-width: root.angle_field_invalid ? 1px : 0px;
                         border-color: Theme.danger;
                         border-radius: Theme.radius-sm;
                         LineEdit {
                             text <=> root.tier_angle;
-                            // Keyboard-to-do #102.
                             accepted => { root.save_form(); }
+                            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                            // Live critical-angle guidance fires on every keystroke
+                            // so the bar updates before the cutter leaves the field.
+                            edited => { EditorModel.angle_live_preview(root.tier_angle); }
                             key-pressed(event) => {
                                 if event.text == Key.UpArrow {
                                     root.tier_angle = root.stepped_angle_text(root.tier_angle, event.modifiers.shift, event.modifiers.control, 1.0);
+                                    EditorModel.angle_live_preview(root.tier_angle);
                                     return accept;
                                 } else if event.text == Key.DownArrow {
                                     root.tier_angle = root.stepped_angle_text(root.tier_angle, event.modifiers.shift, event.modifiers.control, -1.0);
+                                    EditorModel.angle_live_preview(root.tier_angle);
                                     return accept;
                                 }
                                 reject
                             }
                         }
+                    }
+                    CriticalAngleBar {
+                        margin_text: EditorModel.angle_live_margin_text;
+                        level: EditorModel.angle_live_margin_level;
+                        is_estimate: EditorModel.angle_live_margin_is_estimate;
                     }
                     if root.angle_field_invalid: Text {
                         text: "Exceeds 90\u{b0} -- angles are measured from the girdle plane.";
@@ -479,7 +481,7 @@ export component EditorInspector inherits Rectangle {
                         color: Theme.danger;
                         wrap: word-wrap;
                     }
-                    // CAD audit item 115: the manual's worked example describes a
+                    // The manual's worked example describes a
                     // girdle as a 0-degree tier, which `classify_blocks` (only
                     // `|cos(theta)| <= 1e-6`, i.e. exactly +-90) actually reads as
                     // Crown, silently producing a second table instead of a girdle
@@ -505,58 +507,84 @@ export component EditorInspector inherits Rectangle {
                         meets_lbl := Text { text: "Meets"; font-size: 10px; color: Theme.text-muted; }
                     }
                     ComboBox {
-                        model: ["Unspecified vertex", "Named facet(s)", "Exact scale value"];
+                        // Three authoring-level targets (Cut to depth, Girdle thickness,
+                        // Table width) that resolve to scale references before solving.
+                        model: [
+                            "Unspecified vertex",
+                            "Named facet(s)",
+                            "Exact scale value",
+                            "Cut to depth (mm)",
+                            "Girdle thickness (mm)",
+                            "Table width (mm)",
+                        ];
                         current-index <=> root.tier_constraint_kind;
                     }
                     if root.tier_constraint_kind == 1: Text { text: "Facet names (comma-separated)"; font-size: 10px; color: Theme.text-muted; }
-                    // CAD audit item 136: this is a plane offset along the
-                    // facet's own normal, in the design's model units (girdle
-                    // half-width = 1) -- not a caliper dimension a cutter could
-                    // measure directly, which "a real dimension" used to imply.
+                    // Plane offset along this facet's normal, in model units
+                    // (girdle half-width = 1), not a caliper dimension.
                     if root.tier_constraint_kind == 2: Text { text: "Scale value: a plane offset along this facet's normal, in model units (girdle half-width = 1) -- not a caliper dimension"; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
-                    if root.tier_constraint_kind != 0: LineEdit {
-                        text <=> root.tier_constraint_text;
-                        // Keyboard-to-do #102.
-                        accepted => { root.save_form(); }
+                    // Depth, girdle, table-width targets convert through design's girdle diameter.
+                    if root.tier_constraint_kind == 3: Text { text: "Depth: this facet's plane offset, in mm, measured the same way the MAST column's own mm tooltip is -- converted through the design's girdle diameter (needs one set in Design Settings)."; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
+                    if root.tier_constraint_kind == 4: Text { text: "Girdle thickness: this tier's own mast is searched (bisected) until the solved design's girdle thickness matches this value in mm -- same girdle-diameter mm conversion as Depth, so it costs several solves rather than one."; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
+                    if root.tier_constraint_kind == 5: Text { text: "Table width: this tier's own mast is searched (bisected) until the table facet's measured width matches this value in mm -- same girdle-diameter mm conversion as Depth, so it costs several solves rather than one."; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
+                    // Red border for Meets constraint validation errors (unresolved
+                    // name, empty, or not a number). Same as Angle field above.
+                    if root.tier_constraint_kind != 0: Rectangle {
+                        border-width: root.constraint_field_invalid ? 1px : 0px;
+                        border-color: Theme.danger;
+                        border-radius: Theme.radius-sm;
+                        HorizontalLayout {
+                            spacing: 4px;
+                            LineEdit {
+                                text <=> root.tier_constraint_text;
+                                accepted => { root.save_form(); }
+                                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                            }
+                            // Three targets are in millimetres (unlike kind 2's model-unit scale value).
+                            if root.tier_constraint_kind >= 3: Text {
+                                text: "mm";
+                                font-size: 10px;
+                                color: Theme.text-muted;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
                     Rectangle {
                         height: name_lbl.preferred-height;
-                        // CAD audit items 129/132: the '/' fold convention
-                        // (`ConstraintTier::names()` splits on it) was undocumented
-                        // here, so a cutter had no way to know "P1/P2" declares one
-                        // tier under two names rather than a literal display string.
+                        // Facet names can use '/' to give one tier multiple names (e.g., "P1/P2").
                         Tooltip { text: @markdown("Facet name, referenced by other tiers' named-facet field. Join several names with '/' (e.g. \"P1/P2\") to give one tier more than one name; avoid reusing a name another tier already has."); }
                         name_lbl := Text { text: "Name"; font-size: 10px; color: Theme.text-muted; }
                     }
-                    LineEdit {
-                        text <=> root.tier_name;
-                        // Keyboard-to-do #102.
-                        accepted => { root.save_form(); }
+                    // Red border for name-collision rejection.
+                    Rectangle {
+                        border-width: root.name_field_invalid ? 1px : 0px;
+                        border-color: Theme.danger;
+                        border-radius: Theme.radius-sm;
+                        LineEdit {
+                            text <=> root.tier_name;
+                            accepted => { root.save_form(); }
+                            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                        }
                     }
                     Rectangle {
                         height: indices_lbl.preferred-height;
                         Tooltip { text: @markdown("Gear positions this tier occupies, comma-separated. Several values form a symmetric family."); }
                         indices_lbl := Text { text: "Indices (comma-separated)"; font-size: 10px; color: Theme.text-muted; }
                     }
-                    LineEdit {
-                        text <=> root.tier_indices;
-                        // Keyboard-to-do #102.
-                        accepted => { root.save_form(); }
+                    // Red border for invalid index (out-of-range, duplicate, non-numeric).
+                    Rectangle {
+                        border-width: root.indices_field_invalid ? 1px : 0px;
+                        border-color: Theme.danger;
+                        border-radius: Theme.radius-sm;
+                        LineEdit {
+                            text <=> root.tier_indices;
+                            accepted => { root.save_form(); }
+                            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                        }
                     }
 
-                    // --- CAD audit item 45: per-facet editing. The LineEdit
-                    // above stays (it is still how a brand-new tier's indices get
-                    // authored in the first place, and the only bulk-edit path),
-                    // but for an already-saved tier this offers the per-position
-                    // operations `Design`'s orbit helpers actually support
-                    // (`facet_remove`/`facet_toggle_detach`/`facet_add`/
-                    // `tier_rotate_indices`/`tier_mirror_indices`, all declared on
-                    // `EditorModel` -- see that file's own doc comment for why
-                    // their handler bodies live in a different lane's file) --
-                    // one chip per occurrence, so removing/detaching a single
-                    // facet no longer means retyping the whole list. Only shown
-                    // for a real tier (not the "Add Tier" draft, which has no
-                    // `Design` row yet for these callbacks to act on).
+                    // Per-facet editing with chips: one chip per facet, actions
+                    // (toggle detach, remove, add). Only shown for saved tiers.
                     if root.loaded_tier_index >= 0 && root.loaded_tier_index < EditorModel.tiers.length: VerticalLayout {
                         spacing: 4px;
                         Text { text: "Facets"; font-size: 10px; color: Theme.text-muted; }
@@ -647,6 +675,7 @@ export component EditorInspector inherits Rectangle {
                                 text <=> root.new_facet_position;
                                 placeholder-text: "position";
                                 width: 64px;
+                                changed has-focus => { EditorModel.text_focus = self.has-focus; }
                             }
                             Button {
                                 text: "+ Add";
@@ -661,6 +690,7 @@ export component EditorInspector inherits Rectangle {
                             LineEdit {
                                 text <=> root.rotate_by_text;
                                 width: 40px;
+                                changed has-focus => { EditorModel.text_focus = self.has-focus; }
                             }
                             Button {
                                 text: "Rotate \u{27F2}";
@@ -677,12 +707,74 @@ export component EditorInspector inherits Rectangle {
                         }
                     }
 
-                    // CAD audit item 47: plumbing for a real inline validation
-                    // message under the form -- becomes non-empty once
-                    // `setup_save_tier_callback` (a different lane's file,
-                    // `gui::editor::callbacks::tier_actions`) starts calling
-                    // `EditorModel.set_tier_form_error` from its parse-error
-                    // branches instead of (or alongside) its current toast.
+                    // Cheater/azimuth offset (GCS style): applies immediately,
+                    // not staged. Only shown for saved tiers.
+                    if root.loaded_tier_index >= 0 && root.loaded_tier_index < EditorModel.tiers.length: VerticalLayout {
+                        spacing: 4px;
+                        Rectangle {
+                            height: cheater_lbl.preferred-height;
+                            Tooltip { text: @markdown("Cheater/azimuth offset in degrees -- compensates cutting an off-tooth index or a known machine error. Blank clears it."); }
+                            cheater_lbl := Text { text: "Cheater Offset (deg)"; font-size: 10px; color: Theme.text-muted; }
+                        }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            LineEdit {
+                                width: 70px;
+                                text <=> EditorModel.selected_tier_cheater_offset_text;
+                                placeholder-text: "none";
+                                accepted => { EditorModel.apply_cheater_offset(root.loaded_tier_index, EditorModel.selected_tier_cheater_offset_text); }
+                                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                            }
+                            Button {
+                                text: "Set";
+                                clicked => { EditorModel.apply_cheater_offset(root.loaded_tier_index, EditorModel.selected_tier_cheater_offset_text); }
+                            }
+                            Button {
+                                text: "Clear";
+                                clicked => {
+                                    EditorModel.selected_tier_cheater_offset_text = "";
+                                    EditorModel.apply_cheater_offset(root.loaded_tier_index, "");
+                                }
+                            }
+                        }
+                    }
+
+                    // Cutter-authored note for this tier: applies immediately,
+                    // not staged. Only shown for saved tiers.
+                    if root.loaded_tier_index >= 0 && root.loaded_tier_index < EditorModel.tiers.length: VerticalLayout {
+                        spacing: 4px;
+                        Rectangle {
+                            height: note_lbl.preferred-height;
+                            Tooltip { text: @markdown("A cutter-authored note for this tier, e.g. \"check meet here\" or \"grind slowly\". Blank clears it."); }
+                            note_lbl := Text { text: "Note"; font-size: 10px; color: Theme.text-muted; }
+                        }
+                        HorizontalLayout {
+                            spacing: 4px;
+                            LineEdit {
+                                text <=> EditorModel.selected_tier_note_text;
+                                placeholder-text: "none";
+                                accepted => { EditorModel.apply_tier_note(root.loaded_tier_index, EditorModel.selected_tier_note_text); }
+                                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                            }
+                            Button {
+                                text: "Set";
+                                clicked => { EditorModel.apply_tier_note(root.loaded_tier_index, EditorModel.selected_tier_note_text); }
+                            }
+                            Button {
+                                text: "Clear";
+                                clicked => {
+                                    EditorModel.selected_tier_note_text = "";
+                                    EditorModel.apply_tier_note(root.loaded_tier_index, "");
+                                }
+                            }
+                        }
+                    }
+
+                    // A real inline validation message under
+                    // the form, alongside the corner toast -- `setup_save_tier_
+                    // callback` (`gui::editor::callbacks::tier_actions`) sets
+                    // `EditorModel.tier_form_error` from every parse/apply
+                    // error branch.
                     if EditorModel.tier_form_error != "": Text {
                         text: EditorModel.tier_form_error;
                         font-size: 10px;
@@ -691,7 +783,7 @@ export component EditorInspector inherits Rectangle {
                         wrap: word-wrap;
                     }
 
-                    // --- CAD audit item 48: a read-only "Solved" section, fed
+                    // --- A read-only "Solved" section, fed
                     // by what `Design::solve`/`Design::facet_meets` actually
                     // produced for the selected tier -- mast, solve strategy,
                     // block, margin/risk, orbit shape, the meet partners the
@@ -706,7 +798,7 @@ export component EditorInspector inherits Rectangle {
                         // fails with "Cannot override property 'row'". Reads
                         // `root.loaded_tier_index`, not `EditorModel.
                         // selected_tier_index` -- see that property's own doc
-                        // comment (CAD audit item 42) for why the two can disagree.
+                        // comment for why the two can disagree.
                         property <EditorTierItem> tier_row: EditorModel.tiers[root.loaded_tier_index];
                         spacing: 4px;
                         Rectangle { height: 1px; background: Theme.border-subtle; }
@@ -771,40 +863,54 @@ export component EditorInspector inherits Rectangle {
                         current-index <=> EditorModel.preform_shape_index;
                         selected => { root.preform_pending = true; }
                     }
-                    // CAD audit item 136: Half-Width/Depth are in the design's
+                    // Half-Width/Depth are in the design's
                     // own model units (girdle half-width = 1), never
-                    // millimetres -- undocumented before, so a typed 0.5 could
+                    // millimetres -- otherwise a typed 0.5 could
                     // read as "half the girdle width" or as some absolute unit.
                     // The mm-equivalent line below each field is read-only and
                     // ADDITIVE (never replaces the editable model-unit value) --
                     // see `state::preform_mm_texts`'s own doc comment for when
                     // it has something to show.
                     Text { text: "Half-Width (model units, girdle half-width = 1)"; font-size: 10px; color: Theme.text-muted; }
-                    LineEdit { text <=> EditorModel.preform_half_width; edited => { root.preform_pending = true; } }
+                    LineEdit { text <=> EditorModel.preform_half_width; edited => { root.preform_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                     if EditorModel.preform_half_width_mm_text != "": Text { text: EditorModel.preform_half_width_mm_text; font-size: 9px; color: Theme.text-muted; }
                     Text { text: "Length / Width (ratio)"; font-size: 10px; color: Theme.text-muted; }
-                    LineEdit { text <=> EditorModel.preform_length_over_width; edited => { root.preform_pending = true; } }
+                    LineEdit { text <=> EditorModel.preform_length_over_width; edited => { root.preform_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                     Text { text: "Depth (model units, girdle half-width = 1)"; font-size: 10px; color: Theme.text-muted; }
-                    LineEdit { text <=> EditorModel.preform_depth; edited => { root.preform_pending = true; } }
+                    LineEdit { text <=> EditorModel.preform_depth; edited => { root.preform_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                     if EditorModel.preform_depth_mm_text != "": Text { text: EditorModel.preform_depth_mm_text; font-size: 9px; color: Theme.text-muted; }
+                    // Unlike Half-Width/Depth above, this is
+                    // typed directly in MILLIMETRES -- the rough's own girdle
+                    // plane offset from centre is what a cutter actually
+                    // measures on the stone, never a model-unit fraction.
+                    // `apply_preform_y_offset`'s Rust handler converts through
+                    // the design's own mm-per-unit factor (see that callback's
+                    // own doc comment on `ui/models/editor.slint`).
+                    Rectangle {
+                        height: y_offset_lbl.preferred-height;
+                        Tooltip { text: @markdown("How far the rough's girdle plane sits from centre, in millimetres -- positive moves it toward the crown. Needs a Girdle Diameter and a solve to convert; otherwise Apply reports an error instead of guessing."); }
+                        y_offset_lbl := Text { text: "Girdle Y-Offset (mm)"; font-size: 10px; color: Theme.text-muted; }
+                    }
+                    LineEdit { text <=> EditorModel.preform_y_offset_mm; edited => { root.preform_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                     Button {
-                        // CAD audit item 50: `primary` (the same accent-emphasis
+                        // `primary` (the same accent-emphasis
                         // property `editor_command_bar.slint`'s own Solve button
                         // already keys off "stale") flags this button amber-cyan
                         // while a typed/changed field here has not been applied
-                        // yet -- forgetting to click Apply used to revert silently.
+                        // yet, so forgetting to click Apply doesn't revert silently.
                         text: root.preform_pending ? "Apply Preform *" : "Apply Preform";
                         primary: root.preform_pending;
                         clicked => {
                             EditorModel.apply_preform(EditorModel.preform_shape_index, EditorModel.preform_half_width, EditorModel.preform_length_over_width, EditorModel.preform_depth);
+                            EditorModel.apply_preform_y_offset(EditorModel.preform_y_offset_mm);
                             root.preform_pending = false;
                         }
                     }
 
                     Rectangle { height: 1px; background: Theme.border-subtle; }
 
-                    // --- CAD audit item 56: the proportions every faceter
-                    // checks first, invisible before this -- table %, crown
+                    // --- The proportions every faceter
+                    // checks first -- table %, crown
                     // height, pavilion depth, total depth and length-to-width,
                     // from `Design::stone_proportions`. "-" (never a
                     // misleading 0) whenever the design does not currently
@@ -815,22 +921,58 @@ export component EditorInspector inherits Rectangle {
                         Tooltip { text: @markdown("Table size, crown height, pavilion depth, total depth and length-to-width, from the last Solve. In millimetres once a Girdle Diameter is set, otherwise the design's own model units."); }
                         proportions_lbl := Text { text: "Proportions"; font-size: 12px; font-weight: 700; color: Theme.text-primary; }
                     }
-                    Text { text: "Table: " + EditorModel.proportions_table_pct + "    L/W: " + EditorModel.proportions_length_to_width; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                    // Each raw
+                    // number below is paired with a "within/near/outside"
+                    // verdict chip (invisible while there is nothing to judge
+                    // yet -- see `VerdictChip`'s own doc comment) judged
+                    // against `indicatrix_cut_core::proportions_windows`'s
+                    // reference table. Table %/crown angle/pavilion angle/
+                    // total depth %/girdle % are the five metrics that table
+                    // covers; crown height/pavilion depth/L-W below have no
+                    // chip of their own (this table has no window for an
+                    // absolute length or a ratio, only percentages/angles).
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text { horizontal-stretch: 1; text: "Table: " + EditorModel.proportions_table_pct + "    L/W: " + EditorModel.proportions_length_to_width; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                        VerdictChip { level: EditorModel.proportion_verdict_table_level; reason: EditorModel.proportion_verdict_table_reason; }
+                    }
                     Text { text: "Crown Height: " + EditorModel.proportions_crown_height; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
                     Text { text: "Pavilion Depth: " + EditorModel.proportions_pavilion_depth; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
-                    Text { text: "Total Depth: " + EditorModel.proportions_total_depth; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text { horizontal-stretch: 1; text: "Crown Angle (main facet): " + (EditorModel.proportion_verdict_crown_angle_level >= 0 ? "estimated from schedule" : "-"); font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                        VerdictChip { level: EditorModel.proportion_verdict_crown_angle_level; reason: EditorModel.proportion_verdict_crown_angle_reason; }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text { horizontal-stretch: 1; text: "Pavilion Angle (main facet): " + (EditorModel.proportion_verdict_pavilion_angle_level >= 0 ? "estimated from schedule" : "-"); font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                        VerdictChip { level: EditorModel.proportion_verdict_pavilion_angle_level; reason: EditorModel.proportion_verdict_pavilion_angle_reason; }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text { horizontal-stretch: 1; text: "Total Depth: " + EditorModel.proportions_total_depth; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                        VerdictChip { level: EditorModel.proportion_verdict_total_depth_level; reason: EditorModel.proportion_verdict_total_depth_reason; }
+                    }
+                    // Girdle thickness and the printed C/W%,
+                    // P/W% and G/W% ratios every faceting diagram prints.
+                    Text { text: "Girdle Thickness: " + EditorModel.girdle_thickness_text; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Text { horizontal-stretch: 1; text: "C/W: " + EditorModel.crown_to_width_text + "    P/W: " + EditorModel.pavilion_to_width_text + "    G/W: " + EditorModel.girdle_to_width_text; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+                        VerdictChip { level: EditorModel.proportion_verdict_girdle_level; reason: EditorModel.proportion_verdict_girdle_reason; }
+                    }
 
                     Rectangle { height: 1px; background: Theme.border-subtle; }
 
                     // --- Real units, the rough, and yield.
                     Text { text: "Yield"; font-size: 12px; font-weight: 700; color: Theme.text-primary; }
 
-                    // CAD audit item 53: which refractive index the critical
+                    // Which refractive index the critical
                     // angle/MARGIN column/render/export actually use, and where it
-                    // came from -- `editor_design_settings.slint` (a different
-                    // lane's file) shows the bare "Eff. RI" number with no source,
-                    // which is exactly what let a selected custom material's RI go
-                    // silently unused. `ri_source_text` mirrors `Design::
+                    // came from -- `editor_design_settings.slint` shows the bare
+                    // "Eff. RI" number with no source, which is exactly what could
+                    // let a selected custom material's RI go silently unused.
+                    // `ri_source_text` mirrors `Design::
                     // effective_refractive_index_with`'s own precedence so it can
                     // never disagree with `effective_ri_text`.
                     Rectangle {
@@ -843,12 +985,13 @@ export component EditorInspector inherits Rectangle {
                             wrap: word-wrap;
                         }
                     }
+                    MaterialGuessBadge { }
                     Rectangle {
                         height: girdle_lbl.preferred-height;
                         Tooltip { text: @markdown("Real girdle diameter in millimetres, used for the carat estimate."); }
                         girdle_lbl := Text { text: "Girdle Diameter (mm)"; font-size: 10px; color: Theme.text-muted; }
                     }
-                    LineEdit { text <=> EditorModel.girdle_diameter_mm; placeholder-text: "unset"; edited => { root.yield_pending = true; } }
+                    LineEdit { text <=> EditorModel.girdle_diameter_mm; placeholder-text: "unset"; edited => { root.yield_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                     // Distinct from `gem_viewport.slint`'s unrelated Render
                     // Material control -- this one is specific gravity only, for
                     // the carat estimate; it never touches the render.
@@ -858,9 +1001,12 @@ export component EditorInspector inherits Rectangle {
                         yield_material_lbl := Text { text: "Yield Material"; font-size: 10px; color: Theme.text-muted; }
                     }
                     ComboBox {
-                        // EXACT order of `gui::editor::MATERIAL_PRESET_NAMES` --
-                        // kept in sync by hand.
-                        model: ["(none)", "Diamond", "Sapphire", "Ruby", "Emerald", "Zircon", "Alexandrite", "Topaz", "Spinel", "Quartz", "Tourmaline", "Tanzanite", "Synthetic Moissanite", "Cubic Zirconia"];
+                        // Bound to the same pushed `EditorModel.new_material_options`
+                        // that `new_design_dialog.slint` uses -- both are
+                        // `MATERIAL_PRESET_NAMES` in the same order, so sharing the
+                        // one property (rather than a separate hand-synced literal
+                        // here) can never silently drift from the real list.
+                        model: EditorModel.new_material_options;
                         current-index <=> EditorModel.material_index;
                         selected => { root.yield_pending = true; }
                     }
@@ -869,9 +1015,9 @@ export component EditorInspector inherits Rectangle {
                         Tooltip { text: @markdown("Specific gravity for the carat estimate. Does not affect the render."); }
                         sg_override_lbl := Text { text: "Specific Gravity Override"; font-size: 10px; color: Theme.text-muted; }
                     }
-                    LineEdit { text <=> EditorModel.specific_gravity_override; placeholder-text: "use material default"; edited => { root.yield_pending = true; } }
+                    LineEdit { text <=> EditorModel.specific_gravity_override; placeholder-text: "use material default"; edited => { root.yield_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                     Button {
-                        // CAD audit item 50: see the matching "Apply Preform"
+                        // See the matching "Apply Preform"
                         // comment above -- identical amber-on-unapplied treatment.
                         text: root.yield_pending ? "Apply Yield Inputs *" : "Apply Yield Inputs";
                         primary: root.yield_pending;
@@ -910,13 +1056,12 @@ export component EditorInspector inherits Rectangle {
                     }
                     HorizontalLayout {
                         spacing: 4px;
-                        // CAD audit item 232: the caption above names the three
-                        // fields in order, but nothing on the fields themselves
-                        // did -- placeholder text repeats which is which right
-                        // where the cutter is typing.
-                        LineEdit { text <=> EditorModel.optimize_weight_windowing; placeholder-text: "windowing"; }
-                        LineEdit { text <=> EditorModel.optimize_weight_extinction; placeholder-text: "extinction"; }
-                        LineEdit { text <=> EditorModel.optimize_weight_tilt_brilliance; placeholder-text: "tilt brilliance"; }
+                        // The caption above names the three
+                        // fields in order; placeholder text repeats which is
+                        // which right where the cutter is typing.
+                        LineEdit { text <=> EditorModel.optimize_weight_windowing; placeholder-text: "windowing"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                        LineEdit { text <=> EditorModel.optimize_weight_extinction; placeholder-text: "extinction"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                        LineEdit { text <=> EditorModel.optimize_weight_tilt_brilliance; placeholder-text: "tilt brilliance"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                     }
                     // Non-numeric/negative input is rejected Rust-side
                     // (surfaced as an error toast) before it reaches `optimize_design`.
@@ -927,11 +1072,49 @@ export component EditorInspector inherits Rectangle {
                         wrap: word-wrap;
                     }
 
-                    // Running status / result only -- the always-present hint no
-                    // longer keeps this box permanently on screen (see the
-                    // `Tooltip` on the "Optimize" header above for where it lives
-                    // now); this box appears only while there is something that
-                    // just happened or is happening to report.
+                    // Yield is
+                    // bounded `0..1` (a fraction of the same normalized sum the
+                    // three optical weights above share), not a free-form field
+                    // like them -- a slider says that at a glance, where a text
+                    // field inviting "10" or "-1" would not.
+                    Rectangle {
+                        height: yield_weight_lbl.preferred-height;
+                        Tooltip { text: @markdown("How much throwing away preform volume should cost, blended in alongside the three optical weights above. `0` (default) reproduces every previous Optimize run exactly -- see `ObjectiveWeights::score_with_yield`."); }
+                        yield_weight_lbl := Text { text: "Yield weight: " + Math.round(EditorModel.optimize_weight_yield * 100) + "%"; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
+                    }
+                    Slider {
+                        minimum: 0.0;
+                        maximum: 1.0;
+                        value <=> EditorModel.optimize_weight_yield;
+                    }
+
+                    // A real evaluation-budget/seed/polish
+                    // knob each -- `setup_optimize_callback` reads these four
+                    // fields when it builds this run's `OptimizeConfig`.
+                    Rectangle {
+                        height: budget_lbl.preferred-height;
+                        Tooltip { text: @markdown("Evaluation budget and a seed for reproducible results."); }
+                        budget_lbl := Text { text: "Budget / Seed"; font-size: 10px; color: Theme.text-muted; }
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        LineEdit { text <=> EditorModel.optimize_budget_text; placeholder-text: "budget"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                        LineEdit { text <=> EditorModel.optimize_seed_text; placeholder-text: "seed"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        CheckBox { text: "Polish"; checked <=> EditorModel.optimize_polish_enabled; }
+                        CheckBox {
+                            text: "Only selected tiers";
+                            checked <=> EditorModel.optimize_only_selected;
+                        }
+                    }
+
+                    // Running status / result only -- the always-present hint lives
+                    // in the `Tooltip` on the "Optimize" header above instead of
+                    // occupying this box permanently; this box appears only while
+                    // there is something that just happened or is happening to
+                    // report.
                     if EditorModel.optimize_running || EditorModel.optimize_status != "": Rectangle {
                         background: Theme.bg-input;
                         border-radius: Theme.radius-sm;
@@ -957,7 +1140,7 @@ export component EditorInspector inherits Rectangle {
                                     Text { horizontal-stretch: 1; text: row.label; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
                                     Text { text: row.before; font-size: 10px; color: Theme.text-muted; }
                                     Text { text: "->"; font-size: 10px; color: Theme.text-muted; }
-                                    // CAD audit item 237: the direction is the
+                                    // The direction is the
                                     // point of this table -- coloured so "did it
                                     // help?" reads without parsing the sign out
                                     // of the text beside it.
@@ -970,13 +1153,29 @@ export component EditorInspector inherits Rectangle {
                                     }
                                 }
                             }
-                            // CAD audit item 68: which tiers a pending result
+                            // Which tiers a pending result
                             // would actually change, and by how much -- the
                             // aggregate rows above show only the blended
                             // before/after scores, not which tier moved.
                             if EditorModel.optimize_change_rows.length > 0: VerticalLayout {
                                 spacing: 2px;
-                                Text { text: "Tiers this would change:"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text { horizontal-stretch: 1; text: "Tiers this would change:"; font-size: 9px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                                    // Shows this pending result's
+                                    // candidate geometry in the shared viewport
+                                    // before Apply -- `build_optimize_preview_design`/
+                                    // `submit_design_ghost_preview` are wired and
+                                    // tested, and this checkbox's own `toggled`
+                                    // handler below calls
+                                    // `EditorModel.optimize_preview_toggled` on
+                                    // every change.
+                                    CheckBox {
+                                        text: "Preview";
+                                        checked <=> root.optimize_preview_checked;
+                                        toggled => { EditorModel.optimize_preview_toggled(root.optimize_preview_checked); }
+                                    }
+                                }
                                 HorizontalLayout {
                                     spacing: 4px;
                                     Text { width: 28px; text: "#"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
@@ -1008,13 +1207,13 @@ export component EditorInspector inherits Rectangle {
                     }
                 }
 
-                // --- CAD audit item 49: the design's OWN cut order, not only
+                // --- The design's OWN cut order, not only
                 // ever the catalogue's original schedule -- built from
                 // `Design::to_asc_schedule_from_solved`, the same conversion
                 // "Export Edited .asc" already writes. Read-only: copying a
                 // row/the whole table is not wired here (that lives behind
-                // `LibraryModel`'s clipboard callbacks, a different lane's
-                // file) -- Export Edited .asc is the copyable form for now.
+                // `LibraryModel`'s clipboard callbacks) -- Export Edited .asc
+                // is the copyable form for now.
                 if EditorModel.inspector_tab == 3: VerticalLayout {
                     spacing: 6px;
                     Text { text: "Schedule"; font-size: 12px; font-weight: 700; color: Theme.text-primary; }
@@ -1044,16 +1243,18 @@ export component EditorInspector inherits Rectangle {
                 }
             }
 
-            // Keyboard-to-do #103: pinned outside the scroll view above -- see
-            // this component's own top doc comment.
+            // Button row pinned outside the scroll view above.
             if EditorModel.inspector_tab == 0: HorizontalLayout {
                 spacing: 6px;
                 Button {
                     text: root.loaded_tier_index < 0 ? "Add Tier" : "Save Tier";
+                    // Save button gated on angle_field_invalid (also covers
+                    // Rust-reported angle rejection). Other fields validated after save attempt.
+                    enabled: !root.angle_field_invalid;
                     clicked => { root.save_form(); }
                 }
                 Button {
-                    // cad_todo.md #220: renamed from the bare "New" -- identical
+                    // Named "New Tier" -- identical
                     // to the command bar's "New Design..." button/menu item that
                     // discards the WHOLE design, although this one only clears
                     // the tier-edit form. "New Tier" (not "Clear") since it also

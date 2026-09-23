@@ -2,6 +2,7 @@ import { ComboBox, LineEdit, ScrollView, Slider } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { RetargetRowItem } from "../types.slint";
 import { RetargetModel } from "../models/retarget.slint";
+import { StaleBadge } from "stale_badge.slint";
 
 export { RetargetRowItem }
 
@@ -11,15 +12,25 @@ export component RetargetDialog inherits Rectangle {
 
     property <bool> can_apply: RetargetModel.rows.length > 0 && RetargetModel.anchored_tier_errors.length == 0 && RetargetModel.solve_error == "" && !RetargetModel.is_busy;
 
-    visible: RetargetModel.is_open;
+    // This same modal shell is reused for the "Compare to Snapshot" panel
+    // (`compare_panel` below) -- there is no `app.slint` export to wire up a
+    // second dialog component, and Compare needs no target-material machinery
+    // of its own, so it piggybacks on this one rather than inventing a second
+    // mechanism.
+    visible: RetargetModel.is_open || RetargetModel.compare_open;
     background: Theme.overlay-backdrop;
 
     TouchArea {
-        clicked => { if (!RetargetModel.is_busy) { root.close(); } }
+        clicked => {
+            if (RetargetModel.compare_open) {
+                RetargetModel.compare_close();
+            } else if (!RetargetModel.is_busy) {
+                root.close();
+            }
+        }
     }
 
-    // CAD audit item 199: this dialog had no Escape/Enter/focus handling at all --
-    // this component stays instantiated the whole time (`visible: RetargetModel.
+    // This component stays instantiated the whole time (`visible: RetargetModel.
     // is_open`, never wrapped in an `if`), so `init => { self.focus(); }` alone
     // (the idiom `new_design_dialog.slint`/`material_editor_dialog.slint` use)
     // would only ever fire once, the first time the dialog is ever opened. Mirrors
@@ -32,7 +43,7 @@ export component RetargetDialog inherits Rectangle {
     // is swallowed (`accept`) so it cannot bubble to `global_shortcuts` and fire a
     // shortcut on the design underneath.
     key_scope := FocusScope {
-        property <bool> open_mirror: RetargetModel.is_open;
+        property <bool> open_mirror: RetargetModel.is_open || RetargetModel.compare_open;
         changed open_mirror => {
             if (self.open_mirror) {
                 self.focus();
@@ -40,12 +51,14 @@ export component RetargetDialog inherits Rectangle {
         }
         key-pressed(event) => {
             if event.text == Key.Escape {
-                if (!RetargetModel.is_busy) {
+                if (RetargetModel.compare_open) {
+                    RetargetModel.compare_close();
+                } else if (!RetargetModel.is_busy) {
                     root.close();
                 }
                 return accept;
             } else if event.text == Key.Return {
-                if (root.can_apply) {
+                if (!RetargetModel.compare_open && root.can_apply) {
                     RetargetModel.apply();
                 }
                 return accept;
@@ -67,7 +80,98 @@ export component RetargetDialog inherits Rectangle {
 
         TouchArea {} // Isolate clicks inside the modal.
 
-        VerticalLayout {
+        if RetargetModel.compare_open: VerticalLayout {
+            padding: 16px;
+            spacing: 12px;
+
+            // "Compare to Snapshot" -- reuses this same dialog shell (see
+            // `visible`'s own doc comment above) rather than a second dialog
+            // component, and this table's row shape rather than a new struct:
+            // `compare_rows` is a `[RetargetRowItem]` like `rows` above, with
+            // `block` blank, `margin` repurposed to the signed mast delta, and
+            // `risk_label`/`risk_color` repurposed as a plain Same/Changed/Added/
+            // Removed status badge instead of a windowing risk (see
+            // `callbacks::retarget_actions::diff_rows_from_deltas`'s own doc
+            // comment for exactly why each field means what it does here).
+            HorizontalLayout {
+                alignment: space-between;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Image { source: @image-url("../icons/gem.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
+                    Text { text: "Compare to Snapshot"; font-size: 14px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
+                }
+                Rectangle {
+                    width: 24px;
+                    height: 24px;
+                    border-radius: Theme.radius-sm;
+                    background: compare_close_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
+                    compare_close_touch := TouchArea {
+                        clicked => { RetargetModel.compare_close(); }
+                    }
+                    Image { source: @image-url("../icons/close.svg"); colorize: Theme.text-muted; width: 12px; height: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.surface-raised; }
+
+            Text {
+                text: RetargetModel.compare_label;
+                font-size: 11px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                padding-right: 10px;
+                spacing: 6px;
+                Text { text: "Tier"; font-size: 10px; font-weight: 700; color: Theme.text-muted; horizontal-stretch: 1; }
+                Text { text: "Before"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 60px; horizontal-alignment: right; }
+                Text { text: "After"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 60px; horizontal-alignment: right; }
+                Text { text: "Mast \u{394}"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 60px; horizontal-alignment: right; }
+                Text { text: "Status"; font-size: 10px; font-weight: 700; color: Theme.text-muted; width: 64px; horizontal-alignment: right; }
+            }
+
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    spacing: 2px;
+                    for row in RetargetModel.compare_rows: Rectangle {
+                        height: 24px;
+                        border-radius: Theme.radius-sm;
+                        background: Theme.surface-sunken;
+
+                        Tooltip { text: @markdown("Tier #\{row.tier_index} \"\{row.name}\""); }
+
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 10px;
+                            spacing: 6px;
+                            Text { text: row.name; font-size: 11px; color: Theme.text-primary; horizontal-stretch: 1; vertical-alignment: center; overflow: elide; }
+                            Text { text: row.old_angle; font-size: 11px; color: Theme.text-secondary; width: 60px; horizontal-alignment: right; vertical-alignment: center; }
+                            Text { text: row.new_angle; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; width: 60px; horizontal-alignment: right; vertical-alignment: center; }
+                            Text { text: row.margin; font-size: 11px; color: Theme.text-secondary; width: 60px; horizontal-alignment: right; vertical-alignment: center; }
+                            Text { text: row.risk_label; font-size: 11px; font-weight: 700; color: row.risk_color; width: 64px; horizontal-alignment: right; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.surface-raised; }
+
+            Rectangle {
+                height: 32px;
+                border-radius: Theme.radius-sm;
+                background: compare_done_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
+                border-width: 1px;
+                border-color: Theme.border-dialog;
+                compare_done_touch := TouchArea {
+                    clicked => { RetargetModel.compare_close(); }
+                }
+                Text { text: "Close"; font-size: 12px; font-weight: 700; color: Theme.text-primary; horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+
+        if !RetargetModel.compare_open: VerticalLayout {
             padding: 16px;
             spacing: 12px;
 
@@ -76,9 +180,9 @@ export component RetargetDialog inherits Rectangle {
                 alignment: space-between;
                 HorizontalLayout {
                     spacing: 8px;
-                    // cad_todo.md #242: was `save.svg`, which reads as "this dialog
-                    // saves something" -- Retarget previews a material swap, applied
-                    // only via the footer's own explicit "Apply" button below.
+                    // Uses the gem icon, not a save icon, since Retarget previews a
+                    // material swap that is applied only via the footer's own
+                    // explicit "Apply" button below.
                     Image { source: @image-url("../icons/gem.svg"); colorize: Theme.text-primary; width: 15px; height: 15px; vertical-alignment: center; }
                     Text { text: "Retarget for Material"; font-size: 14px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
                 }
@@ -86,7 +190,7 @@ export component RetargetDialog inherits Rectangle {
                     width: 24px;
                     height: 24px;
                     border-radius: Theme.radius-sm;
-                    background: close_touch.has-hover ? #2d3748 : #1a202c;
+                    background: close_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
                     close_touch := TouchArea {
                         clicked => { if (!RetargetModel.is_busy) { root.close(); } }
                     }
@@ -94,7 +198,7 @@ export component RetargetDialog inherits Rectangle {
                 }
             }
 
-            Rectangle { height: 1px; background: #1e293b; }
+            Rectangle { height: 1px; background: Theme.surface-raised; }
 
             // 2. Target material picker -- owned by this dialog (see
             // `RetargetModel.target_material_index`'s own doc comment), not the
@@ -111,10 +215,10 @@ export component RetargetDialog inherits Rectangle {
                     Rectangle {
                         horizontal-stretch: 1;
                         height: 30px;
-                        background: #1e293b;
+                        background: Theme.surface-raised;
                         border-radius: Theme.radius-sm;
                         border-width: 1px;
-                        border-color: #334155;
+                        border-color: Theme.border-dialog;
                         ComboBox {
                             model: RetargetModel.material_options;
                             current-index <=> RetargetModel.target_material_index;
@@ -125,10 +229,10 @@ export component RetargetDialog inherits Rectangle {
                     Rectangle {
                         width: 96px;
                         height: 30px;
-                        background: #1e293b;
+                        background: Theme.surface-raised;
                         border-radius: Theme.radius-sm;
                         border-width: 1px;
-                        border-color: #334155;
+                        border-color: Theme.border-dialog;
                         LineEdit {
                             text <=> RetargetModel.target_ri_override_text;
                             placeholder-text: "Custom n_D";
@@ -140,18 +244,18 @@ export component RetargetDialog inherits Rectangle {
             }
 
             // 3. Target material readout -- the RESOLVED result of the picker above.
-            // Item 174: the name shown is derived from the picker's own
-            // `MaterialSelection` (Rust side, `retarget_actions::target_display_name`),
-            // not the resolved `GemMaterial`, so "(none)"/a typed custom RI never show
-            // as "Diamond". Item 183: an RI override that fails to parse is surfaced
-            // below as its own error line rather than silently falling back to the
-            // design's OLD material with no sign anything was typed wrong.
+            // The name shown is derived from the picker's own `MaterialSelection`
+            // (Rust side, `retarget_actions::target_display_name`), not the resolved
+            // `GemMaterial`, so "(none)"/a typed custom RI never show as "Diamond".
+            // An RI override that fails to parse is surfaced below as its own error
+            // line rather than silently falling back to the design's OLD material
+            // with no sign anything was typed wrong.
             Rectangle {
                 height: target_row.preferred-height + 12px;
                 border-radius: Theme.radius-sm;
-                background: #0f172a;
+                background: Theme.surface-sunken;
                 border-width: 1px;
-                border-color: #334155;
+                border-color: Theme.border-dialog;
 
                 Tooltip { text: @markdown("The material the picker above resolves to -- what this proposal actually retargets TO."); }
 
@@ -189,33 +293,73 @@ export component RetargetDialog inherits Rectangle {
                         horizontal-stretch: 1;
                         height: 28px;
                         border-radius: Theme.radius-sm;
-                        background: RetargetModel.mode_index == 0 ? Theme.accent-cyan : (shift_touch.has-hover ? #1e293b : #0f172a);
+                        background: RetargetModel.mode_index == 0 ? Theme.accent-cyan : (shift_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
                         border-width: 1px;
-                        border-color: RetargetModel.mode_index == 0 ? Theme.accent-cyan : #334155;
+                        border-color: RetargetModel.mode_index == 0 ? Theme.accent-cyan : Theme.border-dialog;
 
                         shift_touch := TouchArea {
                             enabled: !RetargetModel.is_busy;
                             clicked => { RetargetModel.mode_index = 0; RetargetModel.proposal_changed(); }
                         }
 
-                        Text { text: "Shift"; font-size: 11px; font-weight: 600; color: RetargetModel.mode_index == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "Shift"; font-size: 11px; font-weight: 600; color: RetargetModel.mode_index == 0 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     Rectangle {
                         horizontal-stretch: 1;
                         height: 28px;
                         border-radius: Theme.radius-sm;
-                        background: RetargetModel.mode_index == 1 ? Theme.accent-cyan : (optimize_touch.has-hover ? #1e293b : #0f172a);
+                        background: RetargetModel.mode_index == 1 ? Theme.accent-cyan : (optimize_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
                         border-width: 1px;
-                        border-color: RetargetModel.mode_index == 1 ? Theme.accent-cyan : #334155;
+                        border-color: RetargetModel.mode_index == 1 ? Theme.accent-cyan : Theme.border-dialog;
 
                         optimize_touch := TouchArea {
                             enabled: !RetargetModel.is_busy;
                             clicked => { RetargetModel.mode_index = 1; RetargetModel.proposal_changed(); }
                         }
 
-                        Text { text: "Optimize"; font-size: 11px; font-weight: 600; color: RetargetModel.mode_index == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "Optimize"; font-size: 11px; font-weight: 600; color: RetargetModel.mode_index == 1 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                     }
+                }
+            }
+
+            // While on, the shared solid viewport shows THIS proposal's own
+            // candidate geometry instead of the live design, so a cutter can see
+            // whether the retargeted pavilion still closes before ever clicking
+            // Apply -- reverted the instant this is switched back off
+            // (`callbacks::retarget_actions::apply_ghost_preview_or_revert`).
+            Rectangle {
+                height: 22px;
+                Tooltip { text: @markdown("Show this proposal's candidate geometry live in the viewport instead of the current design."); }
+
+                HorizontalLayout {
+                    spacing: 6px;
+                    Rectangle {
+                        width: 14px;
+                        height: 14px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 3px;
+                        background: RetargetModel.preview_enabled ? Theme.accent-cyan : transparent;
+                        border-width: 1px;
+                        border-color: RetargetModel.preview_enabled ? Theme.accent-cyan : Theme.border-control;
+
+                        if RetargetModel.preview_enabled: Image {
+                            source: @image-url("../icons/check.svg");
+                            colorize: Theme.text-on-accent;
+                            width: 9px;
+                            height: 9px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+
+                        preview_touch := TouchArea {
+                            clicked => {
+                                RetargetModel.preview_enabled = !RetargetModel.preview_enabled;
+                                RetargetModel.proposal_changed();
+                            }
+                        }
+                    }
+                    Text { text: "Preview in viewport"; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
                 }
             }
 
@@ -231,10 +375,9 @@ export component RetargetDialog inherits Rectangle {
                 HorizontalLayout {
                     spacing: 8px;
                     Text { text: "Fraction of shift:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
-                    // cad_todo.md #242: was a hand-rolled drag bar (mouse-x / width),
-                    // which makes hitting an exact value pixel-hunting. A std-widgets
-                    // `Slider` gets keyboard/drag/click support for free; `step` lands
-                    // on round 5% increments the way the mouse-drag version never did.
+                    // A std-widgets `Slider` gets keyboard/drag/click support for
+                    // free, and `step` lands on round 5% increments without the
+                    // pixel-hunting a hand-rolled mouse-x/width drag bar would need.
                     crown_slider := Slider {
                         horizontal-stretch: 1;
                         minimum: 0.0;
@@ -249,9 +392,9 @@ export component RetargetDialog inherits Rectangle {
                         height: 22px;
                         y: (parent.height - self.height) / 2;
                         border-radius: Theme.radius-sm;
-                        background: #0f172a;
+                        background: Theme.surface-sunken;
                         border-width: 1px;
-                        border-color: #334155;
+                        border-color: Theme.border-dialog;
                         crown_pct_edit := LineEdit {
                             enabled: !RetargetModel.is_busy && !RetargetModel.scale_crown_by_ratio;
                             horizontal-alignment: center;
@@ -283,11 +426,11 @@ export component RetargetDialog inherits Rectangle {
                             border-radius: 3px;
                             background: RetargetModel.scale_crown_by_ratio ? Theme.accent-cyan : transparent;
                             border-width: 1px;
-                            border-color: RetargetModel.scale_crown_by_ratio ? Theme.accent-cyan : #475569;
+                            border-color: RetargetModel.scale_crown_by_ratio ? Theme.accent-cyan : Theme.border-control;
 
                             if RetargetModel.scale_crown_by_ratio: Image {
                                 source: @image-url("../icons/check.svg");
-                                colorize: #0f172a;
+                                colorize: Theme.text-on-accent;
                                 width: 9px;
                                 height: 9px;
                                 horizontal-alignment: center;
@@ -307,7 +450,7 @@ export component RetargetDialog inherits Rectangle {
                 }
             }
 
-            Rectangle { height: 1px; background: #1e293b; }
+            Rectangle { height: 1px; background: Theme.surface-raised; }
 
             // 6. Errors: shown instead of the table whenever the current mode/crown
             // combination cannot produce a valid proposal.
@@ -339,6 +482,15 @@ export component RetargetDialog inherits Rectangle {
                 vertical-stretch: 1;
                 spacing: 4px;
 
+                // Shown when this proposal was computed against a design generation
+                // that has since moved on (`RetargetModel.stale`, `gui::editor::stale`'s
+                // own doc comment) -- "Recompute" rebuilds against the live
+                // design/current controls, exactly what changing any control here
+                // already does.
+                if RetargetModel.stale && !RetargetModel.is_busy: StaleBadge {
+                    recompute => { RetargetModel.proposal_changed(); }
+                }
+
                 HorizontalLayout {
                     padding-right: 10px;
                     spacing: 6px;
@@ -357,7 +509,7 @@ export component RetargetDialog inherits Rectangle {
                         for row in RetargetModel.rows: Rectangle {
                             height: 24px;
                             border-radius: Theme.radius-sm;
-                            background: #0f172a;
+                            background: Theme.surface-sunken;
 
                             Tooltip { text: @markdown("Tier #\{row.tier_index} \"\{row.name}\" (\{row.block})"); }
 
@@ -398,7 +550,7 @@ export component RetargetDialog inherits Rectangle {
                 color: Theme.accent-cyan;
             }
 
-            Rectangle { height: 1px; background: #1e293b; }
+            Rectangle { height: 1px; background: Theme.surface-raised; }
 
             // 9. Footer
             HorizontalLayout {
@@ -408,9 +560,9 @@ export component RetargetDialog inherits Rectangle {
                     width: 90px;
                     height: 32px;
                     border-radius: Theme.radius-sm;
-                    background: cancel_touch.has-hover ? #1e293b : #0f172a;
+                    background: cancel_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken;
                     border-width: 1px;
-                    border-color: #334155;
+                    border-color: Theme.border-dialog;
 
                     // While busy this cancels the running Optimize search instead of
                     // closing the dialog -- see `RetargetModel.cancel_optimize`'s own
@@ -435,7 +587,7 @@ export component RetargetDialog inherits Rectangle {
                     height: 32px;
                     border-radius: Theme.radius-sm;
                     opacity: root.can_apply ? 1.0 : 0.45;
-                    background: apply_touch.has-hover && root.can_apply ? #7dd3fc : Theme.accent-cyan;
+                    background: apply_touch.has-hover && root.can_apply ? Theme.accent-cyan-hover : Theme.accent-cyan;
 
                     Tooltip { text: @markdown("Pushes one undoable edit retargeting every listed tier, then re-solves the design."); }
 
@@ -444,7 +596,7 @@ export component RetargetDialog inherits Rectangle {
                         clicked => { RetargetModel.apply(); }
                     }
 
-                    Text { text: "Apply"; font-size: 12px; font-weight: 700; color: #0f172a; horizontal-alignment: center; vertical-alignment: center; }
+                    Text { text: "Apply"; font-size: 12px; font-weight: 700; color: Theme.text-on-accent; horizontal-alignment: center; vertical-alignment: center; }
                 }
             }
         }

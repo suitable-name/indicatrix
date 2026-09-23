@@ -6,13 +6,13 @@ use serde::{Deserialize, Serialize};
 /// A named, user-saveable snapshot of the viewport's "view": the lighting rig, the HDR
 /// environment map (if any), and optionally the camera pose.
 ///
-/// # Camera pose: a deliberate reversal, not an oversight
+/// # Camera pose is part of the view, deliberately
 ///
-/// This type used to exclude camera yaw/pitch, on the theory that switching lighting
-/// moods shouldn't spin the gem out from under the user. That's since been overruled:
-/// a preset should capture the full view so it can be recalled as a complete,
-/// reproducible shot -- [`camera_yaw`]/[`camera_pitch`] below are that reversal,
-/// recorded here so a future reader doesn't "fix" it back.
+/// A preset captures the full view -- lighting rig AND camera pose -- so it can be
+/// recalled as a complete, reproducible shot, not just a lighting mood.
+/// [`camera_yaw`]/[`camera_pitch`] below hold that pose, recorded here so a future
+/// reader doesn't "fix" it back to lighting-only on the assumption that switching
+/// moods shouldn't reposition the camera.
 ///
 /// # Why the camera fields are `Option`, not plain `f32`
 ///
@@ -95,8 +95,8 @@ pub fn built_in_presets() -> Vec<LightingPreset> {
             light_yaw_deg: 30.0,
             light_pitch_deg: 65.0,
             exposure: 1.3,
-            // Corrected label -- D65 is 6500K, not 5500K. `LightingPreset::from_label`
-            // parses the old mislabelled string identically for compatibility.
+            // D65 is 6500K, not 5500K -- `LightingPreset::from_label` parses both labels
+            // identically, for compatibility with presets saved under the mislabelled string.
             lighting_rig: "D65 Daylight (6500K)".to_string(),
             camera_distance: 2.2,
             camera_yaw: None,

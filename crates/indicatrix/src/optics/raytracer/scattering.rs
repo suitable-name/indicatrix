@@ -7,7 +7,7 @@
 use super::{
     NUM_CHANNELS,
     absorption::channel_absorption_alphas_assigned,
-    camera::Ray,
+    camera::{FacetFinish, Ray},
     environment::{EnvironmentSource, sample_environment_for_nee},
     intersect::intersect_polyhedron_soa,
     refraction::{BounceRefractionGeometry, RayMaterialContext, RayWavelengthCache},
@@ -223,18 +223,25 @@ pub(super) enum ScatterStepOutcome {
     /// eligible). Caller should `continue` the bounce loop.
     ///
     /// Carries the Henyey-Greenstein phase function's own value at the sampled
-    /// continuation direction (finding G7) -- `Some` only when
-    /// [`NeeContext::enabled`], `None` otherwise (including every trace before this
-    /// finding). The caller stashes this as the pending complementary MIS weight for
-    /// its VERY NEXT bounce-loop iteration: if that iteration's ray escapes directly
-    /// (the phase-sampled continuation reached the environment with no intervening
-    /// facet hit), the escape is weighted by the balance heuristic against
-    /// [`nee_contribution_hg_scatter`]'s own light-sampling technique, rather than
-    /// double-counting the same direct-lighting contribution both ways. If that next
-    /// iteration instead hits more geometry, the pending weight is simply dropped: the
-    /// eventual (indirect) escape has no competing NEE sample to weigh against, so it
-    /// counts at full weight, exactly as it always did.
-    ScatteredAndSurvived(Option<f32>),
+    /// continuation direction, paired with that continuation direction itself --
+    /// `Some` only when [`NeeContext::enabled`], `None` otherwise (including every
+    /// trace with NEE disabled). The caller stashes this as the
+    /// pending complementary MIS weight, consumed by whichever LATER bounce-loop
+    /// iteration first either escapes directly or dispatches a transmit-out event at
+    /// the (necessarily convex) polyhedron's exit facet -- see `transport::dispatch_bounce`'s
+    /// doc comment for why the carry must survive that intervening polished-exit
+    /// refraction rather than being read only the very next iteration: a scattering
+    /// point is strictly interior, so its very next iteration always hits the exit
+    /// facet first, never escapes directly there. Once an eventual direct escape
+    /// consumes it, that escape is weighted by the balance heuristic against
+    /// [`nee_contribution_hg_scatter`]'s own light-sampling technique (evaluated at the
+    /// carried INTERIOR direction, the same measure NEE sampled in), rather than
+    /// double-counting the same direct-lighting contribution both ways. If a bounce
+    /// happens instead while the carry is live -- a reflect, a TIR, another scatter
+    /// event, or any hit while still inside the gem -- the pending weight is dropped:
+    /// that path has no competing NEE sample left to weigh itself against, so it
+    /// counts at full weight.
+    ScatteredAndSurvived(Option<(f32, Vec3)>),
     /// A scatter event fired and Russian roulette terminated the path. Caller should
     /// `break` the bounce loop.
     ScatteredAndTerminated,
@@ -262,18 +269,20 @@ pub(super) enum ScatterStepOutcome {
 /// distinction left to carry past it.
 ///
 /// `is_extraordinary` names which eigenmode this path was assigned to at its most recent
-/// air->crystal entry -- see [`channel_absorption_alphas_assigned`]'s doc comment. No
-/// longer needs `prev_plane_normal` (the old DOP-blended alphas' `s_axis` input): the
-/// assigned-mode absorption this now calls reads no Stokes-frame azimuth at all.
+/// air->crystal entry -- see [`channel_absorption_alphas_assigned`]'s doc comment. Does
+/// not need `prev_plane_normal`: the assigned-mode absorption this calls reads no
+/// Stokes-frame azimuth at all.
 #[expect(
     clippy::too_many_arguments,
     reason = "bundles the fixed-for-the-trace contexts (mat_ctx, cache, nee), this \
               bounce's own state, the RNG stream identity, and the per-ray state a \
               scatter event can mutate -- the same shape dispatch_bounce's reason \
-              explains in transport.rs; `lambdas`/`radiance` are finding G7's NEE \
-              contribution's own inputs/output, threaded through rather than bundled \
+              explains in transport.rs; `lambdas`/`radiance` are the HDR-map NEE \
+              contribution's inputs/output, threaded through rather than bundled \
               into `nee` since they vary in a way `NeeContext` (fixed for the whole \
-              trace) deliberately does not"
+              trace) deliberately does not; `facet_finishes` (the per-facet surface \
+              finish) is threaded the same way rather than added to `NeeContext` so \
+              the GPU Tier 2 harness's `NeeContext` literals stay independent of it"
 )]
 pub(super) fn try_scatter_step(
     mat_ctx: &RayMaterialContext,
@@ -291,6 +300,7 @@ pub(super) fn try_scatter_step(
     nee: NeeContext<'_>,
     lambdas: &[f32; NUM_CHANNELS],
     radiance: &mut [f32; NUM_CHANNELS],
+    facet_finishes: &[FacetFinish],
 ) -> ScatterStepOutcome {
     if material.scattering_sigma_s <= 0.0 {
         return ScatterStepOutcome::NotApplicable;
@@ -328,6 +338,10 @@ pub(super) fn try_scatter_step(
         bounce,
         stokes,
         radiance,
+        &alphas,
+        material.scattering_sigma_s,
+        material.absorption_path_scale,
+        facet_finishes,
     );
 
     current_ray.origin = scatter_point;
@@ -339,9 +353,12 @@ pub(super) fn try_scatter_step(
     // tell "no competing technique" apart from "competing technique has zero density
     // here" (the latter would legitimately give the escape branch full weight too, but
     // via `balance_heuristic`'s own degenerate-input handling, not by skipping it).
-    let phase_pdf_for_mis = nee
-        .enabled
-        .then(|| henyey_greenstein_phase(new_dir.dot(old_dir), material.scattering_g));
+    let phase_pdf_for_mis = nee.enabled.then(|| {
+        (
+            henyey_greenstein_phase(new_dir.dot(old_dir), material.scattering_g),
+            new_dir,
+        )
+    });
     // `split_radiance` rides along on this same survival rescale, exactly like the
     // bounce loop's own trailing Russian-roulette call -- see `apply_russian_roulette`.
     if bounce > 4 && !apply_russian_roulette(bounce, rng_seed, stokes, split_radiance) {
@@ -355,13 +372,20 @@ pub(super) fn try_scatter_step(
 /// Draws one direction from the environment's own importance distribution
 /// ([`sample_environment_for_nee`]), traces a shadow ray from the scattering point to the
 /// (necessarily convex) polyhedron's exit facet, applies a scalar Fresnel transmittance
-/// there, and adds the balance-heuristic-weighted contribution directly into `radiance`.
+/// there, refracts the sampled direction through that exit facet to look up
+/// the environment radiance where the light-sampled ray actually leaves along, applies
+/// the medium's own transmittance over the shadow ray's interior path length, and adds
+/// the balance-heuristic-weighted contribution directly into `radiance`.
 /// A no-op whenever `!nee.enabled`, whenever the environment has no importance
-/// distribution to sample (`Studio`), or whenever the sampled direction is totally
+/// distribution to sample (`Studio`), whenever the sampled direction is totally
 /// internally reflected at the exit facet (cannot reach the environment at all along that
 /// direction -- not a bias: the phase-sampled continuation still has its own chance to
 /// escape through a different exit, at full weight, since no NEE sample competes with it
-/// there).
+/// there), or whenever the exit facet is [`FacetFinish::Frosted`] (a frosted
+/// exit has no well-defined specular Fresnel/refraction for this shadow ray to use --
+/// [`nee_contribution_frosted_exterior`] already handles NEE for a frosted exit's own
+/// diffusely-sampled surface point, so this is a genuine division of labour, not a
+/// dropped case).
 ///
 /// Consumes exactly one new 2D RNG draw
 /// ([`NEE_ENV_DIR_U_STREAM`]/[`NEE_ENV_DIR_V_STREAM`]) -- a stream pair no existing draw
@@ -379,6 +403,17 @@ pub(super) fn try_scatter_step(
 /// the achromatic phase-function/free-path sampling already in place; a future revision
 /// could add per-channel exit indices the way [`compute_channel_transmission`]
 /// (`refraction.rs`) already does for the polished exit path.
+///
+/// # Medium transmittance
+///
+/// `alphas`/`sigma_s`/`absorption_path_scale` are the SAME quantities
+/// [`maybe_scatter_or_extinguish`]'s own survive branch uses (`alphas` is the caller's
+/// precomputed [`channel_absorption_alphas_assigned`] result, `sigma_s` is
+/// [`GemMaterial::scattering_sigma_s`]), and `hit.t` (the shadow ray's own distance to
+/// the exit facet) plays the same role that function's `hit_t` does -- so this applies
+/// the identical per-channel `exp(-(alphas[k]+sigma_s)*hit.t*path_scale)` transmittance,
+/// via the same [`crate::simd::exp_f32x8`] idiom, that a phase-sampled continuation
+/// reaching the same boundary would have paid.
 #[expect(
     clippy::too_many_arguments,
     reason = "mirrors try_scatter_step's own argument shape -- context, this bounce's own \
@@ -396,6 +431,10 @@ pub(crate) fn nee_contribution_hg_scatter(
     bounce: u32,
     stokes: &[StokesVector; NUM_CHANNELS],
     radiance: &mut [f32; NUM_CHANNELS],
+    alphas: &[f32; NUM_CHANNELS],
+    sigma_s: f32,
+    absorption_path_scale: f32,
+    facet_finishes: &[FacetFinish],
 ) {
     if !nee.enabled {
         return;
@@ -420,6 +459,17 @@ pub(crate) fn nee_contribution_hg_scatter(
         // convex solid, but a degenerate/open mesh must not panic or fabricate energy.
         return;
     };
+    // A frosted exit facet has no well-defined specular Fresnel/refraction
+    // for this shadow ray to use -- see this function's own doc comment for why that is
+    // a division of labour with `nee_contribution_frosted_exterior`, not a dropped case.
+    if facet_finishes
+        .get(hit.facet_idx)
+        .copied()
+        .unwrap_or_default()
+        == FacetFinish::Frosted
+    {
+        return;
+    }
 
     // Scalar (hero-index, isotropic-approximation) exit Fresnel transmittance -- see
     // this function's own "Simplification" doc section. `hit.normal` is the exit
@@ -450,10 +500,40 @@ pub(crate) fn nee_contribution_hg_scatter(
         return;
     }
 
+    // The exterior direction this light sample actually leaves along --
+    // Snell's law at the exit facet, `sample.dir` playing the incident-direction role
+    // and (the inward-flipped) `-hit.normal` the surface normal, mirroring
+    // `refraction.rs`'s own `eta*k_hat + (eta*cos_i - cos_t)*normal` vector form (see
+    // this function's doc comment for the sign-convention correspondence). `sample.pdf`
+    // itself stays in the INTERIOR (pre-refraction) measure `sample_environment_for_nee`
+    // sampled in -- only the radiance LOOKUP moves to the refracted direction.
+    let refracted_dir = (n_inside_hero * sample.dir
+        - n_inside_hero.mul_add(cos_i, -cos_t) * hit.normal)
+        .normalize_or_zero();
+    let EnvironmentSource::HdrMap(env_map) = nee.environment else {
+        // `sample` is `Some` only for `HdrMap` (see `sample_environment_for_nee`), so
+        // this is unreachable in practice -- a defensive `return`, not a real branch.
+        return;
+    };
+    let env_rgb = env_map.radiance_rgb(refracted_dir);
+
+    // The medium transmittance a phase-sampled continuation reaching this
+    // same boundary would have paid -- see this function's own "Medium transmittance"
+    // doc section. Vectorized Beer-Lambert via the same `exp_f32x8` idiom
+    // `maybe_scatter_or_extinguish`'s survive branch uses, so the CPU stays
+    // self-consistent between the two estimators.
+    let hit_t_scaled = hit.t * absorption_path_scale;
+    let mut trans_args = [0f32; NUM_CHANNELS];
+    for k in 0..NUM_CHANNELS {
+        trans_args[k] = -(alphas[k] + sigma_s) * hit_t_scaled;
+    }
+    let transmittance = crate::simd::exp_f32x8(trans_args);
+
     let common = t_unpol * phase_val * mis_weight / sample.pdf;
     for k in 0..NUM_CHANNELS {
-        let env_k = crate::renderer::env_map::rgb_to_spectral_radiance(sample.rgb, lambdas[k]);
-        radiance[k] = (stokes[k].intensity() * common * env_k).mul_add(1.0, radiance[k]);
+        let env_k = crate::renderer::env_map::rgb_to_spectral_radiance(env_rgb, lambdas[k]);
+        radiance[k] =
+            (stokes[k].intensity() * transmittance[k] * common * env_k).mul_add(1.0, radiance[k]);
     }
 }
 
@@ -495,7 +575,7 @@ pub(crate) fn cosine_weighted_hemisphere(u1: f32, u2: f32, n: Vec3) -> Vec3 {
 /// [`sample_henyey_greenstein_direction`] importance-samples this exact distribution,
 /// so `phase / pdf` cancels to `1.0` and is never evaluated at a real scattering event).
 ///
-/// IS called by [`nee_contribution_hg_scatter`] (finding G7): NEE evaluates the phase
+/// IS called by [`nee_contribution_hg_scatter`]: NEE evaluates the phase
 /// function at the LIGHT-sampled direction (not the phase-sampled one), where no such
 /// cancellation applies, plus at the phase-sampled continuation's own direction for the
 /// complementary MIS weight -- see that function's doc comment. Also exposed so a Tier 2
@@ -649,7 +729,7 @@ pub(crate) fn nee_contribution_frosted_exterior(
 /// micro-scattering events scramble the coherent phase relationship polarization
 /// depends on.
 ///
-/// # Sign convention for NEE eligibility (finding G8)
+/// # Sign convention for NEE eligibility
 ///
 /// `normal` arrives here ALREADY resolved by the caller (`transport::apply_interior_segment`)
 /// to the facet's outward normal flipped to face the current medium: unflipped (the raw,
@@ -712,7 +792,7 @@ pub(crate) fn nee_contribution_frosted_exterior(
 ///
 /// # Return value
 ///
-/// The fourth tuple element is finding G8's `pending_light_mis` carry, mirroring
+/// The fourth tuple element is the `pending_light_mis` carry, mirroring
 /// [`ScatterStepOutcome::ScatteredAndSurvived`]'s identical carry for the
 /// Henyey-Greenstein path: `Some(cos(theta_new) / pi)` -- the cosine-weighted-hemisphere
 /// BSDF's own density at the just-sampled continuation direction `new_dir` -- whenever
@@ -726,7 +806,7 @@ pub(crate) fn nee_contribution_frosted_exterior(
     clippy::too_many_arguments,
     reason = "bundles ctx/geo, the same contexts apply_partial_fresnel_bounce and \
               apply_refract_bounce use in refraction.rs; nee/lambdas/radiance are \
-              finding G8's own NEE inputs/output, mirroring try_scatter_step's identical \
+              the HDR-map NEE inputs/output, mirroring try_scatter_step's identical \
               addition for the Henyey-Greenstein path; the rest matches \
               transport_physics.wgsl's own apply_frosted_bounce parameter-for-parameter"
 )]

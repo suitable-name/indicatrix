@@ -1,0 +1,137 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { ShortcutsModel } from "../models/shortcuts.slint";
+
+// The in-app "Keyboard
+// Shortcuts" overlay -- opened from Help > Keyboard Shortcuts and from `?`
+// (`ui/app.slint`'s `global_shortcuts`, guarded there the same way every other
+// letter shortcut is: only while no text field has focus). Renders
+// `ShortcutsModel.shortcuts`, the exact same `gui::editor::shortcuts::SHORTCUTS`
+// table `docs/manual/appendix-b-keyboard-shortcuts.md`'s generated blocks come
+// from -- see that module's own doc comment.
+export component ShortcutOverlay inherits Rectangle {
+    background: Theme.overlay-backdrop;
+
+    TouchArea {
+        clicked => { ShortcutsModel.close(); }
+    }
+
+    Rectangle {
+        width: min(480px, parent.width - 40px);
+        height: min(560px, parent.height - 40px);
+        background: Theme.surface-dialog;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-dialog;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.modal-shadow;
+        clip: true;
+
+        TouchArea {} // Isolates clicks inside the dialog from the backdrop above.
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+
+            HorizontalLayout {
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Keyboard Shortcuts";
+                    font-size: 14px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                }
+                Rectangle {
+                    width: copy_md_lbl.preferred-width + 12px;
+                    height: 20px;
+                    border-radius: 3px;
+                    background: copy_md_touch.has-hover ? Theme.bg-card-hover : Theme.bg-input;
+                    copy_md_lbl := Text {
+                        text: "Copy as Markdown";
+                        font-size: 9px;
+                        color: Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    copy_md_touch := TouchArea { clicked => { ShortcutsModel.copy_markdown(); } }
+                    Tooltip { text: @markdown("Copies the full shortcut table (both sections) to the clipboard as a Markdown table."); }
+                }
+                Rectangle {
+                    width: 20px;
+                    height: 20px;
+                    border-radius: 3px;
+                    background: close_touch.has-hover ? Theme.bg-card-hover : transparent;
+                    Text { text: "\u{2715}"; font-size: 12px; color: Theme.text-muted; horizontal-alignment: center; vertical-alignment: center; }
+                    close_touch := TouchArea { clicked => { ShortcutsModel.close(); } }
+                }
+            }
+
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    spacing: 10px;
+
+                    Text { text: "Global"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+                    for item in ShortcutsModel.shortcuts: Rectangle {
+                        if item.context == "Global": HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle {
+                                width: 150px;
+                                background: Theme.bg-input;
+                                border-radius: Theme.radius-sm;
+                                Text {
+                                    text: item.keys;
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                    color: Theme.accent-amber;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            Text {
+                                horizontal-stretch: 1;
+                                text: item.action;
+                                font-size: 10px;
+                                color: Theme.text-secondary;
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: Theme.border-subtle; }
+
+                    Text { text: "The tier list (click into it first)"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+                    for item in ShortcutsModel.shortcuts: Rectangle {
+                        if item.context == "The tier list": HorizontalLayout {
+                            spacing: 8px;
+                            Rectangle {
+                                width: 150px;
+                                background: Theme.bg-input;
+                                border-radius: Theme.radius-sm;
+                                Text {
+                                    text: item.keys;
+                                    font-size: 10px;
+                                    font-weight: 600;
+                                    color: Theme.accent-amber;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            Text {
+                                horizontal-stretch: 1;
+                                text: item.action;
+                                font-size: 10px;
+                                color: Theme.text-secondary;
+                                wrap: word-wrap;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

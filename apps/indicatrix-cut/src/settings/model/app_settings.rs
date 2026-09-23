@@ -7,6 +7,7 @@ use super::{
 };
 use crate::bridge::export_thread::DEFAULT_TEMPLATE as DEFAULT_EXPORT_FILENAME_TEMPLATE;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 // Defaults mirror `RenderContext::default()` and `settings_dialog.slint`'s property
 // initializers. Camera yaw/pitch are kept in RADIANS (matching `RenderContext`) while
@@ -29,8 +30,8 @@ pub const DEFAULT_GIRDLE_FROSTED: bool = false;
 pub const DEFAULT_EDGE_ROUNDING_RADIUS: f32 = 0.0;
 pub const DEFAULT_STONE_WIDTH_MM: f32 = 0.0;
 pub const DEFAULT_LOCAL_PREVIEW_SCALE: LocalPreviewScale = LocalPreviewScale::Off;
-/// Unchanged from the value this used to be hardcoded to
-/// (`gui::remote::REMOTE_RENDER_SAMPLES`).
+/// `512` -- so a settings file predating this becoming configurable still renders
+/// remote batches at the sample count they always used.
 pub const DEFAULT_REMOTE_RENDER_SAMPLES: u32 = 512;
 /// `LiveComputeTarget::Both` is a no-op without a configured worker
 /// (`orchestrator::poll_tick` only dispatches remote when a worker is both selected
@@ -53,7 +54,7 @@ pub const DEFAULT_LIGHTING_RIG: &str = "Light tent + black cards";
 pub enum Backdrop {
     /// The environment's own ground, as lit.
     AsLit,
-    /// The neutral grey canvas `GemRay` paints, for like-for-like comparisons.
+    /// A neutral grey backdrop card (about sRGB 160), for like-for-like comparisons.
     #[default]
     Grey,
     /// A white light box.
@@ -222,8 +223,7 @@ pub struct AppSettings {
     pub local_preview_scale: LocalPreviewScale,
     /// The one-shot full-quality remote render's total sample count -- global (like
     /// `denoise_enabled`), not per-worker, since every worker renders the identical
-    /// request. `512` by default, matching the old hardcoded
-    /// `gui::remote::REMOTE_RENDER_SAMPLES`.
+    /// request. `512` by default -- see [`DEFAULT_REMOTE_RENDER_SAMPLES`].
     pub remote_render_samples: u32,
     /// Live rendering's Local/Remote/Local+Remote choice -- see `LiveComputeTarget`.
     #[serde(default)]
@@ -309,14 +309,26 @@ pub struct AppSettings {
     pub editor_layout_touched: bool,
     /// The Edit sub-tab's "Open Recent" list: up to
     /// [`MAX_RECENT_NATIVE_FILES`] native `.indicatrix.toml` paths, most-recently-used
-    /// first -- Item 78 ("no recent-files list"). Native paths only (never the paired
+    /// first. Native paths only (never the paired
     /// `.asc`, and never a row in the read-only catalogue database, which this list
     /// deliberately has nothing to do with) -- see [`Self::record_recent_native_file`].
     #[serde(default)]
     pub recent_native_files: Vec<String>,
+    /// Keys of the in-window `ConfirmActionDialog` prompts the cutter has ticked
+    /// "Don't ask again" on (`ui/components/confirm_action_dialog.slint`'s
+    /// `show_dont_ask`/`dont_ask`).
+    /// A `BTreeSet` (not `HashMap`/`HashSet` -- house rule: no hash-map iteration
+    /// in a decision path), keyed by a short, stable string each call site owns
+    /// (e.g. `"write_confirm.not_closed_solid"`) -- see
+    /// `gui::editor::native_io::ConfirmKey` for the one enum of keys this app
+    /// defines today. A key present here means that SPECIFIC prompt is silenced;
+    /// nothing else is affected, so suppressing "not a closed solid" never
+    /// silences "overwrite an unrelated sidecar" or vice versa.
+    #[serde(default)]
+    pub suppressed_confirmations: BTreeSet<String>,
 }
 
-/// [`AppSettings::recent_native_files`]'s cap -- "up to ten" per Item 78.
+/// [`AppSettings::recent_native_files`]'s cap: up to ten recent files.
 pub const MAX_RECENT_NATIVE_FILES: usize = 10;
 
 const fn default_preview_size() -> u32 {
@@ -397,6 +409,7 @@ impl Default for AppSettings {
             editor_remap_collapsed: false,
             editor_layout_touched: false,
             recent_native_files: Vec::new(),
+            suppressed_confirmations: BTreeSet::new(),
         }
     }
 }
@@ -443,6 +456,19 @@ impl AppSettings {
             .retain(|existing| existing != &path);
         self.recent_native_files.insert(0, path);
         self.recent_native_files.truncate(MAX_RECENT_NATIVE_FILES);
+    }
+
+    /// Whether the confirm prompt named `key` has been silenced -- see
+    /// [`Self::suppressed_confirmations`]'s own doc comment.
+    #[must_use]
+    pub fn is_confirm_suppressed(&self, key: &str) -> bool {
+        self.suppressed_confirmations.contains(key)
+    }
+
+    /// Silences the confirm prompt named `key` -- idempotent, like every other
+    /// `BTreeSet::insert`.
+    pub fn suppress_confirm(&mut self, key: impl Into<String>) {
+        self.suppressed_confirmations.insert(key.into());
     }
 }
 
@@ -492,5 +518,72 @@ mod tests {
             settings.recent_native_files[0],
             format!("design-{}.indicatrix.toml", MAX_RECENT_NATIVE_FILES + 2)
         );
+    }
+
+    // --- Suppressed confirmations: AppSettings::suppressed_confirmations ---
+
+    #[test]
+    fn a_fresh_settings_file_suppresses_nothing() {
+        let settings = AppSettings::default();
+        assert!(!settings.is_confirm_suppressed("write_confirm.not_closed_solid"));
+    }
+
+    #[test]
+    fn suppress_confirm_is_reflected_immediately() {
+        let mut settings = AppSettings::default();
+        settings.suppress_confirm("write_confirm.not_closed_solid");
+        assert!(settings.is_confirm_suppressed("write_confirm.not_closed_solid"));
+    }
+
+    #[test]
+    fn suppressing_one_key_does_not_suppress_a_different_one() {
+        let mut settings = AppSettings::default();
+        settings.suppress_confirm("write_confirm.not_closed_solid");
+        assert!(!settings.is_confirm_suppressed("write_confirm.overwrite_unrelated"));
+    }
+
+    #[test]
+    fn suppress_confirm_is_idempotent() {
+        let mut settings = AppSettings::default();
+        settings.suppress_confirm("write_confirm.not_closed_solid");
+        settings.suppress_confirm("write_confirm.not_closed_solid");
+        assert_eq!(settings.suppressed_confirmations.len(), 1);
+    }
+
+    /// A round trip through TOML -- the actual persistence mechanism
+    /// (`settings::store`) -- so a regression that drops `#[serde(default)]` or
+    /// breaks `BTreeSet<String>` serialisation is caught here rather than only in
+    /// a live app.
+    #[test]
+    fn suppressed_confirmations_round_trips_through_toml() {
+        let mut settings = AppSettings::default();
+        settings.suppress_confirm("write_confirm.not_closed_solid");
+        settings.suppress_confirm("write_confirm.overwrite_unrelated");
+        let toml_text = toml::to_string(&settings).expect("settings must serialize");
+        let restored: AppSettings = toml::from_str(&toml_text).expect("settings must parse");
+        assert_eq!(
+            restored.suppressed_confirmations,
+            settings.suppressed_confirmations
+        );
+    }
+
+    /// A settings file saved BEFORE this field existed (no `suppressed_confirmations`
+    /// key at all) must still load, with nothing suppressed -- the idempotent
+    /// migration this field's own `#[serde(default)]` provides.
+    #[test]
+    fn a_settings_file_predating_this_field_loads_with_nothing_suppressed() {
+        let settings = AppSettings::default();
+        let mut toml_text = toml::to_string(&settings).expect("settings must serialize");
+        // Strip the field this test is specifically about, simulating an
+        // old-format file that never had it.
+        let filtered: String = toml_text
+            .lines()
+            .filter(|line| !line.contains("suppressed_confirmations"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        toml_text = filtered;
+        let restored: AppSettings = toml::from_str(&toml_text)
+            .expect("a settings file missing this field must still parse");
+        assert!(restored.suppressed_confirmations.is_empty());
     }
 }

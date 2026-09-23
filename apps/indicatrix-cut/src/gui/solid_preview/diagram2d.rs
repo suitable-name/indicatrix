@@ -57,7 +57,10 @@
 //!
 //! The profile panel has no index wheel (a side elevation has no azimuth to mark).
 
-use super::raster::simplify_ring;
+use super::{
+    super::pixel_font::{GLYPH_HEIGHT, GLYPH_WIDTH, glyph},
+    raster::simplify_ring,
+};
 use glam::{DVec3, Vec3};
 use indicatrix::geometry::stone_metrics::SolidMesh;
 
@@ -71,22 +74,21 @@ const NORMAL_EPS: f32 = 1e-3;
 const HATCH_PERIOD: i32 = 6;
 
 /// A facet's projected on-screen span (in either axis) must be at least this many
-/// pixels before [`draw_panel_labels`] draws its label directly ON the facet.
-/// Lowered from the original `22.0` (CAD audit item 28): at the crown/pavilion
-/// body radius typical of an 8-fold design in a ~700px-wide viewport, almost every
-/// facet fell under the old threshold, so the diagram showed almost no labels at
-/// all. A facet still too small for this gets a leader line instead (see
-/// [`LEADER_LINE_MIN_SPAN`]) rather than being dropped silently.
+/// pixels before [`draw_panel_labels`] draws its label directly ON the facet. Kept
+/// low enough that most facets still get a label even at the crown/pavilion body
+/// radius typical of an 8-fold design in a ~700px-wide viewport. A facet still too
+/// small for this gets a leader line instead (see [`LEADER_LINE_MIN_SPAN`]) rather
+/// than being dropped silently.
 const MIN_LABEL_SPAN: f32 = 10.0;
 
 /// Below this on-screen span (in either axis) a facet is too small even to anchor
 /// a leader line legibly -- a near-zero-area sliver -- so [`draw_panel_labels`]
-/// drops its label entirely, same as before item 28's fix. Facets between this and
-/// [`MIN_LABEL_SPAN`] get a leader line rather than nothing.
+/// drops its label entirely. Facets between this and [`MIN_LABEL_SPAN`] get a
+/// leader line rather than nothing.
 const LEADER_LINE_MIN_SPAN: f32 = 2.5;
 
 /// Leader-line length in pixels, radiating from a too-small facet's centroid away
-/// from the panel center, with the label drawn at its far end -- CAD audit item 28.
+/// from the panel center, with the label drawn at its far end.
 const LEADER_LINE_LENGTH: f32 = 22.0;
 
 /// A facet is drawn top-facing (crown) when its normal points enough toward `+Y`
@@ -165,15 +167,15 @@ pub struct DiagramConfig {
     pub gear_teeth: u32,
     pub gear_reference_angle: f32,
     /// The schedule's own rotational symmetry order (`ScheduleMeta::
-    /// symmetry_order`) -- P1 item 29's symmetry-line overlay draws this many
-    /// evenly spaced radial guides on the crown/pavilion panels. `1` (or `0`,
-    /// treated the same) draws none: a design with no rotational symmetry has
-    /// no sector lines to show.
+    /// symmetry_order`) -- the symmetry-line overlay draws this many evenly
+    /// spaced radial guides on the crown/pavilion panels. `1` (or `0`, treated
+    /// the same) draws none: a design with no rotational symmetry has no sector
+    /// lines to show.
     pub symmetry_order: u32,
-    /// The schedule's own mirror flag (`ScheduleMeta::mirror`) -- when set,
-    /// P1 item 29's overlay also draws the mirror axis (through index 0, the
-    /// same "up" direction on every panel per this module's own doc comment)
-    /// in its own distinct color.
+    /// The schedule's own mirror flag (`ScheduleMeta::mirror`) -- when set, the
+    /// overlay also draws the mirror axis (through index 0, the same "up"
+    /// direction on every panel per this module's own doc comment) in its own
+    /// distinct color.
     pub mirror: bool,
 }
 
@@ -210,37 +212,34 @@ pub struct DiagramStyle {
     /// Facet id -> short on-diagram label (`facet_map::FacetMap::facet_label`,
     /// typically the tier name); empty string suppresses the label.
     pub facet_labels: Vec<String>,
-    /// Matches `raster::SolidStyle::hovered` -- see that field's doc comment (#20).
+    /// Matches `raster::SolidStyle::hovered` -- see that field's doc comment.
     pub hovered: Option<u32>,
-    /// Matches `raster::SolidStyle::selected_facet` -- see that field's doc comment
-    /// (#18).
+    /// Matches `raster::SolidStyle::selected_facet` -- see that field's doc comment.
     pub selected_facet: Option<u32>,
-    /// Matches `raster::SolidStyle::multi_selected` -- see that field's doc comment
-    /// (#19).
+    /// Matches `raster::SolidStyle::multi_selected` -- see that field's doc comment.
     pub multi_selected: Vec<u32>,
     /// Facet id -> index-wheel tooth (`facet_map::FacetMap::index_on_gear`), for
-    /// #121's radial-line pass: whenever a facet on a crown/pavilion panel is
+    /// the radial-line pass: whenever a facet on a crown/pavilion panel is
     /// selected/hovered/multi-selected, a line is drawn from the panel centre
     /// through this tooth, linking the facet on screen to its own position on
     /// the index wheel. Unset (default empty) entries simply draw no radial.
     pub facet_index_on_gear: Vec<u32>,
-    /// Facet-id pairs to mark with a meet-point dot on the crown/pavilion panels
-    /// (P1 item 29): `facet_map::FacetMap::meeting_facet_pairs`' output. Resolved
-    /// to actual world-space points by [`meet_marker_points`] against the SAME
-    /// mesh `render_diagram` is already drawing, since `facet_meets` only names
+    /// Facet-id pairs to mark with a meet-point dot on the crown/pavilion panels:
+    /// `facet_map::FacetMap::meeting_facet_pairs`' output. Resolved to actual
+    /// world-space points by [`meet_marker_points`] against the SAME mesh
+    /// `render_diagram` is already drawing, since `facet_meets` only names
     /// tiers, not geometry -- see that function's own doc comment.
     pub meet_marker_pairs: Vec<(u32, u32)>,
-    /// Marker color for a resolved meet point (P1 item 29) -- deliberately
-    /// distinct from every edge/selection color so it reads as its own kind of
-    /// annotation rather than another highlight.
+    /// Marker color for a resolved meet point -- deliberately distinct from
+    /// every edge/selection color so it reads as its own kind of annotation
+    /// rather than another highlight.
     pub meet_marker_color: [u8; 3],
-    /// Radial-guide color for `DiagramConfig::symmetry_order`'s sector lines
-    /// (P1 item 29) -- muted, since these are a background reference, not a
-    /// highlight.
+    /// Radial-guide color for `DiagramConfig::symmetry_order`'s sector lines --
+    /// muted, since these are a background reference, not a highlight.
     pub symmetry_line_color: [u8; 3],
-    /// Axis color for `DiagramConfig::mirror`'s mirror line (P1 item 29) --
-    /// distinct from `symmetry_line_color` so a mirrored design's own axis
-    /// still stands out among the ordinary sector guides.
+    /// Axis color for `DiagramConfig::mirror`'s mirror line -- distinct from
+    /// `symmetry_line_color` so a mirrored design's own axis still stands out
+    /// among the ordinary sector guides.
     pub mirror_line_color: [u8; 3],
 }
 
@@ -289,7 +288,7 @@ pub struct DiagramFrame {
     /// Which panel a pixel's fill came from (0 = none) -- see [`Self::panel_at`].
     panel: Vec<u8>,
     /// `tooth + 1` per pixel within an index-wheel tick's hit region, `0`
-    /// elsewhere -- see [`Self::tooth_at`]. #121: a wheel tick is 1px wide, an
+    /// elsewhere -- see [`Self::tooth_at`]. A wheel tick is 1px wide, an
     /// unusably small click/hover target, so [`draw_index_wheel`] tags a small
     /// box around each tick's midpoint here rather than relying on the 1px
     /// stroke itself.
@@ -298,8 +297,7 @@ pub struct DiagramFrame {
     /// straight into a [`super::preview_state::PickBuffer`] -- its `+1`/`0`
     /// encoding is bit-for-bit the same convention `PickBuffer::facet_at`
     /// already reads, so this buffer is threaded through as one without a
-    /// second accessor type (#121, `cad_todo.md` item 121's remaining half:
-    /// "thread a tooth pick buffer alongside the existing facet pick buffer").
+    /// second accessor type.
     pub(crate) tooth: Vec<u32>,
     /// View-space depth of the closest fill written to each pixel so far, within
     /// that pixel's own panel (panels never share a clip rect, so cross-panel
@@ -354,7 +352,7 @@ impl DiagramFrame {
 
     /// The index-wheel tooth whose hit region covers pixel `(x, y)`, or `None`
     /// well outside every tick (see [`Self::tooth`]'s own doc comment for the hit
-    /// region's size). #121: exposed so a caller (`gui::solid_preview::
+    /// region's size). Exposed so a caller (`gui::solid_preview::
     /// diagram_wiring`) can turn a hover/click over the wheel into "which tooth",
     /// exactly like [`Self::pick_at`] already does for a facet.
     #[must_use]
@@ -451,7 +449,7 @@ fn facet_normals(mesh: &SolidMesh) -> Vec<Option<DVec3>> {
 /// A mesh's own `(xz_radius, profile_radius)` -- the world-space radii
 /// [`build_panel_layout`] scales the crown/pavilion and profile panels against,
 /// shared between [`compute_layout`] (three columns) and
-/// [`compute_single_panel_layout`] (#29, one column spanning the whole frame).
+/// [`compute_single_panel_layout`] (one column spanning the whole frame).
 fn mesh_radii(mesh: &SolidMesh) -> (f32, f32) {
     let (mut min_x, mut max_x, mut min_y, mut max_y) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
     let mut xz_radius = 1e-6f64;
@@ -469,7 +467,7 @@ fn mesh_radii(mesh: &SolidMesh) -> (f32, f32) {
 
 /// The column/row geometry every [`PanelLayout`] in a frame shares --
 /// [`grid_metrics`] computes it once for `columns` equal-width columns spanning
-/// the whole frame (`3` for [`compute_layout`], `1` for #29's
+/// the whole frame (`3` for [`compute_layout`], `1` for
 /// [`compute_single_panel_layout`]).
 struct GridMetrics {
     col_width: f32,
@@ -538,7 +536,7 @@ fn compute_layout(mesh: &SolidMesh, width: u32, height: u32) -> [PanelLayout; 3]
     ]
 }
 
-/// #29's single-panel counterpart to [`compute_layout`]: one column spanning
+/// The single-panel counterpart to [`compute_layout`]: one column spanning
 /// the WHOLE frame width instead of a third of it, for [`render_diagram_single_panel`]'s
 /// "enlarge this panel" mode. Deliberately a fresh layout computation rather than
 /// a crop of [`compute_layout`]'s output -- cropping would enlarge the panel's
@@ -583,7 +581,7 @@ pub fn render_diagram(
         symmetry_order: config.symmetry_order,
         mirror: config.mirror,
     };
-    // #29: resolved once, panel-agnostic -- `render_panel` below only needs to
+    // Resolved once, panel-agnostic -- `render_panel` below only needs to
     // filter by which side of the girdle a point falls on, not recompute it.
     let marker_points =
         meet_marker_points(mesh, &style.meet_marker_pairs, mesh_diagonal(mesh) * 1e-4);
@@ -608,7 +606,7 @@ pub fn render_diagram(
     frame
 }
 
-/// #29's "enlarge this panel" mode: renders `mesh` as a SINGLE panel filling the
+/// The "enlarge this panel" mode: renders `mesh` as a SINGLE panel filling the
 /// whole frame.
 ///
 /// Everything else matches [`render_diagram`]'s fixed three-column layout: the same
@@ -672,8 +670,8 @@ fn mesh_diagonal(mesh: &SolidMesh) -> f64 {
 
 /// The index-wheel/symmetry parameters every panel draw needs, bundled purely
 /// so [`render_panel`]'s own parameter list doesn't keep growing every time a
-/// new wheel-relative overlay (P1 item 29's symmetry/mirror lines, on top of
-/// the index wheel itself) needs another `DiagramConfig` field mirrored down.
+/// new wheel-relative overlay (the symmetry/mirror lines, on top of the index
+/// wheel itself) needs another `DiagramConfig` field mirrored down.
 #[derive(Debug, Clone, Copy)]
 struct WheelConfig {
     gear_teeth: u32,
@@ -758,7 +756,7 @@ fn render_panel(
         );
     }
 
-    // #29: meet-point markers -- crown-side points on the crown panel,
+    // Meet-point markers -- crown-side points on the crown panel,
     // pavilion-side points on the pavilion panel (a profile panel shows no
     // index-wheel-relative content and is skipped, same set as the radials
     // above). See `meet_marker_points`'s own doc comment for how a point here
@@ -861,13 +859,13 @@ fn fill_panel_facets(
 enum EdgePass {
     /// None of the below: the plain `edge_color`, drawn first.
     Ordinary,
-    /// The one facet named in `style.hovered` (#20).
+    /// The one facet named in `style.hovered`.
     Hovered,
-    /// A facet listed in `style.multi_selected` (#19), not otherwise highlighted.
+    /// A facet listed in `style.multi_selected`, not otherwise highlighted.
     MultiSelected,
     /// `selected` (a whole tier) and not otherwise highlighted.
     Selected,
-    /// The one facet named in `style.selected_facet` (#18).
+    /// The one facet named in `style.selected_facet`.
     SelectedFacet,
     /// `pending`: drawn last, so it wins over every other pass too.
     Pending,
@@ -966,11 +964,11 @@ fn draw_panel_labels(
             continue;
         }
 
-        // Too small to hold the label directly on the facet (CAD audit item 28):
-        // draw a short leader line radiating away from the panel center instead of
-        // dropping the label, so a cutter can still trace it back to its facet.
-        // Reuses the facet's own depth so the leader is occluded by anything truly
-        // in front of it but always wins against the (f32::INFINITY) background.
+        // Too small to hold the label directly on the facet: draw a short leader
+        // line radiating away from the panel center instead of dropping the
+        // label, so a cutter can still trace it back to its facet. Reuses the
+        // facet's own depth so the leader is occluded by anything truly in front
+        // of it but always wins against the (f32::INFINITY) background.
         let (label_cx, label_cy) = if w < MIN_LABEL_SPAN || h < MIN_LABEL_SPAN {
             let (dir_x, dir_y) = {
                 let (dx, dy) = (cx - layout.center_x, cy - layout.center_y);
@@ -1111,7 +1109,8 @@ fn fill_polygon(
 
     let flagged = style.flagged.get(facet_id).copied().unwrap_or(false);
     let selected = style.selected.get(facet_id).copied().unwrap_or(false);
-    // Raised from an earlier 35% -- see `raster::SolidRasterizer::
+    // Blended well toward the highlight color (58%) so a selected facet reads
+    // clearly against its neighbors -- see `raster::SolidRasterizer::
     // fill_convex_polygon`'s matching comment.
     let selected_fill = selected.then(|| blend_toward(color, style.selected_color, 0.58));
 
@@ -1280,7 +1279,7 @@ fn draw_index_wheel(
             0.0,
         );
         draw_edge(frame, from, to, color, layout.clip, 1);
-        // #121: tag a small hit region at this tick's midpoint so hover/click can
+        // Tag a small hit region at this tick's midpoint so hover/click can
         // resolve "which tooth" from a generous target, not the 1px stroke.
         let mid_r = inner_r.midpoint(outer_r);
         let mid_x = su.mul_add(mid_r, layout.center_x).round() as i32;
@@ -1292,13 +1291,13 @@ fn draw_index_wheel(
             let (w, h) = text_size(&label, 1);
             let lx = su.mul_add(label_r, layout.center_x) - w as f32 / 2.0;
             let ly = sv.mul_add(-label_r, layout.center_y) - h as f32 / 2.0;
-            // #120: `label_r` alone puts the two horizontal ticks' labels (3 and 9
+            // `label_r` alone puts the two horizontal ticks' labels (3 and 9
             // o'clock) past the panel's own column edge -- `wheel_radius_px*1.2`
             // exceeds `col_width/2` whenever the wheel is sized against a
-            // width-limited panel (see this function's doc comment history). The
-            // ticks themselves stay exactly where they were; only the label's
-            // drawing origin is pulled back inside the clip rect so the full
-            // glyph string survives rather than being cut off mid-digit.
+            // width-limited panel. The ticks themselves stay exactly where they
+            // are; only the label's drawing origin is pulled back inside the
+            // clip rect so the full glyph string survives rather than being cut
+            // off mid-digit.
             let lx = lx.clamp(layout.clip.0 as f32, (layout.clip.2 as f32) - w as f32);
             let ly = ly.clamp(layout.clip.1 as f32, (layout.clip.3 as f32) - h as f32);
             draw_text(frame, lx, ly, &label, 1, color, Some(layout.clip));
@@ -1307,9 +1306,9 @@ fn draw_index_wheel(
 }
 
 /// Fills a `(2*radius+1)` square of [`DiagramFrame::tooth`] around `(cx, cy)`
-/// with `tooth + 1` -- the hit-region primitive [`draw_index_wheel`]'s #121
-/// tagging pass uses per tick. Out-of-bounds pixels are silently skipped, same
-/// as every other per-pixel primitive in this module.
+/// with `tooth + 1` -- the hit-region primitive [`draw_index_wheel`]'s tagging
+/// pass uses per tick. Out-of-bounds pixels are silently skipped, same as every
+/// other per-pixel primitive in this module.
 fn tag_tooth_hit(frame: &mut DiagramFrame, cx: i32, cy: i32, tooth: u32, radius: i32) {
     for dy in -radius..=radius {
         for dx in -radius..=radius {
@@ -1320,7 +1319,7 @@ fn tag_tooth_hit(frame: &mut DiagramFrame, cx: i32, cy: i32, tooth: u32, radius:
     }
 }
 
-/// P1 item 29: draws `wheel.symmetry_order` evenly spaced radial guide lines
+/// Draws `wheel.symmetry_order` evenly spaced radial guide lines
 /// (the schedule's own rotational symmetry, `ScheduleMeta::symmetry_order`) and,
 /// when `wheel.mirror` is set, the design's mirror axis -- always the vertical
 /// line through the panel centre, since index 0 sits at screen "up" on BOTH
@@ -1365,11 +1364,11 @@ fn draw_symmetry_and_mirror_lines(
     }
 }
 
-/// #121: draws a radial line from the panel centre to a highlighted facet's own
-/// index-wheel tooth (`DiagramStyle::facet_index_on_gear`) -- the missing visual
-/// link between "here is tooth N on the wheel" and "here is the facet sitting at
-/// that tooth". Only ever called for a crown/pavilion panel (see
-/// [`render_panel`]): a profile panel has no index wheel to point at.
+/// Draws a radial line from the panel centre to a highlighted facet's own
+/// index-wheel tooth (`DiagramStyle::facet_index_on_gear`), linking "here is
+/// tooth N on the wheel" to "here is the facet sitting at that tooth". Only
+/// ever called for a crown/pavilion panel (see [`render_panel`]): a profile
+/// panel has no index wheel to point at.
 ///
 /// One radial per highlighted facet, in the SAME highlight color
 /// [`draw_panel_edges`] would give that facet's own boundary, at the same
@@ -1410,13 +1409,13 @@ fn draw_selected_index_radials(
 }
 
 /// Resolves [`DiagramStyle::meet_marker_pairs`] (facet-id pairs `Design::
-/// facet_meets`' tier-level resolution names) to actual world-space points (P1
-/// item 29): the vertex the two facets' mesh rings genuinely share, found by
-/// nearest-point matching rather than trusting index alignment -- `facet_meets`
-/// only says WHICH tiers meet, never where. A pair with no ring vertex closer
-/// than `tolerance` contributes nothing (a generously over-listed candidate
-/// pair, see `FacetMap::meeting_facet_pairs`'s own doc comment, not a real
-/// shared vertex).
+/// facet_meets`' tier-level resolution names) to actual world-space points: the
+/// vertex the two facets' mesh rings genuinely share, found by nearest-point
+/// matching rather than trusting index alignment -- `facet_meets` only says
+/// WHICH tiers meet, never where. A pair with no ring vertex closer than
+/// `tolerance` contributes nothing (a generously over-listed candidate pair,
+/// see `FacetMap::meeting_facet_pairs`'s own doc comment, not a real shared
+/// vertex).
 ///
 /// `tolerance` should scale with the mesh's own size -- [`render_diagram`] uses
 /// a fraction of its bounding-box diagonal, mirroring [`simplify_ring`]'s own
@@ -1452,10 +1451,10 @@ fn meet_marker_points(mesh: &SolidMesh, pairs: &[(u32, u32)], tolerance: f64) ->
     points
 }
 
-/// Draws one meet-point marker (P1 item 29): a small filled diamond, depth-
-/// tested against `frame`'s fill pass with the same slack [`draw_edge`] uses, so
-/// a marker on the far side of the stone from this panel's view stays hidden
-/// rather than drawing through the solid.
+/// Draws one meet-point marker: a small filled diamond, depth-tested against
+/// `frame`'s fill pass with the same slack [`draw_edge`] uses, so a marker on
+/// the far side of the stone from this panel's view stays hidden rather than
+/// drawing through the solid.
 fn draw_meet_marker(
     frame: &mut DiagramFrame,
     point: (f32, f32, f32),
@@ -1474,218 +1473,16 @@ fn draw_meet_marker(
     }
 }
 
-// --- Minimal built-in 5x7 bitmap font ---------------------------------------
-
-const GLYPH_WIDTH: usize = 5;
-const GLYPH_HEIGHT: usize = 7;
-
-/// Converts a 5-character `'X'`/`'.'` row into a bitmask (bit 4 = leftmost column).
-fn row_bits(row: &str) -> u8 {
-    let mut bits = 0u8;
-    for (i, ch) in row.chars().take(GLYPH_WIDTH).enumerate() {
-        if ch != '.' {
-            bits |= 1 << (GLYPH_WIDTH - 1 - i);
-        }
-    }
-    bits
-}
-
-/// The punctuation/whitespace arms of [`glyph_rows`]'s lookup, split out purely to
-/// keep that function under clippy's function-length lint -- `c` is already
-/// uppercased by the caller.
-const fn glyph_rows_symbols(c: char) -> Option<[&'static str; GLYPH_HEIGHT]> {
-    Some(match c {
-        ' ' => [
-            ".....", ".....", ".....", ".....", ".....", ".....", ".....",
-        ],
-        '-' => [
-            ".....", ".....", ".....", "XXXXX", ".....", ".....", ".....",
-        ],
-        '.' => [
-            ".....", ".....", ".....", ".....", ".....", ".XX..", ".XX..",
-        ],
-        '\'' => [
-            ".X...", ".X...", ".....", ".....", ".....", ".....", ".....",
-        ],
-        // Multi-name tier join convention (`crates/indicatrix-cut-core/src/design/
-        // tier.rs`) and an underscore in a tier name both used to vanish (`glyph`
-        // falls back to a blank cell for anything `glyph_rows` returns `None` for)
-        // -- CAD audit item 28.
-        '/' => [
-            "....X", "...X.", "..X..", "..X..", ".X...", "X....", ".....",
-        ],
-        '_' => [
-            ".....", ".....", ".....", ".....", ".....", ".....", "XXXXX",
-        ],
-        _ => return None,
-    })
-}
-
-/// The digit arms of [`glyph_rows`]'s lookup, split out purely to keep that function
-/// under clippy's function-length lint -- `c` is already uppercased by the caller.
-const fn glyph_rows_digits(c: char) -> Option<[&'static str; GLYPH_HEIGHT]> {
-    Some(match c {
-        '0' => [
-            "XXXXX", "X...X", "X..XX", "X.X.X", "XX..X", "X...X", "XXXXX",
-        ],
-        '1' => [
-            "..X..", ".XX..", "..X..", "..X..", "..X..", "..X..", ".XXX.",
-        ],
-        '2' => [
-            ".XXX.", "X...X", "....X", "...X.", "..X..", ".X...", "XXXXX",
-        ],
-        '3' => [
-            "XXXXX", "...X.", "..X..", "...X.", "....X", "X...X", ".XXX.",
-        ],
-        '4' => [
-            "...X.", "..XX.", ".X.X.", "X..X.", "XXXXX", "...X.", "...X.",
-        ],
-        '5' => [
-            "XXXXX", "X....", "XXXX.", "....X", "....X", "X...X", ".XXX.",
-        ],
-        '6' => [
-            "..XX.", ".X...", "X....", "XXXX.", "X...X", "X...X", ".XXX.",
-        ],
-        '7' => [
-            "XXXXX", "....X", "...X.", "..X..", ".X...", ".X...", ".X...",
-        ],
-        '8' => [
-            ".XXX.", "X...X", "X...X", ".XXX.", "X...X", "X...X", ".XXX.",
-        ],
-        '9' => [
-            ".XXX.", "X...X", "X...X", ".XXXX", "....X", "...X.", ".XX..",
-        ],
-        _ => return None,
-    })
-}
-
-/// The `A`-`M` letter arms of [`glyph_rows`]'s lookup, split out purely to keep that
-/// function under clippy's function-length lint -- `c` is already uppercased by the
-/// caller.
-const fn glyph_rows_letters_a_to_m(c: char) -> Option<[&'static str; GLYPH_HEIGHT]> {
-    Some(match c {
-        'A' => [
-            "..X..", ".X.X.", "X...X", "X...X", "XXXXX", "X...X", "X...X",
-        ],
-        'B' => [
-            "XXXX.", "X...X", "X...X", "XXXX.", "X...X", "X...X", "XXXX.",
-        ],
-        'C' => [
-            ".XXXX", "X....", "X....", "X....", "X....", "X....", ".XXXX",
-        ],
-        'D' => [
-            "XXXX.", "X...X", "X...X", "X...X", "X...X", "X...X", "XXXX.",
-        ],
-        'E' => [
-            "XXXXX", "X....", "X....", "XXXX.", "X....", "X....", "XXXXX",
-        ],
-        'F' => [
-            "XXXXX", "X....", "X....", "XXXX.", "X....", "X....", "X....",
-        ],
-        'G' => [
-            ".XXXX", "X....", "X....", "X.XXX", "X...X", "X...X", ".XXXX",
-        ],
-        'H' => [
-            "X...X", "X...X", "X...X", "XXXXX", "X...X", "X...X", "X...X",
-        ],
-        'I' => [
-            "XXXXX", "..X..", "..X..", "..X..", "..X..", "..X..", "XXXXX",
-        ],
-        'J' => [
-            "....X", "....X", "....X", "....X", "X...X", "X...X", ".XXX.",
-        ],
-        'K' => [
-            "X...X", "X..X.", "X.X..", "XX...", "X.X..", "X..X.", "X...X",
-        ],
-        'L' => [
-            "X....", "X....", "X....", "X....", "X....", "X....", "XXXXX",
-        ],
-        'M' => [
-            "X...X", "XX.XX", "X.X.X", "X...X", "X...X", "X...X", "X...X",
-        ],
-        _ => return None,
-    })
-}
-
-/// The `N`-`Z` letter arms of [`glyph_rows`]'s lookup, split out purely to keep that
-/// function under clippy's function-length lint -- `c` is already uppercased by the
-/// caller.
-const fn glyph_rows_letters_n_to_z(c: char) -> Option<[&'static str; GLYPH_HEIGHT]> {
-    Some(match c {
-        'N' => [
-            "X...X", "XX..X", "X.X.X", "X..XX", "X...X", "X...X", "X...X",
-        ],
-        'O' => [
-            ".XXX.", "X...X", "X...X", "X...X", "X...X", "X...X", ".XXX.",
-        ],
-        'P' => [
-            "XXXX.", "X...X", "X...X", "XXXX.", "X....", "X....", "X....",
-        ],
-        'Q' => [
-            ".XXX.", "X...X", "X...X", "X...X", "X.X.X", "X..X.", ".XX.X",
-        ],
-        'R' => [
-            "XXXX.", "X...X", "X...X", "XXXX.", "X.X..", "X..X.", "X...X",
-        ],
-        'S' => [
-            ".XXXX", "X....", "X....", ".XXX.", "....X", "....X", "XXXX.",
-        ],
-        'T' => [
-            "XXXXX", "..X..", "..X..", "..X..", "..X..", "..X..", "..X..",
-        ],
-        'U' => [
-            "X...X", "X...X", "X...X", "X...X", "X...X", "X...X", ".XXX.",
-        ],
-        'V' => [
-            "X...X", "X...X", "X...X", "X...X", "X...X", ".X.X.", "..X..",
-        ],
-        'W' => [
-            "X...X", "X...X", "X...X", "X.X.X", "X.X.X", "XX.XX", "X...X",
-        ],
-        'X' => [
-            "X...X", "X...X", ".X.X.", "..X..", ".X.X.", "X...X", "X...X",
-        ],
-        'Y' => [
-            "X...X", "X...X", ".X.X.", "..X..", "..X..", "..X..", "..X..",
-        ],
-        'Z' => [
-            "XXXXX", "....X", "...X.", "..X..", ".X...", "X....", "XXXXX",
-        ],
-        _ => return None,
-    })
-}
-
-/// Returns the glyph rows for `c` (case-insensitive letters), or `None` for an
-/// unsupported character -- callers skip it rather than drawing a placeholder.
-/// Dispatches across [`glyph_rows_symbols`]/[`glyph_rows_digits`]/
-/// [`glyph_rows_letters_a_to_m`]/[`glyph_rows_letters_n_to_z`], split out purely to
-/// keep this lookup table's own function under clippy's function-length lint.
-const fn glyph_rows(c: char) -> Option<[&'static str; GLYPH_HEIGHT]> {
-    let c = c.to_ascii_uppercase();
-    if let Some(rows) = glyph_rows_symbols(c) {
-        return Some(rows);
-    }
-    if let Some(rows) = glyph_rows_digits(c) {
-        return Some(rows);
-    }
-    if let Some(rows) = glyph_rows_letters_a_to_m(c) {
-        return Some(rows);
-    }
-    glyph_rows_letters_n_to_z(c)
-}
-
-fn glyph(c: char) -> [u8; GLYPH_HEIGHT] {
-    let rows = glyph_rows(c).unwrap_or([
-        ".....", ".....", ".....", ".....", ".....", ".....", ".....",
-    ]);
-    std::array::from_fn(|i| row_bits(rows[i]))
-}
+// The glyph lookup itself (`glyph`/`GLYPH_WIDTH`/`GLYPH_HEIGHT`) lives in
+// `gui::pixel_font`, shared with `gui::tilt::video_export::overlay` -- see that
+// module's own doc comment. Everything below is this panel's own scaling/drawing
+// code, which stays here.
 
 /// The pixel size `text` occupies at `scale` (1 device pixel per glyph pixel at
 /// `scale == 1`), including inter-character spacing but not a trailing gap.
 ///
-/// `pub(super)` -- `raster.rs`'s orientation-marker/facet-label overlay (#119/
-/// #122) needs the same measurement to center its own labels.
+/// `pub(super)` -- `raster.rs`'s orientation-marker/facet-label overlay needs
+/// the same measurement to center its own labels.
 pub(super) fn text_size(text: &str, scale: u32) -> (u32, u32) {
     let len = text.chars().count() as u32;
     if len == 0 {
@@ -1724,9 +1521,9 @@ fn draw_text(
 
 /// The buffer-generic sibling of [`draw_text`]: draws `text` straight into a raw
 /// RGBA8 `width x height` buffer rather than a [`DiagramFrame`]. `pub(super)` so
-/// `raster.rs`'s orientation-marker/facet-label overlay (#119/#122) can share
-/// this module's one bitmap font instead of carrying a second copy -- see that
-/// module's own doc comment for what it draws.
+/// `raster.rs`'s orientation-marker/facet-label overlay can share this module's
+/// one bitmap font instead of carrying a second copy -- see that module's own
+/// doc comment for what it draws.
 /// One RGBA8 drawing target for [`draw_text_into_buffer`]: the pixels plus the two
 /// dimensions needed to index them.
 ///
@@ -1928,9 +1725,9 @@ mod tests {
         assert_eq!(frame.pick_at(0, 0), None);
     }
 
-    /// #29: the enlarged panel must fill the WHOLE frame width, not the
-    /// one-third column [`render_diagram`] gives it -- otherwise "enlarge this
-    /// panel" would just be a relabeled crop of the existing image.
+    /// The enlarged panel must fill the WHOLE frame width, not the one-third
+    /// column [`render_diagram`] gives it -- otherwise "enlarge this panel"
+    /// would just be a relabeled crop of the existing image.
     #[test]
     fn render_diagram_single_panel_fills_the_whole_frame() {
         let mesh = match build_solid_mesh(&[

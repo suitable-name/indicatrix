@@ -12,13 +12,33 @@ use crate::{
         DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, ManufacturabilityWarning, check_manufacturability,
     },
 };
+use glam::DVec3;
 use indicatrix::{
     geometry::{
         meet_solver::MeetConstraint,
-        stone_metrics::{SolidStatus, build_solid_mesh},
+        stone_metrics::{SolidStatus, build_solid_mesh, measure_solid},
     },
     optics::materials::GemMaterial,
 };
+
+/// A candidate's yield loss (`0.0` to `100.0`, LOWER is better), for
+/// [`ObjectiveWeights::score_with_yield`] -- `100.0` minus
+/// [`crate::yield_metrics::volumetric_yield`]'s own percentage. `0.0` (no penalty
+/// at all) whenever either the finished or the preform solid fails to measure,
+/// matching `volumetric_yield`'s own `None` case -- a candidate that already
+/// failed to close was rejected before this is ever called (see
+/// [`evaluate_candidate`]), so `finished` here always measures in practice; the
+/// fallback exists only so this can never itself become a reason to reject a
+/// candidate that DID close.
+pub(super) fn yield_loss_pct(design: &Design, finished_planes: &[(DVec3, f64)]) -> f32 {
+    let finished = measure_solid(finished_planes);
+    let preform = measure_solid(&design.preform.planes());
+    let yield_fraction = match (&finished, &preform) {
+        (Some(f), Some(p)) => crate::yield_metrics::volumetric_yield(f.volume, p.volume),
+        _ => None,
+    };
+    yield_fraction.map_or(0.0, |y| 100.0_f64.mul_add(-y, 100.0) as f32)
+}
 
 /// Every tier index this optimizer is allowed to move: not a
 /// [`MeetConstraint::ScaleReference`] (see the module doc comment's "Which tiers are
@@ -57,23 +77,32 @@ pub fn free_tier_indices(design: &Design) -> Vec<usize> {
 pub(super) const MAX_SAFE_CANDIDATE_ANGLE_DEG: f64 = 89.5;
 
 /// Whether nudging tier `index`'s angle from `original_deg` to `candidate_deg` is
-/// safe to even attempt solving. Unsafe in either of two ways: the candidate's
-/// magnitude reaches or passes [`MAX_SAFE_CANDIDATE_ANGLE_DEG`], or the candidate
-/// would cross (or land exactly on) the girdle plane (`0.0`) while the original
-/// angle did not start there -- `Block` classifies a tier as crown/pavilion purely
-/// from the SIGN of `angle_deg` at that boundary, and crossing it can silently
-/// remove a block's only scale anchor. A tier legitimately authored AT `0.0` (a
-/// table facet) is left free to move to either side once -- only a sign change
-/// relative to where it STARTED is rejected.
+/// safe to even attempt solving. Unsafe in any of three ways: the candidate's
+/// magnitude reaches or passes [`MAX_SAFE_CANDIDATE_ANGLE_DEG`], the candidate
+/// lands exactly on the girdle plane (`0.0`, either sign), or it otherwise crosses
+/// that plane while the original angle did not start there -- `Block` classifies a
+/// tier as crown/pavilion purely from the SIGN BIT of `angle_deg` at that boundary
+/// (`f64::is_sign_negative`, exactly like
+/// `indicatrix::geometry::meet_solver::blocks`'s own girdle classifier), and
+/// crossing (or landing on) it can silently remove a block's only scale anchor or
+/// reassign a facet to the wrong block. A tier legitimately authored AT `+0.0` (a
+/// table facet, with no side yet) is left free to move to either side once -- but
+/// `-0.0` is not `+0.0` here: this crate's own templates author a pavilion culet at
+/// `-0.0` specifically to record its side (see
+/// `crate::design::ConstraintTier::standard_round_brilliant`), so only a truly
+/// side-less `+0.0` origin gets the either-direction exemption; a candidate must
+/// never land exactly on `0.0` regardless of sign, since `signum`/`==` treat `-0.0`
+/// and landing-on-zero inconsistently -- exactly the failure mode this check
+/// exists to prevent.
 #[must_use]
 pub(super) fn candidate_angle_is_safe(original_deg: f64, candidate_deg: f64) -> bool {
     if candidate_deg.abs() > MAX_SAFE_CANDIDATE_ANGLE_DEG {
         return false;
     }
-    if original_deg == 0.0 {
+    if original_deg == 0.0 && !original_deg.is_sign_negative() {
         return true;
     }
-    original_deg.signum() == candidate_deg.signum()
+    candidate_deg != 0.0 && candidate_deg.is_sign_negative() == original_deg.is_sign_negative()
 }
 
 /// One candidate's fully-evaluated outcome: either rejected outright (unsolvable,
@@ -109,7 +138,7 @@ pub(super) fn evaluate_candidate(
     }
     let gpu_planes = to_gpu_planes(&planes);
     let components = evaluate_objective(&gpu_planes, material, ObjectiveFidelity::Fast);
-    let score = weights.score(&components);
+    let score = weights.score_with_yield(&components, yield_loss_pct(design, &planes));
     CandidateOutcome::Accepted { score }
 }
 
@@ -269,9 +298,10 @@ pub(super) fn evaluate_candidate_pair(
 }
 
 /// Running counts of the two mesh-dependent [`ManufacturabilityWarning`] variants an
-/// angle-only edit can actually change. `FractionalIndex`/`CutOrder` are excluded:
-/// they depend on `indices`/`constraint`, which this module never touches, so their
-/// counts are invariant across every candidate by construction.
+/// angle-only edit can actually change. `FractionalIndex`/`OutOfOrderMeet`/
+/// `MeetNameNotAscSafe` are excluded: they depend on `indices`/`constraint`, which
+/// this module never touches (it only ever rewrites a free tier's `angle_deg`), so
+/// their counts are invariant across every candidate by construction.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct BaselineWarningCounts {
     vanishing: usize,
@@ -286,7 +316,8 @@ impl BaselineWarningCounts {
                 ManufacturabilityWarning::VanishingFacet { .. } => counts.vanishing += 1,
                 ManufacturabilityWarning::UndersizedFacet { .. } => counts.undersized += 1,
                 ManufacturabilityWarning::FractionalIndex { .. }
-                | ManufacturabilityWarning::OutOfOrderMeet { .. } => {}
+                | ManufacturabilityWarning::OutOfOrderMeet { .. }
+                | ManufacturabilityWarning::MeetNameNotAscSafe { .. } => {}
             }
         }
         counts

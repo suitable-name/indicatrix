@@ -74,22 +74,37 @@ const PREVIEW_SPP: u32 = 2;
 const HOVER_DEBOUNCE: Duration = Duration::from_millis(90);
 
 /// Same tilt-to-pose formula [`evaluate_full_axis_profile_at_azimuth`] uses to build
-/// the curve: given the hovered axis and tilt angle (tilt away from table-up, not
-/// camera elevation), returns `(cam_yaw_rad, cam_pitch_rad)` for [`Camera::new`]:
+/// the curve: given the hovered/swept axis and tilt angle (tilt away from table-up,
+/// not camera elevation), returns `(cam_yaw_rad, cam_pitch_rad)` for [`Camera::new`]:
 /// `cam_pitch = 90° - |tilt_deg|` (`90°` = table-up at `tilt_deg == 0`, `0°` = edge-on
 /// at `|tilt_deg| == 90`), and the sign of `tilt_deg` selects which of the axis's two
 /// opposite azimuths (`PROFILE_AZIMUTHS_DEG[axis_index]` or that plus 180°) it's on.
 ///
+/// Takes `tilt_deg` as `f64` (rather than this module's own `f32`) so
+/// `gui::tilt::video_export` can pose a frame at an EXACT fractional angle (e.g. a
+/// 0.01°-step sweep) without the precision loss an `f32` round-trip would add on top
+/// of an already-fine step -- see [`camera_pose_for_hover`], this module's own `f32`
+/// call site, for the hover tooltip's coarser (mouse-pixel-snapped) needs.
+///
 /// [`evaluate_full_axis_profile_at_azimuth`]: indicatrix::color::metrics::evaluate_full_axis_profile_at_azimuth
-fn camera_pose_for_hover(axis_index: usize, tilt_deg: f32) -> (f32, f32) {
-    let base_azimuth_deg = PROFILE_AZIMUTHS_DEG.get(axis_index).copied().unwrap_or(0.0);
+pub(in crate::gui) fn camera_pose_for_axis_tilt(axis_index: usize, tilt_deg: f64) -> (f32, f32) {
+    let base_azimuth_deg = f64::from(PROFILE_AZIMUTHS_DEG.get(axis_index).copied().unwrap_or(0.0));
     let azimuth_deg = if tilt_deg < 0.0 {
         base_azimuth_deg + 180.0
     } else {
         base_azimuth_deg
     };
     let pitch_deg = 90.0 - tilt_deg.abs();
-    (azimuth_deg.to_radians(), pitch_deg.to_radians())
+    (
+        azimuth_deg.to_radians() as f32,
+        pitch_deg.to_radians() as f32,
+    )
+}
+
+/// `f32` convenience wrapper around [`camera_pose_for_axis_tilt`] for this module's own
+/// mouse-pixel-driven hover preview, which never needs more than `f32` precision.
+fn camera_pose_for_hover(axis_index: usize, tilt_deg: f32) -> (f32, f32) {
+    camera_pose_for_axis_tilt(axis_index, f64::from(tilt_deg))
 }
 
 /// Bundles every input [`render_hover_preview`] needs -- geometry, material, the
@@ -114,17 +129,16 @@ struct HoverPreviewScene<'a> {
 /// (background) thread -- callers must not call this from the UI thread.
 ///
 /// Material resolution deliberately mirrors `gui::tilt_profile`'s background sweep
-/// (`resolve_material_with_override`, CAD audit items 57/61): the RI override/named
-/// custom material DOES reach this preview, same as the curve it sits beside. What
-/// still does NOT reach it -- deliberately, not a bug -- is any of the live
-/// viewport's DISPLAY overrides (inclusion/subsurface scattering, c-axis
-/// orientation, edge rounding, physical stone size, frosted girdle): `caller` below
-/// always traces with `&[]` facet finishes (an all-polished stone) against the
-/// bare resolved material, so the curve and this thumbnail describe the design's
-/// real optics under a fixed, comparable presentation rather than whatever display
-/// knobs happen to be dialled in on screen -- CAD audit item 234 asks that this be
-/// stated on screen (see `performance_graph_dialog.slint`'s caption) rather than
-/// left for a cutter to discover by comparing images.
+/// (`resolve_material_with_override`): the RI override/named custom material DOES
+/// reach this preview, same as the curve it sits beside. What still does NOT reach
+/// it -- deliberately, not a bug -- is any of the live viewport's DISPLAY overrides
+/// (inclusion/subsurface scattering, c-axis orientation, edge rounding, physical
+/// stone size, frosted girdle): `caller` below always traces with `&[]` facet
+/// finishes (an all-polished stone) against the bare resolved material, so the
+/// curve and this thumbnail describe the design's real optics under a fixed,
+/// comparable presentation rather than whatever display knobs happen to be dialled
+/// in on screen. `performance_graph_dialog.slint`'s caption states this on screen
+/// rather than leaving it for a cutter to discover by comparing images.
 fn render_hover_preview(scene: &HoverPreviewScene<'_>) -> SharedPixelBuffer<Rgba8Pixel> {
     let width = PREVIEW_SIZE;
     let height = PREVIEW_SIZE;
@@ -235,7 +249,9 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                     light_pitch,
                     max_bounces,
                 ) = {
-                    let ctx = render_ctx.lock().unwrap();
+                    let ctx = render_ctx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
                     (
                         ctx.active_planes.clone(),
                         ctx.material_name.clone(),
@@ -250,7 +266,7 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                     )
                 };
                 // Same override preference as the sweep itself -- see
-                // `tilt_profile`'s own comment (CAD audit items 57/61).
+                // `tilt_profile`'s own comment.
                 let material = resolve_material_with_override(
                     &GemMaterial::all_materials(),
                     &custom_materials,

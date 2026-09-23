@@ -210,7 +210,7 @@ fn gate_4_a_design_larger_than_its_preform_is_flagged() {
     assert!(report_fits.preform_fit.is_none());
 }
 
-/// CAD audit item 208: `exceeds_preform` must measure against the preform
+/// `exceeds_preform` must measure against the preform
 /// SHIFTED by `Design::preform_y_offset`, not always the centred arrangement
 /// -- a pure vertical shift never changes the preform's own width/length/
 /// total-height (top and bottom move together), so this specifically drives

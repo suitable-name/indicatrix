@@ -23,6 +23,8 @@
 
 use glam::DVec3;
 
+use super::girdle::GIRDLE_NORMAL_Y_EPSILON;
+
 /// Half-extent of the bounding box standing in for the uncut rough. Matches
 /// `meet_solver`'s own blank; a solid that reaches it is unbounded (a schedule
 /// missing its closing planes), which [`measure_solid`] reports as `None`.
@@ -44,9 +46,16 @@ const MIN_TRIPLE_DET: f64 = 1e-6;
 /// Two candidate vertices within this distance (per axis) are one vertex.
 const VERTEX_DEDUP: f64 = 1e-6;
 
-/// `|normal.y|` at or below this means a vertical (girdle) plane -- the same
-/// threshold `meet_solver::classify_blocks` uses.
-const GIRDLE_NY: f64 = 1e-6;
+/// `|normal.y|` at or below this means a vertical (girdle) plane.
+///
+/// Shares [`super::girdle::GIRDLE_NORMAL_Y_EPSILON`] rather than defining its own
+/// separate threshold -- see that constant's doc comment for why a second,
+/// independently-tuned value here would be wrong: this module's planes carry the
+/// same f32-normalize rounding noise `girdle::is_girdle_plane`'s planes do, not the
+/// exact-angle precision `meet_solver::classify_blocks` operates on, so a threshold
+/// tuned for that exact-angle case could disagree with this one and classify a facet
+/// as girdle in one module but not the other.
+const GIRDLE_NY: f64 = GIRDLE_NORMAL_Y_EPSILON as f64;
 
 /// `normal.y` at or above this counts as a flat table facet: an outward
 /// normal within this of straight up (`+Y`) -- the horizontal-plane
@@ -364,8 +373,7 @@ pub struct StoneProportions {
     /// [`SolidMetrics::girdle_thickness`], unchanged. `None` under the exact
     /// same condition as `crown_height`/`pavilion_depth`: no vertical girdle
     /// plane with a live facet (e.g. the manual's chapter-7 0-degree-"girdle"
-    /// example, which classifies as a second table instead -- see
-    /// `crates/indicatrix-cut-core`'s CAD audit item 115 notes).
+    /// example, which classifies as a second table instead).
     pub girdle_thickness: Option<f64>,
     /// [`SolidMetrics::total_height`], under the name a cutter actually uses
     /// for it ("total depth": table to culet).
@@ -765,8 +773,8 @@ pub fn build_solid_mesh(planes: &[(DVec3, f64)]) -> SolidStatus {
 /// when fewer than three vertices lie on the plane -- the facet was cut away
 /// entirely, the same case [`face_area`] reports as zero area.
 ///
-/// This is the vertex-collection-and-ordering half of what used to be
-/// `face_area`'s whole body, pulled out so [`build_solid_mesh`] can reuse the
+/// This is the vertex-collection-and-ordering half of `face_area`'s work,
+/// factored out so [`build_solid_mesh`] can reuse the
 /// ring itself (for triangulation, and for an edge/picking pass) instead of
 /// only the scalar area `face_area` shoelaces it down to.
 fn face_ring(normal: DVec3, offset: f64, verts: &[SolidVertex]) -> Option<(Vec<DVec3>, DVec3)> {

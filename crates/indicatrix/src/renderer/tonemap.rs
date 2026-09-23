@@ -2,9 +2,9 @@
 //!
 //! `xyz_to_srgb_gamma` is not cheap, and three call sites
 //! (`render_thread::denoise_and_tonemap_frame`, `render_thread::tonemap_running_average`,
-//! `export_thread::tonemap_to_rgba`) used to tone-map a full frame in a single-threaded
-//! loop on the UI thread -- measured at 3840x2160, ~392ms, a visible synchronous stall
-//! on every progressive redraw.
+//! `export_thread::tonemap_to_rgba`) each tone-map a full frame; doing so in a
+//! single-threaded loop on the UI thread is a visible synchronous stall on every
+//! progressive redraw (measured at 3840x2160, ~392ms).
 //!
 //! This module factors the three call sites' identical inner loop into one parallel
 //! implementation, following the same row/slice-chunked `std::thread::scope` pattern

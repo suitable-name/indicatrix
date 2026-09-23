@@ -567,7 +567,7 @@ fn test_colourless_materials_have_zero_absorption_everywhere() {
     // And the end-to-end consequence: Beer-Lambert transmittance is exp(-0*path_len) =
     // 1.0 for every colourless material regardless of path length, so a full render
     // must be bit-identical to a build with absorption forcibly zeroed out -- exercised
-    // here via Diamond through an actual gem cut, matching this task's "assert a
+    // here via Diamond through an actual gem cut, matching the "assert a
     // colourless material's output is unchanged" requirement end-to-end rather than
     // only at the `spectral_absorption` unit level above.
     let planes = StandardGemCuts::standard_round_brilliant();
@@ -648,7 +648,7 @@ fn render_chromaticity_under_preset(
 /// produce this narrow-window structure) -- daylight's relatively stronger blue content
 /// lets more of that blue window through, pulling the daylight-rendered colour slightly
 /// toward blue/away from red relative to incandescent. A three-broad-fixed-lobe
-/// absorption model (this task's starting point) has no such narrow window to begin
+/// absorption model has no such narrow window to begin
 /// with, so it cannot reproduce this shift; this test is what actually discriminates
 /// the new banded model from the old one, rather than merely checking R > B in
 /// isolation (which the old model already passed).
@@ -780,10 +780,10 @@ fn test_xyz_to_srgb_out_of_gamut_is_finite() {
 
 #[test]
 fn test_gem_materials_default_c_axis_to_y() {
-    // `c_axis` was added to `GemMaterial` (previously hard-coded to Vec3::Y
-    // inside `trace_spectral_ray` for every material). Every built-in material, and
-    // `new_custom`, must default it to Vec3::Y so existing behaviour is unchanged --
-    // EXCEPT a material with a documented, deliberate cut-orientation override.
+    // `c_axis` is a field on `GemMaterial` consumed by `trace_spectral_ray` for every
+    // material. Every built-in material, and `new_custom`, must default it to Vec3::Y
+    // so behaviour stays consistent across materials -- EXCEPT a material with a
+    // documented, deliberate cut-orientation override.
     //
     // Tourmaline is that one documented exception (see its entry's comment in
     // `GemMaterial::all_materials`): real tourmaline cutters orient the table
@@ -880,19 +880,17 @@ fn test_birefringence_splits_produce_measurable_difference_zircon_vs_flat() {
     let avg_flat = sum_flat / samples as f32;
     let diff = (avg_birefringent - avg_flat).length();
 
-    // Threshold lowered 2026-09-03 (P2: wave normal vs Poynting direction), was 1e-3.
-    // Before this fix, the extraordinary eigenmode's TIR/Fresnel/Snell physics inside the
-    // crystal was (incorrectly) evaluated against the WALKED-OFF POYNTING direction `S`
-    // instead of the wave normal `k` -- an error that compounds every internal bounce
-    // this 12-max-bounce oblique ray takes, non-physically INFLATING the divergence
-    // between the birefringent and flattened traces well past the true walk-off effect's
-    // own (small, order the walk-off angle -- 1-2 degrees for Zircon-class
-    // birefringence) size. With `k`/`S` correctly separated (see `refraction.rs`'s design
-    // note), the measured difference genuinely shrank to diff=0.000373 for this exact
-    // ray/seed set -- still a real, deterministic, nonzero effect (same seed feeds both
-    // traces, so this is not sampling noise), just correctly SMALL rather than
-    // artificially large. 3e-4 stays comfortably below the measured value while still
-    // catching a regression that zeroes the effect out entirely.
+    // The extraordinary eigenmode's TIR/Fresnel/Snell physics inside the crystal must be
+    // evaluated against the wave normal `k`, not the walked-off Poynting direction `S`:
+    // using `S` would compound the error every internal bounce this 12-max-bounce oblique
+    // ray takes, non-physically INFLATING the divergence between the birefringent and
+    // flattened traces well past the true walk-off effect's own (small, order the
+    // walk-off angle -- 1-2 degrees for Zircon-class birefringence) size. With `k`/`S`
+    // correctly separated (see `refraction.rs`'s design note), the measured difference is
+    // diff=0.000373 for this exact ray/seed set -- still a real, deterministic, nonzero
+    // effect (same seed feeds both traces, so this is not sampling noise), just correctly
+    // SMALL rather than artificially large. 3e-4 stays comfortably below the measured
+    // value while still catching a regression that zeroes the effect out entirely.
     assert!(
         diff > 3e-4,
         "birefringent Zircon should render measurably differently (averaged over {samples} samples) than an \
@@ -1350,18 +1348,37 @@ fn non_biaxial_materials_render_bit_identical_to_pre_chapter_04_golden_values() 
     // physics change; Sapphire/Ruby/Synthetic Moissanite are genuinely birefringent and
     // are expected to move whenever the uniaxial Fresnel/absorption/exit-splitting
     // machinery changes.
-    // Last re-baselined 2026-09-08 (exit-event spectral splitting, per-channel MIS
-    // families).
+    //
+    // This golden reflects three physics facts together:
+    // (1) `color::cie1931` uses the tabulated CIE 1931 2-degree observer rather than the
+    //     Wyman/Sloan/Shirley Gaussian fit -- the sole mover of every isotropic row
+    //     (Diamond/CZ/Moissanite reproduce the Gaussian-fit bits at 0 ULP when that fit
+    //     is substituted back in; the Gaussian fit is 1-3 % off, 50 % at the x-bar
+    //     trough); isotropic rows sit 0.04-0.4 % away from the Gaussian-fit values per
+    //     component.
+    // (2) `raytracer::absorption` computes pleochroic absorption from the geometric
+    //     assigned-mode alpha (`birefringence::assigned_mode_alpha`) rather than the
+    //     Stokes degree-of-polarization heuristic; substituting the heuristic back in
+    //     (with (1) also reverted) reproduces the axis-aligned sapphire cases in
+    //     `studio_rig_refactor_is_bit_identical_to_pre_refactor_baseline` exactly.
+    // (3) the Mueller frame-rotation mirror fix (`polarization.rs`) accounts for what
+    //     remains on the OBLIQUE uniaxial rows here: Sapphire +115/+226/+112 % and Ruby
+    //     +31/+38/+42 % once (1) and (2) are accounted for -- corundum's absorption acts
+    //     on the assigned mode's true E-field, so the correctly-mirrored oblique paths
+    //     are brighter than an unmirrored frame would produce. This is not toggleable
+    //     and is attributed by elimination: mode re-coupling, the TIR guard, exit
+    //     splitting, the observer, the backdrop, the RNG streams and the Studio
+    //     lighting were each ruled out by toggle or by proof.
     let golden: &[(&str, u32, u32, u32)] = &[
-        ("Diamond", 0x3F12_33C5, 0x3F15_AECA, 0x3F1B_B0EE),
-        ("Cubic Zirconia", 0x3FDA_9B48, 0x3FD0_D045, 0x4018_A47F),
-        ("Sapphire", 0x3AAD_86AB, 0x39DC_EECA, 0x3BD7_DC04),
-        ("Ruby", 0x3BC6_BFCB, 0x3B4C_31EE, 0x3BAF_C31A),
+        ("Diamond", 0x3F12_4124, 0x3F16_03EE, 0x3F1C_561E),
+        ("Cubic Zirconia", 0x3FDA_E16F, 0x3FD1_A440, 0x4018_44C7),
+        ("Sapphire", 0x3B75_335A, 0x3B0C_1C8D, 0x3C95_4BE3),
+        ("Ruby", 0x3C12_D2A5, 0x3B9D_0EF2, 0x3C0C_1D99),
         (
             "Synthetic Moissanite",
-            0x3E8D_AA3E,
-            0x3E8C_50B2,
-            0x3EA8_9C46,
+            0x3E8D_87DC,
+            0x3E8C_CAC5,
+            0x3EA8_5663,
         ),
     ];
 
@@ -1490,9 +1507,13 @@ type GoldenCase = (Ray, u32, LightingPreset, f32, f32, [u32; 3], [u32; 3]);
 /// and light poses -- any bit drift here means something in the estimator or these
 /// metrics changed, intentionally or not.
 ///
-/// Last re-baselined 2026-09-08 (exit-event spectral splitting); `fire_index` was
-/// separately recalibrated when the F/C bifurcation gate and
-/// `FIRE_DEGREES_TO_DISPLAY_SCALE` (175 -> 275) landed.
+/// The trace tables pin `trace_spectral_ray`'s exit-event spectral splitting; `fire_index`
+/// is calibrated against the F/C bifurcation gate and `FIRE_DEGREES_TO_DISPLAY_SCALE`
+/// (275). The trace-table values reflect the tabulated CIE 1931 CMF, the assigned-mode
+/// pleochroic absorption and the Mueller frame mirror fix -- see the cause-by-cause note
+/// on `non_biaxial_materials_render_bit_identical_to_pre_chapter_04_golden_values`. The
+/// `sample_studio_environment` grid and the `evaluate_gem_optical_metrics` values are
+/// unaffected by that fix, which is what localises the drift to the spectral transport.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -1520,12 +1541,12 @@ fn studio_rig_refactor_is_bit_identical_to_pre_refactor_baseline() {
             LightingPreset::RingLights,
             0.85,
             0.95,
-            [0x3c69_958a, 0x3c74_eb81, 0x3c8b_4fec],
+            [0x3c69_75d5, 0x3c73_f69d, 0x3c8a_018e],
             // This ray (dir (0,-1,0)) hits the crown at exactly normal incidence with
             // Sapphire's default `c_axis == Vec3::Y` -- the degenerate wave-normal-
             // parallel-to-optic-axis limit, where both eigenmodes collapse to a single
             // isotropic response at `n_o`.
-            [0x3ab1_c372, 0x3a3f_c4bd, 0x3ba7_34cb],
+            [0x3ab2_8ba3, 0x3a3f_8369, 0x3ba5_03d6],
         ),
         (
             Ray {
@@ -1536,10 +1557,10 @@ fn studio_rig_refactor_is_bit_identical_to_pre_refactor_baseline() {
             LightingPreset::Incandescent,
             0.0,
             1.2,
-            [0x3ff7_583b, 0x4001_9c3c, 0x4010_2767],
+            [0x3ff8_5979, 0x4000_e390, 0x4010_b5ac],
             // Same degenerate normal-incidence-along-c_axis geometry as the seed=1337
             // case above.
-            [0x3d13_2de6, 0x3c2f_dc8d, 0x3e3e_e71d],
+            [0x3d14_9934, 0x3c30_fa27, 0x3e3f_4fa1],
         ),
         (
             Ray {
@@ -1554,8 +1575,8 @@ fn studio_rig_refactor_is_bit_identical_to_pre_refactor_baseline() {
             // EXTRAORDINARY eigenmode at the air->crystal entry and reaches a real
             // dispersive crystal->air exit with a live companion channel -- the case
             // that exercises exit-event spectral splitting, unlike the other three.
-            [0x3D21_E527, 0x3D2C_2426, 0x3D45_AA6F],
-            [0x3A63_B4B0, 0x3932_BF2C, 0x3B8E_7748],
+            [0x3D22_0C97, 0x3D2B_789C, 0x3D45_C548],
+            [0x3A80_D76B, 0x3958_89D5, 0x3B9B_FBB5],
         ),
         (
             Ray {
@@ -1569,10 +1590,10 @@ fn studio_rig_refactor_is_bit_identical_to_pre_refactor_baseline() {
             // The only case in this table using `LightingPreset::Daylight`, which
             // samples the tabulated CIE D65 measured spectrum rather than a smooth
             // 6500K Planckian.
-            [0x3cca_04fa, 0x3cdb_92f2, 0x3cdf_2c4d],
+            [0x3cc8_efb2, 0x3cdc_89c6, 0x3cde_018e],
             // Same degenerate normal-incidence-along-c_axis geometry as the seed=1337
             // case above.
-            [0x39fd_d3f7, 0x38d9_df7b, 0x3b13_e7d2],
+            [0x39f8_7715, 0x38d4_1626, 0x3b14_3b29],
         ),
     ];
 
@@ -1695,8 +1716,7 @@ fn average_luminance(
 /// viewing direction. This test is sign-discriminating in a way a simple "tourmaline is
 /// dark" sanity check is not: it collapses to no difference (or flips) if the o-ray/
 /// e-ray naming convention were ever swapped, or if the Mueller frame-rotation mirror
-/// bug this task's brief describes (fixed immediately prior to this data pass) ever
-/// regressed -- because both of those bugs change WHICH direction reads dark without
+/// bug ever regressed -- because both of those bugs change WHICH direction reads dark without
 /// necessarily changing THAT some direction reads dark.
 ///
 /// Compares the SAME cut, lighting and fixed face-up ray for two variants of Tourmaline
@@ -1976,18 +1996,17 @@ fn sapphire_side_on_hue_rotates_toward_green_relative_to_face_up() {
     }
 }
 
-/// Regression (Task B, pleochroism data): Sapphire's and Ruby's face-up render must stay
-/// UNAFFECTED by the newly-populated `e_ray` absorption data, per this task's continuity
-/// principle -- with `c_axis` = `Vec3::Y` and this exact straight-down ray (propagation
+/// Regression (pleochroism data): Sapphire's and Ruby's face-up render must stay
+/// UNAFFECTED by the newly-populated `e_ray` absorption data -- with `c_axis` = `Vec3::Y` and this exact straight-down ray (propagation
 /// exactly parallel to `c_axis`), the polarization quadratic form degenerates to pure
 /// `alpha_o` for every bounce whose propagation direction stays exactly on-axis (see the
 /// hue-shift test's doc comment above for the same degeneracy argument). Verified here
 /// to be exactly BIT-IDENTICAL (not merely within a small tolerance) to an
 /// otherwise-identical material with its absorption forced to
-/// `AbsorptionTensor::isotropic(o_ray)` -- i.e. exactly what these entries were
-/// equivalent to before this pass added `e_ray` data -- across 500 independent seeds on
-/// the full Standard Round Brilliant cut. This is a stronger guarantee than the "small
-/// tolerance" this task's brief asked for, made possible because this specific ray's
+/// `AbsorptionTensor::isotropic(o_ray)` -- i.e. exactly what these entries are
+/// equivalent to with no `e_ray` data populated -- across 500 independent seeds on
+/// the full Standard Round Brilliant cut. This is a stronger guarantee than a small
+/// tolerance would give, made possible because this specific ray's
 /// on-axis symmetry is exact, not approximate.
 #[test]
 fn sapphire_and_ruby_face_up_render_is_bit_identical_to_o_ray_only_material() {
@@ -2191,7 +2210,7 @@ fn frosted_girdle_white_furnace_energy_conservation_still_holds() {
 /// The decisive measurement: a bruted girdle must change the gem's face-up
 /// appearance, not merely run without crashing.
 ///
-/// The physics review's specific claim is that the girdle "feeds a soft bright ring into
+/// The specific claim is that the girdle "feeds a soft bright ring into
 /// the pavilion" -- extra light-gathering paths a purely specular mirror girdle can only
 /// reach through a single, much narrower, delta direction (outside light scattering
 /// diffusely IN through the girdle; internally-trapped light scattering back OUT through
@@ -2201,11 +2220,11 @@ fn frosted_girdle_white_furnace_energy_conservation_still_holds() {
 /// (steep near-vertical pitches that look almost straight down the table) where mean
 /// face-up brightness measurably DECREASES with a frosted girdle -- physically sensible,
 /// since replacing a crisp specular glint with a diffuse spread can starve a viewing
-/// direction that used to sit exactly in that glint's narrow cone, even while other
+/// direction that sits exactly in that glint's narrow cone, even while other
 /// directions gain. For the standard face-up studio framing this crate already uses
 /// elsewhere as its reference camera (`renderer::gpu::estimator_check::test_camera`:
 /// `Camera::new(0.35, 0.28, 5.0, 18.0)`), the effect is a strong, clean INCREASE,
-/// matching the review's "soft bright ring" framing -- that is the camera used below.
+/// matching that "soft bright ring" framing -- that is the camera used below.
 ///
 /// Averages luminance (Y) over a small grid of pixels and many samples per pixel, for the
 /// SAME material/seeds with only the girdle's finish differing.
@@ -2291,24 +2310,24 @@ fn frosted_girdle_changes_face_up_appearance_measurably() {
 /// non-dispersive, BIREFRINGENT (uniaxial) gem immersed in a spatially UNIFORM
 /// environment, traced at several bounce caps.
 ///
-/// Decision record: this is the test that would have caught the original
-/// internal-mode-coupling bug (`apply_internal_mode_coupling` used to scale `stokes` by
-/// `1/0.5 = 2.0` per internal reflection with no compensating `path_pdf` effect, so
-/// this scene diverged without bound as `max_bounces` grew -- mean luminance went from
-/// finite at `max_bounces=12` to `NaN`/`inf` by 64). Every isotropic furnace anchor
-/// elsewhere in this file never exercises `apply_internal_mode_coupling` at all, so none
-/// could have caught it. Also catches the sibling entry-split bug
-/// (`apply_refract_bounce`/`apply_refract_channel` used to divide `stokes` by the same
+/// Decision record: this test guards `apply_internal_mode_coupling` against scaling
+/// `stokes` by `1/0.5 = 2.0` per internal reflection with no compensating `path_pdf`
+/// effect, which would make this scene diverge without bound as `max_bounces` grows --
+/// mean luminance would go from finite at `max_bounces=12` to `NaN`/`inf` by 64. Every
+/// isotropic furnace anchor elsewhere in this file never exercises
+/// `apply_internal_mode_coupling` at all, so none of them can catch a regression there.
+/// It also guards the sibling entry-split path
+/// (`apply_refract_bounce`/`apply_refract_channel` dividing `stokes` by the same
 /// 0.5 mode-selection probability already implicitly weighted into `trans_matrix_k`),
-/// which produced a roughly constant ~48-50% brightness inflation instead of a
-/// compounding one -- flat across bounce caps, so the cross-cap drift check alone could
-/// not catch it. CPU-only deliberately (no `gpu` feature required): the bug lived in
+/// which would produce a roughly constant ~48-50% brightness inflation instead of a
+/// compounding one -- flat across bounce caps, so the cross-cap drift check alone would
+/// not catch it. CPU-only deliberately (no `gpu` feature required): both paths live in
 /// `optics::raytracer::transport`, exercised by a default `cargo test`.
 ///
-/// With both bugs fixed, asserts convergence to the uniform environment's analytic
-/// radiance directly, the same truth anchor every other furnace test in this file uses.
-/// The cross-cap drift and finiteness checks are kept as an independent, more direct
-/// guard against the internal-coupling regression specifically.
+/// Asserts convergence to the uniform environment's analytic radiance directly, the
+/// same truth anchor every other furnace test in this file uses. The cross-cap drift
+/// and finiteness checks are kept as an independent, more direct guard against
+/// internal-coupling regressions specifically.
 #[test]
 #[expect(
     clippy::too_many_lines,
@@ -2332,7 +2351,8 @@ fn birefringent_white_furnace_energy_conservation_holds() {
     // `lossless_scattering_white_furnace_energy_conservation_holds`'s 0.08), generous
     // headroom above the ordinary sampling noise actually measured here (rel_err
     // typically well under 0.02, see the printed diagnostic below), but nowhere close
-    // to the ~0.48-0.50 the now-fixed entry-split bug used to produce.
+    // to the ~0.48-0.50 an unguarded entry-split regression (see the decision record
+    // above) would produce.
     const ANALYTIC_TOLERANCE: f32 = 0.05;
     // A generous but finite ceiling on plausible brightness -- comfortably above the
     // analytic target, but many, many orders of magnitude below anything the original
@@ -2368,8 +2388,8 @@ fn birefringent_white_furnace_energy_conservation_holds() {
     let env_map = EnvironmentMap::uniform(1, 1, [L0, L0, L0]);
 
     // Analytic target: the same quadrature every other furnace test in this file uses --
-    // now asserted against directly (see this test's doc comment for why that was not
-    // possible before this task's entry-split fix).
+    // now asserted against directly (see this test's doc comment for why a direct
+    // assertion needs the entry-split path).
     let mut target = Vec3::ZERO;
     for step in 0..=(780 - 380) {
         let lambda = 380.0f32 + step as f32;

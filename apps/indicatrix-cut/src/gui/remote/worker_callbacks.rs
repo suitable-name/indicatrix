@@ -190,19 +190,37 @@ fn setup_test_worker_connection_callback(ui: &MainWindow) {
 /// enrollment token. Returns the SAME text it was given when the user cancels, so the
 /// Slint-side assignment (`root.form_cert_dir = root.pick_cert_dir(root.form_cert_dir)`)
 /// is a no-op on cancel.
+///
+/// The dialog runs off the UI thread through `gui::pickers::pick`, like every other
+/// picker in this app. Slint has no way to await a value-returning callback, so
+/// `on_pick_cert_dir` is void (`ui/models/remote_worker.slint`) and this closure
+/// instead pushes the chosen folder into `RemoteWorkerModel.picked_cert_dir` once the
+/// picker completes; `RemoteWorkerDialog`'s own `changed picked_cert_dir` handler
+/// (`ui/components/remote_worker_dialog.slint`) copies it into `form_cert_dir`. Left
+/// unchanged when the user cancels.
 fn setup_cert_dir_picker_callback(ui: &MainWindow) {
+    let ui_weak = ui.as_weak();
     ui.global::<RemoteWorkerModel>()
-        .on_pick_cert_dir(|current: slint::SharedString| {
-            let mut dialog = rfd::FileDialog::new();
-            if let Some(dir) = crate::gui::starting_dir_from_picker_field(current.as_str()) {
-                dialog = dialog.set_directory(dir);
-            }
-            // Blocking `rfd::FileDialog`, invoked directly on the Slint UI/event-loop
-            // thread -- see `apps/indicatrix-cut/Cargo.toml`'s `rfd` dependency comment for
-            // why that's the supported way to call it here.
-            dialog
-                .pick_folder()
-                .map_or(current, |path| path.display().to_string().into())
+        .on_pick_cert_dir(move |current: slint::SharedString| {
+            use crate::gui::pickers::{PickerKind, PickerRequest, pick};
+
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let starting_dir = crate::gui::starting_dir_from_picker_field(current.as_str());
+            let request = PickerRequest {
+                kind: PickerKind::PickFolder,
+                title: None,
+                filters: Vec::new(),
+                default_file_name: None,
+                starting_dir,
+            };
+            pick(&ui, request, |ui, picked| {
+                if let Some(path) = picked {
+                    ui.global::<RemoteWorkerModel>()
+                        .set_picked_cert_dir(path.display().to_string().into());
+                }
+            });
         });
 }
 

@@ -32,7 +32,7 @@ pub const MAX_SAMPLES_PER_REQUEST: u32 = 65_536;
 ///
 /// 128 is the top rung of the GUI's own bounce ladder (4/8/12/24/64/128; see
 /// `apps/indicatrix-cut/src/bridge/export_thread/params.rs::MAX_EXPORT_BOUNCES`). This
-/// must never sit below that ceiling: it used to be 64, which made a "Local + Remote"
+/// must never sit below that ceiling: a lower cap here would make a "Local + Remote"
 /// export at 128 bounces reply `StreamEvent::Error` and hang the connection at 0% GPU
 /// with no error surfaced to the user.
 ///
@@ -222,20 +222,48 @@ pub fn validate_request(scene: &SceneState, first_sample: u32, samples: u32) -> 
 }
 
 /// Validates the [`indicatrix_net::messages::StreamConfig`] half of a `serve`
-/// [`indicatrix_net::messages::RenderRequest`] ([`validate_request`] covers the rest).
+/// [`indicatrix_net::messages::RenderRequest`].
 ///
-/// Only [`StreamConfig::preview`] needs checking: `cadence_ms` has no invalid value
-/// (`0` legitimately means "as fast as possible"), and `transfer_mode` is an enum with
-/// no invalid variant.
+/// [`validate_request`] covers the rest of the request; this also CLAMPS
+/// [`indicatrix_net::messages::StreamConfig::cadence_ms`] up to this worker's
+/// advertised floor.
+///
+/// # `cadence_ms` clamping
+///
+/// `stream.cadence_ms` below [`crate::stream_emit::MIN_CADENCE_FLOOR_MS`] (the same
+/// floor `WELCOME::min_cadence_ms` already advertises) is silently raised to it, IN
+/// PLACE -- `stream` is taken `&mut` for exactly this. **`0` does not mean "as fast
+/// as possible, unbounded"**: combined with a full-scale
+/// [`indicatrix_net::messages::StreamConfig::preview`] under
+/// [`indicatrix_net::messages::TransferMode::FinalOnly`], an unclamped `cadence_ms = 0`
+/// would make the emitter write the ENTIRE frame's preview on every ~20ms `EMITTER_POLL`
+/// tick for the whole request, not just at cadence boundaries -- exactly the bandwidth a
+/// cadence exists to pace. See the check below for why a full-scale preview under
+/// `FinalOnly` is rejected outright rather than left to this clamp alone.
+///
+/// # Full-scale preview under `FinalOnly`
+///
+/// Also rejected outright: under `FinalOnly`, `FRAME` is sent exactly once at the end,
+/// so the emitter's "skip a redundant full-scale `PREVIEW`" logic (which only fires
+/// when a `FRAME` delta went out on the SAME tick) never applies there -- a full-scale
+/// `PREVIEW` would duplicate the whole frame's data on every cadence tick for the
+/// entire request instead of exactly once. `LiveProgressive` is unaffected: it sends
+/// `FRAME` deltas throughout, so the emitter's existing redundancy skip already covers
+/// a full-scale preview there.
 ///
 /// # Errors
 ///
 /// Returns a human-readable message if a configured preview has a zero `width`/`height`,
-/// or more pixels than the scene it's a reduced-resolution preview of.
+/// more pixels than the scene it's a reduced-resolution preview of, or is exactly the
+/// scene's own resolution under `TransferMode::FinalOnly`.
 pub fn validate_stream_config(
-    stream: &indicatrix_net::messages::StreamConfig,
+    stream: &mut indicatrix_net::messages::StreamConfig,
     scene: &SceneState,
 ) -> Result<(), String> {
+    if stream.cadence_ms < crate::stream_emit::MIN_CADENCE_FLOOR_MS {
+        stream.cadence_ms = crate::stream_emit::MIN_CADENCE_FLOOR_MS;
+    }
+
     let Some(preview) = stream.preview else {
         return Ok(());
     };
@@ -252,6 +280,18 @@ pub fn validate_stream_config(
             "stream.preview {}x{} ({preview_pixels} px) must not exceed the scene's own \
              {}x{} ({scene_pixels} px) -- a preview is a REDUCED-resolution snapshot",
             preview.width, preview.height, scene.width, scene.height
+        ));
+    }
+    if stream.transfer_mode == indicatrix_net::messages::TransferMode::FinalOnly
+        && preview.width == scene.width
+        && preview.height == scene.height
+    {
+        return Err(format!(
+            "stream.preview {}x{} must not equal the scene's own resolution under FinalOnly \
+             transfer mode -- a full-scale PREVIEW would duplicate the single FRAME reply on \
+             every cadence tick; request a smaller preview, drop it, or use LiveProgressive \
+             instead",
+            preview.width, preview.height
         ));
     }
     Ok(())
@@ -476,48 +516,84 @@ mod tests {
     #[test]
     fn validate_stream_config_accepts_no_preview() {
         let scene = valid_scene();
-        assert!(validate_stream_config(&stream_config(None), &scene).is_ok());
+        assert!(validate_stream_config(&mut stream_config(None), &scene).is_ok());
     }
 
     #[test]
     fn validate_stream_config_accepts_a_smaller_preview() {
         let scene = valid_scene();
-        let stream = stream_config(Some(PreviewConfig {
+        let mut stream = stream_config(Some(PreviewConfig {
             width: 16,
             height: 16,
         }));
-        assert!(validate_stream_config(&stream, &scene).is_ok());
+        assert!(validate_stream_config(&mut stream, &scene).is_ok());
     }
 
     #[test]
     fn validate_stream_config_rejects_a_zero_dimension_preview() {
         let scene = valid_scene();
-        let stream = stream_config(Some(PreviewConfig {
+        let mut stream = stream_config(Some(PreviewConfig {
             width: 0,
             height: 16,
         }));
-        let err = validate_stream_config(&stream, &scene).unwrap_err();
+        let err = validate_stream_config(&mut stream, &scene).unwrap_err();
         assert!(err.contains("must be positive"), "{err}");
     }
 
     #[test]
     fn validate_stream_config_rejects_a_preview_larger_than_the_scene() {
         let scene = valid_scene(); // 64x64
-        let stream = stream_config(Some(PreviewConfig {
+        let mut stream = stream_config(Some(PreviewConfig {
             width: 128,
             height: 128,
         }));
-        let err = validate_stream_config(&stream, &scene).unwrap_err();
+        let err = validate_stream_config(&mut stream, &scene).unwrap_err();
         assert!(err.contains("must not exceed"), "{err}");
     }
 
     #[test]
-    fn validate_stream_config_accepts_a_preview_equal_to_the_scene() {
+    fn validate_stream_config_accepts_a_preview_equal_to_the_scene_under_live_progressive() {
         let scene = valid_scene(); // 64x64
-        let stream = stream_config(Some(PreviewConfig {
+        let mut stream = stream_config(Some(PreviewConfig {
             width: 64,
             height: 64,
         }));
-        assert!(validate_stream_config(&stream, &scene).is_ok());
+        assert!(validate_stream_config(&mut stream, &scene).is_ok());
+    }
+
+    /// A full-scale preview is fine under `LiveProgressive` (the emitter's
+    /// own redundancy skip handles it), but must be rejected outright under
+    /// `FinalOnly`, where that skip never applies.
+    #[test]
+    fn validate_stream_config_rejects_a_preview_equal_to_the_scene_under_final_only() {
+        let scene = valid_scene(); // 64x64
+        let mut stream = stream_config(Some(PreviewConfig {
+            width: 64,
+            height: 64,
+        }));
+        stream.transfer_mode = TransferMode::FinalOnly;
+        let err = validate_stream_config(&mut stream, &scene).unwrap_err();
+        assert!(err.contains("FinalOnly"), "{err}");
+    }
+
+    /// `cadence_ms = 0` ("as fast as possible") is clamped up to the
+    /// worker's advertised floor, not left as an unbounded pacing request.
+    #[test]
+    fn validate_stream_config_clamps_a_zero_cadence_up_to_the_floor() {
+        let scene = valid_scene();
+        let mut stream = stream_config(None);
+        stream.cadence_ms = 0;
+        validate_stream_config(&mut stream, &scene).unwrap();
+        assert_eq!(stream.cadence_ms, crate::stream_emit::MIN_CADENCE_FLOOR_MS);
+    }
+
+    #[test]
+    fn validate_stream_config_leaves_a_cadence_at_or_above_the_floor_untouched() {
+        let scene = valid_scene();
+        let mut stream = stream_config(None);
+        stream.cadence_ms = crate::stream_emit::MIN_CADENCE_FLOOR_MS + 500;
+        let original = stream.cadence_ms;
+        validate_stream_config(&mut stream, &scene).unwrap();
+        assert_eq!(stream.cadence_ms, original);
     }
 }

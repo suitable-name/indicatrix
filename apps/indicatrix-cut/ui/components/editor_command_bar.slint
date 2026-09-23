@@ -2,43 +2,36 @@ import { Button, ComboBox } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
 import { RetargetModel } from "../models/retarget.slint";
+// Mounted by `FileActionsGroup` below, next to Save Native; see that file's own
+// doc comment.
+import { ExportSplitButton } from "export_split_button.slint";
 
-// Item 77: a cutter-facing summary of what Ctrl+Z/Ctrl+Y will actually do, from
+// A cutter-facing summary of what Ctrl+Z/Ctrl+Y will actually do, from
 // `Edit::describe` (`crates/indicatrix-cut-core/src/edit/edit_type.rs`) via
-// `History::peek_undo`/`peek_redo`. Declared here (a file this lane owns) rather
-// than as two more properties on `EditorModel` (`ui/models/editor.slint`, owned
-// elsewhere) purely to avoid a hard cross-lane dependency for two plain strings --
-// `ui/app.slint`'s Edit menu imports this same global to show the identical text.
-// `gui::editor::view::push_tier_list_and_undo_redo` (`src/gui/editor/view.rs`,
-// shared by every refresh path that also pushes `EditorModel.can_undo`/`can_redo`)
-// already pushes both labels alongside those two flags, so this is live, not a
-// pending handoff.
+// `History::peek_undo`/`peek_redo`. A separate global rather than two more
+// `EditorModel` properties, since `ui/app.slint`'s Edit menu imports this same
+// global to show the identical text. Pushed by
+// `gui::editor::view::push_tier_list_and_undo_redo` alongside
+// `EditorModel.can_undo`/`can_redo`.
 export global UndoRedoLabels {
     in property <string> undo_label: "";
     in property <string> redo_label: "";
 }
 
-// CAD audit items 151/240: `EditorModel.solve_state`/`last_solve_duration_ms`
-// (declared on `ui/models/editor.slint`, owned elsewhere) are live. `solve_state`
-// replaces `status_is_problem` as the signal this file's Solve button
-// (`SolveGroup.solve_btn` below) and `EditorStatusStrip`'s persistent state
-// segment key off, since `status_is_problem` is set unconditionally `true` by
+// `EditorModel.solve_state` (not `status_is_problem`) is the signal this file's
+// Solve button (`SolveGroup.solve_btn` below) and `EditorStatusStrip`'s persistent
+// state segment key off: `status_is_problem` is set unconditionally `true` by
 // every edit's stale-marker refresh and cannot tell "needs a Solve" apart from
-// "solved, but genuinely failed" -- see the Solve button's own doc comment below
-// for why that matters. Pushed from `gui/editor/view.rs` (`refresh_editor_panel`,
-// `push_stale_content`, `refresh_all`'s synchronous branch) and
-// `gui/editor/auto_solve.rs` (`dispatch_background_solve`,
-// `apply_background_solve_result`) -- both consumers below compile and render
-// off these properties already.
+// "solved, but genuinely failed". `solve_state`/`last_solve_duration_ms` are
+// pushed from `gui/editor/view.rs` and `gui/editor/auto_solve.rs`.
 
 // `Button`/`ComboBox` in this Slint version expose no `has-hover` of their own
 // (unlike `TouchArea`, used everywhere else in this app for a custom hover
-// treatment), so each control below is wrapped in a plain, passive `TouchArea` --
-// sized explicitly from its child's own preferred size, the same idiom the old
-// `editor_view.slint` already used to place a `Tooltip` next to a `Button`. That
-// wrapper never wires `clicked`/`pointer-event`, so it never consumes the press
-// meant for the real control inside it; it only observes `has-hover` for the hint
-// shown below the row(s) (`EditorModel.hover_hint`, cleared on pointer-exit).
+// treatment), so each control below is wrapped in a plain, passive `TouchArea`
+// sized explicitly from its child's own preferred size. That wrapper never wires
+// `clicked`/`pointer-event`, so it never consumes the press meant for the real
+// control inside it; it only observes `has-hover` for the hint shown below the
+// row(s) (`EditorModel.hover_hint`, cleared on pointer-exit).
 //
 // New/Load Selected/Undo/Redo travel together (`NewLoadUndoRedoGroup`), as do
 // Solve/Auto-solve/Deep Solve/Optimize/Retarget (`SolveGroup`) and Export/Save
@@ -60,10 +53,9 @@ component NewLoadUndoRedoGroup inherits HorizontalLayout {
         }
     }
 
-    // Item 77: see `UndoRedoLabels`'s own doc comment above (this file) for what
-    // populates `undo_label`/`redo_label` and the handoff that's still pending.
-    // cad_todo.md #221: appends the keyboard shortcut so it is discoverable from
-    // the hover hint alone, not only from the manual (Appendix B).
+    // See `UndoRedoLabels`'s own doc comment above for what populates
+    // `undo_label`/`redo_label`. The keyboard shortcut is appended so it is
+    // discoverable from the hover hint alone, not only from the manual.
     function undo_hint() -> string {
         return (EditorModel.can_undo && UndoRedoLabels.undo_label != "" ? "Undo: " + UndoRedoLabels.undo_label : "Undo the last edit.") + " (Ctrl+Z)";
     }
@@ -71,11 +63,10 @@ component NewLoadUndoRedoGroup inherits HorizontalLayout {
         return (EditorModel.can_redo && UndoRedoLabels.redo_label != "" ? "Redo: " + UndoRedoLabels.redo_label : "Redo the last undone edit.") + " (Ctrl+Y)";
     }
 
-    // cad_todo.md #220: "New" read the same as the Tier tab's own "New"
-    // (clear-the-form) button below it, even though this one discards the
-    // WHOLE design -- renamed to match the ellipsis convention `Retarget...`/
-    // `Open Native...` already use for "opens a dialog first," and to read as
-    // clearly different from the inspector's unrelated same-named button.
+    // "New Design..." discards the WHOLE design, unlike the Tier tab's own
+    // clear-the-form "New" button below it. The ellipsis follows the
+    // `Retarget...`/`Open Native...` convention for "opens a dialog first" and
+    // keeps the label clearly distinct from the inspector's same-named button.
     TouchArea {
         width: new_btn.preferred-width;
         height: new_btn.preferred-height;
@@ -131,53 +122,48 @@ component SolveGroup inherits HorizontalLayout {
         }
     }
 
-    // CAD audit item 216: this hint text used to only ever mention what Solve
-    // itself does -- it now also names whichever OTHER action (Deep Solve/
+    // Besides what Solve does, names whichever OTHER action (Deep Solve/
     // Optimize) is the reason the button below is disabled, mirroring
-    // `AnalysisGroup`'s own `busy_suffix` below. cad_todo.md #221: "(F5)"
-    // appended so the shortcut is discoverable from the hover hint itself --
-    // `app.slint` wires F5 to this same `EditorModel.solve()` call.
+    // `AnalysisGroup`'s own `busy_suffix` below. "(F5)" is appended so the
+    // shortcut is discoverable from the hover hint itself -- `app.slint` wires
+    // F5 to this same `EditorModel.solve()` call.
     function solve_hint() -> string {
         return "Recompute every tier's depth and validate the design. Runs in the background above 16 tiers. (F5)"
             + (EditorModel.busy_action != "" && EditorModel.busy_action != "Solve" ? (" Disabled while " + EditorModel.busy_action + " is running.") : "");
     }
 
-    // Styled with the same "problem" ruby accent the old validation banner
-    // used while stale, so the button that clears staleness stays visually
-    // tied to the status strip announcing it (see `EditorStatusStrip`).
+    // Styled with the same "problem" ruby accent the status strip uses while
+    // stale, so the button that clears staleness stays visually tied to the
+    // strip announcing it (see `EditorStatusStrip`).
     TouchArea {
         width: solve_btn.preferred-width;
         height: solve_btn.preferred-height;
         changed has-hover => { if self.has-hover { root.set_hint(root.solve_hint()); } else { root.clear_hint(root.solve_hint()); } }
         solve_btn := Button {
             text: EditorModel.solve_running ? "Solving..." : "Solve";
-            // CAD audit item 216: Solve, Deep Solve and Optimize used to each
-            // guard only their own `*_running` flag, so any two could run at
-            // once. `busy_action` (`EditorModel`, derived from all three) is
-            // "" only when none of them are running -- cross-disabling every
-            // launcher on it, not only its own flag.
+            // `busy_action` (`EditorModel`, derived from all three `*_running`
+            // flags) is "" only when none of Solve/Deep Solve/Optimize is
+            // running -- every launcher cross-disables on it, not only its own
+            // flag, so no two can run at once.
             enabled: EditorModel.busy_action == "";
-            // CAD audit item 240: `status_is_problem` used to be the ONLY signal
-            // here, and it is set unconditionally `true` by every ordinary edit's
+            // Keyed off `EditorModel.solve_state`, not `status_is_problem`: the
+            // latter is set unconditionally `true` by every ordinary edit's
             // stale-marker refresh (`push_stale_content`, `gui::editor::view`),
-            // not only by a real solve failure -- with auto-solve on, that flipped
-            // the button blue/red on every keystroke. `EditorModel.solve_state`
-            // (CAD audit items 151/240's shared handoff -- see `ui/models/
-            // editor.slint`) tells "genuinely stale, needs a manual Solve" apart
-            // from "solving"/"solved"/"failed" explicitly. Restricted to
+            // which with auto-solve on would flip the button blue/red on every
+            // keystroke. `solve_state` tells "genuinely stale, needs a manual
+            // Solve" apart from "solving"/"solved"/"failed". Restricted to
             // auto-solve OFF (`auto_solve_budget_ms == 0`) on top of that: with
             // auto-solve on, a background solve is already coming shortly, so
-            // highlighting Solve as primary the moment an edit lands would still
-            // flicker for the fraction of a second before that solve starts --
-            // the accent is only useful when nothing else is going to clear the
-            // staleness for the user.
+            // highlighting Solve the moment an edit lands would flicker for the
+            // fraction of a second before that solve starts -- the accent is
+            // only useful when nothing else is going to clear the staleness.
             primary: EditorModel.auto_solve_budget_ms == 0 && EditorModel.solve_state == "stale";
             clicked => { EditorModel.solve(); }
         }
     }
 
-    // CAD audit item 112: shown only while a solve is actually running, exactly
-    // like the Deep Solve and Optimize cancels further down. The wording says
+    // Shown only while a solve is actually running, exactly like the Deep Solve
+    // and Optimize cancels further down. The wording says
     // "Abandon" rather than "Cancel" on purpose: `Design::solve` has no mid-run
     // checkpoint, so the worker does finish in the background -- what this stops is
     // its result being applied, and the editor staying locked until it lands.
@@ -188,24 +174,19 @@ component SolveGroup inherits HorizontalLayout {
 
     // Auto-solve budget: after an edit, a background re-solve is scheduled
     // automatically (debounced) whenever this design's last measured solve
-    // took less than the selected budget. Collapsed from five separate
-    // pill buttons into one combo; the exact five `auto_solve_budget_ms`
-    // values (and "Off" == plain stale-marker behaviour) are unchanged.
+    // took less than the selected budget; "Off" means plain stale-marker
+    // behaviour. One combo holds the five `auto_solve_budget_ms` values.
     // Explicit width: a `ComboBox`'s preferred width is not derived from its
-    // model, so sizing this wrapper from it collapsed the cell and the combo
-    // drew over the Solve button next to it. CAD audit item 249: shrinks below
-    // a narrow dock instead of always spending 150px -- keyed off `EditorModel.
-    // dock_width` (set externally, by the drag handle in `app.slint`) rather
-    // than this component's OWN rendered width, which would instead feed back
-    // into the very layout pass computing it (a binding loop `cargo clippy`'s
-    // own `.slint` compilation step rejects outright -- see `EditorCommandBar`'s
-    // own doc comment for the exact loop a first attempt hit).
-    // cad_todo.md #217: the combo used to have no label of its own next to it,
-    // only the shared hover hint below -- a cutter had to hover it once just to
-    // learn it exists. `combo_width` keeps the exact `dock_width` breakpoint
-    // logic item 249 already established (see that item's own doc comment
-    // below on this component), now sized separately from the wrapper so the
-    // label can sit beside it without changing the combo's own on-screen size.
+    // model, so sizing this wrapper from it collapses the cell and the combo
+    // draws over the Solve button next to it. Shrinks below a narrow dock
+    // instead of always spending 150px -- keyed off `EditorModel.dock_width`
+    // (set externally, by the drag handle in `app.slint`) rather than this
+    // component's OWN rendered width, which would feed back into the very
+    // layout pass computing it (a binding loop the `.slint` compiler rejects
+    // outright -- see `EditorCommandBar`'s own doc comment for the exact loop).
+    // `combo_width` is sized separately from the wrapper so the "Auto-solve:"
+    // label can sit beside the combo without changing its on-screen size; the
+    // label is there so a cutter learns the combo exists without hovering it.
     property <length> combo_width: EditorModel.dock_width < 760px ? 96px : 150px;
     TouchArea {
         width: auto_solve_label.preferred-width + 4px + root.combo_width;
@@ -243,16 +224,16 @@ component SolveGroup inherits HorizontalLayout {
 
 }
 
-// Add / Duplicate / Delete / Move -- cad_todo.md #219: a command-bar-level way to
-// manage the currently selected tier. `EditorTierTable` (this lane's other owned
-// file) already exposes every one of these as a per-row action (and "+ Add Tier"
-// as its own header button), but a first-time user scanning the command bar for
-// "how do I add a facet" found nothing there at all. Add is always enabled (it
-// only switches the inspector to the Tier tab in add mode, mirroring the tier
-// table's own "+ Add Tier" button exactly); Duplicate/Delete/Move act on
-// `EditorModel.selected_tier_index` and are disabled with nothing selected, the
-// same convention `AnalysisGroup`'s Deep Solve/Optimize use for "not applicable
-// right now" rather than hiding the button outright.
+// Add / Duplicate / Delete / Move -- a command-bar-level way to manage the
+// currently selected tier. `EditorTierTable` exposes every one of these as a
+// per-row action too (and "+ Add Tier" as its own header button), but a
+// first-time user scanning the command bar for "how do I add a facet" needs to
+// find them here. Add is always enabled (it only switches the inspector to the
+// Tier tab in add mode, mirroring the tier table's own "+ Add Tier" button);
+// Duplicate/Delete/Move act on `EditorModel.selected_tier_index` and are
+// disabled with nothing selected, the same convention `AnalysisGroup`'s Deep
+// Solve/Optimize use for "not applicable right now" rather than hiding the
+// button outright.
 component TierGroup inherits HorizontalLayout {
     height: 34px;
     spacing: 8px;
@@ -338,14 +319,12 @@ component AnalysisGroup inherits HorizontalLayout {
         }
     }
 
-    // CAD audit item 154: a purely local latch -- no new `EditorModel` property
-    // needed (`ui/models/editor.slint` is not owned by this group) -- so a second
-    // click on "Cancel Optimize" while a cancel is already in flight cannot re-fire
-    // `EditorModel.optimize_cancel()`. Mirrors `EditorModel.optimize_running` in a
-    // local property (`self.foo`, not `EditorModel.foo`, is what a `changed`
-    // handler can rely on here) purely so `changed` can watch it; reset the moment
-    // a run is no longer active, which covers both this run's own completion AND,
-    // belt and braces, the state a brand new run starts in.
+    // A purely local latch so a second click on "Cancel Optimize" while a cancel
+    // is already in flight cannot re-fire `EditorModel.optimize_cancel()`.
+    // Mirrors `EditorModel.optimize_running` in a local property purely so a
+    // `changed` handler can watch it (`self.foo`, not `EditorModel.foo`, is what
+    // `changed` can rely on here); reset the moment a run stops being active,
+    // which covers both this run's completion AND the state a new run starts in.
     property <bool> optimize_running_mirror: EditorModel.optimize_running;
     property <bool> optimize_cancel_requested: false;
     changed optimize_running_mirror => {
@@ -354,14 +333,14 @@ component AnalysisGroup inherits HorizontalLayout {
         }
     }
 
-    // CAD audit item 216: appended to each button's own tooltip/hint text
-    // below whenever some OTHER action (not `own_action`) is the reason it is
-    // currently disabled -- `EditorModel.busy_action` names Solve, Deep Solve
-    // or Optimize, so this is "" whenever nothing is running or `own_action`
-    // itself is the one running (that case already has its own "Cancel ..."
-    // button/text, nothing more to explain). A named function rather than an
-    // inline ternary: `@markdown`'s dynamic text must be a plain expression,
-    // never a nested ternary -- see the two `Tooltip`s below.
+    // Appended to each button's own tooltip/hint text below whenever some OTHER
+    // action (not `own_action`) is the reason it is currently disabled --
+    // `EditorModel.busy_action` names Solve, Deep Solve or Optimize, so this is
+    // "" whenever nothing is running or `own_action` itself is the one running
+    // (that case already has its own "Cancel ..." button/text, nothing more to
+    // explain). A named function rather than an inline ternary: `@markdown`'s
+    // dynamic text must be a plain expression, never a nested ternary -- see
+    // the two `Tooltip`s below.
     function busy_suffix(own_action: string) -> string {
         return (EditorModel.busy_action != "" && EditorModel.busy_action != own_action)
             ? ("\n\nDisabled while " + EditorModel.busy_action + " is running.")
@@ -377,20 +356,18 @@ component AnalysisGroup inherits HorizontalLayout {
         height: deep_solve_btn.preferred-height;
         changed has-hover => { if self.has-hover { root.set_hint("Slow check against the catalogue's printed proportions. Never changes the design."); } else { root.clear_hint("Slow check against the catalogue's printed proportions. Never changes the design."); } }
         // The always-present explanation of why Deep Solve is (or isn't) available
-        // right now (`view::deep_solve_hint`) -- moved here, off `EditorStatusStrip`,
-        // so it no longer permanently occupies that strip's one message slot ahead
-        // of the design's own solved/stale/failed state. Still fully discoverable,
-        // just on hover instead of always-on. CAD audit item 216: now also names
+        // right now (`view::deep_solve_hint`) lives here, on hover, rather than
+        // in `EditorStatusStrip`, so it never occupies that strip's one message
+        // slot ahead of the design's own solved/stale/failed state. Also names
         // Solve/Optimize as the reason when either is the one keeping this button
-        // disabled (`deep_solve_tooltip_text`, a plain property -- see
-        // `busy_suffix`'s own doc comment for why this can't be inlined here).
+        // disabled. A plain property -- see `busy_suffix`'s own doc comment for
+        // why this can't be inlined into the `@markdown` below.
         property <string> deep_solve_tooltip_text: EditorModel.deep_solve_hint + root.busy_suffix("Deep Solve");
         Tooltip { text: @markdown("\{deep_solve_tooltip_text}"); }
         deep_solve_btn := Button {
             text: "Deep Solve";
-            // CAD audit item 216: cross-disabled on `busy_action`, not only
-            // `deep_solve_available` -- see the Solve button's own doc comment
-            // on `busy_action` for why a fourth flag isn't needed.
+            // Cross-disabled on `busy_action`, not only `deep_solve_available`
+            // -- see the Solve button's own doc comment on `busy_action`.
             enabled: EditorModel.deep_solve_available && EditorModel.busy_action == "";
             clicked => { EditorModel.deep_solve(); }
         }
@@ -408,24 +385,23 @@ component AnalysisGroup inherits HorizontalLayout {
         changed has-hover => { if self.has-hover { root.set_hint("Search free (unpinned) tiers for better optics. Adopt a tier first if disabled."); } else { root.clear_hint("Search free (unpinned) tiers for better optics. Adopt a tier first if disabled."); } }
         // Same reasoning as the Deep Solve button's own `Tooltip` above --
         // `view::optimize_hint`'s always-present explanation lives here instead of
-        // permanently occupying a shared status line. CAD audit item 216: see
-        // the Deep Solve button's own `deep_solve_tooltip_text` doc comment.
+        // permanently occupying a shared status line; see the Deep Solve button's
+        // own `deep_solve_tooltip_text` doc comment.
         property <string> optimize_tooltip_text: EditorModel.optimize_hint + root.busy_suffix("Optimize");
         Tooltip { text: @markdown("\{optimize_tooltip_text}"); }
         optimize_btn := Button {
             text: "Optimize";
-            // CAD audit item 216: see the Deep Solve button's own comment above.
+            // See the Deep Solve button's own comment above.
             enabled: EditorModel.optimize_available && EditorModel.busy_action == "";
             clicked => {
-                EditorModel.optimize(EditorModel.optimize_weight_windowing, EditorModel.optimize_weight_extinction, EditorModel.optimize_weight_tilt_brilliance);
+                EditorModel.optimize(EditorModel.optimize_weight_windowing, EditorModel.optimize_weight_extinction, EditorModel.optimize_weight_tilt_brilliance, EditorModel.optimize_weight_yield);
             }
         }
     }
-    // CAD audit item 154: labelled "Cancelling..." and disabled the instant it's
-    // clicked (see `optimize_cancel_requested` above) -- previously nothing on
-    // this button changed for the several seconds `optimize_status` still took to
-    // read back "Cancelling -- finishing the current evaluation...", so a cutter
-    // who saw no reaction clicked it again.
+    // Labelled "Cancelling..." and disabled the instant it's clicked (see
+    // `optimize_cancel_requested` above): `optimize_status` takes several
+    // seconds to read back "Cancelling -- finishing the current evaluation...",
+    // and a cutter who sees no reaction clicks again.
     if EditorModel.optimize_running: Button {
         text: root.optimize_cancel_requested ? "Cancelling..." : "Cancel Optimize";
         enabled: !root.optimize_cancel_requested;
@@ -444,6 +420,56 @@ component AnalysisGroup inherits HorizontalLayout {
         retarget_btn := Button {
             text: "Retarget...";
             clicked => { RetargetModel.open(); }
+        }
+    }
+
+    // "Snapshot Design"/"Compare to Snapshot", handled by
+    // `callbacks::retarget_actions::setup_snapshot_callbacks`. Placed next to
+    // Retarget since both reuse the same comparison-table dialog shell
+    // (`retarget_dialog.slint`'s `RetargetModel.compare_open` branch).
+    TouchArea {
+        width: snapshot_btn.preferred-width;
+        height: snapshot_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Capture the current design and its solved masts, to compare against later."); } else { root.clear_hint("Capture the current design and its solved masts, to compare against later."); } }
+        snapshot_btn := Button {
+            text: "Snapshot Design";
+            clicked => { EditorModel.snapshot_design(); }
+        }
+    }
+    // Gated on a snapshot existing: `EditorModel.has_snapshot` is pushed `true`
+    // by `callbacks::retarget_actions::setup_snapshot_callbacks` the moment a
+    // snapshot is taken; the hover hint explains the greyed state before that.
+    TouchArea {
+        width: compare_snapshot_btn.preferred-width;
+        height: compare_snapshot_btn.preferred-height;
+        changed has-hover => {
+            if self.has-hover {
+                root.set_hint(EditorModel.has_snapshot
+                    ? "Diff the current design against the last snapshot."
+                    : "Diff the current design against the last snapshot -- click Snapshot Design first if you haven't yet this session.");
+            } else {
+                root.clear_hint("Diff the current design against the last snapshot.");
+            }
+        }
+        compare_snapshot_btn := Button {
+            text: "Compare to Snapshot";
+            enabled: EditorModel.has_snapshot;
+            clicked => { EditorModel.compare_to_snapshot(); }
+        }
+    }
+
+    // Runs the full 4-axis tilt-performance sweep for the design currently
+    // open in the editor -- see `EditorModel.
+    // compute_tilt_curves_for_open_design`'s own doc comment for what happens
+    // once it starts (roughly 1.36s, off the UI thread; only saved once this
+    // design has already been saved to the catalogue).
+    TouchArea {
+        width: compute_tilt_btn.preferred-width;
+        height: compute_tilt_btn.preferred-height;
+        changed has-hover => { if self.has-hover { root.set_hint("Compute this design's tilt-performance curves (brilliance/extinction/windowing vs. tilt)."); } else { root.clear_hint("Compute this design's tilt-performance curves (brilliance/extinction/windowing vs. tilt)."); } }
+        compute_tilt_btn := Button {
+            text: "Compute Tilt Curves";
+            clicked => { EditorModel.compute_tilt_curves_for_open_design(); }
         }
     }
 }
@@ -466,20 +492,15 @@ component FileActionsGroup inherits HorizontalLayout {
     // The native design-file format. "Save Native" always writes a real
     // `.asc` alongside its `.indicatrix.toml` sidecar, never the sidecar
     // alone. "Export Edited .asc" exports the design AS EDITED in this tab,
-    // distinct from `detail_header.slint`'s catalogue-original "Export
-    // .asc" -- kept as a distinguishing label since the two buttons used
-    // to share that exact label with nothing to tell them apart; see
-    // `detail_header.slint`'s own "Export .asc" doc comment. cad_todo.md
-    // #253: this button's own text used to say plain "Export Edited" while
-    // `app.slint`'s File-menu entry for the identical action spelled it out
-    // in full as "Export Edited .asc" -- unified here to the File menu's
-    // fuller name, matching the manual (Chapter 3/11)'s description.
+    // distinct from `detail_header.slint`'s catalogue-original "Export .asc"
+    // (see that file's own doc comment); the label names the `.asc` in full to
+    // match `app.slint`'s File-menu entry for the identical action and the
+    // manual's description.
     TouchArea {
         width: export_btn.preferred-width;
         height: export_btn.preferred-height;
-        // cad_todo.md #260: appended "...to disk; your library is not
-        // updated" -- Export Edited/Save Native genuinely never register
-        // anything in, or change anything about, the catalogue (Chapter 11),
+        // "...to disk; your library is not updated": Export Edited never
+        // registers anything in, or changes anything about, the catalogue --
         // the mirror image of `detail_header.slint`'s own catalogue-side
         // "Save the original file... not your edits" warning.
         changed has-hover => { if self.has-hover { root.set_hint("Export the design as edited in this tab to disk; your library is not updated."); } else { root.clear_hint("Export the design as edited in this tab to disk; your library is not updated."); } }
@@ -491,13 +512,38 @@ component FileActionsGroup inherits HorizontalLayout {
     TouchArea {
         width: save_native_btn.preferred-width;
         height: save_native_btn.preferred-height;
-        // cad_todo.md #260: see the Export Edited TouchArea's own comment above.
-        changed has-hover => { if self.has-hover { root.set_hint("Write the native .asc plus its .indicatrix.toml sidecar to disk; your library is not updated."); } else { root.clear_hint("Write the native .asc plus its .indicatrix.toml sidecar to disk; your library is not updated."); } }
+        // Unlike "Export Edited .asc" above, Save Native DOES update your
+        // library -- it writes or updates this design's own catalogue row
+        // (`native_io::write_back_to_catalogue`), not just the files on disk,
+        // and the hint must say so.
+        changed has-hover => { if self.has-hover { root.set_hint("Write the native .asc plus its .indicatrix.toml sidecar to disk, and update this design's catalogue entry."); } else { root.clear_hint("Write the native .asc plus its .indicatrix.toml sidecar to disk, and update this design's catalogue entry."); } }
         save_native_btn := Button {
             text: "Save Native";
             clicked => { EditorModel.save_native(); }
         }
     }
+    // Makes the "not a closed solid" (or any other solve-problem) verdict
+    // visible IN the save area itself, small and non-blocking, rather than only
+    // as a Yes/No prompt the cutter sees for the first time at the exact moment
+    // they click Save. `EditorModel.status_is_problem` is the same flag
+    // `EditorStatusStrip` colours ruby for -- this does not duplicate the
+    // strip's own message, only flags that clicking Save/Export will ask for
+    // confirmation.
+    if EditorModel.status_is_problem && EditorModel.status_text != "": Rectangle {
+        width: save_warning_text.preferred-width;
+        height: 34px;
+        save_warning_text := Text {
+            text: "\u{26A0} Will ask before saving";
+            font-size: 10px;
+            font-weight: 600;
+            color: Theme.accent-amber;
+            vertical-alignment: center;
+        }
+        Tooltip { text: @markdown("**\{EditorModel.status_text}**\n\nSaving or exporting will still work -- you'll be asked to confirm first (\"Save as draft\"), and the written file notes this in its own header."); }
+    }
+    // "Export..." split button: the single home of the cutting-sheet (HTML) and
+    // diagram (PNG) exports, so the File menu does not need entries for them.
+    ExportSplitButton {}
     TouchArea {
         width: open_native_btn.preferred-width;
         height: open_native_btn.preferred-height;
@@ -512,34 +558,24 @@ component FileActionsGroup inherits HorizontalLayout {
 // The Edit sub-tab's command bar, two fixed rows sized for the dock's 600px
 // minimum width (`app.slint`'s `dock_width` clamp): row 1 is the editing
 // group (New Design.../Load Selected/Undo/Redo) plus Solve and its auto-solve
-// budget, row 2 the tier group (cad_todo.md #219: Add/Duplicate/Delete/Move),
-// the slower analyses (Deep Solve/Optimize/Retarget) and the native file
-// actions. Each row ends in a stretch spacer so a wider dock leaves the
-// buttons left-aligned instead of spreading them. (`FlexboxLayout`, which
-// would wrap automatically, is not enabled in this Slint build.)
+// budget, row 2 the tier group (Add/Duplicate/Delete/Move), the slower
+// analyses (Deep Solve/Optimize/Retarget) and the native file actions. Each
+// row ends in a stretch spacer so a wider dock leaves the buttons left-aligned
+// instead of spreading them. (`FlexboxLayout`, which would wrap automatically,
+// is not enabled in this Slint build.)
 //
-// No 9px caption text lives under any one button any more: hovering any control
-// in any group sets `EditorModel.hover_hint`, shown as a single line below the
-// row(s) instead -- see `hover_hint`'s own doc comment on `EditorModel`.
+// No caption text lives under any one button: hovering any control in any
+// group sets `EditorModel.hover_hint`, shown as a single line below the row(s)
+// instead -- see `hover_hint`'s own doc comment on `EditorModel`.
 //
-// CAD audit item 249 (partial): the auto-solve combo (`SolveGroup`) now
-// shrinks below a narrow dock instead of always spending a fixed 150px, keyed
-// off `EditorModel.dock_width` -- a value set externally (the drag handle in
+// The auto-solve combo (`SolveGroup`) shrinks below a narrow dock, keyed off
+// `EditorModel.dock_width` -- a value set externally (the drag handle in
 // `app.slint`), never derived from this bar's own content, so reading it here
 // carries none of the "one fixed dimension pins the whole window" risk a width
-// derived from THIS layout pass would. (A first attempt read `self.width` on
-// this very component instead and fed it back into a child's `width` --
-// `cargo clippy`'s own build, which compiles every `.slint` file, rejected it
-// outright as a `layoutinfo-h -> layout-cache -> width -> ... -> narrow`
-// binding loop; reverted in favour of `dock_width`.)
-//
-// Still two fixed rows sized for the dock's 600px minimum, not the "one row of
-// icon buttons, `...`-overflowing below ~760px" the full item asks for --
-// left undone (too large a redesign for this pass, and unverifiable without a
-// visual check this pass cannot perform): converting every button here to an
-// icon (`ui/icons` only covers five of this bar's dozen actions today, not all
-// of them), collapsing to a single row above the same `dock_width` breakpoint,
-// and an overflow "..." menu for the Analysis group below it.
+// derived from THIS layout pass would. Reading `self.width` on this component
+// and feeding it back into a child's `width` is a
+// `layoutinfo-h -> layout-cache -> width -> ... -> narrow` binding loop the
+// `.slint` compiler rejects outright.
 export component EditorCommandBar inherits Rectangle {
     VerticalLayout {
         spacing: 2px;
@@ -563,14 +599,13 @@ export component EditorCommandBar inherits Rectangle {
             Rectangle { horizontal-stretch: 1; }
         }
 
-        // CAD audit item 249: wraps instead of eliding a single line, so a long
-        // hint ("After an edit, automatically re-solve (debounced)...") reads in
-        // full instead of teaching nothing past the cutoff. Capped at two lines'
-        // worth of height (not the old function's literal "auto height") so a
-        // very long hint still cannot push the tier table below it around --
-        // `overflow: clip` on the rare hint long enough to need a third line,
-        // rather than `elide`, which only ever elides a single line and would
-        // leave the wrapped second line's own tail truncated mid-word instead.
+        // Wraps instead of eliding a single line, so a long hint ("After an
+        // edit, automatically re-solve (debounced)...") reads in full instead
+        // of teaching nothing past the cutoff. Capped at two lines' worth of
+        // height so a very long hint still cannot push the tier table below it
+        // around -- `overflow: clip` on the rare hint long enough to need a
+        // third line, rather than `elide`, which only ever elides a single line
+        // and would leave the wrapped second line's tail truncated mid-word.
         Text {
             text: EditorModel.hover_hint;
             font-size: 11px;

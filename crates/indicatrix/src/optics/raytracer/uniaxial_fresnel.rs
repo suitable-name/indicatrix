@@ -1413,7 +1413,7 @@ mod tests {
     /// in the unpolarized average (each channel's own `r_sp`/`r_ps` cross-leakage adds
     /// intensity the old scalar formula didn't have, but the DIAGONAL `r_ss`/`r_pp`
     /// terms drop correspondingly, since energy is conserved) -- the single-
-    /// polarization reflectance is where the ~15% deviation the review predicted is
+    /// polarization reflectance is where the ~15% deviation is
     /// actually visible; this geometry (20 degrees incidence, optic axis close to the
     /// surface plane but with a genuine out-of-plane `beta` component) was found, by a
     /// small sweep over angle/axis combinations, to land closest to that figure.
@@ -1489,10 +1489,10 @@ mod tests {
 
     /// Performance (requirement 7, batching): [`entry_solve_pair_with_incidence`] fed a
     /// shared [`EntryIncidenceFrame`] (the "batched" path every uniaxial entry call
-    /// site now uses -- see `refraction::apply_uniaxial_entry_bounce`) must be
+    /// site uses -- see `refraction::apply_uniaxial_entry_bounce`) must be
     /// BIT-IDENTICAL, field for field, to [`entry_solve_pair`] called completely fresh
     /// (the "scalar" path, computing its own `EntryIncidenceFrame` from scratch every
-    /// time -- what every call site used to do) -- across random angles, optic-axis
+    /// time) -- across random angles, optic-axis
     /// orientations and `(n_o, n_e)` pairs, mirroring
     /// `geometry::meet_solver::candidates::batched_enumeration_matches_glam_reference_
     /// bitwise`'s own convention for this exact kind of claim. `entry_incidence_frame`

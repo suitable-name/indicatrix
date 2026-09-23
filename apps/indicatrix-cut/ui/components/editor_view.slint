@@ -56,7 +56,7 @@ export component EditorView inherits Rectangle {
 
     // Re-clamps a persisted `EditorModel.inspector_height` against THIS dock's
     // actual height, not only against the delta the table|inspector `SplitHandle`
-    // below sees on a drag -- see cad_todo.md #108. Without this, a height restored
+    // below sees on a drag. Without this, a height restored
     // from settings on a tall monitor is pushed back unclamped on a shorter one (or
     // after moving a saved layout to a smaller screen) and can clip the inspector's
     // Save/Add Tier row. Mirrors the drag handler's own clamp formula exactly:
@@ -99,7 +99,7 @@ export component EditorView inherits Rectangle {
                 // the design settings, the table's 120px minimum, this
                 // handle, the dock padding and the four 8px gaps -- so the
                 // inspector can never push the dock taller than its column
-                // (which the window no longer follows; it would just clip).
+                // (which the window does not follow; it would just clip).
                 EditorModel.inspector_height = clamp(
                     EditorModel.inspector_height - d,
                     160px,

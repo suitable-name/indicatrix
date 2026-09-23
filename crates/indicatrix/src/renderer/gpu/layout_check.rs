@@ -16,9 +16,10 @@ use crate::{
     renderer::{
         buffers::{
             DispersionParams, GpuAbsorptionBand, GpuCameraParams, GpuGemMaterial, GpuHitRecord,
-            GpuRay, GpuTransportParams, MAX_ABSORPTION_BANDS,
+            GpuRay, GpuTransportParams, GpuWavefrontParams, MAX_ABSORPTION_BANDS,
         },
-        gpu::compute,
+        env_map_gpu::{GpuDistDims, GpuHdrEnvDims},
+        gpu::{compute, frame::GpuReduceParams},
     },
 };
 
@@ -447,6 +448,114 @@ pub fn run_transport_params(ctx: &crate::renderer::gpu::GpuContext) -> LayoutChe
         output_bytes,
         mismatches,
     }
+}
+
+/// Generic single-struct echo test against `PHASE2_SHADER_SRC` -- the [`run_echo`] of
+/// this file's Phase-2 structs, kept separate from [`run_echo`] itself only because it
+/// reads from a different shader module (`phase2_layout_echo.wgsl`, not
+/// `phase1_layout_echo.wgsl`). See [`run_echo`]'s own doc comment for the shared
+/// mechanism and its `# Panics` rationale.
+fn run_phase2_echo<T: bytemuck::Pod + bytemuck::Zeroable>(
+    ctx: &crate::renderer::gpu::GpuContext,
+    entry_point: &str,
+    in_binding: u32,
+    out_binding: u32,
+    sample: T,
+) -> LayoutCheckResult {
+    let input_bytes = bytemuck::bytes_of(&sample).to_vec();
+
+    let pipeline =
+        compute::create_compute_pipeline(&ctx.device, entry_point, PHASE2_SHADER_SRC, entry_point);
+
+    let input_buf = compute::upload(
+        &ctx.device,
+        "phase2 layout_echo input",
+        std::slice::from_ref(&sample),
+        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    );
+    let output_buf = compute::zeroed_buffer::<T>(
+        &ctx.device,
+        "phase2 layout_echo output",
+        1,
+        wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
+    );
+
+    let bind_group = compute::bind_buffers(
+        &ctx.device,
+        "phase2 layout_echo bind group",
+        &pipeline,
+        &[(in_binding, &input_buf), (out_binding, &output_buf)],
+    );
+
+    compute::dispatch_and_wait(&ctx.device, &ctx.queue, &pipeline, &bind_group, (1, 1, 1));
+
+    let output: Vec<T> = compute::readback(&ctx.device, &ctx.queue, &output_buf, 1);
+    let output_bytes = bytemuck::bytes_of(&output[0]).to_vec();
+    let mismatches = diff_bytes(&input_bytes, &output_bytes);
+
+    LayoutCheckResult {
+        input_bytes,
+        output_bytes,
+        mismatches,
+    }
+}
+
+/// `reduce_xyz.wgsl`'s [`GpuReduceParams`] struct-echo self-test.
+///
+/// Uses the `echo_reduce_params` entry point, bindings 2/3 of
+/// `phase2_layout_echo.wgsl`'s shared bind group -- covers `GpuReduceParams` (and the
+/// three structs below) so none of them is left only "verified matching by eye".
+#[must_use]
+pub fn run_reduce_params(ctx: &crate::renderer::gpu::GpuContext) -> LayoutCheckResult {
+    let sample = GpuReduceParams {
+        num_pixels: 1234,
+        num_samples: 8,
+        _pad0: 111,
+        _pad1: 222,
+    };
+    run_phase2_echo(ctx, "echo_reduce_params", 2, 3, sample)
+}
+
+/// `wavefront_transport.wgsl`'s [`GpuWavefrontParams`] struct-echo self-test
+/// (`echo_wavefront_params` entry point, bindings 4/5). See [`run_reduce_params`]'s doc
+/// comment for why this exists.
+#[must_use]
+pub fn run_wavefront_params(ctx: &crate::renderer::gpu::GpuContext) -> LayoutCheckResult {
+    let sample = GpuWavefrontParams {
+        chunk_rays: 4096,
+        active_count: 3072,
+        bounce: 5,
+        workgroup_count: 48,
+    };
+    run_phase2_echo(ctx, "echo_wavefront_params", 4, 5, sample)
+}
+
+/// `spectral_transport.wgsl`'s [`GpuHdrEnvDims`] struct-echo self-test
+/// (`echo_hdr_env_dims` entry point, bindings 6/7). See [`run_reduce_params`]'s doc
+/// comment for why this exists.
+#[must_use]
+pub fn run_hdr_env_dims(ctx: &crate::renderer::gpu::GpuContext) -> LayoutCheckResult {
+    let sample = GpuHdrEnvDims {
+        width: 640,
+        height: 320,
+        _pad0: 111,
+        _pad1: 222,
+    };
+    run_phase2_echo(ctx, "echo_hdr_env_dims", 6, 7, sample)
+}
+
+/// `spectral_transport.wgsl`'s [`GpuDistDims`] struct-echo self-test
+/// (`echo_dist_dims` entry point, bindings 8/9). See [`run_reduce_params`]'s doc comment
+/// for why this exists.
+#[must_use]
+pub fn run_dist_dims(ctx: &crate::renderer::gpu::GpuContext) -> LayoutCheckResult {
+    let sample = GpuDistDims {
+        width: 128,
+        height: 64,
+        marginal_func_int: 3.5,
+        _pad0: 7.25,
+    };
+    run_phase2_echo(ctx, "echo_dist_dims", 8, 9, sample)
 }
 
 /// Human-readable field name for a byte offset within [`GpuGemMaterial`], for

@@ -76,10 +76,17 @@ const POLL_INTERVAL: Duration = Duration::from_millis(100);
 /// cannot happen here: both [`run`]'s and [`run_connection`]'s loops call
 /// [`try_read_stream_event`] every iteration, and neither loop body does anything else
 /// that isn't O(1) -- the `on_update`/`route_event` callback either sends down an
-/// unbounded channel or queues a closure via `Weak::upgrade_in_event_loop` and returns
-/// immediately, so actual render-tail work always happens on other threads. The
-/// liveness check is therefore only ever reached immediately after a real, just-
-/// attempted, empty read.
+/// unbounded channel or, for a persistent connection's `Frame`/`Preview` events, takes
+/// `gui::remote::orchestrator`'s shared `Orchestrator` mutex SYNCHRONOUSLY (right here,
+/// before ever queuing anything) purely to rate-limit/gate a redraw -- an O(1) check and
+/// mutation, held only that briefly -- and otherwise queues a closure via
+/// `Weak::upgrade_in_event_loop` and returns immediately, so actual render-tail work
+/// (the tonemap/denoise pass) always happens on other threads and is never done while
+/// that mutex is held -- the UI thread must never hold this same mutex across the
+/// tonemap, or this O(1) claim would become false for however long that redraw's
+/// tonemap took; see `gui::remote::orchestrator::tick::update::
+/// redraw_from_accumulator`'s own doc comment. The liveness check is therefore only
+/// ever reached immediately after a real, just-attempted, empty read.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How long the TLS handshake and following `HELLO`/`WELCOME` exchange may take,

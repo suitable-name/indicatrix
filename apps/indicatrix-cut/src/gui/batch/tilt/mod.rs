@@ -56,4 +56,77 @@ mod engine;
 mod scan;
 mod wiring;
 
-pub use wiring::setup_tilt_batch_callbacks;
+pub use engine::{save_tilt_curves_for_entry, tilt_curves_for_planes};
+pub use wiring::{offer_batch_confirmation, setup_tilt_batch_callbacks};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indicatrix::{geometry::cuts::StandardGemCuts, optics::materials::GemMaterial};
+    use indicatrix_vault::{
+        db::sqlite::Database,
+        model::tilt_curves::{AxisTiltCurves, TILT_CURVE_AXIS_COUNT, TiltPerformanceCurves},
+    };
+    use std::sync::atomic::AtomicBool;
+
+    /// The single-design entry point, exercised through THIS module's own re-export
+    /// (not `engine`'s private path) -- there is no other call site in this crate;
+    /// the Edit tab's real "run tilt analysis for the design on the bench" trigger is
+    /// the intended real caller. An already-set `cancel` flag is checked before the (otherwise
+    /// ~1.36s) local sweep even starts, so this stays a fast unit test while still
+    /// proving the re-exported name resolves and runs to a real return value.
+    #[test]
+    fn tilt_curves_for_planes_honours_an_already_set_cancel_flag() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = GemMaterial::diamond();
+        let cancel = AtomicBool::new(true);
+        assert!(tilt_curves_for_planes(&planes, &material, None, &cancel).is_none());
+    }
+
+    /// The same single-design entry point run to REAL completion (not the
+    /// already-cancelled short-circuit above) -- this is the exact call
+    /// `apps/indicatrix-cut/src/gui/editor/callbacks/solve_actions.rs`'s
+    /// `setup_batch_tilt_for_open_design_callback` (the Edit tab's "Compute Tilt
+    /// Curves" button) makes off the UI thread, local-only (`worker: None`).
+    /// Asserts a real, non-degenerate curve set comes
+    /// back, not merely `Some` wrapping a default/empty result.
+    #[test]
+    fn tilt_curves_for_planes_computes_a_real_local_sweep_for_the_open_design_path() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = GemMaterial::diamond();
+        let cancel = AtomicBool::new(false);
+        let curves = tilt_curves_for_planes(&planes, &material, None, &cancel)
+            .expect("a standard round brilliant must sweep successfully");
+        assert!(
+            curves
+                .axes
+                .iter()
+                .any(|axis| axis.brilliance_pct.iter().any(|&v| v > 0.0)),
+            "expected at least one nonzero brilliance sample across the swept axes -- \
+             a real sweep, not a degenerate all-zero placeholder"
+        );
+    }
+
+    fn blank_curves() -> TiltPerformanceCurves {
+        let axis = AxisTiltCurves {
+            brilliance_pct: [0.0; indicatrix_vault::model::tilt_curves::TILT_CURVE_POINTS_PER_AXIS],
+            extinction_pct: [0.0; indicatrix_vault::model::tilt_curves::TILT_CURVE_POINTS_PER_AXIS],
+            windowing_pct: [0.0; indicatrix_vault::model::tilt_curves::TILT_CURVE_POINTS_PER_AXIS],
+        };
+        TiltPerformanceCurves {
+            axes: [axis; TILT_CURVE_AXIS_COUNT],
+        }
+    }
+
+    /// `save_tilt_curves_for_entry` (also exercised only through this module's
+    /// re-export) must fail cleanly -- `false`, not a panic -- for an `entry_id`
+    /// that names no real row: `diagram_tilt_curves.entry_id` is a foreign key
+    /// into `diagram_entries`, and nothing here has inserted one.
+    #[test]
+    fn save_tilt_curves_for_entry_fails_cleanly_for_a_nonexistent_entry() {
+        let db = Database::new(Some(":memory:")).expect("in-memory database must open");
+        let db = std::sync::Mutex::new(db);
+        let saved = save_tilt_curves_for_entry(&db, 999_999, &blank_curves());
+        assert!(!saved, "no diagram_entries row exists for this id");
+    }
+}

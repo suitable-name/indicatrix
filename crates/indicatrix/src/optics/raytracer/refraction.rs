@@ -39,8 +39,8 @@
 //!
 //! 1. *The exit event.* A still-alive companion `k` whose own Snell direction
 //!    diverges from the hero's, at the bounce where the hero-driven path leaves the
-//!    gem, is no longer zeroed. It gets its own Fresnel transmission at its own index
-//!    (the same formula the matching-direction case always used, factored into
+//!    gem, gets its own Fresnel transmission at its own index instead of being zeroed
+//!    (the same formula the matching-direction case always uses, factored into
 //!    [`compute_channel_transmission`] / [`compute_uniaxial_exit_transmission`]), and
 //!    [`try_split_exit_channel`] resolves its own continuation with exactly one extra
 //!    intersection test: a deterministic environment lookup at `k`'s own wavelength
@@ -238,8 +238,8 @@ const _: () = assert!(
 
 /// Bundles the three read-only context references (fixed per trace, per sample, and
 /// per bounce respectively) every isotropic/biaxial bounce-dispatch function in this
-/// module needs -- retiring the flat `ctx, cache, geo` parameter triple every one of
-/// those functions used to take individually. Purely a signature-level grouping: every
+/// module needs, instead of each of those functions taking the flat `ctx, cache, geo`
+/// parameter triple individually. Purely a signature-level grouping: every
 /// field is the exact same reference the caller already had.
 pub(super) struct BounceContext<'m, 'b> {
     pub(super) ctx: &'b RayMaterialContext<'m>,
@@ -570,8 +570,8 @@ pub(crate) fn theta_c_for_bounce(
         // curve when the material carries one -- Quartz/Amethyst/Citrine/Rutile --
         // falling back to the constant-offset approximation otherwise), matching
         // `per_channel_effective_extraordinary_indices`'s own per-channel `n_e_k` lookup
-        // rather than the constant-offset-only `n_o_hero_seed +
-        // material.birefringence_delta` this used to hardcode.
+        // rather than a constant-offset-only `n_o_hero_seed +
+        // material.birefringence_delta`.
         let n_e_hero_seed =
             material.extraordinary_index_at(ctx.lambdas[ctx.hero_idx], n_o_hero_seed);
         let mut n_guess = n_o_hero_seed;
@@ -923,7 +923,21 @@ pub(super) fn apply_tir_bounce(
     stokes: &mut [StokesVector; NUM_CHANNELS],
     path_pdf: &mut [f32; NUM_CHANNELS],
 ) -> (Vec3, Option<f32>) {
-    if let Some(frame) = geo.uniaxial_frame {
+    // The degenerate wave-normal-parallel-to-optic-axis guard the two
+    // sibling uniaxial dispatch sites (`apply_uniaxial_entry_bounce`'s own internal
+    // check, and `try_dispatch_uniaxial_bounce`'s internal-event dispatch) both have --
+    // without it, `internal_solve`'s boundary system singularizes exactly along the
+    // c-axis (its own `flux_inc` floors to the `1e-12` guard instead of the true
+    // nonzero value), which very nearly zeroed EVERY uniaxial internal bounce along a
+    // c-axis-aligned ray. This site is reachable only for a hero-forced TIR bounce
+    // (`geo.sin2_t > 1.0`), so it shares the exact same hazard whenever `c_axis = Y`
+    // (every uniaxial built-in but Tourmaline) and a top-view centre ray TIRs on a
+    // pavilion main. Falls through to the plain scalar per-channel loop below at this
+    // limit, exactly as the sibling sites do -- see their own doc comments for why that
+    // is the exact physics here, not an approximation.
+    if let Some(frame) = geo.uniaxial_frame
+        && k_hat.cross(ctx.c_axis).length_squared() > 1e-6
+    {
         // Uniaxial closed-form solve. `apply_tir_bounce` is reachable only from inside
         // the gem, so every channel's incident state is a single eigenmode (o or e,
         // whichever `is_extraordinary` names) -- the propagating Stokes vector is
@@ -2365,8 +2379,8 @@ fn apply_uniaxial_internal_transmit_channels(
 ///
 /// At an air->crystal entry into an anisotropic material, which eigenmode
 /// (ordinary/mode-A vs extraordinary/mode-B) this path's single geometric transmission
-/// event represents is decided HERE -- before the reflect-vs-transmit draw below --
-/// rather than inside `apply_refract_bounce`'s own transmit branch as it used to be.
+/// event represents is decided HERE -- before the reflect-vs-transmit draw below,
+/// rather than inside `apply_refract_bounce`'s own transmit branch.
 /// Two reasons this has to happen up here:
 ///   - The SELECTION itself is weighted by the incident polarization's projection onto
 ///     each eigenmode's own axis ([`entry_eigenmode_selection`]), not a blanket 50/50 --
@@ -2376,15 +2390,15 @@ fn apply_uniaxial_internal_transmit_channels(
 ///     as ordinary conditional on transmitting.
 ///   - The REFLECT branch's own Fresnel coefficients must be evaluated at the SAME
 ///     mode's index the transmit branch (`apply_refract_channel`) already uses for this
-///     channel, so that `R + T == 1` for whichever mode this draw actually selects.
-///     Before this fix, the reflect/transmit decision always used mode B
-///     (extraordinary)'s index regardless of which mode transmission ultimately used,
-///     so `R + T != 1` by `O(delta_n / n)` whenever the ordinary mode was selected.
+///     channel, so that `R + T == 1` for whichever mode this draw actually selects --
+///     always using mode B (extraordinary)'s index for the reflect/transmit decision
+///     regardless of which mode transmission ultimately uses would instead leave
+///     `R + T != 1` by `O(delta_n / n)` whenever the ordinary mode is selected.
 ///
 /// A biaxial material has no uniaxial "ordinary" eigenmode to weight against, so both
-/// the selection and the index correction below are gated on `!geo.is_biaxial` and a
-/// biaxial entry reduces exactly to the previous behaviour (blanket 50/50, mode B's
-/// index driving the reflect/transmit decision).
+/// the selection and the index correction below are gated on `!geo.is_biaxial`: a
+/// biaxial entry always uses a blanket 50/50 split, with mode B's index driving the
+/// reflect/transmit decision.
 /// Dispatches [`apply_partial_fresnel_bounce`]'s two closed-form uniaxial paths --
 /// air->crystal entry and internal/exit -- split out purely to keep that function's
 /// own body under the workspace line-count lint. Returns `Some` with the full result

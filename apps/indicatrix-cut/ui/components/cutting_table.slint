@@ -12,6 +12,17 @@ export component CuttingTableView inherits Rectangle {
     callback copy_table();
     copy_table => { LibraryModel.copy_cutting_table(); }
 
+    // Each pill shows its own per-mode row count via
+    // `LibraryModel.filtered_row_count(mode)` (Rust body:
+    // `gui::library::detail::count_angles_for_mode`, registered by
+    // `setup_filtered_row_count_callback` from `gui::mod::build_main_window`),
+    // matching `row_shown` below's own visibility predicate exactly (mode 0 ->
+    // every row, mode 1 -> `side < 0`, mode 2 -> `side > 0`). Slint's
+    // imperative statements have no general loop or array `.filter`/`.reduce`,
+    // and a `pure function` here cannot even recurse to fake one (confirmed by
+    // trying it -- `cargo clippy -p indicatrix-cut` reported "the binding for
+    // the property 'count-from' is part of a binding loop"), hence the
+    // Rust-side callback rather than a Slint helper.
     background: Theme.bg-darkest;
     border-radius: Theme.radius-md;
     border-width: 1px;
@@ -35,7 +46,7 @@ export component CuttingTableView inherits Rectangle {
                     border-color: root.filter_mode == 0 ? Theme.accent-cyan : Theme.border-subtle;
                     HorizontalLayout {
                         padding-left: 10px; padding-right: 10px; padding-top: 4px; padding-bottom: 4px;
-                        Text { text: "All Steps (" + root.angles.length + ")"; font-size: 11px; font-weight: 600; color: Theme.text-on-primary; }
+                        Text { text: "All Steps (" + LibraryModel.filtered_row_count(0) + ")"; font-size: 11px; font-weight: 600; color: Theme.text-on-primary; }
                     }
                     TouchArea { clicked => { root.filter_mode = 0; } }
                 }
@@ -47,7 +58,7 @@ export component CuttingTableView inherits Rectangle {
                     border-color: root.filter_mode == 1 ? Theme.accent-cyan : Theme.border-subtle;
                     HorizontalLayout {
                         padding-left: 10px; padding-right: 10px; padding-top: 4px; padding-bottom: 4px;
-                        Text { text: "Pavilion"; font-size: 11px; font-weight: 600; color: Theme.text-on-primary; }
+                        Text { text: "Pavilion (" + LibraryModel.filtered_row_count(1) + ")"; font-size: 11px; font-weight: 600; color: Theme.text-on-primary; }
                     }
                     TouchArea { clicked => { root.filter_mode = 1; } }
                 }
@@ -59,7 +70,7 @@ export component CuttingTableView inherits Rectangle {
                     border-color: root.filter_mode == 2 ? Theme.accent-cyan : Theme.border-subtle;
                     HorizontalLayout {
                         padding-left: 10px; padding-right: 10px; padding-top: 4px; padding-bottom: 4px;
-                        Text { text: "Crown"; font-size: 11px; font-weight: 600; color: Theme.text-on-primary; }
+                        Text { text: "Crown (" + LibraryModel.filtered_row_count(2) + ")"; font-size: 11px; font-weight: 600; color: Theme.text-on-primary; }
                     }
                     TouchArea { clicked => { root.filter_mode = 2; } }
                 }
@@ -87,9 +98,9 @@ export component CuttingTableView inherits Rectangle {
                 Text { width: 50px; text: "#"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
                 Text { width: 90px; text: "FACET"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
                 Text { width: 90px; text: "ANGLE"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
-                // UI/UX review finding 14: was "INDEX GEAR" here vs "Indices" in
-                // `editor_view.slint`'s own tier-list column for the same concept --
-                // picked "Indices" (the shorter, already-used-elsewhere name) for both.
+                // "INDICES" here matches `editor_view.slint`'s own tier-list column
+                // for the same concept -- the shorter, already-used-elsewhere name,
+                // used for both.
                 Text { width: 150px; text: "INDICES"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
                 Text { horizontal-stretch: 1; text: "INSTRUCTIONS / NOTES"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
             }
@@ -109,7 +120,7 @@ export component CuttingTableView inherits Rectangle {
                 spacing: 2px;
 
                 for row in root.angles: Rectangle {
-                    // Item 133: Pavilion/Crown filtering, driven by `AngleItem.side`
+                    // Pavilion/Crown filtering, driven by `AngleItem.side`
                     // (-1 pavilion, 1 crown, 0 neither) so the filter never has to
                     // reparse the formatted angle text. A row that does not match the
                     // active filter collapses to zero height and `visible: false`
@@ -139,9 +150,9 @@ export component CuttingTableView inherits Rectangle {
                         Text { width: 90px; text: row.angle; font-size: 11px; font-weight: 600; color: Theme.accent-amber; vertical-alignment: center; }
                         Text { width: 150px; text: row.index_val; font-size: 11px; color: Theme.text-primary; vertical-alignment: center; }
                         Text { horizontal-stretch: 1; text: row.notes; font-size: 11px; color: Theme.text-secondary; overflow: elide; vertical-alignment: center; }
-                        // Also item: a clipboard icon on hover, so a copy-on-click row
-                        // has some visible affordance for that behaviour instead of
-                        // being a plain-looking row that happens to react to a click.
+                        // A clipboard icon on hover gives a copy-on-click row a
+                        // visible affordance for that behaviour, instead of being a
+                        // plain-looking row that happens to react to a click.
                         Image {
                             source: @image-url("../icons/clipboard.svg");
                             colorize: Theme.text-muted;

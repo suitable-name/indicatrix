@@ -44,6 +44,14 @@ pub struct ObjectiveWeights {
     /// Weight on `100.0 - tilt_brilliance_pct` (so a HIGHER `tilt_brilliance_pct`
     /// always reduces the score).
     pub tilt_brilliance: f32,
+    /// Weight on a candidate's yield loss (`100.0 -` the volumetric yield
+    /// percentage -- see [`Self::score_with_yield`]'s own doc comment).
+    /// Adds a yield term to what would otherwise be a purely optical objective.
+    /// Defaults to `0.0` (see [`Default`]) so
+    /// every existing `(Design, OptimizeConfig)` input reproduces
+    /// [`Self::score`]'s output bit for bit -- this field, and
+    /// [`Self::score_with_yield`], are strictly additive.
+    pub yield_weight: f32,
 }
 
 impl Default for ObjectiveWeights {
@@ -52,6 +60,7 @@ impl Default for ObjectiveWeights {
             windowing: 1.0,
             extinction: 1.0,
             tilt_brilliance: 1.0,
+            yield_weight: 0.0,
         }
     }
 }
@@ -63,6 +72,13 @@ impl ObjectiveWeights {
     /// `[0, 100]` regardless of the absolute weight values a user picks. Falls back
     /// to equal weighting when all three are non-positive, rather than dividing by
     /// zero.
+    ///
+    /// Purely optical -- does not consider [`Self::yield_weight`] at all, even when
+    /// non-zero. Kept byte-for-byte unchanged from before yield weighting existed
+    /// (not merely reimplemented to equal its old output) so every caller that has
+    /// not opted into [`Self::score_with_yield`] is provably unaffected. New
+    /// callers that want yield considered should call [`Self::score_with_yield`]
+    /// instead.
     #[must_use]
     pub fn score(&self, components: &ObjectiveComponents) -> f32 {
         let sum = self.windowing + self.extinction + self.tilt_brilliance;
@@ -74,6 +90,37 @@ impl ObjectiveWeights {
         let norm = (w_win + w_ext + w_tilt).max(1e-6);
         let weighted = w_ext.mul_add(components.extinction_pct, w_win * components.windowing_pct);
         w_tilt.mul_add(100.0 - components.tilt_brilliance_pct, weighted) / norm
+    }
+
+    /// [`Self::score`], extended with a yield term: `yield_loss_pct` (`0.0` to
+    /// `100.0`, LOWER is better -- `100.0` minus the design's own
+    /// [`crate::yield_metrics::volumetric_yield`] percentage, i.e. how much of the
+    /// preform is being thrown away) is blended in at [`Self::yield_weight`],
+    /// alongside the three optical weights, all normalized by their combined sum.
+    ///
+    /// With `yield_weight == 0.0` (the default -- see [`Default`] for
+    /// [`ObjectiveWeights`]) this produces EXACTLY [`Self::score`]'s own output:
+    /// the normalizing sum is identical (adding a zero-weight term changes
+    /// neither the sum nor the weighted numerator), so a caller with the default
+    /// weights reproduces every previous optimizer result bit for bit whether it
+    /// calls this or `score` directly.
+    #[must_use]
+    pub fn score_with_yield(&self, components: &ObjectiveComponents, yield_loss_pct: f32) -> f32 {
+        let sum = self.windowing + self.extinction + self.tilt_brilliance + self.yield_weight;
+        let (w_win, w_ext, w_tilt, w_yield) = if sum > 1e-6 {
+            (
+                self.windowing,
+                self.extinction,
+                self.tilt_brilliance,
+                self.yield_weight,
+            )
+        } else {
+            (1.0, 1.0, 1.0, 0.0)
+        };
+        let norm = (w_win + w_ext + w_tilt + w_yield).max(1e-6);
+        let weighted = w_ext.mul_add(components.extinction_pct, w_win * components.windowing_pct);
+        let weighted = w_tilt.mul_add(100.0 - components.tilt_brilliance_pct, weighted);
+        w_yield.mul_add(yield_loss_pct, weighted) / norm
     }
 }
 

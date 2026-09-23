@@ -1,0 +1,88 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { TemplateGalleryModel } from "../models/templates.slint";
+
+// The New Design dialog's template gallery -- a small grid of cards, one per
+// `TemplateGalleryModel.templates` entry, each showing its name/shape/one-line
+// description.
+//
+// No live-rendered thumbnails yet: a card shows a plain shape-glyph placeholder
+// instead. Wiring an actual background-thread render (reusing
+// `gui::batch::preview::engine`'s resolve/render pair, today private to that
+// module) is left undone -- see `gui/editor/templates.rs`'s own doc
+// comment on `thumbnail_cache_path` for the reasoning and the exact follow-up.
+// The placeholder here is permanent until that follow-up lands, rather than
+// swapped out once a background render completes.
+//
+// Every card is selectable today (`TemplateCardData::ready` is always true --
+// see `gui/editor/templates.rs`'s own doc comment for the dispatch that makes
+// each template reachable from "Create").
+export component TemplateGallery inherits Rectangle {
+    in-out property <int> selected_index: 1;
+    callback selected();
+
+    height: content.preferred-height;
+
+    content := ScrollView {
+        height: min(180px, content.preferred-height);
+        VerticalLayout {
+            spacing: 4px;
+            for card[idx] in TemplateGalleryModel.templates: Rectangle {
+                height: 40px;
+                background: idx == root.selected_index
+                    ? Theme.primary-glow
+                    : (card_touch.has-hover ? Theme.bg-card-hover : Theme.bg-input);
+                border-radius: Theme.radius-sm;
+                border-width: idx == root.selected_index ? 1px : 0px;
+                border-color: Theme.accent-cyan;
+
+                card_touch := TouchArea {
+                    clicked => {
+                        root.selected_index = idx;
+                        root.selected();
+                    }
+                }
+                Tooltip { text: @markdown("\{card.description}"); }
+
+                HorizontalLayout {
+                    padding-left: 8px;
+                    padding-right: 8px;
+                    spacing: 8px;
+                    // Shape-glyph placeholder -- see this component's own top
+                    // doc comment for why there is no rendered thumbnail yet.
+                    Rectangle {
+                        width: 28px;
+                        height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: Theme.bg-darkest;
+                        y: (parent.height - self.height) / 2;
+                        Text {
+                            text: "\u{25C8}";
+                            font-size: 14px;
+                            color: Theme.accent-cyan;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        Text {
+                            text: card.name;
+                            font-size: 10px;
+                            font-weight: 700;
+                            color: Theme.text-primary;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: card.shape;
+                            font-size: 9px;
+                            color: Theme.text-muted;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

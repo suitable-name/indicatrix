@@ -56,6 +56,12 @@ pub fn setup_library_source_callbacks(
         };
 
         if idx < 0 {
+            // Invalidates any in-flight remote search reply from BEFORE
+            // this switch -- `load_filter_options_and_initial_list` below also bumps
+            // (via `refresh_diagram_list`), but that happens only once its own
+            // synchronous query finishes; this closes the window between the click and
+            // that point too.
+            crate::gui::library::search::bump_search_seq();
             *source_switch
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner) = LibrarySource::Local;
@@ -85,6 +91,11 @@ pub fn setup_library_source_callbacks(
             let result = library_client::probe(&worker_for_probe);
             let _ = ui_weak_result.upgrade_in_event_loop(move |ui| match result {
                 Ok(info) if info.library => {
+                    // Invalidates any in-flight LOCAL (or previous remote
+                    // worker's) search reply from before this switch -- see the `idx <
+                    // 0` branch's own comment above for why this can't just wait for
+                    // `load_filter_options_and_initial_list_remote`'s own bump.
+                    crate::gui::library::search::bump_search_seq();
                     let new_source = LibrarySource::Remote(worker_for_probe);
                     *source_probe.lock().unwrap_or_else(PoisonError::into_inner) =
                         new_source.clone();
@@ -94,6 +105,20 @@ pub fn setup_library_source_callbacks(
                         load_filter_options_and_initial_list_remote(&ui, w.clone());
                     }
                     show_toast(&ui, &format!("Now browsing: {}", new_source.label()), "success");
+                    // The sort selector and tag chips reach the remote
+                    // worker's own search (`LibraryRequest::Search::order`/`tag_filter`,
+                    // see `gui::library::search::refresh_diagram_list_remote`) and are not
+                    // greyed out. "My designs" and the just-imported restriction
+                    // still are (see `filter_panel.slint`/`diagram_list.slint`'s own
+                    // `RemoteWorkerModel.library_is_remote` bindings) -- both name local
+                    // entry ids/the local import scheme, which have no meaning against a
+                    // remote catalogue. Say why, once, rather than leaving a cutter to
+                    // wonder why those two stopped reacting.
+                    ui.global::<LibraryModel>().set_status_message(
+                        "\"My designs\" and the just-imported filter apply to the local \
+                         library only."
+                            .into(),
+                    );
                 }
                 Ok(_) => {
                     show_toast(
@@ -141,6 +166,13 @@ fn load_filter_options_and_initial_list_remote(ui: &MainWindow, worker: WorkerSe
                 }) => {
                     apply_shape_gear_options(ui, &shapes, &gears);
                     apply_range_wire_to_ui(ui, &ranges);
+                    // The box, tag chip filter and just-imported
+                    // restriction don't come from this reply at all (unlike shape/gear,
+                    // which `apply_shape_gear_options` above already resets), so they'd
+                    // otherwise still show whatever the previous library left behind
+                    // while the query below runs against the literal `""`/"All
+                    // Shapes"/"All Gears" it's about to be called with.
+                    crate::gui::library::diagram_list::reset_search_and_filter_ui_inputs(ui);
                 }
                 Ok(_) => {
                     ui.global::<LibraryModel>().set_status_message(
@@ -390,8 +422,8 @@ pub struct RemoteDesignSource {
 /// that guard's own comment: a remote `DesignRecord` never carries attachment bytes, so
 /// there was nothing to load). This function is what removes that limitation, but
 /// `gui/editor/callbacks/**` is outside this module's ownership -- wiring it in is a
-/// one-line-guard-replacement call into this function, described in this task's own
-/// final report rather than applied here directly.
+/// one-line guard-replacement call into this function, left to `gui/editor/callbacks`
+/// to make since it is outside this module's ownership.
 pub fn fetch_remote_design_source(
     ui_weak: Weak<MainWindow>,
     worker: WorkerSettings,

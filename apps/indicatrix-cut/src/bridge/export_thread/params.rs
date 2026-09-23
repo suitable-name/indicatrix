@@ -183,7 +183,6 @@ mod tests {
         );
     }
 
-    // Default output path coverage now lives in `filename_template::tests`, which
-    // tests the configurable template resolver that replaced this file's old
-    // fixed-format `default_export_path`.
+    // Default output path coverage lives in `filename_template::tests`, which
+    // tests the configurable template resolver.
 }

@@ -3,8 +3,8 @@
 //!
 //! This is a synchronous Slint callback backed by a background-decoded cache, not a
 //! field on `DiagramItem`: `gui::search::to_diagram_item` (the only place `DiagramItem`
-//! rows are built) is owned by another agent concurrently and can't be touched. Instead
-//! `diagram_list.slint` calls `root.get_preview_thumbnails(item.id,
+//! rows are built) does not decode the cached PNGs, so this resolves them lazily
+//! instead. `diagram_list.slint` calls `root.get_preview_thumbnails(item.id,
 //! root.preview_cache_version)` per visible row, and
 //! [`setup_preview_thumbnail_callback`] answers purely from `item.id`.
 //!

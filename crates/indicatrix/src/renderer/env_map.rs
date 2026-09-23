@@ -15,13 +15,14 @@
 //! [`EnvironmentMap::radiance_at`] accordingly.
 //!
 //! [`EnvironmentMap::sample`]/[`EnvironmentMap::pdf`] back a genuine next-event-estimation
-//! extension as of finding G7:
+//! extension:
 //! `optics::raytracer::environment::{sample_environment_for_nee, environment_nee_pdf}`
-//! wrap them for `optics::raytracer::scattering`'s Henyey-Greenstein NEE (a frosted-facet
-//! transmission is not yet wired up -- see `scattering::NeeContext`'s doc comment for the
-//! exact remaining work), which draws a light-sampling direction/pdf and evaluates an
-//! arbitrary direction's density for a Veach-style balance-heuristic MIS weight,
-//! respectively.
+//! wrap them for `optics::raytracer::scattering`'s Henyey-Greenstein NEE
+//! (`scattering::nee_contribution_hg_scatter`) and its frosted-facet-exterior
+//! counterpart (`scattering::nee_contribution_frosted_exterior`, which handles a
+//! frosted exit's own diffusely-sampled surface point), drawing a light-sampling
+//! direction/pdf and evaluating an arbitrary direction's density for a Veach-style
+//! balance-heuristic MIS weight, respectively.
 
 use std::f32::consts::PI;
 
@@ -35,7 +36,7 @@ mod env_map_distribution;
 mod env_map_spectrum;
 
 // `Distribution1D` re-exported alongside `Distribution2D` (not just used privately here)
-// so `renderer::env_map_gpu::HdrEnvGpuData::upload` (finding G7) can name the type it
+// so `renderer::env_map_gpu::HdrEnvGpuData::upload` can name the type it
 // gets back from `Distribution2D::marginal`/`conditional` when flattening it into GPU
 // buffers -- see that module's own doc comment. `env_map_distribution` itself stays a
 // private submodule nested here (not a sibling `renderer::env_map_distribution`) so
@@ -198,7 +199,7 @@ impl EnvironmentMap {
     }
 
     /// Row-major `[r, g, b]` texel buffer, `width() * height()` entries -- exposed so
-    /// `renderer::env_map_gpu::HdrEnvGpuData::upload` (finding G6) can build the
+    /// `renderer::env_map_gpu::HdrEnvGpuData::upload` can build the
     /// `vec4<f32>`-padded storage buffer `spectral_transport.wgsl`'s `hdr_texels`
     /// binding reads, without duplicating this type's own row-major layout convention.
     /// `feature = "gpu"`: only that GPU-upload path calls this.
@@ -211,7 +212,7 @@ impl EnvironmentMap {
     /// The importance-sampling [`Distribution2D`] backing [`Self::sample`]/[`Self::pdf`].
     ///
     /// Exposed, like [`Self::pixels`], so `renderer::env_map_gpu::HdrEnvGpuData::upload`
-    /// (finding G7's GPU NEE port) can flatten its marginal/conditional cdf and function
+    /// can flatten its marginal/conditional cdf and function
     /// arrays into the storage buffers `spectral_transport.wgsl`'s `dist1d_find_bucket`/
     /// `dist2d_sample`/`dist2d_pdf` binary-search, without duplicating this type's own
     /// row-major layout convention. `renderer::gpu::transport_check`'s Tier 2 self-test
@@ -232,7 +233,13 @@ impl EnvironmentMap {
         let v = v.clamp(0.0, 1.0);
         let theta = v * PI;
         let phi = u * 2.0 * PI;
-        let (sin_theta, cos_theta) = theta.sin_cos();
+        // `sin` of the REFLECTED argument, `cos` of the direct one: near the south pole
+        // `sin(v * PI)` is off by percent purely from the rounding of `v * PI` (see
+        // `pdf_uv_to_solid_angle`, "Why `sin(min(v, 1-v) * PI)`"), while `cos` is
+        // well-conditioned there. Keeps this direction's `sin(theta)` bit-consistent
+        // with the pdf [`Self::sample`] reports for it.
+        let sin_theta = (v.min(1.0 - v) * PI).sin();
+        let cos_theta = theta.cos();
         let (sin_phi, cos_phi) = phi.sin_cos();
         Vec3::new(sin_theta * sin_phi, cos_theta, sin_theta * cos_phi)
     }
@@ -288,7 +295,18 @@ impl EnvironmentMap {
     pub fn pdf(&self, dir: Vec3) -> f32 {
         let (u, v) = Self::direction_to_uv(dir);
         let pdf_uv = self.distribution.pdf(u, v);
-        pdf_uv_to_solid_angle(pdf_uv, v)
+        // `sin(theta)` straight off the direction (`|(x, z)|` of the unit vector) rather
+        // than `sin(acos(y))`: `acos` is ill-conditioned at the poles (its slope is
+        // `1/sin(theta)`), and the GPU twin's `acos` is only accurate to about `1e-6`
+        // absolute there -- which, divided by a `sin(theta)` of `1e-2`, was a `6e-4`
+        // relative pdf gap (9062 ULP) at a direction 0.57 degrees off the south pole.
+        // `(x, z)` carry `sin(theta)` to full precision on both sides. `hypot` here
+        // (clippy `imprecise_flops` forbids the hand-rolled `sqrt(x*x + z*z)`) pairs with
+        // `length(vec2(x, z))` in `transport_bounce.wgsl`'s `dist2d_pdf`; on a unit
+        // vector both are the correctly-rounded-to-a-ULP norm of `(x, z)`.
+        let d = dir.normalize_or_zero();
+        let sin_theta = d.x.hypot(d.z);
+        pdf_uv_to_solid_angle_from_sin(pdf_uv, sin_theta)
     }
 
     /// Bilinear sample of the texel grid at continuous `(u, v)`, wrapping in `u` and
@@ -346,9 +364,30 @@ impl EnvironmentMap {
 /// Near the poles `sin(theta) -> 0` and this blows up; a texel row exactly at a pole
 /// subtends zero solid angle, so this returns `0.0` there rather than `inf`/`NaN`
 /// (matching the `sin(theta)` row-weighting in [`build_distribution`]).
+///
+/// # Why `sin(min(v, 1-v) * PI)` and not `sin(v * PI)`
+///
+/// The two are the same number mathematically (`sin(PI - x) == sin(x)`), but not in
+/// `f32`: with `v` a few ULPs below `1.0`, `v * PI` rounds to within half an ULP of
+/// `PI` (an absolute error of up to `1.2e-7`) and `sin` of that argument is a value of
+/// order `1e-6` -- so the *rounding of the argument alone* perturbs `sin_theta`, and
+/// hence the returned pdf, by several percent (measured: `v = 0.9999984`
+/// gave a pdf 2.7 % high on the CPU and 3.7 % low on the GPU, whose `sin` reduces the
+/// argument differently). Folding the reflection in first keeps the argument in
+/// `[0, PI/2]`, where `1.0 - v` is exact (Sterbenz) and both `libm` and GPU `sin`
+/// are accurate to a couple of ULPs, so the CPU and the WGSL twin
+/// (`transport_physics.wgsl`'s `pdf_uv_to_solid_angle`) agree near the south pole
+/// exactly as they already did near the north pole. Away from the poles the two forms
+/// differ by at most one rounding of the argument.
 fn pdf_uv_to_solid_angle(pdf_uv: f32, v: f32) -> f32 {
-    let theta = v * PI;
-    let sin_theta = theta.sin();
+    let theta = v.min(1.0 - v) * PI;
+    pdf_uv_to_solid_angle_from_sin(pdf_uv, theta.sin())
+}
+
+/// The Jacobian division of [`pdf_uv_to_solid_angle`] with `sin(theta)` supplied by the
+/// caller -- [`EnvironmentMap::pdf`] takes it straight off the direction, where it is
+/// better conditioned than any `v`-derived form (see that function's own comment).
+fn pdf_uv_to_solid_angle_from_sin(pdf_uv: f32, sin_theta: f32) -> f32 {
     if sin_theta <= 1e-6 {
         return 0.0;
     }
@@ -437,5 +476,231 @@ mod nee_sample_pdf_tests {
             checked > 900,
             "sanity: should have checked ~1000 (u0,u1) pairs"
         );
+    }
+}
+
+/// South/north-pole numerics regression test for `pdf_uv_to_solid_angle`,
+/// `uv_to_direction` and `EnvironmentMap::pdf`'s `sin(min(v, 1-v) * PI)` /
+/// `x.hypot(z)` reformulations.
+///
+/// See those functions' own doc comments for the
+/// pole-conditioning problem they fix (the WGSL twins in `transport_physics.wgsl` /
+/// `transport_bounce.wgsl` / `transport_functions.wgsl` already match; this module
+/// checks the CPU side against an independent `f64` reference).
+///
+/// The reference distribution below is a closed-form re-derivation of
+/// [`Distribution2D`]/[`Distribution1D`]'s piecewise-constant density, carried
+/// entirely in `f64`: for row-major weighted texel weights `w_i` (the same
+/// `luminance(texel) * sin(theta_row_center)` [`build_distribution`] feeds to
+/// [`Distribution2D::new`]), the two-stage marginal/conditional construction reduces
+/// algebraically to the single closed form `pdf_uv(row, col) = w[row][col] * width *
+/// height / sum(w)` (a piecewise-constant density over the unit square is just each
+/// bucket's weight over the mean weight; the marginal/conditional split's own
+/// normalizations telescope away) -- see `pdf_uv_f64`'s own comment for the algebra.
+/// That closed form is exact (no iteration, no `f32`), so it is a trustworthy
+/// independent ground truth for [`Distribution2D::pdf`]/[`Distribution1D::pdf`]'s own
+/// bucket-lookup formula, which this module's `pole_numerics_tests` doesn't otherwise
+/// duplicate.
+#[cfg(test)]
+mod pole_numerics_tests {
+    use super::*;
+
+    const PI64: f64 = std::f64::consts::PI;
+
+    /// A non-uniform synthetic map (distinct pixel data from
+    /// `nee_sample_pdf_tests::synthetic_map`, since that helper is private to its own
+    /// module) with a texel resolution fine enough to give the poles' bucket rows
+    /// (`row == 0` and `row == height - 1`) genuinely different weights from their
+    /// neighbours, so this module's pole-focused checks aren't accidentally trivial.
+    fn synthetic_map() -> EnvironmentMap {
+        let width = 16;
+        let height = 8;
+        let pixels: Vec<[f32; 3]> = (0..height)
+            .flat_map(|y| {
+                (0..width).map(move |x| {
+                    let u = x as f32 / width as f32;
+                    let v = y as f32 / height as f32;
+                    [
+                        0.9f32.mul_add(u, 0.05),
+                        0.6f32.mul_add(v, 0.3),
+                        (u * 3.0).sin().mul_add(0.2, 0.4f32.mul_add(v, 0.15)),
+                    ]
+                })
+            })
+            .collect();
+        EnvironmentMap::from_rgb(width, height, pixels).expect("self-consistent by construction")
+    }
+
+    /// `f64` replica of [`luminance`] (Rec.709 relative luminance).
+    fn luminance64(rgb: [f32; 3]) -> f64 {
+        0.0722f64.mul_add(
+            f64::from(rgb[2]),
+            0.7152f64.mul_add(f64::from(rgb[1]), 0.2126 * f64::from(rgb[0])),
+        )
+    }
+
+    /// The `f64` row-major weighted texel array (`luminance64(texel) *
+    /// sin(theta_row_center)`, mirroring [`build_distribution`]'s own `f32` weighting
+    /// exactly but carried in `f64`) plus its total sum, built directly off `map`'s own
+    /// private `pixels`/`width`/`height` fields -- this test module is nested inside
+    /// the same module [`EnvironmentMap`] is defined in, so those private fields are
+    /// visible here (the "crate-private accessor" this module uses, in lieu of the
+    /// `feature = "gpu"`-gated [`Distribution2D::marginal`]/[`Distribution2D::conditional`]
+    /// accessors, which this test binary does not have enabled).
+    fn weighted_texels_f64(map: &EnvironmentMap) -> (Vec<f64>, f64) {
+        let mut weighted = vec![0.0f64; map.width * map.height];
+        for y in 0..map.height {
+            let theta = (y as f64 + 0.5) / map.height as f64 * PI64;
+            let sin_theta = theta.sin().max(0.0);
+            for x in 0..map.width {
+                weighted[y * map.width + x] =
+                    luminance64(map.pixels[y * map.width + x]) * sin_theta;
+            }
+        }
+        let total: f64 = weighted.iter().sum();
+        (weighted, total)
+    }
+
+    /// The `f64`-exact `pdf_uv` (unit-square measure) [`Distribution2D::pdf`] computes,
+    /// at arbitrary continuous `(u, v)`.
+    ///
+    /// Derivation of the closed form: `Distribution1D::bucket_pdf(i) = func[i] /
+    /// mean(func)`. The marginal's own `func` is each row's mean weight
+    /// (`mean(row_y) = sum(row_y) / width`), so `marginal.pdf(v) = mean(row_row) /
+    /// mean_y(mean(row_y)) = sum(row_row) * height / sum_all`. The conditional row's
+    /// `pdf(u) = w[row][col] / mean(row_row) = w[row][col] * width / sum(row_row)`.
+    /// `Distribution2D::pdf` multiplies the two, and `sum(row_row)` cancels exactly:
+    /// `pdf_uv(row, col) = w[row][col] * width * height / sum_all`. The bucket indices
+    /// themselves (`row`/`col`) use the same `floor(x.clamp(0, 0.999_999_94) * n)` rule
+    /// [`Distribution1D::pdf`]/[`Distribution2D::pdf`] use, just evaluated in `f64`.
+    fn pdf_uv_f64(map: &EnvironmentMap, weighted: &[f64], total: f64, u: f64, v: f64) -> f64 {
+        let width = map.width;
+        let height = map.height;
+        let row = (v.clamp(0.0, 0.999_999_94) * height as f64) as usize;
+        let row = row.min(height - 1);
+        let col = (u.clamp(0.0, 0.999_999_94) * width as f64) as usize;
+        let col = col.min(width - 1);
+        weighted[row * width + col] * width as f64 * height as f64 / total
+    }
+
+    /// The `f64`-exact solid-angle-measure pdf at continuous `(u, v)`, mirroring
+    /// [`pdf_uv_to_solid_angle`]'s Jacobian division (`pdf_uv / (2 * PI^2 *
+    /// sin(theta))`) but with `theta = v * PI` and `sin(theta)` both computed directly
+    /// in `f64` -- exactly the computation the `f32` production code's `sin(min(v, 1 -
+    /// v) * PI)` reflection trick approximates near the poles (see that function's own
+    /// doc comment for why the naive `sin(v * PI)` loses precision in `f32` there;
+    /// `f64` has ~9 extra decimal digits of headroom, so the naive form needs no
+    /// reflection to stay accurate at the `v` values this module's checks use).
+    fn pdf_solid_angle_f64(
+        map: &EnvironmentMap,
+        weighted: &[f64],
+        total: f64,
+        u: f64,
+        v: f64,
+    ) -> f64 {
+        let theta = v * PI64;
+        let sin_theta = theta.sin();
+        pdf_uv_f64(map, weighted, total, u, v) / (2.0 * PI64 * PI64 * sin_theta)
+    }
+
+    /// (a) [`EnvironmentMap::sample`]'s own returned pdf against the `f64` reference,
+    /// for `u1` pushing the marginal (row/`v`) draw from the north pole (`u1` near
+    /// `0.0`) to the south pole (`u1` near `1.0`) and through the middle.
+    #[test]
+    fn sample_pdf_matches_f64_reference_across_the_v_range() {
+        let map = synthetic_map();
+        let (weighted, total) = weighted_texels_f64(&map);
+        for u1 in [0.999_999f32, 0.9999, 0.999, 0.5, 0.001, 1e-6] {
+            for u0 in [0.13f32, 0.68] {
+                let (u, v, pdf_uv) = map.distribution.sample(u0, u1);
+                let (_dir, _rgb, pdf_sampled) = map.sample(u0, u1);
+                // Sanity: `map.sample`'s internal `distribution.sample` call is a pure
+                // function of `(u0, u1)`, so calling it again here must reproduce the
+                // exact same `(u, v)` this assertion's reference is built from.
+                let pdf_uv_recomputed = map.distribution.pdf(u, v);
+                assert!(
+                    (pdf_uv - pdf_uv_recomputed).abs() < 1e-4 * pdf_uv.max(1.0),
+                    "test premise: distribution.sample/pdf must agree at (u={u}, v={v})"
+                );
+
+                let reference =
+                    pdf_solid_angle_f64(&map, &weighted, total, f64::from(u), f64::from(v));
+                let rel_err = (f64::from(pdf_sampled) - reference).abs() / reference;
+                assert!(
+                    rel_err < 1e-5,
+                    "u0={u0}, u1={u1}: sample()'s pdf ({pdf_sampled}) must match the f64 \
+                     reference ({reference}) to within 1e-5 relative (got {rel_err:e}), \
+                     u={u}, v={v}"
+                );
+            }
+        }
+    }
+
+    /// (b) [`EnvironmentMap::pdf`] at directions built directly from an exact `(theta,
+    /// phi)` a known angular distance off each pole -- `phi` deliberately not a
+    /// multiple of `PI/8` so these directions never land exactly on a texel-column
+    /// edge, which would make the reference's bucket lookup degenerate/ambiguous.
+    #[test]
+    fn pdf_at_direction_matches_f64_reference_near_both_poles() {
+        let map = synthetic_map();
+        let (weighted, total) = weighted_texels_f64(&map);
+        let phis_deg = [10.0f64, 61.0, 137.0];
+        let angles_deg = [0.05f64, 0.5, 5.0];
+        for &angle_deg in &angles_deg {
+            for &phi_deg in &phis_deg {
+                for north_pole in [true, false] {
+                    let angle_rad = angle_deg.to_radians();
+                    let theta = if north_pole {
+                        angle_rad
+                    } else {
+                        PI64 - angle_rad
+                    };
+                    let phi = phi_deg.to_radians();
+                    let (sin_theta, cos_theta) = theta.sin_cos();
+                    let (sin_phi, cos_phi) = phi.sin_cos();
+                    let dir_f64 = (sin_theta * sin_phi, cos_theta, sin_theta * cos_phi);
+                    let dir_f32 = Vec3::new(dir_f64.0 as f32, dir_f64.1 as f32, dir_f64.2 as f32);
+
+                    let u_exact = (phi / (2.0 * PI64)).rem_euclid(1.0);
+                    let v_exact = theta / PI64;
+                    let reference = pdf_solid_angle_f64(&map, &weighted, total, u_exact, v_exact);
+
+                    let actual = map.pdf(dir_f32);
+                    let rel_err = (f64::from(actual) - reference).abs() / reference;
+                    assert!(
+                        rel_err < 1e-5,
+                        "angle_deg={angle_deg} off the {} pole, phi_deg={phi_deg}: \
+                         pdf() ({actual}) must match the f64 reference ({reference}) to \
+                         within 1e-5 relative (got {rel_err:e}), dir={dir_f32:?}",
+                        if north_pole { "north" } else { "south" }
+                    );
+                }
+            }
+        }
+    }
+
+    /// (c) [`EnvironmentMap::sample`]/[`EnvironmentMap::pdf`] self-consistency
+    /// (production-vs-production, no `f64` reference needed) specifically for `(u0,
+    /// u1)` pairs that push the sampled direction to within a texel or so of either
+    /// pole -- the general `nee_sample_pdf_tests` check sweeps `u1 in [0, 1)` on a
+    /// coarse 29-point grid, which does not specifically probe `u1` within `1e-6` of
+    /// either end.
+    #[test]
+    fn sample_and_pdf_agree_at_sampled_direction_within_texel_of_either_pole() {
+        let map = synthetic_map();
+        for u1 in [1e-7f32, 1e-6, 1e-5, 1.0 - 1e-6, 1.0 - 1e-7] {
+            for u0 in [0.21f32, 0.77] {
+                let (dir, _rgb, pdf_sampled) = map.sample(u0, u1);
+                let pdf_looked_up = map.pdf(dir);
+                let rel_err =
+                    (pdf_sampled - pdf_looked_up).abs() / pdf_sampled.max(pdf_looked_up).max(1e-8);
+                assert!(
+                    rel_err < 1e-4,
+                    "u0={u0}, u1={u1}: sample()'s pdf ({pdf_sampled}) and pdf() at the \
+                     sampled direction ({pdf_looked_up}) must agree to within 1e-4 \
+                     relative near the poles (got {rel_err:e}), dir={dir:?}"
+                );
+            }
+        }
     }
 }

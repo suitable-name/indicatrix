@@ -14,11 +14,10 @@
 //! user's own library. A `#[test]` cannot depend on data that may not exist, so this
 //! stays an example you run deliberately against a catalogue you already have.
 //!
-//! It was originally written as a throwaway probe, and its header used to say so. It
-//! is kept because what it measures is not reproducible any other way: several
-//! constants in the shipped solver cite this harness's full-corpus runs as their
-//! provenance (see `geometry::meet_solver::anchors`'s scale-anchor doc comments and
-//! `geometry::meet_solver::verify`'s Report C references). Deleting it would leave
+//! This harness is kept because what it measures is not reproducible any other way:
+//! several constants in the shipped solver cite this harness's full-corpus runs as
+//! their provenance (see `geometry::meet_solver::anchors`'s scale-anchor doc comments
+//! and `geometry::meet_solver::verify`'s Report C references). Deleting it would leave
 //! those numbers with no way to re-derive them.
 //!
 //! `geometry::meet_solver`'s own 23 unit tests cover the solver's logic on synthetic
@@ -352,20 +351,19 @@ fn score_solved_tiers(
 /// The production ratio-anchoring path: like [`solve_one`], but anchors each block
 /// from the design's own printed `C/W`/`P/W` proportions
 /// ([`apply_ratio_anchors`]) instead of bootstrapping from the file's real tier-0
-/// mast. This is the measurement Item 1 exists to produce -- `solve_one`'s
-/// tier-0-real-mast bootstrap is a harness-only crutch (real usage, especially the
-/// ~2,700 catalogued designs with no `.asc` file at all, has no recorded masts to
-/// bootstrap from), so this is the number that actually matters for "is the solver
-/// usable in production".
+/// mast. This produces the measurement that matters for "is the solver usable in
+/// production": `solve_one`'s tier-0-real-mast bootstrap is a harness-only crutch
+/// (real usage, especially the ~2,700 catalogued designs with no `.asc` file at all,
+/// has no recorded masts to bootstrap from), so a bootstrap-free measurement is the
+/// number that actually reflects production usability.
 ///
 /// A block whose ratio is `None` (a partial diagram) or that `apply_ratio_anchors`
 /// otherwise couldn't cover still falls back to its own tier-0 real mast, exactly
 /// like `solve_one`, so every design remains solvable and comparable -- but that
 /// fallback is recorded (`DesignResult::fully_ratio_anchored`) and every anchor
-/// tier, whichever path supplied it, is excluded from scoring below (the same bug
-/// class an earlier pass fixed for `solve_one`'s bootstrap: an anchor is *given*,
-/// not *solved*, so counting it as a free zero-error tier would flatter the
-/// numbers).
+/// tier, whichever path supplied it, is excluded from scoring below: an anchor is
+/// *given*, not *solved*, so counting it as a free zero-error tier would flatter the
+/// numbers.
 fn solve_one_ratio_anchored(row: &AscRow) -> DesignResult {
     solve_one_ratio_anchored_impl(row, false)
 }
@@ -765,10 +763,9 @@ fn print_verified_extras(results: &[DesignResult]) {
 }
 
 /// Counts, among `diagram_details` rows that have no `.asc` attachment at all (the
-/// ~2,700-design population Item 1's ratio-anchoring exists to serve, per the task
-/// description), how many have `cw_ratio`, `pw_ratio`, and both -- a direct coverage
-/// number independent of anything measurable via real masts (there are none for
-/// this population).
+/// ~2,700-design population that ratio-anchoring exists to serve), how many have
+/// `cw_ratio`, `pw_ratio`, and both -- a direct coverage number independent of
+/// anything measurable via real masts (there are none for this population).
 fn count_ratio_coverage_for_designs_without_asc(conn: &Connection) -> (i64, i64, i64, i64) {
     conn.query_row(
         "SELECT COUNT(*), \

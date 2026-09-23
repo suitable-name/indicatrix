@@ -8,10 +8,60 @@
 //! [`spawn_render_thread`]: super::spawn_render_thread
 
 use super::{display_thread::FrameMetricsSnapshot, redraw_gate::RedrawGate};
-use crate::settings::model::LiveComputeTarget;
+use crate::{ActivityModel, settings::model::LiveComputeTarget};
 use glam::Vec3;
 use slint::{ComponentHandle, Weak};
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc};
+
+thread_local! {
+    /// The `crate::ActivityModel` id for the "full quality trace" activity
+    /// currently showing in the status strip, if any. UI-thread-only: accessed
+    /// only from inside [`push_frame_to_ui`]'s `upgrade_in_event_loop` closure.
+    static TRACE_ACTIVITY_ID: RefCell<Option<i32>> = const { RefCell::new(None) };
+}
+
+/// Camera movement and convergence flags for activity tracking: whether the
+/// current frame is a camera-orbit redraw (which should not start/finish a trace
+/// activity) and whether it has converged (which finishes the activity). A named
+/// struct rather than two positional bools prevents silent transposition errors.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct FrameActivityFlags {
+    /// Mirrors `RenderContext::camera_moving` at the moment this frame's cycle was
+    /// handed to the display thread -- while true, this frame is a lower-quality
+    /// camera-orbit redraw, not a step toward a converged full-quality trace, so
+    /// [`push_frame_to_ui`] neither starts nor finishes an activity for it.
+    pub(super) camera_moving: bool,
+    /// Whether THIS frame is the one where progressive accumulation first reached
+    /// `RenderContext::target_samples` (`mod.rs`'s own `converged_now`) -- the
+    /// "finished when the frame arrives" moment.
+    pub(super) converged: bool,
+}
+
+/// Lets [`push_frame_to_ui`] reach `crate::ActivityModel` while staying generic
+/// over `T: ComponentHandle`. Avoids naming `crate::MainWindow` directly in this
+/// module; Rust infers `T = MainWindow` from the sole call site in
+/// `gui::mod::run_gui`.
+pub trait TraceActivitySink: ComponentHandle {
+    /// Registers an indeterminate, non-cancellable "Path tracing" activity and
+    /// returns its id.
+    fn start_trace_activity(&self) -> i32;
+    /// Finishes the activity `id` names.
+    fn finish_trace_activity(&self, id: i32);
+}
+
+impl TraceActivitySink for crate::MainWindow {
+    fn start_trace_activity(&self) -> i32 {
+        self.global::<ActivityModel>().invoke_start_external(
+            "trace".into(),
+            "Path tracing".into(),
+            false,
+        )
+    }
+
+    fn finish_trace_activity(&self, id: i32) {
+        self.global::<ActivityModel>().invoke_finish_external(id);
+    }
+}
 
 /// One finished display cycle's payload, carried by [`push_frame_to_ui`]'s
 /// [`RedrawGate`] from the display thread to the Slint UI-thread closure that shows it
@@ -20,6 +70,7 @@ use std::sync::Arc;
 pub(super) struct FramePayload {
     image: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
     metrics_snapshot: FrameMetricsSnapshot,
+    activity_flags: FrameActivityFlags,
 }
 
 /// Pushes one finished frame's image and gemological metrics to the UI thread's event
@@ -35,8 +86,9 @@ pub(super) fn push_frame_to_ui<T, F, M>(
     redraw_gate: &Arc<RedrawGate<FramePayload>>,
     image: slint::SharedPixelBuffer<slint::Rgba8Pixel>,
     metrics_snapshot: FrameMetricsSnapshot,
+    activity_flags: FrameActivityFlags,
 ) where
-    T: ComponentHandle + 'static,
+    T: TraceActivitySink + 'static,
     F: Fn(&T, slint::SharedPixelBuffer<slint::Rgba8Pixel>) + Send + 'static + Clone,
     M: Fn(&T, f32, f32, f32, f32, f32, [f32; 19], [f32; 19], [f32; 19], f32)
         + Send
@@ -47,11 +99,12 @@ pub(super) fn push_frame_to_ui<T, F, M>(
         .submit(FramePayload {
             image,
             metrics_snapshot,
+            activity_flags,
         })
         .is_none()
     {
-        // A previously enqueued closure is still pending -- it will pick up the
-        // payload just submitted once it runs, so a second closure would be redundant.
+        // An enqueued closure is still pending -- it will pick up the payload
+        // just submitted when it runs, making a second closure redundant.
         return;
     }
     let redraw_gate = Arc::clone(redraw_gate);
@@ -62,6 +115,7 @@ pub(super) fn push_frame_to_ui<T, F, M>(
             let Some(FramePayload {
                 image,
                 metrics_snapshot,
+                activity_flags,
             }) = redraw_gate.take()
             else {
                 // Can't happen in practice -- enqueued only right after a `submit`
@@ -82,18 +136,38 @@ pub(super) fn push_frame_to_ui<T, F, M>(
                 metrics_snapshot.graph_windowing,
                 metrics_snapshot.cam_pitch_deg,
             );
+            track_trace_activity(&ui, activity_flags);
         }
     });
 }
 
+/// The activity start/finish decision itself, split out purely so
+/// [`push_frame_to_ui`]'s own closure stays readable. See [`FrameActivityFlags`]'s
+/// own doc comment for `camera_moving`/`converged`'s meaning. Starts an
+/// indeterminate, non-cancellable "Path tracing" activity on the first non-orbit,
+/// non-converged frame after one finishes (or after startup), and finishes it the
+/// moment a frame converges -- camera-orbit frames touch neither state, so
+/// continuous orbiting never flickers the status strip.
+fn track_trace_activity<T: TraceActivitySink>(ui: &T, flags: FrameActivityFlags) {
+    if !flags.camera_moving {
+        let already_running = TRACE_ACTIVITY_ID.with(|cell| cell.borrow().is_some());
+        if !already_running && !flags.converged {
+            let id = ui.start_trace_activity();
+            TRACE_ACTIVITY_ID.with(|cell| *cell.borrow_mut() = Some(id));
+        }
+    }
+    if flags.converged
+        && let Some(id) = TRACE_ACTIVITY_ID.with(|cell| cell.borrow_mut().take())
+    {
+        ui.finish_trace_activity(id);
+    }
+}
+
 /// Pushes just this iteration's gemological metrics to the UI thread, with no
-/// image -- the metrics-while-suspended path (CAD audit item 60) takes this
-/// instead of [`push_frame_to_ui`] so an invisible 3D tab never pays for a
-/// denoise+tonemap+framebuffer-copy cycle nobody can see just to keep the HUD/
-/// tilt-dialog numbers current. No `RedrawGate` here: this only runs on the
-/// suspended path's own ~100ms cadence (see `spawn_render_thread`'s suspension
-/// branch), which is already far below the rate a burst-coalescing gate exists to
-/// protect against.
+/// image. Invisible 3D tabs (e.g., the Edit tab's Solid view) must continue
+/// updating HUD and tilt-dialog metrics without paying for denoise/tonemap/
+/// framebuffer-copy cycles. No `RedrawGate` here; the ~100ms cadence of the
+/// suspended path is already far below burst-coalescing rates.
 pub(super) fn push_metrics_to_ui<T, M>(
     ui_weak: &Weak<T>,
     update_metrics: &M,
@@ -189,9 +263,8 @@ pub(super) struct SuspensionFlags {
     /// mean local must stay off", not "is remote active at all".
     pub(super) remote_suspends: bool,
     pub(super) export_active: bool,
-    /// `RenderContext::material_unresolved.is_some()` -- CAD audit item 57. Unlike
-    /// every other flag here this is not about who owns the buffer; it is about
-    /// whether any result computed now would mean anything.
+    /// `RenderContext::material_unresolved.is_some()`. Unlike other flags, this
+    /// is not about ownership; it reflects whether computed results would be valid.
     pub(super) material_unresolved: bool,
 }
 
@@ -204,21 +277,15 @@ impl SuspensionFlags {
             || self.material_unresolved
     }
 
-    /// Whether gemological METRICS evaluation (as opposed to full path-tracing)
-    /// should also be skipped this iteration -- CAD audit item 60. Deliberately
-    /// narrower than [`Self::tracing_suspended`]: an invisible 3D tab (the Edit
-    /// tab's default Solid view mode) must not, on its own, freeze brilliance/
-    /// fire/windowing/extinction and the tilt-dialog graphs at whatever was last
-    /// traced while the cutter keeps editing the design. Only a hard suspend --
-    /// an explicit pause, a remote/export handoff owning the buffer -- blocks
-    /// metrics too, since those genuinely mean "nothing here should be computed
-    /// right now" rather than "nothing here is currently on screen".
+    /// Whether gemological METRICS evaluation should be skipped, distinct from
+    /// full path-tracing suspension. An invisible 3D tab must not freeze HUD
+    /// metrics while the cutter edits. Only explicit pause, remote/export handoff
+    /// blocks metrics, since those mean "nothing should compute now" versus just
+    /// "nothing is on screen".
     pub(super) const fn metrics_suspended(self) -> bool {
-        // `material_unresolved` belongs here as well as in `tracing_suspended`, and
-        // is the only flag that does: the others mean "not now", this one means
-        // "there is no honest answer to compute" (CAD audit item 57). Scoring
-        // brilliance against a substituted material is exactly the contradiction
-        // that item is about.
+        // `material_unresolved` blocks metrics (unlike just an invisible tab)
+        // because there is no honest answer to compute when the material is
+        // unresolved; all other flags mean "not right now".
         self.paused || self.remote_suspends || self.export_active || self.material_unresolved
     }
 }
@@ -394,7 +461,7 @@ mod tests {
         }
     }
 
-    // ---- metrics_suspended: narrower than tracing_suspended -- CAD audit item 60 ----
+    // ---- metrics_suspended: narrower than tracing_suspended ----
 
     #[test]
     fn an_invisible_tab_alone_does_not_suspend_metrics() {

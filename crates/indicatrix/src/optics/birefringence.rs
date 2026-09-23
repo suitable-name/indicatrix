@@ -1540,7 +1540,7 @@ mod biaxial_reduction_tests {
         }
     }
 
-    /// Pins the brief's own worked example: with `gamma_axis = +Y`, the deterministic
+    /// Pins the worked example: with `gamma_axis = +Y`, the deterministic
     /// `stable_orthonormal_basis` completion must place `alpha` on `+X`, `beta` on
     /// `-Z`, and `gamma` on `+Y` itself.
     #[test]
@@ -1645,8 +1645,8 @@ mod walk_off_symmetry_tests {
     /// `-c_axis` describe the identical physical crystal, so
     /// `extraordinary_poynting_dir` must return the same Poynting direction for both.
     /// Swept across many incidence angles, deliberately crossing both sides of the
-    /// previously-broken `wave_normal.dot(c_axis) >= 0` branch, for calcite-like
-    /// ordinary/extraordinary indices and an off-axis `c_axis`.
+    /// `wave_normal.dot(c_axis) >= 0` branch, for calcite-like ordinary/extraordinary
+    /// indices and an off-axis `c_axis`.
     #[test]
     fn extraordinary_poynting_dir_is_axis_direction_symmetric() {
         let n_o = 1.658f32;
@@ -1678,7 +1678,7 @@ mod walk_off_symmetry_tests {
         }
     }
 
-    /// Pins the exact measured regression from the physics review: a wave normal at 45
+    /// Pins the exact measured regression: a wave normal at 45
     /// degrees from the optic axis in a calcite-like negative uniaxial material
     /// (`n_o`=1.658, `n_e`=1.486) must walk off to 51.23 degrees from the axis -- not 38.77
     /// degrees (the pre-fix answer on the `wave_normal.dot(c_axis) > 0` branch, off by

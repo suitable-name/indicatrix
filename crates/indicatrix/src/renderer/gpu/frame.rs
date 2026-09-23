@@ -65,8 +65,8 @@
 //! four (camera, material, facet geometry, facet finishes) are PERSISTENT across every
 //! `accumulate` call, not merely uploaded once per call -- see
 //! [`FrameSceneBuffers::ensure`], which either creates them (first call) or updates them
-//! in place via `queue.write_buffer` (every later call), eliminating the four-buffer
-//! churn finding G3 flagged. [`GpuTransportParams`] itself is likewise now a persistent
+//! in place via `queue.write_buffer` (every later call), avoiding a four-buffer
+//! reallocation on every call. [`GpuTransportParams`] itself is likewise a persistent
 //! per-output-slot buffer (see [`GpuFrameRenderer::params_buffers`]), written rather than
 //! recreated each chunk. Likewise [`GpuFrameRenderer::staging`] holds two persistent
 //! [`StagingSlot`]s, grown -- never shrunk -- only when
@@ -74,7 +74,7 @@
 //! [`staging_needs_growth`]), mirroring [`GpuFrameRenderer::ensure_capacity`]'s policy
 //! for `outputs`. [`dispatch_chunk`] therefore uploads nothing at all via
 //! [`build_chunk_bind_group`] -- only `queue.write_buffer`s into already-allocated
-//! buffers. The wasm32 [`GpuFrameRenderer::accumulate_async`] path never had this overlap
+//! buffers. The wasm32 [`GpuFrameRenderer::accumulate_async`] path has no such overlap
 //! and keeps uploading through [`build_bind_group`] unchanged.
 //!
 //! # Material-class kernel specialisation
@@ -123,21 +123,51 @@
 //!   `GemMaterial::gpu_supported` is this crate's routing predicate and
 //!   [`GpuFrameRenderer::accumulate`] enforces it ([`GpuFrameError::UnsupportedMaterial`]).
 //!   Currently unconditionally `true` -- every built-in material, including the
-//!   biaxial ones, is ported and verified at 0 ULP -- but stays enforced because a
-//!   future material kind the megakernel cannot handle would flip it.
-//! - **HDR environment maps (finding G6).** `EnvironmentSource::HdrMap` now renders on the
+//!   biaxial ones, is ported and verified against this module's Tier 2 per-function ULP
+//!   budgets -- but stays enforced because a future material kind the megakernel cannot
+//!   handle would flip it. Every
+//!   Beer-Lambert/extinction-transmittance site whose CPU twin calls
+//!   `crate::simd::exp_f32x8` -- `apply_absorption` (`absorption.rs`), the achromatic
+//!   scatter/survive branches of `maybe_scatter_or_extinguish`, and
+//!   `nee_contribution_hg_scatter`'s medium transmittance (all in `scattering.rs`) --
+//!   has a WGSL twin (`exp_poly`, `transport_physics.wgsl`) that ports `exp_f32x8`'s own
+//!   scalar reference op-for-op (same Cody-Waite range reduction, same `mul_add`/`fma`
+//!   placement, same polynomial coefficients), not the `exp()` builtin, at every one of
+//!   those call sites in `transport_physics.wgsl`/`transport_bounce.wgsl`/
+//!   `transport_functions.wgsl`. `spectral_absorption`'s Gaussian band-shape evaluation
+//!   (`optics::absorption::AbsorptionBand::evaluate`) is a DIFFERENT case: the CPU
+//!   genuinely calls `f32::exp()` there (not `exp_f32x8`), so its WGSL twin keeps the
+//!   plain `exp()` builtin too -- op-for-op identical source on both sides, the residual
+//!   ULP gap there is this adapter's hardware-transcendental-vs-`libm` rounding
+//!   difference, not a twin divergence, and stays within its own ULP budget, never 0. No
+//!   CPU-vs-GPU comparison in this crate should ever be tightened to bit-exact on that
+//!   basis -- but the Beer-Lambert-family sites above ARE
+//!   bit-exact (0 genuine ULP), since both sides run the identical polynomial.
+//! - **HDR environment maps.** `EnvironmentSource::HdrMap` renders on the
 //!   GPU: `env_mode == transport_env_mode::HDR_MAP` routes the megakernel's miss-branch
 //!   and exit-splitting environment lookups through `hdr_env_radiance_at`
-//!   (`spectral_transport.wgsl`), which mirrors [`crate::renderer::env_map::EnvironmentMap`]'s
-//!   `direction_to_uv`/`sample_bilinear`/`radiance_at` bit-for-bit (see
-//!   `renderer::env_map_gpu::HdrEnvGpuData`'s doc comment for the texel-buffer layout and
-//!   [`crate::renderer::gpu::environment_check`]'s `run_hdr_env_radiance` for the ULP
-//!   check). [`GpuFrameError::UnsupportedEnvironment`] is kept for a genuinely
-//!   unsupported future environment source, mirroring [`GpuFrameError::UnsupportedMaterial`]'s
-//!   own currently-unreachable-but-enforced status -- no [`EnvironmentSource`] variant
-//!   produces it today.
+//!   (`spectral_transport.wgsl`), which ports [`crate::renderer::env_map::EnvironmentMap`]'s
+//!   `direction_to_uv`/`sample_bilinear`/`radiance_at` -- pure trig and bilinear-blend
+//!   arithmetic, no `exp()` in this part of the path -- verified against
+//!   [`crate::renderer::gpu::environment_check`]'s `run_hdr_env_radiance` ULP check (see
+//!   `renderer::env_map_gpu::HdrEnvGpuData`'s doc comment for the texel-buffer layout),
+//!   **not** claimed bit-exact: `run_hdr_env_radiance` gates on a ULP budget, not `== 0`,
+//!   the same way every other Tier 2 check in this module does, for any material whose
+//!   absorption/scattering feeds into what gets looked up.
+//!   The CPU (`optics::raytracer::transport::trace_spectral_ray_inner`'s own
+//!   white-balance step) and this GPU path both skip the Von-Kries white-balance round
+//!   trip for `HdrMap` --
+//!   `env_mode == 1u` (`Studio`) gates it on the GPU, `EnvironmentSource::HdrMap(_) => xyz`
+//!   (no-op) on the CPU -- so a hybrid CPU/GPU HDR frame never disagrees by that
+//!   transform's own non-exact-inverse floor (`max|B*A - I| ~= 5.2e-7`), the way it would
+//!   if only one side applied the transform. [`GpuFrameError::UnsupportedEnvironment`] is
+//!   reachable, not merely unreachable-but-enforced future-proofing (mirroring
+//!   [`GpuFrameError::UnsupportedMaterial`]'s own status): [`build_hdr_env`] returns it
+//!   for an HDR map whose texel buffer would exceed the
+//!   device's `max_storage_buffer_binding_size` (see
+//!   [`crate::renderer::env_map_gpu::HdrEnvGpuData::fits_storage_binding`]).
 //!
-//! # Wavefront pipeline (finding G5 Part B)
+//! # Wavefront pipeline
 //!
 //! [`GpuPipelineKind::Wavefront`] (selected via [`GpuFrameRenderer::set_pipeline_kind`]/
 //! [`crate::renderer::gpu_backend::GpuBackend::set_pipeline_kind`], `Megakernel` is
@@ -174,9 +204,9 @@
 //! (`stokes`, `radiance`, `path_pdf`, `split_radiance`, `compat`, `lambdas`, about 288
 //! bytes total), plus `pending_light_mis`/`seed` (8 bytes). At `max_bounces` rounds with
 //! no compaction shrinkage this is `max_bounces` times the megakernel's total
-//! register/cache traffic for the same rays, now paid as actual VRAM bandwidth instead
-//! of registers -- the trade this pipeline makes is exactly the register-pressure
-//! relief finding G5 targets, in exchange for this bandwidth and the compaction round's
+//! register/cache traffic for the same rays, paid as actual VRAM bandwidth instead
+//! of registers -- the trade this pipeline makes is register-pressure
+//! relief in exchange for this bandwidth and the compaction round's
 //! own synchronous host stall (see [`GpuFrameRenderer::run_wavefront_bounce_rounds`]'s
 //! doc comment).
 //!
@@ -222,8 +252,8 @@ use crate::{
         },
         env_map_gpu::HdrEnvGpuData,
         gpu::{
-            GpuAcquireError, GpuContext, MEGAKERNEL_STORAGE_BUFFERS, WAVEFRONT_STORAGE_BUFFERS,
-            compute,
+            GpuAcquireError, GpuContext, MEGAKERNEL_STORAGE_BUFFERS,
+            WAVEFRONT_BOUNCE_TOTAL_BUFFERS, WAVEFRONT_STORAGE_BUFFERS, compute,
         },
     },
 };
@@ -244,7 +274,7 @@ pub(crate) const SHADER_SRC: &str = include_str!(concat!(
 /// [`GpuFrameRenderer::dispatch_chunk`]'s doc comment for why this kernel exists.
 const REDUCE_SHADER_SRC: &str = include_str!("../shaders/reduce_xyz.wgsl");
 
-/// Finding G5 Part B: `shaders/wavefront_transport.wgsl`'s generated source --
+/// `shaders/wavefront_transport.wgsl`'s generated source --
 /// `shaders/transport_physics.wgsl` + `shaders/transport_bounce.wgsl` +
 /// `shaders/wavefront_transport.wgsl`, concatenated by `build.rs` the same way
 /// [`SHADER_SRC`] is (see that constant's own doc comment and `build.rs`'s own doc
@@ -259,13 +289,16 @@ const WAVEFRONT_SHADER_SRC: &str = include_str!(concat!(
 /// WGSL's implicit padding of a two-`u32` uniform struct up to a 16-byte block, mirroring
 /// `renderer::buffers`' own layout convention (see that module's doc comment) rather than
 /// relying on `wgpu`'s own struct-size rounding for a uniform buffer.
+///
+/// `pub(crate)` (not private): `layout_check::run_reduce_params` builds a
+/// sample instance to echo through `phase2_layout_echo.wgsl`, from outside this module.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct GpuReduceParams {
-    num_pixels: u32,
-    num_samples: u32,
-    _pad0: u32,
-    _pad1: u32,
+pub(crate) struct GpuReduceParams {
+    pub(crate) num_pixels: u32,
+    pub(crate) num_samples: u32,
+    pub(crate) _pad0: u32,
+    pub(crate) _pad1: u32,
 }
 
 /// Floats this module's production dispatch writes and reads back per (pixel, sample)
@@ -273,7 +306,7 @@ struct GpuReduceParams {
 /// 27-floats-per-tuple capacity -- see the module doc comment's "Chunking" section.
 const FLOATS_PER_TUPLE: usize = 3;
 
-// Finding G5 Part B: `GpuPipelineKind` itself is defined in `renderer::gpu_backend`, NOT
+// `GpuPipelineKind` itself is defined in `renderer::gpu_backend`, NOT
 // here, and re-exported -- see that module's own doc comment on why `GpuBackend` exists
 // in both build configurations (with and without `feature = "gpu"`) and its types must
 // therefore be reachable without the feature too. Re-exporting it here (rather than every
@@ -327,14 +360,18 @@ pub enum GpuFrameError {
     /// No usable adapter or device on this machine. Expected on plenty of systems; see
     /// [`GpuContext::acquire`].
     Acquire(GpuAcquireError),
-    /// The scene uses an environment the megakernel has no `env_mode` for.
+    /// The scene's environment cannot be dispatched as-is.
     ///
-    /// Currently unreachable: every [`EnvironmentSource`] variant (including `HdrMap`,
-    /// since finding G6) has an `env_mode` -- see [`environment_params`]. Kept as
-    /// defensive future-proofing, mirroring [`Self::UnsupportedMaterial`]'s own
-    /// currently-unreachable-but-enforced status, since a future environment source this
-    /// megakernel cannot handle should produce this rather than a plausible-looking wrong
-    /// image.
+    /// Every [`EnvironmentSource`] variant has an `env_mode` (including `HdrMap`,
+    /// see [`environment_params`]), so this is not an unreachable-by-variant case.
+    /// It IS reachable:
+    /// [`build_hdr_env`] returns this when
+    /// [`HdrEnvGpuData::fits_storage_binding`](crate::renderer::env_map_gpu::HdrEnvGpuData::fits_storage_binding)
+    /// says an HDR map's texel buffer would exceed the device's
+    /// `max_storage_buffer_binding_size`. A caller sees this exactly like any other
+    /// decline (fall back to the CPU tracer, which has no such buffer-size ceiling) --
+    /// see `renderer::gpu_backend::GpuBackend::try_accumulate_cancellable`'s non-`DeviceLost`
+    /// `Err` arm.
     UnsupportedEnvironment,
     /// The device cannot bind enough storage buffers in one compute stage for the
     /// megakernel (`needed` is [`MEGAKERNEL_STORAGE_BUFFERS`]). WebGPU's baseline is 8;
@@ -567,7 +604,7 @@ impl TransportOutputs {
 }
 
 /// One double-buffered slot's GPU-reduced per-pixel XYZ output -- `reduce_xyz_main`'s
-/// destination buffer (see `reduce_xyz.wgsl`'s header comment and finding G2). Alternated
+/// destination buffer (see `reduce_xyz.wgsl`'s header comment). Alternated
 /// in lockstep with [`TransportOutputs`]/[`StagingSlot`] by
 /// [`GpuFrameRenderer::dispatch_chunk`]: `reduce_xyz_main` sums a chunk's `out_xyz`
 /// (`pixels * spp * 3` floats) down to `pixels * 3` floats here, and THIS buffer -- not
@@ -610,7 +647,7 @@ pub(crate) struct TransportDispatchArgs<'a> {
     pub(crate) planes: &'a [GpuFacetPlane],
     pub(crate) facet_finishes: &'a [u32],
     pub(crate) outputs: &'a TransportOutputs,
-    /// Finding G6/G7: bindings 10-14 (`hdr_texels`/`hdr_env_dims`/`dist_func`/`dist_cdf`/`dist_dims`) -- ALWAYS bound, even for
+    /// Bindings 10-14 (`hdr_texels`/`hdr_env_dims`/`dist_func`/`dist_cdf`/`dist_dims`) -- ALWAYS bound, even for
     /// a non-HDR dispatch (pass [`HdrEnvGpuData::dummy`]); see that type's own doc comment
     /// for why the megakernel's bind group layout always includes these two.
     pub(crate) hdr_env: &'a HdrEnvGpuData,
@@ -717,10 +754,10 @@ pub(crate) fn encode_and_dispatch(args: &TransportDispatchArgs<'_>, total_tuples
 /// (camera/material every call; `planes`/`facet_finishes` too, UNLESS the new scene needs
 /// more capacity than the buffer already has, in which case it is recreated -- grown,
 /// never shrunk, mirroring [`GpuFrameRenderer::ensure_capacity`]'s policy for `outputs`).
-/// This replaces the four-fresh-buffers-per-call behaviour finding G3 flagged: a desktop
-/// viewport calling `accumulate` every ~16ms was recreating all four wgpu buffers that
-/// often. None of these four differ between CHUNKS of one frame either -- only
-/// [`GpuTransportParams`] does, itself now also a persistent per-slot buffer (see
+/// Avoids the four-fresh-buffers-per-call cost a naive implementation would pay: a
+/// desktop viewport calling `accumulate` every ~16ms would otherwise recreate all four
+/// wgpu buffers that often. None of these four differ between CHUNKS of one frame either
+/// -- only [`GpuTransportParams`] does, itself also a persistent per-slot buffer (see
 /// [`GpuFrameRenderer::params_buffers`]) rather than a fresh upload in
 /// [`build_chunk_bind_group`]. See the module doc comment's "Per-frame uploads, persistent
 /// staging" section.
@@ -735,7 +772,7 @@ struct FrameSceneBuffers {
     planes_capacity: usize,
     facet_finishes: wgpu::Buffer,
     facet_finishes_capacity: usize,
-    /// Finding G6/G7: bindings 10-14's backing data -- see [`HdrEnvGpuData`]'s doc comment.
+    /// Bindings 10-14's backing data -- see [`HdrEnvGpuData`]'s doc comment.
     /// Unlike `camera`/`material`/`planes`/`facet_finishes` above, this is REBUILT (never
     /// `queue.write_buffer`d in place) whenever it changes, since a texel buffer's very
     /// SIZE depends on the map's resolution -- there is no fixed-capacity "grow, never
@@ -755,16 +792,39 @@ struct FrameSceneBuffers {
 /// [`HdrEnvGpuData::dummy`] for `Studio` -- see that type's own doc comment for why a
 /// non-HDR scene still needs something bound at bindings 10-14. Returns the identity
 /// [`FrameSceneBuffers::hdr_env_identity`] should record alongside it.
+///
+/// The native production call site that enforces
+/// [`HdrEnvGpuData::fits_storage_binding`], declining BEFORE calling the (infallible)
+/// [`HdrEnvGpuData::upload`] rather than having `upload` itself return a `Result` --
+/// `upload` has several other callers across this crate's self-tests, outside
+/// `renderer::gpu::frame`, that always pass small fixture maps and were left untouched
+/// rather than every one of them needing a new `.expect(..)`/`?`. This function (reached
+/// only from [`FrameSceneBuffers::new`]/[`FrameSceneBuffers::update`], both driven by
+/// [`GpuFrameRenderer::prepare_turn`]) and wasm32's `accumulate_async` (which repeats the
+/// same `fits_storage_binding` check inline -- it never had `FrameSceneBuffers`'s
+/// cross-call persistence to share this helper through) are the only two places a
+/// caller-controlled resolution reaches [`HdrEnvGpuData::upload`], so they are the only
+/// two places that need to decline gracefully instead of assuming a test fixture's size.
+///
+/// # Errors
+///
+/// [`GpuFrameError::UnsupportedEnvironment`] if `map`'s texel buffer would exceed the
+/// device's storage-binding limit -- see [`HdrEnvGpuData::fits_storage_binding`]'s own
+/// doc comment. [`HdrEnvGpuData::dummy`]'s `1x1` map is always well within any real
+/// device's limit, so the `Studio` arm never fails.
 fn build_hdr_env(
     device: &wgpu::Device,
     environment: EnvironmentSource<'_>,
-) -> (HdrEnvGpuData, Option<usize>) {
+) -> Result<(HdrEnvGpuData, Option<usize>), GpuFrameError> {
     match environment {
         EnvironmentSource::HdrMap(map) => {
+            if !HdrEnvGpuData::fits_storage_binding(device, map) {
+                return Err(GpuFrameError::UnsupportedEnvironment);
+            }
             let identity = std::ptr::from_ref(map) as usize;
-            (HdrEnvGpuData::upload(device, map), Some(identity))
+            Ok((HdrEnvGpuData::upload(device, map), Some(identity)))
         }
-        EnvironmentSource::Studio { .. } => (HdrEnvGpuData::dummy(device), None),
+        EnvironmentSource::Studio { .. } => Ok((HdrEnvGpuData::dummy(device), None)),
     }
 }
 
@@ -787,9 +847,14 @@ impl FrameSceneBuffers {
     /// scene-buffer usage (unlike the self-test-only [`build_bind_group`]'s one-shot
     /// uploads) since [`Self::update`] writes into these same buffers on every later call
     /// -- `hdr_env` has no such in-place-write path (see its own field doc comment).
-    fn new(device: &wgpu::Device, inputs: &SceneBufferInputs<'_>) -> Self {
-        let (hdr_env, hdr_env_identity) = build_hdr_env(device, inputs.environment);
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// [`GpuFrameError::UnsupportedEnvironment`] if `inputs.environment` is
+    /// an HDR map [`build_hdr_env`] declines -- see that function's own `# Errors`.
+    fn new(device: &wgpu::Device, inputs: &SceneBufferInputs<'_>) -> Result<Self, GpuFrameError> {
+        let (hdr_env, hdr_env_identity) = build_hdr_env(device, inputs.environment)?;
+        Ok(Self {
             camera: compute::upload(
                 device,
                 "transport camera (persistent)",
@@ -818,7 +883,7 @@ impl FrameSceneBuffers {
             facet_finishes_capacity: inputs.facet_finishes.len(),
             hdr_env,
             hdr_env_identity,
-        }
+        })
     }
 
     /// Updates all four persistent scene buffers in place for a new `accumulate` call, in
@@ -826,12 +891,20 @@ impl FrameSceneBuffers {
     /// rebuilt from scratch whenever `inputs.environment`'s identity has changed since the
     /// last call (a different `EnvironmentMap`, or a switch to/from `HdrMap` entirely) --
     /// see [`build_hdr_env`].
+    ///
+    /// # Errors
+    ///
+    /// [`GpuFrameError::UnsupportedEnvironment`] if the identity change above
+    /// requires rebuilding `hdr_env` and [`build_hdr_env`] declines -- see that
+    /// function's own `# Errors`. `self.camera`/`self.material`/`self.planes`/
+    /// `self.facet_finishes` are already written by the time this can happen (they come
+    /// first, above), so they stay valid regardless of whether this returns `Err`.
     fn update(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         inputs: &SceneBufferInputs<'_>,
-    ) {
+    ) -> Result<(), GpuFrameError> {
         let SceneBufferInputs {
             camera_params,
             material,
@@ -877,10 +950,11 @@ impl FrameSceneBuffers {
             EnvironmentSource::Studio { .. } => None,
         };
         if new_identity != self.hdr_env_identity {
-            let (hdr_env, hdr_env_identity) = build_hdr_env(device, environment);
+            let (hdr_env, hdr_env_identity) = build_hdr_env(device, environment)?;
             self.hdr_env = hdr_env;
             self.hdr_env_identity = hdr_env_identity;
         }
+        Ok(())
     }
 
     /// Create-or-update entry point every caller in this module uses: `existing` comes
@@ -891,12 +965,25 @@ impl FrameSceneBuffers {
     /// dispatch loop, which still needs `self.dispatch_chunk`/`self.drain_pending_chunk`
     /// (`&self`/`&mut self`) alongside it -- the caller is responsible for putting it
     /// back via `self.scene_buffers = Some(..)` once done.
-    fn ensure(existing: Option<Self>, ctx: &GpuContext, inputs: &SceneBufferInputs<'_>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// [`GpuFrameError::UnsupportedEnvironment`] if `inputs.environment` is
+    /// an HDR map whose texel buffer would exceed the device's storage-binding limit --
+    /// see [`build_hdr_env`]'s own `# Errors`. On the `existing.update` branch,
+    /// an `Err` here still leaves every OTHER buffer (`camera`/`material`/`planes`/
+    /// `facet_finishes`) freshly written -- only the HDR rebuild itself is abandoned, so
+    /// `existing` is dropped along with this call rather than partially reused.
+    fn ensure(
+        existing: Option<Self>,
+        ctx: &GpuContext,
+        inputs: &SceneBufferInputs<'_>,
+    ) -> Result<Self, GpuFrameError> {
         existing.map_or_else(
             || Self::new(&ctx.device, inputs),
             |mut existing| {
-                existing.update(&ctx.device, &ctx.queue, inputs);
-                existing
+                existing.update(&ctx.device, &ctx.queue, inputs)?;
+                Ok(existing)
             },
         )
     }
@@ -955,12 +1042,12 @@ fn build_chunk_bind_group(
 struct StagingSlot {
     buffer: wgpu::Buffer,
     /// Capacity in PIXELS, not (pixel, sample) tuples -- `capacity * FLOATS_PER_TUPLE` is
-    /// the buffer's actual float count. Since [`GpuFrameRenderer::dispatch_chunk`]'s
-    /// readback copy now reads from [`PixelXyzOutput`] (already GPU-reduced to one XYZ
-    /// triple per pixel, see finding G2) rather than [`TransportOutputs::xyz`] (one
-    /// triple per (pixel, sample) tuple), this shrank from a `spp`-scaled quantity down
-    /// to pixel-scale -- matching [`PixelXyzOutput::capacity`]'s own convention, no
-    /// longer [`TransportOutputs::capacity`]'s.
+    /// the buffer's actual float count. [`GpuFrameRenderer::dispatch_chunk`]'s
+    /// readback copy reads from [`PixelXyzOutput`] (already GPU-reduced to one XYZ
+    /// triple per pixel) rather than [`TransportOutputs::xyz`] (one
+    /// triple per (pixel, sample) tuple), so this is a pixel-scale quantity --
+    /// matching [`PixelXyzOutput::capacity`]'s own convention, not
+    /// [`TransportOutputs::capacity`]'s.
     capacity: usize,
 }
 
@@ -1071,7 +1158,7 @@ pub struct GpuFrameRenderer {
     pipeline_isotropic: Option<wgpu::ComputePipeline>,
     pipeline_uniaxial: Option<wgpu::ComputePipeline>,
     pipeline_biaxial: Option<wgpu::ComputePipeline>,
-    /// `reduce_xyz_main`'s pipeline (see `reduce_xyz.wgsl` and finding G2) -- built
+    /// `reduce_xyz_main`'s pipeline (see `reduce_xyz.wgsl`'s header comment) -- built
     /// eagerly in [`Self::new`]/[`Self::new_async`] alongside the GENERIC transport
     /// pipeline, since every production dispatch (`dispatch_chunk` and wasm32's
     /// `accumulate_async`) uses it unconditionally.
@@ -1083,7 +1170,8 @@ pub struct GpuFrameRenderer {
     outputs: [Option<TransportOutputs>; 2],
     /// TWO double-buffered [`PixelXyzOutput`]s, alternated in lockstep with `outputs` --
     /// `reduce_xyz_main`'s destination, and what [`Self::dispatch_chunk`]'s readback copy
-    /// reads from instead of `outputs[..].xyz()` directly. See finding G2.
+    /// reads from instead of `outputs[..].xyz()` directly (see `Self::dispatch_chunk`'s
+    /// "Why a second dispatch" doc comment).
     pixel_outputs: [Option<PixelXyzOutput>; 2],
     /// TWO persistent staging buffers, alternated by chunk index in lockstep with
     /// `outputs` -- reused across every chunk of every frame and grown (never shrunk)
@@ -1092,7 +1180,7 @@ pub struct GpuFrameRenderer {
     staging: [Option<StagingSlot>; 2],
     /// TWO persistent per-output-slot [`GpuTransportParams`] uniform buffers, written via
     /// `queue.write_buffer` immediately before that slot's dispatch rather than recreated
-    /// every chunk (see [`Self::dispatch_chunk`] and finding G3). Safe to overwrite a
+    /// every chunk (see [`Self::dispatch_chunk`]). Safe to overwrite a
     /// slot's buffer two chunks later because `wgpu` executes queue operations in
     /// submission order: the write is submitted strictly after the earlier chunk that
     /// read the same slot, matching `outputs`/`staging`'s own double-buffering depth.
@@ -1119,7 +1207,7 @@ pub struct GpuFrameRenderer {
     /// [`Self::next_chunk_pixels`] sizes every later chunk toward [`TARGET_CHUNK_MS`]
     /// from this estimate.
     ns_per_tuple_ema: Option<f64>,
-    /// Finding G5 Part B: which kernel [`Self::dispatch_chunk`] dispatches through --
+    /// Which kernel [`Self::dispatch_chunk`] dispatches through --
     /// see [`GpuPipelineKind`]'s own doc comment. `Default::default()` (`Megakernel`)
     /// until [`Self::set_pipeline_kind`] is called.
     pipeline_kind: GpuPipelineKind,
@@ -1128,9 +1216,30 @@ pub struct GpuFrameRenderer {
     /// "never pay a shader-compile cost a session doesn't use" reasoning, at the whole
     /// pipeline granularity rather than per material class.
     wavefront_pipelines: Option<WavefrontPipelines>,
+    /// Set once, permanently, by [`Self::abandon_in_flight`] -- never cleared.
+    /// A `true` here means a previous chunk readback failed (or a previous turn
+    /// unwound, see [`Self::turn_in_progress`]) and this renderer's staging slots were
+    /// dropped rather than `unmap()`d, so any state a resumed dispatch would depend on
+    /// (persistent buffers, the chunk-timing EMA) is no longer trustworthy. Checked at
+    /// the very top of [`Self::accumulate_turn`], before touching anything else, so a
+    /// poisoned renderer declines every later call instead of ever dispatching into it
+    /// again -- mirrors `GpuFrameError::DeviceLost`'s "stop using this renderer for the
+    /// rest of the process" contract, enforced one layer up by `GpuBackend::lost`.
+    poisoned: bool,
+    /// `true` for exactly the duration of one [`Self::accumulate_turn`] call
+    /// -- set at entry, cleared just before that call returns. Exists to catch a panic
+    /// that unwinds OUT of `accumulate_turn` (a wgpu validation panic this module did
+    /// not manage to intercept via `GpuContext::validation_error_seen`, or any other
+    /// unexpected panic mid-chunk): the unwind skips the "clear" step, so the NEXT call
+    /// into `accumulate_turn` finds this still `true`, knows the previous call never
+    /// finished, and poisons the renderer via [`Self::abandon_in_flight`] before doing
+    /// anything else -- a `catch_unwind`-free way to detect "the last turn didn't
+    /// complete" without needing `std::panic::catch_unwind` (which this crate avoids: it
+    /// would need `UnwindSafe` bounds on every `wgpu` type this module touches).
+    turn_in_progress: bool,
 }
 
-/// Finding G5 Part B: the five `wavefront_transport.wgsl` entry points -- see that
+/// The five `wavefront_transport.wgsl` entry points -- see that
 /// file's own header comment for the kernel sequence and
 /// [`GpuFrameRenderer::dispatch_chunk_wavefront`] for how they're driven.
 struct WavefrontPipelines {
@@ -1178,7 +1287,7 @@ impl WavefrontPipelines {
     }
 }
 
-/// Finding G5 Part B: one chunk's wavefront ray-state struct-of-arrays buffers -- mirrors
+/// One chunk's wavefront ray-state struct-of-arrays buffers -- mirrors
 /// `wavefront_transport.wgsl`'s bindings 16-33 exactly (binding 15,
 /// [`GpuWavefrontParams`], is uploaded separately since it's rewritten every bounce
 /// round, unlike these, which are allocated once per chunk -- see
@@ -1186,6 +1295,39 @@ impl WavefrontPipelines {
 /// to `tuples` rays (an 8-channel field to `tuples * 8`); `block_alive_count`/
 /// `block_offset` are sized to `tuples.div_ceil(64)` workgroups. See
 /// `wavefront_transport.wgsl`'s own module doc comment for what each binding holds.
+/// Bytes per (pixel, sample) tuple of [`WavefrontRayBuffers::stokes`], its widest field
+/// -- `tuples * 8` elements of `[f32; 4]` (an 8-channel Stokes vector per ray).
+/// [`GpuFrameRenderer::cap_byte_budget_for_wavefront`] caps a wavefront chunk's
+/// tuple count against this so `stokes`'s own buffer request never exceeds the device's
+/// `max_storage_buffer_binding_size` -- the same `max_storage_buffer_binding_size` is a
+/// PER-BINDING limit (`compute::create_buffer`'s validation is against one buffer at a
+/// time), so this constant only needs to track the single widest per-ray field, not a
+/// sum over all of them. [`WavefrontRayBuffers::pending_light_mis_dir`] (binding 34,
+/// `wavefront_transport.wgsl`'s light-MIS interior-direction hand-off), added alongside
+/// `pending_light_mis`, is `tuples` elements of `[f32; 4]` -- 16 bytes/tuple, well under
+/// this constant -- so it does not change the cap.
+const WAVEFRONT_STOKES_BYTES_PER_TUPLE: usize = 8 * 16;
+
+/// The pure arithmetic [`GpuFrameRenderer::cap_byte_budget_for_wavefront`]
+/// wraps -- pulled out into a standalone function (taking the device's
+/// `max_storage_buffer_binding_size` as a plain `usize` rather than reading
+/// `self.ctx.device.limits()`) so `renderer::gpu::frame`'s adapter-free `#[cfg(test)]`
+/// module can exercise it with a FAKE limit, no real GPU device required. Caps
+/// `byte_budget_pixels` (already the megakernel-sized ceiling) down to however many
+/// pixels' worth of `spp` samples fit [`WavefrontRayBuffers::stokes`] (this module's
+/// widest per-tuple wavefront buffer, [`WAVEFRONT_STOKES_BYTES_PER_TUPLE`] bytes/tuple)
+/// within one storage-buffer binding -- see that function's own doc comment for why
+/// only `stokes` needs tracking. `.max(1)` at both intermediate steps: a pathologically
+/// tiny `max_binding_bytes` (or `spp == 0`) must still return a usable (if degenerate)
+/// cap rather than `0`, which would make every later chunk-sizing division by it panic.
+#[must_use]
+fn wavefront_pixel_cap(max_binding_bytes: usize, spp: u32, byte_budget_pixels: usize) -> usize {
+    let tuple_cap = (max_binding_bytes / WAVEFRONT_STOKES_BYTES_PER_TUPLE).max(1);
+    let spp_usize = (spp as usize).max(1);
+    let pixel_cap = (tuple_cap / spp_usize).max(1);
+    byte_budget_pixels.min(pixel_cap)
+}
+
 struct WavefrontRayBuffers {
     origin: wgpu::Buffer,
     dir: wgpu::Buffer,
@@ -1198,6 +1340,12 @@ struct WavefrontRayBuffers {
     split_radiance: wgpu::Buffer,
     compat: wgpu::Buffer,
     pending_light_mis: wgpu::Buffer,
+    /// `ray_pending_light_mis_dir` (binding 34) -- see that WGSL binding's own doc
+    /// comment (`wavefront_transport.wgsl`) for what it holds (the light-MIS interior
+    /// pre-refraction direction, carried alongside `pending_light_mis` itself).
+    /// Allocated/reset exactly like `pending_light_mis`, just `[f32; 4]` instead of
+    /// `f32` (`.w` unused, matching `origin`/`dir`/`k`/`prev_plane_normal` above).
+    pending_light_mis_dir: wgpu::Buffer,
     lambdas: wgpu::Buffer,
     seed: wgpu::Buffer,
     /// `active_ray_indices` (binding 29): the CURRENT bounce round's live ray indices.
@@ -1265,6 +1413,12 @@ impl WavefrontRayBuffers {
                 tuples,
                 storage_rw,
             ),
+            pending_light_mis_dir: compute::zeroed_buffer::<[f32; 4]>(
+                device,
+                "wf ray_pending_light_mis_dir",
+                tuples,
+                storage_rw,
+            ),
             lambdas: compute::zeroed_buffer::<f32>(
                 device,
                 "wf ray_lambdas",
@@ -1278,11 +1432,18 @@ impl WavefrontRayBuffers {
                 tuples,
                 storage_rw,
             ),
+            // Needs `COPY_SRC` -- after
+            // `wavefront_compact_scatter` fills it, `dispatch_chunk_wavefront`'s
+            // "wavefront active-list copy encoder" copies its content BACK into
+            // `active_in` for the next bounce round (see that copy's own comment); a
+            // buffer can only be a `copy_buffer_to_buffer` source with `COPY_SRC` set,
+            // which plain `storage_rw` (used by every other read/write ray-state buffer
+            // here, none of which is ever a copy source) does not include.
             active_out: compute::zeroed_buffer::<u32>(
                 device,
                 "wf active_ray_indices_next",
                 tuples,
-                storage_rw,
+                storage_rw_src,
             ),
             local_offset: compute::zeroed_buffer::<u32>(
                 device,
@@ -1328,7 +1489,7 @@ const fn wavefront_generate_bindings<'a>(
     params_buf: &'a wgpu::Buffer,
     wf_params_buf: &'a wgpu::Buffer,
     rays: &'a WavefrontRayBuffers,
-) -> [(u32, &'a wgpu::Buffer); 17] {
+) -> [(u32, &'a wgpu::Buffer); 18] {
     [
         (0, camera),
         (1, params_buf),
@@ -1347,6 +1508,7 @@ const fn wavefront_generate_bindings<'a>(
         (27, &rays.lambdas),
         (28, &rays.seed),
         (29, &rays.active_in),
+        (34, &rays.pending_light_mis_dir),
     ]
 }
 
@@ -1416,8 +1578,20 @@ fn build_wavefront_round_bind_groups(
 }
 
 /// `wavefront_bounce`'s bind group -- everything `transport_bounce_step`/
-/// `transport_finalize_ray` can reach EXCEPT `camera` (never touched once a ray
-/// exists) plus this pipeline's own per-round state.
+/// `transport_finalize_ray` can reach, plus this pipeline's own per-round state.
+///
+/// Includes `camera` (binding 0): `wavefront_bounce` recomputes this ray's
+/// `observer = -transport_generate_ray(ray_idx).dir` fresh every bounce round (mirroring
+/// `transport_main`'s own `observer = -gen.dir`, see `wavefront_transport.wgsl`'s
+/// `wavefront_bounce`), and `transport_generate_ray` reads `camera` (via
+/// `generate_camera_ray`) and `params` (`camera.num_samples`/`params.pixel_offset`/
+/// `params.sample_offset`) to reconstruct the ray's pixel/sample indices. Omitting it
+/// made the auto-derived pipeline layout (which naga computes from what the entry
+/// point's call graph actually reaches, not from this list) require a binding this bind
+/// group never provided -- a `wgpu` validation error on every `Wavefront`-pipeline
+/// dispatch (the wgpu-side symptom `examples/gpu_equivalence_harness.rs`'s
+/// `run_pipeline_equivalence` hit as `DeviceLost`, before `GpuContext::
+/// last_uncaptured_error` existed to surface the actual wgpu message).
 #[expect(
     clippy::too_many_arguments,
     reason = "see build_wavefront_round_bind_groups' own #[expect] just above"
@@ -1439,6 +1613,7 @@ fn wavefront_bounce_bind_group(
         "wavefront bounce bind group",
         &pipelines.bounce,
         &[
+            (0, &frame_buffers.camera, None),
             (1, params_buf, None),
             (2, &frame_buffers.material, None),
             (3, &frame_buffers.planes, Some(planes_bytes)),
@@ -1468,6 +1643,7 @@ fn wavefront_bounce_bind_group(
             (27, &rays.lambdas, None),
             (28, &rays.seed, None),
             (29, &rays.active_in, None),
+            (34, &rays.pending_light_mis_dir, None),
         ],
     )
 }
@@ -1644,7 +1820,7 @@ struct TurnSetup<'a> {
 /// Builds one chunk's `GpuTransportParams`, split out of
 /// [`GpuFrameRenderer::dispatch_chunk`] purely to keep that method under clippy's
 /// function-length limit. `params` is written into this chunk's slot's persistent
-/// uniform buffer by the caller instead of being uploaded fresh here -- see finding G3.
+/// uniform buffer by the caller instead of being uploaded fresh here.
 const fn build_chunk_params(
     state: &ChunkFrameState<'_>,
     first_pixel: usize,
@@ -1728,6 +1904,8 @@ impl GpuFrameRenderer {
             ns_per_tuple_ema: None,
             pipeline_kind: GpuPipelineKind::default(),
             wavefront_pipelines: None,
+            poisoned: false,
+            turn_in_progress: false,
         })
     }
 
@@ -1741,7 +1919,7 @@ impl GpuFrameRenderer {
         self.chunk_budget_bytes = bytes;
     }
 
-    /// Finding G5 Part B: selects which kernel every LATER chunk dispatches through --
+    /// Selects which kernel every LATER chunk dispatches through --
     /// see [`GpuPipelineKind`]'s own doc comment. Takes effect from the next
     /// `dispatch_chunk` call onward; a chunk already dispatched (or in flight in the
     /// overlapped pipeline) is unaffected. Existing signatures
@@ -1756,16 +1934,29 @@ impl GpuFrameRenderer {
     /// [`Self::ensure_specialized_pipeline`] does for material classes isn't available
     /// here -- this setter is the one `&mut self` call site available to do it instead.
     pub fn set_pipeline_kind(&mut self, kind: GpuPipelineKind) {
-        let available = self
-            .ctx
-            .device
-            .limits()
-            .max_storage_buffers_per_shader_stage;
-        if kind == GpuPipelineKind::Wavefront && available < WAVEFRONT_STORAGE_BUFFERS {
+        let device_limits = self.ctx.device.limits();
+        let available = device_limits.max_storage_buffers_per_shader_stage;
+        // A device that granted enough
+        // storage-buffer bindings can still fall short of the COMBINED
+        // uniform+storage+acceleration-structure count `wavefront_bounce`'s auto-derived
+        // pipeline layout needs -- see `WAVEFRONT_BOUNCE_TOTAL_BUFFERS`'s doc comment.
+        // Checked here, before `WavefrontPipelines::new` ever calls
+        // `Device::create_compute_pipeline`, so a device that genuinely cannot support
+        // it declines gracefully (falls back to the megakernel) instead of that call
+        // itself failing with "Unable to derive an implicit layout".
+        let available_total =
+            device_limits.max_buffers_and_acceleration_structures_per_shader_stage;
+        if kind == GpuPipelineKind::Wavefront
+            && (available < WAVEFRONT_STORAGE_BUFFERS
+                || available_total < WAVEFRONT_BOUNCE_TOTAL_BUFFERS)
+        {
             tracing::warn!(
                 available,
                 needed = WAVEFRONT_STORAGE_BUFFERS,
-                "device cannot bind enough storage buffers for the wavefront pipeline;                  staying on the megakernel"
+                available_total,
+                needed_total = WAVEFRONT_BOUNCE_TOTAL_BUFFERS,
+                "device cannot bind enough buffers for the wavefront pipeline; staying on \
+                 the megakernel"
             );
             self.pipeline_kind = GpuPipelineKind::Megakernel;
             return;
@@ -1804,7 +1995,7 @@ impl GpuFrameRenderer {
     ///
     /// [`GpuFrameError::UnsupportedEnvironment`] if the scene uses an environment the
     /// megakernel has no `env_mode` for -- currently unreachable (see that variant's own
-    /// doc comment; HDR maps render on the GPU since finding G6).
+    /// doc comment; HDR maps render on the GPU).
     /// [`GpuFrameError::DeviceLost`] if the device stops making forward progress
     /// mid-frame -- see that variant's own doc comment; `renderer::gpu_backend::GpuBackend`
     /// is the caller expected to react to it by permanently disabling the GPU for the rest
@@ -1943,14 +2134,50 @@ impl GpuFrameRenderer {
     /// [`Self::accumulate_via_pipeline`] (its `max_chunks: usize::MAX` driver) share, to
     /// stay under the argument-count limit too.
     ///
+    /// This is a thin poisoning wrapper around [`Self::accumulate_turn_body`],
+    /// which does the actual work -- split out so every early return in the body (there
+    /// are several) doesn't also need to remember to clear [`Self::turn_in_progress`].
+    /// Checks [`Self::poisoned`] first (a renderer `abandon_in_flight` already gave up
+    /// on declines immediately, without touching the GPU again), then
+    /// [`Self::turn_in_progress`]: still `true` here means the PREVIOUS call into this
+    /// function never reached its own clearing step below, i.e. it unwound mid-turn,
+    /// which can leave a staging buffer mapped exactly like a returned `Err` would -- see
+    /// [`Self::turn_in_progress`]'s own doc comment.
+    ///
     /// # Errors
     ///
-    /// Same conditions as [`Self::accumulate`]'s.
+    /// Same conditions as [`Self::accumulate`]'s, plus [`GpuFrameError::DeviceLost`] if
+    /// this renderer is (or just became) poisoned.
     ///
     /// # Panics
     ///
     /// Same conditions as [`Self::accumulate`]'s.
     pub(crate) fn accumulate_turn(
+        &mut self,
+        request: &TurnRequest<'_>,
+        accum: &mut [Vec3],
+        cursor: &mut ChunkCursor,
+    ) -> Result<ChunkTurnOutcome, GpuFrameError> {
+        if self.poisoned {
+            return Err(GpuFrameError::DeviceLost(
+                "GPU renderer poisoned by a previous failed chunk readback".to_string(),
+            ));
+        }
+        if self.turn_in_progress {
+            self.abandon_in_flight();
+            return Err(GpuFrameError::DeviceLost(
+                "GPU renderer poisoned: a previous turn unwound without completing".to_string(),
+            ));
+        }
+        self.turn_in_progress = true;
+        let result = self.accumulate_turn_body(request, accum, cursor);
+        self.turn_in_progress = false;
+        result
+    }
+
+    /// The body [`Self::accumulate_turn`] wraps with poisoning checks -- see that
+    /// function's own doc comment for why the split exists.
+    fn accumulate_turn_body(
         &mut self,
         request: &TurnRequest<'_>,
         accum: &mut [Vec3],
@@ -1981,16 +2208,19 @@ impl GpuFrameRenderer {
             state,
             frame_buffers,
             byte_budget_pixels,
-        } = self.prepare_turn(request);
+        } = self.prepare_turn(request)?;
 
         // frame_buffers is threaded through by value (not `&mut self.scene_buffers`
         // directly) so `run_turn_chunks` can keep borrowing `self` mutably for
         // `dispatch_chunk`/`drain_pending_chunk` without an overlapping borrow -- see
         // `FrameSceneBuffers::ensure`'s own doc comment. Not put back into
-        // `self.scene_buffers` on an `Err` from below (a `?`-propagated `DeviceLost`):
-        // that variant means this whole renderer is about to be discarded (see
-        // `GpuFrameError::DeviceLost`'s doc comment), so leaving `self.scene_buffers` as
-        // `None` there is harmless.
+        // `self.scene_buffers` on an `Err` from below (a `?`-propagated `DeviceLost`, or
+        // `prepare_turn`'s own possible `UnsupportedEnvironment`): the former means this
+        // whole renderer is about to be discarded (see `GpuFrameError::DeviceLost`'s doc
+        // comment), and the latter has already taken `self.scene_buffers` out via
+        // `FrameSceneBuffers::ensure` before failing -- either way leaving
+        // `self.scene_buffers` as `None` there is harmless, just an extra rebuild next
+        // call.
         let (frame_buffers, cancelled) = self.run_turn_chunks(
             request,
             &state,
@@ -2004,6 +2234,46 @@ impl GpuFrameRenderer {
         // turn -- this request's own resumption, or a completely different request's --
         // to reuse.
         self.scene_buffers = Some(frame_buffers);
+
+        // A wgpu validation/internal error `GpuContext::acquire_async`'s
+        // `on_uncaptured_error` handler observed during this turn's dispatches, but that
+        // by wgpu's own default would otherwise have panicked the calling thread instead
+        // of returning here. `swap` both reads and clears it in one step -- this turn
+        // (and this renderer) is about to be abandoned either way, so there is nothing
+        // left for a later turn to still need it set.
+        if self
+            .ctx
+            .validation_error_seen
+            .swap(false, Ordering::Relaxed)
+        {
+            self.abandon_in_flight();
+            // Folds in the actual wgpu error text if the
+            // `on_uncaptured_error` handler captured one -- see
+            // `GpuContext::last_uncaptured_error`'s doc comment for why this avoids
+            // becoming a dead end (a `tracing::error!` alone, with no subscriber
+            // installed in most binaries, would otherwise lose the message). Cleared in
+            // the same step so a later, unrelated turn doesn't report a stale message.
+            let detail = self
+                .ctx
+                .last_uncaptured_error
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            let message = detail.map_or_else(
+                || {
+                    "wgpu reported an uncaptured validation/device error during this turn \
+                     (no error text was captured)"
+                        .to_string()
+                },
+                |detail| {
+                    format!(
+                        "wgpu reported an uncaptured validation/device error during this turn: \
+                         {detail}"
+                    )
+                },
+            );
+            return Err(GpuFrameError::DeviceLost(message));
+        }
 
         if cancelled {
             return Ok(ChunkTurnOutcome::Cancelled);
@@ -2019,11 +2289,21 @@ impl GpuFrameRenderer {
     /// turn cannot skip this. Split out purely to keep `accumulate_turn` under clippy's
     /// function-length limit.
     ///
-    /// Infallible since finding G6 (every [`EnvironmentSource`] now has an `env_mode`,
-    /// see [`environment_params`]) -- no longer wrapped in a `Result` clippy's
-    /// `unnecessary_wraps` would flag as never actually `Err`. [`GpuFrameError::UnsupportedMaterial`]
-    /// is still checked, but by [`Self::accumulate_turn`] itself, before this is called.
-    fn prepare_turn<'a>(&mut self, request: &TurnRequest<'a>) -> TurnSetup<'a> {
+    /// Fallible: every [`EnvironmentSource`] variant maps to
+    /// an `env_mode` (see [`environment_params`]), but [`FrameSceneBuffers::ensure`] can
+    /// fail to (re)build the HDR
+    /// environment buffers for an oversized map, so a genuine `Err` path remains below.
+    /// [`GpuFrameError::UnsupportedMaterial`]
+    /// is still checked by [`Self::accumulate_turn_body`] itself, before this is called.
+    ///
+    /// # Errors
+    ///
+    /// [`GpuFrameError::UnsupportedEnvironment`] -- see [`FrameSceneBuffers::ensure`]'s
+    /// `# Errors`.
+    fn prepare_turn<'a>(
+        &mut self,
+        request: &TurnRequest<'a>,
+    ) -> Result<TurnSetup<'a>, GpuFrameError> {
         let scene = request.scene;
         let num_pixels = scene.width as usize * scene.height as usize;
 
@@ -2053,6 +2333,13 @@ impl GpuFrameRenderer {
         // without growing buffers mid-frame. See next_chunk_pixels for why the actual
         // per-chunk pixel count is computed fresh every iteration instead.
         let byte_budget_pixels = chunk_pixels_for(self.chunk_budget_bytes, request.spp, num_pixels);
+        // chunk_pixels_for's own ceiling is sized off FLOATS_PER_TUPLE (this
+        // module's production XYZ-only output, 12 bytes/tuple) -- it has no notion of
+        // GpuPipelineKind::Wavefront's much larger per-tuple footprint (its widest
+        // buffer, `ray_stokes`, is 128 bytes/tuple). A no-op for Megakernel; see
+        // Self::cap_byte_budget_for_wavefront's own doc comment.
+        let byte_budget_pixels =
+            self.cap_byte_budget_for_wavefront(byte_budget_pixels, request.spp);
         self.ensure_capacity(byte_budget_pixels * request.spp as usize);
         self.ensure_pixel_capacity(byte_budget_pixels);
         self.ensure_staging_capacity(byte_budget_pixels);
@@ -2060,12 +2347,12 @@ impl GpuFrameRenderer {
         self.ensure_reduce_params_buffers();
 
         // camera/material/geometry/facet-finishes are PERSISTENT across every
-        // `accumulate` call now (see FrameSceneBuffers::ensure), not merely uploaded
+        // `accumulate` call (see FrameSceneBuffers::ensure), not merely uploaded
         // once per call -- camera_params carries the FULL frame's dimensions, not a
         // chunk-local one. Every chunk below reuses these same four buffers via
         // build_chunk_bind_group, writing only GpuTransportParams's persistent per-slot
         // buffer per chunk. See the module doc comment's "Per-frame uploads, persistent
-        // staging" section and finding G3.
+        // staging" section.
         let camera_params = GpuCameraParams {
             origin: scene.camera.origin.to_array(),
             fov_tan: scene.camera.fov_tan,
@@ -2095,7 +2382,7 @@ impl GpuFrameRenderer {
                 facet_finishes: &gpu_finishes,
                 environment: scene.environment,
             },
-        );
+        )?;
 
         let state = ChunkFrameState {
             scene,
@@ -2114,11 +2401,41 @@ impl GpuFrameRenderer {
             backdrop,
         };
 
-        TurnSetup {
+        Ok(TurnSetup {
             state,
             frame_buffers,
             byte_budget_pixels,
+        })
+    }
+
+    /// Extra ceiling on `byte_budget_pixels` applied only for
+    /// [`GpuPipelineKind::Wavefront`] -- a no-op (returns `byte_budget_pixels` unchanged)
+    /// for [`GpuPipelineKind::Megakernel`].
+    ///
+    /// `dispatch_chunk_wavefront`'s [`WavefrontRayBuffers`] sizes its widest field,
+    /// `stokes`, at `tuples * 8 * 16` bytes -- 128 bytes per (pixel, sample) tuple, an
+    /// 8-channel field of `[f32; 4]`s. `chunk_pixels_for`'s own byte budget has no notion
+    /// of this: it is sized against [`FLOATS_PER_TUPLE`] (12 bytes/tuple, this module's
+    /// XYZ-only production output), which every OTHER per-chunk buffer this module
+    /// allocates for the megakernel path stays within. Left uncapped, a chunk near
+    /// `chunk_pixels_for`'s dispatch-limited ceiling (`MAX_WORKGROUPS_PER_DIMENSION *
+    /// WORKGROUP_SIZE`, ~4.19M tuples) would ask `stokes` alone for ~537 MB -- comfortably
+    /// past the WebGPU baseline `max_storage_buffer_binding_size` of 128 MiB -- which
+    /// `create_buffer` rejects at validation. Without the `on_uncaptured_error` handler
+    /// (see `GpuContext::acquire_async`'s doc comment) that failure panics the calling
+    /// thread mid-`dispatch_chunk`, straight into a state where the previous chunk's
+    /// staging buffer is never unmapped; with the handler installed, this cap is what
+    /// avoids relying on it to catch an entirely predictable and preventable size
+    /// mismatch in the first place.
+    ///
+    /// Queried from the device rather than hard-coded: the WebGPU baseline is 128 MiB,
+    /// but a real adapter can advertise more (or, rarely, request a smaller one).
+    fn cap_byte_budget_for_wavefront(&self, byte_budget_pixels: usize, spp: u32) -> usize {
+        if self.pipeline_kind != GpuPipelineKind::Wavefront {
+            return byte_budget_pixels;
         }
+        let max_binding_bytes = self.ctx.device.limits().max_storage_buffer_binding_size as usize;
+        wavefront_pixel_cap(max_binding_bytes, spp, byte_budget_pixels)
     }
 
     /// The dispatch/drain loop body of [`Self::accumulate_turn`]: dispatches at most
@@ -2192,7 +2509,18 @@ impl GpuFrameRenderer {
                 chunk_index,
             );
             if let Some(prev) = pending.take() {
-                self.drain_pending_chunk(prev, state.spp, Some(&mut *accum))?;
+                // Chunk i+1's dispatch (above) is already queued on the GPU
+                // by the time this blocks on chunk i's readback -- so if THIS drain
+                // fails, chunk i+1's own eventual drain would try to map a slot whose
+                // sibling never finished, and any later chunk reusing chunk i's slot
+                // would submit into a still-mapped buffer. Draining
+                // that still-pending chunk i+1 first is not safe either: the device may
+                // already have stopped making forward progress, so its own drain could
+                // fail (or hang) too. Abandon both slots now instead of trying.
+                if let Err(err) = self.drain_pending_chunk(prev, state.spp, Some(&mut *accum)) {
+                    self.abandon_in_flight();
+                    return Err(err);
+                }
             }
             pending = Some(new_pending);
 
@@ -2212,10 +2540,18 @@ impl GpuFrameRenderer {
         // reaching the pixel budget or this turn's chunk budget both keep them --
         // neither is a cancellation, so nothing traced this turn is thrown away.
         if let Some(chunk) = pending.take() {
-            if cancelled {
-                self.drain_pending_chunk(chunk, state.spp, None)?;
+            let drain_result = if cancelled {
+                self.drain_pending_chunk(chunk, state.spp, None)
             } else {
-                self.drain_pending_chunk(chunk, state.spp, Some(&mut *accum))?;
+                self.drain_pending_chunk(chunk, state.spp, Some(&mut *accum))
+            };
+            // Identical reasoning to the mid-loop drain above -- a failure
+            // here means this renderer's staging slot is stuck mapped, so the next
+            // caller (a resumed turn on THIS request, or a completely different one)
+            // must never be allowed to dispatch into it.
+            if let Err(err) = drain_result {
+                self.abandon_in_flight();
+                return Err(err);
             }
         }
 
@@ -2276,17 +2612,18 @@ impl GpuFrameRenderer {
     /// per-pixel result, returning the resulting [`PendingChunk`] for a later
     /// [`Self::drain_pending_chunk`] to wait on.
     ///
-    /// # Why a second dispatch (finding G2)
+    /// # Why a second dispatch
     ///
     /// `transport_main` writes one XYZ triple per (pixel, sample) THREAD into
     /// `outputs.xyz()` -- `pixels_this_chunk * spp` triples. Copying and mapping all of
-    /// that back to sum it on the CPU (the old behaviour) scales readback with sample
+    /// that back to sum it on the CPU would scale readback with sample
     /// count: at 1080p x 8 spp, ~200MB per progressive pass. `reduce_xyz_main` instead
     /// sums each pixel's `spp` consecutive triples ON the GPU, one thread per PIXEL, into
     /// `self.pixel_outputs[staging_slot]` -- `pixels_this_chunk` triples, independent of
     /// `spp`. Only THAT smaller buffer is copied to staging below; `outputs.xyz()` itself
     /// never leaves the GPU. See `reduce_xyz.wgsl`'s header comment for the determinism
-    /// argument (fixed ascending summation order, same as the CPU used to sum in).
+    /// argument (fixed ascending summation order, matching the order the CPU sums them
+    /// in).
     ///
     /// Factored out of [`Self::accumulate_via_pipeline`]'s loop body to keep that function
     /// under clippy's function-length limit; `state` bundles the per-frame-constant
@@ -2305,7 +2642,7 @@ impl GpuFrameRenderer {
         // camera_params/material/planes/facet_finishes are NOT rebuilt or re-uploaded
         // here -- frame_buffers already holds them, persistent across every accumulate
         // call (see FrameSceneBuffers). params is written into this slot's persistent
-        // uniform buffer below instead of uploaded fresh -- see finding G3.
+        // uniform buffer below instead of uploaded fresh.
         let params = build_chunk_params(state, first_pixel, pixels_this_chunk);
 
         let staging_slot = chunk_index % 2;
@@ -2325,7 +2662,7 @@ impl GpuFrameRenderer {
             .write_buffer(params_buf, 0, bytemuck::bytes_of(&params));
 
         let submitted_at = Instant::now();
-        // Finding G5 Part B: which kernel(s) populate `outputs.xyz()` for this chunk --
+        // Which kernel(s) populate `outputs.xyz()` for this chunk --
         // see `GpuPipelineKind`'s own doc comment. Either way, everything from here on
         // (`dispatch_reduce`, the readback copy, `PendingChunk`) is UNCHANGED: both
         // pipelines write into the exact same `outputs.xyz()` binding, at the exact
@@ -2445,7 +2782,7 @@ impl GpuFrameRenderer {
         );
     }
 
-    /// Finding G5 Part B: runs one chunk through the wavefront pipeline instead of the
+    /// Runs one chunk through the wavefront pipeline instead of the
     /// megakernel -- `wavefront_generate`, then `wavefront_bounce`/`wavefront_compact_*`
     /// once per bounce round until either every ray has died or
     /// `state.scene.max_bounces` rounds have run, then `wavefront_finalize_survivors`
@@ -2717,8 +3054,8 @@ impl GpuFrameRenderer {
             .expect("dispatch_chunk populated this staging slot")
             .buffer;
         // Reads into self.xyz_scratch (reused across every chunk of every frame) rather
-        // than allocating a fresh Vec here -- see that field's own doc comment and
-        // finding G2. staging_buffer/self.xyz_scratch/self.ctx.device are three disjoint
+        // than allocating a fresh Vec here -- see that field's own doc comment.
+        // staging_buffer/self.xyz_scratch/self.ctx.device are three disjoint
         // fields of `self`, so borrowing them independently here is fine even though
         // this function takes `&mut self`.
         compute::finish_map_read_into(
@@ -2754,11 +3091,52 @@ impl GpuFrameRenderer {
         Ok(())
     }
 
+    /// Drops both persistent staging slots and marks this renderer
+    /// permanently unusable.
+    ///
+    /// A staging buffer [`compute::finish_map_read_into`] failed to finish reading (a
+    /// poll timeout, a `recv_timeout` failure, or a `get_mapped_range` error -- see that
+    /// function's `# Errors`) is left in wgpu's `Waiting`/`Active` map state forever:
+    /// calling `unmap()` on it from here would itself error (a buffer's map state only
+    /// clears via ITS OWN pending callback resolving, not an unrelated call site), and
+    /// the next `dispatch_chunk` that reuses the same slot would submit a write into a
+    /// still-mapped buffer, which panics with the exact
+    /// `"transport out xyz staging (persistent)" ... still mapped` text wgpu produces
+    /// for a buffer still mapped when reused. Dropping the buffer instead is legal in
+    /// wgpu 30 even mid-map (the
+    /// pending callback is simply never delivered) and immediately releases the GPU
+    /// allocation.
+    ///
+    /// Never rebuilds the dropped slots: `self.poisoned = true` here is permanent (no
+    /// method ever clears it) exactly because a renderer this was called on has no
+    /// trustworthy way to know how much of a chunk's work actually completed before the
+    /// failure -- matching [`GpuFrameError::DeviceLost`]'s "stop using this renderer for
+    /// the rest of the process" contract enforced one layer up in
+    /// `renderer::gpu_backend::GpuBackend`.
+    ///
+    /// `pub(crate)`: lets this crate's own `#[cfg(all(test, feature =
+    /// "gpu"))]` hardware tests simulate "a previous chunk readback already failed"
+    /// directly, without needing to actually wedge a real GPU dispatch to reach this
+    /// state -- see `renderer::gpu::frame`'s test module.
+    pub(crate) fn abandon_in_flight(&mut self) {
+        self.staging = [None, None];
+        self.poisoned = true;
+    }
+
     /// Builds and caches the specialised pipeline for `class`, if not already built --
     /// see the module doc comment's "Material-class kernel specialisation" section for
     /// why this is lazy. A no-op for [`material_class::GENERIC`], built eagerly in
     /// [`Self::new`].
     fn ensure_specialized_pipeline(&mut self, class: u32) {
+        // The `_` arm below treats every out-of-range class exactly like
+        // GENERIC (a silent no-op) -- correct for GENERIC itself, but it would just as
+        // quietly swallow a caller bug that passes a bogus class, rather than that bug
+        // showing up as a panic here instead of much later in `pipeline_for_class`'s own
+        // `expect`.
+        debug_assert!(
+            class <= material_class::BIAXIAL,
+            "ensure_specialized_pipeline: class out of range (must be <= material_class::BIAXIAL)"
+        );
         let (slot, label) = match class {
             material_class::ISOTROPIC => (
                 &mut self.pipeline_isotropic,
@@ -2797,6 +3175,13 @@ impl GpuFrameRenderer {
     /// [`Self::ensure_specialized_pipeline`] -- a bug in this module's own call
     /// ordering, never a condition a caller outside it can trigger.
     const fn pipeline_for_class(&self, class: u32) -> &wgpu::ComputePipeline {
+        // Same reasoning as `ensure_specialized_pipeline`'s identical
+        // assertion -- the `_` arm below silently routes any out-of-range class onto the
+        // generic pipeline instead of the `expect` below ever firing.
+        debug_assert!(
+            class <= material_class::BIAXIAL,
+            "pipeline_for_class: class out of range (must be <= material_class::BIAXIAL)"
+        );
         match class {
             material_class::ISOTROPIC => self.pipeline_isotropic.as_ref(),
             material_class::UNIAXIAL => self.pipeline_uniaxial.as_ref(),
@@ -2824,7 +3209,7 @@ impl GpuFrameRenderer {
     /// [`Self::ensure_capacity`]'s policy for `outputs` -- grow both slots identically,
     /// never shrink -- via the same pure predicate, [`staging_needs_growth`]. Sized in
     /// PIXELS, not (pixel, sample) tuples, since [`Self::dispatch_chunk`]'s readback copy
-    /// now reads from [`PixelXyzOutput`] (finding G2), not [`TransportOutputs::xyz`]
+    /// reads from [`PixelXyzOutput`], not [`TransportOutputs::xyz`]
     /// directly -- see [`StagingSlot::capacity`]'s own doc comment.
     fn ensure_staging_capacity(&mut self, pixels: usize) {
         for slot in &mut self.staging {
@@ -2841,8 +3226,7 @@ impl GpuFrameRenderer {
 
     /// Grows the cached [`PixelXyzOutput`] buffers to hold at least `pixels` pixels,
     /// reusing them when already large enough. Mirrors [`Self::ensure_capacity`]'s policy
-    /// for `outputs` exactly, just sized in pixels rather than (pixel, sample) tuples --
-    /// see finding G2.
+    /// for `outputs` exactly, just sized in pixels rather than (pixel, sample) tuples.
     fn ensure_pixel_capacity(&mut self, pixels: usize) {
         for slot in &mut self.pixel_outputs {
             let big_enough = slot.as_ref().is_some_and(|o| o.capacity >= pixels);
@@ -2968,6 +3352,8 @@ impl GpuFrameRenderer {
             ns_per_tuple_ema: None,
             pipeline_kind: GpuPipelineKind::default(),
             wavefront_pipelines: None,
+            poisoned: false,
+            turn_in_progress: false,
         })
     }
 
@@ -3029,9 +3415,18 @@ impl GpuFrameRenderer {
         // Built once for the whole call, like `gpu_material`/`gpu_finishes` above -- this
         // path never had `FrameSceneBuffers`'s cross-call persistence (see this `impl`
         // block's own doc comment), so there is no identity cache to consult here, only
-        // "once per call rather than once per chunk". See finding G6.
+        // "once per call rather than once per chunk".
+        // Declines GpuFrameError::UnsupportedEnvironment for an oversized
+        // HDR map -- mirrors `build_hdr_env`'s identical check (this path never had
+        // `FrameSceneBuffers`'s cross-call persistence to share that helper through, see
+        // this `impl` block's own doc comment, so the check is repeated here directly).
         let hdr_env = match scene.environment {
-            EnvironmentSource::HdrMap(map) => HdrEnvGpuData::upload(&self.ctx.device, map),
+            EnvironmentSource::HdrMap(map) => {
+                if !HdrEnvGpuData::fits_storage_binding(&self.ctx.device, map) {
+                    return Err(GpuFrameError::UnsupportedEnvironment);
+                }
+                HdrEnvGpuData::upload(&self.ctx.device, map)
+            }
             EnvironmentSource::Studio { .. } => HdrEnvGpuData::dummy(&self.ctx.device),
         };
 
@@ -3096,8 +3491,8 @@ impl GpuFrameRenderer {
             // build_chunk_bind_group instead (see the module doc comment's "Per-frame
             // uploads, persistent staging" section), but this wasm32 loop re-uploads every
             // buffer every chunk via build_bind_group: it never had the overlapped
-            // double-buffering that fix targets, so there is no per-frame state to hoist
-            // these uploads out of here.
+            // double-buffering the native path uses, so there is no per-frame state to
+            // hoist these uploads out of here.
             let bind_group = build_bind_group(&bind_args);
             let workgroups = (tuples as u32).div_ceil(WORKGROUP_SIZE as u32);
             let _ = compute::dispatch(
@@ -3109,10 +3504,10 @@ impl GpuFrameRenderer {
             );
 
             // GPU-side sample reduction, mirroring native's `dispatch_chunk` -- see that
-            // function's "Why a second dispatch" doc comment and finding G2. This wasm32
+            // function's "Why a second dispatch" doc comment. This wasm32
             // loop re-creates the tiny reduce-params buffer fresh every chunk (like every
             // other buffer here, per this function's own doc comment: it never had the
-            // overlapped double-buffering finding G3 targets, so there is no per-frame
+            // overlapped double-buffering the native path uses, so there is no per-frame
             // state to persist it in).
             let pixel_output = self.pixel_outputs[chunk_index % 2]
                 .as_ref()
@@ -3284,8 +3679,8 @@ type EnvironmentParams = (u32, f32, f32, f32, f32, f32, bool, u32, f32);
 /// than left to whatever a caller might otherwise pass, so a stray read of one of them
 /// during future maintenance can't silently pick up a stale studio value.
 ///
-/// No longer fallible (see finding G6: every [`EnvironmentSource`] variant has an
-/// `env_mode` now) -- returns [`EnvironmentParams`] directly rather than wrapping it in a
+/// Infallible: every [`EnvironmentSource`] variant has an
+/// `env_mode` -- returns [`EnvironmentParams`] directly rather than wrapping it in a
 /// `Result` that could never be `Err`, per clippy's `unnecessary_wraps`.
 /// [`GpuFrameError::UnsupportedEnvironment`] is still enforced elsewhere (kept as
 /// defensive future-proofing; see that variant's own doc comment), just not by this
@@ -3450,7 +3845,7 @@ impl PipelineEquivalenceResult {
 /// Renders the same chunk through [`GpuPipelineKind::Megakernel`] and
 /// [`GpuPipelineKind::Wavefront`] and requires bit-identical `out_xyz`.
 ///
-/// Finding G5 Part B: `transport_bounce_step`/`transport_finalize_ray`
+/// `transport_bounce_step`/`transport_finalize_ray`
 /// (`shaders/transport_bounce.wgsl`) are the SAME compiled function object either
 /// pipeline calls -- see that file's own doc comment -- so a genuine divergence here
 /// would mean the wavefront kernels' ray-state struct-of-arrays round-trip (load from
@@ -3875,7 +4270,7 @@ mod tests {
         assert_eq!(backdrop, 0.0);
     }
 
-    /// Finding G6: an HDR map is a SUPPORTED environment (`env_mode ==
+    /// An HDR map is a SUPPORTED environment (`env_mode ==
     /// transport_env_mode::HDR_MAP`), not a decline -- the studio-rig fields are simply
     /// unused by that branch (see [`environment_params`]'s own doc comment), not left at
     /// some other environment's stale values.
@@ -3894,23 +4289,350 @@ mod tests {
         assert_eq!(backdrop, 0.0);
     }
 
-    /// This module must ENFORCE `GemMaterial::gpu_supported`, not merely document it --
-    /// routing a material the megakernel cannot handle produces a plausible-looking but
-    /// wrong image rather than a failure, the worst kind of bug to ship.
-    ///
-    /// `gpu_supported` is unconditionally `true` today: every built-in, including the
-    /// biaxial stones (Alexandrite, Topaz, Tanzanite), is ported and verified at 0 ULP.
-    /// This test's real job is not "biaxial is special" but that **this module agrees
-    /// with the predicate**, whatever it currently says -- a future material type the
-    /// megakernel cannot handle would flip the predicate and fail this test.
+    // `every_builtin_routes_the_way_gpu_supported_says` does not belong here:
+    // `GemMaterial::gpu_supported` is unconditionally `true` (see its own doc
+    // comment), so a test that only calls `material.gpu_supported()` directly asserts a
+    // predicate that cannot fail, regardless of whether `accumulate_turn_body`'s own
+    // enforcement of it (a few functions up, `if !scene.material.gpu_supported()`) is
+    // wired correctly. Making it meaningful would mean actually dispatching
+    // `accumulate_turn_body` for a material `gpu_supported` declines, which needs a real
+    // adapter (this module's other adapter-free tests, above, deliberately stay under
+    // plain `cargo test`) -- no such material exists today to dispatch with anyway,
+    // since the predicate is unconditionally `true`. If a future material type the
+    // megakernel cannot handle is ever added, an adapter-gated check belongs in
+    // `examples/gpu_equivalence_harness.rs` alongside this module's other real-hardware
+    // self-tests, not here.
+
+    /// [`wavefront_pixel_cap`] with a FAKE `max_storage_buffer_binding_size`
+    /// -- no real adapter needed (unlike [`GpuFrameRenderer::cap_byte_budget_for_wavefront`]
+    /// itself, which reads a live device's limits). A generous fake limit (128 MiB, the
+    /// WebGPU baseline) must not cap a small chunk at all; a tiny one (one tuple's worth
+    /// of `stokes` exactly) must cap to exactly 1 pixel at `spp == 1` and stay >= 1 even
+    /// at large `spp` (never 0, which would make a later chunk-sizing division panic).
     #[test]
-    fn every_builtin_routes_the_way_gpu_supported_says() {
-        for material in GemMaterial::all_materials() {
-            assert!(
-                material.gpu_supported(),
-                "{} is not GPU-supported, but the megakernel claims to cover every                  built-in since the Phase 4 biaxial port -- if this is a deliberate new                  exclusion, `accumulate`'s decline path must cover it too",
-                material.name
+    fn wavefront_pixel_cap_respects_the_binding_limit() {
+        let generous = 128 * 1024 * 1024;
+        assert_eq!(wavefront_pixel_cap(generous, 4, 1_000), 1_000);
+
+        let one_tuple = WAVEFRONT_STOKES_BYTES_PER_TUPLE;
+        assert_eq!(wavefront_pixel_cap(one_tuple, 1, 1_000), 1);
+        // At spp=4, one tuple's worth of binding room is not even one whole pixel's 4
+        // samples -- `pixel_cap`'s inner `.max(1)` floors `tuple_cap / spp` at 1 tuple,
+        // and the outer `.max(1)` floors the PIXEL cap at 1 pixel either way.
+        assert_eq!(wavefront_pixel_cap(one_tuple, 4, 1_000), 1);
+
+        // A pathological zero-byte fake limit must still return a usable (degenerate)
+        // cap, never 0.
+        assert_eq!(wavefront_pixel_cap(0, 8, 1_000), 1);
+
+        // The requested `byte_budget_pixels` ceiling still wins when it is SMALLER than
+        // what the binding limit would allow.
+        assert_eq!(wavefront_pixel_cap(generous, 1, 3), 3);
+    }
+}
+
+/// Hardware tests for renderer poisoning, wavefront chunk-sizing, and HDR
+/// storage-binding declines -- unlike
+/// `tests` above, every test here needs a real `wgpu` adapter, so each one acquires its
+/// OWN [`GpuContext`]/[`GpuFrameRenderer`] and prints a note and returns (a clean skip,
+/// not a failure) when [`GpuContext::acquire`] finds none. Run with:
+///
+/// ```text
+/// cargo test -p indicatrix --features gpu -- gpu_hardware_tests
+/// ```
+#[cfg(all(test, feature = "gpu"))]
+mod gpu_hardware_tests {
+    use super::*;
+    use crate::{geometry::cuts::StandardGemCuts, renderer::env_map::EnvironmentMap};
+
+    /// A tiny scene good enough to dispatch a real chunk with -- the same fixture
+    /// [`run_pipeline_equivalence`] above already uses, reused rather than reinvented.
+    fn tiny_scene_material() -> GemMaterial {
+        GemMaterial::by_name("Spinel").expect("Spinel is a built-in cubic material")
+    }
+
+    /// An environment map whose texel buffer would exceed the device's
+    /// `max_storage_buffer_binding_size` (the WebGPU baseline this crate requests is 128
+    /// MiB, see [`GpuContext::acquire_async`]; 4100x2050 vec4-padded texels is
+    /// `4100*2050*16 = 134_480_000` bytes, just over `134_217_728`) must decline
+    /// cleanly -- [`GpuFrameError::UnsupportedEnvironment`] -- not panic or hang.
+    #[test]
+    fn oversized_hdr_environment_is_declined_not_panicked() {
+        let Ok(mut renderer) = GpuFrameRenderer::new() else {
+            println!("skipping oversized_hdr_environment_is_declined_not_panicked: no GPU adapter");
+            return;
+        };
+        let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = tiny_scene_material();
+        let map = EnvironmentMap::from_rgb(4100, 2050, vec![[0.0, 0.0, 0.0]; 4100 * 2050])
+            .expect("4100x2050 black texels is a self-consistent buffer");
+        let scene = GpuFrameScene {
+            camera: &camera,
+            width: 8,
+            height: 8,
+            planes: &planes,
+            facet_finishes: &[],
+            material: &material,
+            max_bounces: 4,
+            environment: EnvironmentSource::HdrMap(&map),
+        };
+        let mut accum = vec![Vec3::ZERO; 64];
+        let result = renderer.accumulate(&scene, 0, 1, &mut accum);
+        assert!(
+            matches!(result, Err(GpuFrameError::UnsupportedEnvironment)),
+            "expected UnsupportedEnvironment, got {result:?}"
+        );
+        // Must be a clean, per-call decline -- NOT a poisoned/DeviceLost renderer. A
+        // later call with an in-bounds map on the SAME renderer must still work.
+        let small_map = EnvironmentMap::uniform(1024, 512, [1.0, 1.0, 1.0]);
+        let scene2 = GpuFrameScene {
+            environment: EnvironmentSource::HdrMap(&small_map),
+            ..scene
+        };
+        renderer
+            .accumulate(&scene2, 0, 1, &mut accum)
+            .expect("a 1024x512 HDR map is well within the device's binding limit");
+    }
+
+    /// The in-bounds counterpart to the oversized-map test above: a 1024x512 map --
+    /// comfortably under 128 MiB (`1024*512*16 = 8_388_608` bytes) -- must render,
+    /// standalone (not merely as the second half of that test).
+    #[test]
+    fn in_bounds_hdr_environment_renders() {
+        let Ok(mut renderer) = GpuFrameRenderer::new() else {
+            println!("skipping in_bounds_hdr_environment_renders: no GPU adapter");
+            return;
+        };
+        let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = tiny_scene_material();
+        let map = EnvironmentMap::uniform(1024, 512, [1.0, 1.0, 1.0]);
+        let scene = GpuFrameScene {
+            camera: &camera,
+            width: 8,
+            height: 8,
+            planes: &planes,
+            facet_finishes: &[],
+            material: &material,
+            max_bounces: 4,
+            environment: EnvironmentSource::HdrMap(&map),
+        };
+        let mut accum = vec![Vec3::ZERO; 64];
+        renderer
+            .accumulate(&scene, 0, 1, &mut accum)
+            .expect("a 1024x512 HDR map is well within the device's binding limit");
+        assert!(
+            accum.iter().any(|v| v.length_squared() > 0.0),
+            "a lit uniform environment must leave SOME nonzero radiance in accum"
+        );
+    }
+
+    /// A full-size (1920x1080) wavefront-pipeline dispatch must not error --
+    /// the chunking hazard this guards against (a chunk's `stokes` buffer request
+    /// exceeding the device's storage-buffer-binding limit) only grows the EMA-driven
+    /// chunk size AFTER the first chunk or two drains, so several `accumulate` calls (not
+    /// just one) are needed to actually exercise it. See [`GpuFrameRenderer::
+    /// next_chunk_pixels`]/[`Self::cap_byte_budget_for_wavefront`]'s own doc comments.
+    #[test]
+    fn wavefront_1080p_dispatch_does_not_error_as_the_ema_grows() {
+        let Ok(mut renderer) = GpuFrameRenderer::new() else {
+            println!(
+                "skipping wavefront_1080p_dispatch_does_not_error_as_the_ema_grows: no GPU adapter"
             );
+            return;
+        };
+        renderer.set_pipeline_kind(GpuPipelineKind::Wavefront);
+        if renderer.pipeline_kind() != GpuPipelineKind::Wavefront {
+            println!(
+                "skipping wavefront_1080p_dispatch_does_not_error_as_the_ema_grows: this \
+                 device cannot bind enough buffers for the wavefront pipeline \
+                 (set_pipeline_kind fell back to Megakernel)"
+            );
+            return;
+        }
+        let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = tiny_scene_material();
+        let (width, height) = (1920u32, 1080u32);
+        let scene = GpuFrameScene {
+            camera: &camera,
+            width,
+            height,
+            planes: &planes,
+            facet_finishes: &[],
+            material: &material,
+            max_bounces: 8,
+            environment: LightingPreset::Daylight.studio(1.0, 0.4, 0.35),
+        };
+        let mut accum = vec![Vec3::ZERO; (width * height) as usize];
+        // Several calls, not one: the chunk-timing EMA (`ns_per_tuple_ema`) only starts
+        // growing the per-chunk pixel budget toward the full frame after earlier chunks
+        // have drained and reported their throughput -- see `next_chunk_pixels`'s own
+        // doc comment. `FIRST_DISPATCH_MAX_TUPLES` bounds the very first chunk well
+        // under the old 2.1M-tuple hazard regardless, so this loop is what actually
+        // drives the cap toward its limit.
+        for sample in 0..4u32 {
+            renderer
+                .accumulate(&scene, sample, 1, &mut accum)
+                .unwrap_or_else(|e| panic!("wavefront 1920x1080 dispatch #{sample} errored: {e}"));
+        }
+        assert!(
+            accum.iter().any(|v| v.length_squared() > 0.0),
+            "a lit studio-rig scene must leave SOME nonzero radiance in accum"
+        );
+    }
+
+    /// After [`GpuFrameRenderer::abandon_in_flight`], the renderer is
+    /// permanently poisoned -- [`GpuFrameRenderer::accumulate_turn`] (reached here via
+    /// the public [`GpuFrameRenderer::accumulate`]) must return
+    /// [`GpuFrameError::DeviceLost`], every time, never dispatch into it again.
+    #[test]
+    fn abandon_in_flight_poisons_the_renderer_permanently() {
+        let Ok(mut renderer) = GpuFrameRenderer::new() else {
+            println!("skipping abandon_in_flight_poisons_the_renderer_permanently: no GPU adapter");
+            return;
+        };
+        renderer.abandon_in_flight();
+
+        let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = tiny_scene_material();
+        let scene = GpuFrameScene {
+            camera: &camera,
+            width: 4,
+            height: 4,
+            planes: &planes,
+            facet_finishes: &[],
+            material: &material,
+            max_bounces: 2,
+            environment: LightingPreset::Daylight.studio(1.0, 0.4, 0.35),
+        };
+        let mut accum = vec![Vec3::ZERO; 16];
+        let first = renderer.accumulate(&scene, 0, 1, &mut accum);
+        assert!(
+            matches!(first, Err(GpuFrameError::DeviceLost(_))),
+            "expected DeviceLost right after abandon_in_flight, got {first:?}"
+        );
+        // A SECOND call must decline identically -- poisoning is permanent, not a
+        // one-shot signal that clears itself.
+        let second = renderer.accumulate(&scene, 0, 1, &mut accum);
+        assert!(
+            matches!(second, Err(GpuFrameError::DeviceLost(_))),
+            "expected DeviceLost again on a second call, got {second:?}"
+        );
+    }
+
+    /// [`GpuContext::validation_error_seen`], set directly (standing
+    /// in for a real uncaptured `wgpu::Error` the `on_uncaptured_error` handler would
+    /// otherwise have to be provoked to actually observe), turns the very next turn into
+    /// [`GpuFrameError::DeviceLost`] -- the mechanism [`GpuFrameRenderer::
+    /// accumulate_turn_body`] uses to convert what would otherwise be a wgpu-panicking
+    /// uncaptured error into an ordinary `Err` return.
+    #[test]
+    fn validation_error_seen_flag_turns_the_next_turn_into_device_lost() {
+        let Ok(mut renderer) = GpuFrameRenderer::new() else {
+            println!(
+                "skipping validation_error_seen_flag_turns_the_next_turn_into_device_lost: no \
+                 GPU adapter"
+            );
+            return;
+        };
+        renderer
+            .ctx
+            .validation_error_seen
+            .store(true, Ordering::Relaxed);
+
+        let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = tiny_scene_material();
+        let scene = GpuFrameScene {
+            camera: &camera,
+            width: 4,
+            height: 4,
+            planes: &planes,
+            facet_finishes: &[],
+            material: &material,
+            max_bounces: 2,
+            environment: LightingPreset::Daylight.studio(1.0, 0.4, 0.35),
+        };
+        let mut accum = vec![Vec3::ZERO; 16];
+        let result = renderer.accumulate(&scene, 0, 1, &mut accum);
+        assert!(
+            matches!(result, Err(GpuFrameError::DeviceLost(_))),
+            "expected DeviceLost, got {result:?}"
+        );
+    }
+
+    /// Guards against the live viewport freezing: showing an initial image but rendering
+    /// nothing further, and ignoring camera drags from then on. Mimics
+    /// `apps::indicatrix-cut`'s `ViewportGpu`/render-loop pattern directly against this
+    /// renderer: several full-frame `accumulate` calls at a realistic viewport
+    /// resolution, each with a DIFFERENT camera pose (as `on_camera_orbit` produces on
+    /// every drag `moved` event) and an advancing `sample_offset` (as the render loop's
+    /// `accum_samples` does) -- plus a resize partway through (preview-then-settle: the
+    /// render loop drops to a reduced resolution while `camera_moving` is true, then
+    /// returns to full size once the drag ends). Every call must succeed; a
+    /// `DeviceLost` on any call after the first is exactly that freeze, so its captured
+    /// `last_uncaptured_error` text is printed to help find the real validation error if
+    /// this ever fails.
+    #[test]
+    fn repeated_turns_with_camera_changes_never_poison_the_renderer() {
+        let Ok(mut renderer) = GpuFrameRenderer::new() else {
+            println!(
+                "skipping repeated_turns_with_camera_changes_never_poison_the_renderer: no \
+                 GPU adapter"
+            );
+            return;
+        };
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = tiny_scene_material();
+        let environment = LightingPreset::Daylight.studio(1.0, 0.4, 0.35);
+
+        // Full viewport size, then a reduced "camera_moving" preview size, then back to
+        // full -- see `apps::indicatrix-cut::bridge::render_thread::local_preview::
+        // effective_dimensions`.
+        let full = (480u32, 360u32);
+        let preview = (160u32, 120u32);
+        let sizes = [full, full, preview, preview, full, full, full];
+
+        let mut sample_offset = 0u32;
+        for (turn, &(width, height)) in sizes.iter().enumerate() {
+            // A fresh yaw/pitch every turn -- exactly what `on_camera_orbit` writes into
+            // `RenderContext` on every `moved` event mid-drag.
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "turn index is tiny; precision loss is not a concern in this test"
+            )]
+            let yaw = (turn as f32).mul_add(0.37, 0.1);
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "turn index is tiny; precision loss is not a concern in this test"
+            )]
+            let pitch = (turn as f32).mul_add(0.11, 0.2).clamp(-1.4, 1.4);
+            let camera = Camera::new(yaw, pitch, 5.0, 18.0);
+            let scene = GpuFrameScene {
+                camera: &camera,
+                width,
+                height,
+                planes: &planes,
+                facet_finishes: &[],
+                material: &material,
+                max_bounces: 4,
+                environment,
+            };
+            let spp = 2u32;
+            let mut accum = vec![Vec3::ZERO; (width * height) as usize];
+            let result = renderer.accumulate(&scene, sample_offset, spp, &mut accum);
+            if let Err(GpuFrameError::DeviceLost(ref why)) = result {
+                panic!(
+                    "turn {turn} ({width}x{height}, yaw={yaw}, pitch={pitch}) was declared \
+                     DeviceLost -- this is the exact poisoning the bug report describes: \
+                     {why}"
+                );
+            }
+            result.unwrap_or_else(|e| panic!("turn {turn} failed: {e}"));
+            sample_offset += spp;
         }
     }
 }

@@ -171,6 +171,39 @@ fn detached_member_survives_undo_redo_and_is_removed_alone() {
     );
 }
 
+/// Removing a NON-detached sibling of an already-detached occurrence
+/// must sweep only the attached members, never the detached one. Tier
+/// `[0,24,48,72]`, detach 24, remove 48: 24 must survive (it never re-enters the
+/// sweep), and since the unit is no longer attached-complete (only 3 of its 4
+/// members are attached), 0/72 are not swept either -- only 48 itself is removed.
+#[test]
+fn removing_a_sibling_of_a_detached_member_never_sweeps_the_detached_one() {
+    let mut design = Design::new(
+        PreformSpec::block(1.0, 1.0, 2.0),
+        meta(96, 4, false),
+        vec![tier_with(&[0.0, 24.0, 48.0, 72.0], &[])],
+    );
+    let mut history = History::new();
+
+    let detach = design
+        .detach_orbit_member(0, 24.0)
+        .expect("position 24.0 is present");
+    history.apply(&mut design, detach).expect("must apply");
+    assert_eq!(design.tiers[0].detached, vec![24.0]);
+
+    let remove = design
+        .remove_orbit_member(0, 48.0)
+        .expect("position 48.0 is present");
+    history.apply(&mut design, remove).expect("must apply");
+    assert!(
+        design.tiers[0].indices.contains(&24.0),
+        "the detached position must survive: {:?}",
+        design.tiers[0].indices
+    );
+    assert_eq!(design.tiers[0].indices, vec![0.0, 24.0, 72.0]);
+    assert_eq!(design.tiers[0].detached, vec![24.0]);
+}
+
 /// Undoing a detach must restore the exact prior `detached` set.
 #[test]
 fn undoing_detach_restores_attachment() {
@@ -329,15 +362,15 @@ fn adding_a_gear_boundary_duplicate_collapses_to_one_member() {
     );
 }
 
-/// A residue just past the tolerance gap the linear comparison used to
-/// leave open (`step - 2e-3`, between the old snap's `1e-3` and the old
-/// cluster match's `4e-3`) must still cluster with a residue near `0`.
+/// A residue just past the tolerance gap a plain linear comparison
+/// leaves open (`step - 2e-3`, between the snap tolerance `1e-3` and the
+/// cluster-match tolerance `4e-3`) must still cluster with a residue near `0`.
 #[test]
 fn residue_near_step_boundary_clusters_with_residue_near_zero() {
     let m = meta(100, 1, false);
     // step = gear_teeth_abs / symmetry_order = 100 / 1 = 100, so these
     // indices already *are* their own residues: 99.998 is `step - 2e-3`,
-    // outside the old snap's reach but within the cluster-match
+    // outside the snap tolerance's reach but within the cluster-match
     // tolerance of 0.001.
     let units = orbit_units(&[0.001, 99.998], &m);
     assert_eq!(
@@ -357,9 +390,9 @@ fn residue_near_step_boundary_clusters_with_residue_near_zero() {
 fn mirror_axis_check_wraps_across_the_step_boundary() {
     let m = meta(96, 4, true);
     // base = 96 - 0.0025: step = 24, so its residue is 96 mod 24 minus
-    // 0.0025 wrapped, i.e. step - 2.5e-3 -- inside the old bug's gap
-    // `(step - 4e-3, step - 1e-3)`, and geometrically on the mirror axis
-    // (residue ~= 0 the "other way round").
+    // 0.0025 wrapped, i.e. step - 2.5e-3 -- inside the gap
+    // `(step - 4e-3, step - 1e-3)` a naive comparison would miss, and
+    // geometrically on the mirror axis (residue ~= 0 the "other way round").
     let base: f64 = 96.0 - 0.0025;
     let indices = vec![
         base,

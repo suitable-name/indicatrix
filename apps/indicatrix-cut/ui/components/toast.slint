@@ -16,12 +16,12 @@ export component Toast inherits Rectangle {
     // A Rectangle outside a layout has no intrinsic size: with no `height` it fills
     // its parent (the whole window). Size it to the wrapped content instead.
     height: content.preferred-height;
-    background: toast_type == "success" ? #064e3bcc : (toast_type == "error" ? #7f1d1dcc : (toast_type == "warning" ? #78350fcc : #0f172acc));
+    background: toast_type == "success" ? Theme.toast-success-surface : (toast_type == "error" ? Theme.toast-error-surface : (toast_type == "warning" ? Theme.toast-warning-surface : Theme.toast-info-surface));
     border-color: toast_type == "success" ? Theme.accent-emerald : (toast_type == "error" ? Theme.danger : (toast_type == "warning" ? Theme.accent-amber : Theme.accent-cyan));
     border-width: 1px;
     border-radius: Theme.radius-md;
     drop-shadow-blur: 20px;
-    drop-shadow-color: #000000aa;
+    drop-shadow-color: Theme.toast-shadow;
     drop-shadow-offset-y: 6px;
     clip: true;
 
@@ -39,21 +39,21 @@ export component Toast inherits Rectangle {
 
             Image {
                 source: toast_type == "success" ? @image-url("../icons/check.svg") : ((toast_type == "error" || toast_type == "warning") ? @image-url("../icons/warning.svg") : @image-url("../icons/info.svg"));
-                colorize: toast_type == "success" ? #34d399 : (toast_type == "error" ? Theme.danger : (toast_type == "warning" ? Theme.accent-amber : Theme.accent-cyan));
+                colorize: toast_type == "success" ? Theme.success : (toast_type == "error" ? Theme.danger : (toast_type == "warning" ? Theme.accent-amber : Theme.accent-cyan));
                 width: 15px;
                 height: 15px;
                 y: 1px;
             }
 
-            // UI/UX review finding 7: was `overflow: elide` on a single-line row, so
-            // any message longer than ~40 characters was silently truncated. Wraps
-            // instead, with the toast's own height (no longer fixed -- see `root`'s
-            // own `height` removal above) growing to fit.
+            // Wraps rather than eliding a single-line row, so a long message stays
+            // fully readable instead of being silently truncated; the toast's own
+            // height (bound to `content.preferred-height` above) grows to fit the
+            // wrapped text.
             Text {
                 text: root.text;
                 font-size: 12px;
                 font-weight: 600;
-                color: #f8fafc;
+                color: Theme.text-primary;
                 wrap: word-wrap;
             }
         }
@@ -63,7 +63,7 @@ export component Toast inherits Rectangle {
             width: 24px;
             height: 24px;
             border-radius: Theme.radius-sm;
-            background: close_touch.has-hover ? #ffffff22 : transparent;
+            background: close_touch.has-hover ? Theme.overlay-hover : transparent;
 
             close_touch := TouchArea {
                 clicked => { root.dismiss(); }

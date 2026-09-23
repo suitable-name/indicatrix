@@ -3,31 +3,30 @@ import { Theme } from "../theme.slint";
 import { SolidPreviewModel } from "../models/solid_preview.slint";
 import { ViewportModel } from "../models/viewport.slint";
 import { EditorModel } from "../models/editor.slint";
-// CAD audit item 139: the Tilt Curve pill/dialog, previously reachable only
-// from the Live Render tab's `GemViewportView` -- `PerformanceGraphDialog`
-// (a different lane's file, `components/performance_graph_dialog.slint`) is
-// bound entirely through globals (`TiltModel`/`ViewportModel`), so mounting
-// it here too is safe: it carries no dependency on `GemViewportView`'s own
-// local state.
+// The Tilt Curve pill/dialog is reachable from this tab too, not only from the
+// Live Render tab's `GemViewportView` -- `PerformanceGraphDialog`
+// (`components/performance_graph_dialog.slint`) is bound entirely through
+// globals (`TiltModel`/`ViewportModel`), so mounting it here too is safe: it
+// carries no dependency on `GemViewportView`'s own local state.
 import { TiltModel } from "../models/tilt.slint";
 import { PerformanceGraphDialog } from "performance_graph_dialog.slint";
-// CAD audit item 223: the custom-material editor was reachable only from the
-// Live Render tab's `GemViewportView` (the sole place that mounted
-// `MaterialEditorDialog`), so a cutter working the Edit tab had to switch tabs
-// to create/edit a custom material. Mounted here too, mirroring the item 139
-// precedent right above for `PerformanceGraphDialog`: `SolidViewportView` and
-// `GemViewportView` are mutually exclusive (only the Edit tab OR the Live
-// Render tab is ever mounted at once, see `app.slint`), so there is never a
-// second copy of this dialog on screen despite both files mounting it
-// conditionally on the same `ViewportModel.material_editor_open`.
+// The custom-material editor is mounted here too, not only in the Live Render
+// tab's `GemViewportView` (which also mounts `MaterialEditorDialog`), so a
+// cutter working the Edit tab can create/edit a custom material without
+// switching tabs -- mirroring the same mounting pattern used above for
+// `PerformanceGraphDialog`: `SolidViewportView` and `GemViewportView` are
+// mutually exclusive (only the Edit tab OR the Live Render tab is ever
+// mounted at once, see `app.slint`), so there is never a second copy of this
+// dialog on screen despite both files mounting it conditionally on the same
+// `ViewportModel.material_editor_open`.
 import { MaterialEditorDialog } from "material_editor_dialog.slint";
-// CAD audit item 149: a running catalogue-wide batch (tilt sweep or preview
-// render) sets `ctx.export_active`, which suspends the live tracer exactly like
-// an explicit pause -- but nothing in either viewport said so, so a frozen
-// Path-traced/Both image here read as current. `BatchModel.tilt_batch_running`/
-// `preview_batch_running` are already set by the batch dialogs' own wiring
-// (`gui::batch::tilt::wiring`/`gui::batch::preview::wiring`); this file only
-// reads them to fold a banner into the status strip below.
+// A running catalogue-wide batch (tilt sweep or preview render) sets
+// `ctx.export_active`, which suspends the live tracer exactly like an
+// explicit pause -- the status strip below folds that into a banner so a
+// frozen Path-traced/Both image doesn't read as current.
+// `BatchModel.tilt_batch_running`/`preview_batch_running` are already set by
+// the batch dialogs' own wiring (`gui::batch::tilt::wiring`/
+// `gui::batch::preview::wiring`); this file only reads them.
 import { BatchModel } from "../models/batch.slint";
 
 // The Edit tab's solid-inspection viewport: a flat-shaded software render of the
@@ -55,12 +54,18 @@ export component SolidViewportView inherits Rectangle {
     clip: true;
 
     // The "Not solved" banner takes precedence over mesh_cache status when the shown
-    // solid is stale. A running catalogue-wide batch (item 149) outranks both: while
+    // solid is stale. A running catalogue-wide batch outranks both: while
     // it holds `ctx.export_active`, the Path-traced/Both image is frozen at whatever
     // it showed when the batch started, and the cutter needs to know that before
     // anything else this strip could say.
     property <bool> batch_suspends_tracer: BatchModel.tilt_batch_running || BatchModel.preview_batch_running;
-    property <string> status_text: root.batch_suspends_tracer ? "Live render paused -- a catalogue batch is running in the background." : (SolidPreviewModel.stale ? "Not solved -- showing the last solved solid. Click Solve to refresh." : SolidPreviewModel.status);
+    // "Not solved" states what is actually true (one edit behind, already
+    // catching up) rather than demanding the cutter press Solve, since an
+    // in-budget edit's own debounced auto-solve (or the very next edit)
+    // refreshes this automatically. Solve is still the right thing to suggest
+    // when nothing has ever solved at all (`SolidPreviewModel.has_solid`
+    // false), which keeps its own, more actionable phrasing.
+    property <string> status_text: root.batch_suspends_tracer ? "Live render paused -- a catalogue batch is running in the background." : (SolidPreviewModel.stale ? (SolidPreviewModel.has_solid ? "Preview one edit behind -- updating." : "Not solved -- click Solve to refresh.") : SolidPreviewModel.status);
     // Diagram mode (view_mode 3) shows its own hover text; every other mode keeps the
     // Solid rasterizer's.
     property <string> hover_text: SolidPreviewModel.view_mode == 3 ? SolidPreviewModel.diagram_hover_text : SolidPreviewModel.hover_text;
@@ -114,8 +119,8 @@ export component SolidViewportView inherits Rectangle {
     // `gui::editor::view::refresh_viewport` sizes the rasterizer to exactly the
     // logical size, never the render resolution.
     //
-    // #26: nothing used to OBSERVE this size push -- dragging the dock splitter or
-    // maximising the window left the shown image simply rescaled/letterboxed to
+    // #26: this size push must be observed, or dragging the dock splitter or
+    // maximising the window leaves the shown image simply rescaled/letterboxed to
     // the new size, with the pick buffer (still sized to the OLD frame) misaligned
     // from the cursor until the next orbit/zoom redraw. `resize_pulse` bumps on
     // every width/height change; a 50ms poll timer fires `viewport_resized()` once
@@ -162,20 +167,51 @@ export component SolidViewportView inherits Rectangle {
     // selected_tier_index` in `models/editor.slint` fires `selected_tier_changed`
     // on its own, which re-seeds/clears the inspector form and the 3D
     // highlight.
+    // Forwards Up/Down/PageUp/PageDown straight to `EditorModel.
+    // selected_tier_index` so a cutter watching the 3D view can step through
+    // tiers without switching focus to the tier table.
+    // Mirrors `editor_tier_table.slint`'s own FocusScope arithmetic (clamped to
+    // `[0, tiers.length - 1]`, `-1` treated as "start from the top") but writes
+    // `selected_tier_index` directly rather than calling a local `tier_selected`
+    // callback: `EditorTierTable` has its own `keyboard_focus_index` cursor to
+    // keep in step with a click, but this viewport has no such cursor of its
+    // own, and `changed selected_tier_index` in `models/editor.slint` already
+    // re-seeds the inspector form and the 3D highlight on its own.
+    function step_selection(delta: int) {
+        if EditorModel.tiers.length <= 0 {
+            return;
+        }
+        if EditorModel.selected_tier_index < 0 {
+            EditorModel.selected_tier_index = delta >= 0 ? 0 : EditorModel.tiers.length - 1;
+            return;
+        }
+        EditorModel.selected_tier_index = Math.max(0, Math.min(EditorModel.tiers.length - 1, EditorModel.selected_tier_index + delta));
+    }
     viewport_focus := FocusScope {
         key-pressed(event) => {
             if event.text == Key.Escape {
                 EditorModel.selected_tier_index = -1;
+                return accept;
+            } else if event.text == Key.DownArrow {
+                root.step_selection(1);
+                return accept;
+            } else if event.text == Key.UpArrow {
+                root.step_selection(-1);
+                return accept;
+            } else if event.text == Key.PageDown {
+                root.step_selection(10);
+                return accept;
+            } else if event.text == Key.PageUp {
+                root.step_selection(-10);
                 return accept;
             }
             reject
         }
 
     drag_area := TouchArea {
-        // CAD audit item 139: matches `GemViewportView`'s own `touch_area.
-        // enabled` guard -- without this, an orbit-drag or scroll-to-zoom
-        // could still reach the viewport underneath the (fully covering)
-        // Tilt Curve dialog.
+        // Matches `GemViewportView`'s own `touch_area.enabled` guard --
+        // without this, an orbit-drag or scroll-to-zoom could still reach the
+        // viewport underneath the (fully covering) Tilt Curve dialog.
         enabled: !TiltModel.dialog_open;
         pointer-event(event) => {
             // #29: Diagram mode now drags too -- panning the zoomed-in diagram --
@@ -183,10 +219,10 @@ export component SolidViewportView inherits Rectangle {
             //
             // #124: only the LEFT button starts an orbit/pan drag. Muscle memory
             // from the Live tab's Gem viewport (right-drag moves the light, see
-            // `gem_viewport.slint`'s own `is_right_drag`) used to rotate the
-            // stone here instead, since this handler never read `event.button`
-            // at all -- there is no light to move in this viewport, so a right
-            // or middle drag now does nothing rather than surprise-orbiting.
+            // `gem_viewport.slint`'s own `is_right_drag`) could otherwise rotate
+            // the stone here instead -- there is no light to move in this
+            // viewport, so a right or middle drag does nothing rather than
+            // surprise-orbiting.
             if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
                 root.last_mouse_x = drag_area.mouse-x;
                 root.last_mouse_y = drag_area.mouse-y;
@@ -240,8 +276,8 @@ export component SolidViewportView inherits Rectangle {
             if (SolidPreviewModel.view_mode == 3) {
                 // #29: a pan drag ends in a `clicked` too, exactly like an orbit
                 // drag in every other mode -- only forward it as a real pick when
-                // the pointer barely moved between down and up (previously this
-                // branch always forwarded, since dragging never existed here).
+                // the pointer barely moved between down and up, so panning the
+                // diagram never also re-triggers a facet pick.
                 if (root.drag_distance < 3) {
                     SolidPreviewModel.diagram_facet_click(root.diagram_unzoomed_x(drag_area.mouse-x), root.diagram_unzoomed_y(drag_area.mouse-y));
                 }
@@ -291,13 +327,12 @@ export component SolidViewportView inherits Rectangle {
     //
     // #32: `edges_image` rebuilds from the CURRENT (possibly just-edited) design on
     // every edit, while `render_image` only changes when the path tracer's own
-    // planes are resubmitted -- nothing here used to reconcile the two layers'
-    // provenance, so a misaligned edge overlay after an edit read as a solver
-    // error rather than the render simply being one edit behind. Gated on
-    // `trace_matches_solid` (defaults to `true`, so this composites exactly as
-    // before until something actually sets it `false`); when mismatched, the base
-    // dims and a small note explains why, rather than silently overlaying stale
-    // edges.
+    // planes are resubmitted -- this reconciles the two layers' provenance so a
+    // misaligned edge overlay after an edit reads as the render simply being one
+    // edit behind, rather than a solver error. Gated on `trace_matches_solid`
+    // (defaults to `true`, so this composites normally until something actually
+    // sets it `false`); when mismatched, the base dims and a small note explains
+    // why, rather than silently overlaying stale edges.
     if SolidPreviewModel.view_mode == 2 && ViewportModel.has_render: Image {
         width: 100%;
         height: 100%;
@@ -350,10 +385,20 @@ export component SolidViewportView inherits Rectangle {
         }
 
         Text {
-            text: (SolidPreviewModel.view_mode == 0 || SolidPreviewModel.view_mode == 3) ? "Solve to preview" : "Nothing rendered yet";
+            // A brand-new, zero-tier design has nothing TO solve, so this names
+            // the actual next step rather than telling a first-time cutter to
+            // press "Solve to preview" on a button that cannot yet do anything
+            // (New/Load Selected/Open Native all live in the catalogue panel
+            // and the command bar, neither of which this viewport can reach
+            // directly, hence naming them rather than linking them).
+            text: EditorModel.tiers.length == 0
+                ? "Nothing to show yet -- start with New, Load Selected from the catalogue, or Open Native."
+                : ((SolidPreviewModel.view_mode == 0 || SolidPreviewModel.view_mode == 3) ? "Solve to preview" : "Nothing rendered yet");
             font-size: 13px;
             color: Theme.text-muted;
             horizontal-alignment: center;
+            wrap: word-wrap;
+            width: 80%;
         }
     }
 
@@ -402,7 +447,7 @@ export component SolidViewportView inherits Rectangle {
         HorizontalLayout {
             spacing: 8px;
 
-            // CAD audit item 211: how far through the cutting schedule to draw, so
+            // How far through the cutting schedule to draw, so
             // a cutter can see what the next course actually lands on. Only when
             // there is a solved solid to truncate, and only in the two modes that
             // draw one -- there is nothing to cut back in a path-traced render of
@@ -441,9 +486,33 @@ export component SolidViewportView inherits Rectangle {
                         value: SolidPreviewModel.tier_cutoff < 0
                             ? EditorModel.tiers.length
                             : SolidPreviewModel.tier_cutoff;
-                        changed value => {
+                        // `changed(value)` is the Slider's own INTERACTION
+                        // callback (`SliderBase::set-value`, called only from an
+                        // actual drag/keyboard nudge/click), not a plain
+                        // property-change handler on the bound `value`
+                        // expression above -- a plain `changed value => { ... }`
+                        // handler would re-run on EVERY change to that
+                        // expression, including one driven by
+                        // `EditorModel.tiers.length` moving on an ordinary tier
+                        // push/remove/undo, not only an actual drag, firing a
+                        // redundant replan on every tier edit (on top of the one
+                        // already done through its own `refresh_*` call) and
+                        // risking a race with a Rust writer that still holds
+                        // `state.borrow_mut()` at the moment the queued
+                        // `changed` handler ran -- Slint queues `changed`
+                        // handlers and runs them at the next event-loop pass
+                        // rather than synchronously inside the setter, so a
+                        // Rust callback that pumps the event loop (a blocking
+                        // file dialog, most commonly) while still holding the
+                        // `EditorState` guard can flush a `changed` handler
+                        // mid-borrow. `SolidPreviewModel.tier_cutoff_changed`'s
+                        // own Rust handler
+                        // (`gui::editor::mod::setup_tier_cutoff_callback`) is
+                        // the only one that fires from this, and uses
+                        // `try_borrow` (skip on failure) for the same reason.
+                        changed(value) => {
                             SolidPreviewModel.tier_cutoff =
-                                self.value >= EditorModel.tiers.length ? -1 : Math.round(self.value);
+                                value >= EditorModel.tiers.length ? -1 : Math.round(value);
                             SolidPreviewModel.tier_cutoff_changed();
                         }
                     }
@@ -581,10 +650,9 @@ export component SolidViewportView inherits Rectangle {
                 }
             }
 
-            // #118 (`cad_todo.md` item 118): Bottom/Left/Right -- there used to be
-            // no one-click pavilion view at all, the commonest inspection for
-            // windowing, and no way to look at either side without a free-drag
-            // orbit. Same `ViewportModel.set_view` as Front/Top above, new kinds
+            // #118: Bottom/Left/Right -- a one-click pavilion view, the commonest
+            // inspection for windowing, and a way to look at either side without
+            // a free-drag orbit. Same `ViewportModel.set_view` as Front/Top above, new kinds
             // (`render::camera_lighting::setup_set_view_callback`'s own doc
             // comment has the full kind -> pose mapping).
             Rectangle {
@@ -667,8 +735,8 @@ export component SolidViewportView inherits Rectangle {
             // #118: `ViewportModel.reset_camera` -- the same canonical pose/light
             // reset `gem_viewport.slint`'s own Reset button already calls for the
             // Live Render tab; `render::camera_lighting::setup_camera_and_lighting_
-            // callbacks`'s `on_reset_camera` now also re-requests a redraw at the
-            // new pose (it used to leave both viewports showing the OLD one).
+            // callbacks`'s `on_reset_camera` also re-requests a redraw at the new
+            // pose so both viewports show it, not just the one that triggered it.
             Rectangle {
                 height: 28px;
                 width: 56px;
@@ -688,13 +756,13 @@ export component SolidViewportView inherits Rectangle {
                 }
             }
 
-            // CAD audit item 139: the Edit tab's own route to the tilt-
-            // performance chart -- previously the ONLY way to reach it was the
-            // Live Render tab's "Tilt Curve" button, which meant leaving the
-            // Edit tab (and, to change what it showed, using the catalogue
-            // list, which overwrites the design being edited). Same
-            // open/close + stale-cache-check sequence as `GemViewportView`'s
-            // own button, now shared via `TiltModel.toggle_dialog()`.
+            // The Edit tab's own route to the tilt-performance chart, so a
+            // cutter isn't forced to leave the Edit tab and use the Live
+            // Render tab's "Tilt Curve" button (and, to change what it showed,
+            // the catalogue list, which overwrites the design being edited).
+            // Same open/close + stale-cache-check sequence as
+            // `GemViewportView`'s own button, shared via
+            // `TiltModel.toggle_dialog()`.
             Rectangle {
                 height: 28px;
                 width: 82px;
@@ -766,7 +834,7 @@ export component SolidViewportView inherits Rectangle {
                 }
             }
 
-            // #29 (P1 item 29, "a single-panel enlarged view"): lets a cutter
+            // A single-panel enlarged view: lets a cutter
             // enlarge one of the diagram's three panels to fill the whole
             // image, rather than reading it at one-third width. Re-clicking the
             // already-enlarged panel's own pill returns to the three-column
@@ -858,21 +926,20 @@ export component SolidViewportView inherits Rectangle {
         }
     }
 
-    // CAD audit item 139: mounted here too (mirroring `GemViewportView`'s own
-    // identical mount) so the Tilt Curve pill above has a dialog to open --
-    // `SolidViewportView` and `GemViewportView` are mutually exclusive (only
-    // the Edit tab OR the Live Render tab is ever mounted at once, see
-    // `app.slint`), so there is never a second copy of this dialog on screen
-    // at once despite both files mounting it conditionally on the same
-    // `TiltModel.dialog_open`.
+    // Mounted here too (mirroring `GemViewportView`'s own identical mount) so
+    // the Tilt Curve pill above has a dialog to open -- `SolidViewportView`
+    // and `GemViewportView` are mutually exclusive (only the Edit tab OR the
+    // Live Render tab is ever mounted at once, see `app.slint`), so there is
+    // never a second copy of this dialog on screen at once despite both
+    // files mounting it conditionally on the same `TiltModel.dialog_open`.
     if TiltModel.dialog_open: PerformanceGraphDialog {
         width: 100%;
         height: 100%;
         z: 350;
     }
 
-    // CAD audit item 223: mounted here too (mirroring `GemViewportView`'s own
-    // identical mount, same `z` value) so the "New/Edit material..." button
+    // Mounted here too (mirroring `GemViewportView`'s own identical mount,
+    // same `z` value) so the "New/Edit material..." button
     // `editor_design_settings.slint` adds next to the Design Settings material
     // combo has a dialog to open without leaving the Edit tab.
     if ViewportModel.material_editor_open: MaterialEditorDialog {

@@ -110,8 +110,7 @@ pub(super) struct ExportJob {
 /// Everything shared across every job in one fan-out export, and across the recursive
 /// `start_next_export_job` calls that step through [`jobs`](Self::jobs) one at a time
 /// -- see this group's own `mod.rs` doc comment for why this lives behind
-/// `Arc<Mutex<_>>>` rather than the single-export `Rc<RefCell<Option<ExportHandle>>>>`
-/// this replaced.
+/// `Arc<Mutex<_>>>` rather than a single-export `Rc<RefCell<Option<ExportHandle>>>>`.
 ///
 /// # Progress: counting presets, not just samples within one image
 ///
@@ -210,10 +209,11 @@ pub(super) fn finish_export_queue(
     queue: &ExportQueue,
 ) {
     ui.global::<ExportModel>().set_is_exporting(false);
-    render_ctx
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .export_active = false;
+    // A COUNT, not a bool: the batch preview/tilt jobs can be in flight
+    // at the same time as a fanned-out hi-res export queue, so this decrements this
+    // queue's own claim rather than unconditionally clearing every job's -- see
+    // `RenderContext::export_active_count`'s doc comment.
+    RenderContext::lock(render_ctx).export_active_count -= 1;
     ui.global::<ExportModel>()
         .set_preview_image(slint::Image::default());
 
@@ -417,9 +417,9 @@ mod tests {
     use std::sync::Mutex;
 
     /// The export's bounce cap must come from the export dialog, not silently
-    /// inherit whatever the live viewport happens to be set to -- the exact gap the
-    /// top-level task asked to close. Captures a snapshot from a `RenderContext` at one
-    /// bounce count (standing in for "whatever the viewport is currently set to") and
+    /// inherit whatever the live viewport happens to be set to. Captures a snapshot
+    /// from a `RenderContext` at one bounce count (standing in for "whatever the
+    /// viewport is currently set to") and
     /// confirms `apply_export_bounce_cap` overrides it to a DIFFERENT value rather than
     /// leaving the captured one in place.
     #[test]

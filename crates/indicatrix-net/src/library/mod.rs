@@ -69,6 +69,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::messages::ErrorMsg;
 
+/// Wire counterpart of `indicatrix_vault::db::sqlite::search::SortOrder` (the vault is
+/// not a dependency of this crate).
+///
+/// `#[default]` is [`Self::CatalogueOrder`], matching the vault type's own default, so a
+/// client that never sets a sort preference gets the long-standing `de.id ASC` behaviour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SortOrderWire {
+    /// Insertion order -- the long-standing default.
+    #[default]
+    CatalogueOrder,
+    /// Case-insensitive title, A-Z.
+    Title,
+    /// Most recently created first.
+    Newest,
+    /// Most recently edited first.
+    RecentlyEdited,
+}
+
 /// Wire counterpart of `indicatrix_vault::model::filter::RangeFilter`; a `None` bound is
 /// unconstrained.
 ///
@@ -243,14 +261,38 @@ pub struct DesignRecord {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum LibraryRequest {
     /// List/search designs -- mirrors
-    /// `indicatrix_vault::db::sqlite::Database::search_diagrams`'s filters one-for-one.
-    /// Capped at that method's result cap (currently 1000); see [`Self::SearchPage`] for
-    /// the paginated form a full-catalogue walk needs instead.
+    /// `indicatrix_vault::db::sqlite::Database::search_diagrams_display`'s filters
+    /// one-for-one: the sort order and tag chip are carried on this variant, not
+    /// silently dropped. Capped at that method's result cap (currently 1000);
+    /// see [`Self::SearchPage`] for the paginated form a full-catalogue walk needs
+    /// instead.
+    ///
+    /// # Deliberately NOT on the wire: `local_only`, `id_filter`
+    ///
+    /// `indicatrix_vault::db::sqlite::DisplayFilters` also carries a `local_only`
+    /// ("My designs") flag and an `id_filter` (an explicit entry-id allowlist, used by
+    /// a local batch action). Neither is meaningful against a remote catalogue:
+    /// `local_only` names designs synced under *this* database's own `local://` import
+    /// scheme, and `id_filter` names entry ids from *this* database's own rows -- both
+    /// are per-database concepts specific to the client's own local vault, not
+    /// something a remote worker's catalogue could answer. Sending them would either
+    /// be silently ignored server-side or (worse) accidentally match unrelated rows
+    /// that happen to share an id in the remote catalogue.
     Search {
         query: String,
         shape_filter: String,
         gear_filter: String,
         range: RangeFilterWire,
+        /// Sort order for the results -- see [`SortOrderWire`].
+        order: SortOrderWire,
+        /// Restricts results to designs carrying this tag, by NAME (never an id: tag
+        /// ids are assigned per-database, so an id minted by one catalogue is
+        /// meaningless -- and could accidentally collide with an unrelated tag -- in
+        /// another). `None` for no restriction. `indicatrix-worker` resolves the name
+        /// to its own local tag id via `tag_id_by_name`; a name that worker has never
+        /// seen resolves to no restriction, the same tolerance the app itself already
+        /// has for an unknown tag.
+        tag_filter: Option<String>,
     },
     /// Scalar catalogue facts a search UI needs for its filter controls -- distinct
     /// shapes, distinct gears, attribute range bounds -- mirroring
@@ -391,6 +433,16 @@ mod tests {
                 shape_filter: "All".to_string(),
                 gear_filter: "All".to_string(),
                 range: RangeFilterWire::default(),
+                order: SortOrderWire::default(),
+                tag_filter: None,
+            },
+            LibraryRequest::Search {
+                query: "round".to_string(),
+                shape_filter: "All".to_string(),
+                gear_filter: "All".to_string(),
+                range: RangeFilterWire::default(),
+                order: SortOrderWire::Title,
+                tag_filter: Some("Favorites".to_string()),
             },
             LibraryRequest::FilterOptions,
             LibraryRequest::FetchDesign { entry_id: 42 },
@@ -560,12 +612,63 @@ mod tests {
             shape_filter: "All".to_string(),
             gear_filter: "All".to_string(),
             range,
+            order: SortOrderWire::Newest,
+            tag_filter: Some("Heirloom".to_string()),
         };
         let mut buf = Vec::new();
         write_message(&mut buf, &req).unwrap();
         let mut cursor = std::io::Cursor::new(buf);
         let decoded: LibraryRequest = read_message(&mut cursor).unwrap();
         assert_eq!(decoded, req);
+    }
+
+    /// Every [`SortOrderWire`] variant round-trips, and the type's default matches
+    /// [`SortOrderWire::CatalogueOrder`] -- pins the wire encoding for the sort order a
+    /// [`LibraryRequest::Search`] carries.
+    #[test]
+    fn sort_order_wire_every_variant_round_trips_and_defaults_to_catalogue_order() {
+        assert_eq!(SortOrderWire::default(), SortOrderWire::CatalogueOrder);
+        for order in [
+            SortOrderWire::CatalogueOrder,
+            SortOrderWire::Title,
+            SortOrderWire::Newest,
+            SortOrderWire::RecentlyEdited,
+        ] {
+            let mut buf = Vec::new();
+            write_message(&mut buf, &order).unwrap();
+            let mut cursor = std::io::Cursor::new(buf);
+            let decoded: SortOrderWire = read_message(&mut cursor).unwrap();
+            assert_eq!(decoded, order);
+        }
+    }
+
+    /// [`LibraryRequest::Search`] carries a real `order`/`tag_filter` pair (not the
+    /// defaults) and round-trips both untouched -- a dedicated test (on top of this
+    /// variant's coverage in [`library_request_variants_round_trip`]) so this contract
+    /// is pinned by name.
+    #[test]
+    fn search_request_order_and_tag_filter_round_trip() {
+        let req = LibraryRequest::Search {
+            query: String::new(),
+            shape_filter: "All".to_string(),
+            gear_filter: "All".to_string(),
+            range: RangeFilterWire::default(),
+            order: SortOrderWire::RecentlyEdited,
+            tag_filter: Some("Competition".to_string()),
+        };
+        let mut buf = Vec::new();
+        write_message(&mut buf, &req).unwrap();
+        let mut cursor = std::io::Cursor::new(buf);
+        let decoded: LibraryRequest = read_message(&mut cursor).unwrap();
+        assert_eq!(decoded, req);
+        let LibraryRequest::Search {
+            order, tag_filter, ..
+        } = decoded
+        else {
+            panic!("expected Search, got {decoded:?}");
+        };
+        assert_eq!(order, SortOrderWire::RecentlyEdited);
+        assert_eq!(tag_filter.as_deref(), Some("Competition"));
     }
 
     /// [`DesignSummary::ignored`] round-trips both settings rather than silently
@@ -680,5 +783,60 @@ mod tests {
             panic!("expected SearchResultsPage, got {decoded:?}");
         };
         assert_eq!(excluded_for_missing_curves, 3);
+    }
+
+    /// [`LibraryRequest::Search`] round-trips for every [`SortOrderWire`] variant
+    /// crossed with `tag_filter` both `Some` and `None` -- the full
+    /// combination, on top of the individual cases already covered by
+    /// [`library_request_variants_round_trip`]/[`search_request_order_and_tag_filter_round_trip`]/
+    /// [`range_filter_wire_with_every_new_field_set_round_trips`], so no single
+    /// order/tag-filter pairing is silently unexercised.
+    #[test]
+    fn search_request_every_sort_order_and_tag_filter_combination_round_trips() {
+        for order in [
+            SortOrderWire::CatalogueOrder,
+            SortOrderWire::Title,
+            SortOrderWire::Newest,
+            SortOrderWire::RecentlyEdited,
+        ] {
+            for tag_filter in [None, Some("Favorites".to_string())] {
+                let req = LibraryRequest::Search {
+                    query: "round".to_string(),
+                    shape_filter: "All".to_string(),
+                    gear_filter: "All".to_string(),
+                    range: RangeFilterWire::default(),
+                    order,
+                    tag_filter: tag_filter.clone(),
+                };
+                let mut buf = Vec::new();
+                write_message(&mut buf, &req).unwrap();
+                let mut cursor = std::io::Cursor::new(buf);
+                let decoded: LibraryRequest = read_message(&mut cursor).unwrap();
+                assert_eq!(decoded, req, "order={order:?}, tag_filter={tag_filter:?}");
+            }
+        }
+    }
+
+    /// Pins [`SortOrderWire`]'s four variants at `postcard` discriminants 0-3, in
+    /// declaration order -- unlike the round-trip tests above, a renamed/reordered
+    /// variant that still round-trips against itself would not fail those; this reads
+    /// the raw encoded byte the way
+    /// [`crate::messages::stream::tests::cancel_and_library_keep_postcard_discriminants_0_and_1`]
+    /// pins `ClientMessage`'s own variants.
+    #[test]
+    fn sort_order_wire_postcard_discriminants_are_stable() {
+        for (order, expected) in [
+            (SortOrderWire::CatalogueOrder, 0),
+            (SortOrderWire::Title, 1),
+            (SortOrderWire::Newest, 2),
+            (SortOrderWire::RecentlyEdited, 3),
+        ] {
+            let bytes = postcard::to_allocvec(&order).unwrap();
+            assert_eq!(
+                bytes,
+                [expected],
+                "{order:?} must stay postcard discriminant {expected}"
+            );
+        }
     }
 }

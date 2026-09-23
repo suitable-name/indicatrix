@@ -50,10 +50,10 @@ export component MetadataEditorDialog inherits Rectangle {
     property <string> selected_shape: (root.shape_index >= 0 && root.shape_index < root.shape_options.length)
         ? root.shape_options[root.shape_index] : root.shape_draft;
 
-    // Item 168: a stray click on the backdrop used to discard all thirteen typed
-    // values with no confirmation. `is_dirty` compares every field this dialog can
-    // still actually edit (post-Item-167; gear/RI/symmetry/mirror are read-only here
-    // now, so they can never diverge from `current_detail` and are left out) against
+    // A stray click on the backdrop would otherwise discard all thirteen typed
+    // values with no confirmation, so `is_dirty` compares every field this dialog can
+    // still actually edit (gear/RI/symmetry/mirror are read-only here, so they can
+    // never diverge from `current_detail` and are left out) against
     // the record the dialog opened with; `request_close` asks first when any of them
     // differ, and only `Discard`/an explicit Save proceed to the real `close()`.
     property <bool> is_dirty: root.title_draft != LibraryModel.current_detail.title
@@ -98,7 +98,7 @@ export component MetadataEditorDialog inherits Rectangle {
     // Escape = ask-then-cancel, matching `new_design_dialog.slint`'s own
     // `init => { self.focus(); }` + `key-pressed` idiom.
     //
-    // CAD audit item 199: `accept` (not `reject`) for every other key -- otherwise
+    // `accept` (not `reject`) for every other key -- otherwise
     // an unhandled key bubbles past this dialog to `global_shortcuts` and fires a
     // shortcut on the design underneath it.
     key_scope := FocusScope {
@@ -200,14 +200,13 @@ export component MetadataEditorDialog inherits Rectangle {
             }
 
             // Shape / Facet Count -- catalogue-only descriptive fields. Index Gear,
-            // Refractive Index, Symmetry Order and Mirror Symmetry used to be editable
-            // right here too, but that duplicated the Edit tab's own Design Settings
-            // panel (`editor_design_settings.slint`) without ever agreeing with it: a
-            // correction made in one never reached the other (Item 167), so this
-            // dialog no longer offers them at all -- see the note below. Their draft
-            // properties stay declared (still round-tripped verbatim through `save()`
-            // below) since removing them from `LibraryModel.save_metadata`'s signature
-            // is a change to `ui/models/library.slint`, owned by another lane.
+            // Refractive Index, Symmetry Order and Mirror Symmetry are edited from the
+            // Edit tab's own Design Settings panel (`editor_design_settings.slint`)
+            // instead of here, so a correction always lands in the one place that can
+            // never disagree with another copy of itself -- see the note below. Their
+            // draft properties stay declared (still round-tripped verbatim through
+            // `save()` below) since removing them from `LibraryModel.save_metadata`'s
+            // signature would require editing `ui/models/library.slint`.
             HorizontalLayout {
                 spacing: 10px;
                 VerticalLayout {

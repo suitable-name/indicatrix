@@ -20,8 +20,7 @@
 //! a pinned/fresh/stale/unsolvable outcome); [`edges_layer`] is the "Both" view mode's
 //! transparent-fill, opaque-edges render; [`diagram2d`] is view mode 3's GemCAD-style
 //! three-panel (crown/pavilion/profile) 2D facet diagram, with its own per-pixel
-//! facet-picking buffer. All four are Slint-free; `facet_map`/`live_update` are gated
-//! on `indicatrix-cut-core`, `edges_layer`/`diagram2d` are not.
+//! facet-picking buffer. All four are Slint-free.
 
 pub mod mesh_cache;
 pub mod preview_state;
@@ -30,9 +29,7 @@ pub mod raster;
 pub mod diagram2d;
 pub mod diagram_wiring;
 pub mod edges_layer;
-#[cfg(feature = "editor")]
 pub mod facet_map;
-#[cfg(feature = "editor")]
 pub mod live_update;
 
 /// Converts a finished [`raster::SolidRasterizer`] frame into a `Send`-safe pixel

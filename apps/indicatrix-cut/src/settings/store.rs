@@ -15,10 +15,9 @@ use tracing::{info, warn};
 // separate binaries that can be installed side by side, and sharing one settings
 // directory would mean whichever app last saved silently overwrites the other's file.
 const APP_DIR_NAME: &str = "indicatrix-cut";
-/// The app-dir name this crate's settings used to share with the public app before
-/// `APP_DIR_NAME` was split off. Kept for exactly one purpose:
+/// The public app's own app-dir name, kept for exactly one purpose:
 /// [`migrate_legacy_settings_if_needed`]'s one-time copy, so a machine that already
-/// had the old app configured doesn't have the editor start completely blank.
+/// has the public app configured doesn't have the editor start completely blank.
 const LEGACY_APP_DIR_NAME: &str = "indicatrix-cut";
 const SETTINGS_FILE_NAME: &str = "settings.toml";
 

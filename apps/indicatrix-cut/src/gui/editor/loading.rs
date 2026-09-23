@@ -6,7 +6,8 @@
 use super::state::material_name_from_index;
 use indicatrix::geometry::{meet_solver::MeetConstraint, stone_metrics::ExternalProportions};
 use indicatrix_cut_core::{
-    ConstraintTier, Design, FreshDesignSpec, MaterialSelection, PreformSpec, load_paired,
+    ConstraintTier, Design, FreshDesignSpec, MaterialSelection, PreformSpec, TierTarget,
+    load_paired,
     native::{LEGACY_NATIVE_EXTENSION_SUFFIX, NATIVE_EXTENSION_SUFFIX},
 };
 use indicatrix_vault::model::file::AttachedFile;
@@ -42,13 +43,13 @@ pub(super) struct LoadedDesign {
     /// came from the angle-table placeholder reconstruction (every mast `0.0`) --
     /// see [`design_from_full_record`]'s doc comment.
     pub(super) used_placeholder: bool,
-    /// Phase 7: the real attached `.asc`'s own bare file name, `None` on the
-    /// placeholder path -- reconstructed text was never a real `.asc` this catalogue
-    /// entry ships, so there is nothing there worth [`indicatrix_cut_core::save_paired`]
+    /// The real attached `.asc`'s own bare file name, `None` on the placeholder
+    /// path. Reconstructed text was never a real `.asc` this catalogue entry
+    /// ships, so there is nothing there worth [`indicatrix_cut_core::save_paired`]
     /// preserving verbatim. Fed to `super::state::EditorState::asc_filename` by
     /// `super::callbacks::setup_load_selected_callback`.
     pub(super) asc_filename: Option<String>,
-    /// Phase 7: the real attached `.asc`'s own exact original text, `None` on the
+    /// The real attached `.asc`'s own exact original text, `None` on the
     /// placeholder path for the identical reason. Fed to
     /// `super::state::EditorState::original_asc_text`.
     pub(super) original_asc_text: Option<String>,
@@ -249,59 +250,6 @@ pub(super) fn external_proportions_from_full_record(
     .then_some(props)
 }
 
-/// Parses the tier-edit form's five text/enum fields into a [`ConstraintTier`]. Pure
-/// and unit tested directly (see this module's tests) rather than only exercised
-/// through the Slint callback -- every validation an editor's numeric text field
-/// needs (not a number, not finite) surfaces as a plain `Err` message shown via a
-/// toast, never a panic on bad user input.
-///
-/// There is deliberately no `mast` field here any more -- see this group's `mod.rs`
-/// doc comment and `indicatrix_cut_core::design`'s own module docs ("Constraints, not masts"): a
-/// mast is [`Design::solve`]'s output, never authored state, so the form no longer
-/// offers a text field for it at all. `constraint_kind` is `EditorTierItem`'s own
-/// three-way encoding (`app.slint`'s `editor_save_tier` callback), the inverse of
-/// `super::state`'s `constraint_kind_and_text`:
-/// - `0` -- [`MeetConstraint::MeetExisting`] (`constraint_text` ignored).
-/// - `1` -- [`MeetConstraint::MeetNamed`], `constraint_text` a comma-separated name
-///   list.
-/// - `2` -- [`MeetConstraint::ScaleReference`], `constraint_text` a single real
-///   number (the authored dimension itself).
-/// - anything else -- rejected as an `Err`, never silently coerced to a default
-///   constraint kind.
-///
-/// Indices split on comma/space/semicolon, matching
-/// `indicatrix_vault::local::reconstruct_asc_schedule`'s own splitting convention for
-/// the same kind of field, so a value copied out of that reconstruction's own indices
-/// column round-trips straight back in. CAD audit item 34: two shorthand forms are
-/// recognized before that plain split-and-parse -- `"start:step:stop"` (a colon-
-/// separated arithmetic sequence, exclusive of `stop`, see [`parse_colon_sequence`])
-/// and `"base xN"` (a base index followed by an `xN` fold count, expanded the same
-/// way the ORBIT column's own `orbit x8` label already describes a complete family,
-/// see [`parse_orbit_suffix`]/[`expand_orbit_shorthand`]); either form's generated
-/// values are wrapped modulo the gear and fed through the exact same per-value
-/// validation below as a hand-typed index. Each parsed value is then validated
-/// against `gear_teeth_abs` (the design's own index-wheel tooth count, from
-/// [`indicatrix_cut_core::design::tier::ScheduleMeta::gear_teeth_abs`]): it must be
-/// finite, within `0.0..gear_teeth_abs as f64` (an index the gear physically has no
-/// tooth for is never silently accepted), and not a repeat of an earlier value in the
-/// same list (a duplicate names the same facet occurrence twice, which is never a
-/// meaningful tier). The first entry that fails any of these is reported by its own
-/// text, matching every other field's own "name the offending value" convention here.
-/// A non-integral value (from either a hand-typed fraction or a fold count that does
-/// not evenly divide the gear) is still ACCEPTED here -- warning about it without
-/// rejecting it is the caller's job (`callbacks::tier_actions::setup_save_tier_callback`),
-/// since it is real GemCad-file behavior (`indicatrix_formats::asc`'s own module docs
-/// measure roughly 0.2% of real index tokens as fractional), not necessarily a mistake.
-///
-/// `imported_meet` is threaded straight through to the built [`ConstraintTier`]
-/// unchanged -- this function never inspects or clears it. The caller
-/// (`super::callbacks::setup_save_tier_callback`) passes the CURRENT tier's own
-/// `imported_meet` when editing an existing row (`index >= 0`) so that tweaking,
-/// say, just this tier's name does not silently discard the file's stated meet
-/// instruction, and `None` when adding a brand-new tier (`index < 0`), which
-/// has no import history to preserve at all. The one-click "Adopt" action
-/// (`super::callbacks::setup_adopt_meet_callback`) is the only thing that ever
-/// actually CONSULTS this field to build a new constraint from it.
 /// Parses just the angle text an inline tier-list cell commits (`inline_set_angle`)
 /// -- the same validation [`parse_tier_form`]'s own angle field applies (must parse
 /// as a finite `f64`), pulled out so the inline cell doesn't need a whole tier form's
@@ -318,10 +266,10 @@ pub(super) fn parse_angle_only(angle: &str) -> Result<f64, String> {
     Ok(angle_deg)
 }
 
-/// CAD audit item 34: parses `token` as the colon-separated arithmetic
-/// sequence shorthand `start:step:stop` (e.g. `"0:12:96"`) for the Indices
-/// field -- generates every `start + k*step` strictly before `stop`
-/// (exclusive, the same half-open convention every other "count up to N" in
+/// Parses `token` as the colon-separated arithmetic sequence shorthand
+/// `start:step:stop` (e.g. `"0:12:96"`) for the Indices field -- generates every
+/// `start + k*step` strictly before `stop` (exclusive, the same half-open
+/// convention every other "count up to N" in
 /// this codebase uses), wrapped modulo `gear_teeth_abs` so a sequence that
 /// runs past the gear's own tooth count still lands on real positions
 /// instead of failing outright. Each generated value still goes through the
@@ -364,10 +312,10 @@ fn parse_colon_sequence(token: &str, gear_teeth_abs_f64: f64) -> Option<Vec<f64>
     Some(values)
 }
 
-/// CAD audit item 34: parses `suffix` as the "xN" fold-count half of the
-/// "N xM" orbit shorthand (e.g. `"12 x8"`) -- the same `x`-prefixed notation
-/// the ORBIT column already displays for a complete family (see
-/// `docs/manual/03-loading-and-tier-list.md`'s "Orbits" section: `orbit x8`).
+/// Parses `suffix` as the "xN" fold-count half of the "N xM" orbit shorthand
+/// (e.g. `"12 x8"`) -- the same `x`-prefixed notation the ORBIT column already
+/// displays for a complete family (see `docs/manual/03-loading-and-tier-list.md`'s
+/// "Orbits" section: `orbit x8`).
 /// Returns the fold count when `suffix` is exactly `x`/`X` followed by one or
 /// more digits naming a positive count, `None` otherwise -- the caller then
 /// treats the two tokens as two ordinary (and, for the second, almost
@@ -381,10 +329,10 @@ fn parse_orbit_suffix(suffix: &str) -> Option<u32> {
     digits.parse::<u32>().ok().filter(|&n| n > 0)
 }
 
-/// CAD audit item 34: expands `base` into `fold_count` evenly spaced index-
-/// wheel positions -- `base + k * (gear_teeth_abs / fold_count)` for `k` in
-/// `0..fold_count`, wrapped modulo `gear_teeth_abs`. The other half of
-/// [`parse_orbit_suffix`]'s "12 x8" shorthand. A `fold_count` that does not
+/// Expands `base` into `fold_count` evenly spaced index-wheel positions --
+/// `base + k * (gear_teeth_abs / fold_count)` for `k` in `0..fold_count`, wrapped
+/// modulo `gear_teeth_abs`. The other half of [`parse_orbit_suffix`]'s "12 x8"
+/// shorthand. A `fold_count` that does not
 /// evenly divide the gear still produces values (landing on fractional
 /// teeth) rather than being rejected here -- the caller's own non-integral-
 /// index warning is what flags that, exactly as it would for a hand-typed
@@ -399,13 +347,12 @@ fn expand_orbit_shorthand(base: f64, fold_count: u32, gear_teeth_abs_f64: f64) -
         .collect()
 }
 
-/// CAD audit item 134: a magnitude beyond 90 degrees is never a real facet --
-/// every angle in this app is measured from the girdle plane (crown/pavilion
-/// tiers) or is the girdle itself (`0.0`), so nothing legitimately authored ever
-/// needs to exceed a right angle either side of it. Left unchecked, a mistyped
-/// extra digit (e.g. `410` for `41.0`) used to sail through both the inline cell
-/// and the tier form and only surface later as a cryptic "Degenerate: only N
-/// distinct vertex(es)" message, with no hint the ANGLE was the actual mistake.
+/// A magnitude beyond 90 degrees is never a real facet. Every angle in this app
+/// is measured from the girdle plane or is the girdle itself (`0.0`), so nothing
+/// legitimately authored ever exceeds a right angle either side. Left unchecked,
+/// a mistyped extra digit (e.g. `410` for `41.0`) can sail through the inline
+/// cell and tier form and only surface later as "Degenerate: only N vertex(es)",
+/// with no hint the angle was the mistake.
 fn reject_angle_over_90(angle_deg: f64) -> Result<(), String> {
     if angle_deg.abs() > 90.0 {
         return Err(format!(
@@ -445,8 +392,8 @@ pub(super) struct TierFormFields<'a> {
     /// Every OTHER tier's own name token (`ConstraintTier::names()`, i.e. already
     /// split on `/` -- see that method's own doc comment for the multi-name join
     /// convention), gathered by the caller with the tier being saved itself
-    /// excluded. Checked case-insensitively against this form's own name (CAD
-    /// audit items 129/132/232) so two tiers can never silently share a name --
+    /// excluded. Checked case-insensitively against this form's own name so two
+    /// tiers can never silently share a name --
     /// `MeetNameResolver::name_match` (`indicatrix::geometry::meet_solver::names`)
     /// binds a `MeetNamed` reference to the FIRST tier bearing a given name, so an
     /// undetected collision does not error, it just silently redirects some OTHER
@@ -458,7 +405,7 @@ pub(super) struct TierFormFields<'a> {
 ///
 /// Accepts a comma/space/semicolon separated list whose tokens may each be a plain
 /// number, a `start:step:stop` arithmetic sequence, or a `base xN` orbit shorthand
-/// (CAD audit item 34 -- see [`parse_colon_sequence`] and [`expand_orbit_shorthand`]
+/// (see [`parse_colon_sequence`] and [`expand_orbit_shorthand`]
 /// for each form's own rules). Every produced value is checked for finiteness, for
 /// being inside the design's own gear, and for not repeating.
 ///
@@ -467,7 +414,13 @@ pub(super) struct TierFormFields<'a> {
 /// A message naming the offending token, ready to show the cutter. A value produced
 /// by a shorthand names the shorthand it came from as well as the value itself, so
 /// a range or duplicate error is traceable back to what was actually typed.
-fn parse_index_list(indices: &str, gear_teeth_abs: u32) -> Result<Vec<f64>, String> {
+///
+/// `pub(super)` (rather than private to this module) so
+/// `callbacks::tier_actions::setup_generate_step_series_callback` can parse its own
+/// shared indices field with the exact same free-text convention
+/// [`parse_tier_form`]'s own indices field uses, instead of a second, divergent
+/// parser.
+pub(super) fn parse_index_list(indices: &str, gear_teeth_abs: u32) -> Result<Vec<f64>, String> {
     let gear_teeth_abs_f64 = f64::from(gear_teeth_abs);
     let mut parsed_indices: Vec<f64> = Vec::new();
     let push_index =
@@ -532,6 +485,70 @@ fn parse_index_list(indices: &str, gear_teeth_abs: u32) -> Result<Vec<f64>, Stri
     Ok(parsed_indices)
 }
 
+/// Parses the tier-edit form's five text/enum fields into a [`ConstraintTier`]. Pure
+/// and unit tested directly (see this module's tests) rather than only exercised
+/// through the Slint callback -- every validation an editor's numeric text field
+/// needs (not a number, not finite) surfaces as a plain `Err` message shown via a
+/// toast, never a panic on bad user input.
+///
+/// There is deliberately no `mast` field -- see `indicatrix_cut_core::design`'s
+/// module docs: a mast is [`Design::solve`]'s output, never authored state.
+/// The form does not offer a text field for it at all. `constraint_kind` is
+/// `EditorTierItem`'s own three-way encoding (`app.slint`'s `editor_save_tier`
+/// callback), the inverse of `super::state`'s `constraint_kind_and_text`:
+/// - `0` -- [`MeetConstraint::MeetExisting`] (`constraint_text` ignored).
+/// - `1` -- [`MeetConstraint::MeetNamed`], `constraint_text` a comma-separated name
+///   list.
+/// - `2` -- [`MeetConstraint::ScaleReference`], `constraint_text` a single real
+///   number (the authored dimension itself).
+/// - `3`/`4`/`5` -- an authored [`crate::gui::editor::state`] target ("cut to
+///   depth"/"girdle thickness"/"table width" -- see [`parse_tier_target`], this
+///   function's cutter-facing counterpart). The returned
+///   [`ConstraintTier::constraint`] is a `ScaleReference(0.0)` PLACEHOLDER for
+///   these three kinds -- `indicatrix_cut_core::design::targets`'s module docs
+///   document that `Design::resolved_meet_tier_inputs` always overwrites it
+///   with the real resolved mast before solving, so this function itself never
+///   needs (and cannot, without a `Design` to bisect against) compute the real
+///   value. The caller (`callbacks::tier_actions::setup_save_tier_callback`)
+///   calls [`parse_tier_target`] separately, with the same `constraint_kind`/
+///   `constraint_text`, to get the actual `TierTarget` for its own
+///   `Edit::SetTierTarget`.
+/// - anything else -- rejected as an `Err`, never silently coerced to a default
+///   constraint kind.
+///
+/// Indices split on comma/space/semicolon, matching
+/// `indicatrix_vault::local::reconstruct_asc_schedule`'s own splitting convention for
+/// the same kind of field, so a value copied from that reconstruction's indices
+/// column round-trips straight back in. Two shorthand forms are recognized before
+/// that plain split-and-parse: `"start:step:stop"` (a colon-separated arithmetic
+/// sequence, exclusive of `stop`, see [`parse_colon_sequence`]) and `"base xN"`
+/// (a base index followed by an `xN` fold count, expanded the same
+/// way the ORBIT column's own `orbit x8` label already describes a complete family,
+/// see [`parse_orbit_suffix`]/[`expand_orbit_shorthand`]); either form's generated
+/// values are wrapped modulo the gear and fed through the exact same per-value
+/// validation below as a hand-typed index. Each parsed value is then validated
+/// against `gear_teeth_abs` (the design's own index-wheel tooth count, from
+/// [`indicatrix_cut_core::design::tier::ScheduleMeta::gear_teeth_abs`]): it must be
+/// finite, within `0.0..gear_teeth_abs as f64` (an index the gear physically has no
+/// tooth for is never silently accepted), and not a repeat of an earlier value in the
+/// same list (a duplicate names the same facet occurrence twice, which is never a
+/// meaningful tier). The first entry that fails any of these is reported by its own
+/// text, matching every other field's own "name the offending value" convention here.
+/// A non-integral value (from either a hand-typed fraction or a fold count that does
+/// not evenly divide the gear) is still ACCEPTED here -- warning about it without
+/// rejecting it is the caller's job (`callbacks::tier_actions::setup_save_tier_callback`),
+/// since it is real GemCad-file behavior (`indicatrix_formats::asc`'s own module docs
+/// measure roughly 0.2% of real index tokens as fractional), not necessarily a mistake.
+///
+/// `imported_meet` is threaded straight through to the built [`ConstraintTier`]
+/// unchanged -- this function never inspects or clears it. The caller
+/// (`super::callbacks::setup_save_tier_callback`) passes the CURRENT tier's own
+/// `imported_meet` when editing an existing row (`index >= 0`) so that tweaking,
+/// say, just this tier's name does not silently discard the file's stated meet
+/// instruction, and `None` when adding a brand-new tier (`index < 0`), which
+/// has no import history to preserve at all. The one-click "Adopt" action
+/// (`super::callbacks::setup_adopt_meet_callback`) is the only thing that ever
+/// actually CONSULTS this field to build a new constraint from it.
 pub(super) fn parse_tier_form(form: TierFormFields<'_>) -> Result<ConstraintTier, String> {
     let TierFormFields {
         angle,
@@ -554,10 +571,9 @@ pub(super) fn parse_tier_form(form: TierFormFields<'_>) -> Result<ConstraintTier
     reject_angle_over_90(angle_deg)?;
 
     let name = name.trim();
-    // CAD audit items 129/132/232: reject a name (or, for a `/`-joined multi-name
-    // tier, any ONE of its names) another tier already holds -- see
-    // `TierFormFields::other_tier_names`'s own doc comment for why an undetected
-    // collision is worse than merely confusing.
+    // Reject a name (or, for a `/`-joined multi-name tier, any ONE of its names)
+    // another tier already holds -- see `TierFormFields::other_tier_names`'s own
+    // doc comment for why an undetected collision is worse than merely confusing.
     for token in name.split('/').map(str::trim).filter(|s| !s.is_empty()) {
         if let Some(existing) = other_tier_names
             .iter()
@@ -598,6 +614,14 @@ pub(super) fn parse_tier_form(form: TierFormFields<'_>) -> Result<ConstraintTier
             }
             MeetConstraint::ScaleReference(value)
         }
+        // 3-5: an authored `TierTarget` ("cut to depth"/"girdle thickness"/
+        // "table width") -- see this function's own doc comment and
+        // `parse_tier_target` below. The tier's own `constraint` is a
+        // `ScaleReference` placeholder that `Design::resolved_meet_tier_inputs`
+        // always overwrites before solving; the real millimetre value is
+        // validated and returned separately, by `parse_tier_target`, since this
+        // function only ever returns a `ConstraintTier`.
+        3..=5 => MeetConstraint::ScaleReference(0.0),
         other => return Err(format!("Unknown constraint kind {other}.")),
     };
 
@@ -612,18 +636,73 @@ pub(super) fn parse_tier_form(form: TierFormFields<'_>) -> Result<ConstraintTier
     })
 }
 
+/// Parses the tier form's Meets combo into a [`TierTarget`] when
+/// `constraint_kind` names one of the three target kinds -- `3`
+/// [`TierTarget::DepthMm`], `4` [`TierTarget::GirdleThicknessMm`], `5`
+/// [`TierTarget::TableWidthMm`] -- the
+/// counterpart to [`parse_tier_form`]'s own `0`/`1`/`2` handling for a plain
+/// [`MeetConstraint`]. `constraint_text` is the SAME single numeric field
+/// [`parse_tier_form`] reads for kind `2` (`ScaleReference`); here it is
+/// always a millimetre figure, matching the unit every [`TierTarget`] variant
+/// itself declares.
+///
+/// `Ok(None)` for every other kind (`0`/`1`/`2`, or anything
+/// [`parse_tier_form`] would itself reject) -- "no target," not an error, so a
+/// plain meet/scale-reference save that never authored a target is a no-op
+/// through `callbacks::tier_actions::setup_save_tier_callback`'s own
+/// target-clearing logic, which calls this unconditionally alongside
+/// [`parse_tier_form`].
+///
+/// # Errors
+///
+/// The same "name the offending value" wording [`parse_tier_form`]'s own
+/// `ScaleReference` arm uses, prefixed with the target's own cutter-facing
+/// label ("Depth"/"Girdle thickness"/"Table width") instead of "Scale
+/// reference" -- `callbacks::tier_actions::tier_form_error_field` recognizes
+/// all three prefixes and classifies them the same `"constraint"` field a
+/// bad Meets value always has. A non-finite or non-positive value is
+/// rejected the same way a non-positive preform dimension is
+/// ([`parse_preform_form`]): a depth, girdle thickness, or table width of
+/// zero or less is never a real target.
+pub(super) fn parse_tier_target(
+    constraint_kind: i32,
+    constraint_text: &str,
+) -> Result<Option<TierTarget>, String> {
+    let (label, build): (&str, fn(f64) -> TierTarget) = match constraint_kind {
+        3 => ("Depth", TierTarget::DepthMm as fn(f64) -> TierTarget),
+        4 => (
+            "Girdle thickness",
+            TierTarget::GirdleThicknessMm as fn(f64) -> TierTarget,
+        ),
+        5 => (
+            "Table width",
+            TierTarget::TableWidthMm as fn(f64) -> TierTarget,
+        ),
+        _ => return Ok(None),
+    };
+    let text = constraint_text.trim();
+    let value: f64 = text
+        .parse()
+        .map_err(|_| format!("{label} '{text}' is not a number."))?;
+    if !value.is_finite() {
+        return Err(format!("{label} must be a finite number."));
+    }
+    if value <= 0.0 {
+        return Err(format!("{label} must be a positive number."));
+    }
+    Ok(Some(build(value)))
+}
+
 /// Parses the preform form's shape choice and three dimension fields into a
 /// [`PreformSpec`]. Pure and unit tested directly, same reasoning as
 /// [`parse_tier_form`]. `cylinder_sides` is passed in (rather than read from a
 /// `Design` inside this function) so it stays decoupled from `indicatrix-cut-core` state and easy
-/// to test in isolation -- CAD audit item 137: every caller
-/// (`callbacks::tier_actions`) now always passes a FIXED side count,
-/// independent of the active design's own index gear. Unlike
-/// [`indicatrix_cut_core::PreformSpec::cylinder_for_schedule`]'s "fold count matches the
-/// index gear" reasoning -- correct only for a preform reconstructed ONCE from
-/// an already-authored schedule (`default_preform_for_schedule` below), never
-/// for one the cutter can re-Apply after changing gear, which used to leave a
-/// stale side count behind.
+/// to test in isolation. Every caller (`callbacks::tier_actions`) always passes
+/// a FIXED side count, independent of the active design's index gear. Unlike
+/// [`indicatrix_cut_core::PreformSpec::cylinder_for_schedule`]'s "fold count
+/// matches the index gear" reasoning (correct only for a preform reconstructed
+/// ONCE from an already-authored schedule), a reapply after gear change can
+/// leave a stale side count behind if the design is queried for it.
 pub(super) fn parse_preform_form(
     shape_index: i32,
     half_width: &str,
@@ -704,44 +783,53 @@ pub(super) fn parse_new_design_form(
     })
 }
 
+/// How far a built-in material's own `n_D` may drift from the RI a design's
+/// exported `.asc` currently reports before [`ri_override_to_preserve`] steps in
+/// to hold the export steady -- see that function's own doc comment.
+pub(in crate::gui::editor) const RI_PRESERVE_TOLERANCE: f64 = 0.01;
+
+/// `Design::effective_refractive_index` derives the EXPORTED RI from the selected
+/// material's own built-in `n_D` whenever no override is set -- see that method's
+/// own doc comment. That is exactly right for a design that never had a
+/// recorded RI of its own, but wrong for one that did: picking "Diamond" (`n_D`
+/// 1.5442) for a design whose exported schedule currently reads `I 1.54` would
+/// otherwise silently rewrite that line the moment a material is applied, even
+/// though nothing about the facet geometry or the cutter's typed figure changed.
+///
+/// Returns `Some(original_ri)` -- to be pinned into
+/// [`MaterialSelection::refractive_index_override`] -- when `name` resolves to a
+/// built-in whose own `n_D` differs from `original_ri` by more than
+/// [`RI_PRESERVE_TOLERANCE`], so the export keeps reading `original_ri` exactly
+/// as before. Returns `None` (no override needed) when `name` is not a built-in
+/// at all, or when the two already agree closely enough that pinning would be
+/// pure noise.
+///
+/// Shared by [`material_selection_for_accepted_suggestion`] (the catalogue-load
+/// suggestion, which already applied this reasoning under a different name) and
+/// `callbacks::tier_actions::setup_apply_design_material_callback` (for a plain
+/// in-editor material pick with no typed RI override of its own).
+#[must_use]
+pub(in crate::gui::editor) fn ri_override_to_preserve(name: &str, original_ri: f64) -> Option<f64> {
+    let built_in_ri = indicatrix_cut_core::built_in_refractive_index(name)?;
+    ((built_in_ri - original_ri).abs() > RI_PRESERVE_TOLERANCE).then_some(original_ri)
+}
+
 /// What accepting the catalogue-load material suggestion applies -- see
 /// `super::callbacks::setup_load_selected_callback`'s own doc comment for when
 /// the suggestion (`super::material_lookup::nearest_built_in_material`) is
-/// offered in the first place.
-///
-/// # Why this pins `refractive_index_override`
-///
-/// `Design::effective_refractive_index` now derives the EXPORTED RI from
-/// the selected material's own built-in `n_D` whenever no override is set --
-/// see that method's own doc comment. The suggestion is only ever offered
-/// within 0.01 of the schedule's own recorded RI (see
-/// `nearest_built_in_material`'s own tolerance parameter), but "within 0.01"
-/// is not "identical": accepting a suggested name whose OWN `n_D` differs from
-/// the schedule's real recorded RI by more than 0.01 would otherwise silently
-/// shift what a subsequent "Export .asc"/"Save Native" writes -- exactly the
-/// "never silently change an import's schedule RI" rule the plan states this
-/// chapter must hold. Pinning `refractive_index_override` to the schedule's
-/// own `schedule_ri` whenever that gap is real keeps an untouched import's
-/// exported RI byte-for-byte unchanged after accepting the suggestion, while
-/// still giving the optimizer/tilt-curve/viewport the suggested material's
-/// real dispersion shape (see `super::material_lookup::resolved_gem_material`'s
-/// own doc comment for how the override composes with a resolved material's
-/// dispersion). `current`'s `specific_gravity_override` is carried through
-/// unchanged -- this only ever touches `name`/`refractive_index_override`.
+/// offered in the first place. `current`'s `specific_gravity_override` is
+/// carried through unchanged -- this only ever touches
+/// `name`/`refractive_index_override`; see [`ri_override_to_preserve`] for why
+/// the override is pinned at all.
 pub(super) fn material_selection_for_accepted_suggestion(
     name: &str,
     schedule_ri: f64,
     current: &MaterialSelection,
 ) -> MaterialSelection {
-    let built_in_ri = indicatrix_cut_core::built_in_refractive_index(name);
-    let refractive_index_override = match built_in_ri {
-        Some(ri) if (ri - schedule_ri).abs() > 0.01 => Some(schedule_ri),
-        _ => None,
-    };
     MaterialSelection {
         name: Some(name.to_string()),
         specific_gravity_override: current.specific_gravity_override,
-        refractive_index_override,
+        refractive_index_override: ri_override_to_preserve(name, schedule_ri),
     }
 }
 
@@ -853,7 +941,7 @@ mod tests {
         assert_eq!(tier.indices, vec![1.0, 2.0, 3.0, 4.0]);
     }
 
-    // --- CAD audit item 34: shorthand index entry ---
+    // --- Shorthand index entry ---
 
     #[test]
     fn parse_tier_form_expands_a_colon_sequence() {
@@ -872,7 +960,7 @@ mod tests {
 
     #[test]
     fn parse_tier_form_colon_sequence_out_of_range_is_still_reported() {
-        // step 200 on a 96-tooth gear wraps every generated value modulo 96,
+        // Step 200 on a 96-tooth gear wraps every generated value modulo 96,
         // so this never actually goes out of range -- confirm the wrap lands
         // on real teeth rather than raw (unwrapped) 200/400/etc.
         let tier = parse_tier_form(tier_form("10", 2, "0.5", "G", "0:200:500")).unwrap();
@@ -1029,8 +1117,82 @@ mod tests {
 
     #[test]
     fn parse_tier_form_rejects_an_unknown_constraint_kind() {
-        let err = parse_tier_form(tier_form("30.0", 3, "", "C1", "")).unwrap_err();
-        assert!(err.contains('3'));
+        // `3`/`4`/`5` are now the three target kinds (see
+        // `parse_tier_form_kinds_three_to_five_use_a_scale_reference_placeholder`
+        // below) -- `6` is the first kind nothing recognizes.
+        let err = parse_tier_form(tier_form("30.0", 6, "", "C1", "")).unwrap_err();
+        assert!(err.contains('6'));
+    }
+
+    #[test]
+    fn parse_tier_form_kinds_three_to_five_use_a_scale_reference_placeholder() {
+        // The real millimetre value lives in the `TierTarget` `parse_tier_target`
+        // returns, never in the `ConstraintTier` itself -- see both functions' own
+        // doc comments for why `Design::resolved_meet_tier_inputs` always
+        // overwrites this placeholder before solving.
+        for kind in 3..=5 {
+            let tier = parse_tier_form(tier_form("30.0", kind, "3.2", "T", "")).unwrap();
+            assert_eq!(tier.constraint, MeetConstraint::ScaleReference(0.0));
+        }
+    }
+
+    // --- parse_tier_target (depth/girdle-thickness/table-width targets) ---
+
+    #[test]
+    fn parse_tier_target_is_none_for_the_three_plain_constraint_kinds() {
+        for kind in 0..=2 {
+            assert_eq!(parse_tier_target(kind, "0.5").unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn parse_tier_target_parses_a_depth_target_in_mm() {
+        assert_eq!(
+            parse_tier_target(3, " 3.20 ").unwrap(),
+            Some(TierTarget::DepthMm(3.20))
+        );
+    }
+
+    #[test]
+    fn parse_tier_target_parses_a_girdle_thickness_target_in_mm() {
+        assert_eq!(
+            parse_tier_target(4, "0.25").unwrap(),
+            Some(TierTarget::GirdleThicknessMm(0.25))
+        );
+    }
+
+    #[test]
+    fn parse_tier_target_parses_a_table_width_target_in_mm() {
+        assert_eq!(
+            parse_tier_target(5, "4.10").unwrap(),
+            Some(TierTarget::TableWidthMm(4.10))
+        );
+    }
+
+    #[test]
+    fn parse_tier_target_rejects_a_non_numeric_value_with_the_scale_reference_wording_style() {
+        let err = parse_tier_target(3, "not-a-number").unwrap_err();
+        assert_eq!(err, "Depth 'not-a-number' is not a number.");
+        let err = parse_tier_target(4, "wide").unwrap_err();
+        assert_eq!(err, "Girdle thickness 'wide' is not a number.");
+        let err = parse_tier_target(5, "wide").unwrap_err();
+        assert_eq!(err, "Table width 'wide' is not a number.");
+    }
+
+    #[test]
+    fn parse_tier_target_rejects_a_non_finite_value() {
+        let err = parse_tier_target(3, "NaN").unwrap_err();
+        assert!(err.contains("finite"));
+        let err = parse_tier_target(3, "inf").unwrap_err();
+        assert!(err.contains("finite"));
+    }
+
+    #[test]
+    fn parse_tier_target_rejects_a_non_positive_value() {
+        let err = parse_tier_target(4, "0.0").unwrap_err();
+        assert!(err.contains("positive"));
+        let err = parse_tier_target(5, "-1.0").unwrap_err();
+        assert!(err.contains("positive"));
     }
 
     #[test]
@@ -1224,7 +1386,7 @@ mod tests {
         assert_eq!(spec.gear_teeth, 80);
         assert_eq!(spec.symmetry_order, 6);
         assert!(!spec.mirror);
-        assert_eq!(spec.material.name.as_deref(), Some("Quartz")); // MATERIAL_PRESET_NAMES[9]
+        assert_eq!(spec.material.name.as_deref(), Some("Quartz")); // builtin_preset_names()[9]
         assert_eq!(spec.preform.half_width, 1.5);
     }
 
@@ -1275,5 +1437,32 @@ mod tests {
         current.specific_gravity_override = Some(3.9);
         let selection = material_selection_for_accepted_suggestion("Diamond", 2.417, &current);
         assert_eq!(selection.specific_gravity_override, Some(3.9));
+    }
+
+    // --- ri_override_to_preserve ---
+
+    #[test]
+    fn ri_override_to_preserve_pins_the_original_ri_when_the_built_in_drifts() {
+        let diamond_ri = indicatrix_cut_core::built_in_refractive_index("Diamond").unwrap();
+        // The design's exported schedule currently reads "I 1.54" -- far enough
+        // from Diamond's real n_D (~1.5442) that applying Diamond outright would
+        // silently rewrite it.
+        let original_ri = 1.54;
+        assert!((diamond_ri - original_ri).abs() > RI_PRESERVE_TOLERANCE);
+        assert_eq!(
+            ri_override_to_preserve("Diamond", original_ri),
+            Some(original_ri)
+        );
+    }
+
+    #[test]
+    fn ri_override_to_preserve_does_nothing_when_already_close_enough() {
+        let diamond_ri = indicatrix_cut_core::built_in_refractive_index("Diamond").unwrap();
+        assert_eq!(ri_override_to_preserve("Diamond", diamond_ri), None);
+    }
+
+    #[test]
+    fn ri_override_to_preserve_does_nothing_for_a_non_built_in_name() {
+        assert_eq!(ri_override_to_preserve("Not A Real Material", 1.54), None);
     }
 }

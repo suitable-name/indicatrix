@@ -9,6 +9,7 @@
 //! path added alongside it) and still says "four functions"; this one is the fifth,
 //! added the same way and under the same rule.
 
+use super::{auto_solve, material_lookup::EditorMaterialLookup};
 use crate::{AngleItem, EditorModel, EditorTierItem, GearRemapRow, IndexChipItem, MainWindow};
 use indicatrix::{
     geometry::{
@@ -22,9 +23,9 @@ use indicatrix::{
     optics::materials::GemMaterial,
 };
 use indicatrix_cut_core::{
-    ConstraintTier, Design, Edit, EditError, FreshDesignSpec, History, MaterialSelection,
-    MissingAnchor, OptimizeOutcome, OrbitUnit, PreformSpec, RemapRounding, Risk,
-    degenerate_suspects, remap_ratio, tier_margin_deg, windowing_risk,
+    ConstraintTier, Design, DesignSolveError, Edit, EditError, FreshDesignSpec, History,
+    MaterialSelection, MissingAnchor, OptimizeOutcome, OrbitUnit, PreformSpec, RemapRounding, Risk,
+    TierTarget, degenerate_suspects, remap_ratio, tier_margin_deg, windowing_risk,
 };
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::{
@@ -41,7 +42,67 @@ use std::{
 /// dialog (`super::loading::parse_new_design_form`) so both present the same list.
 pub(super) const GEAR_PRESETS: [i32; 6] = [96, 80, 77, 72, 64, 120];
 
-/// CAD audit item 165: the coalescing window every [`EditorState`]-owned
+/// The `AppSettings::suppressed_confirmations` key the anchor explainer card's
+/// "Don't show again" persists.
+const ANCHOR_EXPLAINER_SUPPRESS_KEY: &str = "anchor_explainer";
+
+thread_local! {
+    /// Whether this session has already DECIDED once (shown the card, or
+    /// found it suppressed) whether to open the anchor explainer -- on top of
+    /// the permanent "Don't show again" suppression persisted in
+    /// `AppSettings` (see [`ANCHOR_EXPLAINER_SUPPRESS_KEY`]), so a design
+    /// that stays `MissingAnchor` across several further edits neither
+    /// reopens the card NOR re-reads the settings file on every refresh --
+    /// only the FIRST time a design lacks an anchor is ever checked at all.
+    static ANCHOR_EXPLAINER_DECIDED_THIS_SESSION: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// Whether the anchor explainer's "Don't show again" has been persisted.
+/// Duplicated in miniature from `native_io::confirm_is_suppressed`'s own
+/// `AppSettings::is_confirm_suppressed` pattern -- that function is private to
+/// `native_io.rs`, which does not expose a public accessor for it, so it is
+/// not callable from here.
+fn anchor_explainer_is_suppressed() -> bool {
+    let settings_path = crate::settings::store::default_settings_path();
+    crate::settings::store::load_or_default(&settings_path)
+        .settings
+        .is_confirm_suppressed(ANCHOR_EXPLAINER_SUPPRESS_KEY)
+}
+
+/// Persists the anchor explainer's "Don't show again" -- the write half of
+/// [`anchor_explainer_is_suppressed`]'s pattern.
+pub(super) fn anchor_explainer_suppress_permanently() {
+    let settings_path = crate::settings::store::default_settings_path();
+    let mut file = crate::settings::store::load_or_default(&settings_path);
+    file.settings
+        .suppress_confirm(ANCHOR_EXPLAINER_SUPPRESS_KEY);
+    let _ = crate::settings::store::save(&settings_path, &file);
+}
+
+/// Whether the anchor explainer card should open NOW, given
+/// `design_has_missing_anchor` (this refresh's own solve result: `true` when
+/// [`Design::solve`] just returned `Err(MissingAnchor)`) -- session-scoped
+/// once-only (see [`ANCHOR_EXPLAINER_DECIDED_THIS_SESSION`]) and permanently
+/// suppressible (see [`anchor_explainer_is_suppressed`]). Marks the session
+/// flag the moment it makes ANY decision (open or not), not only when it
+/// opens, so a design that stays `MissingAnchor` (or one whose explainer is
+/// already permanently suppressed) never touches the settings file again
+/// after the first check this session -- every refresh after that is a
+/// cheap `Cell` read, not a file read.
+#[must_use]
+pub(super) fn should_open_anchor_explainer(design_has_missing_anchor: bool) -> bool {
+    if !design_has_missing_anchor {
+        return false;
+    }
+    if ANCHOR_EXPLAINER_DECIDED_THIS_SESSION.with(std::cell::Cell::get) {
+        return false;
+    }
+    ANCHOR_EXPLAINER_DECIDED_THIS_SESSION.with(|decided| decided.set(true));
+    !anchor_explainer_is_suppressed()
+}
+
+/// The coalescing window every [`EditorState`]-owned
 /// [`History`] is built with (via [`History::with_coalesce_window`]) instead of
 /// [`History::new`]'s crate-wide 500ms default -- long enough that a
 /// deliberate, unhurried scroll-wheel angle nudge (ticks slower than 500ms
@@ -86,7 +147,7 @@ pub(super) enum PendingUnsavedAction {
     /// Resume by building this spec into a fresh design -- see
     /// `gui::editor::callbacks::tier_actions::do_new_design_create`.
     ///
-    /// `template_index` is the dialog's "Start from" choice (CAD audit item 207),
+    /// `template_index` is the dialog's "Start from" choice,
     /// carried through the unsaved-changes guard rather than re-read afterwards:
     /// the dialog is already closed by the time the guard resolves, so its own
     /// state is gone.
@@ -195,6 +256,17 @@ pub(super) struct EditorState {
     /// Optimize's completion handler runs on a worker thread -- but a `Mutex` here
     /// since the payload (a whole [`OptimizeOutcome`]) isn't atomically representable.
     pub(super) pending_optimize: Arc<Mutex<Option<(OptimizeOutcome, u64)>>>,
+    /// The design `generation`
+    /// (see [`Self::generation`]) Deep Solve's currently DISPLAYED verdict
+    /// (`EditorModel.deep_solve_status`) was computed for, or `None` before any
+    /// Deep Solve has ever completed for this design. Unlike `pending_optimize`'s
+    /// matching `u64` (which only needs a ONE-TIME staleness check at Apply time),
+    /// this is compared against the LIVE `generation` on every subsequent edit
+    /// (`view::push_stale_content`, via [`result_is_stale`]) so the status strip's
+    /// "Stale: design changed" badge appears the moment a further edit lands,
+    /// not only at the instant the run itself completed -- see
+    /// `callbacks::solve_actions::apply_deep_solve_outcome`, the one writer.
+    pub(super) deep_solve_result_generation: Option<u64>,
     /// The paired `.asc`'s bare file name and exact original text, when this design's
     /// schedule came from a real `.asc` file on disk (a catalogue attachment, or a
     /// previous native save/open). `None` for a brand-new design or one reconstructed
@@ -203,8 +275,8 @@ pub(super) struct EditorState {
     /// byte-for-byte untouched instead of regenerating it.
     pub(super) asc_filename: Option<String>,
     pub(super) original_asc_text: Option<String>,
-    /// The catalogue row this design belongs to, once it has one -- CAD audit items
-    /// 92/96/186, and the owner's "full round trip" decision.
+    /// The catalogue row this design belongs to, once it has one -- see the
+    /// "full round trip" design decision below.
     ///
     /// Set when Load Selected opens a LOCAL row, and by the first Save Native of a
     /// design that had none (which inserts a row and records its id). Every later
@@ -221,7 +293,7 @@ pub(super) struct EditorState {
     pub(super) source_entry_id: Option<i64>,
     /// Whether `design`'s masts came from `loading::LoadedDesign`'s angle-table
     /// reconstruction fallback -- no attached `.asc` was found, so every mast is a
-    /// fabricated `0.0` (CAD audit item 82). Lets Save Native and Export stamp
+    /// fabricated `0.0`. Lets Save Native and Export stamp
     /// `indicatrix_formats::asc::mark_reconstructed`, so a file that looks like a
     /// real cut instruction but is not says so in its own header. `false` for every
     /// other construction path.
@@ -252,17 +324,23 @@ pub(super) struct EditorState {
     /// scratch fields mirror, as of the last time `view::refresh_design_settings`/
     /// the preform+yield push in `view::refresh_editor_panel`/`view::
     /// push_stale_content` actually wrote them into `EditorModel` -- see
-    /// [`ScratchDelta`]'s own doc comment for why this exists (CAD audit items 50
-    /// and 52: an unrelated edit's refresh used to silently overwrite whatever a
-    /// user was mid-typing/mid-selecting in these fields, since every refresh
-    /// re-seeded all of them from `design` unconditionally).
+    /// [`ScratchDelta`]'s own doc comment for why this exists: it stops an
+    /// unrelated edit's refresh from silently overwriting whatever the user is
+    /// mid-typing/mid-selecting in these fields, since every refresh otherwise
+    /// re-seeds all of them from `design` unconditionally.
     ///
     /// A `RefCell`, not a plain field mutated through `&mut self`, purely so
     /// `view`'s refresh functions -- which only ever receive `&EditorState`,
-    /// because most of THEIR OWN callers live in files this group's lane does not
-    /// own right now -- can update it without every one of those callers needing
-    /// to start passing a mutable borrow through instead.
+    /// because most of their own callers only hold an immutable borrow -- can
+    /// update it without every one of those callers needing to start passing a
+    /// mutable borrow through instead.
     pub(super) last_pushed_scratch: RefCell<PushedScratch>,
+    /// Cache for [`design_material_options`]'s result -- see
+    /// [`Self::material_combo_options`], the method that reads/fills it. Same
+    /// `RefCell`-through-`&self` discipline as `last_pushed_scratch` just above, and
+    /// the same reason: `view::refresh_design_settings` only ever receives
+    /// `&EditorState`.
+    pub(super) material_combo_cache: RefCell<MaterialComboCache>,
 }
 
 /// See [`EditorState::last_pushed_scratch`]. Every field is `None` (or, for
@@ -276,6 +354,35 @@ pub(super) struct PushedScratch {
     symmetry: Option<(u32, bool)>,
     preform: Option<PreformSpec>,
     girdle_diameter_mm: GirdleDiameterPush,
+    /// `(headers, footnotes, gear_reference_angle)` -- see
+    /// [`ScratchDelta::meta`]'s own doc comment.
+    meta: Option<(Vec<String>, Vec<String>, f64)>,
+}
+
+/// [`EditorState::material_combo_cache`]'s contents: [`design_material_options`]'s
+/// last result, plus the custom-material name list (in `custom_materials` order) it
+/// was built from.
+///
+/// `view::refresh_design_settings` only calls
+/// `design_material_options(&ctx.custom_materials)` again when the combo's actual
+/// contents change -- a custom material saved, deleted, or renamed in the
+/// material editor dialog -- rather than on every editor refresh: every other
+/// refresh (an angle nudge, a solve, a tier edit) would otherwise rebuild the same
+/// now-33-plus-customs-entry `Vec<String>` for nothing. `signature` is only the
+/// NAME list, not the full `GemMaterial`: `design_material_options` lists names
+/// only (an RI/absorption edit to an existing custom material changes no name in
+/// the list, so it cannot change this combo's contents either).
+///
+/// `signature` is `None` until the first build, not a plain `Vec` default: with no
+/// custom materials in the vault the incoming name list is empty, which would
+/// equal an empty default signature, so the cache would never rebuild and the
+/// combo would receive an EMPTY model -- Slint's `ComboBox` then clears
+/// `current-value` to `""`, which shows as a blank Material box for every loaded
+/// design.
+#[derive(Default)]
+pub(super) struct MaterialComboCache {
+    signature: Option<Vec<String>>,
+    options: Vec<String>,
 }
 
 /// [`PushedScratch::girdle_diameter_mm`]'s own value -- NOT a plain
@@ -297,8 +404,8 @@ pub(super) enum GirdleDiameterPush {
 
 /// Which of [`PushedScratch`]'s groups actually changed since the last push,
 /// returned by [`EditorState::record_scratch_push`] -- five independent flags
-/// rather than one "anything changed" bit, because that is the entire fix for
-/// CAD audit items 50/52: a design-settings-only change (say, Apply Gear) must
+/// rather than one "anything changed" bit, because a design-settings-only
+/// change (say, Apply Gear) must
 /// never also blank an in-progress, unrelated edit sitting in the Preform tab's
 /// Half-Width field, and vice versa. `view::refresh_design_settings` gates the
 /// material/gear/symmetry pushes on their own flags; the preform+yield push in
@@ -310,6 +417,12 @@ pub(super) struct ScratchDelta {
     pub(super) symmetry: bool,
     pub(super) preform: bool,
     pub(super) girdle: bool,
+    /// Whether `design.meta`'s headers/footnotes/gear-reference-
+    /// angle changed since the last push -- gates `EditorModel.design_title`/
+    /// `design_extra_headers`/`design_footnotes`/`design_gear_reference_angle`'s
+    /// own reseed in `view::refresh_design_settings`, same "don't blank an
+    /// in-progress, unrelated edit" reasoning as every other field here.
+    pub(super) meta: bool,
 }
 
 impl EditorState {
@@ -320,7 +433,7 @@ impl EditorState {
         let preform = indicatrix_cut_core::PreformSpec::cylinder(96, 1.5, 1.0, 1.5);
         Self {
             design: Design::fresh(preform, 96, 8, 1.54),
-            // CAD audit item 165: a longer, per-instance coalescing window
+            // A longer, per-instance coalescing window
             // (`History::with_coalesce_window`, not the crate-wide 500ms
             // `History::new()` default) so a deliberate, unhurried scroll-wheel
             // angle nudge (ticks slower than 500ms apart) still merges into one
@@ -337,6 +450,7 @@ impl EditorState {
             deep_solve: None,
             optimize: None,
             pending_optimize: Arc::new(Mutex::new(None)),
+            deep_solve_result_generation: None,
             asc_filename: None,
             original_asc_text: None,
             pending_gear_remap: None,
@@ -345,6 +459,7 @@ impl EditorState {
             source_entry_id: None,
             used_placeholder: false,
             last_pushed_scratch: RefCell::new(PushedScratch::default()),
+            material_combo_cache: RefCell::new(MaterialComboCache::default()),
         }
     }
 
@@ -354,7 +469,7 @@ impl EditorState {
     pub(super) fn fresh_from_spec(spec: FreshDesignSpec) -> Self {
         Self {
             design: Design::fresh_from_spec(spec),
-            // CAD audit item 165 -- see `Self::fresh`'s matching comment.
+            // See `Self::fresh`'s matching comment on the coalescing window.
             history: History::with_coalesce_window(ANGLE_NUDGE_COALESCE_WINDOW),
             printed_proportions: None,
             generation: Arc::new(AtomicU64::new(0)),
@@ -364,6 +479,7 @@ impl EditorState {
             deep_solve: None,
             optimize: None,
             pending_optimize: Arc::new(Mutex::new(None)),
+            deep_solve_result_generation: None,
             asc_filename: None,
             original_asc_text: None,
             pending_gear_remap: None,
@@ -372,6 +488,7 @@ impl EditorState {
             source_entry_id: None,
             used_placeholder: false,
             last_pushed_scratch: RefCell::new(PushedScratch::default()),
+            material_combo_cache: RefCell::new(MaterialComboCache::default()),
         }
     }
 
@@ -382,15 +499,15 @@ impl EditorState {
     /// constructor -- [`Self::fresh`]/[`Self::fresh_from_spec`], or a hand-built
     /// literal -- otherwise would).
     ///
-    /// A wholesale replacement used to allocate a fresh `Arc` for the
-    /// replacement's own `generation`, which silently defeated every staleness
-    /// check a background closure dispatched BEFORE the replacement (Deep Solve,
-    /// Optimize, the debounced auto-solve) had already captured: that closure
-    /// keeps comparing against the OLD `Arc`, and once it stops being
-    /// `self.generation` nothing ever increments it again -- so a search started
-    /// against design A could complete, report, and even be applied against
-    /// design B. Reusing (and bumping) the SAME `Arc` across the replacement
-    /// closes that gap: every captured clone of it observes the change. The
+    /// Reusing (and bumping) the SAME `Arc` across the replacement, instead of
+    /// letting `replacement` bring its own fresh `Arc::new(AtomicU64::new(0))`,
+    /// keeps every staleness check a background closure dispatched BEFORE the
+    /// replacement (Deep Solve, Optimize, the debounced auto-solve) already
+    /// captured valid: that closure keeps comparing against this SAME `Arc`, so
+    /// it observes the bump immediately. A closure comparing against a
+    /// replacement-owned `Arc` instead would keep watching a value nothing ever
+    /// increments again -- so a search started against design A could complete,
+    /// report, and even be applied against design B. The
     /// replacement still reads as clean immediately afterward -- `saved_generation`
     /// is set to match the just-bumped value, not left at whatever the literal
     /// happened to write, so `is_dirty` is `false` right away, matching a freshly
@@ -454,7 +571,7 @@ impl EditorState {
     /// Propagates [`History::undo`]'s error verbatim (a failed replay of the recorded
     /// inverse edit) -- the caller (`gui::editor::callbacks::tier_actions::
     /// setup_undo_callback`) surfaces this via a toast rather than unwrapping/panicking,
-    /// since `History::undo` itself no longer panics on this path.
+    /// since `History::undo` returns `Err` here instead of panicking.
     pub(super) fn undo(&mut self) -> Result<bool, EditError> {
         let Self {
             design, history, ..
@@ -546,6 +663,11 @@ impl EditorState {
     pub(super) fn record_scratch_push(&self) -> ScratchDelta {
         let design = &self.design;
         let mut cache = self.last_pushed_scratch.borrow_mut();
+        let meta_now = (
+            design.meta.headers.clone(),
+            design.meta.footnotes.clone(),
+            design.meta.gear_reference_angle,
+        );
         let delta = ScratchDelta {
             material: cache.material.as_ref() != Some(&design.material),
             gear: cache.gear_teeth != Some(design.meta.gear_teeth),
@@ -553,6 +675,7 @@ impl EditorState {
             preform: cache.preform != Some(design.preform),
             girdle: cache.girdle_diameter_mm
                 != GirdleDiameterPush::Observed(design.girdle_diameter_mm),
+            meta: cache.meta.as_ref() != Some(&meta_now),
         };
         *cache = PushedScratch {
             material: Some(design.material.clone()),
@@ -560,15 +683,49 @@ impl EditorState {
             symmetry: Some((design.meta.symmetry_order, design.meta.mirror)),
             preform: Some(design.preform),
             girdle_diameter_mm: GirdleDiameterPush::Observed(design.girdle_diameter_mm),
+            meta: Some(meta_now),
         };
         delta
     }
+
+    /// [`design_material_options`], rebuilt only when `custom`'s own name list has
+    /// changed since the last call -- see [`MaterialComboCache`]'s own doc comment.
+    /// `view::refresh_design_settings` calls this every refresh; only a save/delete/
+    /// rename in the material editor dialog (which changes `custom`'s names) actually
+    /// pays for a rebuild.
+    pub(super) fn material_combo_options(&self, custom: &[GemMaterial]) -> Vec<String> {
+        let signature: Vec<String> = custom.iter().map(|m| m.name.clone()).collect();
+        let mut cache = self.material_combo_cache.borrow_mut();
+        if cache.signature.as_ref() != Some(&signature) {
+            cache.options = design_material_options(custom);
+            cache.signature = Some(signature);
+        }
+        cache.options.clone()
+    }
 }
 
-/// Splits a [`MeetConstraint`] into the `(constraint_kind, constraint_text)` pair
-/// [`EditorTierItem`] carries and the tier-edit form round-trips through its
-/// `LineEdit` -- the inverse of `super::loading::parse_tier_form`'s constraint parsing.
-fn constraint_kind_and_text(constraint: &MeetConstraint) -> (i32, String) {
+/// Splits a tier's [`MeetConstraint`] AND its [`TierTarget`] (if any) into the
+/// `(constraint_kind, constraint_text)` pair [`EditorTierItem`] carries and the
+/// tier-edit form round-trips through its `LineEdit` -- the inverse of
+/// `super::loading::parse_tier_form`'s constraint parsing and
+/// `super::loading::parse_tier_target`'s target parsing, combined.
+///
+/// `target` wins whenever it is `Some`: `Design::resolved_meet_tier_inputs`
+/// always leaves `constraint` as a `ScaleReference(0.0)` PLACEHOLDER on a
+/// target-bearing tier (`indicatrix_cut_core::design::targets`'s module docs),
+/// so reading `constraint` directly would show kind `2` with a meaningless
+/// "0" rather than the target the cutter actually authored.
+fn constraint_kind_and_text(
+    constraint: &MeetConstraint,
+    target: Option<TierTarget>,
+) -> (i32, String) {
+    if let Some(target) = target {
+        return match target {
+            TierTarget::DepthMm(mm) => (3, mm.to_string()),
+            TierTarget::GirdleThicknessMm(mm) => (4, mm.to_string()),
+            TierTarget::TableWidthMm(mm) => (5, mm.to_string()),
+        };
+    }
     match constraint {
         MeetConstraint::MeetExisting => (0, String::new()),
         MeetConstraint::MeetNamed(names) => (1, names.join(", ")),
@@ -579,7 +736,7 @@ fn constraint_kind_and_text(constraint: &MeetConstraint) -> (i32, String) {
     }
 }
 
-/// The tier table's ANGLE cell text -- always two decimals (CAD audit item 51):
+/// The tier table's ANGLE cell text -- always two decimals:
 /// a wheel/keyboard nudge accumulates plain `f64` noise (e.g.
 /// `-40.300000000000004`), and showing that raw `Display` output read as a
 /// cut-off, broken number rather than a rounding artifact. A cutter compares
@@ -607,8 +764,8 @@ fn format_index_value(value: f64) -> String {
 }
 
 /// Builds one [`IndexChipItem`] per entry in `indices`, flagging exactly the
-/// occurrences also present in `detached` -- the inspector's per-facet chip row
-/// (CAD audit item 45), pushed by `gui::editor::view::selected_tier_chips` as its
+/// occurrences also present in `detached` -- the inspector's per-facet chip row,
+/// pushed by `gui::editor::view::selected_tier_chips` as its
 /// own `EditorModel.selected_tier_chips`, NOT a field on [`EditorTierItem`] --
 /// that struct's `Vec` is built on a background thread for a large design
 /// (`gui::editor::auto_solve`) and shipped to the UI thread inside
@@ -671,13 +828,13 @@ fn orbit_status_text(units: &[OrbitUnit]) -> (String, bool) {
                 )
             }
         }
-        // CAD audit item 231: "N orbits" used to cover both a clean multi-facet
-        // fold with one unit short a member and a `mixed_fold` where NOTHING
-        // resembles a complete orbit -- indistinguishable except by the amber
-        // tint. `orbit::mod`'s own corpus-measurement doc comment treats those
+        // Reports which of the two cases this actually is -- a clean multi-facet
+        // fold with one unit short a member, vs a `mixed_fold` where NOTHING
+        // resembles a complete orbit -- rather than folding both into one "N
+        // orbits" label indistinguishable except by the amber tint.
+        // `orbit::mod`'s own corpus-measurement doc comment treats those
         // as different findings (a `partial` occurrence is common and benign;
-        // `mixed_fold` -- every unit incomplete -- is "real incoherence"), so
-        // this now reports which one it actually is.
+        // `mixed_fold` -- every unit incomplete -- is "real incoherence").
         many => {
             let incomplete = many.iter().filter(|u| !u.is_complete()).count();
             if incomplete == 0 {
@@ -694,7 +851,7 @@ fn orbit_status_text(units: &[OrbitUnit]) -> (String, bool) {
     }
 }
 
-/// CAD audit item 135: previews a proposed Symmetry Order/Mirror change's effect
+/// Previews a proposed Symmetry Order/Mirror change's effect
 /// on every tier's orbit BEFORE `setup_apply_symmetry_callback` actually applies
 /// it, mirroring the gear-remap path's own dry-run preview (`gear_remap_preview`),
 /// which likewise never mutates `design` to compute its summary. Clones
@@ -720,6 +877,28 @@ pub(super) fn tiers_incomplete_under_proposed_symmetry(
             orbit_status_text(&units).1
         })
         .count()
+}
+
+/// Whether an analysis result
+/// stamped with `result_generation` (Deep Solve's [`EditorState::
+/// deep_solve_result_generation`], Optimize's `pending_optimize`-stored
+/// generation, or any future caller's own equivalent) is stale against
+/// `current_generation` -- i.e. the design has moved on since that result was
+/// computed. `None` (no result has ever completed) is never stale -- there is
+/// nothing to badge yet, not a result "as stale as it gets."
+///
+/// Pure and unit tested directly: this is the one decision every "Stale: design
+/// changed" badge in this app reduces to, whatever Slint property or `ui/
+/// components/stale_badge.slint` instance ends up reading it.
+#[must_use]
+pub(super) const fn result_is_stale(
+    result_generation: Option<u64>,
+    current_generation: u64,
+) -> bool {
+    match result_generation {
+        Some(g) => g != current_generation,
+        None => false,
+    }
 }
 
 /// Patches [`EditorTierItem::multi_selected`] onto every row in `rows` from
@@ -759,13 +938,14 @@ pub(super) fn push_multi_selected_count(ui: &MainWindow, count: usize) {
 /// that doesn't change the tier count, or a background-solve completion never
 /// resizes the list, and Slint only recreates a `for` loop's per-row component
 /// tree when the MODEL ITSELF changes identity, not when one row's data does. A
-/// wholesale replacement tore down and rebuilt every row's component tree on every
-/// refresh, including one mid-inline-edit -- exactly what dropped keyboard focus
+/// wholesale replacement tears down and rebuilds every row's component tree on every
+/// refresh, including one mid-inline-edit -- dropping keyboard focus
 /// out of an open inline angle edit (`editor_tier_table.slint`'s `TierAngleCell`)
-/// on every refresh. A structural edit that actually changes the tier count
+/// on every refresh, which is exactly what the same-length reuse path above avoids.
+/// A structural edit that actually changes the tier count
 /// (`AddTier`/`RemoveTier`, or undoing/redoing one) still needs a real replacement
-/// -- `set_row_data` cannot resize a model -- so that case falls back to the
-/// previous behavior.
+/// -- `set_row_data` cannot resize a model -- so that case still replaces the model
+/// wholesale.
 ///
 /// Explicitly invokes `EditorModel.recompute_dirty` afterward rather than relying
 /// on `editor.slint`'s own `changed tiers => { recompute_dirty(); }` watcher to
@@ -775,16 +955,52 @@ pub(super) fn push_multi_selected_count(ui: &MainWindow, count: usize) {
 /// the dirty/"Unsaved" indicator would stop updating for the common case (an
 /// edit that doesn't change the tier count) the moment that branch is taken.
 pub(super) fn push_tiers(ui: &MainWindow, rows: Vec<EditorTierItem>) {
-    let model = ui.global::<EditorModel>().get_tiers();
-    if model.row_count() == rows.len() {
+    push_rows(&ui.global::<EditorModel>().get_tiers(), rows, |model| {
+        ui.global::<EditorModel>().set_tiers(model);
+    });
+    ui.global::<EditorModel>().invoke_recompute_dirty();
+}
+
+/// The general form of [`push_tiers`]'s own in-place-update trick (see that
+/// function's own doc comment for the full "why" -- rebuilding a Slint `for`
+/// loop's whole component tree on every refresh dropped keyboard focus out of an
+/// open inline edit): reuses `current` via [`slint::Model::set_row_data`] when its
+/// row count already matches `rows`, calling `set` with a fresh `ModelRc` only
+/// when the length actually changed (an add/remove, not an ordinary edit).
+///
+/// `set` is called ONLY on that replace path, never on the reuse path -- exactly
+/// matching [`push_tiers`]'s own original behaviour (see its doc comment on why
+/// `EditorModel.tiers`'s reassignment is what fires `editor.slint`'s `changed
+/// tiers` watcher, and why reusing `current` in place must not also trigger it
+/// again for nothing). A caller pushing a property with no such watcher (every
+/// other use below) still benefits: skipping the property write when nothing
+/// structural changed is itself the point, whether or not Slint's own property
+/// setter would already have elided a same-model reassignment.
+///
+/// `view::push_stale_content`/
+/// `push_manufacturability_and_preform_scratch`/`push_selected_tier_chips`
+/// (`view.rs`, not this file) route `EditorModel.cutting_rows`/
+/// `manufacturability_warnings`/`manufacturability_warning_tiers`/
+/// `selected_tier_chips` through this same generic helper instead of each
+/// replacing the model with a brand-new `ModelRc<VecModel<_>>` on every single
+/// refresh, even a same-length one -- this is what lets each of
+/// those call sites share the identical incremental-update behaviour `push_tiers`
+/// already had, without four near-duplicate copies of the same length-check.
+///
+/// Callers still own deciding WHAT to push (the `Vec<T>` computation itself is
+/// unchanged); this only changes HOW it reaches `EditorModel`.
+pub(super) fn push_rows<T: Clone + 'static>(
+    current: &ModelRc<T>,
+    rows: Vec<T>,
+    set: impl FnOnce(ModelRc<T>),
+) {
+    if current.row_count() == rows.len() {
         for (index, row) in rows.into_iter().enumerate() {
-            model.set_row_data(index, row);
+            current.set_row_data(index, row);
         }
     } else {
-        ui.global::<EditorModel>()
-            .set_tiers(ModelRc::new(VecModel::from(rows)));
+        set(ModelRc::new(VecModel::from(rows)));
     }
-    ui.global::<EditorModel>().invoke_recompute_dirty();
 }
 
 /// The first name in `names` (a `MeetConstraint::MeetNamed` constraint's typed
@@ -804,22 +1020,89 @@ pub(super) fn first_unresolved_meet_name(design: &Design, names: &[String]) -> O
         .cloned()
 }
 
-/// [`EditorTierItem::margin_text`]/`risk_level` for one tier. Meaningful for a
-/// pavilion tier specifically (`tier_angle_deg < 0.0`) -- a crown or girdle tier
-/// always reads `("", -1)`, "nothing to show," not a wrong badge. `n_d` is the
-/// design's effective refractive index, the same value the design settings panel's
+/// [`EditorTierItem::margin_text`]/`risk_level` for one tier -- pavilion tiers
+/// (`tier_angle_deg < 0.0`) read the plain table-only critical-angle margin
+/// ([`tier_margin_deg`]/[`windowing_risk`]); crown tiers (`tier_angle_deg >
+/// 0.0`) read the crown-window ESTIMATE ([`indicatrix_cut_core::
+/// crown_window_margin_deg`]/[`indicatrix_cut_core::crown_windowing_risk`])
+/// against `pavilion_partner_deg`, suffixed `" (est.)"` so it is
+/// never mistaken for the same table-only certainty a pavilion row's margin
+/// carries -- see that function's own doc comment for exactly what the
+/// estimate does and does not model. A girdle tier (`tier_angle_deg == 0.0`,
+/// or a crown tier when no pavilion angle could be found at all) always reads
+/// `("", -1)`, "nothing to show," not a wrong badge. `n_d` is the design's
+/// effective refractive index, the same value the design settings panel's
 /// RI/critical-angle readouts show.
-fn tier_margin_and_risk(tier_angle_deg: f64, n_d: f64) -> (String, i32) {
-    if tier_angle_deg >= 0.0 {
-        return (String::new(), -1);
-    }
-    let margin = tier_margin_deg(tier_angle_deg, n_d);
-    let risk_level = match windowing_risk(tier_angle_deg, n_d) {
+fn tier_margin_and_risk(
+    tier_angle_deg: f64,
+    n_d: f64,
+    pavilion_partner_deg: Option<f64>,
+) -> (String, i32) {
+    let risk_level_of = |risk: Risk| match risk {
         Risk::Safe => 0,
         Risk::Marginal => 1,
         Risk::Windows => 2,
     };
-    (format!("{margin:+.1}\u{b0}"), risk_level)
+    if tier_angle_deg < 0.0 {
+        let margin = tier_margin_deg(tier_angle_deg, n_d);
+        let risk_level = risk_level_of(windowing_risk(tier_angle_deg, n_d));
+        (format!("{margin:+.1}\u{b0}"), risk_level)
+    } else if tier_angle_deg > 0.0 {
+        let Some(pavilion_deg) = pavilion_partner_deg else {
+            return (String::new(), -1);
+        };
+        let margin =
+            indicatrix_cut_core::crown_window_margin_deg(pavilion_deg, tier_angle_deg, n_d);
+        let risk_level = risk_level_of(indicatrix_cut_core::crown_windowing_risk(
+            pavilion_deg,
+            tier_angle_deg,
+            n_d,
+        ));
+        (format!("{margin:+.1}\u{b0} (est.)"), risk_level)
+    } else {
+        (String::new(), -1)
+    }
+}
+
+/// The design's own representative crown/pavilion facet angles, in degrees
+/// (magnitudes), for the crown-window-estimate margin
+/// ([`tier_margin_and_risk`]) and the proportion-verdict angle metrics
+/// (`view::push_yield_and_proportions`): the tier whose name contains "main"
+/// (case-insensitive) on each side, or -- when no tier is named that way --
+/// the tier with the largest magnitude on that side. "Crown Main"/"Pavilion
+/// Main" is this crate's own template naming convention
+/// ([`ConstraintTier::standard_round_brilliant`] and every
+/// [`indicatrix_cut_core::templates::TEMPLATES`] entry), so this reads the
+/// real main facet for every template-derived design and falls back to a
+/// reasonable guess for a hand-authored one using different names. `None` on
+/// either side when the design has no tier on that side at all.
+pub(super) fn representative_crown_and_pavilion_angles_deg(
+    design: &Design,
+) -> (Option<f64>, Option<f64>) {
+    let mut crown_main: Option<f64> = None;
+    let mut crown_largest: Option<f64> = None;
+    let mut pavilion_main: Option<f64> = None;
+    let mut pavilion_largest: Option<f64> = None;
+    for tier in &design.tiers {
+        let angle = tier.angle_deg;
+        let is_main = tier.name.to_lowercase().contains("main");
+        if angle > 0.0 {
+            crown_largest = Some(crown_largest.map_or(angle, |m| angle.max(m)));
+            if is_main {
+                crown_main = Some(crown_main.map_or(angle, |m| angle.max(m)));
+            }
+        } else if angle < 0.0 {
+            let magnitude = angle.abs();
+            pavilion_largest = Some(pavilion_largest.map_or(magnitude, |m| magnitude.max(m)));
+            if is_main {
+                pavilion_main = Some(pavilion_main.map_or(magnitude, |m| magnitude.max(m)));
+            }
+        }
+    }
+    (
+        crown_main.or(crown_largest),
+        pavilion_main.or(pavilion_largest),
+    )
 }
 
 const fn strategy_label(strategy: SolveStrategy) -> (&'static str, bool) {
@@ -868,8 +1151,8 @@ fn tier_label(design: &Design, tier_index: usize) -> String {
 /// (a `ScaleReference`/`MeetExisting` tier, or a `MeetNamed` tier every one of
 /// whose names is unresolved). Uses the same solver-grade [`MeetNameResolver`]
 /// the solver itself runs, unlike guessing from the typed `constraint_text`
-/// alone -- CAD audit item 48's "show the meet partners `MeetNameResolver`
-/// actually resolved" ask. Never needs a solve (`facet_meets` only resolves
+/// alone, so this shows the meet partners `MeetNameResolver` actually resolved.
+/// Never needs a solve (`facet_meets` only resolves
 /// names against `meet_tier_inputs`), so this is populated identically by
 /// [`tier_items`] and [`tier_items_stale`].
 fn meet_partners_text(design: &Design, index: usize) -> String {
@@ -930,13 +1213,13 @@ fn degenerate_suspects_note(design: &Design, solved: &[SolvedTier]) -> String {
 
 /// The mast/strategy-derived half of one tier row -- [`build_tier_row`]'s only
 /// per-tier-varying input beyond the tier itself, bundled into one struct so that
-/// function stays under clippy's argument-count lint (CAD audit item 73's
-/// refactor: [`tier_items`]/[`tier_items_stale`]/[`tier_items_from_solved`] used
-/// to each build the whole [`EditorTierItem`] literal inline, three times over).
+/// function stays under clippy's argument-count lint, instead of
+/// [`tier_items`]/[`tier_items_stale`]/[`tier_items_from_solved`] each building
+/// the whole [`EditorTierItem`] literal inline, three times over.
 struct TierSolveInfo {
     mast: String,
     /// The mast in millimetres, empty when nothing anchors a real scale -- see
-    /// [`EditorTierItem::mast_mm`] (CAD audit items 54/136).
+    /// [`EditorTierItem::mast_mm`].
     mast_mm: String,
     /// The same mast unrounded -- see [`EditorTierItem::mast_full`].
     mast_full: String,
@@ -944,6 +1227,19 @@ struct TierSolveInfo {
     strategy_is_uncertain: bool,
     strategy_detail: String,
     needs_anchor: bool,
+}
+
+/// [`build_tier_row`]'s per-DESIGN (not per-tier) context, bundled into one
+/// struct purely to keep that function under clippy's argument-count lint --
+/// the same reasoning [`TierSolveInfo`] (per-tier) is already split out for.
+/// Computed once by each of [`tier_items`]/[`tier_items_stale`]/
+/// [`tier_items_stale_with_last_solved`]/[`tier_items_from_solved`] before
+/// their own per-tier `.map(...)`, not per row.
+struct RowContext<'a> {
+    tier_blocks: &'a [Block],
+    warnings: &'a BTreeMap<usize, String>,
+    /// See [`tier_margin_and_risk`]'s own doc comment.
+    pavilion_partner_deg: Option<f64>,
 }
 
 /// Builds one [`EditorTierItem`] row from `tier`'s own fields plus its
@@ -962,13 +1258,16 @@ fn build_tier_row(
     tier: &ConstraintTier,
     n_d: f64,
     info: TierSolveInfo,
-    tier_blocks: &[Block],
-    warnings: &BTreeMap<usize, String>,
+    row_context: &RowContext<'_>,
 ) -> EditorTierItem {
-    let (constraint_kind, constraint_text) = constraint_kind_and_text(&tier.constraint);
+    let tier_blocks = row_context.tier_blocks;
+    let warnings = row_context.warnings;
+    let pavilion_partner_deg = row_context.pavilion_partner_deg;
+    let (constraint_kind, constraint_text) =
+        constraint_kind_and_text(&tier.constraint, design.tier_target(index));
     let units = indicatrix_cut_core::orbit_units(&tier.indices, &design.meta);
     let (orbit_status, orbit_incomplete) = orbit_status_text(&units);
-    let (margin_text, risk_level) = tier_margin_and_risk(tier.angle_deg, n_d);
+    let (margin_text, risk_level) = tier_margin_and_risk(tier.angle_deg, n_d, pavilion_partner_deg);
     EditorTierItem {
         index: index as i32,
         angle_deg: format_angle_cell(tier.angle_deg).into(),
@@ -1000,6 +1299,9 @@ fn build_tier_row(
         meet_partners_text: meet_partners_text(design, index).into(),
         warning_text: warnings.get(&index).cloned().unwrap_or_default().into(),
         multi_selected: false,
+        // Patched in place afterward, once there is a whole row list to patch --
+        // see `apply_proposed_angles`'s own doc comment.
+        proposed_angle: String::new().into(),
     }
 }
 
@@ -1013,9 +1315,14 @@ pub(super) fn tier_items_stale(design: &Design, n_d: f64) -> Vec<EditorTierItem>
     let tier_blocks = classify_blocks(&design.meet_tier_inputs());
     // Never solved here (see this function's own doc comment), so only the two
     // mast-free manufacturability checks can run -- tagged "(pre-solve)" since
-    // that is the whole design's state right now, not a completed pass (CAD
-    // audit item 64).
+    // that is the whole design's state right now, not a completed pass.
     let warnings = warning_text_by_tier(&manufacturability_warnings_tagged(design, None));
+    let (_, pavilion_partner_deg) = representative_crown_and_pavilion_angles_deg(design);
+    let row_context = RowContext {
+        tier_blocks: &tier_blocks,
+        warnings: &warnings,
+        pavilion_partner_deg,
+    };
     design
         .tiers
         .iter()
@@ -1034,9 +1341,127 @@ pub(super) fn tier_items_stale(design: &Design, n_d: f64) -> Vec<EditorTierItem>
                 strategy_detail: String::new(),
                 needs_anchor: false,
             };
-            build_tier_row(design, index, tier, n_d, info, &tier_blocks, &warnings)
+            build_tier_row(design, index, tier, n_d, info, &row_context)
         })
         .collect()
+}
+
+/// [`tier_items_stale`]'s counterpart for a caller that still has the LAST real
+/// solve's mast list on hand: [`tier_items_stale`] blanks every mast/strategy/
+/// warning to `"-"`/`"not solved"` until the next solve completes, even for an
+/// edit like a rename that cannot possibly move a mast. On a slow design (auto-solve
+/// off, or over its own measured budget -- see `should_schedule_auto_solve`) that
+/// wipes 100+ mast readings the cutter may be comparing against a gauge, for no
+/// reason: a rename never invalidates anyone's mast. This function instead keeps
+/// the previous solve's readings for every tier the edit didn't touch.
+///
+/// Rows named in `dirty` (the edit's own affected tier indices -- e.g. the single
+/// index a Save Tier/inline-angle/wheel-nudge edit touched, or every index for a
+/// structural edit like Undo/Redo/remove/duplicate/detach/gear-remap that can move
+/// masts application-wide) get [`tier_items_stale`]'s own `"-"`/`"not solved"`
+/// treatment -- no PREVIOUS mast can be trusted for a tier that itself just changed.
+/// Every other row keeps `last_solved`'s own mast/strategy/detail, with strategy
+/// prefixed `"stale"` so it never reads as a fresh, just-completed solve.
+///
+/// `last_solved` (and therefore every row) falls back to [`tier_items_stale`]'s
+/// blank treatment whenever `None`, OR whenever its length no longer matches
+/// `design.tiers.len()` -- a tier add/remove/reorder invalidates every index in an
+/// old solve's list, so trusting it positionally would show tier 5's old mast on
+/// today's tier 6.
+///
+/// # Handoff
+/// `state/mod.rs` only computes; the caller needs a cached `Vec<SolvedTier>` from
+/// this design's last real solve (`auto_solve::solid_last_solved`'s shared handle
+/// already holds exactly this, refreshed by every completed background solve and
+/// every solid-preview replan) and the dirty tier index set `tier_actions.rs`
+/// already computes per edit (see `tier_actions.rs:687-695`) -- both read from
+/// `view.rs`'s `push_stale_content`/`refresh_editor_panel_stale` (not this
+/// file), which would call this in place of [`tier_items_stale`].
+#[must_use]
+pub(super) fn tier_items_stale_with_last_solved(
+    design: &Design,
+    n_d: f64,
+    last_solved: Option<&[SolvedTier]>,
+    dirty: &BTreeSet<usize>,
+) -> Vec<EditorTierItem> {
+    let last_solved = last_solved.filter(|solved| solved.len() == design.tiers.len());
+    let Some(last_solved) = last_solved else {
+        return tier_items_stale(design, n_d);
+    };
+    let tier_blocks = classify_blocks(&design.meet_tier_inputs());
+    // A cached solve is still real evidence for the mast-free checks even though
+    // it may now be one edit old -- tagged "(pre-solve)" regardless, same as
+    // `tier_items_stale`, since a fresh edit landed since it ran and nothing here
+    // re-verifies it still holds.
+    let warnings = warning_text_by_tier(&manufacturability_warnings_tagged(design, None));
+    let mm_per_unit = design.yield_report(last_solved).mm_per_unit;
+    let (_, pavilion_partner_deg) = representative_crown_and_pavilion_angles_deg(design);
+    let row_context = RowContext {
+        tier_blocks: &tier_blocks,
+        warnings: &warnings,
+        pavilion_partner_deg,
+    };
+    design
+        .tiers
+        .iter()
+        .enumerate()
+        .map(|(index, tier)| {
+            let info = if dirty.contains(&index) {
+                TierSolveInfo {
+                    mast: "-".to_string(),
+                    mast_mm: String::new(),
+                    mast_full: String::new(),
+                    strategy: "not solved".to_string(),
+                    strategy_is_uncertain: true,
+                    strategy_detail: String::new(),
+                    needs_anchor: false,
+                }
+            } else {
+                let (label, _) = strategy_label(last_solved[index].strategy);
+                TierSolveInfo {
+                    mast: format!("{:.4}", last_solved[index].mast),
+                    mast_mm: mm_per_unit.map_or_else(String::new, |mm| {
+                        format!("{:.3} mm", last_solved[index].mast * mm)
+                    }),
+                    mast_full: format!("{}", last_solved[index].mast),
+                    strategy: format!("stale ({label})"),
+                    strategy_is_uncertain: true,
+                    strategy_detail: last_solved[index].detail.clone(),
+                    needs_anchor: false,
+                }
+            };
+            build_tier_row(design, index, tier, n_d, info, &row_context)
+        })
+        .collect()
+}
+
+/// Patches `EditorTierItem::proposed_angle`
+/// (`ui/types.slint`) onto each row one of `changes`' own
+/// [`indicatrix_cut_core::AngleChange`]s targets -- called AFTER the row list is
+/// already built, the same "patch the already-pushed row list in place" shape
+/// [`apply_multi_selection`] already uses for the multi-select highlight,
+/// rather than threading an [`OptimizeOutcome`] through [`tier_items`]/
+/// [`tier_items_stale`]/[`tier_items_from_solved`]/
+/// [`tier_items_stale_with_last_solved`]'s four independent call sites.
+///
+/// Leaves `proposed_angle` at its default (`""`) for every row `changes` does
+/// not mention. Formatted with [`format_angle_cell`]'s own two-decimal
+/// convention, so a ghost value reads exactly like the real `angle_deg` cell
+/// beside it.
+///
+/// # Handoff
+/// `ui/components/editor_tier_table.slint` still
+/// needs the ANGLE column's own rendering of this field -- e.g. a small
+/// "\u{2192} 41.20\u{b0}" ghost beside the real value.
+pub(super) fn apply_proposed_angles(
+    tiers: &mut [EditorTierItem],
+    changes: &[indicatrix_cut_core::AngleChange],
+) {
+    for change in changes {
+        if let Some(row) = tiers.get_mut(change.index) {
+            row.proposed_angle = format_angle_cell(change.to_deg).into();
+        }
+    }
 }
 
 /// Converts `design`'s current tier list into the rows `EditorView`'s list renders,
@@ -1059,12 +1484,36 @@ pub(super) fn tier_items(design: &Design, n_d: f64) -> Vec<EditorTierItem> {
     let solved = design.solve();
     match &solved {
         Ok(rows) => tier_items_from_solved(design, rows, n_d),
-        Err(missing) => {
-            let missing_tier_blocks = missing_anchor_tier_blocks(missing, design);
+        Err(err) => {
+            // Only a real `MissingAnchor` can name individual tiers -- a
+            // `TierTarget`/mismatch/plane-cap failure blocks the whole design at
+            // once, so every tier falls to the generic "blocked" arm below with
+            // that error's own status-strip sentence rather than a bogus "no
+            // anchor yet" on tiers that were never the problem.
+            let missing_tier_blocks = match err {
+                DesignSolveError::MissingAnchor(missing) => {
+                    missing_anchor_tier_blocks(missing, design)
+                }
+                DesignSolveError::Mismatch(_)
+                | DesignSolveError::Solve(_)
+                | DesignSolveError::Target(_) => BTreeMap::new(),
+            };
+            let blocked_detail = if matches!(err, DesignSolveError::MissingAnchor(_)) {
+                "Another block in this design has no anchor -- see the validation banner above."
+                    .to_string()
+            } else {
+                err.to_string()
+            };
             let tier_blocks = classify_blocks(&design.meet_tier_inputs());
             // Tagged "(pre-solve)" -- see `manufacturability_warnings_tagged`'s
             // own doc comment; there is no real solve to show warnings from yet.
             let warnings = warning_text_by_tier(&manufacturability_warnings_tagged(design, None));
+            let (_, pavilion_partner_deg) = representative_crown_and_pavilion_angles_deg(design);
+            let row_context = RowContext {
+                tier_blocks: &tier_blocks,
+                warnings: &warnings,
+                pavilion_partner_deg,
+            };
             design
                 .tiers
                 .iter()
@@ -1077,9 +1526,7 @@ pub(super) fn tier_items(design: &Design, n_d: f64) -> Vec<EditorTierItem> {
                             mast_full: String::new(),
                             strategy: "blocked".to_string(),
                             strategy_is_uncertain: true,
-                            strategy_detail: "Another block in this design has no anchor -- \
-                                              see the validation banner above."
-                                .to_string(),
+                            strategy_detail: blocked_detail.clone(),
                             needs_anchor: false,
                         },
                         |&block| TierSolveInfo {
@@ -1092,7 +1539,7 @@ pub(super) fn tier_items(design: &Design, n_d: f64) -> Vec<EditorTierItem> {
                             needs_anchor: true,
                         },
                     );
-                    build_tier_row(design, index, tier, n_d, info, &tier_blocks, &warnings)
+                    build_tier_row(design, index, tier, n_d, info, &row_context)
                 })
                 .collect()
         }
@@ -1104,8 +1551,8 @@ pub(super) fn tier_items(design: &Design, n_d: f64) -> Vec<EditorTierItem> {
 /// from it instead of calling [`Design::solve`] again. Exists so the
 /// solid-preview worker's own replan solve (`solid_preview::live_update::
 /// plan_preview`, run off the UI thread) can feed the SAME masts into the tier
-/// table instead of a second, separately dispatched full solve recomputing them
-/// (CAD audit item 73) -- see `gui::editor::view::push_solved_preview`, this
+/// table instead of a second, separately dispatched full solve recomputing them --
+/// see `gui::editor::view::push_solved_preview`, this
 /// function's one caller.
 ///
 /// # Panics
@@ -1120,10 +1567,16 @@ pub(super) fn tier_items_from_solved(
 ) -> Vec<EditorTierItem> {
     let tier_blocks = classify_blocks(&design.meet_tier_inputs());
     let warnings = warning_text_by_tier(&manufacturability_warnings_tagged(design, Some(solved)));
-    // Items 54/136: `None` whenever the design carries no girdle diameter, which is
+    // `None` whenever the design carries no girdle diameter, which is
     // the only thing that anchors model units to a real size. Computed once here
     // rather than per row -- `yield_report` measures the whole solid.
     let mm_per_unit = design.yield_report(solved).mm_per_unit;
+    let (_, pavilion_partner_deg) = representative_crown_and_pavilion_angles_deg(design);
+    let row_context = RowContext {
+        tier_blocks: &tier_blocks,
+        warnings: &warnings,
+        pavilion_partner_deg,
+    };
     design
         .tiers
         .iter()
@@ -1141,7 +1594,7 @@ pub(super) fn tier_items_from_solved(
                 strategy_detail: solved[index].detail.clone(),
                 needs_anchor: false,
             };
-            build_tier_row(design, index, tier, n_d, info, &tier_blocks, &warnings)
+            build_tier_row(design, index, tier, n_d, info, &row_context)
         })
         .collect()
 }
@@ -1162,13 +1615,13 @@ const fn block_label(block: Block) -> &'static str {
 /// findings against `design`'s current state, as `(tier_index, display_text)`
 /// pairs -- lets a caller attribute a warning to its row
 /// (`ManufacturabilityWarning::tier_index`) instead of only a flattened
-/// `String` (CAD audit item 65). `solved` is an already-[`Design::solve`]'d
+/// `String`. `solved` is an already-[`Design::solve`]'d
 /// mast list when one is available; passing `None` still runs the two
 /// mast-free checks (gear quantization, cut order) -- see
 /// [`check_manufacturability_available`](indicatrix_cut_core::manufacturability::check_manufacturability_available)'s
-/// own doc comment (CAD audit item 75: a design that has never solved, or no
+/// own doc comment: a design that has never solved, or no
 /// longer does, must not lose every finding, only the two that genuinely need
-/// a mesh).
+/// a mesh.
 pub(super) fn manufacturability_warnings_by_tier(
     design: &Design,
     solved: Option<&[SolvedTier]>,
@@ -1185,8 +1638,8 @@ pub(super) fn manufacturability_warnings_by_tier(
 
 /// [`manufacturability_warnings_by_tier`], with each finding's text prefixed
 /// `"(pre-solve) "` when `solved` is `None` -- every caller that shows these
-/// findings without a completed solve backing them must say so (CAD audit item
-/// 64): the two mast-free checks are real and actionable before Solve ever
+/// findings without a completed solve backing them must say so: the two
+/// mast-free checks are real and actionable before Solve ever
 /// runs, but must never be mistaken for a full manufacturability pass once the
 /// mesh checks are back in play too.
 pub(super) fn manufacturability_warnings_tagged(
@@ -1218,78 +1671,50 @@ fn warning_text_by_tier(pairs: &[(usize, String)]) -> BTreeMap<usize, String> {
         .collect()
 }
 
-/// The flat, unattributed line-per-warning list every caller that doesn't need
-/// per-tier attribution uses -- the status strip's Log popup, and the
-/// background-solve completion path in `auto_solve.rs` (a different lane's
-/// file this group's ownership split keeps it from touching directly, hence
-/// keeping this function's original `Design -> Vec<String>` signature exactly
-/// rather than changing it to return pairs). Solves `design` itself (rather
-/// than requiring an already-solved mast list) so it stays a plain,
-/// self-contained `&Design -> Vec<String>` for those callers; `refresh_editor_panel`
-/// already has its own `Vec<SolvedTier>` in scope from `tier_items`'s solve and
-/// does not need to solve a second time to also get the per-tier
-/// attribution -- see [`manufacturability_warnings_by_tier`] for that path.
-pub(super) fn manufacturability_warning_lines(design: &Design) -> Vec<String> {
-    let solved = design.solve().ok();
-    manufacturability_warnings_tagged(design, solved.as_deref())
-        .into_iter()
-        .map(|(_, text)| text)
-        .collect()
-}
-
-/// [`manufacturability_warning_lines`]'s counterpart for a caller that already
-/// has an up-to-date `solved` mast list on hand -- see [`tier_items_from_solved`]'s
-/// own doc comment for why this exists (CAD audit item 73). Never re-solves.
-pub(super) fn manufacturability_warning_lines_from_solved(
-    design: &Design,
-    solved: &[SolvedTier],
-) -> Vec<String> {
-    manufacturability_warnings_tagged(design, Some(solved))
-        .into_iter()
-        .map(|(_, text)| text)
-        .collect()
-}
-
 /// The material `ComboBox`'s preset names, in EXACT index order -- index 0 is
-/// `"(none)"`; indices 1..=13 are the `GemMaterial::name` strings that also have a
-/// `material::built_in_specific_gravity` entry (no Garnet).
+/// `"(none)"`; every following index is a [`indicatrix_cut_core::MaterialCatalogue`]
+/// built-in name, in that catalogue's own order (which is
+/// `GemMaterial::all_materials`'s order, unchanged by this function).
 ///
-/// No shared source of truth between Slint and Rust for a `ComboBox`'s `model` list --
-/// `editor_view.slint`'s material `ComboBox` literal must be kept in this SAME order
-/// by hand; this constant's doc comment is that source of truth in prose.
-pub(super) const MATERIAL_PRESET_NAMES: [&str; 14] = [
-    "(none)",
-    "Diamond",
-    "Sapphire",
-    "Ruby",
-    "Emerald",
-    "Zircon",
-    "Alexandrite",
-    "Topaz",
-    "Spinel",
-    "Quartz",
-    "Tourmaline",
-    "Tanzanite",
-    "Synthetic Moissanite",
-    "Cubic Zirconia",
-];
+/// This lists every built-in species the renderer supports, not just a
+/// hand-picked THIRTEEN-name subset (`"Diamond"`..`"Cubic Zirconia"`) of the
+/// renderer's THIRTY-TWO built-ins -- every garnet, Aquamarine, Morganite,
+/// Chrysoberyl (Yellow), Amethyst, Citrine, Peridot, YAG, GGG, Benitoite,
+/// Andalusite, Opal, both glasses and Rutile can already be traced in Live
+/// Render (`gui::startup_settings::built_in_material_option_names` already reads
+/// `GemMaterial::all_materials()` directly), and can also be NAMED on a design
+/// or offered by the New Design dialog. `MaterialCatalogue::build(&[])` -- no
+/// custom materials, since this is the CAD side's built-in-only picker -- is
+/// the one place that decides "every built-in species exists", so this list
+/// cannot drift from the renderer's own.
+///
+/// `new_design_dialog.slint`'s New Design material `ComboBox`
+/// binds its `model` to `EditorModel.new_material_options`,
+/// pushed from this same function every refresh (`view.rs`) -- see that property's
+/// own doc comment (`ui/models/editor.slint`).
+pub(super) fn builtin_preset_names() -> Vec<String> {
+    std::iter::once("(none)".to_string())
+        .chain(indicatrix_cut_core::MaterialCatalogue::build(&[]).names())
+        .collect()
+}
 
-/// [`MATERIAL_PRESET_NAMES`]'s index for `name` (`None` -> `0`, an unrecognized name
+/// [`builtin_preset_names`]'s index for `name` (`None` -> `0`, an unrecognized name
 /// -> `0` as a safe fallback rather than an out-of-range `ComboBox` index).
 pub(super) fn material_index_from_name(name: Option<&str>) -> i32 {
-    name.and_then(|n| MATERIAL_PRESET_NAMES.iter().position(|&p| p == n))
+    let names = builtin_preset_names();
+    name.and_then(|n| names.iter().position(|p| p == n))
         .map_or(0, |i| i as i32)
 }
 
 /// The inverse of [`material_index_from_name`]: the name at `index` in
-/// [`MATERIAL_PRESET_NAMES`], or `None` for index `0` ("(none)") or an out-of-range
+/// [`builtin_preset_names`], or `None` for index `0` ("(none)") or an out-of-range
 /// index (defensive only -- `EditorView`'s `ComboBox` can never produce one).
 pub(super) fn material_name_from_index(index: i32) -> Option<String> {
+    let names = builtin_preset_names();
     usize::try_from(index)
         .ok()
-        .and_then(|i| MATERIAL_PRESET_NAMES.get(i))
-        .filter(|&&name| name != "(none)")
-        .map(|&name| name.to_string())
+        .and_then(|i| names.get(i).cloned())
+        .filter(|name| name != "(none)")
 }
 
 /// Parses the Yield form's three fields into
@@ -1301,21 +1726,19 @@ pub(super) fn material_name_from_index(index: i32) -> Option<String> {
 ///
 /// The returned [`MaterialSelection`] is `current.with_specific_gravity_override(..)`
 /// -- `name`/`refractive_index_override` always carry through from `current`
-/// unchanged (CAD audit item 55). This form used to rebuild a `MaterialSelection`
-/// from scratch, deriving `name` from `material_index` against
-/// [`MATERIAL_PRESET_NAMES`] (built-ins only) and always clearing
-/// `refractive_index_override` to `None` -- silently renaming a custom catalogue
-/// material to "(none)" (since `material_index_from_name` has no custom entry to map
-/// it to) and dropping the RI override on every "Apply Yield Inputs" click, even one
-/// that only touched the girdle diameter. `_material_index` is consequently no
-/// longer read: the Yield tab's own Material combo can only ever name a built-in
-/// preset or "(none)", so it has no way to name a custom material correctly either --
-/// letting it drive `name` here is exactly what caused the clobber. It is left as a
-/// parameter (prefixed `_`) rather than removed so this signature keeps matching the
-/// existing `on_apply_yield_inputs` call site untouched; the combo itself is now
-/// inert for naming purposes (changing it and clicking Apply no longer renames the
-/// design's material) -- flagged, not fixed, since redesigning or removing that
-/// control is a UI decision outside this fix's scope.
+/// unchanged. Deriving `name` from `material_index` against
+/// [`builtin_preset_names`] (built-ins only) instead would silently rename a
+/// custom catalogue material to "(none)" (since `material_index_from_name` has
+/// no custom entry to map it to) and would drop the RI override on every
+/// "Apply Yield Inputs" click, even one that only touched the girdle diameter --
+/// the Yield tab's own Material combo can only ever name a built-in preset or
+/// "(none)", so it has no way to name a custom material correctly either.
+/// `_material_index` is consequently unread: it stays a
+/// parameter (prefixed `_`) only so this signature keeps matching the
+/// existing `on_apply_yield_inputs` call site; the combo itself is
+/// inert for naming purposes here (changing it and clicking Apply does not rename the
+/// design's material) -- redesigning or removing that
+/// control is a separate UI decision.
 pub(super) fn parse_yield_form(
     girdle_diameter_mm: &str,
     _material_index: i32,
@@ -1366,24 +1789,45 @@ pub(super) fn parse_yield_form(
 /// Returns `(volumetric_yield_text, carat_weight_text, specific_gravity_used_text,
 /// preform_fit_warning_text)` -- all four empty when the design does not currently
 /// solve ([`indicatrix_cut_core::MissingAnchor`], already surfaced by the banner).
-pub(super) fn yield_report_texts(design: &Design) -> (String, String, String, String) {
+///
+/// `custom_sg` is the catalogue's custom-material specific-gravity table --
+/// see [`yield_report_texts_from_solved`]'s own doc comment for where a
+/// caller sources it from.
+pub(super) fn yield_report_texts(
+    design: &Design,
+    custom_sg: &[(String, f64)],
+) -> (String, String, String, String) {
     let Ok(solved) = design.solve() else {
         return (String::new(), String::new(), String::new(), String::new());
     };
-    yield_report_texts_from_solved(design, &solved)
+    yield_report_texts_from_solved(design, &solved, custom_sg)
 }
 
 /// [`yield_report_texts`]'s counterpart for a caller that already has an
 /// up-to-date `solved` mast list on hand -- see [`tier_items_from_solved`]'s own
-/// doc comment for why this exists (CAD audit item 73). Never re-solves, and
+/// doc comment for why this exists. Never re-solves, and
 /// never returns the all-empty tuple [`yield_report_texts`] falls back to on a
 /// `MissingAnchor`: a caller holding a real `solved` slice already knows the
 /// design solves.
+///
+/// Resolves `design.material`'s specific gravity through
+/// [`EditorMaterialLookup`] instead of only [`Design::yield_report`]'s built-in
+/// table, so a CUSTOM catalogue material's own recorded SG reaches the
+/// carat-weight estimate too -- not just a built-in preset or a per-design
+/// override. This module has no live `RenderContext` of its own (a pure
+/// `Design`-only view-model helper), so `custom_sg` is threaded in by the caller
+/// instead -- `view.rs`/`auto_solve.rs` each read it straight off their own
+/// `RenderContext::custom_material_specific_gravity` (cloned before crossing onto
+/// a background thread, same as `RenderContext::custom_materials` already is), so
+/// this stays a single source of truth with no thread-local mirror to drift out
+/// of sync.
 pub(super) fn yield_report_texts_from_solved(
     design: &Design,
     solved: &[SolvedTier],
+    custom_sg: &[(String, f64)],
 ) -> (String, String, String, String) {
-    let report = design.yield_report(solved);
+    let catalogue = EditorMaterialLookup::new(&[]).with_specific_gravity(custom_sg);
+    let report = design.yield_report_with(solved, &catalogue);
 
     let volumetric_yield_text = report
         .volumetric_yield
@@ -1417,7 +1861,7 @@ pub(super) fn yield_report_texts_from_solved(
 
 /// `design`'s proportion readouts for the Preform tab's "Proportions" section
 /// -- table %, crown height, pavilion depth, total depth, and length-to-width,
-/// the figures a cutter actually quotes (CAD audit item 56). Built from
+/// the figures a cutter actually quotes. Built from
 /// [`Design::stone_proportions`] and converted to millimetres via
 /// [`Design::yield_report`]'s own scale factor whenever a trusted one exists
 /// (a girdle diameter is set and the design measures); otherwise shown in the
@@ -1425,13 +1869,31 @@ pub(super) fn yield_report_texts_from_solved(
 ///
 /// Returns `(table_percent_text, crown_height_text, pavilion_depth_text,
 /// total_depth_text, length_to_width_text)`, every one of them `"-"` when the
-/// design does not solve, isn't currently a closed solid, or (the two
-/// depth fields specifically) has no vertical girdle plane with a live facet
-/// to measure from -- see [`indicatrix::geometry::stone_metrics::StoneProportions`]'s
-/// own doc comment for why those two are `Option`. Rides along with the
-/// explicit "Solve" action (like [`yield_report_texts`]), not every edit.
+/// design has no tiers at all, does not solve, isn't currently a closed solid,
+/// or (the two depth fields specifically) has no vertical girdle plane with a
+/// live facet to measure from -- see
+/// [`indicatrix::geometry::stone_metrics::StoneProportions`]'s own doc comment
+/// for why those two are `Option`. Rides along with the explicit "Solve"
+/// action (like [`yield_report_texts`]), not every edit.
+///
+/// A tierless design still solves (an empty
+/// mast list is a valid, closed, zero-plane solve -- `Design::solve` never
+/// rejects it), and `stone_proportions` then measures the bare preform block:
+/// table 100%, crown/pavilion 0%, `total_depth` the preform's own depth. Those
+/// are honest numbers about the preform and fabricated ones about a stone that
+/// does not exist yet, so the `tiers.is_empty()` guard below runs BEFORE the
+/// solve -- including for `total_depth`, which (unlike the other four fields)
+/// is not an `Option` on [`indicatrix::geometry::stone_metrics::StoneProportions`]
+/// and so has no other way to read as "-". [`girdle_and_ratio_texts`] carries
+/// the identical guard for the same reason; the `view` module's own
+/// `proportions_texts_from_solved`/`girdle_and_ratio_texts_from_solved`
+/// mirror it too, since a caller with an already-`solved` list came from a
+/// design that solved -- which, per the above, a tierless one does.
 pub(super) fn proportions_texts(design: &Design) -> (String, String, String, String, String) {
     let dash = || "-".to_string();
+    if design.tiers.is_empty() {
+        return (dash(), dash(), dash(), dash(), dash());
+    }
     let Ok(solved) = design.solve() else {
         return (dash(), dash(), dash(), dash(), dash());
     };
@@ -1463,7 +1925,233 @@ pub(super) fn proportions_texts(design: &Design) -> (String, String, String, Str
     )
 }
 
-/// CAD audit item 136: the Preform tab's Half-Width/Depth fields, converted to
+/// The three proportion readouts
+/// [`proportions_texts`] does not expose -- girdle thickness (a figure with
+/// no existing text home at all) and the printed `C/W%`/`P/W%` ratios every
+/// faceting diagram actually prints, as opposed to the absolute crown/pavilion
+/// depths [`proportions_texts`] already returns. `Design::stone_proportions` has
+/// already computed all four (`StoneProportions::girdle_thickness`/`crown_to_width_percent`/
+/// `pavilion_to_width_percent`/`girdle_to_width_percent`, see
+/// [`indicatrix::geometry::stone_metrics::StoneProportions`]);
+/// nothing under `gui::editor` reads any of them (grepped `state/mod.rs`/
+/// `view.rs` for all four field names).
+///
+/// Mirrors [`proportions_texts`]'s own solve-then-measure shape, `"-"` fallback and
+/// millimetre-vs-model-unit handling exactly (girdle thickness only -- the three
+/// `_to_width_percent` fields are already scale-invariant percentages, exactly like
+/// `table_percent`, so they never take the `unit` suffix), so the two families can
+/// never disagree about which unit a given figure is shown in.
+///
+/// Returns `(girdle_thickness_text, crown_to_width_percent_text,
+/// pavilion_to_width_percent_text, girdle_to_width_percent_text)`, every one of
+/// them `"-"` under the exact same conditions [`proportions_texts`] already
+/// documents (does not solve, isn't currently a closed solid, or -- all four here
+/// specifically -- no vertical girdle plane with a live facet to measure the
+/// girdle band from at all).
+///
+/// # Handoff
+/// `state/mod.rs` only computes; `view.rs` owns
+/// `refresh_editor_panel`'s call to [`proportions_texts`]/`proportions_texts_from_solved`
+/// (view.rs:191-192) and would need a matching call to this function (and a small
+/// local `_from_solved` mirror of it, exactly like `view.rs`'s own doc comment at
+/// :58-64 already does for `proportions_texts_from_solved`) to reach the UI; the
+/// four new strings would need a `EditorModel` property each (`ui/models/editor.slint`)
+/// and a display row in `editor_inspector.slint`'s
+/// "Proportions" section -- there is no girdle-thickness readout yet, and
+/// crown/pavilion depth are still shown as absolute values, not the printed
+/// C/W%/P/W% ratios.
+#[must_use]
+pub(super) fn girdle_and_ratio_texts(design: &Design) -> (String, String, String, String) {
+    let dash = || "-".to_string();
+    // A tierless design still solves, and `stone_proportions` then measures the bare
+    // preform block: girdle 50% of a cube, crown and pavilion 0%. Those are honest
+    // numbers about the preform and fabricated ones about the stone, so they must
+    // never reach a proportions readout. The same
+    // `tiers.is_empty()` guard protects `proportions_texts` (including its
+    // `total_depth`) and both
+    // `_from_solved` mirrors in `view.rs`, so every reader of these figures agrees.
+    if design.tiers.is_empty() {
+        return (dash(), dash(), dash(), dash());
+    }
+    let Ok(solved) = design.solve() else {
+        return (dash(), dash(), dash(), dash());
+    };
+    let Some(proportions) = design.stone_proportions(&solved) else {
+        return (dash(), dash(), dash(), dash());
+    };
+    let mm_per_unit = design.yield_report(&solved).mm_per_unit;
+    let proportions = mm_per_unit.map_or(proportions, |mm| proportions.to_mm(mm));
+    let unit = if mm_per_unit.is_some() { " mm" } else { "" };
+    let girdle_thickness_text = proportions
+        .girdle_thickness
+        .map_or_else(dash, |v| format!("{v:.3}{unit}"));
+    let crown_to_width_percent_text = proportions
+        .crown_to_width_percent
+        .map_or_else(dash, |v| format!("{v:.1}%"));
+    let pavilion_to_width_percent_text = proportions
+        .pavilion_to_width_percent
+        .map_or_else(dash, |v| format!("{v:.1}%"));
+    let girdle_to_width_percent_text = proportions
+        .girdle_to_width_percent
+        .map_or_else(dash, |v| format!("{v:.1}%"));
+    (
+        girdle_thickness_text,
+        crown_to_width_percent_text,
+        pavilion_to_width_percent_text,
+        girdle_to_width_percent_text,
+    )
+}
+
+/// One proportion metric's verdict against
+/// [`indicatrix_cut_core::proportions_windows`]'s reference table -- `level`
+/// is `0` ([`Verdict::Within`]), `1` ([`Verdict::Near`]), `2`
+/// ([`Verdict::Outside`]), or `-1` ("nothing to judge yet": the design does
+/// not currently solve/close, or this particular metric has no value to
+/// judge -- e.g. no crown tier at all). `reason` is the matched window's own
+/// one-line explanation, `""` at level `-1`.
+pub(super) struct ProportionVerdict {
+    pub(super) level: i32,
+    pub(super) reason: String,
+}
+
+/// The five [`ProportionVerdict`]s the Preform tab's "Proportion guidance"
+/// section shows, one per metric
+/// [`indicatrix_cut_core::proportions_windows::Metric`] lists.
+pub(super) struct ProportionVerdicts {
+    pub(super) table_pct: ProportionVerdict,
+    pub(super) crown_angle: ProportionVerdict,
+    pub(super) pavilion_angle: ProportionVerdict,
+    pub(super) total_depth_pct: ProportionVerdict,
+    pub(super) girdle_pct: ProportionVerdict,
+}
+
+/// The "nothing to judge yet" verdict -- see [`ProportionVerdict`]'s own doc
+/// comment for what level `-1` means.
+const fn verdict_none() -> ProportionVerdict {
+    ProportionVerdict {
+        level: -1,
+        reason: String::new(),
+    }
+}
+
+/// Looks `value` up against `shape`/`material`/`metric`'s reference window
+/// (via [`indicatrix_cut_core::proportions_windows::verdict_for`]) and turns
+/// the result into a [`ProportionVerdict`] -- [`verdict_none`] when `value` is
+/// `None` (there was nothing to measure) or the lookup itself found no window
+/// at all (never happens for a real metric today -- see that function's own
+/// doc comment on its Round/Mid fallback).
+fn verdict_from(
+    value: Option<f64>,
+    shape: indicatrix_cut_core::ShapeClass,
+    material: indicatrix_cut_core::MaterialClass,
+    metric: indicatrix_cut_core::ProportionMetric,
+) -> ProportionVerdict {
+    let Some(v) = value else {
+        return verdict_none();
+    };
+    let Some((verdict, window)) =
+        indicatrix_cut_core::proportions_windows::verdict_for(shape, material, metric, v)
+    else {
+        return verdict_none();
+    };
+    let level = match verdict {
+        indicatrix_cut_core::Verdict::Within => 0,
+        indicatrix_cut_core::Verdict::Near => 1,
+        indicatrix_cut_core::Verdict::Outside => 2,
+    };
+    ProportionVerdict {
+        level,
+        reason: window.reason.to_string(),
+    }
+}
+
+/// This design's own [`indicatrix_cut_core::ShapeClass`], for the proportion
+/// verdicts above. Only [`indicatrix_cut_core::ShapeClass::Round`] is ever
+/// returned (a symmetry order of 6 or more with mirroring on -- the round
+/// brilliant family, the one shape this app ships verified, closing templates
+/// for, see [`indicatrix_cut_core::templates`]'s own doc comment); every other
+/// schedule reads as [`indicatrix_cut_core::ShapeClass::Other`], the honest
+/// default this crate has no real cushion/oval/step/trillion classifier for
+/// (see `proportions_windows`'s own top doc comment -- `Other` still judges
+/// against the same generic lapidary window `Round`'s own Mid/Low band uses).
+const fn shape_class_for(
+    meta: &indicatrix_cut_core::ScheduleMeta,
+) -> indicatrix_cut_core::ShapeClass {
+    if meta.symmetry_order >= 6 && meta.mirror {
+        indicatrix_cut_core::ShapeClass::Round
+    } else {
+        indicatrix_cut_core::ShapeClass::Other
+    }
+}
+
+/// The Preform tab's five proportion-verdict chips, judged against `design`'s already-solved
+/// `proportions` -- the SAME [`indicatrix::geometry::stone_metrics::
+/// StoneProportions`] the plain-number readouts above already read, so the
+/// chip and the number next to it can never disagree about the underlying
+/// measurement. `n_d` is the design's effective refractive index (the same
+/// value [`view::refresh_design_settings`](super::super::view::refresh_design_settings)
+/// pushes as `effective_ri_text`).
+///
+/// Total depth is judged as the SUM of `crown_to_width_percent` +
+/// `pavilion_to_width_percent` + `girdle_to_width_percent` -- `StoneProportions`
+/// has no standalone "total depth as a percentage of width" field of its own
+/// (only the absolute `total_depth`, in model units/mm), and total depth is,
+/// by construction, crown height plus pavilion depth plus girdle thickness, so
+/// this sum is the honest percentage-of-width equivalent, not an approximation
+/// invented for this function.
+#[must_use]
+pub(super) fn proportion_verdicts(
+    design: &Design,
+    proportions: &indicatrix::geometry::stone_metrics::StoneProportions,
+    n_d: f64,
+) -> ProportionVerdicts {
+    let shape = shape_class_for(&design.meta);
+    let material = indicatrix_cut_core::MaterialClass::from_ri(n_d);
+    let (crown_angle_deg, pavilion_angle_deg) =
+        representative_crown_and_pavilion_angles_deg(design);
+    let total_depth_pct = match (
+        proportions.crown_to_width_percent,
+        proportions.pavilion_to_width_percent,
+        proportions.girdle_to_width_percent,
+    ) {
+        (Some(c), Some(p), Some(g)) => Some(c + p + g),
+        _ => None,
+    };
+    ProportionVerdicts {
+        table_pct: verdict_from(
+            proportions.table_percent,
+            shape,
+            material,
+            indicatrix_cut_core::ProportionMetric::TablePercent,
+        ),
+        crown_angle: verdict_from(
+            crown_angle_deg,
+            shape,
+            material,
+            indicatrix_cut_core::ProportionMetric::CrownAngle,
+        ),
+        pavilion_angle: verdict_from(
+            pavilion_angle_deg,
+            shape,
+            material,
+            indicatrix_cut_core::ProportionMetric::PavilionAngle,
+        ),
+        total_depth_pct: verdict_from(
+            total_depth_pct,
+            shape,
+            material,
+            indicatrix_cut_core::ProportionMetric::TotalDepthPercent,
+        ),
+        girdle_pct: verdict_from(
+            proportions.girdle_to_width_percent,
+            shape,
+            material,
+            indicatrix_cut_core::ProportionMetric::GirdleThicknessPercent,
+        ),
+    }
+}
+
+/// The Preform tab's Half-Width/Depth fields, converted to
 /// millimetres via the same [`Design::yield_report`] scale factor
 /// [`proportions_texts`] uses -- those two fields are typed and stored in the
 /// design's own mast-unit scale (girdle half-width = 1), which reads as
@@ -1487,12 +2175,30 @@ pub(super) fn preform_mm_texts(design: &Design) -> (String, String) {
     )
 }
 
+/// `EditorModel.preform_y_offset_mm`'s seed
+/// value -- `design.preform_y_offset` (model/mast units) converted to real
+/// millimetres via `mm_per_unit`, the SAME anchor [`preform_mm_texts`] converts
+/// Half-Width/Depth with. Unlike that function, this is pure (no internal
+/// `Design::solve`): the caller already has `mm_per_unit` on hand from a
+/// SOLVED mast list, or passes `None` when it deliberately never solves (`view::
+/// push_stale_content`) -- `""` in that case, the same "cleared, not left
+/// showing a superseded value" treatment `preform_mm_texts`' own two fields get
+/// there. Formatted as a bare decimal (not `preform_mm_texts`' "\u{2248} ... mm"
+/// style) because, unlike those two read-only displays, this field is the
+/// editable value `apply_preform_y_offset`'s `Edit::SetPreformYOffset` round-
+/// trips through -- an approximation glyph or unit suffix would not re-parse.
+#[must_use]
+pub(super) fn preform_y_offset_mm_text(preform_y_offset: f64, mm_per_unit: Option<f64>) -> String {
+    mm_per_unit.map_or_else(String::new, |mm_per_unit| {
+        format!("{:.2}", preform_y_offset * mm_per_unit)
+    })
+}
+
 /// A short label naming the design currently under edit -- the paired `.asc`'s
 /// bare file name when this design was loaded from (or saved to) one, else
-/// `"Untitled design"` (CAD audit item 62: "nothing says which design the
-/// traced image and optical numbers belong to" -- this is the editor-side half,
-/// shown in the status strip; the viewport/render-side half needs a
-/// `RenderContext` change this lane's file ownership doesn't reach right now).
+/// `"Untitled design"`. This is the editor-side half,
+/// shown in the status strip; the viewport/render-side half would need a
+/// separate `RenderContext` change outside this file.
 pub(super) fn design_label_text(asc_filename: Option<&str>) -> String {
     asc_filename.map_or_else(|| "Untitled design".to_string(), str::to_string)
 }
@@ -1500,17 +2206,32 @@ pub(super) fn design_label_text(asc_filename: Option<&str>) -> String {
 /// `design`'s current cut order as the Edit tab's own schedule rows -- angle,
 /// facet name, index positions and notes, in cut order -- so the cutter can
 /// see the design actually being edited rather than only ever the catalogue's
-/// original schedule (CAD audit item 49). Built from
-/// [`Design::to_asc_schedule_from_solved`], the same conversion "Export Edited
+/// original schedule. Built from
+/// [`Design::try_to_asc_schedule_from_solved`], the same conversion "Export Edited
 /// .asc" already uses, so this can never disagree with what an export writes.
+///
+/// Uses `try_to_asc_schedule_from_solved`
+/// (not the panicking `to_asc_schedule_from_solved`) -- every real caller already
+/// passes a `solved` it just derived from THIS SAME `design`, so a
+/// [`SolveMismatch`] should not be reachable in practice, but this is a `pub(super)`
+/// helper with several callers across this module, none of which should be able to
+/// crash the editor over a design/solve pairing that slipped out of sync. Logs and
+/// returns an empty schedule rather than panicking; every caller already treats an
+/// empty `cutting_rows`/schedule as the ordinary "nothing to show yet" state.
 pub(super) fn cutting_schedule_rows(design: &Design, solved: &[SolvedTier]) -> Vec<AngleItem> {
     // `AngleItem::side` comes from the solver's own block classification, not from
     // the sign of the angle: that is the same source the tier table's own block
     // column uses, and it distinguishes a girdle facet (neither side) from a crown
     // one, which a sign test cannot.
     let tier_blocks = classify_blocks(&design.meet_tier_inputs());
-    design
-        .to_asc_schedule_from_solved(solved)
+    let schedule = match design.try_to_asc_schedule_from_solved(solved) {
+        Ok(schedule) => schedule,
+        Err(mismatch) => {
+            tracing::warn!(%mismatch, "cutting_schedule_rows: solved masts do not match this design's tier count");
+            return Vec::new();
+        }
+    };
+    schedule
         .tiers
         .into_iter()
         .enumerate()
@@ -1541,9 +2262,10 @@ pub(super) fn cutting_schedule_rows(design: &Design, solved: &[SolvedTier]) -> V
 }
 
 /// GemCad/GemCutStudio-style external proportion ratios (`L/W`, `H/W`, and
-/// `C/W`/`P/W` where a live girdle facet exists) computed from `m` -- CAD audit
-/// item 233: the validation banner used to report only a bare cubic-model-unit
-/// volume, meaningless next to what GemCad/GCS show after every recalculation.
+/// `C/W`/`P/W` where a live girdle facet exists) computed from `m`, so the
+/// validation banner reports figures a cutter can compare against
+/// GemCad/GCS's own recalculation output, not just a bare cubic-model-unit
+/// volume that is meaningless next to what GemCad/GCS show.
 /// The ratios are dimensionless, so no unit suffix is needed regardless of
 /// whether the design has a real millimetre scale (unlike [`proportions_texts`],
 /// which is -- these two intentionally never share a formatter, since the
@@ -1593,7 +2315,8 @@ fn external_proportions_note(m: &SolidMetrics, mm_per_unit: Option<f64>) -> Stri
 /// or nothing at all -- see those functions' own doc comments. `Unbounded` is
 /// "essentially unreachable" through `Design` in practice (the preform always caps
 /// every direction), not provably impossible, so it still gets a real message rather
-/// than being treated as dead code.
+/// than being treated as dead code. Either can ALSO be [`auto_solve::too_many_planes_message`]'s
+/// plane-cap sentence instead -- see that function's own doc comment.
 pub(super) fn status_text_and_is_problem(design: &Design) -> (String, bool) {
     match design.status() {
         Ok(SolidStatus::Closed(_)) => {
@@ -1627,9 +2350,9 @@ pub(super) fn status_text_and_is_problem(design: &Design) -> (String, bool) {
             vertex_count,
             volume,
         }) => {
-            // CAD audit item 136: same "(model units^3)" suffix as the `Closed`
-            // arm above -- this used to read "volume 0.1234" with no unit at
-            // all, unlike its sibling.
+            // Same "(model units^3)" suffix as the `Closed`
+            // arm above, so the unit is never ambiguous the way a bare
+            // "volume 0.1234" with no unit would be.
             let volume_text = volume.map_or_else(
                 || "non-finite".to_string(),
                 |v| format!("{v:.4} (model units^3)"),
@@ -1638,8 +2361,18 @@ pub(super) fn status_text_and_is_problem(design: &Design) -> (String, bool) {
             // the mesh from `Self::planes`, which requires one), so this re-solve
             // should always succeed -- `unwrap_or_default` degrades to no suspects
             // clause rather than panicking on that assumption if it's ever wrong.
-            let suspects_note = design.solve().map_or(String::new(), |solved| {
-                degenerate_suspects_note(design, &solved)
+            // `.ok()` shared below with the cheap plane-cap pre-filter, so the
+            // common (not-over-cap) case pays for exactly this one solve, never two.
+            let solved = design.solve().ok();
+            if solved
+                .as_deref()
+                .is_some_and(auto_solve::likely_hit_plane_cap)
+                && let Some(message) = auto_solve::too_many_planes_message(design)
+            {
+                return (message, true);
+            }
+            let suspects_note = solved.as_ref().map_or(String::new(), |solved| {
+                degenerate_suspects_note(design, solved)
             });
             (
                 format!(
@@ -1651,9 +2384,17 @@ pub(super) fn status_text_and_is_problem(design: &Design) -> (String, bool) {
         }
         Ok(SolidStatus::Unbounded { escaping }) => {
             // Same re-solve reasoning as the `Degenerate` arm above.
-            let tier_text = design.solve().map_or_else(
-                |_| format!("plane(s) {escaping:?}"),
-                |solved| escaping_tier_text(design, &solved, &escaping),
+            let solved = design.solve().ok();
+            if solved
+                .as_deref()
+                .is_some_and(auto_solve::likely_hit_plane_cap)
+                && let Some(message) = auto_solve::too_many_planes_message(design)
+            {
+                return (message, true);
+            }
+            let tier_text = solved.as_ref().map_or_else(
+                || format!("plane(s) {escaping:?}"),
+                |solved| escaping_tier_text(design, solved, &escaping),
             );
             (
                 format!("Unbounded: {tier_text} never close the solid."),
@@ -1671,7 +2412,7 @@ pub(super) fn status_text_and_is_problem(design: &Design) -> (String, bool) {
 /// [`status_text_and_is_problem`]'s counterpart for a caller that already has an
 /// up-to-date `solved` mast list on hand -- builds the mesh from
 /// [`Design::planes_from_solved`] instead of re-solving via
-/// [`Design::status`]/[`Design::measure`] (CAD audit item 73). There is no
+/// [`Design::status`]/[`Design::measure`]. There is no
 /// `MissingAnchor` arm here: a caller holding a real `solved` slice already
 /// knows the design solves.
 pub(super) fn status_text_and_is_problem_from_solved(
@@ -1701,7 +2442,21 @@ pub(super) fn status_text_and_is_problem_from_solved(
             vertex_count,
             volume,
         } => {
-            // CAD audit item 136: see `status_text_and_is_problem`'s matching arm.
+            // `solved` may itself be
+            // `auto_solve::solve_cancellably`'s own over-`MAX_PLANES` fallback (an
+            // all-`SolveStrategy::Failed` list built with no real solve at all, see
+            // that function's own doc comment) -- this caller's own doc comment
+            // ("a caller holding a real `solved` slice already knows the design
+            // solves") does not hold for that one case. The cheap pre-filter
+            // (`auto_solve::likely_hit_plane_cap`) reads `solved`'s own tells with no
+            // new solve at all; only a hit re-verifies via `too_many_planes_message`
+            // (a real `solve_with`) for the authoritative numbers.
+            if auto_solve::likely_hit_plane_cap(solved)
+                && let Some(message) = auto_solve::too_many_planes_message(design)
+            {
+                return (message, true);
+            }
+            // See `status_text_and_is_problem`'s matching arm.
             let volume_text = volume.map_or_else(
                 || "non-finite".to_string(),
                 |v| format!("{v:.4} (model units^3)"),
@@ -1716,6 +2471,11 @@ pub(super) fn status_text_and_is_problem_from_solved(
             )
         }
         SolidStatus::Unbounded { escaping } => {
+            if auto_solve::likely_hit_plane_cap(solved)
+                && let Some(message) = auto_solve::too_many_planes_message(design)
+            {
+                return (message, true);
+            }
             let tier_text = escaping_tier_text(design, solved, &escaping);
             (
                 format!("Unbounded: {tier_text} never close the solid."),
@@ -1742,7 +2502,7 @@ pub(super) fn design_to_gpu_planes(design: &Design) -> Vec<GpuFacetPlane> {
         .collect()
 }
 
-/// The tier search/filter box's substring test (CAD audit item 43) -- Slint's
+/// The tier search/filter box's substring test -- Slint's
 /// `string` has no `contains`/index-of operation, so this runs in Rust and is
 /// exposed to `editor_tier_table.slint` via the `pure` `EditorModel.
 /// tier_matches_filter` callback (see that property's own doc comment in
@@ -1759,9 +2519,9 @@ pub(super) fn tier_matches_filter(haystack: &str, filter: &str) -> bool {
 }
 
 /// Explains what `Design::effective_refractive_index_with`'s current result (shown
-/// as "Eff. RI" in the design settings panel) actually IS and where it came from --
-/// CAD audit item 53's display half: a cutter picking a custom catalogue material
-/// had no way to tell whether the critical angle/MARGIN/render/export were using
+/// as "Eff. RI" in the design settings panel) actually IS and where it came from,
+/// so a cutter picking a custom catalogue material
+/// can tell whether the critical angle/MARGIN/render/export are using
 /// that material's real index or a stale fallback, because nothing on screen named
 /// the source. Mirrors `Design::effective_refractive_index_with`'s own precedence
 /// exactly (typed override, then a custom catalogue material by name, then a
@@ -1786,24 +2546,39 @@ pub(super) fn ri_source_text(material: &MaterialSelection, custom: &[GemMaterial
     "no material selected -- using this design's legacy imported value".to_string()
 }
 
+/// Appended to a custom material's own name when it collides
+/// case-insensitively with a built-in already in the combo (`design_material_options`'s
+/// list order guarantees the built-in's own plain entry always comes first, from
+/// [`builtin_preset_names`]), so the combo shows a second, clearly-labeled entry
+/// instead of silently dropping the custom material from the list entirely -- a
+/// cutter selecting "Diamond" can tell that a custom "Diamond"
+/// exists too, and that `EditorMaterialLookup`'s custom-over-built-in
+/// precedence (`material_lookup.rs`) means it is the one actually rendered.
+/// [`design_material_name_from_index`] strips this suffix back off before it ever
+/// becomes a real [`MaterialSelection::name`] -- see that function's own doc comment.
+const CUSTOM_BUILTIN_COLLISION_SUFFIX: &str = " (custom)";
+
 /// The design settings panel's material combo, in the EXACT order it must list:
-/// `MATERIAL_PRESET_NAMES` verbatim, then `custom`'s own names (skipping any that
-/// collide case-insensitively with a built-in already listed, since
-/// `EditorMaterialLookup` prefers a custom material of the same name over its
-/// built-in twin), then a final `"Custom RI…"` sentinel -- see
-/// [`design_material_name_from_index`] for what selecting it means. Rust builds this
-/// list fresh every refresh (custom materials can change any time) and pushes it
-/// straight into `editor_material_combo_options`.
+/// [`builtin_preset_names`] verbatim, then `custom`'s own names -- labeled with
+/// [`CUSTOM_BUILTIN_COLLISION_SUFFIX`] for any that collides
+/// case-insensitively with a built-in already listed, rather than skipped outright
+/// -- then a final `"Custom RI…"` sentinel -- see [`design_material_name_from_index`]
+/// for what selecting it means. Pure and cheap enough to call directly for a
+/// one-off need; `view::refresh_design_settings`'s own per-refresh call instead goes
+/// through [`EditorState::material_combo_options`], which caches this result and
+/// only re-derives it when `custom`'s own name list has actually changed.
 pub(super) fn design_material_options(custom: &[GemMaterial]) -> Vec<String> {
-    let mut options: Vec<String> = MATERIAL_PRESET_NAMES
-        .iter()
-        .map(|&s| s.to_string())
-        .collect();
+    let mut options: Vec<String> = builtin_preset_names();
     for material in custom {
-        if !options
+        if options
             .iter()
             .any(|name| name.eq_ignore_ascii_case(&material.name))
         {
+            options.push(format!(
+                "{}{CUSTOM_BUILTIN_COLLISION_SUFFIX}",
+                material.name
+            ));
+        } else {
             options.push(material.name.clone());
         }
     }
@@ -1812,10 +2587,19 @@ pub(super) fn design_material_options(custom: &[GemMaterial]) -> Vec<String> {
 }
 
 /// The inverse of [`design_material_name_from_index`]: `options`'s index for `name`
-/// (case-insensitive), or `0` ("(none)") when `name` is absent or not found.
+/// (case-insensitive, matched against the REAL name -- a labeled entry's own suffix is
+/// stripped before comparing, so a stored `MaterialSelection::name` of "Diamond" still
+/// finds a match even if the only remaining occurrence in `options` were the labeled
+/// one), or `0` ("(none)") when `name` is absent or not found.
 pub(super) fn design_material_index_from_name(name: Option<&str>, options: &[String]) -> i32 {
-    name.and_then(|n| options.iter().position(|o| o.eq_ignore_ascii_case(n)))
-        .map_or(0, |i| i as i32)
+    name.and_then(|n| {
+        options.iter().position(|o| {
+            o.strip_suffix(CUSTOM_BUILTIN_COLLISION_SUFFIX)
+                .unwrap_or(o)
+                .eq_ignore_ascii_case(n)
+        })
+    })
+    .map_or(0, |i| i as i32)
 }
 
 /// The name at `index` in `options`, or `None` for index `0` ("(none)"), the trailing
@@ -1823,12 +2607,24 @@ pub(super) fn design_material_index_from_name(name: Option<&str>, options: &[Str
 /// clears `MaterialSelection::name` the same way "(none)" does -- it exists so a
 /// species with no built-in or catalogue preset (e.g. garnet) can still be given a
 /// real, typed refractive index without pretending to pick a preset that isn't used.
+///
+/// A [`CUSTOM_BUILTIN_COLLISION_SUFFIX`]-labeled entry
+/// (`"Diamond (custom)"`) is stripped back to the real material name (`"Diamond"`)
+/// here -- the label is a DISPLAY convenience only; the stored
+/// [`MaterialSelection::name`] must stay the real name so it keeps resolving through
+/// `super::material_lookup::EditorMaterialLookup`'s custom-over-built-in precedence
+/// exactly like the plain built-in entry does (both name the same real material,
+/// since the label exists only to show the collision, not to distinguish two
+/// different selections).
 pub(super) fn design_material_name_from_index(index: i32, options: &[String]) -> Option<String> {
     usize::try_from(index)
         .ok()
         .and_then(|i| options.get(i))
         .filter(|&name| name != "(none)" && name != "Custom RI\u{2026}")
-        .cloned()
+        .map(|name| {
+            name.strip_suffix(CUSTOM_BUILTIN_COLLISION_SUFFIX)
+                .map_or_else(|| name.clone(), str::to_string)
+        })
 }
 
 /// Parses the design settings panel's material combo index plus its RI override text
@@ -1982,14 +2778,19 @@ pub(super) fn angle_nudge_coalesce_key(targets: &[usize]) -> u64 {
     hasher.finish()
 }
 
-// Colocated with the two functions they cover (CAD audit items 231/233) rather
-// than added to `tests.rs` below: that file is a different lane's, not named in
-// this lane's file ownership (only `mod.rs` itself is), so a new inline module
-// keeps everything this lane touches inside the one file it may edit.
+// Colocated with the two functions they cover instead of added to `tests.rs`
+// below, keeping these small helper tests next to the implementation they
+// exercise.
 #[cfg(test)]
 mod inline_tests {
-    use super::{OrbitUnit, external_proportions_note, orbit_status_text};
-    use indicatrix::geometry::stone_metrics::SolidMetrics;
+    use super::{
+        BTreeSet, EditorState, OrbitUnit, apply_proposed_angles, design_material_index_from_name,
+        design_material_name_from_index, design_material_options, external_proportions_note,
+        girdle_and_ratio_texts, orbit_status_text, preform_y_offset_mm_text, tier_items_stale,
+        tier_items_stale_with_last_solved,
+    };
+    use indicatrix::{geometry::stone_metrics::SolidMetrics, optics::materials::GemMaterial};
+    use indicatrix_cut_core::{Design, PreformSpec};
 
     fn unit(members: usize, expected_len: usize) -> OrbitUnit {
         OrbitUnit {
@@ -2071,7 +2872,7 @@ mod inline_tests {
 
     #[test]
     fn external_proportions_note_appends_absolute_mm_when_a_scale_is_known() {
-        // CAD audit item 233: once a girdle diameter anchors a real scale, the
+        // Once a girdle diameter anchors a real scale, the
         // banner should show absolute size alongside the dimensionless ratios --
         // GemCad/GCS always show both, and the ratios alone still leave "how big
         // is it really" unanswered.
@@ -2085,6 +2886,218 @@ mod inline_tests {
         let m = metrics(2.0, 2.0, 1.2, None, None);
         let note = external_proportions_note(&m, None);
         assert!(!note.contains("mm"));
+    }
+
+    // --- girdle_and_ratio_texts ---
+
+    fn fixture_design() -> Design {
+        Design::fresh(PreformSpec::cylinder(96, 1.5, 1.0, 1.5), 96, 8, 1.54)
+    }
+
+    #[test]
+    fn girdle_and_ratio_texts_dashes_out_a_design_with_no_tiers() {
+        // A brand-new design (`Design::fresh`) has no tiers at all -- it still
+        // SOLVES (an empty mast list is a valid, closed, zero-plane solve), so
+        // only the explicit `tiers.is_empty()` guard, not a `Design::solve`
+        // failure, is what stops `stone_proportions` from measuring the bare
+        // preform block. Every one of the four figures must read "-", the same
+        // fallback `proportions_texts` uses, never a stale zero.
+        let design = fixture_design();
+        assert_eq!(
+            girdle_and_ratio_texts(&design),
+            (
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string(),
+                "-".to_string()
+            )
+        );
+    }
+
+    // --- design_material_options / design_material_name_from_index (a custom
+    // material colliding with a built-in name is shown, not silently hidden
+    // from this combo) ---
+
+    #[test]
+    fn design_material_options_lists_a_builtin_colliding_custom_material_under_a_suffixed_label() {
+        let mut custom = GemMaterial::diamond();
+        custom.name = "Diamond".to_string();
+        let options = design_material_options(std::slice::from_ref(&custom));
+        assert!(
+            options.iter().any(|o| o == "Diamond (custom)"),
+            "options was: {options:?}"
+        );
+        // The built-in entry itself must still be present too -- this is an
+        // addition, not a replacement.
+        assert!(options.iter().any(|o| o == "Diamond"));
+    }
+
+    /// A vault with no custom materials must still yield
+    /// the built-in list on the FIRST call -- an empty incoming name list must
+    /// not be mistaken for "cache already built", which would hand back an
+    /// empty combo model.
+    #[test]
+    fn material_combo_options_with_no_custom_materials_lists_the_builtins_on_first_call() {
+        let state = EditorState::fresh();
+        let options = state.material_combo_options(&[]);
+        assert_eq!(options, design_material_options(&[]));
+        assert_eq!(options.first().map(String::as_str), Some("(none)"));
+        assert!(
+            options.iter().any(|o| o == "Diamond"),
+            "options was: {options:?}"
+        );
+        // Second call with the same (empty) custom list is served from the cache.
+        assert_eq!(state.material_combo_options(&[]), options);
+    }
+
+    #[test]
+    fn design_material_options_lists_a_non_colliding_custom_material_plainly() {
+        let mut custom = GemMaterial::diamond();
+        custom.name = "My Garnet".to_string();
+        let options = design_material_options(std::slice::from_ref(&custom));
+        assert!(options.iter().any(|o| o == "My Garnet"));
+        assert!(!options.iter().any(|o| o.contains("(custom)")));
+    }
+
+    #[test]
+    fn design_material_name_from_index_strips_the_collision_suffix() {
+        let mut custom = GemMaterial::diamond();
+        custom.name = "Diamond".to_string();
+        let options = design_material_options(std::slice::from_ref(&custom));
+        let index = options
+            .iter()
+            .position(|o| o == "Diamond (custom)")
+            .expect("labeled entry must exist");
+        assert_eq!(
+            design_material_name_from_index(index as i32, &options),
+            Some("Diamond".to_string()),
+            "the parsed name must be the real material name, not the display label, \
+             so it still resolves through EditorMaterialLookup's custom-over-built-in \
+             precedence"
+        );
+    }
+
+    #[test]
+    fn design_material_index_from_name_still_finds_the_plain_builtin_entry() {
+        let mut custom = GemMaterial::diamond();
+        custom.name = "Diamond".to_string();
+        let options = design_material_options(std::slice::from_ref(&custom));
+        // `builtin_preset_names`' own "Diamond" entry comes first in the list, so
+        // a plain lookup by name must still resolve to it, not the labeled
+        // duplicate further down.
+        assert_eq!(
+            design_material_index_from_name(Some("Diamond"), &options),
+            1
+        );
+    }
+
+    // --- tier_items_stale_with_last_solved ---
+
+    #[test]
+    fn tier_items_stale_with_last_solved_falls_back_to_dashes_with_no_cached_solve() {
+        let design = fixture_design();
+        let rows = tier_items_stale_with_last_solved(&design, 1.54, None, &BTreeSet::new());
+        assert!(rows.is_empty(), "a fresh design has no tiers to show");
+    }
+
+    fn scale_reference_tier(name: &str) -> indicatrix_cut_core::ConstraintTier {
+        indicatrix_cut_core::ConstraintTier {
+            angle_deg: 40.0,
+            name: name.to_string(),
+            indices: Vec::new(),
+            constraint: indicatrix::geometry::meet_solver::MeetConstraint::ScaleReference(1.0),
+            imported_meet: None,
+            original_notes: None,
+            detached: Vec::new(),
+        }
+    }
+
+    fn solved_tier(mast: f64) -> super::SolvedTier {
+        super::SolvedTier {
+            mast,
+            strategy: indicatrix::geometry::meet_solver::SolveStrategy::ScaleReference,
+            detail: "given (scale reference)".to_string(),
+        }
+    }
+
+    /// A tier the edit itself touched (in `dirty`) must fall back to `"-"`/"not
+    /// solved" -- no previous mast can be trusted for it. A tier the edit left
+    /// alone must keep its previous mast, tagged "stale" rather than shown as a
+    /// fresh solve.
+    #[test]
+    fn tier_items_stale_with_last_solved_blanks_only_the_dirty_rows() {
+        let mut design = fixture_design();
+        design.tiers = vec![scale_reference_tier("Table"), scale_reference_tier("P1")];
+        let last_solved = vec![solved_tier(1.0), solved_tier(0.75)];
+        let dirty = BTreeSet::from([0]);
+
+        let rows = tier_items_stale_with_last_solved(&design, 1.54, Some(&last_solved), &dirty);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].mast.as_str(), "-");
+        assert_eq!(rows[0].strategy.as_str(), "not solved");
+        assert_eq!(rows[1].mast.as_str(), "0.7500");
+        assert_eq!(rows[1].strategy.as_str(), "stale (Scale reference)");
+    }
+
+    /// A tier count mismatch (a tier was added/removed since `last_solved` was
+    /// captured) must not be trusted positionally -- every row falls back to the
+    /// same blank treatment as no cached solve at all.
+    #[test]
+    fn tier_items_stale_with_last_solved_ignores_a_mismatched_tier_count() {
+        let mut design = fixture_design();
+        design.tiers = vec![scale_reference_tier("Table"), scale_reference_tier("P1")];
+        let stale_last_solved = vec![solved_tier(1.0)];
+        let rows = tier_items_stale_with_last_solved(
+            &design,
+            1.54,
+            Some(&stale_last_solved),
+            &BTreeSet::new(),
+        );
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| r.mast.as_str() == "-"));
+    }
+
+    // --- preform_y_offset_mm_text ---
+
+    #[test]
+    fn preform_y_offset_mm_text_is_empty_with_no_scale() {
+        assert_eq!(preform_y_offset_mm_text(0.3, None), "");
+    }
+
+    #[test]
+    fn preform_y_offset_mm_text_converts_through_mm_per_unit() {
+        assert_eq!(preform_y_offset_mm_text(0.3, Some(4.0)), "1.20");
+    }
+
+    // --- apply_proposed_angles ---
+
+    #[test]
+    fn apply_proposed_angles_patches_only_the_named_rows() {
+        let mut design = fixture_design();
+        design.tiers = vec![scale_reference_tier("Table"), scale_reference_tier("P1")];
+        let mut rows = tier_items_stale(&design, 1.54);
+        let changes = vec![indicatrix_cut_core::AngleChange {
+            index: 1,
+            from_deg: 40.0,
+            to_deg: 41.25,
+        }];
+        apply_proposed_angles(&mut rows, &changes);
+        assert_eq!(rows[0].proposed_angle.as_str(), "");
+        assert_eq!(rows[1].proposed_angle.as_str(), "41.25");
+    }
+
+    #[test]
+    fn apply_proposed_angles_ignores_an_out_of_range_index() {
+        let design = fixture_design();
+        let mut rows = tier_items_stale(&design, 1.54);
+        let changes = vec![indicatrix_cut_core::AngleChange {
+            index: 5,
+            from_deg: 0.0,
+            to_deg: 12.0,
+        }];
+        // A tierless design's row list is empty -- this must not panic.
+        apply_proposed_angles(&mut rows, &changes);
+        assert_eq!(rows.len(), 0);
     }
 }
 

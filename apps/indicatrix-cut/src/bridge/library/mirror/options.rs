@@ -111,9 +111,10 @@ impl MirrorHandle {
 /// for the whole sync, reused across every request, reconnecting-and-retrying once per
 /// request if the held connection drops -- see that type's own doc comment.
 /// [`WorkerSettings`]'s implementation (one real connect+handshake+request+response per
-/// call) is no longer wired into [`super::sync::spawn_mirror_sync`] but stays
-/// available, matching how the interactive remote-browse path
-/// (`bridge::library::source`) calls the same one-shot `request` directly.
+/// call) is not used by [`super::sync::spawn_mirror_sync`], which needs the reused
+/// connection instead; it remains available for the interactive remote-browse path
+/// (`bridge::library::source`), which calls the same one-shot `request` directly and
+/// has no reason to hold a connection open.
 pub trait LibraryTransport {
     /// # Errors
     ///

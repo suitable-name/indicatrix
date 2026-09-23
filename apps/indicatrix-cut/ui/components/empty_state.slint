@@ -1,0 +1,172 @@
+import { Theme } from "../theme.slint";
+import { EditorModel } from "../models/editor.slint";
+import { GuideModel } from "../models/guide.slint";
+
+// A real card grid for the empty state (`ui/app.slint`'s Edit-mode empty-state
+// overlay, both the wide and narrow copies): New from Template, Open Recent,
+// Import a Folder, Open the Worked Example -- every path out of the empty
+// state a new user with no manual needs to reach a solved, previewed design,
+// none of them a dead end.
+//
+// `recent_native_files`/`open_recent` mirror `MainWindow`'s own
+// `recent_native_files`/`open_recent_native_file` (declared on `root` there,
+// not `EditorModel` -- see that property's own doc comment) -- `app.slint`
+// binds/forwards both when it instantiates this component, the same "in
+// property plus forwarded callback" pattern `DetailHeaderView` already uses
+// for `window_height`/`window_width`.
+export component EmptyState inherits Rectangle {
+    in property <[string]> recent_native_files: [];
+    callback open_recent(string);
+
+    background: Theme.bg-card;
+
+    VerticalLayout {
+        alignment: center;
+        padding: 24px;
+        spacing: 14px;
+
+        Text {
+            text: "Nothing to show yet";
+            font-size: 16px;
+            font-weight: 700;
+            color: Theme.text-primary;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "Start a design one of these ways:";
+            font-size: 11px;
+            color: Theme.text-muted;
+            horizontal-alignment: center;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: 10px;
+
+            // New from Template -- opens the gallery-backed New Design
+            // dialog. Label matches the command bar/menu's own "New Design..."
+            // exactly, so this card is not a third variant of that label.
+            Rectangle {
+                width: 150px;
+                height: 84px;
+                background: new_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                border-radius: Theme.radius-md;
+                border-width: 1px;
+                border-color: Theme.border-medium;
+                new_touch := TouchArea { clicked => { EditorModel.new_dialog_open = true; } }
+                VerticalLayout {
+                    alignment: center;
+                    padding: 10px;
+                    spacing: 4px;
+                    Text { text: "New Design..."; font-size: 11px; font-weight: 700; color: Theme.text-primary; horizontal-alignment: center; wrap: word-wrap; }
+                    Text { text: "Pick a preform, gear and a starting template."; font-size: 9px; color: Theme.text-muted; horizontal-alignment: center; wrap: word-wrap; }
+                }
+            }
+
+            // Open the Worked Example -- creates the manual's own Chapter 7
+            // stone directly (Cylinder 1.50/1.00/1.50, 96-tooth gear, 8-fold
+            // mirrored, Standard Round Brilliant template -- the exact New
+            // Design form values Chapter 7 Step 1 lists) via the SAME
+            // `EditorModel.new_design_create` callback the dialog's own
+            // "Create" button calls, so this does not duplicate that path's
+            // Rust logic. Also opens the guide panel at its first step, so
+            // the newly created design is immediately walked through.
+            Rectangle {
+                width: 150px;
+                height: 84px;
+                background: worked_example_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                border-radius: Theme.radius-md;
+                border-width: 1px;
+                border-color: Theme.accent-cyan;
+                worked_example_touch := TouchArea {
+                    clicked => {
+                        EditorModel.new_design_create(
+                            1, // Cylinder
+                            "1.50",
+                            "1.00",
+                            "1.50",
+                            0, // "96"
+                            "",
+                            "8",
+                            true,
+                            EditorModel.new_material_index,
+                            1 // Standard Round Brilliant
+                        );
+                        GuideModel.start();
+                    }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    padding: 10px;
+                    spacing: 4px;
+                    Text { text: "Open the Worked Example"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; horizontal-alignment: center; wrap: word-wrap; }
+                    Text { text: "Builds the manual's Chapter 7 stone and opens the step-by-step guide."; font-size: 9px; color: Theme.text-muted; horizontal-alignment: center; wrap: word-wrap; }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: 10px;
+
+            // Open Recent -- lists up to the four most-recently-used native
+            // files (`root.recent_native_files`, the same list `app.slint`'s
+            // File > Open Recent submenu already reads).
+            Rectangle {
+                width: 320px;
+                height: 84px;
+                background: Theme.bg-input;
+                border-radius: Theme.radius-md;
+                border-width: 1px;
+                border-color: Theme.border-medium;
+                clip: true;
+                VerticalLayout {
+                    padding: 8px;
+                    spacing: 3px;
+                    Text { text: "Open Recent"; font-size: 10px; font-weight: 700; color: Theme.text-primary; }
+                    if root.recent_native_files.length == 0: Text {
+                        text: "No recent files yet.";
+                        font-size: 9px;
+                        color: Theme.text-muted;
+                    }
+                    for path[idx] in root.recent_native_files: Rectangle {
+                        if idx < 4: Rectangle {
+                            height: 15px;
+                            Text {
+                                text: path;
+                                font-size: 9px;
+                                color: recent_touch.has-hover ? Theme.accent-cyan : Theme.text-secondary;
+                                overflow: elide;
+                            }
+                            recent_touch := TouchArea { clicked => { root.open_recent(path); } }
+                        }
+                    }
+                }
+            }
+
+            // Import a Folder -- the existing Import control is a `PopupWindow`
+            // private to `header.slint` (`import_popup`, opened only by that
+            // file's own `import_btn.clicked`), with no public function this
+            // card could call to open it (see `header.slint`'s own
+            // `focus_search`, the one function it DOES expose publicly, for
+            // the pattern an `open_import()` equivalent would need). Rather
+            // than a click target that silently does nothing, this card
+            // points at the real control instead of duplicating it.
+            Rectangle {
+                width: 150px;
+                height: 84px;
+                background: Theme.bg-input;
+                border-radius: Theme.radius-md;
+                border-width: 1px;
+                border-color: Theme.border-subtle;
+                VerticalLayout {
+                    alignment: center;
+                    padding: 10px;
+                    spacing: 4px;
+                    Text { text: "Import a Folder"; font-size: 11px; font-weight: 700; color: Theme.text-secondary; horizontal-alignment: center; wrap: word-wrap; }
+                    Text { text: "Use the Import button in the toolbar above to bring in .asc files."; font-size: 9px; color: Theme.text-muted; horizontal-alignment: center; wrap: word-wrap; }
+                }
+            }
+        }
+    }
+}

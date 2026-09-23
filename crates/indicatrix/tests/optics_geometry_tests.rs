@@ -173,12 +173,12 @@ fn from_database_angles_classifies_table_and_culet_via_index_val() {
 }
 
 // ---------------------------------------------------------------------------
-// FIX C (follow-up): every row in the real database's `angle_settings.angle` column
-// carries a trailing UTF-8 degree sign (e.g. "44.86°"), which `f32::from_str` rejects
-// outright. Under the old `item.angle.parse().unwrap_or(45.0)` this meant every single
-// row in the real database silently fell back to a fabricated 45 degrees, flattening
-// every reconstructed diagram into the same shape. These tests exercise the lenient
-// parser, the "N girdle facets" index_val expansion, and the bail-out-to-SRB path.
+// Every row in the real database's `angle_settings.angle` column carries a trailing
+// UTF-8 degree sign (e.g. "44.86°"), which `f32::from_str` rejects outright. A strict
+// `item.angle.parse().unwrap_or(45.0)` would silently fall back to a fabricated 45
+// degrees for every single row in the real database, flattening every reconstructed
+// diagram into the same shape. These tests exercise the lenient parser, the "N girdle
+// facets" index_val expansion, and the bail-out-to-SRB path.
 // ---------------------------------------------------------------------------
 #[test]
 fn from_database_angles_parses_real_degree_sign_format() {

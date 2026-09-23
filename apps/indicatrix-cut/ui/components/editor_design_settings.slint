@@ -1,15 +1,15 @@
-import { Button, LineEdit, ComboBox } from "std-widgets.slint";
+import { Button, LineEdit, ComboBox, ScrollView } from "std-widgets.slint";
 import { GearRemapRow } from "../types.slint";
 import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
+import { GuideModel } from "../models/guide.slint";
 import { SectionHeader } from "section_header.slint";
-// CAD audit items 223/227: `ViewportModel.material_editor_open` and
-// `viewport_material_linked` already exist and are driven from the Live
-// Render tab's `gem_viewport.slint` (owned by another lane) -- this file only
-// reads/writes the same globals so the create path (223) and the "why did my
-// render material change" explanation (227) sit next to the Edit tab's own
-// material combo instead of requiring a tab switch.
+// `ViewportModel.material_editor_open` and `viewport_material_linked` are shared
+// with the Live Render tab's `gem_viewport.slint`; this file reads/writes the same
+// globals so the custom-material create path and the "Linked to design" toggle sit
+// next to the Edit tab's own material combo instead of requiring a tab switch.
 import { ViewportModel } from "../models/viewport.slint";
+import { MaterialGuessBadge } from "material_guess.slint";
 
 // The Edit sub-tab's schedule-wide settings -- material combo (built-ins, custom
 // catalogue materials, then "Custom RI…"), RI override/effective/critical-angle
@@ -22,8 +22,12 @@ import { ViewportModel } from "../models/viewport.slint";
 export component EditorDesignSettings inherits Rectangle {
     background: Theme.bg-darkest;
     border-radius: Theme.radius-sm;
-    border-width: 1px;
-    border-color: Theme.border-subtle;
+    // The worked-example guide's outline while a step targets this panel
+    // (`GuideModel.highlight_target == "design_settings"`); same pattern as
+    // `editor_tier_table.slint`'s `guide_highlighted`.
+    property <bool> guide_highlighted: GuideModel.highlight_target == "design_settings";
+    border-width: root.guide_highlighted ? 2px : 1px;
+    border-color: root.guide_highlighted ? Theme.accent-cyan : Theme.border-subtle;
     clip: true;
     // Zero stretch: without this the section is a stretchable cell of the
     // dock's column (widgets have no maximum height of their own), and spare
@@ -32,6 +36,43 @@ export component EditorDesignSettings inherits Rectangle {
     // content.preferred-height` -- a layout's preferred height defaults to
     // 100% of its parent, so that binding is circular and grows unbounded.
     vertical-stretch: 0;
+
+    // Unapplied-edit markers for the Material/Gear/Symmetry Apply buttons -- the
+    // same amber "*" treatment as `editor_inspector.slint`'s `preform_pending`/
+    // `yield_pending`. A background refresh only re-seeds a section's scratch
+    // fields when the underlying DESIGN value actually changed, so it cannot
+    // silently flip `pending` back to `false` by reasserting a just-typed value.
+    property <bool> material_pending: false;
+    property <bool> gear_pending: false;
+    property <bool> symmetry_pending: false;
+    // "Apply Details" pending marker -- same treatment.
+    property <bool> meta_pending: false;
+    // "Apply Printed" pending marker -- same treatment.
+    property <bool> printed_pending: false;
+    // `form_reset_pulse` (`ui/models/editor.slint`) bumps on New/Load Selected/
+    // Open Native -- a different design underneath these fields, where a leftover
+    // "pending" flag from the previous design would mislead. Local alias so
+    // `changed` can watch a global's property, as `editor_inspector.slint` does.
+    property <int> tracked_form_reset_pulse: EditorModel.form_reset_pulse;
+    changed tracked_form_reset_pulse => {
+        root.material_pending = false;
+        root.gear_pending = false;
+        root.symmetry_pending = false;
+        root.meta_pending = false;
+        root.printed_pending = false;
+    }
+
+    // Mirrors `EditorModel.gear_remap_open` (an `in property`, read-only from this
+    // side) into a local property purely so `changed` can watch it, and clears
+    // the "Apply Gear *" pending marker when the `GearRemapDialog` modal closes
+    // (Confirm and Cancel both flip `gear_remap_open` back to `false` from Rust).
+    // The dialog itself has no access to this component's local `gear_pending`.
+    property <bool> tracked_gear_remap_open: EditorModel.gear_remap_open;
+    changed tracked_gear_remap_open => {
+        if !root.tracked_gear_remap_open {
+            root.gear_pending = false;
+        }
+    }
 
     content := VerticalLayout {
         padding: 8px;
@@ -60,6 +101,7 @@ export component EditorDesignSettings inherits Rectangle {
                     max-width: 200px;
                     model: EditorModel.material_combo_options;
                     current-index <=> EditorModel.material_combo_index;
+                    selected => { root.material_pending = true; }
                 }
             }
             VerticalLayout {
@@ -73,20 +115,29 @@ export component EditorDesignSettings inherits Rectangle {
                     width: 90px;
                     text <=> EditorModel.ri_override_text;
                     placeholder-text: "auto";
-                    accepted => { EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text); }
+                    edited => { root.material_pending = true; }
+                    accepted => {
+                        EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text);
+                        root.material_pending = false;
+                    }
+                    changed has-focus => { EditorModel.text_focus = self.has-focus; }
                 }
             }
             VerticalLayout {
-                // Item 246: bottom-align the control to the labelled fields'
-                // baseline instead of faking the gap with a blank spacer `Text`
-                // above it (which broke the moment a label wrapped or the font
-                // changed). `alignment: end` sizes this column to its natural
-                // (unstretched) content and pins it to the bottom of the row --
-                // the same height the taller label+field columns fill exactly.
+                // Bottom-aligns the button to the labelled fields' baseline rather
+                // than faking the gap with a blank spacer `Text` (which breaks when
+                // a label wraps or the font changes). `alignment: end` sizes this
+                // column to its natural content and pins it to the row's bottom.
                 alignment: end;
                 Button {
-                    text: "Apply Material";
-                    clicked => { EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text); }
+                    // Amber "*" marks unapplied edits, matching the inspector's
+                    // Apply buttons.
+                    text: root.material_pending ? "Apply Material *" : "Apply Material";
+                    primary: root.material_pending;
+                    clicked => {
+                        EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text);
+                        root.material_pending = false;
+                    }
                 }
             }
             // Read-only chips, same small-rounded-rectangle style as
@@ -121,13 +172,9 @@ export component EditorDesignSettings inherits Rectangle {
                     }
                 }
             }
-            // CAD audit item 223: the only other opener of this dialog is the
-            // Live Render tab's viewport overlay button (`gem_viewport.slint`,
-            // owned by another lane) -- this sits next to the consuming combo
-            // above so creating a custom material no longer requires leaving
-            // the Edit tab. `solid_viewport.slint` (also ours) now mounts
-            // `MaterialEditorDialog` so this actually opens something while
-            // the Edit tab is showing.
+            // Opens the custom-material editor next to the combo that consumes it,
+            // so creating a material does not require leaving the Edit tab;
+            // `solid_viewport.slint` mounts `MaterialEditorDialog` for this tab.
             VerticalLayout {
                 alignment: end;
                 Button {
@@ -135,11 +182,9 @@ export component EditorDesignSettings inherits Rectangle {
                     clicked => { ViewportModel.material_editor_open = true; }
                 }
             }
-            // CAD audit item 227: mirrors the "Linked to design" toggle that
-            // otherwise lives only in the Live Render tab (`gem_viewport.slint`),
-            // right where the design's material is actually set -- so a cutter
-            // who turned the render material off-link elsewhere can see and
-            // undo it without switching tabs.
+            // Mirrors the Live Render tab's "Linked to design" toggle right where
+            // the design's material is set, so a cutter who unlinked the render
+            // material elsewhere can see and undo it without switching tabs.
             VerticalLayout {
                 alignment: end;
                 Rectangle {
@@ -156,7 +201,7 @@ export component EditorDesignSettings inherits Rectangle {
                             border-radius: 7px;
                             // Theme.border-dialog, not a bare literal: the same
                             // "off" toggle-track shade `filter_panel.slint`'s
-                            // chip toggles already use (cad_todo.md #245).
+                            // chip toggles use.
                             background: ViewportModel.viewport_material_linked ? Theme.accent-cyan : Theme.border-dialog;
                             y: (parent.height - self.height) / 2;
                             TouchArea {
@@ -169,7 +214,8 @@ export component EditorDesignSettings inherits Rectangle {
                                 width: 10px;
                                 height: 10px;
                                 border-radius: 5px;
-                                background: white;
+                                // Same knob token as the Mirror toggle below.
+                                background: Theme.text-on-primary;
                                 x: ViewportModel.viewport_material_linked ? parent.width - self.width - 2px : 2px;
                                 y: 2px;
                                 animate x { duration: 120ms; }
@@ -187,6 +233,10 @@ export component EditorDesignSettings inherits Rectangle {
             Rectangle { horizontal-stretch: 1; }
         }
 
+        // The inferred-material guess badge -- renders nothing while
+        // `design.material.name` is set. See `MaterialGuessBadge`'s doc comment.
+        MaterialGuessBadge { }
+
         Rectangle { height: 1px; background: Theme.border-subtle; }
 
         // Row 2: index gear / symmetry.
@@ -203,29 +253,31 @@ export component EditorDesignSettings inherits Rectangle {
                     max-width: 160px;
                     model: ["96", "80", "77", "72", "64", "120", "Custom"];
                     current-index <=> EditorModel.gear_index;
+                    selected => { root.gear_pending = true; }
                 }
             }
             if EditorModel.gear_index == 6: VerticalLayout {
                 spacing: 3px;
                 Text { text: "Custom Teeth"; font-size: 10px; color: Theme.text-muted; }
-                LineEdit { width: 70px; text <=> EditorModel.gear_custom_text; }
+                LineEdit { width: 70px; text <=> EditorModel.gear_custom_text; edited => { root.gear_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
             }
             VerticalLayout {
-                // Item 246: see the matching comment on the Apply Material button
-                // above -- bottom-aligned instead of a blank spacer `Text`.
+                // Bottom-aligned to the fields' baseline, as with Apply Material.
                 alignment: end;
                 Button {
-                    text: "Apply Gear";
+                    // Gear applies through the `GearRemapDialog` confirmation rather
+                    // than immediately, so this marks "a remap has been requested
+                    // and not yet confirmed" -- cleared by Confirm or Cancel there.
+                    text: root.gear_pending ? "Apply Gear *" : "Apply Gear";
+                    primary: root.gear_pending;
                     clicked => { EditorModel.gear_apply(EditorModel.gear_index, EditorModel.gear_custom_text); }
                 }
             }
             VerticalLayout {
                 spacing: 3px;
-                // CAD audit item 135: previews how many tiers the CURRENTLY
-                // typed symmetry order/mirror would leave with an incomplete
-                // orbit, before Apply Symmetry commits anything -- requested
-                // live as the field is edited (below) rather than only shown
-                // after the fact.
+                // Tooltip previews how many tiers the CURRENTLY typed symmetry
+                // order/mirror would leave with an incomplete orbit, before Apply
+                // Symmetry commits anything -- requested live as the field is edited.
                 Rectangle {
                     height: symmetry_lbl.preferred-height;
                     Tooltip { text: @markdown("\{EditorModel.symmetry_preview_text}"); }
@@ -234,12 +286,16 @@ export component EditorDesignSettings inherits Rectangle {
                 LineEdit {
                     width: 60px;
                     text <=> EditorModel.symmetry_order_text;
-                    edited => { EditorModel.request_symmetry_preview(self.text, EditorModel.mirror); }
-                    // CAD audit item 135: the RI Override field right above
-                    // already commits on Enter (`accepted => apply_design_
-                    // material` near the top of this file) -- this field
-                    // didn't.
-                    accepted => { EditorModel.apply_symmetry(EditorModel.symmetry_order_text, EditorModel.mirror); }
+                    edited => {
+                        EditorModel.request_symmetry_preview(self.text, EditorModel.mirror);
+                        root.symmetry_pending = true;
+                    }
+                    // Enter commits, matching the RI Override field above.
+                    accepted => {
+                        EditorModel.apply_symmetry(EditorModel.symmetry_order_text, EditorModel.mirror);
+                        root.symmetry_pending = false;
+                    }
+                    changed has-focus => { EditorModel.text_focus = self.has-focus; }
                 }
             }
             VerticalLayout {
@@ -256,10 +312,10 @@ export component EditorDesignSettings inherits Rectangle {
                         TouchArea {
                             clicked => {
                                 EditorModel.mirror = !EditorModel.mirror;
-                                // CAD audit item 135: mirror is the OTHER half
-                                // of the proposed change the preview above
-                                // describes -- refresh it here too, not just
-                                // on the Symmetry Order field's own `edited`.
+                                root.symmetry_pending = true;
+                                // Mirror is the other half of the proposed change
+                                // the symmetry preview describes, so refresh it
+                                // here too, not only on the order field's `edited`.
                                 EditorModel.request_symmetry_preview(EditorModel.symmetry_order_text, EditorModel.mirror);
                             }
                         }
@@ -276,60 +332,227 @@ export component EditorDesignSettings inherits Rectangle {
                 }
             }
             VerticalLayout {
-                // Item 246: see the matching comment on the Apply Material button
-                // above -- bottom-aligned instead of a blank spacer `Text`.
+                // Bottom-aligned to the fields' baseline, as with Apply Material.
                 alignment: end;
                 Button {
-                    text: "Apply Symmetry";
-                    clicked => { EditorModel.apply_symmetry(EditorModel.symmetry_order_text, EditorModel.mirror); }
+                    // Amber "*" marks unapplied edits, as with Apply Material.
+                    text: root.symmetry_pending ? "Apply Symmetry *" : "Apply Symmetry";
+                    primary: root.symmetry_pending;
+                    clicked => {
+                        EditorModel.apply_symmetry(EditorModel.symmetry_order_text, EditorModel.mirror);
+                        root.symmetry_pending = false;
+                    }
                 }
             }
             Rectangle { horizontal-stretch: 1; }
         }
 
-        // --- Gear remap confirmation. Non-integral remaps (a lossy
-        // tooth-count change) are shown in red. Its own collapsible section
-        // (title "GEAR REMAP") nested within "DESIGN" -- collapsing it hides
-        // the remap rows/confirm-cancel buttons but leaves the confirmation
-        // itself pending (`EditorModel.gear_remap_open` untouched), so it is
-        // never silently dismissed, only tucked away.
-        if EditorModel.gear_remap_open: Rectangle {
-            background: Theme.bg-input;
-            border-radius: Theme.radius-sm;
-            border-width: 1px;
-            border-color: Theme.accent-amber;
+        Rectangle { height: 1px; background: Theme.border-subtle; }
+
+        // Row 3: design metadata, committed as an `Edit::SetMeta`
+        // (`crates/indicatrix-cut-core`). `design_title` is the FIRST header line
+        // (this app's "first header is the title" convention, e.g. the catalogue
+        // import fallback and the status strip's `design_label`);
+        // `design_extra_headers`/`design_footnotes` are every further
+        // header/footnote line, joined/split on "; " since this app has no
+        // multi-line text control.
+        HorizontalLayout {
+            spacing: 10px;
             VerticalLayout {
-                padding: 8px;
-                spacing: 4px;
-
-                SectionHeader {
-                    title: "GEAR REMAP";
-                    collapsed: EditorModel.remap_collapsed;
-                    toggled => { EditorModel.remap_collapsed = !EditorModel.remap_collapsed; }
+                spacing: 3px;
+                Rectangle {
+                    height: title_lbl.preferred-height;
+                    Tooltip { text: @markdown("The design's own name -- the .asc file's first header line. Seeds the window title and a saved/exported file's default name."); }
+                    title_lbl := Text { text: "Title"; font-size: 10px; color: Theme.text-muted; }
                 }
-
-                if !EditorModel.remap_collapsed: VerticalLayout {
-                    spacing: 4px;
-                    Text {
-                        text: "Confirm index remap -- every tier's indices are recomputed for the new gear:";
-                        font-size: 11px;
-                        font-weight: 700;
-                        color: Theme.accent-amber;
-                        wrap: word-wrap;
+                LineEdit { width: 150px; text <=> EditorModel.design_title; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+            }
+            VerticalLayout {
+                spacing: 3px;
+                Rectangle {
+                    height: extra_headers_lbl.preferred-height;
+                    Tooltip { text: @markdown("Further .asc header lines beyond the title. Join several with \"; \"."); }
+                    extra_headers_lbl := Text { text: "Extra Header Lines"; font-size: 10px; color: Theme.text-muted; }
+                }
+                LineEdit { width: 150px; text <=> EditorModel.design_extra_headers; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+            }
+            VerticalLayout {
+                spacing: 3px;
+                Rectangle {
+                    height: footnotes_lbl.preferred-height;
+                    Tooltip { text: @markdown("Footnote lines written at the end of the .asc file. Join several with \"; \"."); }
+                    footnotes_lbl := Text { text: "Footnotes"; font-size: 10px; color: Theme.text-muted; }
+                }
+                LineEdit { width: 150px; text <=> EditorModel.design_footnotes; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+            }
+            VerticalLayout {
+                spacing: 3px;
+                Rectangle {
+                    height: gear_ref_lbl.preferred-height;
+                    Tooltip { text: @markdown("The index wheel's zero-tooth reference angle, in degrees."); }
+                    gear_ref_lbl := Text { text: "Gear Ref. Angle"; font-size: 10px; color: Theme.text-muted; }
+                }
+                LineEdit { width: 70px; text <=> EditorModel.design_gear_reference_angle; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+            }
+            VerticalLayout {
+                // Bottom-aligned to the fields' baseline, as with Apply Material.
+                alignment: end;
+                Button {
+                    // Amber "*" marks unapplied edits, as with Apply Material.
+                    text: root.meta_pending ? "Apply Details *" : "Apply Details";
+                    primary: root.meta_pending;
+                    clicked => {
+                        EditorModel.apply_design_meta(EditorModel.design_title, EditorModel.design_extra_headers, EditorModel.design_footnotes, EditorModel.design_gear_reference_angle);
+                        root.meta_pending = false;
                     }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        Rectangle { height: 1px; background: Theme.border-subtle; }
+
+        // Row 4: a cutter's own typed printed proportions (Vol/W^3, L/W, C/W, P/W,
+        // H/W, the figures printed on every GemCad sheet), feeding Deep Solve's
+        // external verification target for a New, remote-loaded or natively-saved
+        // design -- none of which carry a catalogue row's measured columns the way
+        // "Load Selected" does. Without this, Deep Solve is unusable for those.
+        HorizontalLayout {
+            spacing: 10px;
+            VerticalLayout {
+                spacing: 3px;
+                Rectangle {
+                    height: printed_lbl.preferred-height;
+                    Tooltip { text: @markdown("The design's own printed proportions -- Vol/W\u{b3}, L/W, C/W, P/W, H/W -- as they appear on a GemCad-style sheet. Feeds Deep Solve's external verification for a design with no catalogue-measured columns of its own. Blank means \"not typed.\""); }
+                    printed_lbl := Text { text: "Printed Proportions (Vol/W\u{b3}, L/W, C/W, P/W, H/W)"; font-size: 10px; color: Theme.text-muted; }
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    LineEdit { width: 60px; text <=> EditorModel.printed_vol_w3_text; placeholder-text: "Vol/W\u{b3}"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { width: 50px; text <=> EditorModel.printed_lw_text; placeholder-text: "L/W"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { width: 50px; text <=> EditorModel.printed_cw_text; placeholder-text: "C/W"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { width: 50px; text <=> EditorModel.printed_pw_text; placeholder-text: "P/W"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { width: 50px; text <=> EditorModel.printed_hw_text; placeholder-text: "H/W"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                }
+            }
+            VerticalLayout {
+                alignment: end;
+                Button {
+                    text: root.printed_pending ? "Apply Printed *" : "Apply Printed";
+                    primary: root.printed_pending;
+                    clicked => {
+                        EditorModel.apply_printed_proportions(
+                            EditorModel.printed_vol_w3_text,
+                            EditorModel.printed_lw_text,
+                            EditorModel.printed_cw_text,
+                            EditorModel.printed_pw_text,
+                            EditorModel.printed_hw_text
+                        );
+                        root.printed_pending = false;
+                    }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        } // if !EditorModel.settings_collapsed
+    }
+}
+
+// The gear-remap confirmation, a real modal mounted by `app.slint` so it blocks
+// like every other confirmation in this app (`RetargetDialog`/`NewDesignDialog`)
+// and cannot be missed behind a collapsed "DESIGN" section or left open behind
+// other work. The Rust side refuses a stale Confirm (it compares
+// `EditorState::generation` against the value captured when the dialog opened).
+// The Rounding selector lets a cutter keep indices deliberately placed on a
+// half-tooth from being silently moved by Nearest; the Rust side recomputes the
+// red/black preview rows on change, so the preview stays honest.
+export component GearRemapDialog inherits Rectangle {
+    visible: EditorModel.gear_remap_open;
+    background: Theme.overlay-backdrop;
+
+    TouchArea {
+        // Backdrop click cancels, matching `NewDesignDialog`'s own convention.
+        clicked => { EditorModel.gear_remap_cancel(); }
+    }
+
+    // Same re-focus-on-every-open idiom `RetargetDialog`'s own `key_scope` uses
+    // (`retarget_dialog.slint`) -- this component stays instantiated the whole
+    // time (`visible`, not `if`), so a plain `init => { self.focus(); }` would
+    // only ever fire once.
+    key_scope := FocusScope {
+        property <bool> open_mirror: EditorModel.gear_remap_open;
+        changed open_mirror => {
+            if self.open_mirror {
+                self.focus();
+            }
+        }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                EditorModel.gear_remap_cancel();
+                return accept;
+            } else if event.text == Key.Return {
+                EditorModel.gear_remap_confirm();
+                return accept;
+            }
+            accept
+        }
+    }
+
+    Rectangle {
+        width: 460px;
+        height: min(card.preferred-height, root.height - 40px);
+        background: Theme.surface-dialog;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-dialog;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.modal-shadow;
+        clip: true;
+
+        TouchArea {} // Isolate clicks inside the modal.
+
+        card := VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+
+            Text { text: "Confirm Index Remap"; font-size: 14px; font-weight: 700; color: Theme.text-primary; }
+            Text {
+                text: "Every tier's indices are recomputed for the new gear:";
+                font-size: 11px;
+                font-weight: 700;
+                color: Theme.accent-amber;
+                wrap: word-wrap;
+            }
+
+            Rectangle {
+                height: rounding_lbl.preferred-height;
+                Tooltip { text: @markdown("How a non-integral remapped index is rounded. Nearest was hard-coded before this existed."); }
+                rounding_lbl := Text { text: "Rounding"; font-size: 10px; color: Theme.text-muted; }
+            }
+            ComboBox {
+                model: ["Nearest", "Floor", "Ceil"];
+                selected(val) => {
+                    EditorModel.gear_remap_set_rounding(val == "Nearest" ? 0 : (val == "Floor" ? 1 : 2));
+                }
+            }
+
+            ScrollView {
+                height: min(rows.preferred-height, 240px);
+                rows := VerticalLayout {
+                    spacing: 2px;
                     for row in EditorModel.gear_remap_rows: HorizontalLayout {
                         spacing: 6px;
                         Text { width: 60px; text: row.name; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
                         Text { horizontal-stretch: 1; text: row.old_indices + "  ->  " + row.new_indices; font-size: 10px; font-weight: row.non_integral ? 700 : 400; color: row.non_integral ? Theme.accent-ruby : Theme.text-secondary; overflow: elide; }
                     }
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Button { text: "Confirm Remap"; primary: true; clicked => { EditorModel.gear_remap_confirm(); } }
-                        Button { text: "Cancel"; clicked => { EditorModel.gear_remap_cancel(); } }
-                    }
                 }
             }
+
+            HorizontalLayout {
+                spacing: 6px;
+                Button { text: "Confirm Remap"; primary: true; clicked => { EditorModel.gear_remap_confirm(); } }
+                Button { text: "Cancel"; clicked => { EditorModel.gear_remap_cancel(); } }
+            }
         }
-        } // if !EditorModel.settings_collapsed
     }
 }

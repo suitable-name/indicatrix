@@ -428,8 +428,8 @@ fn cpu_frosted_bounce(case: &FrostedBounceCase, material: &GemMaterial) -> Frost
     let mut path_pdf = case.path_pdf_in;
     let normal = Vec3::from_array(case.normal);
     // This check pins `apply_frosted_bounce`'s base reflect/transmit/TIR physics against
-    // the WGSL port, which predates finding G8's NEE addition -- `enabled: false` keeps
-    // this comparison exactly as it was (no RNG draw, no `radiance` touch; see
+    // the WGSL port. `enabled: false` scopes
+    // this comparison to that base physics alone (no RNG draw, no `radiance` touch; see
     // `NeeContext::enabled`'s doc comment), leaving a dedicated frosted-NEE Tier 2/3
     // check as future work once the WGSL side ports that machinery too.
     let plane_soa = build_plane_soa(&[]);

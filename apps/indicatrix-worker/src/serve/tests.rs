@@ -1,5 +1,5 @@
 use crate::serve::{
-    connection::{BUILD_MISMATCH_CODE, VALIDATION_FAILED_CODE},
+    connection::{BUILD_MISMATCH_CODE, NO_RENDER_CAPACITY_CODE, VALIDATION_FAILED_CODE},
     handle_connection,
 };
 use indicatrix::{
@@ -263,6 +263,7 @@ fn handle_connection_refuses_a_mismatched_build_hash() {
     let bad_hello = Hello {
         protocol_version: indicatrix_net::messages::PROTOCOL_VERSION,
         build_hash: [0xAB; 8],
+        source_hash: handshake::UNKNOWN_BUILD_HASH,
     };
     indicatrix_net::messages::write_message(&mut input, &bad_hello).unwrap();
 
@@ -292,6 +293,58 @@ fn handle_connection_accepts_a_matching_build_hash_and_sends_welcome() {
         welcome.render.as_ref().unwrap().backend,
         Backend::Cpu { .. }
     ));
+}
+
+/// A `HELLO` declaring no `indicatrix` build at all
+/// (`build_hash == UNKNOWN_BUILD_HASH`, e.g. a library-only client) must not be refused
+/// by `verify_compatible`'s "an unknown build is never compatible with anything" rule --
+/// it is paired as library-only instead: `WELCOME::render` is `None`, and a later
+/// `RenderRequest` on that same connection is refused with `NO_RENDER_CAPACITY_CODE`
+/// rather than reaching the tracer.
+#[test]
+fn handle_connection_pairs_an_unknown_build_hash_as_library_only_and_refuses_a_later_render() {
+    let mut input = Vec::new();
+    let library_only_hello = Hello {
+        protocol_version: indicatrix_net::messages::PROTOCOL_VERSION,
+        build_hash: handshake::UNKNOWN_BUILD_HASH,
+        source_hash: handshake::UNKNOWN_BUILD_HASH,
+    };
+    indicatrix_net::messages::write_message(&mut input, &library_only_hello).unwrap();
+    let request = RenderRequest {
+        request_id: 1,
+        scene: tiny_scene(),
+        first_sample: 0,
+        samples: 2,
+        stream: final_only(0),
+    };
+    indicatrix_net::messages::write_message(
+        &mut input,
+        &ClientMessage::RenderRequest(Box::new(request)),
+    )
+    .unwrap();
+
+    let mut duplex = DuplexHalf::new(input);
+    handle_connection(&mut duplex, 1, &test_db()).unwrap();
+
+    let mut out_cursor = Cursor::new(duplex.out);
+    let welcome: Welcome = indicatrix_net::messages::read_message(&mut out_cursor).unwrap();
+    assert!(
+        welcome.render.is_none(),
+        "an unknown-build-hash peer must be welcomed with no render capacity"
+    );
+    assert!(welcome.library, "the library protocol stays available");
+    assert!(!welcome.tilt_curves);
+
+    let events = read_stream_until_done(&mut out_cursor);
+    assert_eq!(
+        events.len(),
+        1,
+        "a RenderRequest on a library-only-paired connection gets exactly one reply"
+    );
+    let StreamEvent::Error(err) = &events[0].0 else {
+        panic!("expected StreamEvent::Error, got {:?}", events[0].0);
+    };
+    assert_eq!(err.code, NO_RENDER_CAPACITY_CODE);
 }
 
 #[test]
@@ -856,8 +909,8 @@ fn a_peer_that_never_drains_ends_the_connection_rather_than_hanging_forever() {
     let mut duplex = BackpressureDuplex::new(input, 8);
     let result = handle_connection(&mut duplex, 2, &test_db());
 
-    // The bound this closes: this used to hang forever; now it returns an error
-    // within one WRITE_TIMEOUT.
+    // The bound this closes: without WRITE_TIMEOUT this would hang forever; instead
+    // it returns an error within one WRITE_TIMEOUT.
     let err = result.expect_err(
         "a peer that never drains must end the connection with an error, not hang forever",
     );
@@ -1165,6 +1218,75 @@ fn preview_frames_never_enter_the_full_resolution_accumulator_path() {
         // valid radiance data, just never for the full-resolution accumulator.
         assert!(indicatrix_net::radiance::decode(payload, header.width, header.height).is_ok());
     }
+}
+
+// ---- TILT_CURVES leaves the connection usable afterward ---------------------------
+
+/// `serve::tilt::handle_tilt_curves_request` must restore the short read timeout
+/// `poll_for_cancel` applies to the socket
+/// (`CANCEL_POLL_TIMEOUT`/`crate::stream_emit::FRAME_REMAINDER_TIMEOUT`) before
+/// returning -- otherwise this connection's next `read_message` call fails unless the
+/// next frame happens to already be sitting in the socket buffer. Driven over a REAL
+/// loopback `TcpStream`
+/// (unlike this file's `DuplexHalf`-based tests, which can never actually time out a
+/// read) with the second message written only after the first reply comes back --
+/// exactly the case a leftover short timeout would break.
+#[test]
+fn tilt_curves_request_then_library_request_both_get_replies_over_a_real_socket() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        handle_connection(stream, 2, &test_db()).unwrap();
+    });
+
+    let mut client = std::net::TcpStream::connect(addr).unwrap();
+    indicatrix_net::messages::write_message(&mut client, &handshake::local_hello()).unwrap();
+    let welcome: Welcome = indicatrix_net::messages::read_message(&mut client).unwrap();
+    assert!(welcome.tilt_curves);
+
+    let tilt_request = indicatrix_net::messages::TiltCurvesRequest {
+        request_id: 1,
+        scene: tiny_scene(),
+    };
+    indicatrix_net::messages::write_message(
+        &mut client,
+        &ClientMessage::TiltCurvesRequest(Box::new(tilt_request)),
+    )
+    .unwrap();
+    let tilt_response: indicatrix_net::messages::TiltCurvesResponse =
+        indicatrix_net::messages::read_message(&mut client).unwrap();
+    assert!(
+        matches!(
+            tilt_response,
+            indicatrix_net::messages::TiltCurvesResponse::Curves(_)
+        ),
+        "{tilt_response:?}"
+    );
+
+    // Sent only now -- not already buffered when the TILT_CURVES reply above went out
+    // -- so this proves the read timeout the emitter left on the socket was actually
+    // restored to blocking, not that a lucky pre-buffered read papered over the bug.
+    indicatrix_net::messages::write_message(
+        &mut client,
+        &ClientMessage::Library(Box::new(
+            indicatrix_net::library::LibraryRequest::FilterOptions,
+        )),
+    )
+    .unwrap();
+    let library_response: indicatrix_net::library::LibraryResponse =
+        indicatrix_net::messages::read_message(&mut client).unwrap();
+    assert!(
+        matches!(
+            library_response,
+            indicatrix_net::library::LibraryResponse::FilterOptions { .. }
+        ),
+        "{library_response:?}"
+    );
+
+    drop(client);
+    server.join().unwrap();
 }
 
 // ---- Real-socket repro: does the emitter block on a slow reader? -----------

@@ -5,10 +5,9 @@
 //! policy every caller needs: try the GPU, fall back to the CPU tracer whenever it
 //! declines, and never pretend the GPU ran when it didn't.
 //!
-//! Lives here rather than duplicated in `apps/indicatrix-cut` and
-//! `apps/indicatrix-worker` (as it once was) because the decline reasons below are
-//! correctness rules -- a drifted copy would render a plausible-looking wrong image
-//! rather than fail.
+//! Lives here, shared by `apps/indicatrix-cut` and `apps/indicatrix-worker`, because the
+//! decline reasons below are correctness rules -- a drifted copy would render a
+//! plausible-looking wrong image rather than fail.
 //!
 //! Deliberately NOT `#[cfg(feature = "gpu")]`: [`GpuBackend`] exists in *both*
 //! configurations (the real thing with the feature on, a stand-in that always declines
@@ -18,8 +17,8 @@
 //!
 //! A decline is not an error: it happens when this build has no `gpu` feature,
 //! [`GpuBackend::disabled`] was chosen explicitly, or the machine has no usable adapter.
-//! (HDR environment maps and biaxial materials both used to decline; neither does any
-//! more -- see finding G6 and `renderer::gpu::frame`'s module doc comment.) Re-made on
+//! (Which environment/material kinds the GPU can dispatch is its own evolving list --
+//! see `renderer::gpu::frame`'s module doc comment for the current picture.) Re-made on
 //! every call, so a declining scene moves only its own samples to the CPU.
 //!
 //! # Sample-range additivity
@@ -40,7 +39,7 @@
 //! `apps/indicatrix-worker/src/serve/mod.rs::run`).
 //!
 //! [`GpuBackend::try_accumulate_cancellable`] does NOT hold the renderer lock for a
-//! whole request's worth of chunks the way it used to. It instead takes a FAIR, FIFO
+//! whole request's worth of chunks. It instead takes a FAIR, FIFO
 //! ticket ([`Turnstile`]) before every [`CHUNKS_PER_TURN`]-chunk "turn" through
 //! [`super::gpu::GpuFrameRenderer::accumulate_turn`], releases both the ticket and the
 //! renderer lock at the end of that turn, and -- if pixels remain -- rejoins the BACK of
@@ -49,7 +48,7 @@
 //! request's whole frame running to completion while every other connection's thread
 //! blocks behind it. A plain `Mutex` gives no such guarantee -- the OS is free to let one
 //! thread relock it repeatedly ahead of others already waiting -- which is the starvation
-//! this replaces (concurrency review finding G4, 2026-09-06).
+//! this design avoids.
 //!
 //! ## Why draining before yielding a turn is required
 //!
@@ -98,9 +97,15 @@
 //! viewport's local tracing for the duration of an export (`RenderContext::export_active`)
 //! is real, but it is unrelated to this module's fairness model: the two never contend
 //! for the same [`Turnstile`] or the same `Mutex<GpuFrameRenderer>` at all, since they
-//! are two entirely separate `GpuBackend` instances. The turnstile below only ever
-//! arbitrates more than one admission at a time on `indicatrix-worker`, where multiple
-//! connection threads genuinely do share one `Arc<GpuBackend>`.
+//! are two entirely separate `GpuBackend` instances.
+//!
+//! The turnstile below is not specific to `indicatrix-worker`: `apps/indicatrix-cut`'s
+//! BATCH preview (`gui::batch::preview::wiring`) acquires
+//! ONE [`GpuBackend`] for the whole batch job and spawns `local_lane_count()` worker
+//! lanes over that SAME `Arc<GpuBackend>`, exactly the multi-admission shape this
+//! module's fairness turnstile exists for. `indicatrix-worker`'s `serve` module (handing
+//! one `Arc<GpuBackend>` to every connection's own thread) is simply the OTHER caller
+//! that shares one backend across threads, not the only one.
 
 use std::sync::atomic::AtomicBool;
 
@@ -163,7 +168,7 @@ pub enum GpuAccumulate {
     Cancelled,
 }
 
-/// Finding G5 Part B: which transport kernel a render dispatches every chunk through.
+/// Which transport kernel a render dispatches every chunk through.
 ///
 /// The megakernel (`spectral_transport.wgsl`'s `transport_main`) or the wavefront
 /// pipeline (`wavefront_transport.wgsl`) -- see `renderer::gpu::frame`'s module doc
@@ -307,6 +312,15 @@ pub struct GpuBackend {
     /// first once true. `AtomicBool` rather than `Mutex<bool>`: read and written
     /// independently of the `renderer` mutex, from any thread sharing one `Arc`.
     lost: AtomicBool,
+    /// The human-readable reason [`Self::lost`] was last set `true` for -- either the
+    /// `why` text from a [`GpuFrameError::DeviceLost`], or a fixed message for the
+    /// poisoned-mutex case. `None` until the first loss. Read by [`Self::last_lost_reason`]
+    /// so a caller doing its OWN self-healing (drop this backend, construct a fresh one
+    /// via [`Self::acquire`]) can log or display WHY, not just that it happened -- see
+    /// `apps::indicatrix_cut::bridge::render_thread::gpu_backend::ViewportGpu` for that
+    /// caller. `Mutex`, not an atomic: the payload is a `String`, and this is set only on
+    /// the cold "just lost the device" path, so lock contention is irrelevant.
+    last_lost_reason: std::sync::Mutex<Option<String>>,
 }
 
 #[cfg(feature = "gpu")]
@@ -332,6 +346,7 @@ impl GpuBackend {
             renderer,
             turnstile: Turnstile::new(),
             lost: AtomicBool::new(false),
+            last_lost_reason: std::sync::Mutex::new(None),
         }
     }
 
@@ -347,7 +362,32 @@ impl GpuBackend {
             renderer: None,
             turnstile: Turnstile::new(),
             lost: AtomicBool::new(false),
+            last_lost_reason: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Whether this backend has permanently given up on its GPU device -- set once by a
+    /// [`GpuFrameError::DeviceLost`] or a poisoned renderer mutex, never cleared (see
+    /// [`Self::lost`]'s own doc comment). Distinct from an ordinary per-call decline
+    /// (unsupported material/environment, or [`Self::disabled`]/no adapter at all, none
+    /// of which set this): a caller doing self-healing on a `false` return from
+    /// [`Self::try_accumulate`] checks this first to decide whether re-acquiring a fresh
+    /// backend could possibly help.
+    #[must_use]
+    pub fn is_lost(&self) -> bool {
+        self.lost.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The reason [`Self::is_lost`] became `true`, if it has -- the `why` text from a
+    /// [`GpuFrameError::DeviceLost`], or a fixed message for the poisoned-mutex case.
+    /// `None` both before any loss and for a [`Self::disabled`] backend, which never
+    /// loses a device it never had.
+    #[must_use]
+    pub fn last_lost_reason(&self) -> Option<String> {
+        self.last_lost_reason
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// This backend's adapter and backend label, if one was genuinely acquired.
@@ -368,7 +408,7 @@ impl GpuBackend {
         })
     }
 
-    /// Finding G5 Part B: selects which kernel this backend's renderer dispatches
+    /// Selects which kernel this backend's renderer dispatches
     /// every LATER chunk through -- see [`GpuPipelineKind`]'s own doc comment. A no-op
     /// when this backend never acquired a renderer (see [`Self::disabled`]).
     pub fn set_pipeline_kind(&self, kind: GpuPipelineKind) {
@@ -470,9 +510,40 @@ impl GpuBackend {
             let ticket = self.turnstile.take_ticket();
             let _turn = self.turnstile.wait_for_turn(ticket);
 
-            let mut renderer = mutex
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            // Re-checked AFTER waiting, not just once before the loop above --
+            // this call may have blocked in `wait_for_turn` behind an admission whose OWN
+            // turn just discovered `DeviceLost` and set `self.lost` (the `Err(DeviceLost)`
+            // arm below), in which case dispatching into this renderer now would let an
+            // already-queued caller submit into a poisoned renderer -- checked here,
+            // before `mutex.lock()`, so this waiter declines instead.
+            if self.lost.load(std::sync::atomic::Ordering::Relaxed) {
+                return GpuAccumulate::Declined;
+            }
+
+            // A poisoned `std::sync::Mutex` (its guard was dropped mid-panic --
+            // possible if a wgpu call inside `accumulate_turn` panics despite this
+            // module's own `on_uncaptured_error`/poisoning defenses, e.g. a bug in wgpu
+            // itself) is never silently recovered via `PoisonError::into_inner`, which
+            // would hand the next caller a renderer whose state mid-panic is unknown.
+            // Treated the same as `DeviceLost` instead: permanently decline rather than
+            // guess that whatever the panicking call left behind is still safe to
+            // dispatch into.
+            let mut renderer = match mutex.lock() {
+                Ok(guard) => guard,
+                Err(_poisoned) => {
+                    tracing::warn!(
+                        "GPU renderer mutex poisoned (a previous turn panicked), permanently \
+                         disabling the GPU backend for the rest of this process"
+                    );
+                    *self
+                        .last_lost_reason
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                        Some("GPU renderer mutex poisoned (a previous turn panicked)".to_string());
+                    self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return GpuAccumulate::Declined;
+                }
+            };
             let outcome = renderer.accumulate_turn(&request, accum, &mut cursor);
             // Released before `_turn` (below, at end of scope) so a woken waiter's own
             // `mutex.lock()` never has to contend with a guard this turn is done with.
@@ -492,6 +563,10 @@ impl GpuBackend {
                          the rest of this process -- every later call falls back to the CPU \
                          tracer"
                     );
+                    *self
+                        .last_lost_reason
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(why);
                     self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
                     return GpuAccumulate::Declined;
                 }
@@ -535,6 +610,19 @@ impl GpuBackend {
     /// `_kind` only to stay signature-compatible with the `gpu`-gated
     /// [`GpuBackend::set_pipeline_kind`] above.
     pub const fn set_pipeline_kind(&self, _kind: GpuPipelineKind) {}
+
+    /// Always `false`: with no `gpu` feature there is no device to ever lose -- see the
+    /// `gpu`-gated [`GpuBackend::is_lost`] above.
+    #[must_use]
+    pub const fn is_lost(&self) -> bool {
+        false
+    }
+
+    /// Always `None`, for the same reason [`Self::is_lost`] is always `false`.
+    #[must_use]
+    pub const fn last_lost_reason(&self) -> Option<String> {
+        None
+    }
 
     /// Always declines, leaving `accum` untouched.
     ///
@@ -580,6 +668,21 @@ impl GpuBackend {
 mod tests {
     use super::Turnstile;
     use std::{sync::Mutex, thread};
+
+    // Covers `GpuBackend::try_accumulate_cancellable`'s
+    // poisoned-mutex handling -- see `poisoned_renderer_mutex_declines_and_sets_lost` below.
+    // Reaches `GpuBackend::renderer` (a private field) directly, which is why this test
+    // lives here rather than in `renderer::gpu::frame`'s own hardware test module.
+    use super::{GpuAccumulate, GpuBackend, GpuSceneRef};
+    use crate::{
+        geometry::cuts::StandardGemCuts,
+        optics::{
+            materials::GemMaterial,
+            raytracer::{Camera, LightingPreset},
+        },
+    };
+    use glam::Vec3;
+    use std::sync::atomic::AtomicBool;
 
     /// The fairness property [`Turnstile`] exists for: three threads holding tickets
     /// `t0 < t1 < t2`, asked to wait for their turn in REVERSE ticket order (`t2` and
@@ -669,5 +772,157 @@ mod tests {
         // `thread::scope` with no spawned threads just runs straight through, so a hang
         // here fails the test the same way any other infinite loop would.
         let _turn1 = turnstile.wait_for_turn(t1);
+    }
+
+    /// A poisoned `renderer` mutex (a previous turn's `wgpu` call panicked
+    /// while holding the guard, despite this module's own `on_uncaptured_error`/
+    /// `abandon_in_flight` defenses -- e.g. a bug in `wgpu` itself) must make
+    /// [`GpuBackend::try_accumulate_cancellable`] return [`GpuAccumulate::Declined`] and
+    /// set [`GpuBackend::lost`], not silently recover the possibly-mid-panic renderer
+    /// state via `PoisonError::into_inner` -- see that function's own comment on the
+    /// `mutex.lock()` match arm this test exercises.
+    ///
+    /// Needs a real adapter (unlike every other test in this module): a poisoned
+    /// `std::sync::Mutex<GpuFrameRenderer>` can only exist around a REAL
+    /// `GpuFrameRenderer`, [`GpuBackend::disabled`] never builds one at all.
+    #[test]
+    fn poisoned_renderer_mutex_declines_and_sets_lost() {
+        let backend = GpuBackend::acquire();
+        let Some(mutex) = &backend.renderer else {
+            println!("skipping poisoned_renderer_mutex_declines_and_sets_lost: no GPU adapter");
+            return;
+        };
+
+        // Lock the renderer mutex on a scoped thread that panics while still holding the
+        // guard -- the standard way to poison a `std::sync::Mutex` from a test. `.join()`
+        // (not `.unwrap()`) catches the panic itself, the same effect `catch_unwind`
+        // would have, without needing `GpuFrameRenderer: UnwindSafe`.
+        let join_result = thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _guard = mutex
+                        .lock()
+                        .expect("first lock of a fresh mutex cannot fail");
+                    panic!("deliberate poison for poisoned_renderer_mutex_declines_and_sets_lost");
+                })
+                .join()
+        });
+        assert!(
+            join_result.is_err(),
+            "the scoped thread was expected to panic (that's what poisons the mutex)"
+        );
+        assert!(mutex.is_poisoned(), "the mutex should now be poisoned");
+
+        let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = GemMaterial::by_name("Spinel").expect("Spinel is a built-in cubic material");
+        let scene = GpuSceneRef {
+            camera: &camera,
+            width: 4,
+            height: 4,
+            planes: &planes,
+            facet_finishes: &[],
+            material: &material,
+            max_bounces: 2,
+            environment: LightingPreset::Daylight.studio(1.0, 0.4, 0.35),
+        };
+        let mut accum = vec![Vec3::ZERO; 16];
+        let never_cancel = AtomicBool::new(false);
+        let outcome = backend.try_accumulate_cancellable(&scene, 0, 1, &mut accum, &never_cancel);
+        assert_eq!(
+            outcome,
+            GpuAccumulate::Declined,
+            "a poisoned renderer mutex must decline, not dispatch into possibly-corrupt state"
+        );
+        assert!(
+            backend.lost.load(std::sync::atomic::Ordering::Relaxed),
+            "a poisoned renderer mutex must permanently set `lost`, like DeviceLost does"
+        );
+
+        // A SECOND call must also decline, via the `self.lost` fast path this time
+        // (never touching the still-poisoned mutex again).
+        let outcome2 = backend.try_accumulate_cancellable(&scene, 0, 1, &mut accum, &never_cancel);
+        assert_eq!(outcome2, GpuAccumulate::Declined);
+    }
+
+    /// Guards against the live viewport freezing after its first frame: it shows an
+    /// initial image but renders nothing further, ignoring camera drags from then on.
+    ///
+    /// `renderer::gpu::frame`'s own hardware tests exercise `GpuFrameRenderer::accumulate`
+    /// directly, which drives one UNLIMITED-chunk-budget turn per call -- not what the
+    /// live viewport actually does. `apps::indicatrix-cut::bridge::render_thread::
+    /// gpu_backend::ViewportGpu::try_accumulate` calls `GpuBackend::try_accumulate`
+    /// (this module), which drives `try_accumulate_cancellable`'s loop: EVERY single
+    /// viewport frame is broken into many [`CHUNKS_PER_TURN`]-chunk turns, each one
+    /// re-taking a `Turnstile` ticket and re-running `prepare_turn`'s full scene
+    /// re-upload -- far more turn-boundary churn per frame than the unlimited-chunk
+    /// path exercises. This test drives that EXACT production entry point across
+    /// several simulated viewport frames, each with a different camera pose (as
+    /// `on_camera_orbit` produces on every drag `moved` event), to see whether that
+    /// extra churn is what trips the poisoning this bug report describes.
+    #[test]
+    fn viewport_frames_with_camera_changes_never_poison_the_backend() {
+        let backend = GpuBackend::acquire();
+        if backend.renderer.is_none() {
+            println!(
+                "skipping viewport_frames_with_camera_changes_never_poison_the_backend: no \
+                 GPU adapter"
+            );
+            return;
+        }
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let material = GemMaterial::by_name("Spinel").expect("Spinel is a built-in cubic material");
+        let environment = LightingPreset::Daylight.studio(1.0, 0.4, 0.35);
+        let never_cancel = AtomicBool::new(false);
+
+        // A realistic viewport resolution at a realistic per-frame `spp` -- large
+        // enough (480*360*2 = 345_600 (pixel, sample) tuples) that CHUNKS_PER_TURN's
+        // small per-turn budget forces MANY turns per single `try_accumulate` call,
+        // exactly like the real render loop's own frames.
+        let (width, height) = (480u32, 360u32);
+        let spp = 2u32;
+        let mut accum = vec![Vec3::ZERO; (width * height) as usize];
+
+        for frame in 0..12u32 {
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "frame index is tiny; precision loss is not a concern in this test"
+            )]
+            let yaw = (frame as f32).mul_add(0.29, 0.1);
+            #[allow(
+                clippy::cast_precision_loss,
+                reason = "frame index is tiny; precision loss is not a concern in this test"
+            )]
+            let pitch = (frame as f32).mul_add(0.13, 0.2).clamp(-1.4, 1.4);
+            let camera = Camera::new(yaw, pitch, 5.0, 18.0);
+            let scene = GpuSceneRef {
+                camera: &camera,
+                width,
+                height,
+                planes: &planes,
+                facet_finishes: &[],
+                material: &material,
+                max_bounces: 4,
+                environment,
+            };
+            let outcome = backend.try_accumulate_cancellable(
+                &scene,
+                frame * spp,
+                spp,
+                &mut accum,
+                &never_cancel,
+            );
+            assert_eq!(
+                outcome,
+                GpuAccumulate::Done,
+                "frame {frame} (yaw={yaw}, pitch={pitch}) did not complete -- got {outcome:?} \
+                 instead of Done; `backend.lost` = {}",
+                backend.lost.load(std::sync::atomic::Ordering::Relaxed)
+            );
+        }
+        assert!(
+            accum.iter().any(|v| v.length_squared() > 0.0),
+            "a lit studio-rig scene traced over 12 frames must leave SOME nonzero radiance"
+        );
     }
 }

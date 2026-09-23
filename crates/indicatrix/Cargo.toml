@@ -36,8 +36,8 @@ tracing = { workspace = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # `wgpu`'s own default features (`dx12`, `metal`, `gles`, `vulkan`, `webgpu`, ...) --
-# every native compute backend this crate's Phase 0/1/2/3 self-tests and
-# `renderer::gpu`/`renderer::gpu_backend` were built and verified against. Split into
+# every native compute backend this crate's self-tests and
+# `renderer::gpu`/`renderer::gpu_backend` are verified against. Split into
 # its own target-specific section (rather than one unconditional `[dependencies]`
 # entry) purely so the wasm32 arm below can trim it to the one backend a browser
 # actually has -- this arm's behaviour is completely unchanged from before the split.
@@ -81,6 +81,12 @@ rusqlite = { workspace = true }
 # this a syntax error in a shader only surfaces on a machine with a GPU. Pinned to
 # the same version `wgpu` bundles so accepted syntax matches what runs.
 naga = { version = "30.0.1", default-features = false, features = ["wgsl-in"] }
+# `examples/gpu_equivalence_harness.rs` installs a `fmt` subscriber
+# at `warn` level so a `tracing::error!` from `GpuContext::acquire_async`'s
+# `on_uncaptured_error` handler (the actual wgpu validation error text) is printed
+# instead of silently discarded -- see that example's `main` and
+# `GpuContext::last_uncaptured_error`.
+tracing-subscriber = { workspace = true }
 
 [features]
 default = []

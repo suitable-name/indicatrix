@@ -7,10 +7,13 @@
 //! either way -- and `postcard` is not self-describing, so a real client can't tell
 //! which is coming from a tag on the wire. [`handshake`] reads the one reply frame,
 //! tries to decode it as [`Welcome`], and falls back to [`ErrorMsg`] if that fails.
-//! `postcard::from_bytes` requires the entire frame consumed with nothing left over, so
-//! an accidental cross-decode needs byte lengths to coincide exactly AND every field to
-//! land on a valid discriminant/length -- vanishingly unlikely for two structurally
-//! different types.
+//! Decoding uses `postcard::take_from_bytes` and explicitly requires the returned
+//! remainder to be empty -- `postcard::from_bytes` alone does NOT enforce that (postcard
+//! 1.1.3 happily ignores trailing bytes after a structurally valid decode), so without
+//! this check an accidental cross-decode would only need byte length to be *at least*
+//! enough. Requiring the whole frame consumed narrows that back down to needing every
+//! field to also land on a valid discriminant/length -- vanishingly unlikely for two
+//! structurally different types.
 //!
 //! # Why the client re-verifies compatibility itself
 //!
@@ -55,6 +58,7 @@ const fn local_hello_for_this_build() -> Hello {
     Hello {
         protocol_version: messages::PROTOCOL_VERSION,
         build_hash: handshake::UNKNOWN_BUILD_HASH,
+        source_hash: handshake::UNKNOWN_BUILD_HASH,
     }
 }
 
@@ -80,12 +84,15 @@ pub fn handshake<S: Read + Write>(stream: &mut S) -> Result<Welcome, ClientError
 
     let raw = crate::framing::read_frame(stream).map_err(crate::messages::NetError::Framing)?;
 
-    if let Ok(welcome) = postcard::from_bytes::<Welcome>(&raw) {
+    if let Ok((welcome, remainder)) = postcard::take_from_bytes::<Welcome>(&raw)
+        && remainder.is_empty()
+    {
         #[cfg(feature = "render")]
         if welcome.render.is_some() {
             let remote_as_hello = Hello {
                 protocol_version: welcome.protocol_version,
                 build_hash: welcome.build_hash,
+                source_hash: welcome.source_hash,
             };
             handshake::verify_compatible(&local, &remote_as_hello)
                 .map_err(ClientError::Incompatible)?;
@@ -93,7 +100,9 @@ pub fn handshake<S: Read + Write>(stream: &mut S) -> Result<Welcome, ClientError
         return Ok(welcome);
     }
 
-    if let Ok(err) = postcard::from_bytes::<ErrorMsg>(&raw) {
+    if let Ok((err, remainder)) = postcard::take_from_bytes::<ErrorMsg>(&raw)
+        && remainder.is_empty()
+    {
         return Err(ClientError::Refused(err));
     }
 
@@ -187,6 +196,7 @@ mod tests {
         Welcome {
             protocol_version: PROTOCOL_VERSION,
             build_hash: local_hello_for_this_build().build_hash,
+            source_hash: local_hello_for_this_build().source_hash,
             render: Some(RenderCapability {
                 backend: crate::messages::Backend::Cpu { threads: 8 },
                 max_pixels: 8_294_400,
@@ -266,6 +276,24 @@ mod tests {
 
         let err = handshake(&mut duplex).unwrap_err();
         assert!(matches!(err, ClientError::MalformedHandshakeReply));
+    }
+
+    /// A reply frame that decodes as a valid `Welcome` PLUS trailing garbage
+    /// must not be accepted -- `postcard::from_bytes` alone would silently ignore the
+    /// extra bytes; `take_from_bytes` with an empty-remainder check must not.
+    #[test]
+    fn handshake_rejects_a_welcome_with_trailing_bytes_after_it() {
+        let mut input = Vec::new();
+        let mut payload = postcard::to_allocvec(&scripted_welcome()).unwrap();
+        payload.push(0xEE); // trailing garbage past the structurally valid Welcome
+        crate::framing::write_frame(&mut input, &payload).unwrap();
+        let mut duplex = DuplexHalf::new(input);
+
+        let err = handshake(&mut duplex).unwrap_err();
+        assert!(
+            matches!(err, ClientError::MalformedHandshakeReply),
+            "expected ClientError::MalformedHandshakeReply, got {err:?}"
+        );
     }
 
     #[test]

@@ -63,9 +63,9 @@ use std::fmt;
 
 /// Everything that can go wrong parsing an `.asc` cutting schedule with [`parse_asc`].
 ///
-/// Every variant's [`Display`](fmt::Display) reproduces, verbatim, the human-readable
-/// message the parser used to return as a plain `String` -- callers that only ever
-/// printed or matched on substrings of that message keep working unchanged; callers
+/// Every variant's [`Display`](fmt::Display) reproduces, verbatim, the same
+/// human-readable message a plain `String` would -- callers that only ever
+/// print or match on substrings of that message keep working unchanged; callers
 /// that want to branch on the specific failure (e.g. distinguishing "missing header"
 /// from "bad numeric token") can now match on the variant instead.
 #[derive(Debug, Clone, PartialEq)]
@@ -97,6 +97,12 @@ pub enum AscParseError {
         token: String,
         value: f64,
     },
+    /// The `g` line's gear tooth count was exactly zero. `phi = 2*pi*index/gear_teeth_abs()`
+    /// (see [`AscSchedule::gear_teeth_abs`]) divides by this value downstream, so a
+    /// zero-tooth gear is nonsensical, not merely unusual.
+    GearTeethZero { line: usize },
+    /// The `y` line's mirror-flag field was neither `y` nor `n` (case-insensitive).
+    MirrorFlagInvalid { line: usize, token: String },
     /// The file had no `g` (gear teeth) header line at all.
     MissingGearLine,
     /// The file had no `y` (symmetry) header line at all.
@@ -149,6 +155,13 @@ impl fmt::Display for AscParseError {
             } => write!(
                 f,
                 "line {line}: {field} {token:?} must be a whole number in range, got {value}"
+            ),
+            Self::GearTeethZero { line } => {
+                write!(f, "line {line}: 'g' (gear) tooth count must not be zero")
+            }
+            Self::MirrorFlagInvalid { line, token } => write!(
+                f,
+                "line {line}: 'y' (symmetry) line's mirror flag {token:?} is neither 'y' nor 'n'"
             ),
             Self::MissingGearLine => write!(f, "missing required 'g' (gear teeth) header line"),
             Self::MissingSymmetryLine => {
@@ -449,12 +462,7 @@ pub fn parse_asc(content: &str) -> Result<AscSchedule, AscParseError> {
                             line: line_no,
                             token: rest[0].to_string(),
                         })?;
-                gear_teeth = Some(require_integral_i32(
-                    teeth,
-                    line_no,
-                    "gear tooth count",
-                    rest[0],
-                )?);
+                gear_teeth = Some(require_nonzero_gear_teeth(teeth, line_no, rest[0])?);
                 schedule.gear_reference_angle =
                     rest[1]
                         .parse()
@@ -485,7 +493,16 @@ pub fn parse_asc(content: &str) -> Result<AscSchedule, AscParseError> {
                     "symmetry order",
                     rest[0],
                 )?);
-                schedule.mirror = rest[1].eq_ignore_ascii_case("y");
+                schedule.mirror = if rest[1].eq_ignore_ascii_case("y") {
+                    true
+                } else if rest[1].eq_ignore_ascii_case("n") {
+                    false
+                } else {
+                    return Err(AscParseError::MirrorFlagInvalid {
+                        line: line_no,
+                        token: rest[1].to_string(),
+                    });
+                };
             }
             "I" => {
                 finalize_pending(&mut pending, &mut schedule.tiers)?;
@@ -527,8 +544,9 @@ pub fn parse_asc(content: &str) -> Result<AscSchedule, AscParseError> {
                     if bare.len() == 2
                         && let (Ok(teeth), Ok(refang)) =
                             (bare[0].parse::<f64>(), bare[1].parse::<f64>())
+                        && let Ok(teeth_i32) = require_nonzero_gear_teeth(teeth, line_no, bare[0])
                     {
-                        gear_teeth = Some(teeth as i32);
+                        gear_teeth = Some(teeth_i32);
                         schedule.gear_reference_angle = refang;
                     }
                     // Otherwise: an unrecognized header-area line. Ignore leniently --
@@ -582,6 +600,24 @@ fn require_integral_i32(
         });
     }
     Ok(value.round() as i32)
+}
+
+/// Parses and validates a gear-tooth-count token exactly like [`require_integral_i32`],
+/// additionally rejecting an all-zero tooth count: `phi = 2*pi*index/gear_teeth_abs()`
+/// (see [`AscSchedule::gear_teeth_abs`]) divides by this value downstream, so a
+/// zero-tooth gear is nonsensical. Shared by both places a gear tooth count is parsed
+/// -- the `g` line itself, and the bare-gear-line fallback that tolerates one real
+/// corpus file's missing `g` keyword.
+fn require_nonzero_gear_teeth(
+    value: f64,
+    line_no: usize,
+    token: &str,
+) -> Result<i32, AscParseError> {
+    let teeth = require_integral_i32(value, line_no, "gear tooth count", token)?;
+    if teeth == 0 {
+        return Err(AscParseError::GearTeethZero { line: line_no });
+    }
+    Ok(teeth)
 }
 
 /// Same contract as [`require_integral_i32`], narrowed to `u32` instead -- used for
@@ -897,6 +933,70 @@ mod tests {
         assert_eq!(schedule.gear_teeth, 96);
     }
 
+    /// Zero gear teeth must be rejected here, not silently become gear 1
+    /// downstream (`cuts.rs`'s `.max(1)`).
+    #[test]
+    fn rejects_a_zero_gear_tooth_count_on_the_g_line() {
+        let content = "GemCad 5.0\n\
+                        g 0 0.0\n\
+                        y 1 n\n\
+                        I 1.72\n\
+                        a -90.00 1.0 0\n";
+        let err = parse_asc(content).unwrap_err();
+        assert!(
+            matches!(err, AscParseError::GearTeethZero { line: 2 }),
+            "{err:?}"
+        );
+    }
+
+    /// Zero gear teeth must also be rejected through the bare-gear-line fallback,
+    /// using the same `require_nonzero_gear_teeth` path as the keyworded `g` line.
+    #[test]
+    fn rejects_a_zero_gear_tooth_count_on_a_bare_gear_line() {
+        let content = "GemCad 5.0\n\
+                        0 0.0\n\
+                        y 1 n\n\
+                        I 1.72\n\
+                        a -90.00 1.0 0\n";
+        // The bare line fails to register as a gear line at all (leniently ignored),
+        // so parsing fails later for a plain missing 'g' header, not GearTeethZero --
+        // either way, gear 0 must never be accepted.
+        let err = parse_asc(content).unwrap_err();
+        assert!(matches!(err, AscParseError::MissingGearLine), "{err:?}");
+    }
+
+    #[test]
+    fn mirror_flag_accepts_y_and_n_case_insensitively() {
+        for (flag, expected) in [("y", true), ("Y", true), ("n", false), ("N", false)] {
+            let content = format!(
+                "GemCad 5.0\n\
+                 g 96 0.0\n\
+                 y 1 {flag}\n\
+                 I 1.72\n\
+                 a -90.00 1.0 0\n"
+            );
+            let schedule = parse_asc(&content).expect("y/n must parse regardless of case");
+            assert_eq!(schedule.mirror, expected, "flag {flag:?}");
+        }
+    }
+
+    #[test]
+    fn mirror_flag_rejects_anything_other_than_y_or_n() {
+        let content = "GemCad 5.0\n\
+                        g 96 0.0\n\
+                        y 1 yes\n\
+                        I 1.72\n\
+                        a -90.00 1.0 0\n";
+        let err = parse_asc(content).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AscParseError::MirrorFlagInvalid { line: 3, ref token } if token == "yes"
+            ),
+            "{err:?}"
+        );
+    }
+
     #[test]
     fn parses_fractional_index_positions() {
         let content = "GemCad 4.41\n\
@@ -930,9 +1030,9 @@ mod tests {
     }
 
     /// Real corpus tier line (girdle tier literally named "G"): `parse_tier`'s token
-    /// loop used to check for the "G" notes marker before honoring a pending
-    /// `expect_name` from the preceding "n" marker, so the name token "G" was misread
-    /// as the start of the notes tail and every index after it was swallowed into
+    /// loop must honor a pending `expect_name` from the preceding "n" marker before
+    /// checking for the "G" notes marker, or the name token "G" is misread
+    /// as the start of the notes tail and every index after it is swallowed into
     /// `notes` instead. 2,296 of 5,759 corpus files hit this because "G" is a very
     /// common girdle-tier name.
     const ASC_GIRDLE_NAMED_G: &str = "GemCad 5.0\n\

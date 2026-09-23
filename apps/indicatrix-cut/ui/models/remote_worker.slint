@@ -30,8 +30,15 @@ export global RemoteWorkerModel {
     // Suggested render address after a successful claim: the enrollment host on the
     // worker's default serve port (the dialog fills an empty Address field with it).
     in property <string> claimed_address: "";
+    // The folder `pick_cert_dir` below picked, once its (off-UI-thread) dialog
+    // completes. `pick_cert_dir` is a void callback rather than a
+    // blocking-shaped, value-returning one, so `RemoteWorkerDialog`'s own
+    // `changed picked_cert_dir` handler copies a non-empty value into
+    // `form_cert_dir`, the same "one-shot property, not a running value" pattern
+    // `claimed_cert_dir` above already uses.
+    in property <string> picked_cert_dir: "";
 
-    callback pick_cert_dir(string) -> string;
+    callback pick_cert_dir(string);
     callback denoise_toggled(bool);
     callback render_samples_changed(int);
     callback test_worker_connection(int, string, string);

@@ -50,12 +50,14 @@ pub struct SceneSnapshot {
     /// `active_planes` never changes mid-export.
     pub facet_finishes: Vec<FacetFinish>,
     /// A loaded HDR environment map, captured from `RenderContext::env_map` exactly
-    /// like the live viewport reads it. `None` reproduces the pre-existing "export
-    /// always uses the analytic studio rig" behaviour. `run_export`'s `environment`
+    /// like the live viewport reads it. `None` means the export uses the analytic
+    /// studio rig. `run_export`'s `environment`
     /// binding reads this via the same `as_deref().map_or_else(studio,
-    /// EnvironmentSource::HdrMap)` `render_thread::mod` uses, so an export inherits the
-    /// same GPU-decline behaviour the live viewport has for an HDR map (`GpuBackend::
-    /// try_accumulate` has no `env_mode` for `HdrMap`).
+    /// EnvironmentSource::HdrMap)` `render_thread::mod` uses, so an export renders an
+    /// HDR map exactly like the live viewport does: the GPU megakernel has its own
+    /// `env_mode` for `HdrMap` and renders it directly, falling back to
+    /// the CPU tracer only on the same generic per-frame decline every other scene
+    /// gets, not an HDR-specific one.
     ///
     /// `Arc`, not a bare `EnvironmentMap`: a decoded panorama can be tens of
     /// megabytes, and this snapshot is cloned once per fanned-out preset render.
@@ -69,7 +71,7 @@ impl SceneSnapshot {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let materials = GemMaterial::all_materials();
-        // CAD audit item 61: a high-resolution export must honour the same RI/custom
+        // A high-resolution export must honour the same RI/custom
         // material override the live viewport, tilt sweep and hover preview already
         // resolve through -- otherwise the export silently reverts to the by-name
         // lookup for the one surface that matters most (the delivered image).
@@ -83,8 +85,8 @@ impl SceneSnapshot {
         // at, so an export has to carry it or the file silently differs from the
         // viewport. Applied here (not inside `resolve_material`, which `render_thread`
         // shares) via the same `MaterialOverrides`/`apply_material_overrides` path, so
-        // an export with nothing dialled in stays bit-identical to before these
-        // controls existed. A fresh `StoneWidthCache` since this runs once per export,
+        // an export with nothing dialled in stays bit-identical to a plain by-name
+        // resolve. A fresh `StoneWidthCache` since this runs once per export,
         // not once per frame like the live loop's persistent cache.
         let material = apply_material_overrides(
             material,
@@ -119,8 +121,7 @@ impl SceneSnapshot {
             // `SceneSnapshot::active_planes` is a plain `Vec` (a one-shot export
             // capture, not `RenderContext`'s hot-path per-frame snapshot), so this is
             // the one actual deep copy `capture` makes -- `.to_vec()` off the `Arc<Vec<..>>`
-            // (via its `Deref<Target = [GpuFacetPlane]>`), same cost as the old bare
-            // `Vec::clone()` this replaces.
+            // (via its `Deref<Target = [GpuFacetPlane]>`).
             active_planes: guard.active_planes.to_vec(),
             facet_finishes,
             // `Arc::clone`, not a deep copy of the decoded panorama.
@@ -134,7 +135,7 @@ mod tests {
     use super::*;
     use glam::Vec3;
 
-    /// CAD audit item 61: a high-resolution export must resolve the design's real
+    /// A high-resolution export must resolve the design's real
     /// effective material (RI override / unlisted custom material) exactly as the
     /// live viewport, tilt sweep and hover preview do, rather than falling back to
     /// a plain by-name lookup that cannot represent an override. Guards

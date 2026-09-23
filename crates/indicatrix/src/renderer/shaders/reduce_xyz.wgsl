@@ -6,21 +6,20 @@
 // # Why this exists
 //
 // `transport_main` (in `spectral_transport.wgsl`) writes one XYZ triple per (pixel,
-// sample) thread into `out_xyz`. `GpuFrameRenderer::dispatch_chunk`'s production path
-// used to copy `tuples * 3` floats off the GPU per chunk and sum each pixel's `spp`
-// samples on the CPU -- at 1080p x 8 spp that is ~200 MB of readback per progressive
-// pass. `reduce_xyz_main` does that same sum ON the GPU instead, one thread per PIXEL,
-// so only `pixels_this_chunk * 3` floats -- the final per-pixel sums -- ever cross the
-// PCIe bus.
+// sample) thread into `out_xyz`. Copying `tuples * 3` floats off the GPU per chunk and
+// summing each pixel's `spp` samples on the CPU would cost, at 1080p x 8 spp, ~200 MB
+// of readback per progressive pass. `reduce_xyz_main` does that same sum ON the GPU
+// instead, one thread per PIXEL, so only `pixels_this_chunk * 3` floats -- the final
+// per-pixel sums -- ever cross the PCIe bus.
 //
 // # Determinism
 //
 // Each thread sums its pixel's `num_samples` consecutive `out_xyz` tuples in fixed
-// ASCENDING sample-index order -- the exact order `GpuFrameRenderer::drain_pending_chunk`
-// used to sum them in on the CPU (`for s in 0..spp`). Float addition is not associative,
+// ASCENDING sample-index order -- the same order `GpuFrameRenderer::drain_pending_chunk`
+// sums them in on the CPU (`for s in 0..spp`). Float addition is not associative,
 // so a reduction order is only guaranteed bit-identical to another if the order itself is
 // identical; here it is, so `run_chunk_equivalence`'s chunked-vs-whole-frame bit-identity
-// and `estimator_check`'s dispatch-determinism checks both continue to hold unchanged.
+// and `estimator_check`'s dispatch-determinism checks both continue to hold.
 
 struct GpuReduceParams {
     num_pixels: u32,

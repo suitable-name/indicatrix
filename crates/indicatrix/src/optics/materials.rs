@@ -868,23 +868,23 @@ impl GemMaterial {
                 c_axis: Vec3::Y,
                 // n_beta - n_alpha at the D line. Source: C.S. Hurlbut, American
                 // Mineralogist 54, 702 (1969), reporting per-specimen tanzanite
-                // indices n_alpha=1.6915, n_beta=1.6935, n_gamma=1.7020 (not the
-                // independent-range midpoints this comment previously used --
-                // averaging n_alpha/n_beta/n_gamma ranges separately, as the earlier
-                // derivation did, discards the correlation between them within a
-                // single specimen and is not equivalent to a real 3-index
-                // measurement). Fractional position of beta between alpha and gamma:
+                // indices n_alpha=1.6915, n_beta=1.6935, n_gamma=1.7020. Uses these
+                // per-specimen indices rather than independent-range midpoints for
+                // n_alpha/n_beta/n_gamma: averaging each index's range separately
+                // would discard the correlation between them within a single
+                // specimen, and would not be equivalent to a real 3-index
+                // measurement. Fractional position of beta between alpha and gamma:
                 // (1.6935-1.6915)/(1.7020-1.6915) = 0.19. Applied to this entry's own
                 // birefringence_delta (0.0130): delta_beta_alpha = 0.19 * 0.0130 =
                 // 0.00247, rounded to 0.0025.
                 //
                 // SIGN CHECK: `optical_character` above is `BiaxialPositive`, which
                 // requires (n_beta - n_alpha) < (n_gamma - n_beta) -- beta sits closer
-                // to alpha than to gamma. 0.0025 < (0.0130 - 0.0025) = 0.0105 holds.
-                // The previous 0.0070 value put beta closer to GAMMA (0.0070 >
-                // 0.0060), which is optically NEGATIVE and contradicted the declared
-                // sign; see `biaxial_sign_matches_optical_character` below, which
-                // pins this relationship for every biaxial built-in.
+                // to alpha than to gamma. 0.0025 < (0.0130 - 0.0025) = 0.0105 holds. A
+                // value that instead put beta closer to GAMMA would be optically
+                // NEGATIVE, contradicting the declared sign; see
+                // `biaxial_sign_matches_optical_character` below, which pins this
+                // relationship for every biaxial built-in.
                 biaxial_delta_beta_alpha: Some(0.0025),
                 scattering_sigma_s: 0.0,
                 scattering_g: 0.0,
@@ -993,7 +993,7 @@ impl GemMaterial {
     /// Sellmeier is used as-is per this file's primary-source-wins rule; and the two
     /// optical glasses, whose Schott catalogue Abbe numbers are already true F-C).
     ///
-    /// # Deliberately NOT added: Sphene, Rutile
+    /// # Deliberately left out of this list: Sphene
     ///
     /// Sphene (titanite) needs `birefringence_delta` up to ~0.135, well beyond every
     /// existing Delta-n-range assumption this file's biaxial/uniaxial machinery has
@@ -1002,9 +1002,8 @@ impl GemMaterial {
     /// unverified extrapolation, not a measurement. Left out.
     ///
     /// Rutile needs the full anisotropic (uniaxial, extremely high birefringence
-    /// +0.287) Fresnel treatment at a magnitude this crate's Fresnel code had not
-    /// previously been exercised at, compounded by rutile's very strong dispersion.
-    /// (Since added -- see [`Self::built_in_material_rutile`].)
+    /// +0.287) Fresnel treatment, compounded by rutile's very strong dispersion, so
+    /// it gets its own dedicated entry -- see [`Self::built_in_material_rutile`].
     fn built_in_materials_aquamarine_through_citrine() -> Vec<Self> {
         vec![
             // Aquamarine (Beryl, Be3Al2(SiO3)6:Fe2+) -- same host mineral as Emerald
@@ -1512,7 +1511,7 @@ impl GemMaterial {
         ]
     }
 
-    /// M4 (2026-09 review), fourth and final quarter: Andalusite (the third biaxial
+    /// Fourth and final quarter: Andalusite (the third biaxial
     /// addition), Opal, and the two Schott optical glasses.
     fn built_in_materials_andalusite_through_glass() -> Vec<Self> {
         vec![
@@ -1572,8 +1571,8 @@ impl GemMaterial {
             // opal's structural play-of-colour, which this Gaussian-band absorption
             // model has no mechanism to represent at all: that effect is diffraction
             // off an ordered silica-sphere lattice, not a wavelength-selective
-            // absorption coefficient, and is explicitly OUT OF SCOPE for this entry
-            // per this task's brief. `crystal_system: Cubic` is a placeholder here,
+            // absorption coefficient, and is explicitly OUT OF SCOPE for this entry.
+            // `crystal_system: Cubic` is a placeholder here,
             // not a mineralogical claim -- opal is a mineraloid with no true crystal
             // structure at all, and `CrystalSystem` has no "amorphous" variant; Cubic
             // is chosen only because it is this enum's existing isotropic-only
@@ -1583,7 +1582,7 @@ impl GemMaterial {
             // Dispersion: `n_d=1.45` is the standard reference value for common
             // opal's essentially glass-like silica; "Disp" chosen as a small but
             // non-zero Delta n(F-C) = 0.001 (not a cited figure -- deliberately a
-            // small hand-picked value per this task's brief, "~0.0, use a tiny
+            // small hand-picked value, "~0.0, use a tiny
             // positive value," since opal's classical dispersion is minor and
             // visually dominated by the unmodelled structural play-of-colour anyway).
             // A=1.45-0.000523/0.5893^2=1.448493, B=0.000523.
@@ -1625,7 +1624,7 @@ impl GemMaterial {
             // (catalogue nd = 1.5168, matching to <0.0001 -- the small residual is the
             // catalogue's helium d-line 587.56nm vs this crate's sodium-D convention
             // 589.3nm), Delta n(F-C) = 0.00808 (catalogue-derived 0.0081), Abbe
-            // V_d = 63.98 (catalogue Vd = 64.17) -- all within this task's own 0.002/
+            // V_d = 63.98 (catalogue Vd = 64.17) -- all within the 0.002
             // tight tolerance.
             Self {
                 name: "Glass (N-BK7)".to_string(),
@@ -1779,10 +1778,10 @@ impl GemMaterial {
     /// requested F-C delta exactly (up to floating-point rounding) rather than only
     /// approximately. Computed here from the wavelengths directly (not a hand-rounded
     /// literal) so the reciprocal-square arithmetic is exact regardless of how many
-    /// digits get typed into a comment; evaluates to a factor of ~0.5235 -- previously
-    /// this used a flat `0.347` multiplier with no derivation given, which measurably
-    /// under-delivered the requested F-C delta (only ~66% of it) while over-delivering
-    /// a B-G-interpreted delta (~113% of it) -- i.e. it matched neither convention.
+    /// digits get typed into a comment; evaluates to a factor of ~0.5235. A flat
+    /// `0.347` multiplier, by contrast, has no derivation behind it and measurably
+    /// under-delivers the requested F-C delta (only ~66% of it) while over-delivering
+    /// a B-G-interpreted delta (~113% of it) -- i.e. it matches neither convention.
     ///
     /// See this module's own test
     /// `new_custom_dispersion_delta_measures_exactly_at_f_and_c` for the regression
@@ -1827,15 +1826,14 @@ impl GemMaterial {
             birefringence_delta,
             // `new_custom`'s public signature keeps accepting a plain
             // `[R, G, B]` triple (callers, including existing tests, pass one) --
-            // internally converted to the new band-set representation via
-            // `legacy_rgb_bands` (same three-lobe shape the whole codebase used before;
-            // see that function's doc comment).
+            // internally converted to the band-set representation via
+            // `legacy_rgb_bands` (see that function's doc comment for the three-lobe
+            // shape it produces).
             absorption: AbsorptionTensor::isotropic(legacy_rgb_bands(absorption_rgb)),
             // No caller currently supplies a c-axis for a custom material, so
-            // default to Vec3::Y -- the same value `trace_spectral_ray` previously had
-            // hard-coded for every material, so this keeps `new_custom` behaviour
-            // unchanged rather than adding a new parameter every call site would need
-            // to be updated for.
+            // default to Vec3::Y, keeping `new_custom` behaviour unchanged rather
+            // than adding a new parameter every call site would need to be updated
+            // for.
             c_axis: Vec3::Y,
             // No caller currently supplies biaxial principal-index data
             // for a custom material -- `new_custom` remains a uniaxial/isotropic
@@ -1921,11 +1919,12 @@ impl GemMaterial {
     /// has a real entry" from "this name silently fell through to the default," which a
     /// catch-all's return value alone cannot do (a species genuinely tuned to the same
     /// numbers as the default would look identical to one that was simply forgotten).
-    /// A `_ =>` catch-all previously matched the literal `"Moissanite"`, but the
-    /// built-in material's actual name is `"Synthetic Moissanite"` (see
-    /// `Self::all_materials`), so the intended `(0.0, 0.0)` arm never fired and every
-    /// Moissanite render silently used the generic default instead -- hence the
-    /// explicit-arm-plus-test structure to catch this class of bug going forward.
+    /// A `_ =>` catch-all is also fragile to name drift: matching the literal
+    /// `"Moissanite"` instead of the built-in material's actual name,
+    /// `"Synthetic Moissanite"` (see `Self::all_materials`), would let the intended
+    /// `(0.0, 0.0)` arm silently never fire, so every Moissanite render would use the
+    /// generic default instead -- hence the explicit-arm-plus-test structure to catch
+    /// this class of bug.
     fn recommended_scattering_arm(name: &str) -> Option<(f32, f32)> {
         match name {
             // Typically visibly included (the proverbial "jardin", French for garden --
@@ -1966,9 +1965,10 @@ impl GemMaterial {
             | "Andalusite" => Some((0.02, 0.2)),
             // Lab-grown, essentially inclusion-free by construction. "Synthetic
             // Moissanite" -- see this function's own doc comment -- is
-            // [`Self::all_materials`]'s actual built-in name; the bare "Moissanite"
-            // this arm used to match never appears there. Lab-grown YAG/GGG and Schott
-            // catalogue glass share this same "essentially inclusion-free" tier.
+            // [`Self::all_materials`]'s actual built-in name; matching the bare
+            // "Moissanite" instead would silently miss it, since that name never
+            // appears there. Lab-grown YAG/GGG and Schott catalogue glass share this
+            // same "essentially inclusion-free" tier.
             "Synthetic Moissanite"
             | "Cubic Zirconia"
             | "YAG"
@@ -2382,7 +2382,7 @@ mod tests {
     }
 
     /// Only the six orthorhombic (biaxial) built-ins -- Alexandrite, Topaz,
-    /// Tanzanite, and (M4, 2026-09 review) Chrysoberyl (Yellow), Peridot, Andalusite
+    /// Tanzanite, and Chrysoberyl (Yellow), Peridot, Andalusite
     /// -- should carry biaxial principal-index data; every other material (isotropic
     /// or uniaxial) must resolve to `None`, keeping them on the existing uniaxial code
     /// path unchanged.
@@ -2448,14 +2448,13 @@ mod tests {
         }
     }
 
-    /// `gpu_supported` no longer depends on `biaxial_delta_beta_alpha` at all (nor on
-    /// anything else) -- it is `true` unconditionally now that the biaxial eigenvector
-    /// conditioning fix let Alexandrite/Topaz/Tanzanite pass the same GPU-equivalence
-    /// bar every other material already had to. Kept as a dedicated test (rather than
-    /// folded into the one above) specifically because the OLD behavior here was
-    /// itself a documented, load-bearing contract point -- pinning that it is GONE,
-    /// not merely untested, is the useful signal a future regression (e.g.
-    /// reintroducing a biaxial-only gate) should trip.
+    /// `gpu_supported` does not depend on `biaxial_delta_beta_alpha` at all (nor on
+    /// anything else) -- it is `true` unconditionally: the biaxial eigenvector
+    /// conditioning lets Alexandrite/Topaz/Tanzanite pass the same GPU-equivalence
+    /// bar every other material already has to. Kept as a dedicated test (rather than
+    /// folded into the one above) because this predicate is itself a documented,
+    /// load-bearing contract point -- pinning it here is the useful signal a future
+    /// regression (e.g. reintroducing a biaxial-only gate) should trip.
     #[test]
     fn gpu_supported_no_longer_depends_on_biaxial_delta_beta_alpha() {
         let mut zircon = GemMaterial::by_name("Zircon").expect("Zircon must be a built-in");
@@ -2706,7 +2705,7 @@ mod tests {
         }
     }
 
-    /// M3: every built-in material's dispersion curve (Sellmeier or Cauchy) must
+    /// Every built-in material's dispersion curve (Sellmeier or Cauchy) must
     /// evaluate to a finite, physically-sane (`n >= 1.0`) index at BOTH ends of this
     /// renderer's actual sampled visible band (380nm violet, 780nm red) -- not just
     /// near the sodium D line every other dispersion test in this file checks. Most
@@ -2748,11 +2747,11 @@ mod tests {
         }
     }
 
-    /// M4: every new (2026-09 review) built-in must resolve by its own exact name
+    /// Every new built-in must resolve by its own exact name
     /// (the same `by_name` round-trip `by_name_round_trips_every_builtin_material`
     /// already covers exhaustively -- this test's real job is the tolerance check
-    /// below) and its `n(589.3nm)` must match this task's own target table to within
-    /// 0.002, the tolerance this task's own brief specified.
+    /// below) and its `n(589.3nm)` must match the target table below to within
+    /// 0.002.
     #[test]
     fn m4_new_species_match_their_target_n_d_within_tolerance() {
         // (name, target n_D, tolerance)
@@ -2799,8 +2798,8 @@ mod tests {
         );
     }
 
-    /// M4: every new built-in must have an explicit birefringence sign/magnitude
-    /// matching this task's own target table (a cheap, high-signal regression against
+    /// Every new built-in must have an explicit birefringence sign/magnitude
+    /// matching the target table below (a cheap, high-signal regression against
     /// a mistyped `birefringence_delta` literal).
     #[test]
     fn m4_new_species_match_their_target_birefringence() {

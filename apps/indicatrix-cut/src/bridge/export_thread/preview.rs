@@ -24,15 +24,52 @@ const PREVIEW_MAX_LONG_EDGE: u32 = 360;
 /// waste.
 const PREVIEW_MIN_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Rate-limits preview regeneration across `run_export`'s batch loop. One instance lives
-/// for the whole export, not per batch.
-pub(super) struct PreviewThrottle {
-    last: Option<Instant>,
+/// A source of "now" for [`PreviewThrottle`], abstracted purely so a test can drive the
+/// throttle with a fake, pre-scheduled sequence of instants instead of racing
+/// `PREVIEW_MIN_INTERVAL` against however busy the machine happens to be at test time.
+/// Production always uses [`SystemClock`], the only constructor `run_export` calls.
+pub(super) trait Clock {
+    /// The current instant.
+    fn now(&mut self) -> Instant;
 }
 
-impl PreviewThrottle {
+/// The real wall clock: [`Instant::now`], what [`PreviewThrottle`] reads in production.
+pub(super) struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&mut self) -> Instant {
+        Instant::now()
+    }
+}
+
+/// Rate-limits preview regeneration across `run_export`'s batch loop. One instance lives
+/// for the whole export, not per batch.
+///
+/// Generic over its clock (default [`SystemClock`]) so
+/// [`preview_throttle_emits_first_then_withholds_until_the_interval_elapses`] can drive it
+/// with a fake, deterministic clock rather than sleeping past `PREVIEW_MIN_INTERVAL` --
+/// the production call site in `worker.rs` is unaffected: `PreviewThrottle::new()` still
+/// reads the real wall clock.
+pub(super) struct PreviewThrottle<C: Clock = SystemClock> {
+    last: Option<Instant>,
+    clock: C,
+}
+
+impl PreviewThrottle<SystemClock> {
     pub(super) const fn new() -> Self {
-        Self { last: None }
+        Self {
+            last: None,
+            clock: SystemClock,
+        }
+    }
+}
+
+impl<C: Clock> PreviewThrottle<C> {
+    /// Builds a throttle reading `clock` instead of the real wall clock -- test-only, so
+    /// `PREVIEW_MIN_INTERVAL` can be crossed deterministically rather than by sleeping.
+    #[cfg(test)]
+    const fn with_clock(clock: C) -> Self {
+        Self { last: None, clock }
     }
 
     /// Returns a freshly regenerated thumbnail if at least `PREVIEW_MIN_INTERVAL` has
@@ -50,7 +87,7 @@ impl PreviewThrottle {
         remote_accum: Option<&[Vec3]>,
         samples_done: u32,
     ) -> Option<SharedPixelBuffer<Rgba8Pixel>> {
-        let now = Instant::now();
+        let now = self.clock.now();
         if self
             .last
             .is_some_and(|last| now.duration_since(last) < PREVIEW_MIN_INTERVAL)
@@ -247,13 +284,44 @@ mod tests {
         );
     }
 
-    /// `PreviewThrottle` must emit on the first call and then withhold a call made
-    /// immediately afterwards, until `PREVIEW_MIN_INTERVAL` has elapsed.
+    /// A fake [`Clock`]: returns instants from a fixed, pre-scheduled sequence, one per
+    /// call, so [`PreviewThrottle::maybe_generate`]'s interval check can be exercised
+    /// deterministically with no real waiting and no dependence on how busy the machine
+    /// happens to be -- unlike reading [`Instant::now`] directly, which made this test
+    /// flaky under compile load.
+    struct FakeClock {
+        times: std::vec::IntoIter<Instant>,
+    }
+
+    impl FakeClock {
+        fn new(times: Vec<Instant>) -> Self {
+            Self {
+                times: times.into_iter(),
+            }
+        }
+    }
+
+    impl Clock for FakeClock {
+        fn now(&mut self) -> Instant {
+            self.times
+                .next()
+                .expect("FakeClock ran out of scheduled instants")
+        }
+    }
+
+    /// `PreviewThrottle` must emit on the first call, withhold a call made before
+    /// `PREVIEW_MIN_INTERVAL` has elapsed, and emit again once it has -- driven entirely
+    /// by a [`FakeClock`], so this has no wall-clock dependency at all.
     #[test]
     fn preview_throttle_emits_first_then_withholds_until_the_interval_elapses() {
         let accum = vec![Vec3::ONE; 4 * 4];
         let gpu_accum = vec![Vec3::ZERO; accum.len()];
-        let mut throttle = PreviewThrottle::new();
+        let base = Instant::now();
+        let mut throttle = PreviewThrottle::with_clock(FakeClock::new(vec![
+            base,
+            base + PREVIEW_MIN_INTERVAL / 2,
+            base + PREVIEW_MIN_INTERVAL + Duration::from_millis(1),
+        ]));
 
         assert!(
             throttle
@@ -265,7 +333,13 @@ mod tests {
             throttle
                 .maybe_generate(4, 4, &accum, &gpu_accum, None, 1)
                 .is_none(),
-            "a call immediately after the first must be rate-limited"
+            "a call made before the interval elapses must be rate-limited"
+        );
+        assert!(
+            throttle
+                .maybe_generate(4, 4, &accum, &gpu_accum, None, 1)
+                .is_some(),
+            "a call made after the interval elapses must emit again"
         );
     }
 }

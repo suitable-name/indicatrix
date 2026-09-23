@@ -2,6 +2,8 @@
 //! through. See the parent module's doc comment for the four checks and why each
 //! is a warning, never a silent correction.
 
+use crate::design::TierId;
+
 /// One manufacturability problem found in an (already-solved, for the two
 /// mesh-based variants) [`crate::design::Design`].
 ///
@@ -18,6 +20,10 @@ pub enum ManufacturabilityWarning {
     /// a tier with no listed indices).
     VanishingFacet {
         tier_index: usize,
+        /// The stable id of the tier at `tier_index` when this warning was built
+        /// (the tier table badges rows directly instead of parsing 'tier N' out
+        /// of the message). See [`Self::tier_id`].
+        tier_id: TierId,
         tier_name: String,
         vanished: usize,
         total: usize,
@@ -33,6 +39,8 @@ pub enum ManufacturabilityWarning {
     /// which reports both as a fraction of `width_axis` instead).
     UndersizedFacet {
         tier_index: usize,
+        /// See [`Self::VanishingFacet`]'s own `tier_id` doc comment.
+        tier_id: TierId,
         tier_name: String,
         facet_plane_index: usize,
         area: f64,
@@ -51,6 +59,8 @@ pub enum ManufacturabilityWarning {
     /// Never silently rounded -- this is reported, not corrected.
     FractionalIndex {
         tier_index: usize,
+        /// See [`Self::VanishingFacet`]'s own `tier_id` doc comment.
+        tier_id: TierId,
         tier_name: String,
         requested: f64,
         achievable: f64,
@@ -65,9 +75,28 @@ pub enum ManufacturabilityWarning {
     /// when this tier would be cut.
     OutOfOrderMeet {
         tier_index: usize,
+        /// See [`Self::VanishingFacet`]'s own `tier_id` doc comment.
+        tier_id: TierId,
         tier_name: String,
         target_tier_index: usize,
         target_tier_name: String,
+    },
+    /// This tier's [`indicatrix::geometry::meet_solver::MeetConstraint::MeetNamed`]
+    /// names at least one target that
+    /// [`crate::design::meet_name_is_asc_safe`] rejects -- a name that would not
+    /// re-parse back to itself from a plain `.asc` `"Meet <names>"` export (see that
+    /// function's own doc comment for exactly which names fail and why). A pure
+    /// `.asc` re-export/re-import, or a native load that fell back to
+    /// `TierOverlay::SkippedFingerprintMismatch`, loses or mis-targets this meet
+    /// reference even though the design solves and exports without any other
+    /// complaint today. `unsafe_names` is the exact subset of this tier's authored
+    /// names that fail the check, in authored order.
+    MeetNameNotAscSafe {
+        tier_index: usize,
+        /// See [`Self::VanishingFacet`]'s own `tier_id` doc comment.
+        tier_id: TierId,
+        tier_name: String,
+        unsafe_names: Vec<String>,
     },
 }
 
@@ -84,7 +113,24 @@ impl ManufacturabilityWarning {
             Self::VanishingFacet { tier_index, .. }
             | Self::UndersizedFacet { tier_index, .. }
             | Self::FractionalIndex { tier_index, .. }
-            | Self::OutOfOrderMeet { tier_index, .. } => *tier_index,
+            | Self::OutOfOrderMeet { tier_index, .. }
+            | Self::MeetNameNotAscSafe { tier_index, .. } => *tier_index,
+        }
+    }
+
+    /// The stable [`TierId`] of the tier this warning is about, as of the solve
+    /// this warning was built from -- lets the tier table badge a row directly
+    /// by id (stable across add/remove/move/undo) instead of matching
+    /// [`Self::tier_index`] against a position that may have shifted since, or
+    /// parsing "tier N" back out of [`Self`]'s own `Display` text.
+    #[must_use]
+    pub const fn tier_id(&self) -> TierId {
+        match self {
+            Self::VanishingFacet { tier_id, .. }
+            | Self::UndersizedFacet { tier_id, .. }
+            | Self::FractionalIndex { tier_id, .. }
+            | Self::OutOfOrderMeet { tier_id, .. }
+            | Self::MeetNameNotAscSafe { tier_id, .. } => *tier_id,
         }
     }
 
@@ -101,7 +147,8 @@ impl ManufacturabilityWarning {
             } => Some(*facet_plane_index),
             Self::VanishingFacet { .. }
             | Self::FractionalIndex { .. }
-            | Self::OutOfOrderMeet { .. } => None,
+            | Self::OutOfOrderMeet { .. }
+            | Self::MeetNameNotAscSafe { .. } => None,
         }
     }
 }
@@ -120,6 +167,7 @@ impl std::fmt::Display for ManufacturabilityWarning {
                 tier_name,
                 vanished,
                 total,
+                ..
             } => write!(
                 f,
                 "tier {} ({tier_name}): {vanished}/{total} facet(s) cut away entirely \
@@ -162,6 +210,7 @@ impl std::fmt::Display for ManufacturabilityWarning {
                 requested,
                 achievable,
                 azimuth_error_deg,
+                ..
             } => write!(
                 f,
                 "tier {} ({tier_name}): index {requested} does not land on a gear \
@@ -174,12 +223,26 @@ impl std::fmt::Display for ManufacturabilityWarning {
                 tier_name,
                 target_tier_index,
                 target_tier_name,
+                ..
             } => write!(
                 f,
                 "tier {} ({tier_name}): meets tier {} \
                  ({target_tier_name}), which is not cut until later in the schedule",
                 tier_index + 1,
                 target_tier_index + 1
+            ),
+            Self::MeetNameNotAscSafe {
+                tier_index,
+                tier_name,
+                unsafe_names,
+                ..
+            } => write!(
+                f,
+                "tier {} ({tier_name}): meet target name(s) {} would not survive a plain \
+                 .asc export/re-import -- rename without spaces, commas or semicolons, and \
+                 without leading/trailing punctuation",
+                tier_index + 1,
+                unsafe_names.join(", ")
             ),
         }
     }

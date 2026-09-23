@@ -74,13 +74,19 @@ export global SettingsModel {
     // HDR environment map: carries the typed path field's text; `pick_hdr_file` below
     // only fills the field, this is a separate step.
     callback load_env_map(string);
-    // Native file-open picker for `env_map_path` above.
-    callback pick_hdr_file(string) -> string;
+    // Native file-open picker for `env_map_path` above. Void, not value-returning:
+    // the dialog runs off the UI thread (`gui::pickers`), so Rust pushes the chosen
+    // path into `env_map_path` itself once the picker completes, rather than this
+    // callback returning it synchronously (see `gui::render::camera_lighting::
+    // setup_environment_map_callbacks`'s own doc comment). A no-op on cancel:
+    // `env_map_path` is simply left unchanged.
+    callback pick_hdr_file(string);
     callback clear_env_map();
 
     callback close();
-    callback reset_defaults();
-    callback open_performance_graph();
+    // `reset_defaults`/`open_performance_graph` are not declared here:
+    // `settings_dialog.slint`'s own same-named local function/callback do the
+    // real work directly against this global's other callbacks instead.
     callback target_samples_changed(int);
     // Carries the resolved (width, height) directly; a fixed pill list rather than a
     // slider since Slint never reports an `Image`'s actual on-screen size back to Rust.

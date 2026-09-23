@@ -21,6 +21,11 @@ const ALL_SPACES: [ColorSpace; 4] = [
 
 /// Simple max-min saturation metric on an `[u8; 4]` encoded pixel: 0 for a neutral
 /// colour, approaching 1 for a fully saturated one.
+///
+/// Only meaningful for comparing two pixels encoded in the **same** [`ColorSpace`]:
+/// equal RGB ratios correspond to different chromaticities in different primaries, so
+/// this metric cannot be used to compare saturation *across* spaces (see
+/// [`uv_chroma_distance_from_white`], which can).
 fn u8_saturation(rgb: [u8; 4]) -> f32 {
     let r = f32::from(rgb[0]) / 255.0;
     let g = f32::from(rgb[1]) / 255.0;
@@ -28,6 +33,100 @@ fn u8_saturation(rgb: [u8; 4]) -> f32 {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     if max <= 0.0 { 0.0 } else { (max - min) / max }
+}
+
+/// Inverts a 3x3 matrix, row-major in and out.
+///
+/// Used to turn a space's `XYZ->RGB` matrix ([`ColorSpace::xyz_to_rgb_matrix`]) back
+/// into an `RGB->XYZ` one, so a decoded 8-bit pixel can be checked colorimetrically
+/// against the stimulus that produced it.
+fn invert_3x3(m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    // `p * q - r * s`, via `mul_add` -- shared by the determinant and every adjugate
+    // entry below.
+    fn diff_of_products(p: f32, q: f32, r: f32, s: f32) -> f32 {
+        p.mul_add(q, -(r * s))
+    }
+
+    let row0 = m[0];
+    let row1 = m[1];
+    let row2 = m[2];
+
+    let cof00 = diff_of_products(row1[1], row2[2], row1[2], row2[1]);
+    let cof01 = diff_of_products(row1[0], row2[2], row1[2], row2[0]);
+    let cof02 = diff_of_products(row1[0], row2[1], row1[1], row2[0]);
+    let det = row0[0].mul_add(cof00, (-row0[1]).mul_add(cof01, row0[2] * cof02));
+    let inv_det = 1.0 / det;
+
+    [
+        [
+            cof00 * inv_det,
+            diff_of_products(row0[2], row2[1], row0[1], row2[2]) * inv_det,
+            diff_of_products(row0[1], row1[2], row0[2], row1[1]) * inv_det,
+        ],
+        [
+            -cof01 * inv_det,
+            diff_of_products(row0[0], row2[2], row0[2], row2[0]) * inv_det,
+            diff_of_products(row0[2], row1[0], row0[0], row1[2]) * inv_det,
+        ],
+        [
+            cof02 * inv_det,
+            diff_of_products(row0[1], row2[0], row0[0], row2[1]) * inv_det,
+            diff_of_products(row0[0], row1[1], row0[1], row1[0]) * inv_det,
+        ],
+    ]
+}
+
+/// Applies a row-major 3x3 matrix to a vector.
+fn matvec(m: [[f32; 3]; 3], v: Vec3) -> Vec3 {
+    Vec3::new(
+        m[0][2].mul_add(v.z, m[0][0].mul_add(v.x, m[0][1] * v.y)),
+        m[1][2].mul_add(v.z, m[1][0].mul_add(v.x, m[1][1] * v.y)),
+        m[2][2].mul_add(v.z, m[2][0].mul_add(v.x, m[2][1] * v.y)),
+    )
+}
+
+/// CIE 1976 `u'v'` chromaticity from CIE XYZ (`u' = 4X / (X+15Y+3Z)`, `v' = 9Y /
+/// (X+15Y+3Z)`), perceptually near-uniform and, critically, defined identically
+/// regardless of which RGB primaries the XYZ came from -- unlike `(max-min)/max` on
+/// encoded RGB, which is only comparable within a single space's own primaries.
+fn uv_prime(xyz: Vec3) -> (f32, f32) {
+    let denom = 3.0f32.mul_add(xyz.z, 15.0f32.mul_add(xyz.y, xyz.x));
+    if denom <= 1e-9 {
+        return (0.0, 0.0);
+    }
+    (4.0 * xyz.x / denom, 9.0 * xyz.y / denom)
+}
+
+/// Decodes an encoded 8-bit RGB pixel (as produced by [`ColorSpace::encode`]) back to
+/// CIE XYZ for `space`: undoes the transfer curve, then `space`'s `RGB->XYZ` matrix
+/// (the inverse of [`ColorSpace::xyz_to_rgb_matrix`]).
+fn decode_to_xyz(rgb: [u8; 4], space: ColorSpace) -> Vec3 {
+    let tf = space.transfer_function();
+    let linear = Vec3::new(
+        tf.decode(f32::from(rgb[0]) / 255.0),
+        tf.decode(f32::from(rgb[1]) / 255.0),
+        tf.decode(f32::from(rgb[2]) / 255.0),
+    );
+    matvec(invert_3x3(space.xyz_to_rgb_matrix()), linear)
+}
+
+/// CIE 1976 `u'v'` chromaticity distance of an encoded 8-bit pixel from `space`'s own
+/// white point -- a cross-gamut-comparable chroma metric.
+///
+/// Unlike `(max-min)/max` on the raw 8-bit values (which mixes each space's own,
+/// differently-sized primaries into the numerator and denominator), this decodes back
+/// to CIE XYZ first, so the same physical distance is measured the same way regardless
+/// of which space encoded the pixel. 0 for a pixel exactly at the space's white point,
+/// growing with excitation purity.
+fn uv_chroma_distance_from_white(rgb: [u8; 4], space: ColorSpace) -> f32 {
+    let xyz = decode_to_xyz(rgb, space);
+    let (u, v) = uv_prime(xyz);
+
+    let (wx, wy) = space.white_point_xy();
+    let white_xyz = Vec3::new(wx / wy, 1.0, (1.0 - wx - wy) / wy);
+    let (wu, wv) = uv_prime(white_xyz);
+
+    (u - wu).hypot(v - wv)
 }
 
 // ---------------------------------------------------------------------------------
@@ -114,6 +213,19 @@ fn neutral_white_point_projects_to_equal_linear_rgb_components() {
 //    visibly more saturation in Rec.2020 (and Display P3).
 // ---------------------------------------------------------------------------------
 
+/// A naive metric to compare across spaces would be `(max-min)/max` on each
+/// space's own encoded 8-bit values -- but equal RGB ratios mean different
+/// chromaticities in different primaries, so that comparison is not colorimetrically
+/// valid across spaces (it happens to be fine *within* one space, which is how
+/// [`u8_saturation`] is used elsewhere in this file). Measured for this exact
+/// 520nm stimulus: sRGB encodes to `[49, 248, 167]` (`u8_saturation` = 0.8024) and
+/// Display P3 to `[58, 251, 158]` (`u8_saturation` = 0.7689) -- P3 reads as *less*
+/// saturated by that metric even though P3's gamut strictly contains sRGB's for this
+/// hue, which is physically backwards. Decoding both back to CIE XYZ and comparing CIE
+/// 1976 `u'v'` chromaticity distance from each space's own white point (a metric
+/// that's valid across primaries) gives the physically expected ordering instead:
+/// sRGB ~0.0762, Display P3 ~0.1004, Rec.2020 ~0.1612 -- monotonically increasing with
+/// gamut width, as excitation purity retention should.
 #[test]
 fn monochromatic_520nm_clamps_harder_in_srgb_than_in_wider_gamuts() {
     let [x, y, z] = cie_1931_cmf(520.0);
@@ -129,33 +241,40 @@ fn monochromatic_520nm_clamps_harder_in_srgb_than_in_wider_gamuts() {
     let p3_rgb = ColorSpace::DisplayP3.encode(xyz, ToneMap::None);
     let rec2020_rgb = ColorSpace::Rec2020.encode(xyz, ToneMap::None);
 
-    let srgb_sat = u8_saturation(srgb_rgb);
-    let p3_sat = u8_saturation(p3_rgb);
-    let rec2020_sat = u8_saturation(rec2020_rgb);
+    let srgb_chroma = uv_chroma_distance_from_white(srgb_rgb, ColorSpace::Srgb);
+    let p3_chroma = uv_chroma_distance_from_white(p3_rgb, ColorSpace::DisplayP3);
+    let rec2020_chroma = uv_chroma_distance_from_white(rec2020_rgb, ColorSpace::Rec2020);
 
     // The core physical claim: sRGB's narrow triangle clamps this stimulus much harder
-    // than either wider gamut. Display P3 and Rec.2020 land close enough to each other
-    // for this particular fit-derived chromaticity that a strict P3-vs-Rec2020
-    // ordering isn't asserted (both clearly beat sRGB, which is the point).
+    // than either wider gamut, so after gamut mapping sRGB's output should retain LESS
+    // chroma (be closer, in u'v', to its own white point) than either wider gamut's
+    // output is to its own white point. Display P3 and Rec.2020 land close enough to
+    // each other for this particular fit-derived chromaticity that a strict
+    // P3-vs-Rec2020 ordering isn't asserted (both clearly beat sRGB, which is the
+    // point).
     assert!(
-        srgb_sat < p3_sat,
-        "sRGB should be less saturated than Display P3 for a 520nm stimulus: srgb={srgb_sat:.4} p3={p3_sat:.4} (rgb {srgb_rgb:?} vs {p3_rgb:?})"
+        srgb_chroma < p3_chroma,
+        "sRGB should retain less u'v' chroma than Display P3 for a 520nm stimulus: srgb={srgb_chroma:.4} p3={p3_chroma:.4} (rgb {srgb_rgb:?} vs {p3_rgb:?})"
     );
     assert!(
-        srgb_sat < rec2020_sat,
-        "sRGB should be less saturated than Rec.2020 for a 520nm stimulus: srgb={srgb_sat:.4} rec2020={rec2020_sat:.4} (rgb {srgb_rgb:?} vs {rec2020_rgb:?})"
+        srgb_chroma < rec2020_chroma,
+        "sRGB should retain less u'v' chroma than Rec.2020 for a 520nm stimulus: srgb={srgb_chroma:.4} rec2020={rec2020_chroma:.4} (rgb {srgb_rgb:?} vs {rec2020_rgb:?})"
     );
 
     // And in linear (pre-transfer-curve) terms, the actual gamut-mapping compression
-    // step should need to pull less far toward white as the gamut widens: Rec.2020
-    // should end up brighter/more saturated in its dominant (green) channel than sRGB
-    // does, in absolute linear terms, for the same input.
+    // step should need to walk less far toward white as the gamut widens. The walk
+    // stops as soon as every channel is non-negative, so the channel that was driving
+    // the stimulus out of gamut in the first place (red, here -- `project_to_gamut`
+    // returns RGB as `Vec3 { x: R, y: G, z: B }`) should still land closer to zero
+    // (less diluted by the white point's own much larger red component) in the wider
+    // gamut, which needs a smaller step to become non-negative.
     let srgb_linear = project_to_gamut(xyz, ColorSpace::Srgb);
     let rec2020_linear = project_to_gamut(xyz, ColorSpace::Rec2020);
     assert!(
         rec2020_linear.x < srgb_linear.x,
-        "Rec.2020's wider gamut should require pulling the red channel down less \
-         severely toward zero than sRGB does: srgb={srgb_linear:?} rec2020={rec2020_linear:?}"
+        "Rec.2020's wider gamut should require pulling the red channel up out of \
+         negative territory less severely (via less white-point mixing) than sRGB \
+         does: srgb={srgb_linear:?} rec2020={rec2020_linear:?}"
     );
 }
 
@@ -383,8 +502,8 @@ fn zero_radiance_encodes_to_opaque_black() {
 }
 
 // ---------------------------------------------------------------------------------
-// 6. `project_to_srgb` / `project_to_gamut` sanity: in-gamut passthrough, and the old
-//    stub behaviour (return inputs unchanged) is gone.
+// 6. `project_to_srgb` / `project_to_gamut` sanity: in-gamut colours pass through
+//    unchanged, and out-of-gamut colours are actually gamut-mapped, not passed through.
 // ---------------------------------------------------------------------------------
 
 #[test]
@@ -408,8 +527,8 @@ fn project_to_srgb_actually_compresses_out_of_gamut_colours() {
     let xyz = Vec3::new(x, y, z);
     let mapped = indicatrix::color::gamut::project_to_srgb(xyz);
 
-    // The old stub returned its xyY inputs unchanged; the real implementation must
-    // actually gamut-map, so the result must differ from a naive passthrough and must
+    // `project_to_srgb` must actually gamut-map out-of-gamut input rather than pass it
+    // through unchanged, so the result must differ from a naive passthrough and must
     // have every channel non-negative.
     assert!(
         mapped.x >= 0.0 && mapped.y >= 0.0 && mapped.z >= 0.0,
@@ -432,21 +551,25 @@ fn project_to_srgb_actually_compresses_out_of_gamut_colours() {
 //    the others hold still.
 // ---------------------------------------------------------------------------------
 
-/// A saturated, over-bright stimulus (well beyond what tone mapping alone brings back
-/// under 1.0) exercises exactly the bug this fix targets: the OLD scheme (gamut-project
-/// at the original luminance, scale by the luminance-only ACES ratio, then hard-clamp
-/// each channel to `[0, 1]` independently) reintroduces the per-channel clipping the
-/// luminance-only ACES design was chosen to avoid. The new scheme routes the
-/// tone-mapped colour through [`indicatrix::color::gamut::project_to_gamut_bounded`]
-/// instead, which desaturates toward white -- measurably LOWER max-min saturation than
-/// the old hard-clamped result, for the identical input.
+/// A saturated, over-bright stimulus exercises the per-channel clipping bug this test
+/// guards against.
+///
+/// The stimulus sits well beyond what tone mapping alone brings back under 1.0.
+/// Gamut-projecting at the original luminance, scaling by the luminance-only ACES
+/// ratio, then hard-clamping each channel to `[0, 1]` independently would reintroduce
+/// the per-channel clipping the luminance-only ACES design is meant to avoid. Instead,
+/// the tone-mapped colour routes through
+/// [`indicatrix::color::gamut::project_to_gamut_bounded`], which desaturates toward
+/// white -- measurably LOWER max-min saturation than a hard-clamped result would give,
+/// for the identical input.
 #[test]
 fn aces_highlight_clipping_desaturates_instead_of_clamping_one_channel() {
     let [x, y, z] = cie_1931_cmf(600.0); // saturated orange-red
     let xyz = Vec3::new(x, y, z) * 6.0; // bright enough to clip after tone mapping
 
-    // Reference: the OLD behaviour, reimplemented here only as a comparison point (the
-    // production code no longer does this -- see `ColorSpace::encode`'s doc comment).
+    // Reference: a naive hard-clamp scheme, reimplemented here only as a comparison
+    // point (production code takes the gamut-bounded path instead -- see
+    // `ColorSpace::encode`'s doc comment).
     let linear_rgb = project_to_gamut(xyz, ColorSpace::Srgb);
     let luminance = xyz.y.max(0.0);
     let y_tm = indicatrix::optics::raytracer::aces_tonemap(luminance);

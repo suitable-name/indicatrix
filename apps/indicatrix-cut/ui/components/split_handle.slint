@@ -33,7 +33,7 @@ export component SplitHandle inherits Rectangle {
     // the bar across it. NEVER bind the long axis to `100%` here: a percent
     // binding on a layout child becomes that child's min AND max, tied to the
     // parent's current size, and the parent row can then never grow again
-    // (the window enlarged but the content stayed put -- 2026-09-09).
+    // (the window enlarged but the content stayed put).
     min-width: root.vertical ? 0px : 6px;
     max-width: root.vertical ? 1000000px : 6px;
     min-height: root.vertical ? 6px : 0px;

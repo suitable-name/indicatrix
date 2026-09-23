@@ -26,12 +26,23 @@ pub struct History {
     /// `can_redo` checks that don't care about this field either).
     last_coalesce: Option<(u64, Instant)>,
     /// This instance's own coalescing window -- [`Self::COALESCE_WINDOW`] unless
-    /// built via [`Self::with_coalesce_window`]. CAD audit item 165: a fixed,
-    /// crate-wide 500ms suited one caller (a keyboard/wheel angle nudge) but not
+    /// built via [`Self::with_coalesce_window`]. A fixed,
+    /// crate-wide 500ms suits one caller (a keyboard/wheel angle nudge) but not
     /// every possible coalescing caller equally -- e.g. a slower, more deliberate
-    /// interaction might want a longer window -- so this is now a per-`History`
-    /// value rather than a single `const` every caller was stuck with.
+    /// interaction might want a longer window -- so this is a per-`History`
+    /// value rather than a single shared `const`.
     coalesce_window: Duration,
+    /// A bounded, append-only journal of [`Edit::describe`] strings for every edit
+    /// actually applied via [`Self::apply`]/[`Self::apply_coalescing`], oldest
+    /// first -- unlike `undo`/`redo`, [`Self::undo`]/
+    /// [`Self::redo`] never remove or reorder entries here: this is a trail of
+    /// what was done, not a stack of what could still be replayed, so undoing an
+    /// edit does not erase it from the record. Bounded to [`Self::MAX_LOG_ENTRIES`]
+    /// so an old design's native sidecar `[history]` table cannot grow forever.
+    /// A coalesced run ([`Self::apply_coalescing`]) updates its own single entry in
+    /// place on every merge rather than appending one per nudge, matching how it
+    /// already collapses to a single undo step.
+    log: Vec<String>,
 }
 
 impl History {
@@ -42,6 +53,9 @@ impl History {
     /// a `History` with a different window instead.
     const COALESCE_WINDOW: Duration = Duration::from_millis(500);
 
+    /// The bound on [`Self::log`] -- see that field's own doc comment.
+    const MAX_LOG_ENTRIES: usize = 200;
+
     /// A fresh, empty history (nothing to undo or redo), coalescing with the
     /// default [`Self::COALESCE_WINDOW`] (500ms).
     #[must_use]
@@ -51,11 +65,12 @@ impl History {
             redo: Vec::new(),
             last_coalesce: None,
             coalesce_window: Self::COALESCE_WINDOW,
+            log: Vec::new(),
         }
     }
 
     /// Like [`Self::new`], but [`Self::apply_coalescing`] uses `window` instead of
-    /// the default [`Self::COALESCE_WINDOW`] -- CAD audit item 165: lets a caller
+    /// the default [`Self::COALESCE_WINDOW`] -- lets a caller
     /// with a different natural pace for its own coalesced interaction (or one
     /// that always ends a run explicitly via [`Self::end_coalesce_run`] and so
     /// wants a short or even zero window as a pure safety net) pick its own value
@@ -68,6 +83,7 @@ impl History {
             redo: Vec::new(),
             last_coalesce: None,
             coalesce_window: window,
+            log: Vec::new(),
         }
     }
 
@@ -84,10 +100,12 @@ impl History {
     ///
     /// Propagates [`Design::apply_edit`]'s error verbatim.
     pub fn apply(&mut self, design: &mut Design, edit: Edit) -> Result<(), EditError> {
+        let description = edit.describe(design);
         let inverse = design.apply_edit(edit)?;
         self.undo.push(inverse);
         self.redo.clear();
         self.last_coalesce = None;
+        self.push_log_entry(description);
         Ok(())
     }
 
@@ -124,6 +142,7 @@ impl History {
         key: u64,
         now: Instant,
     ) -> Result<(), EditError> {
+        let description = edit.describe(design);
         let inverse = design.apply_edit(edit)?;
         let merges = self.last_coalesce.is_some_and(|(last_key, last_time)| {
             last_key == key && now.saturating_duration_since(last_time) <= self.coalesce_window
@@ -133,12 +152,38 @@ impl History {
             // all the way back to before it started -- discard this call's own
             // inverse rather than pushing it, so one undo still reverts the whole run.
             let _ = inverse;
+            // Likewise, update the run's own single log entry in place rather than
+            // appending a new one per nudge -- see `Self::log`'s own doc comment.
+            if let Some(last) = self.log.last_mut() {
+                *last = description;
+            } else {
+                self.push_log_entry(description);
+            }
         } else {
             self.undo.push(inverse);
+            self.push_log_entry(description);
         }
         self.redo.clear();
         self.last_coalesce = Some((key, now));
         Ok(())
+    }
+
+    /// Appends `description` to [`Self::log`], dropping the oldest entry once
+    /// [`Self::MAX_LOG_ENTRIES`] would otherwise be exceeded.
+    fn push_log_entry(&mut self, description: String) {
+        self.log.push(description);
+        if self.log.len() > Self::MAX_LOG_ENTRIES {
+            self.log.remove(0);
+        }
+    }
+
+    /// The bounded trail of human-readable edit descriptions recorded by
+    /// [`Self::apply`]/[`Self::apply_coalescing`], oldest first -- see [`Self::log`]'s
+    /// own doc comment. Feeds a native sidecar's `[history]` table (via
+    /// `indicatrix_cut_core::native::SaveExtras::history_entries`).
+    #[must_use]
+    pub fn description_log(&self) -> &[String] {
+        &self.log
     }
 
     /// Undoes the most recent [`History::apply`], moving its inverse onto
@@ -153,7 +198,7 @@ impl History {
     /// the recorded index math itself has a bug. The failed edit is pushed
     /// back onto the undo stack (not dropped) so no history is lost and the
     /// caller can surface the error without corrupting the stack -- a caller
-    /// that used to rely on this never failing should report the error
+    /// relying on this never failing should report the error
     /// (e.g. a toast) rather than unwrap/expect it.
     pub fn undo(&mut self, design: &mut Design) -> Result<bool, EditError> {
         let Some(edit) = self.undo.pop() else {
@@ -232,23 +277,35 @@ impl History {
     }
 
     /// Explicitly ends any [`Self::apply_coalescing`] run in progress, without
-    /// making a new edit -- CAD audit item 165: lets a caller with a real
+    /// making a new edit -- lets a caller with a real
     /// interaction boundary of its own (pointer release or focus loss on the
     /// control driving the coalesced edits) name that boundary directly instead
     /// of only ever discovering a run ended once [`Self::COALESCE_WINDOW`]
     /// (or a custom [`Self::with_coalesce_window`] value) had silently elapsed.
     /// A no-op, not an error, when no run is in progress.
     ///
-    /// # Handoff
+    /// # Call sites
     ///
-    /// Nothing calls this yet: the one caller today
-    /// (`gui::editor::callbacks::tier_actions::setup_nudge_angle_callback`, via
-    /// `gui::editor::state::EditorState`'s own wrapper around
-    /// [`Self::apply_coalescing`]) is outside this crate and outside this group's
-    /// file ownership. Wiring it up means calling this once a `TierAngleCell`'s
-    /// pointer-release or focus-loss fires -- both files that would touch
-    /// (`callbacks/tier_actions.rs`, the `TierAngleCell` component) belong to a
-    /// different lane.
+    /// `gui::editor::callbacks::tier_actions` (via `gui::editor::state::
+    /// EditorState`'s own wrapper) calls this from two real, reachable
+    /// interaction boundaries: `setup_inline_set_angle_callback`'s
+    /// committed-but-unchanged branch (the cutter opened the angle cell, looked,
+    /// and closed it without changing anything), and
+    /// `apply_selected_tier_change` (the tier list's selection actually changed
+    /// -- a different row or a viewport click elsewhere -- so a nudge run on the
+    /// tier just navigated away from must not sit open for a later, unrelated
+    /// nudge on that same tier to merge into).
+    ///
+    /// The one boundary this does NOT cover -- ending a run on the nudge
+    /// control's OWN pointer-release/focus-loss, the way a slider drag would --
+    /// needs a real pointer/focus event from `TierAngleCell`
+    /// (`editor_tier_table.slint`), which has no such event to forward today;
+    /// adding one is a `.slint` change outside every wave this doc comment has
+    /// been written under. A genuine slow, evenly-paced scroll-wheel session
+    /// (each tick further apart than the coalescing window) will keep producing
+    /// one undo step per tick until that lands -- the STATUS this fix responds
+    /// to calls this the part "not achievable exactly as specified" and asks for
+    /// the boundary above instead.
     pub const fn end_coalesce_run(&mut self) {
         self.last_coalesce = None;
     }

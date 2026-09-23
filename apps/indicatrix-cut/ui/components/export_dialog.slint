@@ -1,6 +1,7 @@
 import { SpinBox, Slider, LineEdit } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { ExportModel } from "../models/export.slint";
+import { SettingsModel } from "../models/settings.slint";
 
 // High-resolution render export, independent of the viewport. Follows the
 // same modal-card conventions as `MaterialEditorDialog` (full-viewport backdrop +
@@ -30,14 +31,14 @@ export component ExportDialog inherits Rectangle {
     // `selected_bounce_index` -- see that file's "Ray Bounces" section for the
     // `bounce_cost.rs` measurements the ladder itself is backed by.
     //
-    // `ExportModel.live_bounce_index` is the live viewport's CURRENT pill index
-    // (`SettingsModel.bounce_index`), already resolved via `gui::mod::bounces_index`'s
-    // nearest-rung matching -- reused here rather than re-deriving a second mapping.
-    // `selected_bounce_index` is a plain (non `in-out`) property bound to it, so it
-    // re-derives every time `live_bounce_index` changes (i.e. every time this dialog
-    // opens showing the CURRENT live value) UNTIL the user clicks a pill, exactly like
-    // `compute_target` above.
-    property <int> selected_bounce_index: ExportModel.live_bounce_index;
+    // Bound directly to `SettingsModel.bounce_index` -- the live
+    // viewport's CURRENT pill index -- rather than mirroring it into a separate
+    // `ExportModel` property, which would risk drifting out of sync if nothing kept
+    // it updated. `selected_bounce_index` is a plain (non `in-out`) property
+    // bound to it, so it re-derives every time `SettingsModel.bounce_index` changes
+    // (i.e. every time this dialog opens showing the CURRENT live value) UNTIL the user
+    // clicks a pill, exactly like `compute_target` above.
+    property <int> selected_bounce_index: SettingsModel.bounce_index;
 
     property <int> effective_width: ExportModel.selected_size_preset == 2 ? ExportModel.custom_width : (ExportModel.selected_size_preset == 1 ? 3840 : 1920);
     property <int> effective_height: ExportModel.selected_size_preset == 2 ? ExportModel.custom_height : (ExportModel.selected_size_preset == 1 ? 2160 : 1080);
@@ -72,7 +73,7 @@ export component ExportDialog inherits Rectangle {
         clicked => { if (!ExportModel.is_exporting) { root.close(); } }
     }
 
-    // CAD audit item 199: this dialog had no Escape/Enter/focus handling at all --
+    // This dialog had no Escape/Enter/focus handling at all --
     // the last of the five editor dialogs to get it. Mounted with `if ExportModel.
     // is_open: ExportDialog { ... }` (`gem_viewport.slint`), i.e. freshly
     // instantiated every time it opens (unlike `RetargetDialog`, which stays
@@ -164,7 +165,7 @@ export component ExportDialog inherits Rectangle {
 
             Rectangle { height: 1px; background: #1e293b; }
 
-            // 1b. Output Location (Tasks 3/4): the export directory (chosen once via a
+            // 1b. Output Location: the export directory (chosen once via a
             // native folder picker -- see `export_directory`'s own doc comment -- and
             // just displayed/changeable here) and the filename template every file in
             // this export (the current-view render, and every fanned-out preset render
@@ -258,8 +259,8 @@ export component ExportDialog inherits Rectangle {
                     color: Theme.text-muted;
                     wrap: word-wrap;
                 }
-                // Also item: which placeholder exists ONLY with preset fan-out on --
-                // `{preset}` is the design's own current-view render's `preset`
+                // `{preset}` is the only placeholder that exists ONLY with preset
+                // fan-out on -- it's the design's own current-view render's `preset`
                 // (empty for that render; the fanned-out preset's own name for each
                 // additional file -- see `bridge::export_thread`'s module doc
                 // comment). Every other placeholder resolves for every export.
@@ -271,7 +272,7 @@ export component ExportDialog inherits Rectangle {
                     wrap: word-wrap;
                 }
 
-                // Also item: a live "resolves to" preview, rendered against a fixed
+                // A live "resolves to" preview, rendered against a fixed
                 // example (see `preview_filename_template`'s own doc comment for why
                 // not the live selected design). Recomputed on every keystroke via
                 // `<=>`-bound `export_filename_template` above changing.
@@ -528,8 +529,9 @@ export component ExportDialog inherits Rectangle {
             // viewport's. Same segmented-pill idiom and ladder (4/8/12/24/64/128) as
             // `settings_dialog.slint`'s "Ray Bounces" section -- see that file's own
             // doc comment for the `bounce_cost.rs` measurements behind these six rungs.
-            // Defaults to `live_bounce_index` (see that property's own doc comment) so
-            // opening this dialog shows the value an export would have used anyway.
+            // Defaults to `SettingsModel.bounce_index` (see `selected_bounce_index`'s
+            // own doc comment) so opening this dialog shows the value an export would
+            // have used anyway.
             VerticalLayout {
                 spacing: 6px;
                 Text { text: "Max Ray Bounces"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
@@ -678,7 +680,7 @@ export component ExportDialog inherits Rectangle {
                 }
             }
 
-            // 3b. Preset fan-out (Task 2) -- only shown when at least one preset is
+            // 3b. Preset fan-out -- only shown when at least one preset is
             // export-usable; an empty list here means nobody has checked "usable for
             // export" on any preset yet (`settings_dialog.slint`'s own checkbox), so
             // there is nothing to fan out and showing an empty section would just be
@@ -721,7 +723,7 @@ export component ExportDialog inherits Rectangle {
                             border-radius: 3px;
                             background: preset.selected ? Theme.accent-cyan : transparent;
                             border-width: 1px;
-                            border-color: preset.selected ? Theme.accent-cyan : #475569;
+                            border-color: preset.selected ? Theme.accent-cyan : Theme.border-control;
                             y: (parent.height - self.height) / 2;
 
                             if preset.selected: Image {
@@ -806,7 +808,7 @@ export component ExportDialog inherits Rectangle {
 
                 // Preset-fan-out status: only shown once there's more than one job in
                 // this export's queue (`preset_total > 1`) -- a plain single-render
-                // export shows just "Rendering...", unchanged from before Task 2.
+                // export shows just "Rendering...".
                 if ExportModel.preset_total > 1: Text {
                     text: "Rendering " + (ExportModel.preset_index + 1) + " of " + ExportModel.preset_total
                         + (ExportModel.current_preset_label == "" ? "" : ": " + ExportModel.current_preset_label);

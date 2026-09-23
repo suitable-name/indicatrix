@@ -5,8 +5,8 @@ import { SettingsModel } from "../models/settings.slint";
 import { ViewportModel } from "../models/viewport.slint";
 import { RemoteWorkerModel } from "../models/remote_worker.slint";
 import { TiltModel } from "../models/tilt.slint";
-// CAD audit item 146: `gui::editor::view::refresh_design_settings` (owned by
-// another lane) pushes the design's own `girdle_diameter_mm` into
+// `gui::editor::view::refresh_design_settings` pushes the design's own
+// `girdle_diameter_mm` into
 // `ctx.stone_width_mm`/`SettingsModel.stone_width_mm` under the same
 // Edit-tab/`viewport_material_linked` gate the material sync uses -- this
 // file only reads that same global to say so next to the slider, rather than
@@ -33,7 +33,7 @@ export component SettingsDialog inherits Rectangle {
     property <bool> confirming_reset: false;
     property <int> renaming_index: -1;
     property <string> rename_text: "";
-    // CAD audit item 146: while linked, `SettingsModel.stone_width_mm` is
+    // While linked, `SettingsModel.stone_width_mm` is
     // overwritten by the design's own girdle diameter on every Edit-tab
     // refresh (a solve, an edit, a design load) -- dragging the Stone Size
     // slider would only be clobbered on the next one, so the slider says so
@@ -46,11 +46,15 @@ export component SettingsDialog inherits Rectangle {
     callback close();
     close => { SettingsModel.is_open = false; SettingsModel.close(); }
 
+    // Goes through `TiltModel.toggle_dialog()` -- the SAME shared
+    // open/close + stale-cached-curve check `gem_viewport.slint`'s/`solid_viewport.slint`'s
+    // own Tilt Curve buttons use (see that function's own doc comment). Do not
+    // set `TiltModel.dialog_open = true` directly: that skips the stale-curve
+    // check.
     callback open_performance_graph();
     open_performance_graph => {
         SettingsModel.is_open = false;
-        TiltModel.dialog_open = true;
-        SettingsModel.open_performance_graph();
+        TiltModel.toggle_dialog();
     }
 
     function reset_defaults() {
@@ -90,7 +94,8 @@ export component SettingsDialog inherits Rectangle {
         SettingsModel.girdle_frosted_changed(false);
         SettingsModel.edge_rounding_changed(0.0);
         SettingsModel.stone_width_changed(0.0);
-        SettingsModel.reset_defaults();
+        // Every actual reset effect above goes through its own `*_changed`
+        // callback, which is wired up in Rust.
     }
     width: 380px;
     // Content-driven height, capped: unset, this `Rectangle` would expand to fill
@@ -807,7 +812,7 @@ export component SettingsDialog inherits Rectangle {
                     text: "Crystal Axis Orientation";
                     font-size: 11px;
                     font-weight: 600;
-                    color: SettingsModel.c_axis_override_available ? Theme.text-muted : #475569;
+                    color: SettingsModel.c_axis_override_available ? Theme.text-muted : Theme.text-disabled;
                 }
                 Rectangle {
                     width: 36px;
@@ -1014,7 +1019,7 @@ export component SettingsDialog inherits Rectangle {
                     border-color: #334155;
 
                     browse_hdr_touch := TouchArea {
-                        clicked => { SettingsModel.env_map_path = SettingsModel.pick_hdr_file(SettingsModel.env_map_path); }
+                        clicked => { SettingsModel.pick_hdr_file(SettingsModel.env_map_path); }
                     }
 
                     Text { text: "Browse..."; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
@@ -1093,7 +1098,7 @@ export component SettingsDialog inherits Rectangle {
             spacing: 4px;
             Rectangle {
                 height: backdrop_lbl.preferred-height;
-                Tooltip { text: @markdown("What the camera sees behind the stone. **As lit**: the environment's own ground. **Grey**: the neutral canvas GemRay paints, for like-for-like comparisons. **White**: a light box. The stone's optics never see the card, so leakage stays dark."); }
+                Tooltip { text: @markdown("What the camera sees behind the stone. **As lit**: the environment's own ground. **Grey**: a neutral grey backdrop card (about sRGB 160), for like-for-like comparisons. **White**: a light box. The stone's optics never see the card, so leakage stays dark."); }
                 backdrop_lbl := Text { text: "Backdrop"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
             }
             HorizontalLayout {

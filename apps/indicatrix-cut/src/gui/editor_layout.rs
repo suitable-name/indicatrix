@@ -5,12 +5,7 @@
 //! concern in its own file -- the same reasoning `window_sizing` and `startup_settings`
 //! themselves already document.
 //!
-//! Not behind the `editor` feature: `EditorModel` itself is a plain Slint global,
-//! always compiled in regardless of whether `indicatrix-cut-core` is linked (see
-//! `gui::mod::build_main_window`'s own `EditorModel.enabled` comment). Gating this
-//! module would mean a non-`editor` build silently drops the dock-width/
-//! inspector-height/collapsed-state settings on every save, corrupting them for a
-//! later `editor`-enabled run against the same settings file.
+//! `EditorModel` itself is a plain Slint global, always compiled in.
 
 use crate::{
     EditorModel, MainWindow,
@@ -22,8 +17,7 @@ use std::sync::Arc;
 /// Raised floor for the inspector's height while the user has never touched the Edit
 /// sub-tab's layout -- taller than `AppSettings::DEFAULT_EDITOR_INSPECTOR_HEIGHT`
 /// (260px) so the Tier tab's Save/Add Tier button row lands inside the `ScrollView`'s
-/// initial fold instead of landing roughly 75px below it (`cad_todo.md` #100-108 item
-/// "Default inspector height hides the Save/Add Tier button below the fold"). Applied
+/// initial fold instead of landing roughly 75px below it. Applied
 /// in [`apply_editor_layout_from_settings`] only while `editor_layout_touched` is
 /// `false`; once a user has ever dragged the table|inspector split themselves (or a
 /// smaller screen has narrowed it, see `window_sizing`), their own value is trusted

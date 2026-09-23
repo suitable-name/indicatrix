@@ -34,7 +34,7 @@ rows shows an explanation of whatever button you are currently hovering:
   the same export. See Chapter 11 for what each of the three actually
   writes.
 
-Undo and Redo now say what they are about to do, rather than a bare "Undo"
+Undo and Redo say what they are about to do, rather than a bare "Undo"
 and "Redo" — hover either button, or open the Edit menu, and you will see
 something like "Undo: Set P1 angle to -41.0 degrees" or "Redo: Add tier
 C1'". This works for every kind of edit the app makes, including a Retarget
@@ -141,7 +141,28 @@ earlier or later in cutting order (the same as Alt+Up/Alt+Down — Chapter
 button — all covered in Chapter 4. A row needing an anchor (Chapter 5)
 also shows an **Add Anchor** button that jumps the inspector straight to
 that tier with "Exact scale value" already selected, ready for you to type
-the number and save.
+the number and save. **Add Anchor does not create a new tier or fill in a
+number for you** — it only selects the existing tier the app already
+flagged as the one missing an anchor, and opens the Tier form to it with
+the constraint kind preset; you still type the actual scale value and
+click Save Tier yourself.
+
+The first time (each session) a design you're editing lacks an anchor, a
+one-time card explains why the solver needs one before Add Anchor even
+does anything: relative "this meets that" statements fix a block's shape
+but never its size, so one tier per block has to state a real, authored
+depth. Click **Got it** to dismiss it, or tick **Don't show again** to
+stop it appearing for good — that choice is remembered across sessions.
+
+A tier whose SOLVE strategy is trusted (see below) also shows a **Pin**
+button, the mirror image of Adopt (Chapter 8): click it to freeze that
+tier's *current* solved mast as an exact **Exact scale value** anchor,
+converting a free (meet-derived) tier back into a pinned one. This is
+useful once Solve or Optimize has found a mast you want to lock in place
+so further edits elsewhere cannot move it. Pin is hidden on a tier that is
+already an anchor, and on any tier whose SOLVE strategy is still uncertain
+(amber) — pinning a stale or placeholder mast would freeze the wrong
+number, so the app does not offer it until the value is trustworthy.
 
 Above the column headers is a small filter box: type a few letters of a
 name, index, block, SOLVE strategy, or meet constraint and every
@@ -160,16 +181,23 @@ tab below to add one."
 
 ### Trusting the SOLVE column
 
-The SOLVE column names the method that produced a tier's mast:
+The SOLVE column names the method that produced a tier's mast. The exact
+label is one of:
 
-- **Dependency order** or **Joint group** — a real, geometrically derived
-  value. Trust these.
-- **Least-squares est.** or **FAILED (untrusted)** — shown in bold amber.
-  These are estimates or placeholders, not real solved geometry. Treat a
-  design with any row in this state as not actually finished.
-- **not solved** / **no anchor yet** — also flagged amber; the tier has
-  never had a successful solve, usually because its block is still missing
-  an anchor (see Chapter 5).
+| Label | Meaning | Trust it? |
+|---|---|---|
+| **Scale reference** | An anchor tier (Meets: Exact scale value) — the mast is exactly the number you typed, not derived. | Yes |
+| **Dependency order** | A real meet vertex, settled directly in the solver's first pass. | Yes |
+| **Joint group** | A real meet vertex from a mutually-dependent group the solver had to settle together rather than in strict order. | Yes |
+| **Least-squares est.** (bold amber) | No usable meet-vertex candidate; this is a per-block estimate, not real solved geometry. | No — treat the design as not actually finished |
+| **FAILED (untrusted)** (bold amber) | The solve could not even produce an estimate; the mast shown is a placeholder. | No |
+| **not solved** (bold amber) | This row has changed since the design's last successful Solve. | No — click Solve |
+| **blocked** (bold amber) | This tier's own block is fine, but *another* block in the design has no anchor, so nothing solves yet. | No — fix the other block (Chapter 5) |
+| **no anchor yet** (bold amber) | This tier's own block is the one missing an anchor. | No — Add Anchor (below) or Chapter 5 |
+| **stale (‹label›)** (bold amber) | A cached result is shown without a fresh solve, e.g. "stale (Least-squares est.)" — the parenthesised label is what it was at the last real solve. | No — click Solve |
+
+Hover any SOLVE cell for a one-line explanation specific to that tier when
+the app has one to give.
 
 ### Orbits
 

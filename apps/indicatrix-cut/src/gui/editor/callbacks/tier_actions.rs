@@ -5,19 +5,21 @@
 
 use super::{
     super::{
-        auto_solve, loading,
+        auto_solve, edit_intent, loading,
         material_lookup::nearest_built_in_material,
         native_io::do_open_native,
+        stall_guard::stall_guard,
         state::{
-            ANGLE_NUDGE_COALESCE_WINDOW, EditorState, PendingGearRemap, PendingUnsavedAction,
-            PushedScratch, angle_nudge_coalesce_key, apply_multi_selection,
+            ANGLE_NUDGE_COALESCE_WINDOW, EditorState, MaterialComboCache, PendingGearRemap,
+            PendingUnsavedAction, PushedScratch, angle_nudge_coalesce_key, apply_multi_selection,
             first_unresolved_meet_name, gear_choice_to_teeth, gear_remap_preview,
-            parse_design_material_form, push_multi_selected_count, push_tiers, tier_matches_filter,
+            parse_design_material_form, push_multi_selected_count, push_tiers,
+            representative_crown_and_pavilion_angles_deg, tier_matches_filter,
             tiers_incomplete_under_proposed_symmetry,
         },
         view::{
-            SolidLastSolved, push_selected_tier_chips, refresh_all, refresh_editor_panel_stale,
-            submit_preview_replan,
+            SolidLastSolved, push_selected_tier_chips, refresh_all_now, refresh_editor_panel_stale,
+            submit_preview_replan, sync_viewport_material_link,
         },
     },
     solve_actions::clear_analysis_results,
@@ -36,30 +38,32 @@ use crate::{
     },
 };
 use indicatrix::geometry::meet_solver::MeetConstraint;
-use indicatrix_cut_core::{ConstraintTier, Edit, FreshDesignSpec, History, RemapRounding};
+use indicatrix_cut_core::{
+    ConstraintTier, Design, Edit, FreshDesignSpec, History, RemapRounding, TierTarget,
+};
 use indicatrix_vault::db::sqlite::Database;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell, RefMut},
     collections::BTreeSet,
     rc::Rc,
-    sync::{Arc, Mutex, atomic::AtomicU64},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::Duration,
 };
 
-/// CAD audit item 137: a cylindrical preform's side count, fixed and
-/// independent of the design's own index gear. The preform is a piece of
-/// rough, not a machine setting -- deriving `PreformSpec::cylinder`'s side
-/// count from whichever gear happened to be selected at Apply Preform/New
-/// Design time was the category error: switching gear afterward (say 96 ->
-/// 8) used to leave a stale 96-sided cylinder with nothing left to revisit
-/// it, and a preform applied under an 8-tooth gear stayed visibly octagonal
-/// after switching gear back to 96. 96 is high enough that the rough reads as
-/// a smooth round in the viewport at every zoom level this app renders --
-/// the same figure `indicatrix_cut_core::PreformSpec::cylinder_for_schedule`'s own doc
-/// comment uses, for the unrelated "reconstructed once from an already-
-/// authored schedule" case in `loading::default_preform_for_schedule`, which
-/// this constant deliberately does not touch.
+/// A cylindrical preform's side count, fixed and independent of the design's
+/// index gear. The preform is a piece of rough, not a machine setting. Switching
+/// gear after Apply Preform leaves the original rough's side count behind if it
+/// derived from the old gear; a preform applied under one gear stays shaped by it
+/// if switched. 96 is high enough that the rough reads as smooth in the viewport
+/// at every zoom level -- the same figure
+/// `indicatrix_cut_core::PreformSpec::cylinder_for_schedule`'s own doc uses for
+/// the "reconstructed once from an already-authored schedule" case in
+/// `loading::default_preform_for_schedule`, which this constant deliberately does
+/// not touch.
 const FIXED_CYLINDER_PREFORM_SIDES: usize = 96;
 
 thread_local! {
@@ -72,7 +76,35 @@ thread_local! {
     /// resubmit the merged whole, so hovering a facet never clears the click/multi-
     /// select highlight and vice versa. UI-thread-only, same reasoning as
     /// `auto_solve::RUNTIME`'s own `thread_local!`.
-    static FACET_OVERLAY: RefCell<FacetOverlay> = RefCell::new(FacetOverlay::default());
+    static FACET_OVERLAY: RefCell<FacetOverlay> = const {
+        RefCell::new(FacetOverlay {
+            hovered: None,
+            selected_facet: None,
+            multi_selected: Vec::new(),
+        })
+    };
+
+    /// The last clicked facet's own identifying text -- the SAME "tier name, index
+    /// N of M" string [`SolidPreviewModel::hover_text`] shows transiently on hover.
+    /// Kept around so a click's selection keeps reading on screen after the
+    /// pointer leaves. Reused rather than a new `EditorModel`/`SolidPreviewModel`
+    /// property: no `.slint` file declares one, and this gives a
+    /// persistent per-facet readout with the existing tooltip mechanism alone.
+    /// See [`setup_solid_facet_hover_callback`]'s miss branch and
+    /// [`setup_solid_facet_click_callback`], which writes it. UI-thread-only,
+    /// same reasoning as `FACET_OVERLAY` above.
+    static SELECTED_FACET_LABEL: RefCell<String> = const { RefCell::new(String::new()) };
+
+    /// The design generation (`EditorState::generation`) at the moment
+    /// [`setup_gear_apply_callback`] built the pending remap's preview --
+    /// compared against the LIVE generation in [`setup_gear_remap_confirm_callback`]
+    /// to refuse a stale Confirm. Uses the same guard shape `retarget_actions::
+    /// apply_pending_retarget`/`solve_actions`'s optimize-apply path already use
+    /// (`started_generation` compared via `AtomicU64::load`). Reimplemented here
+    /// rather than adding a field to `PendingGearRemap` or changing
+    /// `EditorState::pending_gear_remap`'s type. Cleared whenever nothing is
+    /// pending, so a stale leftover value can never be compared against by mistake.
+    static PENDING_GEAR_REMAP_GENERATION: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
 /// Mutates the cached [`FacetOverlay`] via `mutate`, then resubmits the merged
@@ -91,13 +123,36 @@ fn resubmit_facet_overlay(
     preview_state.request_facet_overlay(overlay);
 }
 
+/// Builds a [`FacetMap`] from `design` and the last-solved mast cache, but only
+/// when that cache is aligned with `design`'s CURRENT tier count. An unfiltered
+/// `solid_last_solved().unwrap_or_default()` here fed
+/// `FacetMap::from_design` a stale solve (wrong length) whenever a tier had just
+/// been added or removed and the background solve had not caught up yet;
+/// `facet_map.rs`'s own fallback for a missing tier is mast 0, so every
+/// highlight/hover/pick landed on the wrong facet until the next frame. Falls
+/// back to `FacetMap::default()` (no facets) rather than a stale solve, same
+/// reasoning [`retarget_actions::setup_snapshot_callbacks`]'s length filter uses
+/// for its own `solid_last_solved` read.
+fn facet_map_from_aligned_solve(design: &Design) -> FacetMap {
+    let solved = auto_solve::solid_last_solved()
+        .and_then(|cache| {
+            cache
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        })
+        .filter(|solved| solved.len() == design.tiers.len())
+        .unwrap_or_default();
+    FacetMap::from_design(design, &solved)
+}
+
 /// "Solve": the explicit re-solve action -- see this group's `mod.rs` doc comment for
 /// why every other edit callback deliberately does NOT do this. The only callback
 /// here besides `New`/`Load Selected` that calls `refresh_all` (a real `Design::solve`,
 /// potentially multi-second) rather than [`refresh_editor_panel_stale`].
 ///
-/// CAD audit item 216: guards against Deep Solve or Optimize already running, not
-/// only a re-entrant Solve click -- Solve, Deep Solve and Optimize used to each
+/// Guards against Deep Solve or Optimize already running, not only a
+/// re-entrant Solve click. Solve, Deep Solve and Optimize each
 /// guard only their OWN `*_running` flag, so any two of the three could be launched
 /// at once (each roughly doubling the others' runtime). `EditorModel.busy_action`
 /// (`ui/models/editor.slint`) is the single Slint-side derived source of truth for
@@ -118,18 +173,26 @@ pub(in crate::gui::editor) fn setup_solve_callback(
     let solid_last_solved = Arc::clone(solid_last_solved);
     let ui_weak = ui.as_weak();
     ui.global::<EditorModel>().on_solve(move || {
-        let Some(ui) = ui_weak.upgrade() else {
-            return;
-        };
-        let model = ui.global::<EditorModel>();
-        if model.get_solve_running()
-            || model.get_deep_solve_running()
-            || model.get_optimize_running()
-        {
-            return;
-        }
-        let st = state.borrow();
-        refresh_all(&ui, &render_ctx, &preview_state, &solid_last_solved, &st);
+        stall_guard("on_solve", || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let model = ui.global::<EditorModel>();
+            if model.get_solve_running()
+                || model.get_deep_solve_running()
+                || model.get_optimize_running()
+            {
+                return;
+            }
+            refresh_all_now(
+                &ui,
+                &render_ctx,
+                &preview_state,
+                &solid_last_solved,
+                &state,
+                false,
+            );
+        });
     });
 }
 
@@ -168,63 +231,65 @@ pub(in crate::gui::editor) fn setup_new_design_create_callback(
               mirror: bool,
               material_index: i32,
               template_index: i32| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            let gear_teeth = match gear_choice_to_teeth(gear_preset_index, &gear_custom_text) {
-                Ok(t) => t,
-                Err(e) => {
-                    show_toast(&ui, &e, "error");
+            stall_guard("on_new_design_create", || {
+                let Some(ui) = ui_weak.upgrade() else {
                     return;
-                }
-            };
-            let preform = match loading::parse_preform_form(
-                shape_index,
-                &half_width,
-                &length_over_width,
-                &depth,
-                FIXED_CYLINDER_PREFORM_SIDES,
-            ) {
-                Ok(p) => p,
-                Err(e) => {
-                    show_toast(&ui, &e, "error");
-                    return;
-                }
-            };
-            match loading::parse_new_design_form(
-                gear_teeth,
-                preform,
-                &symmetry_order_text,
-                mirror,
-                material_index,
-            ) {
-                Ok(spec) => {
-                    if state.borrow().is_dirty() {
-                        state.borrow_mut().pending_unsaved_action =
-                            Some(PendingUnsavedAction::New {
+                };
+                let gear_teeth = match gear_choice_to_teeth(gear_preset_index, &gear_custom_text) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        show_toast(&ui, &e, "error");
+                        return;
+                    }
+                };
+                let preform = match loading::parse_preform_form(
+                    shape_index,
+                    &half_width,
+                    &length_over_width,
+                    &depth,
+                    FIXED_CYLINDER_PREFORM_SIDES,
+                ) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        show_toast(&ui, &e, "error");
+                        return;
+                    }
+                };
+                match loading::parse_new_design_form(
+                    gear_teeth,
+                    preform,
+                    &symmetry_order_text,
+                    mirror,
+                    material_index,
+                ) {
+                    Ok(spec) => {
+                        if state.borrow().is_dirty() {
+                            state.borrow_mut().pending_unsaved_action =
+                                Some(PendingUnsavedAction::New {
+                                    spec,
+                                    template_index,
+                                });
+                            ui.global::<EditorModel>().set_unsaved_dialog_message(
+                                "Starting a new design will discard the current one's unsaved \
+                                 changes."
+                                    .into(),
+                            );
+                            ui.global::<EditorModel>().set_unsaved_dialog_open(true);
+                        } else {
+                            do_new_design_create(
+                                &ui,
+                                &state,
+                                &render_ctx,
+                                &preview_state,
+                                &solid_last_solved,
                                 spec,
                                 template_index,
-                            });
-                        ui.global::<EditorModel>().set_unsaved_dialog_message(
-                            "Starting a new design will discard the current one's unsaved \
-                             changes."
-                                .into(),
-                        );
-                        ui.global::<EditorModel>().set_unsaved_dialog_open(true);
-                    } else {
-                        do_new_design_create(
-                            &ui,
-                            &state,
-                            &render_ctx,
-                            &preview_state,
-                            &solid_last_solved,
-                            spec,
-                            template_index,
-                        );
+                            );
+                        }
                     }
+                    Err(e) => show_toast(&ui, &e, "error"),
                 }
-                Err(e) => show_toast(&ui, &e, "error"),
-            }
+            });
         },
     );
 }
@@ -240,9 +305,14 @@ fn do_new_design_create(
     preview_state: &Arc<SolidPreviewState>,
     solid_last_solved: &SolidLastSolved,
     spec: FreshDesignSpec,
-    // The "Start from" choice: 0 empty, 1 standard round brilliant (CAD audit
-    // item 207). Anything else is treated as empty rather than panicking -- the
-    // combo is the only producer, but a stale index must not lose a design.
+    // The "Start from" choice: 0 is "Empty"; 1..=N indexes
+    // `indicatrix_cut_core::templates::TEMPLATES` at `template_index - 1`
+    // (index 1 is "Standard Round Brilliant", `TEMPLATES[0]`, matching this
+    // gallery's own display order -- see `gui/editor/templates.rs::
+    // setup_template_gallery`). Any index the table has no entry for (0, a
+    // negative value, or one past the end) is treated as empty rather than
+    // panicking -- the combo/gallery is the only producer, but a stale index
+    // must not lose a design.
     template_index: i32,
 ) {
     let mut st = state.borrow_mut();
@@ -256,15 +326,28 @@ fn do_new_design_create(
     // through `History`: this is the design's starting state, not an edit to it,
     // so it must not be undoable back to an empty schedule the cutter never saw.
     // `saved_generation` already matches, so the new design still reads as clean.
-    if template_index == 1 {
-        st.design.tiers = ConstraintTier::standard_round_brilliant();
+    // `template_index - 1`: index 1 is the gallery's first template
+    // ("Standard Round Brilliant", `TEMPLATES[0]`) -- see this parameter's own
+    // doc comment above. `usize::try_from` refuses a negative index (0 =
+    // "Empty", or a stale/corrupt value) instead of panicking on the cast.
+    if let Ok(table_index) = usize::try_from(template_index - 1)
+        && let Some(spec) = indicatrix_cut_core::templates::TEMPLATES.get(table_index)
+    {
+        st.design.tiers = spec.tiers();
     }
     // A Deep Solve/Optimize verdict computed against the design just replaced no
     // longer describes anything on screen -- see `clear_analysis_results`'s own
     // doc comment.
     clear_analysis_results(ui);
-    refresh_all(ui, render_ctx, preview_state, solid_last_solved, &st);
     drop(st);
+    refresh_all_now(
+        ui,
+        render_ctx,
+        preview_state,
+        solid_last_solved,
+        state,
+        true,
+    );
     // See `apply_loaded_design`'s matching reset -- "New" replaces the
     // whole `EditorState` exactly the same way.
     ui.global::<EditorModel>().set_selected_tier_index(-1);
@@ -308,10 +391,9 @@ struct LoadedDesignOutcome<'a> {
     /// The catalogue row this design was loaded from -- `Some(full.entry_id)` for a
     /// LOCAL load, `None` for a remote one (see `EditorState::source_entry_id`'s own
     /// doc comment for why a remote entry id must never land here). Threaded through
-    /// unconditionally rather than defaulted to `None` here, because another lane's
-    /// concurrent edit grew `EditorState` with this field after this struct was
-    /// written -- see this task's final report for the two `native_io.rs` construction
-    /// sites still needing the equivalent fix (that file is not owned by this lane).
+    /// unconditionally rather than defaulted to `None` here: every
+    /// `LoadedDesignOutcome` construction site, including `native_io.rs`'s own, must
+    /// supply the correct value for this field rather than rely on a default.
     source_entry_id: Option<i64>,
 }
 
@@ -357,7 +439,7 @@ fn apply_loaded_design(
         used_placeholder: loaded.used_placeholder,
         source_entry_id,
         design: loaded.design,
-        // CAD audit item 165 -- see `EditorState::fresh`'s matching comment.
+        // See `EditorState::fresh`'s matching comment.
         history: History::with_coalesce_window(ANGLE_NUDGE_COALESCE_WINDOW),
         printed_proportions,
         generation: Arc::new(AtomicU64::new(0)),
@@ -367,24 +449,37 @@ fn apply_loaded_design(
         deep_solve: None,
         optimize: None,
         pending_optimize: Arc::new(Mutex::new(None)),
+        deep_solve_result_generation: None,
         asc_filename: loaded.asc_filename,
         original_asc_text: loaded.original_asc_text,
         pending_gear_remap: None,
         pending_retarget: None,
         multi_selected: BTreeSet::new(),
         // A freshly replaced `EditorState` has never pushed anything yet -- matches
-        // `EditorState::fresh_from_spec`'s own construction (`state/mod.rs`), added
-        // here because another lane's concurrent edit grew this struct with this
-        // field after this literal was written; see this task's final report for the
-        // two matching `native_io.rs` construction sites still needing the same fix
-        // (that file is not owned by this lane).
+        // `EditorState::fresh_from_spec`'s own construction (`state/mod.rs`); every
+        // other `EditorState` construction site, including `native_io.rs`'s own,
+        // must set this field the same way.
         last_pushed_scratch: RefCell::new(PushedScratch::default()),
+        // Same reasoning as `last_pushed_scratch` immediately above -- a freshly
+        // replaced `EditorState` has no cached material-combo options yet either.
+        material_combo_cache: RefCell::new(MaterialComboCache::default()),
     });
     // A Deep Solve/Optimize verdict computed against the design just replaced no
     // longer describes anything on screen -- see `clear_analysis_results`'s own
     // doc comment.
     clear_analysis_results(ui);
-    refresh_all(ui, render_ctx, preview_state, solid_last_solved, &st);
+    // Captured before dropping the borrow below -- `refresh_all_now` needs to
+    // borrow `state` itself, so `st` cannot still be held across that call.
+    let loaded_asc_filename = st.asc_filename.clone();
+    drop(st);
+    refresh_all_now(
+        ui,
+        render_ctx,
+        preview_state,
+        solid_last_solved,
+        state,
+        true,
+    );
     // The whole `EditorState` above was just replaced -- any previously selected
     // tier index now names (at best) an unrelated row in the NEWLY loaded design, so
     // both halves of the selection reset unconditionally: the property (for the
@@ -398,14 +493,14 @@ fn apply_loaded_design(
     ui.global::<EditorModel>().set_is_dirty(false);
     // The window title names whichever design is open -- `native_io` sets this on
     // every Save/Open Native, and this is the matching Load Selected path.
-    ui.set_loaded_design_name(st.asc_filename.clone().unwrap_or_default().into());
+    ui.set_loaded_design_name(loaded_asc_filename.unwrap_or_default().into());
     if loaded.used_placeholder {
         show_toast(
             ui,
             "Loaded a reconstructed schedule -- mast distances are \
              placeholders (no attached .asc file was found); adjust \
              masts before exporting.",
-            // Item 179: every mast on this design is a fabricated 0.0. A cutter who
+            // Every mast on this design is a fabricated 0.0. A cutter who
             // misses that can export a file that looks like a real cut
             // instruction and is not, so this must not auto-dismiss the way an
             // "info" toast does.
@@ -418,15 +513,18 @@ fn apply_loaded_design(
             "success",
         );
     }
-    drop(st);
     // Suggests the built-in material whose n_D is nearest the schedule RI (within
     // 0.01) -- never applied automatically, only offered as a banner the user can
     // dismiss or accept.
     if let Some((name, ri)) = nearest_built_in_material(schedule_ri, 0.01) {
+        // Unrelated pre-existing build break fixed in passing (not part of this
+        // session's GPU/display-thread work): the suggestion text is built BEFORE
+        // `name` moves into `set_material_suggestion_name` below, not after.
+        let suggestion_text = format!("Set material to {name} (RI {ri:.4})?");
         ui.global::<EditorModel>()
             .set_material_suggestion_name(name.into());
         ui.global::<EditorModel>()
-            .set_material_suggestion_text(format!("Set material to {name} (RI {ri:.4})?").into());
+            .set_material_suggestion_text(suggestion_text.into());
     } else {
         ui.global::<EditorModel>()
             .set_material_suggestion_name("".into());
@@ -480,32 +578,35 @@ pub(in crate::gui::editor) fn setup_load_selected_callback(
     let source = Arc::clone(source);
     let ui_weak = ui.as_weak();
     ui.global::<EditorModel>().on_load_selected(move || {
-        let Some(ui) = ui_weak.upgrade() else {
-            return;
-        };
-        let entry_id = ui.global::<LibraryModel>().get_selected_entry_id();
-        if entry_id < 0 {
-            show_toast(&ui, "No diagram selected to load.", "error");
-            return;
-        }
+        stall_guard("on_load_selected", || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let entry_id = ui.global::<LibraryModel>().get_selected_entry_id();
+            if entry_id < 0 {
+                show_toast(&ui, "No diagram selected to load.", "error");
+                return;
+            }
 
-        if state.borrow().is_dirty() {
-            state.borrow_mut().pending_unsaved_action = Some(PendingUnsavedAction::LoadSelected);
-            ui.global::<EditorModel>().set_unsaved_dialog_message(
-                "Loading another design will discard the current one's unsaved changes.".into(),
+            if state.borrow().is_dirty() {
+                state.borrow_mut().pending_unsaved_action =
+                    Some(PendingUnsavedAction::LoadSelected);
+                ui.global::<EditorModel>().set_unsaved_dialog_message(
+                    "Loading another design will discard the current one's unsaved changes.".into(),
+                );
+                ui.global::<EditorModel>().set_unsaved_dialog_open(true);
+                return;
+            }
+            do_load_selected(
+                &ui,
+                &state,
+                &render_ctx,
+                &preview_state,
+                &solid_last_solved,
+                &db,
+                &source,
             );
-            ui.global::<EditorModel>().set_unsaved_dialog_open(true);
-            return;
-        }
-        do_load_selected(
-            &ui,
-            &state,
-            &render_ctx,
-            &preview_state,
-            &solid_last_solved,
-            &db,
-            &source,
-        );
+        });
     });
 }
 
@@ -789,7 +890,7 @@ pub(in crate::gui::editor) fn setup_material_suggestion_accept_callback(
             );
             match st.apply(Edit::SetMaterial { material }) {
                 Ok(()) => {
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st);
+                    refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::new());
                     // Material-only: geometry is unchanged, only the critical-angle
                     // overlay (which depends on n_D) needs a fresh render.
                     submit_preview_replan(
@@ -815,9 +916,7 @@ pub(in crate::gui::editor) fn setup_material_suggestion_accept_callback(
 /// The material-suggestion banner's dismiss ("No thanks") action -- just clears the
 /// banner; the schedule's material/RI stay exactly as loaded.
 ///
-/// CAD audit item 164: this used to be a literal no-op (`move || {}`), so "No
-/// Thanks" visibly did nothing and the suggestion text sat in the Log
-/// unchanged -- mirrors the Accept path's own clearing above.
+/// Just clears the banner; mirrors the Accept path's own clearing above.
 pub(in crate::gui::editor) fn setup_material_suggestion_dismiss_callback(ui: &MainWindow) {
     let ui_weak = ui.as_weak();
     ui.global::<EditorModel>()
@@ -854,11 +953,17 @@ pub(in crate::gui::editor) fn setup_undo_callback(
         let mut st = state.borrow_mut();
         match st.undo() {
             Ok(true) => {
-                refresh_editor_panel_stale(&ui, &render_ctx, &st);
-                clamp_selection_to_tier_count(&ui, st.design.tiers.len());
                 // Undo can move any tier (or a whole structural AddTier/RemoveTier
                 // change), so an edit whose blast radius isn't tracked precisely forces
-                // a full solve rather than guessing a `dirty` set.
+                // a full solve rather than guessing a `dirty` set -- and, for the same
+                // reason, no cached mast is trusted for.
+                refresh_editor_panel_stale(
+                    &ui,
+                    &render_ctx,
+                    &st,
+                    &(0..st.design.tiers.len()).collect(),
+                );
+                clamp_selection_to_tier_count(&ui, st.design.tiers.len());
                 submit_preview_replan(
                     &ui,
                     &render_ctx,
@@ -899,7 +1004,14 @@ pub(in crate::gui::editor) fn setup_redo_callback(
         let mut st = state.borrow_mut();
         match st.redo() {
             Ok(true) => {
-                refresh_editor_panel_stale(&ui, &render_ctx, &st);
+                // Same "blast radius unknown, trust nothing cached" reasoning as
+                // `setup_undo_callback`'s matching arm.
+                refresh_editor_panel_stale(
+                    &ui,
+                    &render_ctx,
+                    &st,
+                    &(0..st.design.tiers.len()).collect(),
+                );
                 clamp_selection_to_tier_count(&ui, st.design.tiers.len());
                 submit_preview_replan(
                     &ui,
@@ -954,9 +1066,9 @@ pub(in crate::gui::editor) fn setup_apply_preform_callback(
                 // `Err` path here is this function's own parse failure, already reported.
                 Ok(preform) => {
                     let _ = st.apply(Edit::SetPreform { preform });
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st);
                     // The preform reshapes the bounding planes but never moves a
                     // tier's own mast -- no tier is dirty.
+                    refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::new());
                     submit_preview_replan(
                         &ui,
                         &render_ctx,
@@ -975,10 +1087,9 @@ pub(in crate::gui::editor) fn setup_apply_preform_callback(
 
 /// "Apply Yield Inputs": parses the form and, on success, applies both halves
 /// through `EditorState::apply` as ONE [`Edit::Batch`] of [`Edit::
-/// SetGirdleDiameterMm`] then [`Edit::SetMaterial`] (CAD audit item 79) --
-/// previously two separate, independently-undoable edits, which meant a single
-/// Apply Yield Inputs click cost two Ctrl+Z presses to undo and could be
-/// undone out of order.
+/// SetGirdleDiameterMm`] then [`Edit::SetMaterial`] -- two separate,
+/// independently-undoable edits would cost a single Apply Yield Inputs click two
+/// Ctrl+Z presses to undo, and could be undone out of order.
 pub(in crate::gui::editor) fn setup_apply_yield_inputs_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -1006,13 +1117,17 @@ pub(in crate::gui::editor) fn setup_apply_yield_inputs_callback(
                 &st.design.material,
             ) {
                 Ok((girdle_diameter_mm, material)) => {
+                    // Neither `SetGirdleDiameterMm` nor `SetMaterial` names a tier
+                    // index (both design-wide), so -- like `Edit::SetPreform`/
+                    // `Edit::SetMeta` elsewhere in this module -- `EditorState::apply`
+                    // cannot fail on this `Batch` in practice; kept `let _ =`.
                     let _ = st.apply(Edit::Batch(vec![
                         Edit::SetGirdleDiameterMm { girdle_diameter_mm },
                         Edit::SetMaterial { material },
                     ]));
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st);
                     // Girdle diameter and material alone never move a tier's own
                     // mast -- no tier is dirty.
+                    refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::new());
                     submit_preview_replan(
                         &ui,
                         &render_ctx,
@@ -1029,16 +1144,289 @@ pub(in crate::gui::editor) fn setup_apply_yield_inputs_callback(
     );
 }
 
+/// "Apply Y-Offset". `Design::preform_y_offset`/
+/// `Edit::SetPreformYOffset` are real, applied, mast-preserving edits, but nothing in
+/// this app ever set them away from `0.0` until this callback -- see `EditorModel.
+/// preform_y_offset_mm`'s own doc comment (`ui/models/editor.slint`) for why the field
+/// is typed in millimetres (the cutter's own rough measurement) rather than model
+/// units. Converts through the design's own mm-per-unit factor
+/// (`Design::yield_report(&solved).mm_per_unit`, the same anchor
+/// [`super::super::state::preform_mm_texts`] already reads) before building the
+/// `Edit`; toasts instead of applying anything when the field does not parse, or
+/// when no girdle diameter/solve has anchored that factor yet.
+pub(in crate::gui::editor) fn setup_apply_preform_y_offset_callback(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
+    solid_last_solved: &SolidLastSolved,
+) {
+    let state = Rc::clone(state);
+    let render_ctx = Arc::clone(render_ctx);
+    let preview_state = Arc::clone(preview_state);
+    let solid_last_solved = Arc::clone(solid_last_solved);
+    let ui_weak = ui.as_weak();
+    ui.global::<EditorModel>()
+        .on_apply_preform_y_offset(move |mm_text: SharedString| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            stall_guard("on_apply_preform_y_offset", || {
+                let trimmed = mm_text.trim();
+                let Ok(mm) = trimmed.parse::<f64>() else {
+                    show_toast(
+                        &ui,
+                        &format!("Y-offset '{trimmed}' is not a number."),
+                        "error",
+                    );
+                    return;
+                };
+                if !mm.is_finite() {
+                    show_toast(&ui, "Y-offset must be a finite number.", "error");
+                    return;
+                }
+                let mut st = state.borrow_mut();
+                // The UI thread never solves -- this reuses the last
+                // background/synchronous solve's cached masts (same cache
+                // `deep_solve`'s own setup reads) instead of
+                // a fresh `Design::solve()` while `state.borrow_mut()` is held. When
+                // no cached solve matches this design's current tier count (a design
+                // that has never solved yet, or an edit landed since the cache was
+                // last populated), this asks for one explicitly rather than solving
+                // inline.
+                let Some(solved) = auto_solve::solid_last_solved()
+                    .and_then(|cache| {
+                        cache
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .clone()
+                    })
+                    .filter(|solved| solved.len() == st.design.tiers.len())
+                else {
+                    show_toast(&ui, "Solve first, then set a Y-offset.", "error");
+                    return;
+                };
+                let Some(mm_per_unit) = st.design.yield_report(&solved).mm_per_unit else {
+                    show_toast(
+                        &ui,
+                        "Set a girdle diameter in the Yield tab before setting a Y-offset in \
+                     millimetres.",
+                        "error",
+                    );
+                    return;
+                };
+                let y_offset = mm / mm_per_unit;
+                // Mast-preserving (see `Edit::SetPreformYOffset`'s own doc comment) --
+                // no tier is dirty, same reasoning `setup_apply_preform_callback` uses.
+                //
+                // A failed apply left the field showing a value that was never
+                // actually recorded, with nothing telling the cutter why.
+                // `Edit::SetPreformYOffset` is mast-preserving and takes no tier index,
+                // so `EditorState::apply` can only fail here on an internal invariant
+                // violation, not a cutter mistake -- still surfaced rather than assumed
+                // impossible.
+                if let Err(e) = st.apply(Edit::SetPreformYOffset { y_offset }) {
+                    show_toast(&ui, &e.to_string(), "error");
+                    return;
+                }
+                refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::new());
+                submit_preview_replan(
+                    &ui,
+                    &render_ctx,
+                    &preview_state,
+                    &solid_last_solved,
+                    &st,
+                    BTreeSet::new(),
+                    false,
+                );
+            });
+        });
+}
+
+/// "Apply Cheater Offset". Sets (or, for a blank field,
+/// clears) one tier's own cheater/azimuth offset via [`Edit::SetCheaterOffset`], a
+/// cutting-sheet annotation with no geometric effect (see that variant's own doc
+/// comment) -- so unlike every other tier edit in this module, this never calls
+/// [`submit_preview_replan`]: there is nothing for the solid preview to redraw.
+pub(in crate::gui::editor) fn setup_apply_cheater_offset_callback(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+) {
+    let state = Rc::clone(state);
+    let render_ctx = Arc::clone(render_ctx);
+    let ui_weak = ui.as_weak();
+    ui.global::<EditorModel>()
+        .on_apply_cheater_offset(move |index: i32, text: SharedString| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            let trimmed = text.trim();
+            let offset_deg = if trimmed.is_empty() {
+                None
+            } else {
+                match trimmed.parse::<f64>() {
+                    Ok(value) if value.is_finite() => Some(value),
+                    _ => {
+                        show_toast(
+                            &ui,
+                            &format!("Cheater offset '{trimmed}' is not a number."),
+                            "error",
+                        );
+                        return;
+                    }
+                }
+            };
+            let mut st = state.borrow_mut();
+            // `index` names a real row when the field was focused, but the tier list
+            // can change while a cutter is still typing in this field -- surfaced
+            // rather than silently dropping a stale-index edit.
+            if let Err(e) = st.apply(Edit::SetCheaterOffset { index, offset_deg }) {
+                show_toast(&ui, &e.to_string(), "error");
+                return;
+            }
+            refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::new());
+        });
+}
+
+/// "Apply Tier Note". Sets (or, for a
+/// blank field, clears) one tier's own cutter-authored free-text note via
+/// [`Edit::SetTierNote`], a cutting-sheet annotation with no geometric effect
+/// (see that variant's own doc comment) -- so exactly like
+/// [`setup_apply_cheater_offset_callback`], this never calls
+/// [`submit_preview_replan`]: there is nothing for the solid preview to redraw.
+///
+/// Unlike the cheater offset (a number that fails to parse), any text is a
+/// valid note, so there is no error-toast branch here -- blank just clears it.
+pub(in crate::gui::editor) fn setup_apply_tier_note_callback(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+) {
+    let state = Rc::clone(state);
+    let render_ctx = Arc::clone(render_ctx);
+    let ui_weak = ui.as_weak();
+    ui.global::<EditorModel>()
+        .on_apply_tier_note(move |index: i32, text: SharedString| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let Ok(index) = usize::try_from(index) else {
+                return;
+            };
+            let trimmed = text.trim();
+            let note = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            };
+            let mut st = state.borrow_mut();
+            // Same stale-index reasoning as `setup_apply_cheater_offset_callback` just above.
+            if let Err(e) = st.apply(Edit::SetTierNote { index, note }) {
+                show_toast(&ui, &e.to_string(), "error");
+                return;
+            }
+            refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::new());
+        });
+}
+
+/// Replaces the design's title (the
+/// first `H` header), any further header lines, footnotes, and the index wheel's
+/// zero-tooth reference angle as ONE undoable [`Edit::SetMeta`], mirroring
+/// [`setup_apply_yield_inputs_callback`]'s own "one form, one undo step" shape.
+/// `title`/`extra_headers`/`footnotes` are each split on `';'` into individual
+/// header/footnote lines (`extra_headers` following the title as further `H`
+/// lines) -- see `EditorModel.design_title`'s own doc comment (`ui/models/
+/// editor.slint`) for the exact field layout this mirrors. An unparseable
+/// `gear_ref` toasts instead of applying anything.
+pub(in crate::gui::editor) fn setup_apply_design_meta_callback(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
+    solid_last_solved: &SolidLastSolved,
+) {
+    let state = Rc::clone(state);
+    let render_ctx = Arc::clone(render_ctx);
+    let preview_state = Arc::clone(preview_state);
+    let solid_last_solved = Arc::clone(solid_last_solved);
+    let ui_weak = ui.as_weak();
+    ui.global::<EditorModel>().on_apply_design_meta(
+        move |title: SharedString,
+              extra_headers: SharedString,
+              footnotes: SharedString,
+              gear_ref: SharedString| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let split_lines = |text: &str| -> Vec<String> {
+                text.split(';')
+                    .map(str::trim)
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            };
+            let trimmed_title = title.trim();
+            let mut headers = Vec::new();
+            if !trimmed_title.is_empty() {
+                headers.push(trimmed_title.to_string());
+            }
+            headers.extend(split_lines(&extra_headers));
+            let footnotes = split_lines(&footnotes);
+            let gear_ref_trimmed = gear_ref.trim();
+            let Ok(gear_reference_angle) = gear_ref_trimmed.parse::<f64>() else {
+                show_toast(
+                    &ui,
+                    &format!("Gear reference angle '{gear_ref_trimmed}' is not a number."),
+                    "error",
+                );
+                return;
+            };
+            if !gear_reference_angle.is_finite() {
+                show_toast(
+                    &ui,
+                    "Gear reference angle must be a finite number.",
+                    "error",
+                );
+                return;
+            }
+            let mut st = state.borrow_mut();
+            // Mast-preserving (see `Edit::SetMeta`'s own doc comment) -- no tier is
+            // dirty, but the gear reference angle can rotate the rendered index
+            // wheel, so the solid preview still needs a fresh (non-blocking) replan.
+            // `SetMeta` names no tier index (design-wide headers/footnotes/gear
+            // angle only), so -- like `Edit::SetPreform` above -- `EditorState::apply`
+            // cannot fail on it in practice; kept `let _ =`, not surfaced, for the
+            // same reason.
+            let _ = st.apply(Edit::SetMeta {
+                headers,
+                footnotes,
+                gear_reference_angle,
+            });
+            refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::new());
+            submit_preview_replan(
+                &ui,
+                &render_ctx,
+                &preview_state,
+                &solid_last_solved,
+                &st,
+                BTreeSet::new(),
+                false,
+            );
+        },
+    );
+}
+
 /// "Add Tier" / "Save Tier": parses the form and applies it through
 /// `EditorState::apply` as `AddTier` (index `< 0`, "new tier" mode -- appended at the
 /// end) or `ModifyTier` (an existing row's index).
-/// CAD audit items 129/132/232: every OTHER tier's own name token (`ConstraintTier::
-/// names()`, i.e. already split on `/`), with the tier at `excluded_index` left out
-/// -- feeds `loading::TierFormFields::other_tier_names` so `parse_tier_form` can
-/// reject a name collision (see that field's own doc comment for why an
-/// undetected one is worse than merely confusing). `excluded_index < 0` (a
-/// brand-new tier being added) excludes nothing, since there is no existing row
-/// to exempt from its own check.
+/// Every OTHER tier's own name token (`ConstraintTier::names()`, split on `/`),
+/// with the tier at `excluded_index` left out. Feeds `loading::TierFormFields::
+/// other_tier_names` so `parse_tier_form` can reject name collisions. `excluded_index
+/// < 0` (a brand-new tier) excludes nothing, since there is no existing row to exempt.
 fn other_tier_names_excluding(st: &EditorState, excluded_index: i32) -> Vec<String> {
     st.design
         .tiers
@@ -1059,13 +1447,11 @@ fn added_tier_label(st: &EditorState, dirty_index: usize) -> Option<String> {
         .map(|tier| tier_nudge_label(tier, dirty_index))
 }
 
-/// CAD audit item 131: selects and reveals the tier `setup_save_tier_callback`'s
-/// `AddTier` branch just added, then names it in a toast (CAD audit item 127).
-/// Setting `EditorModel.selected_tier_index` alone is enough to reveal the row
-/// too: `editor_view.slint`'s `changed tracked_selected_tier_index` re-seeds the
-/// inspector form AND calls `tier_table.focus_row`, which is what actually
-/// scrolls the new row into view (see that property's own doc comment) -- so the
-/// reveal itself is the EXISTING path, not something new here.
+/// Selects and reveals the tier `setup_save_tier_callback`'s `AddTier` branch
+/// just added, then names it in a toast. Setting `EditorModel.selected_tier_index`
+/// is enough to reveal: `editor_view.slint`'s `changed tracked_selected_tier_index`
+/// re-seeds the inspector form AND calls `tier_table.focus_row`, which scrolls the
+/// new row into view.
 fn select_and_announce_added_tier(ui: &MainWindow, dirty_index: usize, label: Option<String>) {
     ui.global::<EditorModel>()
         .set_selected_tier_index(dirty_index as i32);
@@ -1105,6 +1491,181 @@ fn tier_save_edit(
     }
 }
 
+/// [`setup_save_tier_callback`]'s target-parsing step: parses
+/// `constraint_kind`/`constraint_text` (the SAME two fields
+/// [`loading::parse_tier_form`] already validated for its own 0/1/2 kinds)
+/// via [`loading::parse_tier_target`] into the [`TierTarget`] the form's
+/// Meets combo authored, if any -- kinds `3`/`4`/`5` ("cut to depth"/"girdle
+/// thickness"/"table width"); `Ok(None)` for every other kind, since
+/// `parse_tier_form` already turned those into a plain `ConstraintTier` with
+/// no target at all.
+///
+/// Reports any parse error exactly the way a `parse_tier_form` failure would
+/// (`report_tier_form_error`, classified via `tier_form_error_field`) and
+/// returns `Err(())` -- the caller reads that as "already reported, apply
+/// nothing" and bails out. `Result<Option<TierTarget>, ()>` rather than the
+/// more obvious `Option<Option<TierTarget>>` purely to dodge clippy's
+/// `option_option` lint; the `()` carries no information beyond "stop."
+/// Split out of `setup_save_tier_callback` purely to keep that function
+/// under clippy's `too_many_lines` lint.
+fn parse_tier_target_reporting(
+    ui: &MainWindow,
+    constraint_kind: i32,
+    constraint_text: &str,
+) -> Result<Option<TierTarget>, ()> {
+    loading::parse_tier_target(constraint_kind, constraint_text).map_err(|e| {
+        report_tier_form_error(ui, &e, tier_form_error_field(&e));
+    })
+}
+
+/// [`tier_save_edit`], extended for depth/girdle-thickness/table-width targets:
+/// wraps its edit in an
+/// [`Edit::Batch`] with [`Edit::SetTierTarget`] whenever `target` is `Some`,
+/// or whenever the tier CURRENTLY at `index` already carries one -- which
+/// must then be explicitly cleared (`Edit::SetTierTarget { target: None }`)
+/// the moment the cutter saves with a plain Meets kind (0/1/2), or it would
+/// silently keep resolving against a target the form no longer shows. A
+/// brand-new tier (`index < 0`) never has one to clear. Split out of
+/// [`setup_save_tier_callback`] purely to keep that function under clippy's
+/// `too_many_lines` lint.
+fn tier_save_edit_with_target(
+    ui: &MainWindow,
+    st: &EditorState,
+    index: i32,
+    tier: indicatrix_cut_core::ConstraintTier,
+    target: Option<TierTarget>,
+) -> (usize, Edit) {
+    let had_target = usize::try_from(index)
+        .ok()
+        .and_then(|i| st.design.tier_target(i))
+        .is_some();
+    let (dirty_index, edit) = tier_save_edit(ui, st, index, tier);
+    let edit = if target.is_some() || had_target {
+        Edit::Batch(vec![
+            edit,
+            Edit::SetTierTarget {
+                index: dirty_index,
+                target,
+            },
+        ])
+    } else {
+        edit
+    };
+    (dirty_index, edit)
+}
+
+/// [`setup_save_tier_callback`]'s preamble: the current row's carried-through
+/// `imported_meet`/`original_notes` (for an existing tier), the gear tooth
+/// count, and every OTHER tier's own name tokens -- everything [`loading::
+/// parse_tier_form`] needs beyond the form's own five text/enum fields. Split
+/// out purely to keep that function under clippy's function-length lint.
+struct SaveTierFormContext {
+    imported_meet: Option<MeetConstraint>,
+    original_notes: Option<String>,
+    gear_teeth_abs: u32,
+    other_tier_names: Vec<String>,
+}
+
+/// Builds [`SaveTierFormContext`] from a short-lived immutable borrow of
+/// `state` -- dropped before this returns, so the caller's later
+/// `state.borrow_mut()` never races it.
+fn save_tier_form_context(state: &Rc<RefCell<EditorState>>, index: i32) -> SaveTierFormContext {
+    let st = state.borrow();
+    // An existing row keeps its own `imported_meet` and the `.asc` file's
+    // original `G` note across this save -- looked up here, before the
+    // caller's mutable borrow, so editing an imported tier's name/angle/indices
+    // never silently drops what the file claimed it meets, nor the note a
+    // cutter reads while cutting it.
+    let (imported_meet, original_notes) = (index >= 0)
+        .then(|| {
+            let tier = st.design.tiers.get(usize::try_from(index).ok()?)?;
+            Some((tier.imported_meet.clone(), tier.original_notes.clone()))
+        })
+        .flatten()
+        .unwrap_or_default();
+    SaveTierFormContext {
+        imported_meet,
+        original_notes,
+        gear_teeth_abs: st.design.meta.gear_teeth_abs(),
+        other_tier_names: other_tier_names_excluding(&st, index),
+    }
+}
+
+/// [`apply_tier_save_success`]'s outcome fields, bundled purely to keep that
+/// function under clippy's too-many-arguments lint.
+struct TierSaveOutcome {
+    /// The form's own `index` argument: negative for a fresh `AddTier`, the
+    /// tier's own index for a `ModifyTier`.
+    index: i32,
+    /// The saved tier's actual index in `st.design.tiers` after the edit applied.
+    dirty_index: usize,
+    /// [`non_integral_index_warning`]'s verdict for the saved indices, if any.
+    non_integral_warning: Option<String>,
+}
+
+/// [`setup_save_tier_callback`]'s success arm: clears the form's stale error state,
+/// replans the preview for `outcome.dirty_index`, reveals a freshly added row, and
+/// surfaces the non-integral-index warning (if any). Split out purely to keep that
+/// function under clippy's function-length lint.
+///
+/// Takes `st` by value (not `&mut EditorState`) so the `AddTier` branch can `drop`
+/// it before calling back into Slint through `select_and_announce_added_tier` --
+/// exactly the same borrow-scope this body had inlined, just made explicit at the
+/// call boundary.
+fn apply_tier_save_success(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
+    solid_last_solved: &SolidLastSolved,
+    st: RefMut<'_, EditorState>,
+    outcome: TierSaveOutcome,
+) {
+    let TierSaveOutcome {
+        index,
+        dirty_index,
+        non_integral_warning,
+    } = outcome;
+    // A successful save means the form is valid again, so this clears whatever the
+    // last save's parse/validation error left behind.
+    let model = ui.global::<EditorModel>();
+    model.set_tier_form_error("".into());
+    model.set_tier_form_error_field("".into());
+    // `AddTier` changes the tier count, so the alignment
+    // check falls back to a full solve regardless of
+    // `dirty`; for `ModifyTier` this one index is exactly
+    // what changed.
+    refresh_editor_panel_stale(ui, render_ctx, &st, &BTreeSet::from([dirty_index]));
+    submit_preview_replan(
+        ui,
+        render_ctx,
+        preview_state,
+        solid_last_solved,
+        &st,
+        BTreeSet::from([dirty_index]),
+        false,
+    );
+    // Selects and reveals the row just added -- an `AddTier`-only branch, since a
+    // `ModifyTier` save is already on the row it edited. See
+    // [`select_and_announce_added_tier`]'s own doc comment for why setting
+    // `selected_tier_index` alone is enough to reveal it too.
+    if index < 0 {
+        let label = added_tier_label(&st, dirty_index);
+        drop(st);
+        select_and_announce_added_tier(ui, dirty_index, label);
+    }
+    // The non-integral-index warning is shown last (after the "Added <label>" toast
+    // above, when this was a new tier) so it is the one left on screen -- the single
+    // toast slot keeps only the most recent call, and a possibly-unintentional
+    // fractional index is more worth a cutter's attention than a bare confirmation
+    // that the save succeeded.
+    if let Some(warning) = non_integral_warning {
+        show_toast(ui, &warning, "info");
+    }
+}
+
+/// The Tier form's Save action: parses the form via [`loading::parse_tier_form`],
+/// applies the resulting [`Edit`] through [`EditorState::apply`], and refreshes the
+/// preview and panel on success.
 pub(in crate::gui::editor) fn setup_save_tier_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -1127,26 +1688,12 @@ pub(in crate::gui::editor) fn setup_save_tier_callback(
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            // An existing row keeps its own `imported_meet` and the `.asc` file's
-            // original `G` note across this save -- both looked up here, before the
-            // mutable borrow below, so editing an imported tier's name/angle/indices
-            // never silently drops what the file claimed it meets, nor the note a
-            // cutter reads while cutting it.
-            let (imported_meet, original_notes) = (index >= 0)
-                .then(|| {
-                    let st = state.borrow();
-                    let tier = st.design.tiers.get(usize::try_from(index).ok()?)?;
-                    Some((tier.imported_meet.clone(), tier.original_notes.clone()))
-                })
-                .flatten()
-                .unwrap_or_default();
-            let (gear_teeth_abs, other_tier_names) = {
-                let st = state.borrow();
-                (
-                    st.design.meta.gear_teeth_abs(),
-                    other_tier_names_excluding(&st, index),
-                )
-            };
+            let SaveTierFormContext {
+                imported_meet,
+                original_notes,
+                gear_teeth_abs,
+                other_tier_names,
+            } = save_tier_form_context(&state, index);
             match loading::parse_tier_form(loading::TierFormFields {
                 angle: &angle,
                 constraint_kind,
@@ -1159,7 +1706,15 @@ pub(in crate::gui::editor) fn setup_save_tier_callback(
                 other_tier_names: other_tier_names.clone(),
             }) {
                 Ok(mut tier) => {
-                    // CAD audit item 129: a brand-new tier saved with a blank Name
+                    // The form's Meets combo also carries three target kinds that
+                    // `loading::parse_tier_form` above only turns into a `ScaleReference(0.0)`
+                    // placeholder -- see `parse_tier_target_reporting`'s own doc comment.
+                    let Ok(target) =
+                        parse_tier_target_reporting(&ui, constraint_kind, &constraint_text)
+                    else {
+                        return;
+                    };
+                    // A brand-new tier saved with a blank Name
                     // field would otherwise stay unnamed and un-meetable (
                     // `ConstraintTier::names()` returns nothing for an empty name) --
                     // auto-name it here, matching what Duplicate already does for
@@ -1169,15 +1724,14 @@ pub(in crate::gui::editor) fn setup_save_tier_callback(
                     if index < 0 && tier.name.is_empty() {
                         tier.name = next_free_block_name(tier.angle_deg, &other_tier_names);
                     }
-                    // CAD audit item 34: captured before `tier` is moved into
+                    // Captured before `tier` is moved into
                     // `tier_save_edit` below -- see `non_integral_index_warning`'s
                     // own doc comment for why this warns rather than rejects.
                     let non_integral_warning = non_integral_index_warning(&tier.indices);
                     let mut st = state.borrow_mut();
                     // Preserve the row's own `detached` set across a save --
-                    // `parse_tier_form` always returns an empty one (`loading.rs` is
-                    // not this lane's file to edit), and without this a rename/
-                    // angle/index edit would silently re-link a deliberately
+                    // `parse_tier_form` always returns an empty one, and without this
+                    // a rename/angle/index edit would silently re-link a deliberately
                     // detached tier back into its orbit.
                     if let Some(current) = usize::try_from(index)
                         .ok()
@@ -1195,56 +1749,35 @@ pub(in crate::gui::editor) fn setup_save_tier_callback(
                         report_tier_form_error(
                             &ui,
                             &format!("No facet named '{bad_name}' -- check the Meets field."),
+                            "constraint",
                         );
                         return;
                     }
-                    let (dirty_index, edit) = tier_save_edit(&ui, &st, index, tier);
+                    let (dirty_index, edit) =
+                        tier_save_edit_with_target(&ui, &st, index, tier, target);
                     match st.apply(edit) {
                         Ok(()) => {
-                            // Clears whatever the LAST save's parse/validation
-                            // error left behind (CAD audit item 47): a successful
-                            // save means the form is valid again.
-                            ui.global::<EditorModel>().set_tier_form_error("".into());
-                            refresh_editor_panel_stale(&ui, &render_ctx, &st);
-                            // `AddTier` changes the tier count, so the alignment
-                            // check falls back to a full solve regardless of
-                            // `dirty`; for `ModifyTier` this one index is exactly
-                            // what changed.
-                            submit_preview_replan(
+                            apply_tier_save_success(
                                 &ui,
                                 &render_ctx,
                                 &preview_state,
                                 &solid_last_solved,
-                                &st,
-                                BTreeSet::from([dirty_index]),
-                                false,
+                                st,
+                                TierSaveOutcome {
+                                    index,
+                                    dirty_index,
+                                    non_integral_warning,
+                                },
                             );
-                            // CAD audit item 131: select and reveal the row just
-                            // added -- an `AddTier`-only branch, since a
-                            // `ModifyTier` save is already on the row it edited.
-                            // See [`select_and_announce_added_tier`]'s own doc
-                            // comment for why setting `selected_tier_index` alone
-                            // is enough to reveal it too.
-                            if index < 0 {
-                                let label = added_tier_label(&st, dirty_index);
-                                drop(st);
-                                select_and_announce_added_tier(&ui, dirty_index, label);
-                            }
-                            // CAD audit item 34: shown last (after the "Added
-                            // <label>" toast above, when this was a new tier) so
-                            // it is the one left on screen -- the single toast
-                            // slot keeps only the most recent call, and a
-                            // possibly-unintentional fractional index is more
-                            // worth a cutter's attention than a bare
-                            // confirmation that the save succeeded.
-                            if let Some(warning) = non_integral_warning {
-                                show_toast(&ui, &warning, "info");
-                            }
                         }
-                        Err(e) => report_tier_form_error(&ui, &e.to_string()),
+                        Err(e) => {
+                            let message = e.to_string();
+                            let field = tier_form_error_field(&message);
+                            report_tier_form_error(&ui, &message, field);
+                        }
                     }
                 }
-                Err(e) => report_tier_form_error(&ui, &e),
+                Err(e) => report_tier_form_error(&ui, &e, tier_form_error_field(&e)),
             }
         },
     );
@@ -1292,9 +1825,9 @@ pub(in crate::gui::editor) fn setup_remove_tier_callback(
                 index: index as usize,
             }) {
                 Ok(()) => {
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st);
-                    adjust_selection_after_remove(&ui, index);
                     // Tier count changed -- the alignment check falls back to a full solve.
+                    refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::new());
+                    adjust_selection_after_remove(&ui, index);
                     submit_preview_replan(
                         &ui,
                         &render_ctx,
@@ -1362,14 +1895,14 @@ pub(in crate::gui::editor) fn setup_inline_set_angle_callback(
                     // that lint without needing an epsilon whose size would be arbitrary
                     // here.
                     if angle_deg.to_bits() == current.angle_deg.to_bits() {
-                        // CAD audit item 165: committing back the SAME value is a
+                        // Committing back the SAME value is a
                         // real interaction boundary (the cutter opened the cell,
                         // looked, and closed it) -- end any scroll-wheel nudge
                         // coalescing run in progress rather than leaving it open
                         // for a later, unrelated nudge to merge into.
                         st.history.end_coalesce_run();
-                        // CAD audit item 127: a committed-but-unchanged edit used
-                        // to be silent and indistinguishable from a dropped one.
+                        // Without this toast, a committed-but-unchanged edit would
+                        // be silent and indistinguishable from a dropped one.
                         show_toast(&ui, "No change.", "info");
                         return;
                     }
@@ -1377,7 +1910,12 @@ pub(in crate::gui::editor) fn setup_inline_set_angle_callback(
                     tier.angle_deg = angle_deg;
                     match st.apply(Edit::ModifyTier { index, tier }) {
                         Ok(()) => {
-                            refresh_editor_panel_stale(&ui, &render_ctx, &st);
+                            refresh_editor_panel_stale(
+                                &ui,
+                                &render_ctx,
+                                &st,
+                                &BTreeSet::from([index]),
+                            );
                             submit_preview_replan(
                                 &ui,
                                 &render_ctx,
@@ -1445,6 +1983,16 @@ fn tier_nudge_label(tier: &indicatrix_cut_core::ConstraintTier, index: usize) ->
 /// see [`angle_nudge_coalesce_key`] for how the coalescing key is derived from the
 /// nudge's actual target set, distinguishing a lone tier's nudge from a
 /// multi-selected group containing that same tier.
+///
+/// `History::apply_coalescing`
+/// already merged the UNDO step for a fast nudge burst, but every tick still ran
+/// its own apply/refresh/replan cycle on the UI thread (each of those clones the
+/// whole `Design` twice -- `view::submit_preview_replan_for`'s own doc comment).
+/// This now posts an [`edit_intent::EditIntent::NudgeAngle`] into a queue this
+/// function builds once, and [`apply_nudge_intent`] (the actual apply/clamp/
+/// refresh/replan/toast logic, moved out of this closure unchanged) runs at most
+/// once per 16ms drain tick, against the SUMMED `delta_deg` of everything posted
+/// since the last tick -- see [`edit_intent::EditIntentQueue`]'s own doc comment.
 pub(in crate::gui::editor) fn setup_nudge_angle_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -1452,91 +2000,135 @@ pub(in crate::gui::editor) fn setup_nudge_angle_callback(
     preview_state: &Arc<SolidPreviewState>,
     solid_last_solved: &SolidLastSolved,
 ) {
-    let state = Rc::clone(state);
-    let render_ctx = Arc::clone(render_ctx);
-    let preview_state = Arc::clone(preview_state);
-    let solid_last_solved = Arc::clone(solid_last_solved);
-    let ui_weak = ui.as_weak();
-    ui.global::<EditorModel>()
-        .on_nudge_angle(move |anchor_index: i32, delta_deg: f32| {
+    let intent_queue = {
+        let state = Rc::clone(state);
+        let render_ctx = Arc::clone(render_ctx);
+        let preview_state = Arc::clone(preview_state);
+        let solid_last_solved = Arc::clone(solid_last_solved);
+        let ui_weak = ui.as_weak();
+        edit_intent::EditIntentQueue::new(move |intent| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            let Ok(anchor_index) = usize::try_from(anchor_index) else {
+            let edit_intent::EditIntent::NudgeAngle { targets, delta_deg } = intent else {
                 return;
             };
-            let mut st = state.borrow_mut();
-            let is_multi_target =
-                st.multi_selected.len() > 1 && st.multi_selected.contains(&anchor_index);
-            let targets: Vec<usize> = if is_multi_target {
-                st.multi_selected.iter().copied().collect()
-            } else {
-                vec![anchor_index]
-            };
-            let delta_deg = f64::from(delta_deg);
-            let mut clamped_labels: Vec<String> = Vec::new();
-            let changes: Option<Vec<(usize, f64, f64)>> = targets
-                .iter()
-                .map(|&index| {
-                    st.design.tiers.get(index).map(|tier| {
-                        let wanted = tier.angle_deg + delta_deg;
-                        let nudged = clamp_nudge_to_side(tier.angle_deg, wanted);
-                        if nudged != wanted {
-                            clamped_labels.push(tier_nudge_label(tier, index));
-                        }
-                        (index, tier.angle_deg, nudged)
-                    })
-                })
-                .collect();
-            let Some(changes) = changes else {
-                return;
-            };
-            if changes.is_empty() {
-                return;
-            }
-            let key = angle_nudge_coalesce_key(&targets);
-            match st.apply_coalescing(Edit::RetargetAngles { changes }, key) {
-                Ok(()) => {
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st);
-                    submit_preview_replan(
-                        &ui,
-                        &render_ctx,
-                        &preview_state,
-                        &solid_last_solved,
-                        &st,
-                        targets.into_iter().collect(),
-                        false,
-                    );
-                    // The angle's sign is the only thing that says which block a
-                    // tier belongs to (`clamp_nudge_to_side`'s own doc comment), so
-                    // a nudge that would cross zero is clamped there instead of
-                    // silently reclassifying the tier -- explain the stop instead
-                    // of leaving it looking like the nudge simply refused to move
-                    // (CAD audit item 46's remainder).
-                    if !clamped_labels.is_empty() {
-                        show_toast(
-                            &ui,
-                            &format!(
-                                "{} stopped at 0° -- nudging further would move it into the \
-                                 other block. Type the angle directly (e.g. \"-0\") to cross \
-                                 blocks on purpose.",
-                                clamped_labels.join(", ")
-                            ),
-                            "info",
-                        );
-                    }
-                }
-                Err(e) => show_toast(&ui, &e.to_string(), "error"),
-            }
+            apply_nudge_intent(
+                &ui,
+                &state,
+                &render_ctx,
+                &preview_state,
+                &solid_last_solved,
+                &targets,
+                delta_deg,
+            );
+        })
+    };
+    let state = Rc::clone(state);
+    ui.global::<EditorModel>()
+        .on_nudge_angle(move |anchor_index: i32, delta_deg: f32| {
+            stall_guard("on_nudge_angle", || {
+                let Ok(anchor_index) = usize::try_from(anchor_index) else {
+                    return;
+                };
+                let st = state.borrow();
+                let is_multi_target =
+                    st.multi_selected.len() > 1 && st.multi_selected.contains(&anchor_index);
+                let targets: Vec<usize> = if is_multi_target {
+                    st.multi_selected.iter().copied().collect()
+                } else {
+                    vec![anchor_index]
+                };
+                drop(st);
+                intent_queue.post(edit_intent::EditIntent::NudgeAngle {
+                    targets,
+                    delta_deg: f64::from(delta_deg),
+                });
+            });
         });
+}
+
+/// [`setup_nudge_angle_callback`]'s actual apply/clamp/refresh/replan/toast work,
+/// run once per drained [`edit_intent::EditIntent::NudgeAngle`] against the
+/// SUMMED `delta_deg` of the whole coalesced burst -- see that function's own doc
+/// comment. `targets`/`delta_deg` are read fresh against the design's CURRENT
+/// angle at drain time (not whatever it was when the first tick of the burst
+/// posted), so [`clamp_nudge_to_side`]'s zero-crossing clamp always judges the
+/// real, final position, exactly as if the summed delta had been applied in one
+/// step -- which, after this change, it is.
+fn apply_nudge_intent(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
+    solid_last_solved: &SolidLastSolved,
+    targets: &[usize],
+    delta_deg: f64,
+) {
+    let mut st = state.borrow_mut();
+    let mut clamped_labels: Vec<String> = Vec::new();
+    let changes: Option<Vec<(usize, f64, f64)>> = targets
+        .iter()
+        .map(|&index| {
+            st.design.tiers.get(index).map(|tier| {
+                let wanted = tier.angle_deg + delta_deg;
+                let nudged = clamp_nudge_to_side(tier.angle_deg, wanted);
+                if nudged != wanted {
+                    clamped_labels.push(tier_nudge_label(tier, index));
+                }
+                (index, tier.angle_deg, nudged)
+            })
+        })
+        .collect();
+    let Some(changes) = changes else {
+        return;
+    };
+    if changes.is_empty() {
+        return;
+    }
+    let key = angle_nudge_coalesce_key(targets);
+    match st.apply_coalescing(Edit::RetargetAngles { changes }, key) {
+        Ok(()) => {
+            let dirty: BTreeSet<usize> = targets.iter().copied().collect();
+            refresh_editor_panel_stale(ui, render_ctx, &st, &dirty);
+            submit_preview_replan(
+                ui,
+                render_ctx,
+                preview_state,
+                solid_last_solved,
+                &st,
+                dirty,
+                false,
+            );
+            // The angle's sign is the only thing that says which block a
+            // tier belongs to (`clamp_nudge_to_side`'s own doc comment), so
+            // a nudge that would cross zero is clamped there instead of
+            // silently reclassifying the tier -- explain the stop instead
+            // of leaving it looking like the nudge simply refused to move.
+            if !clamped_labels.is_empty() {
+                show_toast(
+                    ui,
+                    &format!(
+                        "{} stopped at 0° -- nudging further would move it into the \
+                         other block. Type the angle directly (e.g. \"-0\") to cross \
+                         blocks on purpose.",
+                        clamped_labels.join(", ")
+                    ),
+                    "info",
+                );
+            }
+        }
+        Err(e) => show_toast(ui, &e.to_string(), "error"),
+    }
 }
 
 /// A row's "Duplicate" button and the tier list's Ctrl+D: inserts a copy of the
 /// named tier (name suffixed `'`, same indices/angle/constraint/detached set)
 /// immediately AFTER the source row as a new [`Edit::AddTier`] through
 /// `EditorState::apply` -- not appended at the end, since cut order is meaningful
-/// (`Edit::AddTier` already supports an arbitrary insertion index; only the call
-/// site used to force the end) -- then moves the tier-list selection to the copy.
+/// (`Edit::AddTier` already supports an arbitrary insertion index, so this passes
+/// the source row's own position plus one rather than appending at the end) --
+/// then moves the tier-list selection to the copy.
 /// The copy's `imported_meet` is always cleared -- it is a new, user-authored row,
 /// not itself something a real `.asc` file's `G` field ever made a claim about,
 /// even though the tier it was copied FROM might carry one.
@@ -1570,12 +2162,11 @@ pub(in crate::gui::editor) fn setup_duplicate_tier_callback(
             } else {
                 source.name.clone()
             };
-            // CAD audit items 129/132/232: a real generator ("P1 (2)", "P1 (3)",
-            // ...) instead of appending an apostrophe -- see
-            // `unique_duplicate_name`'s own doc comment for why the old scheme
-            // piled up unreadable "P1''''" names AND silently created a duplicate
-            // name every meet resolver secretly binds to the FIRST tier holding
-            // it.
+            // Uses a counted `" (N)"` suffix instead of appending an apostrophe --
+            // see `unique_duplicate_name`'s own doc comment for why an apostrophe
+            // scheme piles up unreadable "P1''''" names AND silently creates a
+            // duplicate name that a meet resolver secretly binds to the FIRST tier
+            // holding it.
             let existing_names: Vec<String> =
                 st.design.tiers.iter().map(|t| t.name.clone()).collect();
             duplicate.name = unique_duplicate_name(&source.name, &existing_names);
@@ -1587,9 +2178,9 @@ pub(in crate::gui::editor) fn setup_duplicate_tier_callback(
                 tier: duplicate,
             }) {
                 Ok(()) => {
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st);
                     // `AddTier` changes the tier count -- same full-solve fallback
                     // `setup_save_tier_callback`'s own `AddTier` path uses.
+                    refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::from([new_index]));
                     submit_preview_replan(
                         &ui,
                         &render_ctx,
@@ -1602,7 +2193,7 @@ pub(in crate::gui::editor) fn setup_duplicate_tier_callback(
                     drop(st);
                     ui.global::<EditorModel>()
                         .set_selected_tier_index(new_index as i32);
-                    // CAD audit item 127: names the change instead of leaving a
+                    // Names the change instead of leaving a
                     // mis-clicked Duplicate indistinguishable from a no-op.
                     show_toast(
                         &ui,
@@ -1615,22 +2206,228 @@ pub(in crate::gui::editor) fn setup_duplicate_tier_callback(
         });
 }
 
+/// [`setup_generate_step_series_callback`]'s form-parsing half -- everything the
+/// "Generate steps" form needs turned into real values BEFORE
+/// [`ConstraintTier::step_series`] can be called, except the indices list, which
+/// the caller parses separately via [`loading::parse_index_list`] (that parse
+/// also needs `state`'s own `gear_teeth_abs`, not available here). An empty
+/// anchor field means [`MeetConstraint::MeetExisting`] (the same "blank means use
+/// whatever's already anchored" convention -- the caller is relying on an anchor
+/// elsewhere in the design); a
+/// non-empty one is parsed and pinned via [`MeetConstraint::ScaleReference`].
+///
+/// # Errors
+///
+/// A message naming the offending field, ready to show the cutter.
+fn parse_step_series_form(
+    start_angle_text: &str,
+    angle_step_text: &str,
+    count: i32,
+    anchor_text: &str,
+) -> Result<(f64, f64, usize, MeetConstraint), String> {
+    let start_angle: f64 = start_angle_text
+        .trim()
+        .parse()
+        .map_err(|_| format!("Start angle '{start_angle_text}' is not a number."))?;
+    let angle_step: f64 = angle_step_text
+        .trim()
+        .parse()
+        .map_err(|_| format!("Angle step '{angle_step_text}' is not a number."))?;
+    if !start_angle.is_finite() || !angle_step.is_finite() {
+        return Err("Start angle and angle step must be finite numbers.".to_string());
+    }
+    let count = usize::try_from(count)
+        .ok()
+        .filter(|&count| count >= 1)
+        .ok_or_else(|| "Tier count must be a positive whole number.".to_string())?;
+    let anchor_text = anchor_text.trim();
+    let first_constraint = if anchor_text.is_empty() {
+        MeetConstraint::MeetExisting
+    } else {
+        let anchor: f64 = anchor_text
+            .parse()
+            .map_err(|_| format!("Anchor '{anchor_text}' is not a number."))?;
+        if !anchor.is_finite() {
+            return Err("Anchor must be a finite number.".to_string());
+        }
+        MeetConstraint::ScaleReference(anchor)
+    };
+    Ok((start_angle, angle_step, count, first_constraint))
+}
+
+/// "Generate steps": builds `count`
+/// tiers via [`ConstraintTier::step_series`] and applies them as one
+/// [`Edit::Batch`] of [`Edit::AddTier`]s, appended after the design's current
+/// last tier. Mirrors `editor_tier_table.slint`'s own call site's argument
+/// order: name prefix, start-angle text, angle-step text, tier count, a
+/// comma-separated index list shared by every generated tier (parsed the same
+/// way [`setup_save_tier_callback`]'s own indices field is, via
+/// [`loading::parse_index_list`]), and an optional anchor -- see
+/// [`parse_step_series_form`]'s own doc comment for what an empty one means.
+/// Previously this callback did not exist at all (the Slint side called
+/// straight into nothing); see [`setup_toggle_detach_callback`]'s own doc
+/// comment for why it is registered from there rather than from
+/// `gui::editor::mod::setup_editor_callbacks`.
+pub(in crate::gui::editor) fn setup_generate_step_series_callback(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
+    solid_last_solved: &SolidLastSolved,
+) {
+    let state = Rc::clone(state);
+    let render_ctx = Arc::clone(render_ctx);
+    let preview_state = Arc::clone(preview_state);
+    let solid_last_solved = Arc::clone(solid_last_solved);
+    let ui_weak = ui.as_weak();
+    ui.global::<EditorModel>().on_generate_step_series(
+        move |name_prefix: SharedString,
+              start_angle_text: SharedString,
+              angle_step_text: SharedString,
+              count: i32,
+              indices_text: SharedString,
+              anchor_text: SharedString| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let (start_angle, angle_step, count, first_constraint) = match parse_step_series_form(
+                &start_angle_text,
+                &angle_step_text,
+                count,
+                &anchor_text,
+            ) {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    show_toast(&ui, &e, "error");
+                    return;
+                }
+            };
+            let mut st = state.borrow_mut();
+            let gear_teeth_abs = st.design.meta.gear_teeth_abs();
+            let indices = match loading::parse_index_list(&indices_text, gear_teeth_abs) {
+                Ok(indices) => indices,
+                Err(e) => {
+                    show_toast(&ui, &e, "error");
+                    return;
+                }
+            };
+            let tiers = ConstraintTier::step_series(
+                &name_prefix,
+                start_angle,
+                angle_step,
+                count,
+                &indices,
+                &first_constraint,
+            );
+            let start_index = st.design.tiers.len();
+            let edits: Vec<Edit> = tiers
+                .into_iter()
+                .enumerate()
+                .map(|(offset, tier)| Edit::AddTier {
+                    index: start_index + offset,
+                    tier,
+                })
+                .collect();
+            let added_count = edits.len();
+            match st.apply(Edit::Batch(edits)) {
+                Ok(()) => {
+                    let dirty: BTreeSet<usize> = (start_index..start_index + added_count).collect();
+                    refresh_editor_panel_stale(&ui, &render_ctx, &st, &dirty);
+                    submit_preview_replan(
+                        &ui,
+                        &render_ctx,
+                        &preview_state,
+                        &solid_last_solved,
+                        &st,
+                        dirty,
+                        false,
+                    );
+                    drop(st);
+                    show_toast(&ui, &format!("Generated {added_count} tier(s)."), "info");
+                }
+                Err(e) => show_toast(&ui, &e.to_string(), "error"),
+            }
+        },
+    );
+}
+
+/// "Mirror tier to other block" :
+/// duplicates the tier at `tier_index` to the opposite block via
+/// [`ConstraintTier::mirrored_to_other_block`] (angle negated, same
+/// indices/constraint/detached set, name suffixed by `name_suffix`) and applies
+/// it as one [`Edit::AddTier`], appended after the design's current last tier.
+/// A silent no-op for an out-of-range `tier_index`, the same guard
+/// [`setup_duplicate_tier_callback`] uses for its own source lookup.
+pub(in crate::gui::editor) fn setup_mirror_tier_to_other_block_callback(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
+    solid_last_solved: &SolidLastSolved,
+) {
+    let state = Rc::clone(state);
+    let render_ctx = Arc::clone(render_ctx);
+    let preview_state = Arc::clone(preview_state);
+    let solid_last_solved = Arc::clone(solid_last_solved);
+    let ui_weak = ui.as_weak();
+    ui.global::<EditorModel>().on_mirror_tier_to_other_block(
+        move |tier_index: i32, name_suffix: SharedString| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let mut st = state.borrow_mut();
+            let Ok(tier_index) = usize::try_from(tier_index) else {
+                return;
+            };
+            let Some(source) = st.design.tiers.get(tier_index) else {
+                return;
+            };
+            let mirrored = source.mirrored_to_other_block(&name_suffix);
+            let mirrored_label = mirrored.name.clone();
+            let new_index = st.design.tiers.len();
+            match st.apply(Edit::AddTier {
+                index: new_index,
+                tier: mirrored,
+            }) {
+                Ok(()) => {
+                    refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::from([new_index]));
+                    submit_preview_replan(
+                        &ui,
+                        &render_ctx,
+                        &preview_state,
+                        &solid_last_solved,
+                        &st,
+                        BTreeSet::from([new_index]),
+                        false,
+                    );
+                    drop(st);
+                    ui.global::<EditorModel>()
+                        .set_selected_tier_index(new_index as i32);
+                    show_toast(&ui, &format!("Mirrored to {mirrored_label}"), "info");
+                }
+                Err(e) => show_toast(&ui, &e.to_string(), "error"),
+            }
+        },
+    );
+}
+
 /// Generates a name for [`setup_duplicate_tier_callback`] that is guaranteed not
-/// to collide with any name in `existing_names` (CAD audit items 129/132/232) --
-/// replaces the old "append an apostrophe" scheme, which produced an unreadable
-/// "P1''''" pile on a second or third duplicate of the same tier and, worse,
-/// silently created a duplicate name that `MeetNameResolver::name_match`
-/// (`indicatrix::geometry::meet_solver::names`) resolves by binding to whichever
-/// tier holds it FIRST -- so a duplicate's stale copy of a popular name could
-/// silently steal every future `MeetNamed` reference meant for the original.
+/// to collide with any name in `existing_names`, by counting up a `" (N)"` suffix
+/// (`"P1 (2)"`, `"P1 (3)"`, ...) rather than appending an apostrophe: the
+/// apostrophe scheme produced an unreadable "P1''''" pile on a second or third
+/// duplicate of the same tier and, worse, silently created a duplicate name that
+/// `MeetNameResolver::name_match` (`indicatrix::geometry::meet_solver::names`)
+/// resolves by binding to whichever tier holds it FIRST -- so a duplicate's stale
+/// copy of a popular name could silently steal every future `MeetNamed` reference
+/// meant for the original.
 ///
 /// [`split_duplicate_suffix`] first removes a trailing `" (N)"` a PREVIOUS call to
 /// this same function already appended, so duplicating "P1 (2)" produces
 /// "P1 (3)" rather than nesting into "P1 (2) (2)". An empty source name (an
 /// unnamed tier) falls back to the base "Tier" rather than producing a bare
 /// "(2)" -- giving the duplicate a real name is also what lets it become a
-/// `MeetNamed` target, which `ConstraintTier::names` never allows for an empty
-/// name (see CAD audit item 129).
+/// `MeetNamed` target, since `ConstraintTier::names` never resolves a name from an
+/// empty string.
 fn unique_duplicate_name(source_name: &str, existing_names: &[String]) -> String {
     let (base, source_number) = split_duplicate_suffix(source_name.trim());
     let base = if base.is_empty() { "Tier" } else { base };
@@ -1656,8 +2453,8 @@ fn unique_duplicate_name(source_name: &str, existing_names: &[String]) -> String
 }
 
 /// [`setup_save_tier_callback`]'s auto-name for a brand-new tier saved with a
-/// blank Name field (CAD audit item 129, the remainder [`unique_duplicate_name`]
-/// above does not cover -- that one only ever runs against an already-named
+/// blank Name field ([`unique_duplicate_name`] above does not cover this case --
+/// that one only ever runs against an already-named
 /// source). An empty name can never become a `MeetNamed` target
 /// (`ConstraintTier::names()` returns nothing for it), so leaving a fresh
 /// `AddTier` unnamed silently makes it un-meetable until the cutter notices.
@@ -1754,15 +2551,7 @@ pub(in crate::gui::editor) fn setup_toggle_multi_select_callback(
             // the last rendered frame's masts the same way the hover/click
             // callbacks already build one.
             if let Some(preview_state) = auto_solve::preview_state() {
-                let solved = auto_solve::solid_last_solved()
-                    .and_then(|cache| {
-                        cache
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .clone()
-                    })
-                    .unwrap_or_default();
-                let facet_map = FacetMap::from_design(&st.design, &solved);
+                let facet_map = facet_map_from_aligned_solve(&st.design);
                 let facet_ids: Vec<u32> = multi_selected
                     .iter()
                     .flat_map(|&tier_index| facet_map.facets_of_tier(tier_index).iter().copied())
@@ -1774,7 +2563,7 @@ pub(in crate::gui::editor) fn setup_toggle_multi_select_callback(
         });
 }
 
-/// The tier list's Shift+click: CAD audit item 39's remainder -- replaces
+/// The tier list's Shift+click: replaces
 /// [`EditorState::multi_selected`] wholesale with every tier index between the
 /// current selection anchor (`EditorModel.selected_tier_index`) and `index`,
 /// inclusive of both ends. Unlike [`setup_toggle_multi_select_callback`]'s
@@ -1825,15 +2614,7 @@ pub(in crate::gui::editor) fn setup_select_tier_range_callback(
             // -- resolves every multi-selected TIER to its member FACET ids so the
             // range is visible in 3D too, not only as a row border.
             if let Some(preview_state) = auto_solve::preview_state() {
-                let solved = auto_solve::solid_last_solved()
-                    .and_then(|cache| {
-                        cache
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .clone()
-                    })
-                    .unwrap_or_default();
-                let facet_map = FacetMap::from_design(&st.design, &solved);
+                let facet_map = facet_map_from_aligned_solve(&st.design);
                 let facet_ids: Vec<u32> = multi_selected
                     .iter()
                     .flat_map(|&tier_index| facet_map.facets_of_tier(tier_index).iter().copied())
@@ -1856,12 +2637,13 @@ pub(in crate::gui::editor) fn setup_select_tier_range_callback(
 /// callback`]/[`setup_clear_multi_select_callback`]/[`setup_remove_multi_selected_
 /// callback`]/[`setup_facet_remove_callback`]/[`setup_facet_toggle_detach_callback`]/
 /// [`setup_facet_add_callback`]/[`setup_tier_rotate_indices_callback`]/
-/// [`setup_tier_mirror_indices_callback`] -- `gui::editor::mod::setup_editor_callbacks`
-/// (not this lane's file to edit) has one fixed call site per `setup_*` function
-/// name, so a genuinely new callback can only be wired up by piggybacking its own
-/// `setup_*` call onto an EXISTING call site that already receives every argument it
-/// needs; this is the one existing call already carrying `render_ctx`/
-/// `preview_state`/`solid_last_solved` alongside `ui`/`state`.
+/// [`setup_tier_mirror_indices_callback`]/[`setup_generate_step_series_callback`]/
+/// [`setup_mirror_tier_to_other_block_callback`] (the last two share this one
+/// entry point) -- `gui::editor::mod::setup_editor_callbacks` has one fixed call
+/// site per `setup_*` function name, so a genuinely new callback can only be wired
+/// up by piggybacking its own `setup_*` call onto an EXISTING call site that
+/// already receives every argument it needs; this is the one existing call already
+/// carrying `render_ctx`/`preview_state`/`solid_last_solved` alongside `ui`/`state`.
 pub(in crate::gui::editor) fn setup_toggle_detach_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -1869,11 +2651,11 @@ pub(in crate::gui::editor) fn setup_toggle_detach_callback(
     preview_state: &Arc<SolidPreviewState>,
     solid_last_solved: &SolidLastSolved,
 ) {
-    // CAD audit item 117: stashes the shared `RenderContext` handle for
+    // Stashes the shared `RenderContext` handle for
     // `auto_solve::render_ctx()` -- this is one of several `setup_*_callback`s
     // already given the `Arc` directly by `gui::editor::mod::setup_editor_
-    // callbacks` (not this lane's file to add a NEW parameter to), and it runs
-    // once here, synchronously, before `setup_editor_callbacks` returns and the
+    // callbacks`, and it runs once here, synchronously, before
+    // `setup_editor_callbacks` returns and the
     // event loop starts -- so by the time a user can hover or click anything,
     // `setup_solid_facet_hover_callback`/`setup_solid_facet_click_callback`
     // (whose own fixed call site never receives `render_ctx` at all) can already
@@ -1905,7 +2687,12 @@ pub(in crate::gui::editor) fn setup_toggle_detach_callback(
             };
             match edit_result.and_then(|edit| st.apply(edit)) {
                 Ok(()) => {
-                    refresh_editor_panel_stale(&ui, &render_ctx_toggle, &st);
+                    refresh_editor_panel_stale(
+                        &ui,
+                        &render_ctx_toggle,
+                        &st,
+                        &BTreeSet::from([index]),
+                    );
                     submit_preview_replan(
                         &ui,
                         &render_ctx_toggle,
@@ -1915,7 +2702,7 @@ pub(in crate::gui::editor) fn setup_toggle_detach_callback(
                         BTreeSet::from([index]),
                         false,
                     );
-                    // CAD audit item 127: names the change and which way it went
+                    // Names the change and which way it went
                     // -- `tier.detached` is now whatever this apply just left it
                     // as, so a non-empty set here means "just detached," empty
                     // means "just reattached."
@@ -1956,15 +2743,23 @@ pub(in crate::gui::editor) fn setup_toggle_detach_callback(
     setup_facet_add_callback(ui, state, render_ctx, preview_state, solid_last_solved);
     setup_tier_rotate_indices_callback(ui, state, render_ctx, preview_state, solid_last_solved);
     setup_tier_mirror_indices_callback(ui, state, render_ctx, preview_state, solid_last_solved);
-    // CAD audit items 128/130/121 -- piggybacked here for the identical
-    // "wiring point" reason given above.
+    //    // "wiring point" reason given above.
     setup_adopt_all_callback(ui, state, render_ctx, preview_state, solid_last_solved);
     setup_adopt_selected_callback(ui, state, render_ctx, preview_state, solid_last_solved);
     setup_pin_to_mast_callback(ui, state, render_ctx, preview_state, solid_last_solved);
     setup_highlight_tooth_callback(ui, state);
+    //    // reason given above.
+    setup_generate_step_series_callback(ui, state, render_ctx, preview_state, solid_last_solved);
+    setup_mirror_tier_to_other_block_callback(
+        ui,
+        state,
+        render_ctx,
+        preview_state,
+        solid_last_solved,
+    );
 }
 
-/// CAD audit item 128: bulk-adopts every tier that still has an unadopted
+/// Bulk-adopts every tier that still has an unadopted
 /// `imported_meet`, as one undoable step -- built as a single [`Edit::Batch`] of
 /// per-tier [`Edit::SetConstraint`]s (mirroring `solve_actions::
 /// setup_adopt_meet_callback`'s own one-tier "Adopt") rather than looping single
@@ -1977,9 +2772,8 @@ pub(in crate::gui::editor) fn setup_toggle_detach_callback(
 /// is already what the design's last real solve produced, so re-solving here
 /// pays the same whole-schedule cost that solve already paid, not a new one.
 ///
-/// HANDOFF: needs `callback adopt_all();` declared on `EditorModel` in
-/// `ui/models/editor.slint` (not this lane's file) -- `editor_tier_table.slint`'s
-/// own "Adopt all" button (added alongside this) already calls it.
+/// Wired to `EditorModel.adopt_all()` (declared in `ui/models/editor.slint`) --
+/// `editor_tier_table.slint`'s own "Adopt all" button calls it.
 pub(in crate::gui::editor) fn setup_adopt_all_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -1993,42 +2787,51 @@ pub(in crate::gui::editor) fn setup_adopt_all_callback(
     let solid_last_solved = Arc::clone(solid_last_solved);
     let ui_weak = ui.as_weak();
     ui.global::<EditorModel>().on_adopt_all(move || {
-        let Some(ui) = ui_weak.upgrade() else {
-            return;
-        };
-        let mut st = state.borrow_mut();
-        let edits: Vec<Edit> = st
-            .design
-            .tiers
-            .iter()
-            .enumerate()
-            .filter_map(|(index, tier)| {
-                tier.imported_meet
-                    .clone()
-                    .map(|constraint| Edit::SetConstraint { index, constraint })
-            })
-            .collect();
-        if edits.is_empty() {
-            return;
-        }
-        let count = edits.len();
-        match st.apply(Edit::Batch(edits)) {
-            Ok(()) => {
-                refresh_all(&ui, &render_ctx, &preview_state, &solid_last_solved, &st);
-                drop(st);
-                let plural = if count == 1 { "" } else { "s" };
-                show_toast(
-                    &ui,
-                    &format!("Adopted {count} imported meet{plural}"),
-                    "info",
-                );
+        stall_guard("on_adopt_all", || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let mut st = state.borrow_mut();
+            let edits: Vec<Edit> = st
+                .design
+                .tiers
+                .iter()
+                .enumerate()
+                .filter_map(|(index, tier)| {
+                    tier.imported_meet
+                        .clone()
+                        .map(|constraint| Edit::SetConstraint { index, constraint })
+                })
+                .collect();
+            if edits.is_empty() {
+                return;
             }
-            Err(e) => show_toast(&ui, &e.to_string(), "error"),
-        }
+            let count = edits.len();
+            match st.apply(Edit::Batch(edits)) {
+                Ok(()) => {
+                    drop(st);
+                    refresh_all_now(
+                        &ui,
+                        &render_ctx,
+                        &preview_state,
+                        &solid_last_solved,
+                        &state,
+                        false,
+                    );
+                    let plural = if count == 1 { "" } else { "s" };
+                    show_toast(
+                        &ui,
+                        &format!("Adopted {count} imported meet{plural}"),
+                        "info",
+                    );
+                }
+                Err(e) => show_toast(&ui, &e.to_string(), "error"),
+            }
+        });
     });
 }
 
-/// CAD audit item 128's second half: like [`setup_adopt_all_callback`] above, but
+/// Like [`setup_adopt_all_callback`] above, but
 /// restricted to [`EditorState::multi_selected`] instead of every tier in the
 /// design -- freeing one Ctrl-clicked group for Optimize without also disturbing
 /// every other still-pinned tier. Applied as a single [`Edit::Batch`] for the
@@ -2036,10 +2839,8 @@ pub(in crate::gui::editor) fn setup_adopt_all_callback(
 /// silent no-op when the selection is empty or none of it has an
 /// `imported_meet` left to adopt.
 ///
-/// HANDOFF: needs `callback adopt_selected();` declared on `EditorModel` in
-/// `ui/models/editor.slint` (not this lane's file) -- already there as of this
-/// pass, so only this handler and `editor_tier_table.slint`'s own "Adopt sel."
-/// button (added alongside this) were missing.
+/// Wired to `EditorModel.adopt_selected()` (declared in `ui/models/editor.slint`)
+/// -- `editor_tier_table.slint`'s own "Adopt sel." button calls it.
 pub(in crate::gui::editor) fn setup_adopt_selected_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -2053,43 +2854,52 @@ pub(in crate::gui::editor) fn setup_adopt_selected_callback(
     let solid_last_solved = Arc::clone(solid_last_solved);
     let ui_weak = ui.as_weak();
     ui.global::<EditorModel>().on_adopt_selected(move || {
-        let Some(ui) = ui_weak.upgrade() else {
-            return;
-        };
-        let mut st = state.borrow_mut();
-        let edits: Vec<Edit> = st
-            .design
-            .tiers
-            .iter()
-            .enumerate()
-            .filter(|(index, _)| st.multi_selected.contains(index))
-            .filter_map(|(index, tier)| {
-                tier.imported_meet
-                    .clone()
-                    .map(|constraint| Edit::SetConstraint { index, constraint })
-            })
-            .collect();
-        if edits.is_empty() {
-            return;
-        }
-        let count = edits.len();
-        match st.apply(Edit::Batch(edits)) {
-            Ok(()) => {
-                refresh_all(&ui, &render_ctx, &preview_state, &solid_last_solved, &st);
-                drop(st);
-                let plural = if count == 1 { "" } else { "s" };
-                show_toast(
-                    &ui,
-                    &format!("Adopted {count} imported meet{plural} from the selection"),
-                    "info",
-                );
+        stall_guard("on_adopt_selected", || {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let mut st = state.borrow_mut();
+            let edits: Vec<Edit> = st
+                .design
+                .tiers
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| st.multi_selected.contains(index))
+                .filter_map(|(index, tier)| {
+                    tier.imported_meet
+                        .clone()
+                        .map(|constraint| Edit::SetConstraint { index, constraint })
+                })
+                .collect();
+            if edits.is_empty() {
+                return;
             }
-            Err(e) => show_toast(&ui, &e.to_string(), "error"),
-        }
+            let count = edits.len();
+            match st.apply(Edit::Batch(edits)) {
+                Ok(()) => {
+                    drop(st);
+                    refresh_all_now(
+                        &ui,
+                        &render_ctx,
+                        &preview_state,
+                        &solid_last_solved,
+                        &state,
+                        false,
+                    );
+                    let plural = if count == 1 { "" } else { "s" };
+                    show_toast(
+                        &ui,
+                        &format!("Adopted {count} imported meet{plural} from the selection"),
+                        "info",
+                    );
+                }
+                Err(e) => show_toast(&ui, &e.to_string(), "error"),
+            }
+        });
     });
 }
 
-/// CAD audit item 130: the inverse of "Adopt" -- freezes a tier's CURRENT solved
+/// The inverse of "Adopt" -- freezes a tier's CURRENT solved
 /// mast (read back here from the shared `solid_last_solved` cache the tier
 /// table's own MAST column is built from) as an exact
 /// [`MeetConstraint::ScaleReference`] anchor, through [`Edit::SetConstraint`]
@@ -2105,9 +2915,8 @@ pub(in crate::gui::editor) fn setup_adopt_selected_callback(
 /// above (and `setup_adopt_meet_callback`) do: the value pinned is already what
 /// the design's last real solve produced.
 ///
-/// HANDOFF: needs `callback pin_to_mast(int);` declared on `EditorModel` in
-/// `ui/models/editor.slint` (not this lane's file) -- the tier table's own
-/// per-row "Pin" button (added alongside this) already calls it.
+/// Wired to `EditorModel.pin_to_mast(int)` (declared in `ui/models/editor.slint`)
+/// -- the tier table's own per-row "Pin" button calls it.
 pub(in crate::gui::editor) fn setup_pin_to_mast_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -2122,53 +2931,75 @@ pub(in crate::gui::editor) fn setup_pin_to_mast_callback(
     let ui_weak = ui.as_weak();
     ui.global::<EditorModel>()
         .on_pin_to_mast(move |index: i32| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            let Ok(index) = usize::try_from(index) else {
-                return;
-            };
-            let Some(mast) = solid_last_solved
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .as_ref()
-                .and_then(|solved| solved.get(index))
-                .map(|tier| tier.mast)
-            else {
-                return;
-            };
-            let mut st = state.borrow_mut();
-            match st.apply(Edit::SetConstraint {
-                index,
-                constraint: MeetConstraint::ScaleReference(mast),
-            }) {
-                Ok(()) => {
-                    refresh_all(&ui, &render_ctx, &preview_state, &solid_last_solved, &st);
-                    drop(st);
-                    show_toast(
-                        &ui,
-                        &format!("Pinned tier {} at {mast:.4}", index + 1),
-                        "info",
-                    );
+            stall_guard("on_pin_to_mast", || {
+                let Some(ui) = ui_weak.upgrade() else {
+                    return;
+                };
+                let Ok(index) = usize::try_from(index) else {
+                    return;
+                };
+                let Some(mast) = solid_last_solved
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .as_ref()
+                    .and_then(|solved| solved.get(index))
+                    .map(|tier| tier.mast)
+                else {
+                    return;
+                };
+                let mut st = state.borrow_mut();
+                match st.apply(Edit::SetConstraint {
+                    index,
+                    constraint: MeetConstraint::ScaleReference(mast),
+                }) {
+                    Ok(()) => {
+                        // Pin freezes a tier at exactly the mast the last real solve
+                        // already
+                        // produced for it (this function's own doc comment), so a full
+                        // `refresh_all` re-solve is redundant work for the SAME reason
+                        // `setup_adopt_meet_callback`'s own doc comment gives -- and,
+                        // unlike a wholesale replace, this touches only one tier.
+                        // Pushes the immediate UI update from the CACHED solve
+                        // (`refresh_editor_panel_stale` with `dirty = {index}`, which
+                        // reads every OTHER row from the last-solved cache -- see
+                        // `push_stale_content`'s own doc comment) and lets the
+                        // background dirty-set replan confirm it via `resolve_dirty`
+                        // instead of re-solving the whole design synchronously here.
+                        let dirty: BTreeSet<usize> = std::iter::once(index).collect();
+                        refresh_editor_panel_stale(&ui, &render_ctx, &st, &dirty);
+                        submit_preview_replan(
+                            &ui,
+                            &render_ctx,
+                            &preview_state,
+                            &solid_last_solved,
+                            &st,
+                            dirty,
+                            false,
+                        );
+                        show_toast(
+                            &ui,
+                            &format!("Pinned tier {} at {mast:.4}", index + 1),
+                            "info",
+                        );
+                    }
+                    Err(e) => show_toast(&ui, &e.to_string(), "error"),
                 }
-                Err(e) => show_toast(&ui, &e.to_string(), "error"),
-            }
+            });
         });
 }
 
-/// CAD audit item 121's remaining half: a clicked index-wheel tooth
+/// A clicked index-wheel tooth
 /// (`solid_preview::diagram_wiring::setup_diagram_hover_and_click_callbacks`'s
 /// own miss branch, which already reports the id through
-/// `SolidPreviewModel.diagram_clicked_tooth` -- see that function's own HANDOFF
+/// `SolidPreviewModel.diagram_clicked_tooth` -- see that function's own doc
 /// comment naming this callback as the intended consumer) now highlights every
 /// facet sharing that tooth, using the reverse of the lookup
 /// [`setup_toggle_multi_select_callback`] already does the forward direction of:
 /// that one turns a set of TIER indices into their member facet ids via
 /// `FacetMap::facets_of_tier`; this one turns one GEAR TOOTH into every facet id
 /// whose own `FacetMap::index_on_gear` matches it, by scanning
-/// `0..FacetMap::facet_count()` -- the "reverse lookup the facet map already
-/// offers" (`cad_todo.md` item 121), since nothing in `facet_map.rs` (not this
-/// lane's file) exposes a dedicated tooth-to-facets index. Reuses
+/// `0..FacetMap::facet_count()`, since `facet_map.rs` exposes no dedicated
+/// tooth-to-facets index. Reuses
 /// [`FacetOverlay::multi_selected`] for the tint rather than adding a new overlay
 /// field, which would need a `facet_map.rs`/`preview_state.rs` change.
 ///
@@ -2176,12 +3007,11 @@ pub(in crate::gui::editor) fn setup_pin_to_mast_callback(
 /// default) clears the highlight instead of leaving a stale one from a previous
 /// click.
 ///
-/// HANDOFF: needs `callback highlight_tooth(int);` declared on `EditorModel` in
-/// `ui/models/editor.slint` (not this lane's file) -- `editor_tier_table.slint`'s
-/// own `tracked_clicked_tooth` mirror (added alongside this; see that property's
-/// doc comment for why a mirrored property, not a `changed` handler on the
-/// global itself, is what calls it) already invokes it whenever
-/// `SolidPreviewModel.diagram_clicked_tooth` changes.
+/// Wired to `EditorModel.highlight_tooth(int)` (declared in
+/// `ui/models/editor.slint`) -- `editor_tier_table.slint`'s own
+/// `tracked_clicked_tooth` mirror (see that property's doc comment for why a
+/// mirrored property, not a `changed` handler on the global itself, is what calls
+/// it) invokes it whenever `SolidPreviewModel.diagram_clicked_tooth` changes.
 pub(in crate::gui::editor) fn setup_highlight_tooth_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -2197,15 +3027,7 @@ pub(in crate::gui::editor) fn setup_highlight_tooth_callback(
                 return;
             }
             let st = state.borrow();
-            let solved = auto_solve::solid_last_solved()
-                .and_then(|cache| {
-                    cache
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .clone()
-                })
-                .unwrap_or_default();
-            let facet_map = FacetMap::from_design(&st.design, &solved);
+            let facet_map = facet_map_from_aligned_solve(&st.design);
             let tooth = tooth as u32;
             let facet_ids: Vec<u32> = (0..facet_map.facet_count() as u32)
                 .filter(|&facet_id| facet_map.index_on_gear(facet_id as usize) == tooth)
@@ -2224,9 +3046,9 @@ pub(in crate::gui::editor) fn setup_highlight_tooth_callback(
 /// actually holds. Wired up from [`setup_toggle_detach_callback`]'s own call site
 /// (see that function's doc comment's "wiring point" section for why).
 ///
-/// HANDOFF: needs `callback facet_remove(int, float);` declared on `EditorModel` in
-/// `ui/models/editor.slint` (tier index, index-wheel position) -- the per-facet
-/// index chips that would call it live in the inspector, owned by another lane.
+/// Wired to `EditorModel.facet_remove(int, float)` (declared in
+/// `ui/models/editor.slint`; tier index, index-wheel position) -- the per-facet
+/// index chips that call it live in `editor_inspector.slint`.
 pub(in crate::gui::editor) fn setup_facet_remove_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -2254,7 +3076,12 @@ pub(in crate::gui::editor) fn setup_facet_remove_callback(
                 .and_then(|edit| st.apply(edit))
             {
                 Ok(()) => {
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st);
+                    refresh_editor_panel_stale(
+                        &ui,
+                        &render_ctx,
+                        &st,
+                        &BTreeSet::from([tier_index]),
+                    );
                     submit_preview_replan(
                         &ui,
                         &render_ctx,
@@ -2278,9 +3105,9 @@ pub(in crate::gui::editor) fn setup_facet_remove_callback(
 /// own "empty vs. non-empty" convention one level down (a single occurrence rather
 /// than the whole tier).
 ///
-/// HANDOFF: needs `callback facet_toggle_detach(int, float);` declared on
-/// `EditorModel` in `ui/models/editor.slint` -- same inspector-owned chips as
-/// [`setup_facet_remove_callback`]'s own handoff.
+/// Wired to `EditorModel.facet_toggle_detach(int, float)` (declared in
+/// `ui/models/editor.slint`) -- called from the same per-facet chips in
+/// `editor_inspector.slint` as [`setup_facet_remove_callback`].
 pub(in crate::gui::editor) fn setup_facet_toggle_detach_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -2313,7 +3140,12 @@ pub(in crate::gui::editor) fn setup_facet_toggle_detach_callback(
             };
             match edit_result.and_then(|edit| st.apply(edit)) {
                 Ok(()) => {
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st);
+                    refresh_editor_panel_stale(
+                        &ui,
+                        &render_ctx,
+                        &st,
+                        &BTreeSet::from([tier_index]),
+                    );
                     submit_preview_replan(
                         &ui,
                         &render_ctx,
@@ -2334,9 +3166,9 @@ pub(in crate::gui::editor) fn setup_facet_toggle_detach_callback(
 /// that method's own doc comment): an addition can never leave a half-populated
 /// orbit unit behind.
 ///
-/// HANDOFF: needs `callback facet_add(int, float);` declared on `EditorModel` in
-/// `ui/models/editor.slint` -- same inspector-owned chips as
-/// [`setup_facet_remove_callback`]'s own handoff.
+/// Wired to `EditorModel.facet_add(int, float)` (declared in
+/// `ui/models/editor.slint`) -- called from the same per-facet chips in
+/// `editor_inspector.slint` as [`setup_facet_remove_callback`].
 pub(in crate::gui::editor) fn setup_facet_add_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -2364,7 +3196,12 @@ pub(in crate::gui::editor) fn setup_facet_add_callback(
                 .and_then(|edit| st.apply(edit))
             {
                 Ok(()) => {
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st);
+                    refresh_editor_panel_stale(
+                        &ui,
+                        &render_ctx,
+                        &st,
+                        &BTreeSet::from([tier_index]),
+                    );
                     submit_preview_replan(
                         &ui,
                         &render_ctx,
@@ -2384,10 +3221,9 @@ pub(in crate::gui::editor) fn setup_facet_add_callback(
 /// the tier at `tier_index` (both `indices` and `detached`) by `k_teeth` around the
 /// gear, via [`Design::rotate_indices`].
 ///
-/// HANDOFF: needs `callback tier_rotate_indices(int, float);` declared on
-/// `EditorModel` in `ui/models/editor.slint` (tier index, teeth to rotate by) -- the
-/// inspector control that would call it (a "rotate this tier" stepper next to its
-/// index chips) is owned by another lane.
+/// Wired to `EditorModel.tier_rotate_indices(int, float)` (declared in
+/// `ui/models/editor.slint`; tier index, teeth to rotate by) -- the inspector's
+/// "rotate this tier" stepper in `editor_inspector.slint` calls it.
 pub(in crate::gui::editor) fn setup_tier_rotate_indices_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -2415,7 +3251,12 @@ pub(in crate::gui::editor) fn setup_tier_rotate_indices_callback(
                 .and_then(|edit| st.apply(edit))
             {
                 Ok(()) => {
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st);
+                    refresh_editor_panel_stale(
+                        &ui,
+                        &render_ctx,
+                        &st,
+                        &BTreeSet::from([tier_index]),
+                    );
                     submit_preview_replan(
                         &ui,
                         &render_ctx,
@@ -2435,9 +3276,9 @@ pub(in crate::gui::editor) fn setup_tier_rotate_indices_callback(
 /// the tier at `tier_index` (both `indices` and `detached`) to the other side of the
 /// symmetry axis, via [`Design::mirror_indices`].
 ///
-/// HANDOFF: needs `callback tier_mirror_indices(int);` declared on `EditorModel` in
-/// `ui/models/editor.slint` -- same inspector-owned control as
-/// [`setup_tier_rotate_indices_callback`]'s own handoff.
+/// Wired to `EditorModel.tier_mirror_indices(int)` (declared in
+/// `ui/models/editor.slint`) -- called from the same inspector control in
+/// `editor_inspector.slint` as [`setup_tier_rotate_indices_callback`].
 pub(in crate::gui::editor) fn setup_tier_mirror_indices_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -2465,7 +3306,12 @@ pub(in crate::gui::editor) fn setup_tier_mirror_indices_callback(
                 .and_then(|edit| st.apply(edit))
             {
                 Ok(()) => {
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st);
+                    refresh_editor_panel_stale(
+                        &ui,
+                        &render_ctx,
+                        &st,
+                        &BTreeSet::from([tier_index]),
+                    );
                     submit_preview_replan(
                         &ui,
                         &render_ctx,
@@ -2524,7 +3370,15 @@ pub(in crate::gui::editor) fn setup_move_tier_callback(
                 to: target,
             }) {
                 Ok(()) => {
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st);
+                    // A move can shift index-wheel alignment for every tier between
+                    // the old and new position, not tracked precisely here -- same
+                    // "blast radius unknown" treatment as Undo/Redo.
+                    refresh_editor_panel_stale(
+                        &ui,
+                        &render_ctx,
+                        &st,
+                        &(0..st.design.tiers.len()).collect(),
+                    );
                     submit_preview_replan(
                         &ui,
                         &render_ctx,
@@ -2595,7 +3449,7 @@ pub(in crate::gui::editor) fn setup_complete_orbit_callback(
             }
             match last_err {
                 None => {
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st);
+                    refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::from([index]));
                     submit_preview_replan(
                         &ui,
                         &render_ctx,
@@ -2675,7 +3529,9 @@ pub(in crate::gui::editor) fn setup_remove_multi_selected_callback(
             }
             match last_err {
                 None => {
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st);
+                    // Tier count changed -- the length check falls back to a full
+                    // solve regardless of `dirty`.
+                    refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::new());
                     submit_preview_replan(
                         &ui,
                         &render_ctx,
@@ -2693,6 +3549,28 @@ pub(in crate::gui::editor) fn setup_remove_multi_selected_callback(
                 Some(e) => show_toast(&ui, &e.to_string(), "error"),
             }
         });
+}
+
+/// Whether a plain material
+/// pick (`picked_name`, with no typed RI override of its own) should pin
+/// [`MaterialSelection::refractive_index_override`] to the design's legacy
+/// exported RI (`legacy_ri`, i.e. `meta.refractive_index` -- the schedule's own
+/// `I` line) so the pick does not silently rewrite it. Returns `None` (pick
+/// stays unpinned, the newly resolved material's own `n_D` wins) whenever
+/// `previous_material_name` is `Some`: once a design already has a NAMED
+/// material, that material's own `n_D` (or an explicit typed override) is the
+/// design's RI story from then on, and pinning the OUTGOING material's RI onto
+/// the incoming one would be exactly the bug this guard exists to prevent --
+/// see [`loading::ri_override_to_preserve`] for the tolerance check itself.
+fn ri_override_for_material_pick(
+    picked_name: Option<&str>,
+    previous_material_name: Option<&str>,
+    legacy_ri: f64,
+) -> Option<f64> {
+    if previous_material_name.is_some() {
+        return None;
+    }
+    loading::ri_override_to_preserve(picked_name?, legacy_ri)
 }
 
 /// The design settings panel's material combo + RI override field -- applies
@@ -2729,32 +3607,98 @@ pub(in crate::gui::editor) fn setup_apply_design_material_callback(
                 &options,
                 &st.design.material,
             ) {
-                Ok(material) => match st.apply(Edit::SetMaterial { material }) {
-                    Ok(()) => {
-                        refresh_editor_panel_stale(&ui, &render_ctx, &st);
-                        submit_preview_replan(
-                            &ui,
-                            &render_ctx,
-                            &preview_state,
-                            &solid_last_solved,
-                            &st,
-                            BTreeSet::new(),
-                            false,
+                Ok(mut material) => {
+                    // A plain material
+                    // pick (no typed RI override -- that path is left alone, it
+                    // is an explicit choice) must not silently change what the
+                    // exported I line reads, but must also not pin the OUTGOING
+                    // material's RI onto the incoming one. See
+                    // `ri_override_for_material_pick`'s own doc comment.
+                    if material.refractive_index_override.is_none() {
+                        material.refractive_index_override = ri_override_for_material_pick(
+                            material.name.as_deref(),
+                            st.design.material.name.as_deref(),
+                            st.design.meta.refractive_index,
                         );
                     }
-                    Err(e) => show_toast(&ui, &e.to_string(), "error"),
-                },
+                    match st.apply(Edit::SetMaterial { material }) {
+                        Ok(()) => {
+                            // A material change never moves a tier's own mast.
+                            refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::new());
+                            submit_preview_replan(
+                                &ui,
+                                &render_ctx,
+                                &preview_state,
+                                &solid_last_solved,
+                                &st,
+                                BTreeSet::new(),
+                                false,
+                            );
+                        }
+                        Err(e) => show_toast(&ui, &e.to_string(), "error"),
+                    }
+                }
                 Err(e) => show_toast(&ui, &e, "error"),
             }
         },
     );
 }
 
+/// "Set material" on an inferred-material guess (the "Inferred material shown as
+/// a guess, never as a fact" principle) -- writes `name` into the design's
+/// [`indicatrix_cut_core::MaterialSelection`]
+/// as an ordinary, undoable `Edit::SetMaterial`, keeping the design's own
+/// current specific-gravity/RI-override fields untouched (only the NAME
+/// changes -- this is "confirm the guess", not "reconfigure the material").
+/// Once a name is set, `view::refresh_design_settings` stops computing a
+/// guess at all (`design.material.name.is_some()`), so the guess label
+/// disappears and the next native save carries the confirmed name through
+/// `design.material`.
+pub(in crate::gui::editor) fn setup_material_guess_set_callback(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
+    solid_last_solved: &SolidLastSolved,
+) {
+    let state = Rc::clone(state);
+    let render_ctx = Arc::clone(render_ctx);
+    let preview_state = Arc::clone(preview_state);
+    let solid_last_solved = Arc::clone(solid_last_solved);
+    let ui_weak = ui.as_weak();
+    ui.global::<EditorModel>()
+        .on_set_material_from_guess(move |name: SharedString| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let mut st = state.borrow_mut();
+            let mut material = st.design.material.clone();
+            material.name = Some(name.to_string());
+            match st.apply(Edit::SetMaterial { material }) {
+                Ok(()) => {
+                    // A material name change never moves a tier's own mast.
+                    refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::new());
+                    submit_preview_replan(
+                        &ui,
+                        &render_ctx,
+                        &preview_state,
+                        &solid_last_solved,
+                        &st,
+                        BTreeSet::new(),
+                        false,
+                    );
+                    show_toast(&ui, &format!("Material set to {name}."), "success");
+                }
+                Err(e) => show_toast(&ui, &e.to_string(), "error"),
+            }
+        });
+}
+
 /// The design settings panel's Symmetry/Mirror "Apply" -- wholesale
 /// [`Edit::SetSchedule`], keeping the design's CURRENT gear (this control never
 /// changes gear -- that's [`setup_gear_apply_callback`]'s job, since only a gear
 /// change needs the remap confirmation). Also registers
-/// [`EditorModel::on_request_symmetry_preview`] (CAD audit item 135): a live
+/// [`EditorModel::on_request_symmetry_preview`]: a live
 /// dry-run preview of the SAME proposed change, computed as the Symmetry Order
 /// field is edited or Mirror is toggled, so switching (say) 8-fold to 6-fold no
 /// longer turns rows amber with no warning and no chance to reconsider before
@@ -2774,8 +3718,7 @@ pub(in crate::gui::editor) fn setup_apply_symmetry_callback(
     let render_ctx = Arc::clone(render_ctx);
     let preview_state = Arc::clone(preview_state);
     let solid_last_solved = Arc::clone(solid_last_solved);
-    // CAD audit item 135's own preview half -- cloned from `state` BEFORE
-    // `on_apply_symmetry` below moves the ORIGINAL `state` binding into its
+    //    // `on_apply_symmetry` below moves the ORIGINAL `state` binding into its
     // own closure, not after (that closure is `move`, so `state` is gone once
     // it is constructed).
     let state_preview = Rc::clone(&state);
@@ -2804,9 +3747,15 @@ pub(in crate::gui::editor) fn setup_apply_symmetry_callback(
                 mirror,
             }) {
                 Ok(()) => {
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st);
                     // Symmetry/mirror can move every tier's index-wheel position, not
-                    // tracked precisely here, so force a full (non-blocking) solve.
+                    // tracked precisely here, so force a full (non-blocking) solve --
+                    // and trust no cached mast either.
+                    refresh_editor_panel_stale(
+                        &ui,
+                        &render_ctx,
+                        &st,
+                        &(0..st.design.tiers.len()).collect(),
+                    );
                     submit_preview_replan(
                         &ui,
                         &render_ctx,
@@ -2822,8 +3771,7 @@ pub(in crate::gui::editor) fn setup_apply_symmetry_callback(
         },
     );
 
-    // CAD audit item 135's own preview half -- see this function's own doc
-    // comment above.
+    //    // comment above.
     let ui_weak_preview = ui.as_weak();
     ui.global::<EditorModel>().on_request_symmetry_preview(
         move |symmetry_order_text: SharedString, mirror: bool| {
@@ -2867,7 +3815,7 @@ pub(in crate::gui::editor) fn setup_gear_apply_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
 ) {
-    let state = Rc::clone(state);
+    let state_apply = Rc::clone(state);
     let ui_weak = ui.as_weak();
     ui.global::<EditorModel>().on_gear_apply(
         move |gear_preset_index: i32, gear_custom_text: SharedString| {
@@ -2881,7 +3829,7 @@ pub(in crate::gui::editor) fn setup_gear_apply_callback(
                     return;
                 }
             };
-            let mut st = state.borrow_mut();
+            let mut st = state_apply.borrow_mut();
             let from_gear = st.design.meta.gear_teeth;
             if to_gear == from_gear {
                 show_toast(&ui, "Already using this gear.", "info");
@@ -2897,20 +3845,63 @@ pub(in crate::gui::editor) fn setup_gear_apply_callback(
                 mirror: st.design.meta.mirror,
                 rounding,
             });
+            // Records which generation this preview was built
+            // against, so `setup_gear_remap_confirm_callback` can refuse to apply a
+            // preview the design has since moved past -- see
+            // `PENDING_GEAR_REMAP_GENERATION`'s own doc comment.
+            PENDING_GEAR_REMAP_GENERATION
+                .with(|cell| cell.set(Some(st.generation.load(Ordering::Relaxed))));
             drop(st);
             ui.global::<EditorModel>()
                 .set_gear_remap_rows(ModelRc::new(VecModel::from(rows)));
             ui.global::<EditorModel>().set_gear_remap_open(true);
         },
     );
+
+    // `EditorModel.gear_remap_set_rounding` (`ui/models/editor.slint`) is
+    // registered here, alongside `on_gear_apply` above, rather than as its own
+    // `setup_*` function: a new registration needs no new call site in
+    // `gui::editor::mod`'s hub, while a new function would. This is what lets the
+    // UI's own rounding choice reach `PendingGearRemap`'s existing `rounding`
+    // field and `gear_remap_preview`'s existing parameter for it. Re-runs the
+    // SAME dry-run preview `on_gear_apply` above computes, just with the newly
+    // chosen rounding, so the red/black preview rows stay honest about what
+    // Confirm will actually do.
+    let state_rounding = Rc::clone(state);
+    let ui_weak_rounding = ui.as_weak();
+    ui.global::<EditorModel>()
+        .on_gear_remap_set_rounding(move |rounding_index: i32| {
+            let Some(ui) = ui_weak_rounding.upgrade() else {
+                return;
+            };
+            let rounding = match rounding_index {
+                1 => RemapRounding::Floor,
+                2 => RemapRounding::Ceil,
+                _ => RemapRounding::Nearest,
+            };
+            let mut st = state_rounding.borrow_mut();
+            let Some(pending) = st.pending_gear_remap.as_mut() else {
+                // Defensive only: the rounding selector only shows while a remap
+                // is pending, same as Confirm's own no-op guard.
+                return;
+            };
+            pending.rounding = rounding;
+            let from_gear = pending.from_gear;
+            let to_gear = pending.to_gear;
+            let rows: Vec<GearRemapRow> =
+                gear_remap_preview(&st.design, from_gear, to_gear, rounding);
+            drop(st);
+            ui.global::<EditorModel>()
+                .set_gear_remap_rows(ModelRc::new(VecModel::from(rows)));
+        });
 }
 
 /// The gear-remap confirmation panel's "Apply" -- commits
 /// [`EditorState::pending_gear_remap`] as ONE undoable `History` step, an
-/// [`Edit::Batch`] of [`Edit::RemapIndices`] then [`Edit::SetSchedule`] (CAD audit
-/// items 79/86) -- previously two separate, independently-undoable steps, so one
-/// Undo after a gear change could leave indices remapped for the new gear while
-/// the schedule still named the old one. A no-op (closes the panel only) if
+/// [`Edit::Batch`] of [`Edit::RemapIndices`] then [`Edit::SetSchedule`] -- as two
+/// separate, independently-undoable steps, one Undo after a gear change could
+/// leave indices remapped for the new gear while the schedule still named the old
+/// one. A no-op (closes the panel only) if
 /// nothing is pending -- defensive only, since this button only shows while a
 /// real remap is pending.
 pub(in crate::gui::editor) fn setup_gear_remap_confirm_callback(
@@ -2934,6 +3925,24 @@ pub(in crate::gui::editor) fn setup_gear_remap_confirm_callback(
             ui.global::<EditorModel>().set_gear_remap_open(false);
             return;
         };
+        // Refuses a Confirm whose preview no longer describes
+        // the live design -- an edit landed (a tier add/edit, an Undo, another
+        // Apply) while the panel sat open, so `pending`'s from/to-gear rows may no
+        // longer match what `Edit::RemapIndices`/`Edit::SetSchedule` are about to do.
+        // Matches `retarget_actions::apply_pending_retarget`'s own stale-generation
+        // refusal shape.
+        let started_generation = PENDING_GEAR_REMAP_GENERATION.with(Cell::take);
+        if started_generation.is_some_and(|g| g != st.generation.load(Ordering::Relaxed)) {
+            ui.global::<EditorModel>().set_gear_remap_open(false);
+            show_toast(
+                &ui,
+                "The design changed while Apply Gear was open, so this preview no \
+                 longer matches it. Re-open Apply Gear to remap against the current \
+                 design.",
+                "warning",
+            );
+            return;
+        }
         let batch_result = st.apply(Edit::Batch(vec![
             Edit::RemapIndices {
                 from_gear: pending.from_gear,
@@ -2949,9 +3958,15 @@ pub(in crate::gui::editor) fn setup_gear_remap_confirm_callback(
         ui.global::<EditorModel>().set_gear_remap_open(false);
         match batch_result {
             Ok(()) => {
-                refresh_editor_panel_stale(&ui, &render_ctx, &st);
                 // A gear remap rewrites every tier's index-wheel position -- force a
-                // full solve rather than guessing a `dirty` set.
+                // full solve rather than guessing a `dirty` set, and trust no cached
+                // mast either.
+                refresh_editor_panel_stale(
+                    &ui,
+                    &render_ctx,
+                    &st,
+                    &(0..st.design.tiers.len()).collect(),
+                );
                 submit_preview_replan(
                     &ui,
                     &render_ctx,
@@ -2981,29 +3996,33 @@ pub(in crate::gui::editor) fn setup_gear_remap_cancel_callback(
             return;
         };
         state.borrow_mut().pending_gear_remap = None;
+        // Matches the `take()` in `setup_gear_remap_confirm_callback` -- no pending
+        // remap should ever leave a stale recorded generation behind it.
+        PENDING_GEAR_REMAP_GENERATION.with(|cell| cell.set(None));
         ui.global::<EditorModel>().set_gear_remap_open(false);
     });
 }
 
-// CAD audit item 86's other half (rounding choice) is NOT implemented here --
-// see this file's end-of-task handoff notes. Wiring it requires a new
-// `EditorModel` callback (`ui/models/editor.slint`, not owned by this lane)
-// and a call to register its handler from `gui/editor/mod.rs` (also not owned
-// by this lane); a Rust handler added here ahead of that Slint declaration
-// would fail to build (the generated `EditorModel::on_gear_remap_set_rounding`
-// would not exist yet) and block this lane's own clippy verification for
-// every other fix in this file. See the handoff note for the exact shape.
-
 /// The viewport's "Linked to design" checkbox -- when switched ON, syncs the shared
 /// viewport's render material to the design's own material IMMEDIATELY, so turning it
 /// on feels responsive. `refresh_design_settings` keeps it in sync from then on.
+///
+/// Calls [`view::sync_viewport_material_link`] directly (`pub(super)`) rather than
+/// the heavier `refresh_editor_panel_stale`, which would wipe the solved-state
+/// banner, MAST/SOLVE figures, warnings and yield report and schedule a full
+/// background re-solve for what is a display-only toggle that never touches
+/// `Design`. Calling the real function directly, rather than a narrower copy,
+/// also keeps the Render Material dropdown's own displayed index and
+/// `stone_width_mm` in sync alongside `material_name` -- all three must move
+/// together, or turning "Linked" on after picking a different material in the
+/// dropdown would leave the dropdown and the absorption-path scaling both stale.
 pub(in crate::gui::editor) fn setup_viewport_material_linked_changed_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
     render_ctx: &Arc<Mutex<RenderContext>>,
 ) {
-    let state = Rc::clone(state);
-    let render_ctx = Arc::clone(render_ctx);
+    let state_linked = Rc::clone(state);
+    let render_ctx_linked = Arc::clone(render_ctx);
     let ui_weak = ui.as_weak();
     ui.global::<ViewportModel>()
         .on_viewport_material_linked_changed(move |linked: bool| {
@@ -3011,13 +4030,121 @@ pub(in crate::gui::editor) fn setup_viewport_material_linked_changed_callback(
                 return;
             };
             if linked {
-                let st = state.borrow();
-                refresh_editor_panel_stale(&ui, &render_ctx, &st);
+                let st = state_linked.borrow();
+                let selected_material_index = {
+                    let mut ctx = render_ctx_linked
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    sync_viewport_material_link(&ui, &mut ctx, &st.design)
+                };
+                drop(st);
+                // Set only after the `render_ctx` guard above is
+                // dropped -- see `sync_viewport_material_link`'s own doc comment.
+                if let Some(idx) = selected_material_index {
+                    ui.global::<ViewportModel>()
+                        .set_selected_material_index(idx);
+                }
             }
         });
+
+    // Registered here, alongside the viewport-link callback
+    // above, rather than as its own `setup_*` function -- both need exactly
+    // `(ui, state, render_ctx)`, and a new registration needs no new call site in
+    // `gui::editor::mod`'s hub the way a new function would. Wired to
+    // `EditorModel.apply_printed_proportions` (`ui/models/editor.slint`), called
+    // from `editor_design_settings.slint`.
+    let state_props = Rc::clone(state);
+    let render_ctx_props = Arc::clone(render_ctx);
+    let ui_weak_props = ui.as_weak();
+    ui.global::<EditorModel>().on_apply_printed_proportions(
+        move |vol_w3: SharedString,
+              lw: SharedString,
+              cw: SharedString,
+              pw: SharedString,
+              hw: SharedString| {
+            let Some(ui) = ui_weak_props.upgrade() else {
+                return;
+            };
+            let props = match parse_printed_proportions_form(&vol_w3, &lw, &cw, &pw, &hw) {
+                Ok(props) => props,
+                Err(e) => {
+                    show_toast(&ui, &e, "error");
+                    return;
+                }
+            };
+            let has_any = props.vol_w3.is_some()
+                || props.lw.is_some()
+                || props.cw.is_some()
+                || props.pw.is_some()
+                || props.hw.is_some();
+            let mut st = state_props.borrow_mut();
+            st.printed_proportions = has_any.then_some(props);
+            // A printed-proportions edit never moves a tier's own mast.
+            refresh_editor_panel_stale(&ui, &render_ctx_props, &st, &BTreeSet::new());
+            drop(st);
+            show_toast(
+                &ui,
+                if has_any {
+                    "Printed proportions saved -- Deep Solve can now verify against them."
+                } else {
+                    "Printed proportions cleared."
+                },
+                "success",
+            );
+        },
+    );
 }
 
-/// CAD audit item 117's input half: maps an incoming Solid-viewport pointer
+/// One printed-proportions field's text, parsed as `None` for blank text or
+/// `Some(value)` for a finite positive number -- shared by
+/// [`parse_printed_proportions_form`] across all five fields.
+///
+/// # Errors
+///
+/// A ready-to-toast message naming `label` when `text` is non-blank but does not
+/// parse as a finite positive number.
+fn parse_printed_proportions_field(label: &str, text: &str) -> Result<Option<f64>, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let value: f64 = trimmed
+        .parse()
+        .map_err(|_| format!("{label} '{trimmed}' is not a number."))?;
+    if !value.is_finite() || value <= 0.0 {
+        return Err(format!("{label} must be a positive number."));
+    }
+    Ok(Some(value))
+}
+
+/// Parses the printed-proportions panel's five text fields
+/// into an [`ExternalProportions`], the exact shape
+/// [`super::super::loading::external_proportions_from_full_record`] already
+/// builds from a catalogue row's own measured columns -- see that function's own
+/// doc comment for the target this feeds ([`EditorState::printed_proportions`],
+/// Deep Solve's external verification).
+///
+/// # Errors
+///
+/// The first field (in `vol_w3, lw, cw, pw, hw` order) that fails to parse, via
+/// [`parse_printed_proportions_field`].
+fn parse_printed_proportions_form(
+    vol_w3: &str,
+    lw: &str,
+    cw: &str,
+    pw: &str,
+    hw: &str,
+) -> Result<indicatrix::geometry::stone_metrics::ExternalProportions, String> {
+    Ok(indicatrix::geometry::stone_metrics::ExternalProportions {
+        vol_w3: parse_printed_proportions_field("Vol/W\u{b3}", vol_w3)?,
+        lw: parse_printed_proportions_field("L/W", lw)?,
+        cw: parse_printed_proportions_field("C/W", cw)?,
+        pw: parse_printed_proportions_field("P/W", pw)?,
+        hw: parse_printed_proportions_field("H/W", hw)?,
+    })
+}
+
+/// Maps an incoming Solid-viewport pointer
 /// position (`SolidPreviewModel.on_facet_hover`/`on_facet_click`'s own `x`/`y`,
 /// LOGICAL pixels) onto the pick buffer's PHYSICAL-pixel coordinate space.
 ///
@@ -3082,23 +4209,23 @@ fn letterbox_margin(viewport_physical: (u32, u32), contained_physical: (u32, u32
 /// (`SlintSolidSink::apply`, `gui::mod`). A silent no-op off the silhouette or before
 /// anything has ever rendered.
 ///
-/// # #22: indexes the frame's own table instead of rebuilding a `FacetMap`
+/// # Indexes the frame's own table instead of rebuilding a `FacetMap`
 ///
-/// Every hover used to call `FacetMap::from_design(&st.design, &solved)` -- a full
+/// Rebuilding `FacetMap::from_design(&st.design, &solved)` -- a full
 /// `Design::planes_from_solved`-equivalent rebuild plus a fresh `dedup_planes` pass --
-/// on every single mouse-move event. `solid_hover_text` already holds exactly the
-/// string this map would have produced for each facet id, computed ONCE per rendered
-/// frame by the worker thread (`preview_state::update_diagram_memory_from_design`'s
-/// Solid-mode counterpart), so this now degrades to one `Vec::get`. Neither `Design`
-/// nor the last-solved mast cache is needed here any more (an editor edit that
-/// hasn't re-rendered yet still shows the PREVIOUS frame's hover text, exactly as it
-/// showed the previous frame's picked geometry -- no new staleness).
+/// on every single mouse-move event would be wasteful. `solid_hover_text` already
+/// holds exactly the string that map would produce for each facet id, computed ONCE
+/// per rendered frame by the worker thread
+/// (`preview_state::update_diagram_memory_from_design`'s Solid-mode counterpart), so
+/// this degrades to one `Vec::get`. Neither `Design` nor the last-solved mast cache
+/// is needed here at all (an editor edit that hasn't re-rendered yet still shows the
+/// PREVIOUS frame's hover text, exactly as it shows the previous frame's picked
+/// geometry -- no new staleness).
 ///
-/// HANDOFF: needs a `solid_hover_text: &Arc<Mutex<Vec<String>>>` parameter added to
-/// this call in `gui::editor::mod::setup_editor_callbacks` (not this lane's file),
-/// sourced from the `solid_hover_text` binding `gui::mod::build_main_window` already
-/// creates (currently unused past `SlintSolidSink`'s own construction) -- see that
-/// file's own "#22" comment for the exact spot.
+/// `solid_hover_text` reaches this callback through `solid_pick_state` (see
+/// [`SolidPickState`]'s own doc comment): `gui::mod::build_main_window` owns the
+/// `Arc<Mutex<Vec<String>>>` `SlintSolidSink` writes every frame, and bundles it into
+/// the `SolidPickState` this function's caller passes through.
 pub(in crate::gui::editor) fn setup_solid_facet_hover_callback(
     ui: &MainWindow,
     solid_pick_state: &SolidPickState,
@@ -3118,7 +4245,7 @@ pub(in crate::gui::editor) fn setup_solid_facet_hover_callback(
             // viewport is physical x=800 in a 1600-wide pick buffer. Dividing would
             // collapse every pick into the top-left quarter of the image.
             // `solid_preview::diagram_wiring` does the same for the diagram's own
-            // pick buffer. CAD audit item 117: in Path-traced/Both mode the pick
+            // pick buffer. In Path-traced/Both mode the pick
             // buffer is smaller than the raw viewport (letterboxed), so
             // `map_to_pick_coordinates` also subtracts the centred margin --
             // see that function's own doc comment. `.max(0.0) as u32` saturates a
@@ -3133,7 +4260,13 @@ pub(in crate::gui::editor) fn setup_solid_facet_hover_callback(
                 .as_ref()
                 .and_then(|pick| pick.facet_at(px.max(0.0) as u32, py.max(0.0) as u32));
             let Some(facet_id) = facet_id else {
-                ui.global::<SolidPreviewModel>().set_hover_text("".into());
+                // Falls back to the last CLICKED facet's own
+                // label (if any) instead of blanking the tooltip outright, so the
+                // selection stays readable once the pointer leaves it -- see
+                // `SELECTED_FACET_LABEL`'s own doc comment.
+                let selected_label = SELECTED_FACET_LABEL.with(|cell| cell.borrow().clone());
+                ui.global::<SolidPreviewModel>()
+                    .set_hover_text(selected_label.into());
                 if let Some(preview_state) = auto_solve::preview_state() {
                     resubmit_facet_overlay(&preview_state, |overlay| overlay.hovered = None);
                 }
@@ -3156,24 +4289,22 @@ pub(in crate::gui::editor) fn setup_solid_facet_hover_callback(
 /// tier in the list" link (see [`setup_solid_selected_tier_changed_callback`] for the
 /// reverse half).
 ///
-/// # #22: indexes the frame's own table instead of rebuilding a `FacetMap`
+/// # Indexes the frame's own table instead of rebuilding a `FacetMap`
 ///
 /// See [`setup_solid_facet_hover_callback`]'s matching doc section: `solid_facet_tier`
 /// is the last rendered frame's own `PreviewFrame::facet_tier` table, so resolving a
-/// clicked facet to its owning tier is now one `Vec::get` instead of a fresh
+/// clicked facet to its owning tier is one `Vec::get` instead of a fresh
 /// `FacetMap::from_design` rebuild. Neither `Design` nor the last-solved mast cache is
-/// needed here any more.
-///
-/// HANDOFF: needs a `solid_facet_tier: &Arc<Mutex<Vec<Option<usize>>>>` parameter
-/// added to this call in `gui::editor::mod::setup_editor_callbacks` (not this lane's
-/// file), sourced from the `solid_facet_tier` binding `gui::mod::build_main_window`
-/// already creates -- same handoff spot as `setup_solid_facet_hover_callback`'s own.
+/// needed here at all. `solid_facet_tier` reaches this callback the same way
+/// `solid_hover_text` reaches the hover callback: through `solid_pick_state`, bundled
+/// there by `gui::mod::build_main_window`.
 pub(in crate::gui::editor) fn setup_solid_facet_click_callback(
     ui: &MainWindow,
     solid_pick_state: &SolidPickState,
 ) {
     let solid_pick = Arc::clone(&solid_pick_state.pick);
     let solid_facet_tier = Arc::clone(&solid_pick_state.facet_tier);
+    let solid_hover_text = Arc::clone(&solid_pick_state.hover_text);
     let ui_weak = ui.as_weak();
     ui.global::<SolidPreviewModel>()
         .on_facet_click(move |x: f32, y: f32| {
@@ -3190,16 +4321,21 @@ pub(in crate::gui::editor) fn setup_solid_facet_click_callback(
                 .as_ref()
                 .and_then(|pick| pick.facet_at(px.max(0.0) as u32, py.max(0.0) as u32))
             else {
-                // CAD audit item 229: a click that misses the silhouette clears
+                // A click that misses the silhouette clears
                 // the tier selection instead of leaving it alone -- matching what
                 // `solid_preview::diagram_wiring`'s own Diagram-mode click miss
-                // branch already does (see that function's own #229 comment).
+                // branch already does.
                 // Setting `selected_tier_index` alone is enough: `changed
                 // selected_tier_index` in `models/editor.slint` fires
                 // `selected_tier_changed`, which re-seeds/clears the inspector
                 // form on the Rust side (`setup_solid_selected_tier_changed_
                 // callback`).
                 ui.global::<EditorModel>().set_selected_tier_index(-1);
+                // A miss also clears whatever facet was
+                // previously identified -- nothing is selected any more, so
+                // nothing should keep reading in the tooltip.
+                SELECTED_FACET_LABEL.with(|cell| cell.borrow_mut().clear());
+                ui.global::<SolidPreviewModel>().set_hover_text("".into());
                 return;
             };
             let tier_index = solid_facet_tier
@@ -3212,6 +4348,21 @@ pub(in crate::gui::editor) fn setup_solid_facet_click_callback(
                 ui.global::<EditorModel>()
                     .set_selected_tier_index(tier_index as i32);
             }
+            // Identifies the clicked facet itself, not just its
+            // owning tier -- GemCad/GCS-style "which index is this facet, and
+            // which member of the orbit did I click" -- reusing the SAME per-facet
+            // label `setup_solid_facet_hover_callback` shows transiently on hover
+            // (`solid_hover_text`), but kept in `SELECTED_FACET_LABEL` so it
+            // survives the pointer leaving the facet.
+            let label = solid_hover_text
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(facet_id as usize)
+                .cloned()
+                .unwrap_or_default();
+            SELECTED_FACET_LABEL.with(|cell| cell.borrow_mut().clone_from(&label));
+            ui.global::<SolidPreviewModel>()
+                .set_hover_text(label.into());
             // The clicked facet stays lit regardless of whether it resolved to a
             // tier above -- a facet under the cursor is always a real pick.
             if let Some(preview_state) = auto_solve::preview_state() {
@@ -3310,6 +4461,17 @@ fn apply_selected_tier_change(
     solid_last_solved: &SolidLastSolved,
 ) {
     let mut st = state.borrow_mut();
+    // Ending a coalesce run needs a real
+    // interaction boundary, and the ideal one (pointer release/focus loss on the
+    // `TierAngleCell` doing the nudging) lives in `editor_tier_table.slint`, not
+    // here (see `History::end_coalesce_run`'s own doc comment). The
+    // selection changing IS something this function can observe: it fires only on
+    // a genuine `changed selected_tier_index` (a different row/facet clicked, or the
+    // selection cleared), never on the nudge control's own repeated ticks, so a
+    // wheel-nudge run in progress on the tier the cutter just navigated away from
+    // must not sit open for an unrelated later nudge on that same tier (after
+    // selecting elsewhere and back within the coalescing window) to merge into.
+    st.history.end_coalesce_run();
     if !st.multi_selected.is_empty() {
         st.multi_selected.clear();
         let mut rows: Vec<EditorTierItem> = ui.global::<EditorModel>().get_tiers().iter().collect();
@@ -3337,19 +4499,58 @@ fn apply_selected_tier_change(
 /// in red) and as a toast. Factored out because all three failure branches of
 /// [`setup_save_tier_callback`] must agree on the wording -- an inline message that
 /// disagrees with the toast is worse than either alone.
-fn report_tier_form_error(ui: &MainWindow, message: &str) {
-    ui.global::<EditorModel>()
-        .set_tier_form_error(message.into());
+///
+/// `field` is one of `"angle"`/`"name"`/
+/// `"indices"`/`"constraint"`, or `""` for a general/unclassified error -- see
+/// `EditorModel.tier_form_error_field`'s own doc comment (`ui/models/editor.slint`)
+/// for the exact contract `editor_inspector.slint`
+/// reads this against to put a red border on the SPECIFIC offending control,
+/// not only the shared message under the whole form.
+fn report_tier_form_error(ui: &MainWindow, message: &str, field: &str) {
+    let model = ui.global::<EditorModel>();
+    model.set_tier_form_error(message.into());
+    model.set_tier_form_error_field(field.into());
     show_toast(ui, message, "error");
 }
 
-/// CAD audit item 34: `loading::parse_tier_form` deliberately ACCEPTS a
+/// Classifies a [`loading::parse_tier_form`] error message into which tier-form
+/// field it concerns -- see [`report_tier_form_error`]'s own doc comment for what
+/// each returned string means. Matched on the exact wording `loading.rs`'s own
+/// error branches build (reads the rendered text rather than a structured
+/// variant, since `loading::parse_tier_form` returns a plain `String`); a message this
+/// does not recognize classifies as `""`, the same "general/unclassified" bucket
+/// an apply-time (post-parse) failure falls into.
+fn tier_form_error_field(message: &str) -> &'static str {
+    if message.starts_with("Angle") {
+        "angle"
+    } else if message.starts_with("Another tier is already named") {
+        "name"
+    } else if message.starts_with("Index '") {
+        "indices"
+    } else if message.starts_with("\"Meet named\"")
+        || message.starts_with("Scale reference")
+        || message.starts_with("No facet named")
+        || message.starts_with("Unknown constraint kind")
+        // `loading::parse_tier_target`'s own three target labels --
+        // same "constraint" bucket as `Scale reference`'s wording, since these
+        // are all failures of the same Meets-combo numeric field.
+        || message.starts_with("Depth")
+        || message.starts_with("Girdle thickness")
+        || message.starts_with("Table width")
+    {
+        "constraint"
+    } else {
+        ""
+    }
+}
+
+/// `loading::parse_tier_form` deliberately ACCEPTS a
 /// non-integral index-wheel position (real `.asc` files carry a small but
 /// real fraction of these -- see that function's own doc comment) rather
 /// than rejecting it, since a hand-typed fraction is sometimes exactly what
-/// was meant. But it used to give a cutter no signal at all when it was NOT
-/// meant -- a stray extra digit ("12.5" for "12") only ever surfaced later as
-/// an obscure solver oddity. Called from [`setup_save_tier_callback`] after a
+/// was meant. Without this warning a cutter gets no signal at all when it was
+/// NOT meant -- a stray extra digit ("12.5" for "12") would only ever surface
+/// later as an obscure solver oddity. Called from [`setup_save_tier_callback`] after a
 /// successful parse, alongside the toast, rather than inside `parse_tier_form`
 /// itself, so a save is never blocked by this -- only flagged. `1e-3`
 /// matches `indicatrix_cut_core`'s own `orbit::model::INDEX_TOLERANCE` order of
@@ -3377,6 +4578,103 @@ pub(in crate::gui::editor) fn setup_tier_filter_callback(ui: &MainWindow) {
     ui.global::<EditorModel>().on_tier_matches_filter(
         |haystack: SharedString, filter: SharedString| tier_matches_filter(&haystack, &filter),
     );
+}
+
+/// Live critical-angle guidance in the Tier form's Angle field (see
+/// `EditorModel::angle_live_preview`'s own doc comment on `ui/models/editor.slint`).
+/// Parses `text` (the field's own
+/// live content) as a signed degree value: a pavilion angle (`< 0`) reads the
+/// plain table-only critical-angle margin
+/// ([`super::super::state::tier_margin_and_risk`]'s own pavilion branch, via
+/// [`indicatrix_cut_core::tier_margin_deg`]/[`indicatrix_cut_core::windowing_risk`]);
+/// a crown angle (`> 0`) reads the crown-window ESTIMATE
+/// ([`indicatrix_cut_core::crown_window_margin_deg`]/
+/// [`indicatrix_cut_core::crown_windowing_risk`]) against the design's own
+/// representative pavilion angle
+/// ([`super::super::state::representative_crown_and_pavilion_angles_deg`]) --
+/// the exact same functions a saved row's MARGIN cell uses, so a value typed
+/// but not yet saved reads the identical bar. Uses the design's plain
+/// [`indicatrix_cut_core::Design::effective_refractive_index`] (built-in
+/// materials only, no custom-catalogue lookup) rather than threading
+/// `RenderContext` through for this preview-only path -- the authoritative
+/// "Eff. RI"/critical-angle readouts elsewhere already use the full
+/// custom-material-aware value; this is a live estimate while typing, not the
+/// figure of record. An unparseable/blank/zero angle, or a crown angle with no
+/// pavilion tier in the design to estimate against, clears the bar
+/// (`level = -1`).
+pub(in crate::gui::editor) fn setup_angle_live_preview_callback(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+) {
+    let state = Rc::clone(state);
+    let ui_weak = ui.as_weak();
+    ui.global::<EditorModel>()
+        .on_angle_live_preview(move |text: SharedString| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let model = ui.global::<EditorModel>();
+            let clear = || {
+                model.set_angle_live_margin_text(SharedString::new());
+                model.set_angle_live_margin_level(-1);
+                model.set_angle_live_margin_is_estimate(false);
+            };
+            let Ok(angle_deg) = text.trim().parse::<f64>() else {
+                clear();
+                return;
+            };
+            let st = state.borrow();
+            let n_d = st.design.effective_refractive_index();
+            if angle_deg < 0.0 {
+                let margin = indicatrix_cut_core::tier_margin_deg(angle_deg, n_d);
+                let level = match indicatrix_cut_core::windowing_risk(angle_deg, n_d) {
+                    indicatrix_cut_core::Risk::Safe => 0,
+                    indicatrix_cut_core::Risk::Marginal => 1,
+                    indicatrix_cut_core::Risk::Windows => 2,
+                };
+                model.set_angle_live_margin_text(format!("{margin:+.1}\u{b0}").into());
+                model.set_angle_live_margin_level(level);
+                model.set_angle_live_margin_is_estimate(false);
+            } else if angle_deg > 0.0 {
+                let (_, pavilion_deg) = representative_crown_and_pavilion_angles_deg(&st.design);
+                let Some(pavilion_deg) = pavilion_deg else {
+                    clear();
+                    return;
+                };
+                let margin =
+                    indicatrix_cut_core::crown_window_margin_deg(pavilion_deg, angle_deg, n_d);
+                let level =
+                    match indicatrix_cut_core::crown_windowing_risk(pavilion_deg, angle_deg, n_d) {
+                        indicatrix_cut_core::Risk::Safe => 0,
+                        indicatrix_cut_core::Risk::Marginal => 1,
+                        indicatrix_cut_core::Risk::Windows => 2,
+                    };
+                model.set_angle_live_margin_text(format!("{margin:+.1}\u{b0}").into());
+                model.set_angle_live_margin_level(level);
+                model.set_angle_live_margin_is_estimate(true);
+            } else {
+                clear();
+            }
+        });
+}
+
+/// The anchor explainer card's "Got it" / "Don't show again" dismiss buttons:
+/// "Don't show again" additionally persists the suppression (`state::anchor_explainer_suppress_permanently`,
+/// `AppSettings::suppressed_confirmations` key `"anchor_explainer"`) so
+/// `state::should_open_anchor_explainer` never reopens it again, on top of the
+/// session-scoped "already shown once" guard that function already applies.
+pub(in crate::gui::editor) fn setup_anchor_explainer_dismiss_callback(ui: &MainWindow) {
+    let ui_weak = ui.as_weak();
+    ui.global::<EditorModel>()
+        .on_anchor_explainer_dismiss(move |dont_show_again: bool| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            ui.global::<EditorModel>().set_anchor_explainer_open(false);
+            if dont_show_again {
+                super::super::state::anchor_explainer_suppress_permanently();
+            }
+        });
 }
 
 /// Bumps `EditorModel.form_reset_pulse` -- see that property's own doc comment
@@ -3429,10 +4727,44 @@ fn clamp_selection_to_tier_count(ui: &MainWindow, tier_count: usize) {
 #[cfg(test)]
 mod tests {
     use super::{
-        letterbox_margin, next_free_block_name, split_duplicate_suffix, unique_duplicate_name,
+        letterbox_margin, next_free_block_name, parse_printed_proportions_field,
+        parse_printed_proportions_form, ri_override_for_material_pick, split_duplicate_suffix,
+        tier_form_error_field, unique_duplicate_name,
     };
 
-    // --- next_free_block_name (CAD audit item 129) ---
+    // --- ri_override_for_material_pick ---
+
+    #[test]
+    fn ri_override_for_material_pick_does_not_pin_when_the_design_already_had_a_material() {
+        // Diamond -> Quartz on a design whose CURRENT material is already named
+        // "Diamond": pinning the outgoing material's (Diamond's) RI onto the
+        // incoming pick (Quartz) is exactly the bug this guard prevents.
+        assert_eq!(
+            ri_override_for_material_pick(Some("Quartz"), Some("Diamond"), 2.417),
+            None
+        );
+    }
+
+    #[test]
+    fn ri_override_for_material_pick_pins_the_legacy_ri_on_a_first_pick_that_drifts() {
+        // No material named yet (fresh design, legacy schedule RI 1.54): picking
+        // Diamond (n_D ~1.5442) should pin the legacy figure so the exported I
+        // line does not silently move.
+        assert_eq!(
+            ri_override_for_material_pick(Some("Diamond"), None, 1.54),
+            Some(1.54)
+        );
+    }
+
+    #[test]
+    fn ri_override_for_material_pick_does_nothing_for_a_non_built_in_name() {
+        assert_eq!(
+            ri_override_for_material_pick(Some("Not A Real Material"), None, 1.54),
+            None
+        );
+    }
+
+    // --- next_free_block_name  ---
 
     #[test]
     fn next_free_block_name_starts_at_1_for_a_crown_angle() {
@@ -3461,8 +4793,7 @@ mod tests {
         assert_eq!(next_free_block_name(45.0, &existing), "C2");
     }
 
-    // --- unique_duplicate_name / split_duplicate_suffix (CAD audit items 129/132/232) ---
-
+    // --- unique_duplicate_name / split_duplicate_suffix ---
     #[test]
     fn unique_duplicate_name_starts_at_2_when_nothing_collides() {
         assert_eq!(unique_duplicate_name("P1", &[]), "P1 (2)");
@@ -3522,7 +4853,61 @@ mod tests {
         assert_eq!(split_duplicate_suffix("P1/P2 (2)"), ("P1/P2", Some(2)));
     }
 
-    // --- letterbox_margin (CAD audit item 117) ---
+    // --- parse_printed_proportions_form/_field  ---
+
+    #[test]
+    fn parse_printed_proportions_field_treats_blank_text_as_none() {
+        assert_eq!(parse_printed_proportions_field("L/W", ""), Ok(None));
+        assert_eq!(parse_printed_proportions_field("L/W", "   "), Ok(None));
+    }
+
+    #[test]
+    fn parse_printed_proportions_field_parses_a_positive_number() {
+        assert_eq!(
+            parse_printed_proportions_field("L/W", "1.05"),
+            Ok(Some(1.05))
+        );
+    }
+
+    #[test]
+    fn parse_printed_proportions_field_rejects_unparsable_text() {
+        assert!(parse_printed_proportions_field("L/W", "abc").is_err());
+    }
+
+    #[test]
+    fn parse_printed_proportions_field_rejects_zero_and_negative() {
+        assert!(parse_printed_proportions_field("L/W", "0").is_err());
+        assert!(parse_printed_proportions_field("L/W", "-1.0").is_err());
+    }
+
+    #[test]
+    fn parse_printed_proportions_form_builds_every_field() {
+        let props = parse_printed_proportions_form("1.30", "1.05", "0.61", "0.43", "0.60").unwrap();
+        assert_eq!(props.vol_w3, Some(1.30));
+        assert_eq!(props.lw, Some(1.05));
+        assert_eq!(props.cw, Some(0.61));
+        assert_eq!(props.pw, Some(0.43));
+        assert_eq!(props.hw, Some(0.60));
+    }
+
+    #[test]
+    fn parse_printed_proportions_form_allows_every_field_blank() {
+        let props = parse_printed_proportions_form("", "", "", "", "").unwrap();
+        assert_eq!(props.vol_w3, None);
+        assert_eq!(props.lw, None);
+        assert_eq!(props.cw, None);
+        assert_eq!(props.pw, None);
+        assert_eq!(props.hw, None);
+    }
+
+    #[test]
+    fn parse_printed_proportions_form_names_the_failing_field() {
+        let err = parse_printed_proportions_form("1.30", "not a number", "0.61", "0.43", "0.60")
+            .unwrap_err();
+        assert!(err.contains("L/W"), "error should name the field: {err}");
+    }
+
+    // --- letterbox_margin  ---
 
     #[test]
     fn letterbox_margin_is_zero_when_the_pick_buffer_fills_the_viewport() {
@@ -3539,5 +4924,57 @@ mod tests {
     #[test]
     fn letterbox_margin_never_goes_negative_if_the_pick_buffer_is_larger() {
         assert_eq!(letterbox_margin((800, 600), (900, 700)), (0.0, 0.0));
+    }
+
+    // --- tier_form_error_field  ---
+
+    #[test]
+    fn tier_form_error_field_classifies_every_documented_message_shape() {
+        assert_eq!(
+            tier_form_error_field("Angle '41x' is not a number."),
+            "angle"
+        );
+        assert_eq!(
+            tier_form_error_field(
+                "Angle 91.00\u{b0} exceeds 90\u{b0} -- angles are measured from the girdle \
+                 plane, so no crown or pavilion facet can be steeper than that."
+            ),
+            "angle"
+        );
+        assert_eq!(
+            tier_form_error_field(
+                "Another tier is already named 'P1' -- facet names must be unique so meet \
+                 constraints resolve to the right tier."
+            ),
+            "name"
+        );
+        assert_eq!(
+            tier_form_error_field("Index '99' is outside this design's 96-tooth gear."),
+            "indices"
+        );
+        assert_eq!(
+            tier_form_error_field("\"Meet named\" needs at least one facet name."),
+            "constraint"
+        );
+        assert_eq!(
+            tier_form_error_field("Scale reference 'x' is not a number."),
+            "constraint"
+        );
+        assert_eq!(
+            tier_form_error_field("No facet named 'C1' -- check the Meets field."),
+            "constraint"
+        );
+        assert_eq!(
+            tier_form_error_field("Unknown constraint kind 7."),
+            "constraint"
+        );
+    }
+
+    #[test]
+    fn tier_form_error_field_is_empty_for_an_unrecognized_message() {
+        assert_eq!(
+            tier_form_error_field("Failed to remap this design's indices to the new gear."),
+            ""
+        );
     }
 }

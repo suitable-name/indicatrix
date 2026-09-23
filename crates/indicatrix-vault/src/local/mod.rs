@@ -25,9 +25,9 @@ pub struct ImportedAsc {
     pub detail: FacetDiagramDetail,
     /// The catalogue row this file's own text says it was derived from -- recovered
     /// from a [`SOURCE_ENTRY_FOOTNOTE_PREFIX`] footnote line, when the `.asc` was
-    /// written by `gui::editor::native_io`'s Save Native/Export .asc (CAD audit item
-    /// 186: "an export-then-reimport matches its source row and becomes a version
-    /// rather than a second same-titled duplicate"). `None` for a `.asc` with no such
+    /// written by `gui::editor::native_io`'s Save Native/Export .asc: an
+    /// export-then-reimport matches its source row and becomes a version rather than
+    /// a second same-titled duplicate. `None` for a `.asc` with no such
     /// footnote -- an original hand-authored file, one scraped from another source, or
     /// one exported before this stamp existed. The caller is responsible for verifying
     /// the id still names a real row (it may have been deleted since) before recording
@@ -89,10 +89,10 @@ pub fn parse_source_entry_footnote(footnotes: &[String]) -> Option<i64> {
 ///
 /// `native_sidecar`, when the caller found a `<stem>.indicatrix.toml`/`.gemcut.toml`
 /// file sitting beside the `.asc` on disk, is attached as a SECOND [`AttachedFile`]
-/// alongside the `.asc` itself -- CAD audit item 93: without it, a design that went
-/// out through Save Native and back in through Import lost every sidecar-only field
-/// (authored meet constraints, preform, detached facets, material/RI override), since
-/// only the `.asc` was ever stored. `gui::editor::loading::design_from_full_record`
+/// alongside the `.asc` itself: without it, a design that goes out through Save
+/// Native and back in through Import loses every sidecar-only field (authored meet
+/// constraints, preform, detached facets, material/RI override), since only the
+/// `.asc` would otherwise be stored. `gui::editor::loading::design_from_full_record`
 /// already prefers `indicatrix_cut_core::load_paired` whenever both attachments are
 /// present, so attaching it here is the only piece this crate needs to add.
 ///

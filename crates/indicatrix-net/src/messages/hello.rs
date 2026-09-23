@@ -9,6 +9,12 @@
 //! explicit (rather than assumed always-true) so a future build that can disable it
 //! doesn't need a breaking `Welcome` change. [`Welcome::tilt_curves`] follows the same
 //! pattern for `TILT_CURVES` -- checked before ever sending a `TiltCurvesRequest`.
+//!
+//! # `build_hash` vs `source_hash`
+//!
+//! Both [`Hello`] and [`Welcome`] carry two independent `indicatrix` identity fields --
+//! see `crate::handshake`'s module doc comment for the full two-level check
+//! [`crate::handshake::verify_compatible`] runs against them.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +23,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Hello {
     pub protocol_version: u16,
+    /// A hash of `indicatrix`'s crate VERSION -- see [`crate::handshake::local_build_hash`].
     pub build_hash: [u8; 8],
+    /// A content hash of `indicatrix`'s actual source tree -- see
+    /// [`crate::handshake::local_source_hash`]. `crate::handshake::UNKNOWN_BUILD_HASH`
+    /// when this side has no `indicatrix` build to report (a library-only build) or
+    /// its source hash could not be established.
+    pub source_hash: [u8; 8],
 }
 
 /// Which compute backend a worker is rendering on, reported in [`RenderCapability`].
@@ -47,7 +59,10 @@ pub struct RenderCapability {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Welcome {
     pub protocol_version: u16,
+    /// See [`Hello::build_hash`].
     pub build_hash: [u8; 8],
+    /// See [`Hello::source_hash`].
+    pub source_hash: [u8; 8],
     /// `Some` iff this worker can accept a `RenderRequest` right now -- check this
     /// before ever sending one. See the module doc comment.
     pub render: Option<RenderCapability>,
@@ -80,6 +95,7 @@ mod tests {
         let hello = Hello {
             protocol_version: PROTOCOL_VERSION,
             build_hash: [1, 2, 3, 4, 5, 6, 7, 8],
+            source_hash: [8, 7, 6, 5, 4, 3, 2, 1],
         };
         let mut buf = Vec::new();
         write_message(&mut buf, &hello).unwrap();
@@ -99,6 +115,7 @@ mod tests {
             let welcome = Welcome {
                 protocol_version: PROTOCOL_VERSION,
                 build_hash: [9; 8],
+                source_hash: [10; 8],
                 render: Some(RenderCapability {
                     backend,
                     max_pixels: 8_294_400,
@@ -120,6 +137,7 @@ mod tests {
         let welcome = Welcome {
             protocol_version: PROTOCOL_VERSION,
             build_hash: [9; 8],
+            source_hash: [10; 8],
             render: None,
             library: true,
             tilt_curves: false,

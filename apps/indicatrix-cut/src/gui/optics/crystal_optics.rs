@@ -112,6 +112,30 @@ pub fn optical_character_from_index(idx: i32) -> Option<OpticalCharacter> {
         .and_then(|idx| OPTICAL_CHARACTERS.get(idx).copied())
 }
 
+/// Inverse of [`crystal_system_from_index`] -- the material-editor pre-fill needs to
+/// go the other way, from a saved row's real [`CrystalSystem`] back to the combo
+/// index that selects it. `CRYSTAL_SYSTEMS` covers every variant, so this always
+/// finds a match.
+#[must_use]
+pub fn crystal_system_to_index(cs: CrystalSystem) -> i32 {
+    CRYSTAL_SYSTEMS
+        .iter()
+        .position(|&candidate| candidate == cs)
+        .and_then(|idx| i32::try_from(idx).ok())
+        .unwrap_or(0)
+}
+
+/// Inverse of [`optical_character_from_index`] -- see [`crystal_system_to_index`]'s
+/// own doc comment for why the pre-fill needs this direction too.
+#[must_use]
+pub fn optical_character_to_index(oc: OpticalCharacter) -> i32 {
+    OPTICAL_CHARACTERS
+        .iter()
+        .position(|&candidate| candidate == oc)
+        .and_then(|idx| i32::try_from(idx).ok())
+        .unwrap_or(0)
+}
+
 /// Whether `optical_character` is one of the two biaxial variants -- the only case
 /// `biaxial_delta_beta_alpha` means anything (see that field's own doc comment on
 /// `GemMaterial`) and the only case the dialog's delta-beta-alpha control is enabled
@@ -191,13 +215,11 @@ pub fn save_gem_material(
     dispersion: f32,
     birefringence: f32,
     absorption_rgb: [f32; 3],
-    // CAD audit item 169: the Material Editor dialog already collects this as
-    // `sg_val` (`material_editor_dialog.slint`), but `ViewportModel.save_custom_material`
-    // does not yet carry it as a 10th argument -- that Slint global signature change
-    // is the one remaining link, owned outside `gui/optics`. Until it lands, every
-    // caller passes `None` here; this parameter exists so wiring the real value
-    // through is a one-line change at the (single) call site rather than a new
-    // parameter threaded through this function too.
+    // The Material Editor dialog collects this as `sg_val`
+    // (`material_editor_dialog.slint`) and carries it through as the tenth argument
+    // of `ViewportModel.save_custom_material`; `apply_custom_material_save`
+    // (`gui::optics::custom_materials`) is the single call site, converting the
+    // dialog's `0.0` "not recorded" sentinel to `None` before it reaches here.
     specific_gravity: Option<f32>,
 ) -> anyhow::Result<()> {
     db.save_custom_material(&CustomMaterialParams {
@@ -215,6 +237,33 @@ pub fn save_gem_material(
         per_axis_dispersion_json: None,
         specific_gravity,
     })
+}
+
+/// Builds `RenderContext::custom_material_specific_gravity`'s value from a set of
+/// custom-material database rows: every row that has a recorded
+/// [`CustomMaterialRow::specific_gravity`], paired with its name.
+///
+/// The read-side half of getting a custom material's specific gravity from the
+/// database into the carat-weight estimate -- see `RenderContext::
+/// custom_material_specific_gravity`'s own doc comment for the full picture and why
+/// this is a parallel side channel rather than a field on [`GemMaterial`] itself.
+/// Called by `gui::optics::custom_materials`'s save/delete callbacks, so the side
+/// channel never drifts out of sync with `custom_materials` itself, AND by
+/// `gui::mod`'s startup load (`build_main_window`), from the exact same row read
+/// that builds `initial_custom_mats` -- so `RenderContext::
+/// custom_material_specific_gravity` is populated from the very first frame,
+/// rather than starting empty until this session's own save/delete callback runs
+/// at least once.
+#[must_use]
+pub fn custom_material_specific_gravity_from_rows(
+    rows: &[CustomMaterialRow],
+) -> Vec<(String, f64)> {
+    rows.iter()
+        .filter_map(|row| {
+            row.specific_gravity
+                .map(|sg| (row.name.clone(), f64::from(sg)))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -258,6 +307,26 @@ mod tests {
                 optical_character_from_index(i32::try_from(idx).unwrap()),
                 Some(*oc),
                 "idx={idx}"
+            );
+        }
+    }
+
+    #[test]
+    fn crystal_system_to_index_round_trips_through_from_index_for_every_variant() {
+        for cs in CRYSTAL_SYSTEMS {
+            let idx = crystal_system_to_index(cs);
+            assert_eq!(crystal_system_from_index(idx), Some(cs), "variant={cs:?}");
+        }
+    }
+
+    #[test]
+    fn optical_character_to_index_round_trips_through_from_index_for_every_variant() {
+        for oc in OPTICAL_CHARACTERS {
+            let idx = optical_character_to_index(oc);
+            assert_eq!(
+                optical_character_from_index(idx),
+                Some(oc),
+                "variant={oc:?}"
             );
         }
     }
@@ -328,10 +397,10 @@ mod tests {
     /// -- the whole point of this feature -- including reaching a `BiaxialPositive`/
     /// `Some(delta)` combination `new_custom` itself can never produce on its own.
     ///
-    /// The final assertion reflects that `gpu_supported()` no longer excludes biaxial
-    /// materials (see `indicatrix::optics::materials::GemMaterial::gpu_supported`'s own
+    /// The final assertion reflects that `gpu_supported()` supports biaxial materials
+    /// (see `indicatrix::optics::materials::GemMaterial::gpu_supported`'s own
     /// doc comment, and `docs/history/indicatrix-core.md`, for the eigenvector-
-    /// conditioning fix that made this safe), so a row with
+    /// conditioning fix that makes this safe), so a row with
     /// `biaxial_delta_beta_alpha = Some(_)` is GPU-supported like every other material,
     /// not excluded from it.
     #[test]
@@ -356,5 +425,58 @@ mod tests {
         );
         assert_eq!(material.biaxial_delta_beta_alpha, Some(0.0070));
         assert!(material.gpu_supported());
+    }
+
+    // --- custom_material_specific_gravity_from_rows ---
+
+    fn row_named(name: &str, specific_gravity: Option<f32>) -> CustomMaterialRow {
+        CustomMaterialRow {
+            name: name.to_string(),
+            refractive_index: 1.7,
+            dispersion: 0.02,
+            birefringence: 0.0,
+            absorption_rgb: [0.0, 0.0, 0.0],
+            crystal_system: None,
+            optical_character: None,
+            biaxial_delta_beta_alpha: None,
+            per_axis_dispersion_json: None,
+            specific_gravity,
+        }
+    }
+
+    /// Only rows with a recorded SG contribute an entry -- a row with `None` (the
+    /// state every save through this app produces today, per `save_gem_material`'s
+    /// own doc comment) is skipped rather than showing up as a spurious `Some(0.0)`.
+    #[test]
+    fn only_rows_with_a_recorded_sg_produce_an_entry() {
+        let rows = [
+            row_named("My Garnet", Some(3.90)),
+            row_named("Custom Diamond", None),
+        ];
+        let entries = custom_material_specific_gravity_from_rows(&rows);
+        // Exact `f32` -> `f64` widening (no arithmetic in between), but still not
+        // literal-equal to a directly-typed `f64` -- see the `f32`/`f64` binary
+        // representations of 3.90 -- so this compares by name and by tolerance
+        // rather than a brittle `assert_eq!` against a `vec![...]` literal.
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].0, "My Garnet");
+        assert!((entries[0].1 - 3.90_f64).abs() < 1e-6);
+    }
+
+    #[test]
+    fn an_empty_row_set_produces_no_entries() {
+        assert_eq!(
+            custom_material_specific_gravity_from_rows(&[]),
+            Vec::<(String, f64)>::new()
+        );
+    }
+
+    /// `f32` -> `f64` widening must not distort the stored value beyond ordinary
+    /// float-widening precision.
+    #[test]
+    fn widens_the_stored_f32_without_meaningful_precision_loss() {
+        let rows = [row_named("My Garnet", Some(3.9))];
+        let entries = custom_material_specific_gravity_from_rows(&rows);
+        assert!((entries[0].1 - 3.9_f64).abs() < 1e-6);
     }
 }
