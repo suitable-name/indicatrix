@@ -44,9 +44,9 @@ pub(super) struct PoseAndGeometry<'a> {
 /// pipeline).
 ///
 /// The depth/normal/facet-id guides a remote payload never carries (see
-/// `bridge::remote_render`'s module docs on why they're not shipped over the wire) come
+/// `bridge::remote::remote_render`'s module docs on why they're not shipped over the wire) come
 /// from `guide_cache`: a local primary-ray-only prepass over the CURRENT camera pose
-/// and gem geometry (see `bridge::guide_pass`'s module docs for why that's valid for
+/// and gem geometry (see `bridge::frame_cache::guide_pass`'s module docs for why that's valid for
 /// ANY image of that pose, remote-sourced or not, and why caching on pose+geometry
 /// rather than recomputing every call is what keeps this cheap across many `FRAME`
 /// events from one in-progress render).
@@ -55,7 +55,7 @@ pub(super) struct PoseAndGeometry<'a> {
 /// tests without a window, a socket, or a worker. This function itself still runs the
 /// full (multi-second at 4K) denoise pass synchronously, so it is called only from
 /// `super::generation::spawn_denoise_generation`'s background thread, never directly
-/// from `super::tick::redraw_from_accumulator` (which runs on the Slint UI thread,
+/// from `super::tick::redraw_from_epoch` (which runs on the Slint UI thread,
 /// invoked from inside `handle_remote_update`'s `upgrade_in_event_loop` closure, and
 /// would block it). The background thread pre-seeds a throwaway `GuideCache` via
 /// [`GuideCache::adopt`] so its own internal `guide_cache.ensure` call is a guaranteed

@@ -7,7 +7,7 @@ use crate::serve::{
 };
 use indicatrix_net::{
     handshake,
-    messages::{Backend, ClientMessage, RenderRequest, StreamEvent, Welcome},
+    messages::{Backend, ClientMessage, PeerRole, RenderRequest, StreamEvent, Welcome},
 };
 use rustls::pki_types::ServerName;
 use std::{
@@ -104,15 +104,19 @@ fn full_round_trip_handshake_and_render_over_loopback() {
 
     let server_config = server_config_from(&pki);
     let client_cfg = client_config_from(&pki, &bundle);
-    let auth = Auth::Allowlist(pki.join(crate::pki::ALLOWLIST_FILE));
+    let auth = Auth {
+        role: PeerRole::Viewer,
+        allowlist: Some(pki.join(crate::pki::VIEWER_ALLOWLIST_FILE)),
+    };
 
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
 
     let server = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        let tls_stream = accept_tls(stream, &server_config, &auth, None)
+        let (tls_stream, role) = accept_tls(stream, &server_config, &auth, None)
             .expect("handshake and allowlist check should both succeed");
+        assert_eq!(role, PeerRole::Viewer);
         handle_connection(tls_stream, 2, &super::test_db()).unwrap();
     });
 
@@ -129,6 +133,7 @@ fn full_round_trip_handshake_and_render_over_loopback() {
 
     let scene = tiny_scene();
     let request = RenderRequest {
+        intent: indicatrix_net::messages::RequestIntent::Batch,
         request_id: 1,
         scene: scene.clone(),
         first_sample: 0,
@@ -163,7 +168,7 @@ fn full_round_trip_handshake_and_render_over_loopback() {
 
 /// A client certificate signed by a different CA than the server trusts must be
 /// rejected before `check_auth` (the allowlist) ever runs -- this test uses
-/// `Auth::AnyCaSignedClient` to isolate the CA-chain failure from the allowlist check
+/// an allowlist-free `Auth` to isolate the CA-chain failure from the allowlist check
 /// exercised separately below.
 #[test]
 fn client_certificate_signed_by_a_different_ca_is_rejected() {
@@ -185,7 +190,11 @@ fn client_certificate_signed_by_a_different_ca_is_rejected() {
 
     let server = thread::spawn(move || {
         let (stream, _) = listener.accept().unwrap();
-        accept_tls(stream, &server_config, &Auth::AnyCaSignedClient, None)
+        let any_viewer = Auth {
+            role: PeerRole::Viewer,
+            allowlist: None,
+        };
+        accept_tls(stream, &server_config, &any_viewer, None)
     });
 
     let mut tcp = TcpStream::connect(addr).unwrap();
@@ -219,7 +228,7 @@ fn client_certificate_not_on_the_allowlist_is_rejected_after_a_successful_handsh
 
     // `issue_client` already added this fingerprint to the allowlist -- overwrite it
     // with an empty one so the certificate is valid but not trusted.
-    let allowlist_path = pki.join(crate::pki::ALLOWLIST_FILE);
+    let allowlist_path = pki.join(crate::pki::VIEWER_ALLOWLIST_FILE);
     std::fs::write(&allowlist_path, "").unwrap();
 
     let server_config = server_config_from(&pki);
@@ -233,7 +242,10 @@ fn client_certificate_not_on_the_allowlist_is_rejected_after_a_successful_handsh
         accept_tls(
             stream,
             &server_config,
-            &Auth::Allowlist(allowlist_path),
+            &Auth {
+                role: PeerRole::Viewer,
+                allowlist: Some(allowlist_path),
+            },
             None,
         )
     });
@@ -358,10 +370,18 @@ fn insecure_no_tls_with_a_non_loopback_bind_is_refused() {
         trust_any_client_cert: false,
         insecure_no_tls: true,
         compute_mode: crate::cli::ComputeMode::default(),
+        render: false,
         enroll_bind: None,
         no_enroll: false,
+        worker_bind: None,
+        worker_enroll_bind: None,
+        no_workers: false,
+        worker_allowlist: None,
         db: None,
         max_connections: crate::cli::DEFAULT_MAX_CONNECTIONS,
+        interactive_workers: 0,
+        pin_interactive_worker: None,
+        max_job_memory_mib: crate::cli::DEFAULT_MAX_JOB_MEMORY_MIB,
     };
     let bind_addr: SocketAddr = args.bind.parse().unwrap();
     let err = build_transport(&args, bind_addr).unwrap_err();
@@ -383,10 +403,18 @@ fn insecure_no_tls_with_a_loopback_bind_is_accepted() {
         trust_any_client_cert: false,
         insecure_no_tls: true,
         compute_mode: crate::cli::ComputeMode::default(),
+        render: false,
         enroll_bind: None,
         no_enroll: false,
+        worker_bind: None,
+        worker_enroll_bind: None,
+        no_workers: false,
+        worker_allowlist: None,
         db: None,
         max_connections: crate::cli::DEFAULT_MAX_CONNECTIONS,
+        interactive_workers: 0,
+        pin_interactive_worker: None,
+        max_job_memory_mib: crate::cli::DEFAULT_MAX_JOB_MEMORY_MIB,
     };
     let bind_addr: SocketAddr = args.bind.parse().unwrap();
     assert!(matches!(

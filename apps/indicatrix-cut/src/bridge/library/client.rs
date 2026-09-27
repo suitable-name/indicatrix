@@ -3,9 +3,9 @@
 //! exactly one [`LibraryResponse`], and disconnects; and [`LibrarySession`], which
 //! connects once and holds that connection open across many requests.
 //!
-//! Unlike [`crate::bridge::remote_render`], the library protocol is plain
+//! Unlike [`crate::bridge::remote::remote_render`], the library protocol is plain
 //! request/response, not streamed -- no poll-loop/timeout-read machinery needed. Both
-//! forms here reuse [`crate::bridge::remote_render::connect_and_handshake`] for the
+//! forms here reuse [`crate::bridge::remote::remote_render::connect_and_handshake`] for the
 //! mutual-TLS connect+`HELLO`/`WELCOME` rather than duplicating it.
 //!
 //! # One-shot vs. one held session
@@ -73,7 +73,7 @@ impl std::fmt::Display for LibraryClientError {
             Self::Connect(e) => write!(f, "{e}"),
             Self::NoLibraryCapacity => write!(
                 f,
-                "this worker does not serve a design library -- it was started without a library database"
+                "this remote does not serve a design library -- it was started without a library database"
             ),
             Self::Client(e) => write!(f, "{e}"),
             Self::WorkerError(msg) => write!(f, "{msg}"),

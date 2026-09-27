@@ -1,9 +1,22 @@
-//! TLS transport setup for the render listener: [`Transport`]/[`Auth`] (decided once at
-//! [`crate::serve::run`] startup), [`build_transport`], and the per-connection
-//! [`accept_tls`]/[`check_auth`] pair -- see `crate::serve`'s module docs (the "TLS"
-//! section) for the full picture of how this fits together with [`crate::handshake`].
+//! TLS transport setup for the viewer and worker listeners: [`Transport`]/[`Auth`]
+//! (decided once at [`crate::serve::run`] startup), [`build_transport`], and the
+//! per-connection [`accept_tls`]/[`check_auth`] pair -- see `crate::serve`'s module docs
+//! (the "TLS" section) for the full picture.
+//!
+//! # Roles
+//!
+//! Every listener expects one client-certificate role ([`Auth::role`]): the viewer port
+//! viewers, the worker port joining workers (see `crate::pki::role` for how a role is
+//! recorded). [`check_auth`] reads the presented certificate's role first:
+//!
+//! - the port's own role: the certificate must ALSO be on the port's allowlist (unless
+//!   `--trust-any-client-cert`), else the connection is dropped after logging why;
+//! - the other role: the allowlist is not consulted, and the connection is handed on with
+//!   its real role so the `HELLO` gate refuses it with `ROLE_REFUSED` and a message that
+//!   names the mix-up -- never served.
 
-use crate::cli::ServeArgs;
+use crate::{cli::ServeArgs, pki};
+use indicatrix_net::messages::PeerRole;
 use std::{
     net::{SocketAddr, TcpStream},
     path::PathBuf,
@@ -11,25 +24,25 @@ use std::{
 };
 
 /// How [`accept_tls`] decides whether a client whose certificate chains to the
-/// configured CA is actually trusted -- the authorization decision that stands in for a
-/// password in this design. See the module doc comment.
+/// configured CA is actually trusted on one listener -- the authorization decision that
+/// stands in for a password in this design. See the module doc comment.
 #[derive(Debug, Clone)]
-pub(super) enum Auth {
-    /// Check the connected client certificate's SHA-256 fingerprint against the
-    /// allowlist file at this path, RE-READ on every connection (not cached at
-    /// startup) -- so revoking a client by deleting its line from the file takes
-    /// effect immediately, no restart required.
-    Allowlist(PathBuf),
-    /// `--trust-any-client-cert`: skip the fingerprint check, trusting any client
-    /// certificate that chains to the configured CA. Never the silent default -- see
-    /// [`run`]'s doc comment on why this has to be an explicit, visible flag.
-    AnyCaSignedClient,
+pub struct Auth {
+    /// The client-certificate role this listener serves.
+    pub role: PeerRole,
+    /// The fingerprint allowlist for [`Self::role`], RE-READ on every connection (not
+    /// cached at startup) -- so revoking a client by deleting its line from the file
+    /// takes effect immediately, no restart required. `None` is
+    /// `--trust-any-client-cert`: any certificate that chains to the CA and carries the
+    /// right role is trusted. Never the silent default.
+    pub allowlist: Option<PathBuf>,
 }
 
-/// How [`run`]'s accept loop wraps each accepted `TcpStream`, decided once at startup
-/// from `ServeArgs` rather than per-connection.
+/// How [`crate::serve::run`]'s accept loop wraps each accepted `TcpStream`, decided
+/// once at startup from `ServeArgs` rather than per-connection.
 #[derive(Debug)]
-pub(super) enum Transport {
+pub enum Transport {
+    /// Mutual TLS with the viewer listener's [`Auth`].
     Tls {
         config: Arc<rustls::ServerConfig>,
         auth: Auth,
@@ -38,11 +51,9 @@ pub(super) enum Transport {
     Insecure,
 }
 
-/// Builds this process's [`Transport`] from `args`, per [`run`]'s doc comment.
-pub(super) fn build_transport(
-    args: &ServeArgs,
-    bind_addr: SocketAddr,
-) -> Result<Transport, String> {
+/// Builds this process's viewer [`Transport`] from `args`, per [`crate::serve::run`]'s
+/// doc comment.
+pub fn build_transport(args: &ServeArgs, bind_addr: SocketAddr) -> Result<Transport, String> {
     if args.insecure_no_tls {
         if !bind_addr.ip().is_loopback() {
             return Err(format!(
@@ -76,50 +87,100 @@ pub(super) fn build_transport(
     let config = indicatrix_net::tls::server_config(ca, cert_chain, key)
         .map_err(|e| format!("failed to build TLS config: {e}"))?;
 
-    let auth = if args.trust_any_client_cert {
+    let allowlist = if args.trust_any_client_cert {
         tracing::warn!(
-            "indicatrix-worker serve: --trust-any-client-cert -- the fingerprint allowlist is DISABLED; any client \
-             certificate signed by {} will be accepted",
+            "indicatrix-worker serve: --trust-any-client-cert -- the fingerprint allowlists are DISABLED; any client \
+             certificate signed by {} (and carrying the port's role) will be accepted",
             ca_path.display()
         );
-        Auth::AnyCaSignedClient
+        None
     } else {
         let allowlist_path = args
             .allowlist
             .clone()
-            .unwrap_or_else(|| crate::pki::default_allowlist_path(&ca_path));
+            .unwrap_or_else(|| pki::default_viewer_allowlist_path(&ca_path));
         // Loaded once here purely to fail fast at startup on a bad/missing path --
-        // accept_tls re-loads it on every connection; see Auth::Allowlist.
+        // accept_tls re-loads it on every connection; see Auth::allowlist.
         let preflight = indicatrix_net::tls::Allowlist::load(&allowlist_path).map_err(|e| {
             format!(
-                "--allowlist {}: {e} (run `indicatrix-worker cert issue-client` to trust a client, or pass \
+                "--allowlist {}: {e} (run `indicatrix-worker cert issue-client` to trust a viewer, or pass \
                  --trust-any-client-cert to skip this check)",
                 allowlist_path.display()
             )
         })?;
         tracing::info!(
-            "indicatrix-worker serve: {} trusted client certificate(s) in {}",
+            "indicatrix-worker serve: {} trusted viewer certificate(s) in {}",
             preflight.len(),
             allowlist_path.display()
         );
-        Auth::Allowlist(allowlist_path)
+        Some(allowlist_path)
     };
 
-    Ok(Transport::Tls { config, auth })
+    Ok(Transport::Tls {
+        config,
+        auth: Auth {
+            role: PeerRole::Viewer,
+            allowlist,
+        },
+    })
+}
+
+/// The worker port's [`Auth`]: role [`PeerRole::Worker`], the `--worker-allowlist`
+/// (default `allowlist-workers.txt` next to `--ca`), or none under
+/// `--trust-any-client-cert`.
+///
+/// Unlike the viewer allowlist, a MISSING worker allowlist is not a startup error --
+/// most coordinators start before any worker is enrolled -- it only means every worker
+/// is refused until one is (logged at `info`). A malformed one still fails fast.
+#[cfg(feature = "worker")]
+pub fn worker_auth(args: &ServeArgs) -> Result<Auth, String> {
+    if args.trust_any_client_cert {
+        return Ok(Auth {
+            role: PeerRole::Worker,
+            allowlist: None,
+        });
+    }
+    let path = match (&args.worker_allowlist, &args.ca) {
+        (Some(path), _) => path.clone(),
+        (None, Some(ca)) => pki::default_worker_allowlist_path(ca),
+        (None, None) => return Err("\"serve\" requires --ca <path> for the worker port".into()),
+    };
+    if path.exists() {
+        let list = indicatrix_net::tls::Allowlist::load(&path)
+            .map_err(|e| format!("--worker-allowlist {}: {e}", path.display()))?;
+        tracing::info!(
+            "indicatrix-worker serve: {} trusted worker certificate(s) in {}",
+            list.len(),
+            path.display()
+        );
+    } else {
+        tracing::info!(
+            "indicatrix-worker serve: no worker allowlist at {} yet -- every joining worker is refused until one \
+             is enrolled (`cert issue-client --role worker` or `cert issue-token --role worker`)",
+            path.display()
+        );
+    }
+    Ok(Auth {
+        role: PeerRole::Worker,
+        allowlist: Some(path),
+    })
 }
 
 /// Completes the TLS handshake for one just-accepted `stream` and checks the resulting
-/// peer certificate against `auth`. Returns `None` for anything short of a fully
-/// authenticated connection -- a handshake failure (wrong CA, expired certificate,
-/// clock skew, a SAN that doesn't match how the peer connected: see `indicatrix_net::tls`'s
-/// doc comment and this crate's top-level docs) or a client certificate that isn't on
-/// the allowlist -- having already logged specifically why via `peer`.
-pub(super) fn accept_tls(
+/// peer certificate against `auth`, returning the stream with the certificate's role.
+///
+/// `None` for anything short of a usable connection -- a handshake failure (wrong CA,
+/// expired certificate, clock skew, a SAN that doesn't match how the peer connected: see
+/// `indicatrix_net::tls`'s doc comment) or a certificate of the port's own role that isn't
+/// on the allowlist -- having already logged specifically why via `peer`. A certificate
+/// of the OTHER role comes back `Some` with that role, for the `HELLO` gate to refuse
+/// (see the module doc comment).
+pub fn accept_tls(
     stream: TcpStream,
     config: &Arc<rustls::ServerConfig>,
     auth: &Auth,
     peer: Option<SocketAddr>,
-) -> Option<TlsStream> {
+) -> Option<(TlsStream, PeerRole)> {
     let conn = match rustls::ServerConnection::new(Arc::clone(config)) {
         Ok(c) => c,
         Err(e) => {
@@ -133,13 +194,12 @@ pub(super) fn accept_tls(
     // failure is diagnosed here with the peer address in hand, rustls's own error text
     // naming the actual reason (expired, clock skew, wrong CA, no matching SAN).
     //
-    // `stream` carries `serve::HANDSHAKE_TIMEOUT` (applied by `serve::run`'s accept loop
-    // before calling this function), so a client that connects and never completes the
+    // `stream` carries `serve::HANDSHAKE_TIMEOUT` (applied by the accept loop before
+    // calling this function), so a client that connects and never completes the
     // handshake -- a slowloris attempt, not a real protocol failure -- surfaces here as
     // an `io::Error` of kind `WouldBlock`/`TimedOut` rather than hanging forever. Logged
-    // at `debug`, not `warn`: unlike an actual handshake failure (wrong CA, expired
-    // certificate, clock skew, no matching SAN), a timeout is an expected, routine
-    // outcome of exposing a socket to the network at all.
+    // at `debug`, not `warn`: a timeout is an expected, routine outcome of exposing a
+    // socket to the network at all.
     if let Err(e) = tls_stream.conn.complete_io(&mut tls_stream.sock) {
         if matches!(
             e.kind(),
@@ -156,31 +216,30 @@ pub(super) fn accept_tls(
         return None;
     }
 
-    if let Err(msg) = check_auth(&tls_stream, auth) {
-        tracing::warn!("connection {peer:?}: {msg}");
-        return None;
+    match check_auth(&tls_stream, auth) {
+        Ok(role) => Some((tls_stream, role)),
+        Err(msg) => {
+            tracing::warn!("connection {peer:?}: {msg}");
+            None
+        }
     }
-
-    Some(tls_stream)
 }
 
-pub(super) type TlsStream = rustls::StreamOwned<rustls::ServerConnection, TcpStream>;
+/// A server-side mutual-TLS stream over an accepted socket.
+pub type TlsStream = rustls::StreamOwned<rustls::ServerConnection, TcpStream>;
 
 /// The authorization decision described in the module doc comment: CA-chain validity
 /// (already established by the completed handshake) is necessary but not sufficient,
-/// so this is where [`Auth::Allowlist`] actually gets checked.
+/// so this is where the role and the allowlist actually get checked. Returns the
+/// certificate's role.
 ///
 /// # Errors
 ///
-/// A human-readable message (naming the offending fingerprint, for `Auth::Allowlist`)
-/// if the peer presented no certificate at all (should be unreachable -- the server
-/// config requires one, so a bare TLS handshake success without one would itself be a
-/// bug) or its fingerprint isn't on the allowlist.
-fn check_auth(stream: &TlsStream, auth: &Auth) -> Result<(), String> {
-    let Auth::Allowlist(path) = auth else {
-        return Ok(()); // Auth::AnyCaSignedClient: CA-chain validity alone is enough.
-    };
-
+/// A human-readable message (naming the offending fingerprint) if the peer presented no
+/// certificate at all (should be unreachable -- the server config requires one), its
+/// subject can't be parsed, or a certificate of the port's own role isn't on the
+/// allowlist.
+fn check_auth(stream: &TlsStream, auth: &Auth) -> Result<PeerRole, String> {
     let peer_certs = stream
         .conn
         .peer_certificates()
@@ -190,21 +249,34 @@ fn check_auth(stream: &TlsStream, auth: &Auth) -> Result<(), String> {
         })?;
     let fingerprint = indicatrix_net::tls::fingerprint(&peer_certs[0]);
     let fingerprint_hex = indicatrix_net::tls::fingerprint_to_hex(&fingerprint);
+    let role = pki::role_of_certificate(&peer_certs[0])
+        .map_err(|e| format!("rejecting client certificate {fingerprint_hex}: {e}"))?;
+
+    if role != auth.role {
+        // Refused at HELLO with ROLE_REFUSED (see the module doc comment).
+        return Ok(role);
+    }
+    let Some(path) = &auth.allowlist else {
+        return Ok(role); // --trust-any-client-cert: CA chain + role are enough.
+    };
 
     let allowlist = indicatrix_net::tls::Allowlist::load(path).map_err(|e| {
         format!(
-            "rejecting client certificate {fingerprint_hex}: could not (re-)load allowlist {}: {e}",
+            "rejecting {} certificate {fingerprint_hex}: could not (re-)load allowlist {}: {e}",
+            pki::role::role_name(role),
             path.display()
         )
     })?;
 
     if allowlist.contains(&fingerprint) {
-        Ok(())
+        Ok(role)
     } else {
         Err(format!(
-            "rejecting client certificate {fingerprint_hex}: not present in {} (run `indicatrix-worker cert \
-             issue-client` to trust it, or add this exact fingerprint by hand)",
-            path.display()
+            "rejecting {} certificate {fingerprint_hex}: not present in {} (run `indicatrix-worker cert \
+             issue-client --role {}` to trust it, or add this exact fingerprint by hand)",
+            pki::role::role_name(role),
+            path.display(),
+            pki::role::role_name(role)
         ))
     }
 }

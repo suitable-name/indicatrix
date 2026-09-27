@@ -131,10 +131,10 @@ pub fn calibrate(
         return CalibrationOutcome::Cancelled { consumed: 0 };
     }
     let (camera, facet_finishes) = scene_pieces(scene);
-    let environment = scene
-        .lighting_preset
-        .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
-        .with_backdrop(scene.backdrop);
+    // The studio rig, or the HDR map the request path resolved -- see
+    // `crate::assets::resolved_hdr_map`.
+    let hdr_map = crate::assets::resolved_hdr_map(scene);
+    let environment = crate::assets::environment_source(scene, hdr_map.as_deref());
     let gpu_scene = GpuSceneRef {
         camera: &camera,
         width: scene.width,
@@ -251,10 +251,10 @@ pub fn hybrid_trace(
     let cpu_share = samples - gpu_share;
 
     let (camera, facet_finishes) = scene_pieces(scene);
-    let environment = scene
-        .lighting_preset
-        .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
-        .with_backdrop(scene.backdrop);
+    // The studio rig, or the HDR map the request path resolved -- see
+    // `crate::assets::resolved_hdr_map`.
+    let hdr_map = crate::assets::resolved_hdr_map(scene);
+    let environment = crate::assets::environment_source(scene, hdr_map.as_deref());
 
     if gpu_share == 0 {
         trace_into(
@@ -456,6 +456,7 @@ mod tests {
             planes: StandardGemCuts::standard_round_brilliant(),
             girdle_frosted: false,
             backdrop: 0.0,
+            environment: indicatrix_net::scene::SceneEnvironment::Studio,
         }
     }
 

@@ -47,8 +47,8 @@
 
 use glam::Vec3;
 use indicatrix::optics::raytracer::{
-    Camera, EnvironmentSource, FacetFinish, build_plane_soa, pixel_rotations, sample_draws,
-    trace_spectral_ray_with_finish_soa,
+    Camera, EnvironmentSource, FacetFinish, add_finite_sample, build_plane_soa, pixel_rotations,
+    sample_draws, trace_spectral_ray_with_finish_soa,
 };
 use indicatrix_net::SceneState;
 use std::{
@@ -79,12 +79,14 @@ fn resolve_facet_finishes(scene: &SceneState) -> Vec<FacetFinish> {
     }
 }
 
-/// Fixed FOV matching the viewer's own hard-coded value. `SceneState` carries no FOV
-/// field of its own (see that struct's doc comment on what it deliberately does and
-/// doesn't carry), so this must match `apps/indicatrix-cut/src/bridge/render_thread.rs`
-/// and `export_thread.rs`'s `42.0` exactly for a remote worker's camera rays to line up
-/// with the viewer's.
-const VIEWER_FOV_DEG: f32 = 42.0;
+/// Fixed FOV matching the viewer's own hard-coded value.
+///
+/// `SceneState` carries no FOV field of its own (see that struct's doc comment on what it
+/// deliberately does and doesn't carry), so this must match the `42.0` of
+/// `apps/indicatrix-cut/src/bridge/render_thread/` and `export_thread/` exactly for a remote worker's camera rays to line up
+/// with the viewer's. Also the camera of a coordinator's display-frame guide prepass
+/// (`stream_emit`'s display denoiser).
+pub const VIEWER_FOV_DEG: f32 = 42.0;
 
 /// Resolves a `--threads`-style argument (`0` meaning "let the OS decide") to an actual
 /// thread count.
@@ -213,10 +215,10 @@ pub fn trace_samples(
     }
 
     let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, VIEWER_FOV_DEG);
-    let environment = scene
-        .lighting_preset
-        .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
-        .with_backdrop(scene.backdrop);
+    // The studio rig, or the HDR map the request path resolved -- see
+    // `crate::assets::resolved_hdr_map`.
+    let hdr_map = crate::assets::resolved_hdr_map(scene);
+    let environment = crate::assets::environment_source(scene, hdr_map.as_deref());
 
     trace_into(
         scene,
@@ -293,10 +295,10 @@ pub fn trace_samples_with_gpu_cancellable(
     }
 
     let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, VIEWER_FOV_DEG);
-    let environment = scene
-        .lighting_preset
-        .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
-        .with_backdrop(scene.backdrop);
+    // The studio rig, or the HDR map the request path resolved -- see
+    // `crate::assets::resolved_hdr_map`.
+    let hdr_map = crate::assets::resolved_hdr_map(scene);
+    let environment = crate::assets::environment_source(scene, hdr_map.as_deref());
 
     // scene.girdle_frosted re-expanded into Vec<FacetFinish> (see
     // resolve_facet_finishes). The CPU fallback below resolves identical finishes from
@@ -454,11 +456,10 @@ fn trace_into(
                             // summed in would poison this pixel's accumulator
                             // permanently (NaN propagates through every future `+=`,
                             // including across later chunks/requests that reuse this
-                            // buffer) -- cheap enough to guard unconditionally rather
-                            // than trust that no future change ever introduces one.
-                            if sample.is_finite() {
-                                sample_sum += sample;
-                            }
+                            // buffer). Dropped but still counted: the shared rule every
+                            // backend (GUI export, live view, GPU reduction) applies, so
+                            // the client can merge this buffer with theirs.
+                            add_finite_sample(&mut sample_sum, sample);
                         }
 
                         *pixel += sample_sum;
@@ -493,6 +494,7 @@ mod tests {
             planes: StandardGemCuts::standard_round_brilliant(),
             girdle_frosted: false,
             backdrop: 0.0,
+            environment: indicatrix_net::scene::SceneEnvironment::Studio,
         }
     }
 

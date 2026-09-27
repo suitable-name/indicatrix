@@ -1,16 +1,18 @@
 [workspace]
 resolver = "3"
-members = ["crates/indicatrix", "crates/indicatrix-net", "crates/indicatrix-formats", "crates/indicatrix-vault", "crates/indicatrix-cut-core", "apps/indicatrix-cut", "apps/indicatrix-worker", "apps/indicatrix-web"]
+members = ["crates/indicatrix", "crates/indicatrix-net", "crates/indicatrix-dispatch", "crates/indicatrix-formats", "crates/indicatrix-vault", "crates/indicatrix-cut-core", "apps/indicatrix-cut", "apps/indicatrix-worker", "apps/indicatrix-web"]
 # indicatrix: a physically-based spectral gemstone renderer and faceting-design
 # library. `indicatrix` is the spectral path tracer at the center; `indicatrix-formats` reads and
 # writes GemCAD-style `.asc` cutting schedules; `indicatrix-vault` is the local
 # SQLite-backed design library; `indicatrix-cut-core` is the editor-core crate (preform, editable
-# cutting schedule, undo/redo); `apps/indicatrix-cut` is the desktop faceting-design
-# editor and `apps/indicatrix-worker` the headless render CLI / remote render server,
-# connected by `indicatrix-net`'s wire protocol.
+# cutting schedule, undo/redo); `indicatrix-dispatch` is the coordinator's job-execution
+# core (lane pool, sample cursor, rate models, deterministic merge); `apps/indicatrix-cut`
+# is the desktop faceting-design editor and `apps/indicatrix-worker` the headless
+# coordinator (`serve`), joining render worker (`join`) and render CLI, connected by
+# `indicatrix-net`'s wire protocol.
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Suitable-Name"]
@@ -99,11 +101,12 @@ wgpu = { version = "30.0.1", default-features = false }
 winresource = "0.1.31"
 
 # Workspace members
-indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.4.0" }
-indicatrix = { path = "crates/indicatrix", version = "0.4.0" }
-indicatrix-net = { path = "crates/indicatrix-net", version = "0.4.0" }
-indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.4.0" }
-indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.4.0" }
+indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.5.0" }
+indicatrix = { path = "crates/indicatrix", version = "0.5.0" }
+indicatrix-net = { path = "crates/indicatrix-net", version = "0.5.0" }
+indicatrix-dispatch = { path = "crates/indicatrix-dispatch", version = "0.5.0" }
+indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.5.0" }
+indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.5.0" }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

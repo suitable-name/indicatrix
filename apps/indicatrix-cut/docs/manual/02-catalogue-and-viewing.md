@@ -171,13 +171,15 @@ Open **Settings** from the viewport toolbar for:
   resolution for smoother movement, then snap back to full resolution once
   you stop.
 - **Live Compute** — Local only, Remote only, or Local + Remote (default,
-  once a remote worker is configured) — see Chapters 9 and 10.
+  once a remote coordinator is configured) — see Chapters 9 and 10. Next to it,
+  **Live Transfer** (Full data or Final picture) chooses how the remote's
+  contribution comes back to you — see Chapter 10.
 - **Local Compute** — CPU, CPU + GPU (default), or GPU only. **This choice
   only appears on a build compiled with GPU support**; an ordinary build
   has no such choice and always renders on CPU. Even "GPU only" quietly
   falls back to CPU for a scene the GPU can't handle (no usable graphics
-  adapter, or an HDR environment map loaded), so nothing ever fails to
-  render outright.
+  adapter, or an HDR environment map too large for the graphics card's
+  memory limits), so nothing ever fails to render outright.
 - **Max Ray Bounces** — 4, 8, 12 (default), 24, 64, or 128. Higher values
   model more light bounces (useful for strongly dispersive or heavily
   faceted stones) at a rendering-time cost that grows faster on GPU than
@@ -188,8 +190,8 @@ Open **Settings** from the viewport toolbar for:
   switching it on exposes a tilt 0–90° from the table normal and an
   azimuth 0–360° around it), a frosted-girdle toggle, facet edge rounding,
   physical stone size in millimetres, and an HDR environment map loader
-  (which, once loaded, replaces the studio lighting controls and forces
-  CPU-only rendering).
+  (which, once loaded, replaces the studio lighting controls; HDR maps render
+  on the GPU too, and on a remote coordinator that supports them — Chapter 10).
 - **Reset to Defaults** at the bottom of Settings asks for
   confirmation before it wipes every rendering setting back to its
   default — click it once to see "Reset everything?", then **Confirm** (or

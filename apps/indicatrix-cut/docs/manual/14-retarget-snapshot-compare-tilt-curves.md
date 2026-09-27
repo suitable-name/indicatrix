@@ -70,6 +70,27 @@ In short: compute tilt curves on a design you intend to keep only after
 you have saved it into your catalogue at least once (Chapter 11), or plan
 to recompute them once you have.
 
+## Exporting a tilt performance video
+
+The Tilt Performance dialog's **Export tilt video** section renders one
+high-quality frame per swept angle (posed exactly like the dialog's own
+hover preview), optionally overlays the swept brilliance/windowing/
+extinction/angle values into each frame, then muxes the numbered PNG
+sequence into an MP4 (or an animated GIF if `ffmpeg` is not on your PATH).
+
+Every frame renders through the SAME compute setup as a still-image export
+(Chapter 9): whichever local CPU / CPU+GPU / GPU mode you have chosen in
+Settings, plus the remote coordinator if one is configured, with the same
+graceful fallback to local-only rendering if the remote is unreachable or none
+is configured. There is no separate "Compute" choice for the video itself,
+but with a remote configured the section shows the same **Transfer** row as
+the export dialog (Full data, or Final picture only: one finished PNG per
+frame from the remote -- Chapter 10).
+Because a video now shares the app's single GPU adapter and the remote
+with the rest of the app, the live viewport pauses for the whole
+video's duration — exactly as it does during a still-image export — and
+resumes automatically once the video finishes, is cancelled, or fails.
+
 ## Stale results
 
 Retarget's held proposal and the Tilt Performance curves both carry a small

@@ -29,6 +29,13 @@ export global ExportModel {
     // `bridge::export_thread::remote::RemoteUnavailable::message`), rather than one
     // generic "unavailable".
     in property <string> remote_unavailable_reason: "";
+    // "Transfer": 0 = Full data (float radiance, merged with the
+    // local lanes), 1 = Final picture only (the remote renders AND tone-maps; one PNG
+    // comes back, the local lanes stay idle). Reset from the remote endpoint's own
+    // default every time the dialog opens (`populate_fanout_presets`); read by Rust
+    // when the export starts. Only shown while a remote is available and the Compute
+    // pill includes it.
+    in-out property <int> transfer_index: 0;
 
     // Preset fan-out: every export-usable preset
     // (`gui::render_export::setup_populate_export_fanout_presets_callback` rebuilds

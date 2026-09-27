@@ -1,0 +1,28 @@
+[package]
+name = "indicatrix-dispatch"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+authors = { workspace = true }
+description = "Sample-range scheduling for indicatrix render lanes: a shared disjoint sample cursor, per-lane rate models, a lane pool that merges chunk sums deterministically, and a whole-item batch queue. No networking and no GUI types."
+license = { workspace = true }
+repository = { workspace = true }
+documentation = "https://docs.rs/indicatrix-dispatch"
+keywords = ["gemstone", "raytracer", "scheduling", "rendering"]
+categories = ["rendering", "concurrency"]
+publish = { workspace = true }
+
+[dependencies]
+# `SceneState` is the scene every lane of one epoch renders (the `render` feature
+# gates it). Nothing else from the protocol crate is needed: this crate never opens a
+# socket; concrete remote lanes live with whoever owns the connections.
+indicatrix-net = { workspace = true, features = ["render"] }
+# `Vec3`: the per-pixel summed CIE XYZ element type of every radiance buffer.
+glam = { workspace = true }
+
+[dev-dependencies]
+# Only to build a real `SceneState` (material + facet planes) in the tests.
+indicatrix = { workspace = true }
+
+[lints]
+workspace = true

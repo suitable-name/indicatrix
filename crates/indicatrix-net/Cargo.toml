@@ -31,6 +31,15 @@ indicatrix = { workspace = true, features = ["serde"], optional = true }
 # has no opinion on this feature, since Cargo only unifies it across a build that
 # actually includes indicatrix-net.
 glam = { workspace = true, features = ["bytemuck"] }
+# `radiance::payload`: the v14 lossless FRAME/PREVIEW payload encodings (byte shuffle +
+# LZ4 block / zstd one-shot). Both were measured in Part D (see the coordinator guide
+# section 11): `ShuffleZstd { level: 1 }` is the default, `ShuffleLz4` the gigabit-LAN
+# opt-in. Optional behind the default-on `compression` feature below; without it only
+# `PayloadEncoding::Raw` is offered, accepted and decodable.
+lz4_flex = { version = "0.11", optional = true }
+# `display`: lossless PNG encode/decode of the v14 8-bit `DisplayFrame`/`FinalImage`
+# payloads. The same `png` 0.18 the `image` crate already pulls into the workspace.
+png = { version = "0.18", optional = true }
 postcard = { workspace = true }
 # `tls` module: mutual-TLS config building and the fingerprint allowlist. Socket-free --
 # see this crate's own doc comment on why ("types, codec, and framing only") and the
@@ -49,9 +58,17 @@ tracing = { workspace = true }
 # secret and the claimed private key the moment each is no longer needed, the same
 # `zeroize` version `apps/indicatrix-worker` already pins for the same purpose.
 zeroize = "1.9"
+# See `lz4_flex` above. The C library (`zstd-sys`) builds with the MSVC toolchain; use
+# the one-shot `bulk` API only, so decode memory stays bounded by `raw_len`.
+zstd = { version = "0.13", optional = true }
 
 [features]
-default = []
+default = ["compression"]
+# The v14 compressed payload encodings (`PayloadEncoding::ShuffleZstd`/`ShuffleLz4`) and
+# the PNG display-frame codec. On by default. A build without it still speaks v14 but
+# negotiates `PayloadEncoding::Raw` for everything and sends raw RGBA8 display frames,
+# so it never needs `zstd-sys`'s C toolchain (e.g. a `wasm32` target).
+compression = ["dep:lz4_flex", "dep:png", "dep:zstd"]
 # Gates everything that needs `indicatrix`'s resolved scene/material types: `crate::scene`
 # (`SceneState`), `RenderRequest`, and the `ClientMessage::RenderRequest` variant. Off
 # by default so a library-only `indicatrix-worker` build (see that crate's own `worker`

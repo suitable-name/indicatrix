@@ -26,7 +26,8 @@ and falls through to the CPU tracer whenever it declines:
 | The GPU declines when | Because |
 | --- | --- |
 | No usable adapter on this machine | Logged once at startup; every frame then uses the CPU |
-| The environment is an HDR map | The megakernel has no `env_mode` for it |
+| The GPU device was lost mid-run | Logged at `warn`; the backend stays disabled for the rest of the process |
+| The environment is an HDR map too large for the device | Its texel buffer would exceed the adapter's storage-buffer limit. Ordinary HDR maps render on the GPU — the megakernel has its own environment mode for them |
 
 All materials support the GPU path: the `BiaxialIndicatrix` machinery is ported to
 WGSL and verified at the same Tier 2 / Tier 3 bar as every other material, so
@@ -34,14 +35,17 @@ WGSL and verified at the same Tier 2 / Tier 3 bar as every other material, so
 `indicatrix::renderer::gpu_backend`'s module doc comment for the authoritative
 decline list (which covers GPU adapter support, not materials).
 
-Both the viewport (`bridge::render_thread`) and the export worker
-(`bridge::export_thread`) go through the same `bridge::gpu_backend::FrameGpu`, so
-there is one decline-and-fall-back rule rather than two that could drift apart.
+Both the viewport (`bridge::render_thread`, through its `ViewportGpu` wrapper in
+`bridge::render_thread::gpu_backend`) and the export worker (`bridge::export_thread`)
+go through the same `indicatrix::renderer::gpu_backend::GpuBackend` — the one
+`indicatrix-worker` uses too — so there is one decline-and-fall-back rule rather than
+several that could drift apart. Each acquires its own instance.
 Both backends *add* into the same accumulation buffer with the same meaning for
 the sample counter, so a render that switches between them mid-flight continues a
 correct running average rather than restarting.
 
 One thing the GPU cannot supply is the denoiser's first-hit depth/normal/facet-id
 guide buffers — the megakernel returns radiance only. That is the same gap a
-remote worker's `FRAME` payload has, and it takes the same answer: `bridge::guide_pass`'s
-local primary-ray prepass, cached on pose plus geometry, reused unchanged here.
+remote worker's `FRAME` payload has, and it takes the same answer: the local
+primary-ray prepass (`indicatrix::renderer::guide_pass`), cached on pose plus geometry
+by `bridge::frame_cache::guide_pass`, reused unchanged here.

@@ -1,0 +1,176 @@
+import { ComboBox, LineEdit } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+
+// Base Template Selector (a preset picker that fills in every optics field at
+// once) and the Material Name input -- split out of `material_editor_dialog.slint`
+// to keep that file under its line budget. Every field the preset combo's
+// `selected` handler writes is two-way bound back to `MaterialEditorDialog`'s
+// own identically-named property (see that file's own doc comments on each).
+export component MaterialTemplateSelector inherits HorizontalLayout {
+    spacing: 10px;
+
+    in property <[string]> base_templates: [
+        "Custom", "Diamond", "Sapphire", "Ruby", "Emerald",
+        "Tanzanite", "Synthetic Moissanite", "Zircon", "Topaz", "Spinel", "Quartz", "Cubic Zirconia"
+    ];
+
+    in-out property <int> selected_template_idx: 0;
+    in-out property <string> mat_name: "Custom Diamond";
+    in-out property <float> ri_val: 2.417;
+    in-out property <float> disp_val: 0.044;
+    in-out property <float> biref_val: 0.000;
+    in-out property <int> selected_color_preset: 0;
+    in-out property <int> selected_crystal_system_idx: 0;
+    in-out property <int> selected_optical_character_idx: 0;
+    in-out property <float> biaxial_delta_beta_alpha_val: 0.0;
+
+    VerticalLayout {
+        horizontal-stretch: 1;
+        spacing: 4px;
+        Text { text: "Load Preset Template:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+
+        Rectangle {
+            height: 32px;
+            background: Theme.surface-raised;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-dialog;
+
+            ComboBox {
+                model: root.base_templates;
+                current-index <=> root.selected_template_idx;
+                selected(val) => {
+                    // Crystal system indices: 0 Cubic, 1 Tetragonal,
+                    // 2 Hexagonal, 3 Trigonal, 4 Orthorhombic,
+                    // 5 Monoclinic, 6 Triclinic. Optical character
+                    // indices: 0 Isotropic, 1 Uniaxial(+), 2 Uniaxial(-),
+                    // 3 Biaxial(+), 4 Biaxial(-). Both orders match
+                    // `indicatrix::optics::materials::{CrystalSystem,
+                    // OpticalCharacter}`'s own declared variant order --
+                    // see `gui::crystal_optics` on the Rust side. Values
+                    // below are each preset's REAL classification, read
+                    // from its `indicatrix` built-in entry in materials.rs.
+                    if (val == "Diamond") {
+                        root.mat_name = "Custom Diamond";
+                        root.ri_val = 2.417;
+                        root.disp_val = 0.044;
+                        root.biref_val = 0.000;
+                        root.selected_color_preset = 0;
+                        root.selected_crystal_system_idx = 0; // Cubic
+                        root.selected_optical_character_idx = 0; // Isotropic
+                        root.biaxial_delta_beta_alpha_val = 0.0;
+                    } else if (val == "Sapphire") {
+                        root.mat_name = "Custom Sapphire";
+                        root.ri_val = 1.768;
+                        root.disp_val = 0.018;
+                        root.biref_val = -0.008;
+                        root.selected_color_preset = 1;
+                        root.selected_crystal_system_idx = 3; // Trigonal
+                        root.selected_optical_character_idx = 2; // Uniaxial(-)
+                        root.biaxial_delta_beta_alpha_val = 0.0;
+                    } else if (val == "Ruby") {
+                        root.mat_name = "Custom Ruby";
+                        root.ri_val = 1.768;
+                        root.disp_val = 0.018;
+                        root.biref_val = -0.008;
+                        root.selected_color_preset = 2;
+                        root.selected_crystal_system_idx = 3; // Trigonal
+                        root.selected_optical_character_idx = 2; // Uniaxial(-)
+                        root.biaxial_delta_beta_alpha_val = 0.0;
+                    } else if (val == "Emerald") {
+                        root.mat_name = "Custom Emerald";
+                        root.ri_val = 1.577;
+                        root.disp_val = 0.014;
+                        root.biref_val = -0.006;
+                        root.selected_color_preset = 3;
+                        root.selected_crystal_system_idx = 2; // Hexagonal
+                        root.selected_optical_character_idx = 2; // Uniaxial(-)
+                        root.biaxial_delta_beta_alpha_val = 0.0;
+                    } else if (val == "Tanzanite") {
+                        root.mat_name = "Custom Tanzanite";
+                        root.ri_val = 1.691;
+                        root.disp_val = 0.030;
+                        root.biref_val = 0.013;
+                        root.selected_color_preset = 4;
+                        root.selected_crystal_system_idx = 4; // Orthorhombic
+                        root.selected_optical_character_idx = 3; // Biaxial(+)
+                        root.biaxial_delta_beta_alpha_val = 0.0070;
+                    } else if (val == "Synthetic Moissanite") {
+                        root.mat_name = "Custom Moissanite";
+                        root.ri_val = 2.650;
+                        root.disp_val = 0.104;
+                        root.biref_val = 0.043;
+                        root.selected_color_preset = 0;
+                        root.selected_crystal_system_idx = 2; // Hexagonal
+                        root.selected_optical_character_idx = 1; // Uniaxial(+)
+                        root.biaxial_delta_beta_alpha_val = 0.0;
+                    } else if (val == "Zircon") {
+                        root.mat_name = "Custom Zircon";
+                        root.ri_val = 1.950;
+                        root.disp_val = 0.039;
+                        root.biref_val = 0.059;
+                        root.selected_color_preset = 7;
+                        root.selected_crystal_system_idx = 1; // Tetragonal
+                        root.selected_optical_character_idx = 1; // Uniaxial(+)
+                        root.biaxial_delta_beta_alpha_val = 0.0;
+                    } else if (val == "Topaz") {
+                        root.mat_name = "Custom Topaz";
+                        root.ri_val = 1.620;
+                        root.disp_val = 0.014;
+                        root.biref_val = 0.008;
+                        root.selected_color_preset = 8;
+                        root.selected_crystal_system_idx = 4; // Orthorhombic
+                        root.selected_optical_character_idx = 3; // Biaxial(+)
+                        root.biaxial_delta_beta_alpha_val = 0.0024;
+                    } else if (val == "Spinel") {
+                        root.mat_name = "Custom Spinel";
+                        root.ri_val = 1.718;
+                        root.disp_val = 0.020;
+                        root.biref_val = 0.000;
+                        root.selected_color_preset = 6;
+                        root.selected_crystal_system_idx = 0; // Cubic
+                        root.selected_optical_character_idx = 0; // Isotropic
+                        root.biaxial_delta_beta_alpha_val = 0.0;
+                    } else if (val == "Quartz") {
+                        root.mat_name = "Custom Quartz";
+                        root.ri_val = 1.544;
+                        root.disp_val = 0.013;
+                        root.biref_val = 0.009;
+                        root.selected_color_preset = 0;
+                        root.selected_crystal_system_idx = 3; // Trigonal
+                        root.selected_optical_character_idx = 1; // Uniaxial(+)
+                        root.biaxial_delta_beta_alpha_val = 0.0;
+                    } else if (val == "Cubic Zirconia") {
+                        root.mat_name = "Custom CZ";
+                        root.ri_val = 2.160;
+                        root.disp_val = 0.060;
+                        root.biref_val = 0.000;
+                        root.selected_color_preset = 0;
+                        root.selected_crystal_system_idx = 0; // Cubic
+                        root.selected_optical_character_idx = 0; // Isotropic
+                        root.biaxial_delta_beta_alpha_val = 0.0;
+                    }
+                }
+            }
+        }
+    }
+
+    VerticalLayout {
+        horizontal-stretch: 1;
+        spacing: 4px;
+        Text { text: "Material Name:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+
+        Rectangle {
+            height: 32px;
+            background: Theme.surface-raised;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-dialog;
+
+            LineEdit {
+                text <=> root.mat_name;
+                placeholder-text: "Enter gem name...";
+            }
+        }
+    }
+}

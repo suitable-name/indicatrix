@@ -20,7 +20,7 @@
 //!
 //! [`claim_and_write_bundle`] performs a real TCP connect and TLS handshake against a
 //! host the operator typed in, which may be slow or unreachable -- the same kind of
-//! blocking call `bridge::remote_render::test_connection` already keeps off the Slint
+//! blocking call `bridge::remote::remote_render::test_connection` already keeps off the Slint
 //! UI thread. `gui::remote`'s claim-token callback follows the same pattern; no
 //! cancellation or progress reporting is needed since a claim is a single
 //! request/response, not a multi-second stream.

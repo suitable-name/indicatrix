@@ -2,7 +2,19 @@
 //!
 //! Replaces "copy the certificate bundle to the client machine by hand" with a one-time,
 //! time-limited token the operator reads out (or pastes) to the person enrolling a new
-//! viewer.
+//! viewer -- or, on the coordinator's WORKER enrollment listener, a new joining worker.
+//!
+//! # Two listeners, one per role
+//!
+//! `serve` runs one enrollment listener per client role: the VIEWER one next to the
+//! viewer port (default 7879) and the WORKER one next to the worker port (default
+//! 7881). Each has its own [`EnrollRegistry`] (so a token only ever claims on the
+//! listener that issued it), mints certificates of its own role only (a worker's
+//! Common Name is `worker:<name>`, see `crate::pki::role`) and appends a claimed
+//! fingerprint to its own role's allowlist. No wire change: `cert issue-token --role
+//! worker` sends its `Issue` name as `worker:<name>`, and each listener refuses an
+//! `Issue` for the other role (a viewer listener refuses a `worker:` name, a worker
+//! listener refuses a name without it) rather than silently minting the wrong kind.
 //!
 //! # Why this needs its own listener, not the render port
 //!
@@ -67,6 +79,7 @@
 //! itself guarantees.
 
 use crate::pki;
+use indicatrix_net::messages::PeerRole;
 use std::{
     net::{SocketAddr, TcpListener},
     path::{Path, PathBuf},
@@ -125,117 +138,54 @@ fn build_enroll_server_config(
 }
 
 /// Configuration [`spawn_enroll_listener`] needs, gathered once at `serve` startup from
-/// the same `--ca`/`--cert`/`--key`/`--allowlist` args the render listener validated.
+/// the same `--ca`/`--cert`/`--key` args the listeners validated.
 pub struct EnrollConfig {
+    /// Where to listen (already derived and loopback-checked by `crate::serve`).
     pub bind_addr: SocketAddr,
+    /// The CA's directory (`ca.pem`, `ca.key`).
     pub pki_dir: PathBuf,
     /// `None` when `--trust-any-client-cert` is set: no allowlist to append to (any
-    /// CA-signed client is already trusted), so a successful claim skips that step.
+    /// CA-signed client of the right role is already trusted), so a successful claim
+    /// skips that step.
     pub allowlist_path: Option<PathBuf>,
+    /// TLS with the server certificate and CA chain, no client auth.
     pub tls_config: Arc<rustls::ServerConfig>,
-    /// The render listener's own connection cap, shared here so this listener's
+    /// The matching listener's own connection cap, shared here so this listener's
     /// unauthenticated connections are bounded too -- see
     /// [`crate::serve::ConnectionLimiter`]'s doc comment.
     pub limiter: crate::serve::ConnectionLimiter,
+    /// Which client role this listener enrolls (see the module doc comment).
+    pub role: PeerRole,
 }
 
 impl EnrollConfig {
-    /// Builds an [`EnrollConfig`] from the same `serve --ca/--cert/--key` paths, plus
-    /// the resolved allowlist path and the render listener's [`crate::serve::ConnectionLimiter`]
-    /// to share. `enroll_bind` is `--enroll-bind` if given, else the same host as
-    /// `bind_addr` on the next port up.
+    /// Builds an [`EnrollConfig`] for `role` from the same `serve --ca/--cert/--key`
+    /// paths, the role's resolved allowlist path and the matching listener's
+    /// [`crate::serve::ConnectionLimiter`] to share.
     ///
     /// # Errors
     ///
-    /// A human-readable message if `args.enroll_bind` doesn't parse as a socket
-    /// address, if it's non-loopback without `args.allow_remote`, or if the TLS config
-    /// can't be built (see [`build_enroll_server_config`]).
+    /// A human-readable message if the TLS config can't be built (see
+    /// [`build_enroll_server_config`]).
     pub fn build(
         bind_addr: SocketAddr,
-        args: &crate::cli::ServeArgs,
         ca_path: &Path,
         cert_path: &Path,
         key_path: &Path,
         allowlist_path: Option<PathBuf>,
         limiter: crate::serve::ConnectionLimiter,
+        role: PeerRole,
     ) -> Result<Self, String> {
-        let enroll_addr_str = args.enroll_bind.as_deref().map_or_else(
-            || format!("{}:{}", bind_addr.ip(), bind_addr.port().saturating_add(1)),
-            str::to_string,
-        );
-        let enroll_bind_addr: SocketAddr = enroll_addr_str
-            .parse()
-            .map_err(|e| format!("invalid --enroll-bind address {enroll_addr_str:?}: {e}"))?;
-        if !enroll_bind_addr.ip().is_loopback() && !args.allow_remote {
-            return Err(format!(
-                "refusing to bind non-loopback enrollment address {enroll_bind_addr} without --allow-remote -- \
-                 exposing the enrollment listener beyond localhost must be explicit, same as --bind (see --help)"
-            ));
-        }
-
         let tls_config = build_enroll_server_config(ca_path, cert_path, key_path)?;
-        let pki_dir = ca_path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf();
-
         Ok(Self {
-            bind_addr: enroll_bind_addr,
-            pki_dir,
+            bind_addr,
+            pki_dir: pki::role::pki_dir_of(ca_path),
             allowlist_path,
             tls_config,
             limiter,
+            role,
         })
     }
-}
-
-/// Starts the enrollment listener for a `serve` invocation, straight from its
-/// [`crate::cli::ServeArgs`] -- the one call `crate::serve::run` makes.
-///
-/// A no-op (not an error) when `args.insecure_no_tls` (no CA to enroll against) or
-/// `args.no_enroll` is set. Otherwise resolves the same allowlist path
-/// `crate::serve::build_transport` would and hands everything to
-/// [`EnrollConfig::build`] then [`spawn_enroll_listener`].
-///
-/// `limiter` is the render listener's own [`crate::serve::ConnectionLimiter`], shared
-/// (not a fresh one) so this listener's unauthenticated connections count against the
-/// same `--max-connections` cap -- see that type's doc comment.
-///
-/// # Errors
-///
-/// Whatever [`EnrollConfig::build`] or [`spawn_enroll_listener`] returns.
-pub fn maybe_start_from_serve_args(
-    args: &crate::cli::ServeArgs,
-    bind_addr: SocketAddr,
-    limiter: crate::serve::ConnectionLimiter,
-) -> Result<(), String> {
-    if args.insecure_no_tls || args.no_enroll {
-        return Ok(());
-    }
-    let (Some(ca_path), Some(cert_path), Some(key_path)) = (&args.ca, &args.cert, &args.key) else {
-        return Ok(()); // `crate::serve::build_transport` already requires these.
-    };
-
-    let allowlist_path = if args.trust_any_client_cert {
-        None
-    } else {
-        Some(
-            args.allowlist
-                .clone()
-                .unwrap_or_else(|| pki::default_allowlist_path(ca_path)),
-        )
-    };
-    let config = EnrollConfig::build(
-        bind_addr,
-        args,
-        ca_path,
-        cert_path,
-        key_path,
-        allowlist_path,
-        limiter,
-    )?;
-    spawn_enroll_listener(config).map(|_bound_addr| ())
 }
 
 /// Binds `config.bind_addr` and spawns a background thread accepting enrollment
@@ -261,12 +211,17 @@ pub fn spawn_enroll_listener(config: EnrollConfig) -> Result<SocketAddr, String>
     let bound_addr = listener
         .local_addr()
         .map_err(|e| format!("enrollment listener bound but local_addr() failed: {e}"))?;
+    let role_flag = match config.role {
+        PeerRole::Viewer => "",
+        PeerRole::Worker => " --role worker",
+    };
     tracing::info!(
-        "indicatrix-worker serve: enrollment listener on {bound_addr} (token TTL {TOKEN_TTL_SECS}s; `indicatrix-worker cert \
-         issue-token` to mint one)"
+        "indicatrix-worker serve: {} enrollment listener on {bound_addr} (token TTL {TOKEN_TTL_SECS}s; \
+         `indicatrix-worker cert issue-token{role_flag} --admin-addr {bound_addr}` to mint one)",
+        pki::role::role_name(config.role)
     );
 
-    let registry = Arc::new(EnrollRegistry::new());
+    let registry = Arc::new(EnrollRegistry::for_role(config.role));
     let tls_config = config.tls_config;
     let pki_dir = config.pki_dir;
     let allowlist_path = config.allowlist_path;
@@ -295,8 +250,8 @@ pub fn spawn_enroll_listener(config: EnrollConfig) -> Result<SocketAddr, String>
                         // `accept_enroll_tls`) already bounds how long that can take.
                         let Ok(_slot) = limiter.try_acquire() else {
                             tracing::warn!(
-                                "enrollment connection {peer:?}: refusing -- this worker is already at \
-                                 --max-connections capacity (shared with the render/library listener)"
+                                "enrollment connection {peer:?}: refusing -- already at --max-connections capacity \
+                                 (shared with the matching viewer/worker listener)"
                             );
                             return;
                         };

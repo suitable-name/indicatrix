@@ -1,0 +1,201 @@
+import { LineEdit } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { EditorModel } from "../../models/editor.slint";
+import { GuideModel } from "../../models/guide.slint";
+
+// One tier-list row's angle cell -- click-to-edit rather than always a `LineEdit`
+// (see the manual's "Inline Angle Editing" chapter): a plain, click-through `Text`
+// display normally, so the row's ordinary click-to-select/Ctrl+click/hover behavior
+// around it is completely unaffected, with a small `TouchArea` over just this cell
+// that (a) opens an editable `LineEdit` on a DOUBLE click and (b) nudges the value
+// +-0.1deg on a scroll-wheel tick while already in edit mode, or with Ctrl held --
+// otherwise the wheel is left to scroll the tier list, the same as anywhere else in
+// it. A plain (single) click instead fires `select()`, so clicking the angle value
+// selects the row exactly like clicking anywhere else in it, matching GCS/
+// spreadsheet behavior. `EditorTierTable.select`/`nudge`/`commit`/`closed` are
+// the only ways this
+// component ever reports intent -- it never touches `Design` itself, matching this
+// whole file's "dumb about the design" convention (see `EditorTierTable`'s own top
+// doc comment).
+//
+// Commit path: Enter (`accepted`) or focus loss (`changed has-focus`, since
+// `LineEdit` exposes no separate "blurred" callback -- see the interface in
+// `i-slint-compiler`'s `widgets/interfaces/lineedit.slint`) both call `commit` with
+// the field's current text, then close edit mode. Escape closes edit mode WITHOUT
+// calling `commit` -- the `LineEdit` is destroyed uncommitted and the display
+// reverts to `value` (still whatever `Design` actually holds), no separate "revert"
+// step needed. `cancelling` prevents a double-commit: Escape and `accepted`
+// both set it before dropping `editing`, so the `changed has-focus` handler
+// skips its own commit when set. A `changed has-focus` may or may not fire
+// during `if root.editing`'s teardown, and without this flag would silently
+// re-commit the very value Escape just asked to throw away.
+// Every path that closes edit mode also fires `closed()` so the
+// caller (the tier list's own `FocusScope`) can reclaim keyboard focus -- see
+// `EditorTierTable`'s own `table_focus` doc comment for why that hand-back is
+// needed at all. Up/Down step +-0.1deg (Shift +-1deg, Ctrl +-0.01deg) via the
+// `LineEdit`'s own `key-pressed` -- see `i-slint-compiler`'s `widgets/interfaces/
+// lineedit.slint` for why this, not a wrapping `FocusScope`, is the mechanism: a
+// plain `Rectangle`/`FocusScope` has no `scroll-event` in Slint 1.17 (only
+// `TouchArea`/`Flickable` do, per `builtins.slint`), which is why the wheel-nudge
+// below lives on `area` instead.
+//
+// `focus_target`/`focus_pulse` are how the tier list's F2 shortcut opens THIS
+// specific row's editor from outside (`EditorTierTable`'s own `key-pressed` cannot
+// reach into one `for`-loop iteration's local state directly) -- `focus_pulse` is a
+// monotonically increasing counter, not a plain flag, so pressing F2 on the SAME row
+// twice in a row still fires a fresh `changed focus_pulse` each time (a flag that
+// merely equals the target index again would not fire it a second time).
+export component TierAngleCell inherits Rectangle {
+    in property <string> value;
+    // What a pending Optimize outcome would set this tier's angle to
+    // (`EditorTierItem::proposed_angle`), or "" when no change is proposed. Shown
+    // as a small ghost beside the real angle so a cutter can see the proposal
+    // before pressing Apply, matching the Optimize "Preview" toggle.
+    in property <string> proposed: "";
+    in property <int> index;
+    in property <int> focus_target: -1;
+    in property <int> focus_pulse: 0;
+    // `false` while the worked-example guide locks the tier table: the
+    // double-click/F2 edit and the wheel nudge are refused, while a plain click still
+    // selects the row (selection changes no design data).
+    in property <bool> editable: true;
+    // Fired on a plain click, BEFORE edit mode -- lets the row select itself the
+    // same way clicking any other cell does.
+    callback select();
+    callback commit(string);
+    // (index, delta_deg)
+    callback nudge(int, float);
+    // Fired whenever `editing` transitions from `true` back to `false`, by every
+    // path that does so (Enter, focus loss, Escape) -- see this component's own
+    // top doc comment.
+    callback closed();
+
+    // This cell's own `area` covers the whole 60px column. A `TouchArea` steals
+    // hover from elements under it, so this property is exposed so the row can OR
+    // it into its own background condition to keep the highlight from flickering
+    // while the pointer crosses the ANGLE column.
+    out property <bool> hovered: area.has-hover;
+
+    width: 60px;
+    height: 100%;
+    property <bool> editing: false;
+    property <int> seen_pulse: 0;
+    // Set right before `editing` drops to `false` on a path that must NOT commit
+    // (Escape) or that already committed once (`accepted`).
+    property <bool> cancelling: false;
+
+    changed focus_pulse => {
+        if root.editable && root.focus_target == root.index && root.focus_pulse != root.seen_pulse {
+            root.seen_pulse = root.focus_pulse;
+            root.cancelling = false;
+            root.editing = true;
+        }
+    }
+
+    function step(shift: bool, ctrl: bool, sign: float) {
+        if shift {
+            root.nudge(root.index, sign * 1.0);
+        } else if ctrl {
+            root.nudge(root.index, sign * 0.01);
+        } else {
+            root.nudge(root.index, sign * 0.1);
+        }
+    }
+
+    Tooltip { text: root.editable ? @markdown("Click to select this row, double-click to edit. Scroll while editing, or Ctrl+Scroll any time, to nudge +-0.1deg.") : @markdown("\{GuideModel.locked_hint}"); }
+
+    area := TouchArea {
+        clicked => { root.select(); }
+        double-clicked => {
+            if root.editable {
+                root.cancelling = false;
+                root.editing = true;
+            }
+        }
+        scroll-event(event) => {
+            if root.editable && event.delta-y != 0 && (root.editing || event.modifiers.control) {
+                root.nudge(root.index, event.delta-y > 0 ? 0.1 : -0.1);
+                return accept;
+            }
+            reject
+        }
+    }
+
+    if !root.editing: HorizontalLayout {
+        spacing: 2px;
+        Text {
+            text: root.value;
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.accent-amber;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        // Proposed-angle ghost: only shown when Optimize proposes a change.
+        if root.proposed != "": Text {
+            text: "\u{2192} " + root.proposed;
+            font-size: 9px;
+            font-weight: 600;
+            color: Theme.accent-emerald;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        // A small pencil affordance on hover, providing visual hint for
+        // double-click-to-edit and F2 (the Tooltip only appears after the
+        // pointer has lingered). Purely visual, same "no second click target"
+        // convention `diagram_list.slint`'s hover-only "..." glyph uses.
+        if root.hovered: Text {
+            text: "\u{270E}";
+            font-size: 9px;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+        }
+    }
+
+    if root.editing: edit := LineEdit {
+        width: 100%;
+        height: 100%;
+        text: root.value;
+        font-size: 11px;
+        init => {
+            self.select-all();
+            self.focus();
+        }
+        accepted => {
+            root.commit(self.text);
+            // Already committed above -- the focus-loss teardown Enter also
+            // triggers must not commit `self.text` a second time.
+            root.cancelling = true;
+            root.editing = false;
+            root.closed();
+        }
+        // Marks the shared "some text field has focus" flag that app.slint's
+        // Ctrl+Z/Ctrl+Y guard checks, alongside the commit-on-blur logic below.
+        changed has-focus => {
+            EditorModel.text_focus = self.has-focus;
+            if !self.has-focus {
+                if !root.cancelling {
+                    root.commit(self.text);
+                }
+                root.cancelling = false;
+                root.editing = false;
+                root.closed();
+            }
+        }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancelling = true;
+                root.editing = false;
+                root.closed();
+                return accept;
+            } else if event.text == Key.UpArrow && root.editable {
+                root.step(event.modifiers.shift, event.modifiers.control, 1.0);
+                return accept;
+            } else if event.text == Key.DownArrow && root.editable {
+                root.step(event.modifiers.shift, event.modifiers.control, -1.0);
+                return accept;
+            }
+            reject
+        }
+    }
+}

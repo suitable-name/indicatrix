@@ -96,7 +96,7 @@ export component HeaderToolbar inherits Rectangle {
 
                 // Always-visible "which library am I looking at" badge --
                 // deliberately shown here, next to the status line, not only inside the
-                // worker panel (`remote_popup`), so switching away from local is
+                // Remote Coordinator dialog (`remote_popup`), so switching away from local is
                 // obvious even with that panel closed. See this component's own
                 // `library_source_label`/`library_is_remote` doc comment.
                 Rectangle {
@@ -305,11 +305,12 @@ export component HeaderToolbar inherits Rectangle {
                 }
             }
 
-            // Remote rendering: opens the worker-list panel.
+            // Remote rendering: opens the single Remote Coordinator dialog
+            // (`remote_popup`, `RemoteWorkerDialog`).
             Rectangle {
                 width: remote_btn.preferred-width;
                 height: 28px;
-                Tooltip { text: @markdown("Configure and connect to a remote render worker."); }
+                Tooltip { text: @markdown("Configure and connect to the remote coordinator."); }
                 remote_btn := Button {
                     text: "Remote";
                     icon: @image-url("../icons/gem.svg");

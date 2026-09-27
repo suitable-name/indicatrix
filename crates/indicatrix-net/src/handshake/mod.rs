@@ -97,17 +97,98 @@ pub fn local_source_hash() -> [u8; 8] {
     parse_build_id(indicatrix::SOURCE_HASH)
 }
 
-/// Builds this process's `HELLO` message: the current protocol version paired with its
-/// own [`local_build_hash`] and [`local_source_hash`]. Only compiled under this crate's
-/// `render` feature.
+/// Builds this process's viewer `HELLO` message.
+///
+/// The current protocol version paired with its own [`local_build_hash`] and
+/// [`local_source_hash`], role [`crate::messages::PeerRole::Viewer`], accepting every
+/// payload encoding this build supports. Only compiled under this crate's `render`
+/// feature.
 #[cfg(feature = "render")]
 #[must_use]
 pub fn local_hello() -> Hello {
+    Hello::viewer(
+        crate::messages::PROTOCOL_VERSION,
+        local_build_hash(),
+        local_source_hash(),
+    )
+}
+
+/// Builds this process's `HELLO` as a render worker joining a coordinator (v14).
+///
+/// Like [`local_hello`] but with role [`crate::messages::PeerRole::Worker`] and the
+/// worker's own `capability`. Only compiled under this crate's `render` feature.
+#[cfg(feature = "render")]
+#[must_use]
+pub fn local_worker_hello(capability: crate::messages::RenderCapability) -> Hello {
     Hello {
-        protocol_version: crate::messages::PROTOCOL_VERSION,
-        build_hash: local_build_hash(),
-        source_hash: local_source_hash(),
+        role: crate::messages::PeerRole::Worker,
+        capability: Some(capability),
+        ..local_hello()
     }
+}
+
+/// Why [`read_hello`]/[`decode_hello`] could not produce a [`Hello`].
+#[derive(Debug)]
+pub enum HelloReadError {
+    /// Reading the frame failed, or a same-version `HELLO` did not decode.
+    Net(crate::messages::NetError),
+    /// The peer speaks another protocol version -- see the variant's `Display`, which
+    /// names both versions. Answer with an `ErrorMsg` (code
+    /// `error_codes::BUILD_MISMATCH`) built from it.
+    Incompatible(Incompatible),
+}
+
+impl std::fmt::Display for HelloReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Net(e) => write!(f, "{e}"),
+            Self::Incompatible(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+impl std::error::Error for HelloReadError {}
+
+impl From<crate::messages::NetError> for HelloReadError {
+    fn from(e: crate::messages::NetError) -> Self {
+        Self::Net(e)
+    }
+}
+
+/// Decodes a `HELLO` frame's bytes, version first.
+///
+/// Every `HELLO` since v12 starts with `protocol_version` (see `messages::hello`'s module
+/// doc comment), so this reads that prefix alone first and refuses a different version
+/// with [`Incompatible::ProtocolVersionMismatch`] -- a clear, two-version message -- instead
+/// of the postcard error an older or newer `HELLO` layout would otherwise produce.
+///
+/// # Errors
+///
+/// [`HelloReadError::Incompatible`] for another protocol version,
+/// [`HelloReadError::Net`] if the bytes do not decode at all.
+pub fn decode_hello(bytes: &[u8]) -> Result<Hello, HelloReadError> {
+    let (remote_version, _) =
+        postcard::take_from_bytes::<u16>(bytes).map_err(crate::messages::NetError::from)?;
+    if remote_version != crate::messages::PROTOCOL_VERSION {
+        return Err(HelloReadError::Incompatible(
+            Incompatible::ProtocolVersionMismatch {
+                local: crate::messages::PROTOCOL_VERSION,
+                remote: remote_version,
+            },
+        ));
+    }
+    Ok(postcard::from_bytes::<Hello>(bytes).map_err(crate::messages::NetError::from)?)
+}
+
+/// Reads one frame and decodes it with [`decode_hello`] -- what a server calls instead of
+/// a plain `read_message::<Hello>`.
+///
+/// # Errors
+///
+/// See [`decode_hello`]; framing errors surface as [`HelloReadError::Net`].
+pub fn read_hello<R: std::io::Read>(reader: &mut R) -> Result<Hello, HelloReadError> {
+    let bytes = crate::framing::read_frame(reader).map_err(crate::messages::NetError::from)?;
+    decode_hello(&bytes)
 }
 
 /// Why [`verify_compatible`] refused to pair two builds.
@@ -141,7 +222,8 @@ impl std::fmt::Display for Incompatible {
             Self::ProtocolVersionMismatch { local, remote } => {
                 write!(
                     f,
-                    "protocol version mismatch: local={local}, remote={remote}"
+                    "protocol version mismatch: this side speaks protocol v{local}, the peer speaks \
+                     v{remote} -- the viewer, coordinator and every worker must run the same build"
                 )
             }
             Self::UnknownBuild => write!(
@@ -151,7 +233,7 @@ impl std::fmt::Display for Incompatible {
             Self::BuildHashMismatch { local, remote } => {
                 write!(
                     f,
-                    "indicatrix version mismatch (build id local={local:02x?}, remote={remote:02x?}):                      viewer and worker must run the same indicatrix release"
+                    "indicatrix version mismatch (build id local={local:02x?}, remote={remote:02x?}): viewer and worker must run the same indicatrix release"
                 )
             }
             Self::SourceHash { local, remote } => write!(
@@ -235,12 +317,8 @@ mod tests {
     /// A [`Hello`] with an unknown `source_hash` -- the shape every pre-Finding-15 test
     /// below expects, so a mismatched/matched `build_hash` alone still drives the
     /// outcome (the `source_hash` check only ever warns, never refuses, when unknown).
-    const fn hello(protocol_version: u16, build_hash: [u8; 8]) -> Hello {
-        Hello {
-            protocol_version,
-            build_hash,
-            source_hash: UNKNOWN_BUILD_HASH,
-        }
+    fn hello(protocol_version: u16, build_hash: [u8; 8]) -> Hello {
+        Hello::viewer(protocol_version, build_hash, UNKNOWN_BUILD_HASH)
     }
 
     #[test]
@@ -270,14 +348,14 @@ mod tests {
     }
 
     /// The real current/previous pairing, not the generic `1` vs `2` the test above
-    /// uses: a peer still advertising the pre-Finding-21 [`crate::messages::PROTOCOL_VERSION`]
-    /// (`12`) is refused against this build's `13`, exercising [`verify_compatible`] --
+    /// uses: a peer still advertising the previous [`crate::messages::PROTOCOL_VERSION`]
+    /// (`13`) is refused against this build's `14`, exercising [`verify_compatible`] --
     /// the same function [`crate::client::handshake::handshake`] calls -- with the exact
     /// values a real mismatched deploy would produce.
     #[test]
     fn a_peer_advertising_the_previous_protocol_version_is_refused() {
         let current = crate::messages::PROTOCOL_VERSION;
-        assert_eq!(current, 13, "update the 12 below if this constant moves");
+        assert_eq!(current, 14, "update the 13 below if this constant moves");
         let local = hello(current, [1; 8]);
         let remote = hello(current - 1, [1; 8]);
         assert_eq!(
@@ -321,16 +399,8 @@ mod tests {
 
     #[test]
     fn matching_build_hash_but_mismatched_known_source_hash_is_refused() {
-        let local = Hello {
-            protocol_version: 1,
-            build_hash: [4; 8],
-            source_hash: [5; 8],
-        };
-        let remote = Hello {
-            protocol_version: 1,
-            build_hash: [4; 8],
-            source_hash: [6; 8],
-        };
+        let local = Hello::viewer(1, [4; 8], [5; 8]);
+        let remote = Hello::viewer(1, [4; 8], [6; 8]);
         assert_eq!(
             verify_compatible(&local, &remote),
             Err(Incompatible::SourceHash {
@@ -342,11 +412,7 @@ mod tests {
 
     #[test]
     fn matching_build_hash_and_source_hash_is_compatible() {
-        let local = Hello {
-            protocol_version: 1,
-            build_hash: [4; 8],
-            source_hash: [5; 8],
-        };
+        let local = Hello::viewer(1, [4; 8], [5; 8]);
         assert!(verify_compatible(&local, &local).is_ok());
     }
 
@@ -354,15 +420,70 @@ mod tests {
     fn an_unknown_source_hash_on_either_side_is_a_warning_not_a_refusal() {
         // build_hash matches on both; source_hash unknown on one side (or both) must
         // not refuse the pairing -- see verify_compatible's doc comment.
-        let known_source = Hello {
-            protocol_version: 1,
-            build_hash: [7; 8],
-            source_hash: [8; 8],
-        };
+        let known_source = Hello::viewer(1, [7; 8], [8; 8]);
         let unknown_source = hello(1, [7; 8]); // source_hash: UNKNOWN_BUILD_HASH
         assert!(verify_compatible(&known_source, &unknown_source).is_ok());
         assert!(verify_compatible(&unknown_source, &known_source).is_ok());
         assert!(verify_compatible(&unknown_source, &unknown_source).is_ok());
+    }
+
+    /// The exact v13 `HELLO` layout (three fields), for the version-probe tests.
+    #[derive(serde::Serialize)]
+    struct HelloV13 {
+        protocol_version: u16,
+        build_hash: [u8; 8],
+        source_hash: [u8; 8],
+    }
+
+    /// A v13 peer's `HELLO` does not decode as a v14 `Hello` at all; `decode_hello` still
+    /// reports a version mismatch naming both versions, not a postcard error.
+    #[test]
+    fn decode_hello_reports_a_v13_hello_as_a_clear_version_mismatch() {
+        let v13 = postcard::to_allocvec(&HelloV13 {
+            protocol_version: 13,
+            build_hash: [1; 8],
+            source_hash: [2; 8],
+        })
+        .unwrap();
+        assert!(postcard::from_bytes::<Hello>(&v13).is_err());
+        let err = decode_hello(&v13).unwrap_err();
+        let HelloReadError::Incompatible(incompatible) = err else {
+            panic!("expected a version mismatch, got {err:?}");
+        };
+        assert_eq!(
+            incompatible,
+            Incompatible::ProtocolVersionMismatch {
+                local: crate::messages::PROTOCOL_VERSION,
+                remote: 13
+            }
+        );
+        let message = incompatible.to_string();
+        assert!(
+            message.contains("v14") && message.contains("v13"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn decode_hello_accepts_a_current_hello_and_rejects_garbage() {
+        let current = hello(crate::messages::PROTOCOL_VERSION, [3; 8]);
+        let bytes = postcard::to_allocvec(&current).unwrap();
+        assert_eq!(decode_hello(&bytes).unwrap(), current);
+
+        let mut framed = Vec::new();
+        crate::framing::write_frame(&mut framed, &bytes).unwrap();
+        assert_eq!(
+            read_hello(&mut std::io::Cursor::new(framed)).unwrap(),
+            current
+        );
+
+        // The right version prefix but a truncated body: a decode error, not a mismatch.
+        let truncated = &bytes[..bytes.len() - 1];
+        assert!(matches!(
+            decode_hello(truncated),
+            Err(HelloReadError::Net(_))
+        ));
+        assert!(matches!(decode_hello(&[]), Err(HelloReadError::Net(_))));
     }
 
     #[test]

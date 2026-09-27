@@ -41,8 +41,9 @@ exporting a design of your own.
    still image, and how local and remote computation hand off while you
    work.
 10. [Remote Worker Setup](10-remote-worker-setup.md) — certificates,
-    adding a worker, testing the connection, and troubleshooting a
-    connection gone quiet.
+    setting up the remote coordinator, testing the connection, full data vs.
+    final picture transfer, HDR scenes, and troubleshooting a connection
+    gone quiet.
 11. [Saving and File Formats](11-saving-and-file-formats.md) — `.asc`
     versus this app's native `.indicatrix.toml` format, and where your files
     go.
@@ -80,7 +81,7 @@ You do not need to read this front to back. Three common starting points:
   design and understanding its tiers, adapting it for a different
   material, then Deep Solve/Optimize/Adopt to verify and improve it.
 - **Rendering a design:** read Chapters 9 and 10 — exporting an image, and
-  setting up a remote worker if you want faster or higher-quality renders.
+  setting up a remote coordinator if you want faster or higher-quality renders.
 
 Whatever your starting point, Chapter 12 and the appendices are there when
 something goes wrong or you need to look up a term, a shortcut, or a

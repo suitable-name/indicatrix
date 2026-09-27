@@ -366,7 +366,7 @@ mod tests {
         assert_eq!(gem.absorption, expected.absorption);
         assert!(
             !gem.absorption.o_ray.is_empty(),
-            "test premise: Sapphire must carry real absorption bands, or this test              cannot tell it apart from diamond"
+            "test premise: Sapphire must carry real absorption bands, or this test cannot tell it apart from diamond"
         );
     }
 

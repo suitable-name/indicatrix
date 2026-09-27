@@ -1,16 +1,24 @@
-//! Handling a `RemoteUpdate` from an in-flight dispatch ([`handle_remote_update`]),
-//! and turning the accumulator's running sum into a displayed, denoised image
-//! ([`redraw_from_accumulator`]). See this group's own `mod.rs` doc comment.
+//! Handling a `RemoteUpdate` from an in-flight chunk ([`handle_remote_update`]):
+//! merging a finished chunk and requesting the next one, keeping a failed chunk's
+//! prefix and handing its remainder back, finishing the epoch -- and, for
+//! `LiveComputeTarget::RemoteOnly`, turning the epoch's merged remote sum into a
+//! displayed, denoised image ([`redraw_from_epoch`]). See this group's own `mod.rs` doc
+//! comment.
 
 use super::{
+    dispatch::dispatch_next_chunk,
     poll::{apply_actions, sync_served_by_to_ui},
     state::{Orchestrator, lock},
 };
 use crate::{
-    MainWindow, RemoteWorkerModel, ViewportModel,
+    MainWindow, ViewportModel,
     bridge::{
         frame_cache::guide_pass::GuideCache,
-        remote::{handoff::HandoffEvent, remote_render::RemoteUpdate},
+        remote::{
+            handoff::HandoffEvent,
+            live_lane::{ChunkVerdict, LiveLane},
+            remote_render::RemoteUpdate,
+        },
         render_thread::{RenderContext, tonemap_running_average},
     },
     gui::{remote::worker_callbacks::backend_label, show_toast},
@@ -31,9 +39,9 @@ use super::super::generation::{
 /// `handle_remote_update` will perform -- mirrors `render_thread::
 /// DENOISE_MIN_INTERVAL`'s role for the local path (a plain tonemap alone is "tens of
 /// milliseconds even at 4K, not free"). 33ms (~30 FPS), since this crate has no
-/// pre-existing remote-specific cadence to reuse. `RemoteUpdate::Done`'s redraw is
-/// deliberately never subject to this gap (see its match arm below) -- the final,
-/// fully-settled image must always be shown.
+/// pre-existing remote-specific cadence to reuse. The epoch's final redraw is
+/// deliberately never subject to this gap -- the fully-settled image must always be
+/// shown.
 const REMOTE_REDRAW_MIN_INTERVAL: Duration = Duration::from_millis(33);
 
 /// Whether enough real time has passed since `last_redraw_at` (`None` meaning "no
@@ -45,54 +53,66 @@ fn redraw_is_due(last_redraw_at: Option<Instant>, min_interval: Duration, now: I
     last_redraw_at.is_none_or(|t| now.duration_since(t) >= min_interval)
 }
 
-/// Whether the live viewport is currently in `LiveComputeTarget::Both` -- callers skip
-/// pushing a remote-only redraw while this holds, since the render thread's own
-/// display cycle is the combined image's sole producer in that mode.
+/// Whether the live viewport is currently combining (the EFFECTIVE target is `Both`:
+/// a final-picture epoch never combines) -- callers skip pushing a remote-only redraw
+/// while this holds, since the render thread's own display cycle is the combined
+/// image's sole producer in that mode.
 fn is_combining(render_ctx: &Arc<Mutex<RenderContext>>) -> bool {
     matches!(
         render_ctx
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .live_compute_target,
+            .effective_live_target(),
         LiveComputeTarget::Both
     )
 }
 
+/// The `on_update` callback of every chunk request: gates redraw-worthy events on the
+/// connection thread, then carries the update out on the Slint event loop. `chunk` is
+/// the epoch's dimensions plus the chunk's own accumulator, whose latest display frame
+/// (final-picture live transfer) is what a `DisplayFrame` shows.
 pub(super) fn handle_remote_update(
     ui_weak: &Weak<MainWindow>,
     render_ctx: &Arc<Mutex<RenderContext>>,
     state: &Arc<Mutex<Orchestrator>>,
-    accumulator: &Arc<Mutex<Accumulator>>,
-    width: u32,
-    height: u32,
+    chunk: (u32, u32, &Arc<Mutex<Accumulator>>),
     update: RemoteUpdate,
 ) {
+    let (width, height, chunk_accumulator) = chunk;
+    let chunk_accumulator = Arc::clone(chunk_accumulator);
     let render_ctx = render_ctx.clone();
     let state = Arc::clone(state);
-    let accumulator = Arc::clone(accumulator);
 
-    // `Frame`/`Preview` events can arrive many times per second while a remote render
-    // is in flight, each otherwise queuing its own UI-thread closure that clones the
-    // whole accumulator buffer and tonemaps it (`upgrade_in_event_loop` queues rather
-    // than runs immediately, so nothing bounds how many such closures could pile up).
-    // Gate the two of them -- and only the two -- through `Orchestrator::redraw_gate`
-    // (at most one pending closure) and `REMOTE_REDRAW_MIN_INTERVAL` (at most one
-    // redraw attempt per ~33ms) before enqueueing anything: dropping such an update
-    // here is safe because a redraw always re-reads the accumulator's then-current
-    // running sum when it runs, never a value snapshotted now.
+    // `Frame`/`Preview` events can arrive many times per second while a chunk is in
+    // flight, each otherwise queuing its own UI-thread closure. Gate the two of them --
+    // and only the two -- through `Orchestrator::redraw_gate` (at most one pending
+    // closure) and `REMOTE_REDRAW_MIN_INTERVAL` (at most one redraw attempt per ~33ms)
+    // before enqueueing anything: dropping such an update here is safe because a redraw
+    // always re-reads the epoch's then-current sums when it runs. While combining, the
+    // render thread owns redraws entirely, so they are dropped outright -- except that
+    // the rate estimate still wants `Frame` progress, which `Progress` heartbeats
+    // (never gated) also carry.
     //
     // `Connected`/`Progress`/`Done`/`Failed` are never gated this way: each is a
-    // one-time state transition (or, for `Done`, the terminal redraw that must always
-    // be shown) rather than a redundant intermediate frame.
+    // one-time state transition or a cheap bookkeeping update.
+    // A `DisplayFrame` is gated the same way: the queued closure decodes whatever frame
+    // is LATEST in the chunk's accumulator when it runs, so dropping one here is safe.
     let wants_gated_redraw = matches!(
         update,
-        RemoteUpdate::Frame { .. } | RemoteUpdate::Preview { .. }
+        RemoteUpdate::Frame { .. }
+            | RemoteUpdate::Preview { .. }
+            | RemoteUpdate::DisplayFrame { .. }
     );
     if wants_gated_redraw {
         if is_combining(&render_ctx) {
-            // The render thread's own display cycle owns redraws entirely while
-            // combining -- checked here too, not just inside the closure, to avoid
-            // enqueuing a closure that would do nothing anyway.
+            if let RemoteUpdate::Frame {
+                request_id,
+                samples_done,
+            } = update
+                && let Some(lane) = lock(&state).live_lane.as_mut()
+            {
+                lane.observe_progress(request_id, samples_done, Instant::now());
+            }
             return;
         }
         let orch = lock(&state);
@@ -107,133 +127,413 @@ pub(super) fn handle_remote_update(
         drop(orch);
     }
 
+    let ui_weak_for_next = ui_weak.clone();
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
         // Release `redraw_gate`'s pending slot unconditionally, before anything else --
         // including the staleness check below, which can itself `return` early.
-        // `redraw_gate.submit` above set `pending` on the promise that this closure
-        // would eventually call `take()`; skipping that on a stale-update early return
-        // would leave `pending` stuck `true` forever, blocking every future redraw.
         if wants_gated_redraw {
             lock(&state).redraw_gate.take();
         }
-        // By the time this queued closure actually runs, a later settle may already
-        // have dispatched a fresh request, setting `current_request_id` to the new id.
-        // An update for anything else is stale and must never drive this
-        // orchestrator's state.
+        // By the time this queued closure actually runs, a later chunk or settle may
+        // already be current. An update for anything else is stale and must never
+        // drive this orchestrator's state.
         if lock(&state).current_request_id != Some(update.request_id()) {
             return;
         }
-        match update {
-            RemoteUpdate::Connected { info, .. } => {
-                let actions = lock(&state)
-                    .handoff
-                    .handle(HandoffEvent::RemoteStreamStarted);
-                apply_actions(&actions, &render_ctx, &state);
-                ui.global::<RemoteWorkerModel>()
-                    .set_served_by_worker_name(backend_label(info.render.as_ref()).into());
-            }
-            RemoteUpdate::Frame { samples_done, .. } => {
-                tracing::trace!("remote render: {samples_done} samples done");
-                // While combining, this orchestrator's own denoise-and-push pipeline
-                // is skipped entirely: the render thread's periodic display cycle
-                // already folds this same accumulator's current total into the
-                // combined image it pushes, at a cadence at least as fast as remote
-                // `FRAME` events typically arrive. A redraw here would show a
-                // remote-only partial sum and fight the render thread's combined push
-                // for the same `render_image` property.
-                if !is_combining(&render_ctx) {
-                    redraw_from_accumulator(&ui, &accumulator, &render_ctx, &state, width, height);
-                }
-            }
-            RemoteUpdate::Preview { .. } => {
-                if !is_combining(&render_ctx) {
-                    redraw_from_accumulator(&ui, &accumulator, &render_ctx, &state, width, height);
-                }
-            }
-            RemoteUpdate::Progress { samples_done, .. } => {
-                tracing::trace!("remote render progress: {samples_done} samples done");
-            }
-            RemoteUpdate::Done { cancelled, .. } => {
-                if cancelled {
-                    // A cancellation the worker confirmed after this orchestrator had
-                    // already moved on -- nothing further to do; local preview is
-                    // already back in charge.
-                    return;
-                }
-                if !is_combining(&render_ctx) {
-                    redraw_from_accumulator(&ui, &accumulator, &render_ctx, &state, width, height);
-                }
-                let actions = lock(&state).handoff.handle(HandoffEvent::RemoteDone);
-                apply_actions(&actions, &render_ctx, &state);
-                // `ctx.remote_active` is deliberately not cleared here -- a finished
-                // remote render is the settled, full-quality image; clearing it would
-                // let local tracing race back in and progressively overwrite it with a
-                // rough low-spp restart. It stays set until
-                // `resolve_remote_ownership` releases it once the scene is genuinely
-                // invalidated.
-                sync_served_by_to_ui(&ui, &state);
-                let mut s = lock(&state);
-                s.remote_handle = None;
-                s.accumulator = None;
-            }
-            RemoteUpdate::Failed { message, .. } => {
-                let actions = lock(&state).handoff.handle(HandoffEvent::RemoteFailed);
-                apply_actions(&actions, &render_ctx, &state);
-                {
-                    let mut ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
-                    ctx.remote_active = false;
-                    ctx.dirty = true;
-                    // Same reasoning as `DiscardRemotePartial` in `apply_actions`: a
-                    // failed request's shared accumulator must never keep being folded
-                    // into the combined display local is about to restart fresh.
-                    ctx.remote_accumulator = None;
-                    ctx.remote_reserved_samples = 0;
-                }
-                let mut s = lock(&state);
-                s.remote_handle = None;
-                s.accumulator = None;
-                drop(s);
-                show_toast(&ui, &format!("Remote render failed: {message}"), "error");
-            }
-        }
+        apply_update(
+            &UpdateCtx {
+                ui: &ui,
+                ui_weak: &ui_weak_for_next,
+                render_ctx: &render_ctx,
+                state: &state,
+                chunk_accumulator: &chunk_accumulator,
+                width,
+                height,
+            },
+            update,
+        );
     });
 }
 
-/// Reads the accumulator's current running sum plus the pose/geometry/denoise-toggle
-/// state needed out of the real `Accumulator`/`RenderContext`/`Orchestrator`, decides
-/// what to display, and pushes the result to the viewport image.
+/// Everything [`apply_update`] needs on the Slint event loop, bundled.
+struct UpdateCtx<'a> {
+    ui: &'a MainWindow,
+    ui_weak: &'a Weak<MainWindow>,
+    render_ctx: &'a Arc<Mutex<RenderContext>>,
+    state: &'a Arc<Mutex<Orchestrator>>,
+    chunk_accumulator: &'a Mutex<Accumulator>,
+    width: u32,
+    height: u32,
+}
+
+/// Carries one current (not stale) update out on the Slint event loop.
+fn apply_update(c: &UpdateCtx<'_>, update: RemoteUpdate) {
+    let (ui, render_ctx, state) = (c.ui, c.render_ctx, c.state);
+    match update {
+        RemoteUpdate::Connected { info, .. } => {
+            // A no-op for every chunk after the epoch's first (the machine is
+            // already `RemoteRendering`).
+            let actions = lock(state)
+                .handoff
+                .handle(HandoffEvent::RemoteStreamStarted);
+            apply_actions(&actions, render_ctx, state);
+            {
+                let mut s = lock(state);
+                s.worker_label = backend_label(info.render.as_ref());
+                s.remote_hdr = Some(info.render.as_ref().is_some_and(|r| r.hdr));
+            }
+            sync_served_by_to_ui(ui, render_ctx, state);
+        }
+        RemoteUpdate::Frame {
+            request_id,
+            samples_done,
+        } => {
+            tracing::trace!("remote chunk {request_id}: {samples_done} samples done");
+            if let Some(lane) = lock(state).live_lane.as_mut() {
+                lane.observe_progress(request_id, samples_done, Instant::now());
+            }
+            redraw_from_epoch(ui, render_ctx, state, c.width, c.height);
+        }
+        RemoteUpdate::Preview { .. } => {
+            redraw_from_epoch(ui, render_ctx, state, c.width, c.height);
+        }
+        RemoteUpdate::Progress {
+            request_id,
+            samples_done,
+        } => {
+            if let Some(lane) = lock(state).live_lane.as_mut() {
+                lane.observe_progress(request_id, samples_done, Instant::now());
+            }
+        }
+        RemoteUpdate::Done {
+            request_id,
+            cancelled,
+        } => {
+            // A cancellation the worker confirmed after this orchestrator had
+            // already moved on -- nothing further to do (a drag already released
+            // the epoch; the id check above normally catches this first).
+            if !cancelled {
+                // The final display frame may have been coalesced away by the gate.
+                if lane_is_display_only(state) {
+                    show_display_frame(ui, state, c.chunk_accumulator, c.width, c.height);
+                }
+                on_chunk_done(ui, c.ui_weak, render_ctx, state, request_id);
+            }
+        }
+        RemoteUpdate::Failed {
+            request_id,
+            message,
+        } => on_chunk_failed(ui, c.ui_weak, render_ctx, state, request_id, &message),
+        RemoteUpdate::Unsupported {
+            request_id,
+            message,
+        } => {
+            if lane_is_display_only(state) {
+                on_display_only_refused(ui, render_ctx, state, &message);
+            } else {
+                on_chunk_failed(ui, c.ui_weak, render_ctx, state, request_id, &message);
+            }
+        }
+        RemoteUpdate::DisplayFrame {
+            request_id,
+            samples_done,
+        } => {
+            tracing::trace!("remote display frame {request_id}: {samples_done} samples");
+            show_display_frame(ui, state, c.chunk_accumulator, c.width, c.height);
+        }
+        RemoteUpdate::CapabilityChanged { render, .. } => {
+            // A coordinator gained or lost joined workers: keep "served by" true, and
+            // its HDR-map support current for the next settle.
+            {
+                let mut s = lock(state);
+                s.worker_label = backend_label(render.as_ref());
+                s.remote_hdr = Some(render.as_ref().is_some_and(|r| r.hdr));
+            }
+            sync_served_by_to_ui(ui, render_ctx, state);
+        }
+        // Only a `FinalImageRequest` produces one, and the live view never sends it.
+        RemoteUpdate::FinalImage { .. } => {}
+    }
+}
+
+fn lane_is_display_only(state: &Arc<Mutex<Orchestrator>>) -> bool {
+    lock(state)
+        .live_lane
+        .as_ref()
+        .is_some_and(LiveLane::is_display_only)
+}
+
+/// The decoded RGBA8 of `accumulator`'s latest display frame (final-picture live
+/// transfer), `None` before the first one arrived. Pure: no Slint, no lock.
 ///
-/// This runs on the Slint UI/event-loop thread, for every `RemoteUpdate::Frame`/
-/// `Preview`/`Done` -- which, mid-render, can arrive many times per second. That is
-/// exactly why the actual (multi-second at 4K) denoise pass must never run inline
-/// here -- this function only does cheap work synchronously (a plain tonemap, tens of
+/// # Errors
+///
+/// A message when the frame's size is not the epoch's `width x height` or it does not
+/// decode (`indicatrix_net::display::decode_rgba8`'s bounded checks).
+fn display_frame_rgba(
+    accumulator: &Accumulator,
+    width: u32,
+    height: u32,
+) -> Result<Option<Vec<u8>>, String> {
+    let Some(frame) = accumulator.last_display_frame() else {
+        return Ok(None);
+    };
+    if (frame.width, frame.height) != (width, height) {
+        return Err(format!(
+            "a {}x{} display frame for a {width}x{height} view",
+            frame.width, frame.height
+        ));
+    }
+    indicatrix_net::display::decode_rgba8(frame.encoding, width, height, &frame.bytes)
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+/// Shows the chunk's latest display frame as the settled image -- already tone-mapped
+/// and denoised by the remote, so no local denoise/tonemap touches it.
+fn show_display_frame(
+    ui: &MainWindow,
+    state: &Arc<Mutex<Orchestrator>>,
+    chunk_accumulator: &Mutex<Accumulator>,
+    width: u32,
+    height: u32,
+) {
+    let decoded = display_frame_rgba(
+        &chunk_accumulator
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner),
+        width,
+        height,
+    );
+    match decoded {
+        Ok(Some(rgba)) => {
+            lock(state).last_redraw_at = Some(Instant::now());
+            push_image(ui, width, height, &rgba);
+        }
+        Ok(None) => {}
+        Err(message) => tracing::warn!("dropping a remote display frame: {message}"),
+    }
+}
+
+/// The remote refused a display-only request (`UNSUPPORTED_REQUEST`: a plain worker).
+/// Remember it for this connection, drop the epoch, and let the next poll tick
+/// re-dispatch the settled view with full data -- with ONE note.
+fn on_display_only_refused(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    state: &Arc<Mutex<Orchestrator>>,
+    message: &str,
+) {
+    {
+        let mut s = lock(state);
+        s.display_only_refused = true;
+        s.remote_handle = None;
+        if let Some(mut lane) = s.live_lane.take() {
+            lane.abandon();
+        }
+        s.lane_scene = None;
+    }
+    render_ctx
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .release_remote();
+    let actions = lock(state).handoff.handle(HandoffEvent::RemoteFailed);
+    apply_actions(&actions, render_ctx, state);
+    show_toast(
+        ui,
+        &format!(
+            "The remote cannot send finished live frames ({message}); using full data \
+             instead."
+        ),
+        "info",
+    );
+}
+
+fn tab_visible(render_ctx: &Arc<Mutex<RenderContext>>) -> bool {
+    render_ctx
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .tab_visible
+}
+
+/// Requests the epoch's next chunk if the viewport is visible (a hidden viewport just
+/// pauses the lane between chunks; `poll::resume_idle_lane` picks it up again), and
+/// finishes the epoch once the lane has nothing left to claim.
+pub(super) fn continue_lane(
+    ui: &MainWindow,
+    ui_weak: &Weak<MainWindow>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    state: &Arc<Mutex<Orchestrator>>,
+) {
+    if tab_visible(render_ctx) && dispatch_next_chunk(ui_weak, render_ctx, state) {
+        return;
+    }
+    let finished = lock(state)
+        .live_lane
+        .as_ref()
+        .is_some_and(LiveLane::is_finished);
+    if finished {
+        finish_epoch(ui, render_ctx, state);
+    }
+}
+
+/// A chunk's `DONE` (not cancelled): merge it into the epoch, then continue the lane.
+fn on_chunk_done(
+    ui: &MainWindow,
+    ui_weak: &Weak<MainWindow>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    state: &Arc<Mutex<Orchestrator>>,
+    request_id: u32,
+) {
+    let merged = lock(state)
+        .live_lane
+        .as_mut()
+        .and_then(|lane| lane.chunk_done(request_id, Instant::now()));
+    if merged.is_none() {
+        return;
+    }
+    lock(state).remote_handle = None;
+    continue_lane(ui, ui_weak, render_ctx, state);
+}
+
+/// A chunk failed (worker error, transport error or liveness timeout): the lane keeps
+/// its valid prefix and hands the remainder back. After too many failures in a row the
+/// lane gives up for this epoch with ONE status note: under `Both` the image finishes
+/// locally (the merged remote prefix stays in it); under `RemoteOnly` the epoch is
+/// released and local rendering restarts, exactly as a failed remote render always did.
+fn on_chunk_failed(
+    ui: &MainWindow,
+    ui_weak: &Weak<MainWindow>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    state: &Arc<Mutex<Orchestrator>>,
+    request_id: u32,
+    message: &str,
+) {
+    let verdict = lock(state)
+        .live_lane
+        .as_mut()
+        .and_then(|lane| lane.chunk_failed(request_id));
+    lock(state).remote_handle = None;
+    match verdict {
+        None => {}
+        Some(ChunkVerdict::Continue) => {
+            tracing::warn!("remote chunk {request_id} failed ({message}); retrying");
+            continue_lane(ui, ui_weak, render_ctx, state);
+        }
+        Some(ChunkVerdict::GaveUp) => {
+            // Never re-dispatched for this exact scene and mode (see
+            // `decisions::should_redispatch`); the next scene change or mode switch is a
+            // new epoch and may try the worker again.
+            let mode = render_ctx
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .live_compute_target;
+            {
+                let mut s = lock(state);
+                s.gave_up_for = s
+                    .live_lane
+                    .as_ref()
+                    .map(|lane| (lane.epoch().scene_generation(), mode));
+            }
+            let actions = lock(state).handoff.handle(HandoffEvent::RemoteFailed);
+            apply_actions(&actions, render_ctx, state);
+            if is_combining(render_ctx) {
+                show_toast(
+                    ui,
+                    &format!(
+                        "Remote worker failed twice in a row ({message}); finishing this \
+                         image locally."
+                    ),
+                    "info",
+                );
+            } else {
+                {
+                    let mut s = lock(state);
+                    s.live_lane = None;
+                    s.lane_scene = None;
+                }
+                render_ctx
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .release_remote();
+                show_toast(ui, &format!("Remote render failed: {message}"), "error");
+            }
+        }
+    }
+}
+
+/// The lane claimed and finished everything it could: show the final remote image
+/// (`RemoteOnly`) and tell the handoff machine the remote render is done.
+/// `ctx.remote_active` is deliberately NOT cleared -- the settled image keeps
+/// combining (and, in `RemoteOnly`, local stays paused) until a real invalidation.
+fn finish_epoch(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    state: &Arc<Mutex<Orchestrator>>,
+) {
+    let Some((width, height)) = lock(state)
+        .live_lane
+        .as_ref()
+        .map(|lane| lane.epoch().dimensions())
+    else {
+        return;
+    };
+    redraw_from_epoch(ui, render_ctx, state, width, height);
+    let actions = lock(state).handoff.handle(HandoffEvent::RemoteDone);
+    apply_actions(&actions, render_ctx, state);
+    sync_served_by_to_ui(ui, render_ctx, state);
+    lock(state).remote_handle = None;
+}
+
+/// Reads the epoch's merged remote sum (finished chunks plus the in-flight one) and
+/// its matching sample count, plus the pose/geometry/denoise-toggle state, decides what
+/// to display, and pushes the result to the viewport image. Only for
+/// `LiveComputeTarget::RemoteOnly` -- a no-op while combining (the render thread's
+/// display cycle owns the image then) or when no epoch is live.
+///
+/// The color is `remote_sum / remote_count` with the count read under the SAME locks as
+/// the sum (`LiveEpoch::remote_snapshot`), and that same count is what the background
+/// denoise generation receives, so the tone mapper and the denoiser always divide by
+/// the count that actually matches the radiance.
+///
+/// This runs on the Slint UI/event-loop thread, for every chunk `Frame`/`Preview` and
+/// the epoch's end -- which, mid-render, can arrive many times per second. That is
+/// exactly why the actual (multi-second at 4K) denoise pass must never run inline here
+/// -- this function only does cheap work synchronously (a plain tonemap, tens of
 /// milliseconds even at 4K) and defers the expensive pass to a background thread via
 /// `spawn_denoise_generation`, swapping in its result on a later redraw once
 /// `adopt_ready_denoise` confirms it is ready and still valid for the pose on screen.
 ///
-/// `state`'s lock is taken TWICE here, briefly, rather than once for the whole function
-/// -- never held across the plain tonemap below (see `Orchestrator::last_redraw_at`'s
-/// "tens of milliseconds even at 4K, not free" doc comment). Holding one lock end to end
-/// across that tonemap call would stall `handle_remote_update`'s own rate-limit check
-/// (this same lock, taken SYNCHRONOUSLY on the connection thread, before it ever queues
-/// a UI-thread closure -- see its own call site) for exactly as long as the tonemap
-/// took, contrary to `connection::run`/`run_connection`'s documented "O(1) between
-/// reads" liveness argument (`bridge/remote/remote_render/connection/mod.rs`'s module
-/// doc comment).
-fn redraw_from_accumulator(
+/// `state`'s lock is taken briefly, several times, rather than once for the whole
+/// function -- never held across the plain tonemap below (see
+/// `Orchestrator::last_redraw_at`'s "tens of milliseconds even at 4K, not free" doc
+/// comment): `handle_remote_update`'s own rate-limit check takes this same lock
+/// SYNCHRONOUSLY on the connection thread and must never wait out a tonemap.
+fn redraw_from_epoch(
     ui: &MainWindow,
-    accumulator: &Arc<Mutex<Accumulator>>,
     render_ctx: &Arc<Mutex<RenderContext>>,
     state: &Arc<Mutex<Orchestrator>>,
     width: u32,
     height: u32,
 ) {
-    let (buffer, samples_done) = {
-        let acc = accumulator
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        (acc.buffer().to_vec(), acc.samples_done().max(1))
+    if is_combining(render_ctx) {
+        return;
+    }
+    // A final-picture epoch sums no radiance: its image is the remote's display frames
+    // (`show_display_frame`), never a tonemap of the (empty) epoch sums.
+    let Some(epoch) = lock(state)
+        .live_lane
+        .as_ref()
+        .filter(|lane| !lane.is_display_only())
+        .map(|lane| Arc::clone(lane.epoch()))
+    else {
+        return;
     };
+    if epoch.dimensions() != (width, height) {
+        return;
+    }
+    let (buffer, remote_count) = epoch.remote_snapshot();
+    let samples_done = remote_count.max(1);
     let (yaw, pitch, distance, planes, denoise_enabled) = {
         let ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
         (
@@ -342,8 +642,13 @@ fn redraw_from_accumulator(
         orch.last_redraw_at = Some(Instant::now());
     }
 
+    push_image(ui, width, height, &bytes);
+}
+
+/// Shows `rgba` (`width * height * 4` bytes) as the viewport's rendered image.
+fn push_image(ui: &MainWindow, width: u32, height: u32, rgba: &[u8]) {
     let mut fb = crate::bridge::pixel_buffer::FramebufferTransfer::new(width, height);
-    let image = fb.copy_from_gpu_slice(&bytes);
+    let image = fb.copy_from_gpu_slice(rgba);
     ui.global::<ViewportModel>()
         .set_render_image(slint::Image::from_rgba8(image));
     ui.global::<ViewportModel>().set_has_render(true);
@@ -352,6 +657,46 @@ fn redraw_from_accumulator(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indicatrix_net::messages::{DisplayEncoding, DisplayFrameHeader, StreamEvent};
+
+    // ---- display_frame_rgba: the final-picture live transfer's frame -> image path --
+
+    /// An accumulator holding `rgba` as request 1's latest display frame, encoded the
+    /// way a coordinator sends it.
+    fn with_display_frame(width: u32, height: u32, rgba: &[u8]) -> Accumulator {
+        let png = indicatrix_net::display::encode_rgba8(DisplayEncoding::Png, width, height, rgba)
+            .expect("encodes");
+        let mut acc = Accumulator::new(width, height);
+        acc.begin_request(1);
+        let header = DisplayFrameHeader {
+            request_id: 1,
+            samples_done: 32,
+            width,
+            height,
+            encoding: DisplayEncoding::Png,
+            payload_len: png.len() as u32,
+        };
+        acc.apply(&StreamEvent::DisplayFrame(header), Some(&png))
+            .expect("applies");
+        acc
+    }
+
+    #[test]
+    fn a_display_frame_decodes_to_exactly_the_pixels_the_remote_sent() {
+        let rgba: Vec<u8> = (0..3 * 2 * 4).map(|i| (i * 7 % 256) as u8).collect();
+        let acc = with_display_frame(3, 2, &rgba);
+        assert_eq!(display_frame_rgba(&acc, 3, 2), Ok(Some(rgba)));
+    }
+
+    #[test]
+    fn no_display_frame_yet_shows_nothing_and_a_mis_sized_one_is_refused() {
+        assert_eq!(display_frame_rgba(&Accumulator::new(2, 2), 2, 2), Ok(None));
+        let acc = with_display_frame(2, 2, &[5_u8; 16]);
+        assert!(
+            display_frame_rgba(&acc, 4, 4).is_err(),
+            "a frame for another view size never reaches the viewport"
+        );
+    }
 
     // ---- redraw_is_due: remote redraw rate limit ----
 

@@ -49,10 +49,20 @@ saturated.
 ### Compute
 
 Choose **Local only**, **Remote only**, or **Local + Remote**. If a usable
-remote worker is already configured and reachable, **Local + Remote** is
-selected for you by default; otherwise the remote options are shown
+remote (coordinator) is already configured and reachable, **Local + Remote**
+is selected for you by default; otherwise the remote options are shown
 greyed out with the reason underneath (see Chapter 10 for what those
 reasons mean and how to fix them).
+
+### Transfer
+
+Shown once the remote is available and Compute includes it: **Full data**
+(the remote's raw samples are merged with your own) or **Final picture
+only** (the remote renders and tone-maps the whole image and sends one
+finished PNG — much less data, but your own CPU/GPU do not help). The
+starting choice is the remote's own default ("Export transfer (default)" in
+the Remote Coordinator form); see Chapter 10, "Transfer: full data or final
+picture". The tilt video's export section has the same row.
 
 ### Max Ray Bounces
 
@@ -73,8 +83,7 @@ large output sizes."
 If you have saved lighting presets marked as usable for export (Chapter 2),
 you can tick any number of them here to render one extra image per ticked
 preset alongside your current view. Export time multiplies with how many
-you select. A preset that uses an HDR environment map is marked "HDR ·
-slower."
+you select. A preset that uses an HDR environment map is marked "HDR".
 
 ### While it renders
 
@@ -89,14 +98,23 @@ track completion; **Cancel Export** stops the job early.
 While you are dragging the camera or the light, the app is not trying to
 produce a polished picture — it draws a cheap, rough local preview so
 movement stays responsive. The moment you stop moving (about six-tenths of
-a second of no input), if a remote worker is set up, the app hands the
-whole job over to it and starts fresh — nothing from the rough local sketch
-is mixed into what comes back. From then on, the remote worker sends
-back an improved image every "cadence" interval (half a second by
-default), always sending at least a small update at least once every two
-seconds even if there's nothing new worth showing. If you grab the camera
-again before it finishes, the app throws away the in-progress remote image
-and drops straight back to the cheap local preview — the two never blend.
+a second of no input), if a remote coordinator is set up, the app starts a
+fresh settled image and brings the remote in — nothing from the rough local
+sketch is mixed into it. With **Live Compute: Local + Remote** your own
+computer and the remote both keep adding samples to that one image until
+together they reach **Target Samples**; with **Remote only** the remote does
+all of it. The remote sends back updates every "cadence" interval (half a
+second by default), always sending at least a small update at least once
+every two seconds even if there's nothing new worth showing. With **Live
+Transfer: Final picture** it instead sends finished, denoised pictures of the
+whole image and your own computer pauses (Chapter 10). If you grab the camera
+again before it finishes, the app throws away the in-progress settled image
+and drops straight back to the cheap local preview — the moving preview and
+the settled image never blend.
+
+An **HDR environment map** goes to the remote only if the remote reports that
+it can render HDR scenes (Chapter 10); otherwise the live view and exports
+render that scene on your own computer, with a one-time note.
 
 **Local preview scale** (Off / Half / Quarter, in Settings) controls how
 coarse that moving-camera preview is: a smaller fraction renders faster but
@@ -124,5 +142,5 @@ running — see Chapter 10.
 
 ## Next steps
 
-Continue to Chapter 10 to set up and troubleshoot a remote worker, or
+Continue to Chapter 10 to set up and troubleshoot a remote coordinator, or
 Chapter 11 to understand the app's save formats.

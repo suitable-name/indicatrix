@@ -1,6 +1,6 @@
 //! Pure resolution logic for the optional local preview-then-settle rendering.
 //!
-//! `bridge::handoff::HandoffMachine` already gives the REMOTE path this feel: while the
+//! `bridge::remote::handoff::HandoffMachine` already gives the REMOTE path this feel: while the
 //! camera moves, the viewport renders locally at low quality; once it settles, a
 //! full-quality render is requested from a remote worker. This module gives the same
 //! feel with no worker at all -- while moving, [`effective_dimensions`] returns a

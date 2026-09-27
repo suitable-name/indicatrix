@@ -4,7 +4,7 @@ version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 authors = { workspace = true }
-description = "Library server for a indicatrix-backed design catalogue (`serve`, default build): serves indicatrix-net's read-only design-library protocol over mutual TLS. The optional `worker` feature adds render capacity on top -- accepting RenderRequests and replying with traced radiance -- and `render` a one-shot scene-to-PNG CLI."
+description = "Coordinator and render worker for an indicatrix-backed design catalogue. `serve` (default build) is the coordinator: it serves indicatrix-net's read-only design-library protocol to viewers over mutual TLS and accepts joining render workers on a separate worker port. The optional `worker` feature adds render capacity -- `join` (dial a coordinator and render its requests), `serve --render` (render with the coordinator's own CPU/GPU) and `render` (a one-shot scene-to-PNG CLI)."
 license = { workspace = true }
 repository = { workspace = true }
 documentation = { workspace = true }
@@ -37,6 +37,9 @@ indicatrix = { workspace = true, features = ["serde"], optional = true }
 # `SceneState`/`RenderRequest` -- is turned on only by this crate's `worker` feature
 # below, never unconditionally).
 indicatrix-net = { workspace = true }
+# Coordinator job execution (`worker` feature): the lane pool, sample cursor, rate
+# models and deterministic merge a coordinator fans a viewer's request out with.
+indicatrix-dispatch = { workspace = true, optional = true }
 glam = { workspace = true, features = ["bytemuck"], optional = true }
 image = { workspace = true, features = ["png"], optional = true }
 # Decodes a `ClientMessage` (CANCEL or RenderRequest) raw postcard bytes directly in
@@ -79,6 +82,20 @@ tracing-subscriber = { workspace = true }
 # dependency of `rustls`).
 zeroize = "1.9"
 
+# Payload codec measurement only (`examples/payload_codec_bench.rs`). The production
+# codecs now live in `indicatrix-net` (`radiance::payload`, behind its default-on
+# `compression` feature); the bench keeps its own direct dependency because it also
+# measures variants production never sends (unshuffled LZ4/zstd, zstd level 3).
+[dev-dependencies]
+lz4_flex = "0.11"
+zstd = "0.13"
+
+# Renders real FRAME payloads with the production render core (needs `worker`; add
+# `gpu` to trace on the adapter).
+[[example]]
+name = "capture_frame_payloads"
+required-features = ["worker"]
+
 [features]
 default = []
 # The render path: `RenderRequest` handling, `stream_emit`, `render_core`, `render_cmd`,
@@ -88,12 +105,15 @@ default = []
 # actually gates `indicatrix` out of a default build's dependency tree (see that crate's
 # `Cargo.toml`) -- without that half, `indicatrix-net` would still pull `indicatrix` in via its
 # own unconditional dependency, and this feature alone wouldn't achieve anything.
-worker = ["dep:indicatrix", "dep:glam", "dep:bytemuck", "dep:postcard", "dep:serde_json", "dep:image", "indicatrix-net/render"]
+# `indicatrix/hdr`: decoding the HDR environment maps a viewer sends by content hash
+# (protocol v14 -- `crate::assets`) with the exact decoder the viewer uses.
+worker = ["dep:indicatrix", "dep:indicatrix-dispatch", "dep:glam", "dep:bytemuck", "dep:postcard", "dep:serde_json", "dep:image", "indicatrix/hdr", "indicatrix-net/render"]
 # GPU with no render capacity is meaningless, so this implies `worker`. Routes tracing
 # through indicatrix's verified GPU megakernel (`indicatrix::renderer::gpu::frame::GpuFrameRenderer`,
 # wrapped by this crate's own `gpu_backend::GpuBackend`) for both `render` and `serve`,
 # falling back to the CPU tracer per batch whenever the GPU declines (no adapter,
-# `--only-cpu`, or a biaxial material -- see `gpu_backend`'s own doc comment). Off by
+# `--only-cpu`, a scene past the adapter's buffer limits, or a lost device -- see
+# `gpu_backend`'s own doc comment; every material is GPU-supported). Off by
 # default even with `worker` on: `wgpu`/`pollster` is a real dependency tree, and a
 # render-capable server may still run on a machine with no GPU adapter at all.
 gpu = ["worker", "indicatrix/gpu"]

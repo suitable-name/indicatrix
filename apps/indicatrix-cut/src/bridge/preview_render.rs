@@ -6,7 +6,7 @@
 //! `ensure_preview_material`) and is deliberately `indicatrix`-free (see
 //! `indicatrix_vault::model::material_match`'s module doc comment), so the actual
 //! rendering and the `GemMaterial::all_materials()` -> `RiPresetCandidate` adaptation
-//! both have to live on this side of the boundary. `gui::preview_batch` is the one
+//! both have to live on this side of the boundary. `gui::batch::preview` is the one
 //! caller: it resolves a design's planes/material and calls [`render_view`] (locally)
 //! or [`render_view_remote`] once per [`PreviewView`] -- up to twice per design, from
 //! whichever of its local/remote lanes claims each view -- and persists whatever comes
@@ -49,16 +49,19 @@
 //! in a single dispatch, falling back to [`export_thread::batch::render_batch`] (the
 //! exact CPU scanline tracer the export path uses) if the GPU declines. Unlike an
 //! export, a preview never chunks a view's samples into multiple batches --
-//! `gui::preview_batch`'s progress reports "which view"/"which lane", not "how
+//! `gui::batch::preview`'s progress reports "which view"/"which lane", not "how
 //! converged", so there is nothing to report more finely than "done", and a ~1-2s
 //! render has no cancellation-latency argument for chunking either.
-//! `gui::preview_batch` gives cancellation and per-view panic isolation their own,
+//! `gui::batch::preview` gives cancellation and per-view panic isolation their own,
 //! coarser granularity (between items) instead.
 
 use crate::{
     bridge::{
         export_thread::{self, SceneSnapshot},
-        remote::remote_render::{self, RemoteRenderRequest, RemoteUpdate},
+        remote::{
+            remote_can_render,
+            remote_render::{self, RemoteRenderRequest, RemoteUpdate},
+        },
     },
     settings::WorkerSettings,
 };
@@ -70,6 +73,7 @@ use indicatrix::{
         raytracer::{Camera, LightingPreset},
     },
     renderer::{
+        env_map::EnvironmentMap,
         gpu_backend::{GpuBackend, GpuSceneRef},
         tonemap::tonemap_to_rgba,
     },
@@ -115,7 +119,7 @@ pub fn material_ri_at_sodium_d(material: &GemMaterial) -> f64 {
 /// otherwise seen.
 const PREVIEW_YAW: f32 = 0.60;
 const PREVIEW_DISTANCE: f32 = 2.4;
-/// `pub` (effectively crate-visible only -- see [`SODIUM_D_NM`]'s note): `gui::tilt_batch`'s
+/// `pub` (effectively crate-visible only -- see [`SODIUM_D_NM`]'s note): `gui::batch::tilt`'s
 /// batch tilt-curve computation reuses this same light position for every design,
 /// rather than whatever angle happens to be dialled into the live viewport. Deliberate,
 /// not a shortcut: `crate::model::performance`'s search filters compare a threshold
@@ -179,7 +183,7 @@ pub fn ri_candidates() -> Vec<RiPresetCandidate> {
 
 /// Everything one [`render_view`] call needs about the design being rendered, bundled
 /// so that function's signature stays short. `planes`/`material` are already fully
-/// resolved by the caller (`gui::preview_batch`); this module only renders what it's
+/// resolved by the caller (`gui::batch::preview`); this module only renders what it's
 /// given.
 pub struct PreviewJob<'a> {
     pub planes: &'a [GpuFacetPlane],
@@ -191,7 +195,7 @@ pub struct PreviewJob<'a> {
     pub spp: u32,
     /// `AppSettings::default().max_bounces`-equivalent bounce cap for this render. Not
     /// itself a settings-file field (a preview's bounce cap is fixed, not user-tunable
-    /// the way size/spp are -- see `gui::preview_batch::PREVIEW_MAX_BOUNCES`'s own
+    /// the way size/spp are -- see `gui::batch::preview::engine::PREVIEW_MAX_BOUNCES`'s own
     /// doc comment for why 12 was chosen and left off the settings surface).
     pub max_bounces: u32,
 }
@@ -202,9 +206,9 @@ pub struct PreviewJob<'a> {
 /// `Database::save_preview_images`.
 ///
 /// The PNG encode step can theoretically fail on an internal buffer-size mismatch;
-/// that case returns `None` rather than panicking, and `gui::preview_batch` treats it
+/// that case returns `None` rather than panicking, and `gui::batch::preview` treats it
 /// like a caught panic for this one view. A genuine panic inside the tracer itself is
-/// not caught here -- `gui::preview_batch::render_item_local` already wraps each call
+/// not caught here -- `gui::batch::preview::engine::render_item_local` already wraps each call
 /// in `catch_unwind` at the single-item granularity its progress reports at.
 #[must_use]
 pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) -> Option<Vec<u8>> {
@@ -271,13 +275,17 @@ pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) ->
 /// persistent-connection `next_request_id` counter has to guard against.
 const PREVIEW_REQUEST_ID: u32 = 1;
 
+/// The environment every catalogue thumbnail is rendered under: always the analytic
+/// studio rig (see `render_view`'s `env_map: None`), never an HDR map.
+const PREVIEW_ENV_MAP: Option<&Arc<EnvironmentMap>> = None;
+
 /// The remote counterpart of [`render_view`]: dispatches `job`'s view as one
 /// `RenderRequest` covering the whole `job.spp` budget in a single request (a preview
 /// is small enough to never need an export's batched-request chunking) against
 /// `worker`, blocking until it finishes, fails, or `cancel` is observed.
 ///
 /// Returns `None` on any kind of shortfall -- connection failure, worker rejection,
-/// cancellation, or fewer samples than asked for -- so `gui::preview_batch`'s remote
+/// cancellation, or fewer samples than asked for -- so `gui::batch::preview`'s remote
 /// lane can decide what's next: under `LiveComputeTarget::Both` it requeues the item
 /// for a guaranteed local retry via [`render_view`]; under `RemoteOnly` the failure is
 /// final and surfaced. Never partially reports: unlike an export (which keeps a
@@ -291,6 +299,14 @@ pub fn render_view_remote(
     worker: &WorkerSettings,
     cancel: &AtomicBool,
 ) -> Option<Vec<u8>> {
+    // The shared remote-render rule (`bridge::remote::guard`). Catalogue thumbnails
+    // always use the analytic studio rig -- `render_view`'s snapshot hard-codes
+    // `env_map: None` -- so this never refuses today; it is asked anyway so a future
+    // per-design environment cannot silently start mixing lighting between the local
+    // and remote lanes of a batch.
+    if remote_can_render(PREVIEW_ENV_MAP, false).is_err() {
+        return None;
+    }
     let scene = SceneState {
         width: job.size,
         height: job.size,
@@ -306,6 +322,7 @@ pub fn render_view_remote(
         planes: job.planes.to_vec(),
         girdle_frosted: false,
         backdrop: PREVIEW_BACKDROP,
+        environment: indicatrix_net::scene::SceneEnvironment::Studio,
     };
     let accumulator = Arc::new(Mutex::new(Accumulator::new(job.size, job.size)));
     let (tx, rx) = mpsc::channel::<RemoteUpdate>();
@@ -318,6 +335,8 @@ pub fn render_view_remote(
             samples: job.spp,
             width: job.size,
             height: job.size,
+            intent: indicatrix_net::messages::RequestIntent::Batch,
+            display_only: false,
         },
         Arc::clone(&accumulator),
         move |update| {
@@ -336,7 +355,8 @@ pub fn render_view_remote(
                 RemoteUpdate::Done {
                     cancelled: true, ..
                 }
-                | RemoteUpdate::Failed { .. },
+                | RemoteUpdate::Failed { .. }
+                | RemoteUpdate::Unsupported { .. },
             ) => {
                 return None;
             }
@@ -347,7 +367,10 @@ pub fn render_view_remote(
                 RemoteUpdate::Connected { .. }
                 | RemoteUpdate::Preview { .. }
                 | RemoteUpdate::Frame { .. }
-                | RemoteUpdate::Progress { .. },
+                | RemoteUpdate::Progress { .. }
+                | RemoteUpdate::DisplayFrame { .. }
+                | RemoteUpdate::FinalImage { .. }
+                | RemoteUpdate::CapabilityChanged { .. },
             )
             | Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return None,

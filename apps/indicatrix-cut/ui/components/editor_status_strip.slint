@@ -1,6 +1,7 @@
 import { Button, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
+import { GuideModel } from "../models/guide.slint";
 import { ActivityModel, ActivityItem } from "../models/activity.slint";
 import { StaleBadge } from "stale_badge.slint";
 // The Log popup's "Copy" button reuses LibraryModel.copy_text to copy details
@@ -170,6 +171,8 @@ component EditorLogPopup inherits PopupWindow {
                             // Not shown while a run is actively in progress (its
                             // own amber "running" state already says enough).
                             if EditorModel.deep_solve_stale && !EditorModel.deep_solve_running: StaleBadge {
+                                // Locked with Deep Solve while the worked-example guide runs.
+                                enabled: GuideModel.allows_advanced();
                                 recompute => { EditorModel.deep_solve(); }
                             }
                         }
@@ -237,6 +240,7 @@ component EditorLogPopup inherits PopupWindow {
                                     width: 30px;
                                     height: pin_text.preferred-height;
                                     pin_touch := TouchArea {
+                                        enabled: GuideModel.allows_advanced();
                                         clicked => { EditorModel.pin_verified_mast(r.tier_number); }
                                     }
                                     pin_text := Text {
@@ -306,7 +310,7 @@ component EditorLogPopup inherits PopupWindow {
                             Text { text: EditorModel.material_suggestion_text; font-size: 11px; color: Theme.accent-cyan; wrap: word-wrap; }
                             HorizontalLayout {
                                 spacing: 8px;
-                                Button { text: "Set Material"; clicked => { EditorModel.material_suggestion_accept(EditorModel.material_suggestion_name); } }
+                                Button { text: "Set Material"; enabled: GuideModel.allows_design_settings(); clicked => { EditorModel.material_suggestion_accept(EditorModel.material_suggestion_name); } }
                                 Button { text: "No Thanks"; clicked => { EditorModel.material_suggestion_dismiss(); } }
                             }
                         }

@@ -115,3 +115,11 @@ remote is only given up on entirely after two consecutive chunk failures.
 With no local fallback (`Compute: Remote`), a chunk that comes back short
 fails the whole export outright, loudly, rather than writing an image that is
 silently missing samples.
+
+All of the above is the dialog's default **Transfer: Full data** path. **Final
+picture only** instead sends one `FinalImageRequest` for the whole image and writes
+the finished PNG the remote returns (local lanes idle); see
+[remote-rendering.md](remote-rendering.md)'s "Transfer" section for its fallbacks. A
+scene lit by an HDR map is only sent to a remote that advertises HDR support; any
+other remote leaves that export local-only, with a note, so the whole image is lit by
+one environment.

@@ -9,8 +9,16 @@ fire / scintillation metrics derived along the way.
 `indicatrix` has no dependency on any particular UI toolkit or data source: callers
 supply plain facet-plane geometry and a material, and get back rendered pixels
 and/or optical metrics. It is used by `apps/indicatrix-cut` (interactive viewer),
-`apps/indicatrix-worker` (headless CLI / remote render server), and `crates/indicatrix-net`
-(the wire protocol between the two).
+`apps/indicatrix-worker` (headless CLI / remote render coordinator and workers), and
+`crates/indicatrix-net` (the wire protocol between the two).
+
+Besides the tracer, `renderer` holds the display pipeline both applications share, so
+a remote picture matches a local one: `renderer::denoise` (À-Trous denoiser),
+`renderer::tonemap`, `renderer::guide_pass` (the primary-ray prepass that produces the
+denoiser's depth/normal/facet-id guide buffers for radiance that arrived without
+them — GPU or remote samples), and `renderer::frame_denoise` (average → denoise →
+tone-map for one displayed frame — the GUI's live view and the coordinator's
+finished display frames both call it).
 
 ## What it physically models
 
@@ -180,7 +188,7 @@ feature's `image` dependency is pulled in with `default-features = false` and on
 the `hdr` format feature, specifically to avoid dragging in png/gif/webp/avif/exr
 decoders indicatrix has no use for; `serde` is feature-gated off by default "so the
 base `indicatrix` dependency count... stays publishable." Even a dev-only example
-(`examples/meet_solver_validation.rs`) uses `std::thread::scope` instead of pulling
+(`examples/meet_solver_validation/`) uses `std::thread::scope` instead of pulling
 in `rayon`, citing this same policy. If you're adding a dependency here, ask
 whether it can be feature-gated, and whether a zero-dependency alternative exists,
 before adding it unconditionally.
@@ -265,10 +273,10 @@ No `#[test]`-attributed function in this crate requires a live GPU adapter — t
 `--features gpu` unit tests (in `renderer/gpu/furnace_check.rs` and
 `renderer/gpu/ulp.rs`) are pure-logic tests of the comparison/tolerance helpers
 themselves. All GPU-adapter-dependent equivalence checking lives exclusively in
-`examples/gpu_equivalence_harness.rs` (above), which `cargo test` never runs on
+`examples/gpu_equivalence_harness/` (above), which `cargo test` never runs on
 its own.
 
-`examples/meet_solver_validation.rs` is corpus-scale validation tooling for
+`examples/meet_solver_validation/` is corpus-scale validation tooling for
 `geometry::meet_solver` — the module that derives a facet's mast (depth)
 distance from its angle, index position, gear, and meet constraints alone, the
 inverse of the forward plane-construction path described above.

@@ -1,0 +1,261 @@
+import { NewDesignDialog } from "../new_design_dialog.slint";
+import { RetargetDialog } from "../retarget_dialog.slint";
+import { GearRemapDialog } from "../editor_design_settings.slint";
+import { MetadataEditorDialog } from "../metadata_editor_dialog.slint";
+import { PreviewBatchDialog } from "../preview_batch_dialog.slint";
+import { TiltBatchDialog } from "../tilt_batch_dialog.slint";
+import { ShortcutOverlay } from "../shortcut_overlay.slint";
+import { ConfirmActionDialog } from "../confirm_action_dialog.slint";
+import { AnchorExplainer } from "../anchor_explainer.slint";
+import { EditorModel } from "../../models/editor.slint";
+import { RetargetModel } from "../../models/retarget.slint";
+import { LibraryModel } from "../../models/library.slint";
+import { BatchModel } from "../../models/batch.slint";
+import { ShortcutsModel } from "../../models/shortcuts.slint";
+
+// Every modal dialog `app.slint` mounts that is driven ENTIRELY by a global
+// model (no `MainWindow`-local property or callback involved) -- split out to
+// keep `app.slint` under its line budget. `MaterialEditorDialog`/`ExportDialog`
+// need the identical wrapping-`FocusScope` treatment but are mounted in
+// `gem_viewport.slint` instead (mutually exclusive with everything here, since
+// they belong to the Live Render/Edit viewports). `close_confirm_open`'s own
+// dialog and the `Toast` stay in `app.slint`: both read `MainWindow`'s own
+// local properties/callbacks, which this component -- driven only by globals
+// -- deliberately has none of.
+export component GlobalDialogsOverlay {
+    // `NewDesignDialog`/`RetargetDialog`/`MetadataEditorDialog` are plain
+    // Rectangles with no key handling of their own -- wrapped here in
+    // a `FocusScope` that takes focus on mount, maps Escape to that dialog's own
+    // cancel/close path and Return to its primary action, and swallows every
+    // other key (`return accept`) so `global_shortcuts` (`app.slint`) cannot
+    // fire on the design underneath while one of these is open (e.g. Ctrl+S
+    // saving over the New Design form). `Key.Tab` is let through unhandled so
+    // the window's built-in focus-cycling still moves between the dialog's own
+    // fields/buttons.
+    if EditorModel.new_dialog_open: FocusScope {
+        width: 100%;
+        height: 100%;
+        z: 400;
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                EditorModel.new_dialog_open = false;
+            } else if event.text == Key.Return {
+                // Through the dialog's own `do_create`, so Return respects
+                // `form_valid` exactly like the Create button. The dialog is NOT
+                // closed here: only Rust's success path
+                // (`tier_actions::do_new_design_create`) closes it, so a parse
+                // error keeps the typed values on screen next to its toast.
+                new_design_dialog.do_create();
+            } else if event.text == Key.Tab {
+                return reject;
+            }
+            return accept;
+        }
+
+        new_design_dialog := NewDesignDialog {
+            width: 100%;
+            height: 100%;
+        }
+    }
+
+    if RetargetModel.is_open: FocusScope {
+        width: 100%;
+        height: 100%;
+        z: 400;
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                if !RetargetModel.is_busy {
+                    RetargetModel.is_open = false;
+                    RetargetModel.close();
+                }
+            } else if event.text == Key.Return {
+                if RetargetModel.rows.length > 0 && RetargetModel.anchored_tier_errors.length == 0
+                        && RetargetModel.solve_error == "" && !RetargetModel.is_busy {
+                    RetargetModel.apply();
+                }
+            } else if event.text == Key.Tab {
+                return reject;
+            }
+            return accept;
+        }
+
+        RetargetDialog {
+            width: 100%;
+            height: 100%;
+        }
+    }
+
+    // The gear-remap confirmation is a modal dialog (rather than an inline
+    // section inside `EditorDesignSettings`, `editor_design_settings.slint`)
+    // so it cannot be missed entirely behind other work. Same
+    // wrapping-`FocusScope` idiom as `RetargetDialog`
+    // above: `GearRemapDialog` already has its own internal Escape/Return
+    // handling, but this outer layer additionally swallows every other key
+    // (e.g. Ctrl+S) so it cannot fire on the design underneath while this
+    // modal is open.
+    if EditorModel.gear_remap_open: FocusScope {
+        width: 100%;
+        height: 100%;
+        z: 400;
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                EditorModel.gear_remap_cancel();
+            } else if event.text == Key.Return {
+                EditorModel.gear_remap_confirm();
+            } else if event.text == Key.Tab {
+                return reject;
+            }
+            return accept;
+        }
+
+        GearRemapDialog {
+            width: 100%;
+            height: 100%;
+        }
+    }
+
+    if LibraryModel.metadata_editor_open: FocusScope {
+        width: 100%;
+        height: 100%;
+        z: 400;
+        init => { self.focus(); }
+        key-pressed(event) => {
+            // Enter-to-save is not wired here: `MetadataEditorDialog::save`
+            // needs its own internal draft properties (title_draft/shape_draft/
+            // .../volume_draft), which the dialog resolves itself
+            // (`selected_shape` there is a plain, not externally readable,
+            // property), so that half stays with the dialog's own file.
+            if event.text == Key.Escape {
+                LibraryModel.metadata_editor_open = false;
+            } else if event.text == Key.Tab {
+                return reject;
+            }
+            return accept;
+        }
+
+        MetadataEditorDialog {
+            width: 100%;
+            height: 100%;
+        }
+    }
+
+    if BatchModel.preview_visible: PreviewBatchDialog {
+        width: 100%;
+        height: 100%;
+        z: 400;
+    }
+
+    if BatchModel.tilt_visible: TiltBatchDialog {
+        width: 100%;
+        height: 100%;
+        z: 400;
+    }
+
+    // The Keyboard Shortcuts overlay (Help menu, or `?` --
+    // `global_shortcuts` in `app.slint`). Same wrapping-`FocusScope` Escape
+    // convention as `NewDesignDialog`/`RetargetDialog` above.
+    if ShortcutsModel.open: FocusScope {
+        width: 100%;
+        height: 100%;
+        z: 400;
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                ShortcutsModel.close();
+            } else if event.text == Key.Tab {
+                return reject;
+            }
+            return accept;
+        }
+
+        ShortcutOverlay {
+            width: 100%;
+            height: 100%;
+        }
+    }
+
+    // Unsaved-changes guard for New/Load Selected/Open Native -- see
+    // `EditorModel.unsaved_dialog_*`'s own doc comment.
+    // Deliberately last-but-one in this stack: it only
+    // appears at startup, when none of the others can be open.
+    if EditorModel.startup_restore_path != "": ConfirmActionDialog {
+        heading: EditorModel.startup_restore_is_autosave
+            ? "Recover unsaved work?"
+            : "Reopen last design?";
+        message: EditorModel.startup_restore_is_autosave
+            ? "The previous session ended without saving. A recovery file is still on disk:\n" + EditorModel.startup_restore_path
+            : EditorModel.startup_restore_path;
+        primary_label: EditorModel.startup_restore_is_autosave ? "Recover" : "Reopen";
+        secondary_label: "Not now";
+        primary => { EditorModel.startup_restore_accept(); }
+        secondary => { EditorModel.startup_restore_dismiss(); }
+        cancel => { EditorModel.startup_restore_dismiss(); }
+    }
+
+    if EditorModel.unsaved_dialog_open: ConfirmActionDialog {
+        width: 100%;
+        height: 100%;
+        z: 500;
+        heading: "Unsaved Changes";
+        message: EditorModel.unsaved_dialog_message;
+        primary_label: "Save";
+        secondary_label: "Discard";
+        primary => { EditorModel.unsaved_dialog_save(); }
+        secondary => { EditorModel.unsaved_dialog_discard(); }
+        cancel => {
+            EditorModel.unsaved_dialog_open = false;
+            EditorModel.unsaved_dialog_cancel();
+        }
+    }
+
+    // The native-load fingerprint-mismatch choice -- see
+    // `EditorModel.mismatch_dialog_*`'s own doc comment.
+    if EditorModel.mismatch_dialog_open: ConfirmActionDialog {
+        width: 100%;
+        height: 100%;
+        z: 500;
+        heading: "Native Sidecar Out of Sync";
+        message: "The paired .asc file was changed outside the editor since this native file was last saved, so its per-tier meet constraints and detached facets can no longer be trusted to line up by position. Apply them anyway, or continue with the .asc alone?";
+        primary_label: EditorModel.mismatch_dialog_can_apply ? "Apply Sidecar Anyway" : "";
+        secondary_label: "Use .asc Only";
+        primary => { EditorModel.mismatch_dialog_apply_anyway(); }
+        secondary => { EditorModel.mismatch_dialog_asc_only(); }
+        cancel => {
+            EditorModel.mismatch_dialog_open = false;
+            EditorModel.mismatch_dialog_cancel();
+        }
+    }
+
+    // Replaces the two blocking `rfd::MessageDialog` Yes/No prompts
+    // `gui::editor::native_io` would otherwise show on the UI thread ("not a
+    // closed solid, write anyway?" and "overwrite an unrelated sidecar?") --
+    // see `EditorModel.write_confirm_*`'s own doc comment. No `secondary_label`
+    // set: Cancel alone is the decline.
+    if EditorModel.write_confirm_open: ConfirmActionDialog {
+        width: 100%;
+        height: 100%;
+        z: 500;
+        heading: EditorModel.write_confirm_heading;
+        message: EditorModel.write_confirm_message;
+        primary_label: EditorModel.write_confirm_primary_label;
+        secondary_label: "";
+        show_dont_ask: EditorModel.write_confirm_show_dont_ask;
+        dont_ask <=> EditorModel.write_confirm_dont_ask;
+        primary => { EditorModel.write_confirm_accept(); }
+        cancel => {
+            EditorModel.write_confirm_open = false;
+            EditorModel.write_confirm_cancel();
+        }
+    }
+
+    // The one-time anchor explainer card -- see
+    // `EditorModel.anchor_explainer_open`'s own doc comment.
+    if EditorModel.anchor_explainer_open: AnchorExplainer {
+        width: 100%;
+        height: 100%;
+        z: 500;
+    }
+}

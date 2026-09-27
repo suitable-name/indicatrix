@@ -1,0 +1,96 @@
+import { Theme } from "../../theme.slint";
+
+// `EditorTierTable`'s column header row. Column widths are passed straight
+// through from `EditorTierTable`'s own `col_*_width` properties (see that
+// component's own top doc comment on why they live there, named, rather than
+// as literals repeated in header and row) so this header and `TierTableRow`
+// can never drift out of sync.
+export component TierTableHeader inherits Rectangle {
+    in property <bool> select_mode: false;
+
+    in property <length> col_hash_width;
+    in property <length> col_warn_width;
+    in property <length> col_block_width;
+    in property <length> col_angle_width;
+    in property <length> col_name_min_width;
+    in property <length> col_indices_min_width;
+    in property <length> col_meets_width;
+    in property <length> col_mast_width;
+    in property <length> col_solve_width;
+    in property <length> col_margin_width;
+    in property <length> col_orbit_width;
+    in property <length> col_adopt_width;
+    in property <length> col_pin_width;
+    in property <length> col_detach_width;
+    in property <length> col_anchor_width;
+    in property <length> col_move_width;
+    in property <length> col_dup_width;
+    in property <length> col_remove_width;
+
+    height: 26px;
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        Text { width: root.col_hash_width; text: root.select_mode ? "\u{2713}" : "#"; font-size: 11px; font-weight: 700; color: root.select_mode ? Theme.accent-amber : Theme.text-muted; vertical-alignment: center; }
+        Text { width: root.col_warn_width; text: ""; }
+        Text { width: root.col_block_width; text: ""; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+        Text { width: root.col_angle_width; text: "ANGLE"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+        Text { horizontal-stretch: 1; min-width: root.col_name_min_width; overflow: elide; text: "NAME"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+        Text { horizontal-stretch: 1; min-width: root.col_indices_min_width; overflow: elide; text: "INDICES"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+        // What this tier's constraint actually is -- a scale reference,
+        // an unspecified meet, or named facets (`EditorTierItem::
+        // constraint_kind`/`constraint_text`).
+        Text { width: root.col_meets_width; text: "MEETS"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+        // Mast figure is in the design's model units (girdle half-width = 1),
+        // never millimetres. Named here since header carries no unit.
+        Rectangle {
+            width: root.col_mast_width;
+            height: 100%;
+            Text { text: "MAST"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+            Tooltip { text: @markdown("Solved mast depth, in the design's own model units (girdle half-width = 1), not millimetres."); }
+        }
+        // Header Tooltips reuse the row-cell wording from below.
+        Rectangle {
+            width: root.col_solve_width;
+            height: 100%;
+            Text { text: "SOLVE"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+            Tooltip { text: @markdown("How this tier's MAST was derived: a real vertex-derived solve, or a least-squares/uncertain fallback (amber)."); }
+        }
+        // Margin over the design's effective critical angle
+        // (pavilion tiers only) and the risk band it falls into
+        // (`EditorTierItem::margin_text`/`risk_level`).
+        Rectangle {
+            width: root.col_margin_width;
+            height: 100%;
+            Text { text: "MARGIN"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+            Tooltip { text: @markdown("Margin over the design's effective critical angle (pavilion tiers only), and the risk band it falls into."); }
+        }
+        // Whether this row is one orbit, several folded together,
+        // or partial/inconsistent (`EditorTierItem::orbit_status`)
+        // -- makes "editing this row moves more than one facet"
+        // visible before the user clicks Save. Also doubles as the
+        // "Complete orbit" action's hit target (see the row's own
+        // `orbit_touch`).
+        Rectangle {
+            width: root.col_orbit_width;
+            height: 100%;
+            Text { text: "ORBIT"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+            Tooltip { text: @markdown("Whether this row is one orbit, several folded together, or partial/inconsistent. Click an amber badge in the row below to complete it."); }
+        }
+        // What the source file claims this facet meets, when
+        // import pinned the tier instead of deriving it
+        // (`EditorTierItem::imported_meet_text`).
+        Rectangle {
+            width: root.col_adopt_width;
+            height: 100%;
+            Text { text: "IMPORTED"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+            Tooltip { text: @markdown("What the source file claims this facet meets, when import pinned the tier instead of deriving it. Click Adopt in the row below to switch to it."); }
+        }
+        Text { width: root.col_pin_width; text: ""; }
+        Text { width: root.col_detach_width; text: ""; }
+        Text { width: root.col_anchor_width; text: ""; }
+        Text { width: root.col_move_width; text: ""; }
+        Text { width: root.col_dup_width; text: ""; }
+        Text { width: root.col_remove_width; text: ""; }
+    }
+}

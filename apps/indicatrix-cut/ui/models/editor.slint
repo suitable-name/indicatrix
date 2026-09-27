@@ -2,6 +2,14 @@ import { AngleItem, DeepSolveTierRow, EditorTierItem, GearRemapRow, IndexChipIte
 
 export global EditorModel {
     in property <bool> enabled: false;
+    // Whether a REAL design is installed -- `false` only for the startup
+    // placeholder (`EditorState::fresh`) before anything is created, loaded or
+    // restored. Pushed from Rust (`gui::editor::view::push_has_design`, mirroring
+    // `EditorState::has_design`) on every install path: New Design/templates,
+    // Load Selected, Open Native/Open Recent/the startup restore. Gates the
+    // empty-state card grid (`components/app/viewport_overlay.slint`): a design
+    // with zero tiers is still a design and must stay visible.
+    in property <bool> has_design: false;
 
     in-out property <int> selected_tier_index: -1;
     callback selected_tier_changed(int);

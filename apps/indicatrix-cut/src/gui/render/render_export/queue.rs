@@ -11,7 +11,7 @@ use crate::{
         render_thread::{RenderContext, load_env_map},
     },
     gui::show_toast,
-    settings::{LightingPreset as SavedLightingPreset, LocalComputeTarget, WorkerSettings},
+    settings::{LightingPreset as SavedLightingPreset, LocalComputeTarget},
 };
 use indicatrix::{color::ColorSpace, optics::raytracer::LightingPreset};
 use slint::ComponentHandle;
@@ -151,8 +151,8 @@ pub(super) struct ExportQueue {
 
     pub(super) params: export_thread::ExportParams,
     pub(super) color_space: ColorSpace,
-    pub(super) compute_target: ComputeTarget,
-    pub(super) workers: Vec<WorkerSettings>,
+    /// Compute target, remote endpoint and transfer, fixed for the whole queue.
+    pub(super) remote: export_thread::RemoteSelection,
     pub(super) local_compute: LocalComputeTarget,
 }
 
@@ -293,17 +293,11 @@ pub(super) fn start_next_export_job(
     };
     set_starting_job_ui_state(ui, current_index, total, &job);
 
-    let (params, color_space, compute_target, workers, local_compute) = {
+    let (params, color_space, remote, local_compute) = {
         let q = queue
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        (
-            q.params,
-            q.color_space,
-            q.compute_target,
-            q.workers.clone(),
-            q.local_compute,
-        )
+        (q.params, q.color_space, q.remote.clone(), q.local_compute)
     };
     ui.global::<ExportModel>()
         .set_preview_samples_total(params.samples_per_pixel as i32);
@@ -318,8 +312,7 @@ pub(super) fn start_next_export_job(
         params,
         color_space,
         output_path,
-        compute_target,
-        workers,
+        remote,
         local_compute,
         move |ui: &MainWindow, progress: export_thread::ExportProgress| {
             handle_export_job_progress(ui, &queue_progress, progress);

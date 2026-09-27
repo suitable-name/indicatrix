@@ -245,13 +245,13 @@ cargo test -p indicatrix-vault
 ```
 
 No `tests/` directory — everything is inline `#[cfg(test)]` coverage, concentrated
-in `db/sqlite.rs` (schema creation, every migration's correctness *and* idempotency
+in `db/sqlite/` (schema creation, every migration's correctness *and* idempotency
 across two opens, using hand-seeded "pre-migration" fixture schemas; entry/detail
 save-and-search round trips; custom-material CRUD; cross-source duplicate
 detection; `update_diagram_metadata` proven, column by column, to leave every field
 outside `MetadataUpdate` — including every field `FullDiagramRecord` can't even see —
-byte-for-byte unchanged), plus `local.rs` (`import_asc`/`reconstruct_asc_schedule`), `dedup.rs`
-(`normalize_for_dedup`), and `facets.rs` (parsing a packed `"55+6"`-style
+byte-for-byte unchanged), plus `local/` (`import_asc`/`reconstruct_asc_schedule`), `model/dedup.rs`
+(`normalize_for_dedup`), and `model/facets.rs` (parsing a packed `"55+6"`-style
 facet-count string). Every test opens its own temporary SQLite file — none of them
 touch the real `facet_diagrams.sqlite` working database that lives at the
 workspace root.

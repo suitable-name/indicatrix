@@ -1,8 +1,8 @@
 # indicatrix-worker — architecture
 
 How the worker is built internally: how tracing is decoupled from the network, what
-makes cancellation mechanical, how concurrent clients are served, and how the GPU
-backend fits in. For *using* the worker — flags, certificate workflows, troubleshooting
+makes cancellation mechanical, how concurrent clients are served, how the coordinator
+spreads a request over joined workers, and how the GPU backend fits in. For *using* the worker — flags, certificate workflows, troubleshooting
 — see [the README](../README.md). For the trust model and what each security-relevant
 flag actually weakens, see [security.md](security.md).
 
@@ -10,16 +10,20 @@ flag actually weakens, see [security.md](security.md).
 
 `serve`'s primary role is the **design library**: read-only catalogue queries answered
 from a SQLite database opened read-only. Rendering is optional on top, behind the
-`worker` feature. Both share one listener, one handshake, one authenticated
-connection, and one accept loop — a connection is not "a render connection" or "a
-library connection", it is a connection over which either kind of message may arrive.
+`worker` feature. For a viewer, both share one listener (`--bind`), one handshake,
+one authenticated connection, and one accept loop — a connection is not "a render
+connection" or "a library connection", it is a connection over which either kind of
+message may arrive. Joined render workers use a separate listener, the worker port
+(see [Coordinator](#coordinator-joined-workers) below).
 
 That has two consequences worth stating, because both are easy to get wrong:
 
 - **`WELCOME` is the capability contract.** `library: bool` and
   `render: Option<RenderCapability>` say what this instance actually offers, and
-  `render` is `Some` only when a GPU or CPU tracer is genuinely available — not merely
-  when the feature compiled. A client checks before sending.
+  `render` is `Some` only when something can genuinely render — the coordinator's own
+  lane (`--render`) or at least one joined worker — not merely when the feature
+  compiled. A client checks before sending, and a mid-connection `CAPABILITY_CHANGED`
+  updates it when workers join or leave.
 - **The contract is advisory, not enforcement.** Nothing prevents a peer from sending
   a `RenderRequest` to a library-only server anyway, so the dispatch answers with a
   protocol error rather than treating the case as impossible: treating it as
@@ -128,15 +132,17 @@ is the whole rule.
 
 ### Concurrency model
 
-`serve`'s accept loop (`run`, in `src/serve.rs`) calls `thread::spawn` once
-per accepted `TcpStream` — every client gets its own OS thread for the whole
-lifetime of its connection, so N simultaneously-connected clients are served
-in parallel, not queued behind each other.
+`serve`'s viewer accept loop (`run_accept_loop`, in `src/serve/accept.rs`) calls
+`thread::spawn` once per accepted `TcpStream` — every client gets its own OS thread
+for the whole lifetime of its connection, so N simultaneously-connected clients are
+served in parallel, not queued behind each other. The worker port's listener
+(`src/coordinator/listener.rs`) does the same for joined workers.
 
 `--threads` is a **separate, per-render-request** knob, not a total budget
-across those connections. Each `RenderRequest` gets its own tracer thread
-(`stream_emit::spawn_tracer`), and that tracer thread's own `trace_samples`
-call (`render_core.rs`) further parallelizes a single sub-batch internally
+across those connections. Each `RenderRequest` the own lane traces gets its own tracer
+thread (`stream_emit::run_stream` -> `run_stream_with`'s producer thread), and that
+tracer thread's own `trace_samples` call (`src/render_core/`) further parallelizes a
+single sub-batch internally
 using `thread::scope`, fanning out across `effective_thread_count(threads)`
 threads (`0`/omitted resolves to `std::thread::available_parallelism()`, or 8
 if that call fails). So the actual number of OS threads doing CPU-bound
@@ -158,6 +164,69 @@ time should generally pass an explicit `--threads <n>` sized so that `n ×
 rather than relying on the `0` default, which is only appropriate when the
 worker is expected to serve one client at a time.
 
+### Coordinator (joined workers)
+
+`worker` builds only (`src/coordinator/`). The worker port (`listener.rs`) accepts
+`indicatrix-worker join` connections: mutual TLS with a worker-role certificate, a
+`HELLO` carrying the worker's `RenderCapability`, a `worker_id` back in
+`WELCOME.registration`. Each connection is registered in the `Registry` (`registry.rs`)
+as one idle lane; a `join --slots k` worker simply opens k connections. A liveness
+thread (`liveness.rs`) sends `PING` every 10 s to idle connections and drops one that
+has been silent for 30 s. Viewers are told about joins and departures with
+`CAPABILITY_CHANGED` between requests (`viewer.rs`).
+
+A viewer's request is planned before anything is streamed (`job/plan.rs`):
+
+- **Direct** — only the own lane (`--render`) would serve it, e.g. every live-view
+  request by default. It is streamed exactly like a single worker: the tracer/emitter
+  split above, no chunking.
+- **Job** — anything that takes joined workers. An `indicatrix_dispatch::LanePool`
+  (from the `crates/indicatrix-dispatch` scheduler crate) hands out disjoint sample
+  chunks from one shared cursor to one lane per checked-out worker connection plus the
+  own lane, sizing chunks from each lane's measured rate (larger chunks for
+  export-type work, smaller ones for live-view work so progress arrives often). A
+  failed chunk's unfinished samples go back to the pool; a lane that keeps failing is
+  retired; when every lane is gone the viewer gets `ALL_WORKERS_LOST`. The job runs on
+  a producer thread (`job/producer.rs`) feeding the same emitter the direct route uses.
+
+Which workers a job takes: an export-type request (`Batch` intent with
+`FinalOnly` transfer, and every `FINAL_IMAGE_REQUEST`) takes every idle worker whose
+`max_pixels` accepts the image (and, for an HDR scene, that advertises `hdr`). A
+live-view request takes none by default, the single fastest idle worker when there is
+no own lane, or up to `--interactive-workers` of the fastest — ranked by rate measured
+on this viewer connection, unmeasured GPUs first — with `--pin-interactive-worker`'s
+worker moved to the front while it is available.
+
+Limits (`job/limits.rs`): every job reserves `width × height × 48` bytes (four
+full-resolution `Vec3` buffers) against `--max-job-memory-mib` and is refused past it;
+export-type jobs wait in a per-viewer FIFO so one viewer certificate has one such job
+running at a time. Live-view and direct requests are exempt.
+
+What the viewer receives: `FRAME`s carry the sum of every chunk merged since the last
+emit — a *set* of samples inside the request range, so clients check containment,
+never contiguity; under `FinalOnly` the one `FRAME` is the pool's deterministic merge
+in chunk-start order, so the result does not depend on which lane finished first.
+`DISPLAY_FRAME`s (live view, `TransferMode::DisplayOnly`) are the merged sum averaged,
+denoised and tone-mapped with the GUI's own pipeline — `indicatrix::renderer::frame_denoise`,
+with guide buffers from the coordinator's own primary-ray prepass
+(`indicatrix::renderer::guide_pass`, computed once per request from pose and
+geometry) — with at most one denoise in flight, identically for a job and for the
+direct route (`src/stream_emit/emitter/display.rs`). `FINAL_IMAGE` is the merged sum
+tone-mapped with the GUI export's own function and PNG-encoded
+(`src/stream_emit/emitter/picture.rs`).
+
+Joined lanes (`src/coordinator/lanes/`) talk to their worker like a viewer would: one
+`RenderRequest` per chunk, containment-checked `FRAME`s, the same two-tier liveness
+deadline as the GUI (30 s for the first event, 8 s after), and on cancel a `CANCEL`
+followed by a bounded 10 s wait for `DONE`. A worker that asks for an HDR map
+(`NEED_ASSET`) is answered from the copy the coordinator holds for the job
+(`src/assets/`), so a viewer uploads each map at most once.
+
+Payload encoding is negotiated per connection in the handshake: each side lists what it
+can decode, the server picks its first preference the peer accepts (byte-shuffle +
+zstd, then shuffle + LZ4, then raw; loopback peers get raw), and a payload that would
+not shrink is sent raw. All encodings are lossless.
+
 ### GPU
 
 Optional, off by default:
@@ -166,11 +235,12 @@ Optional, off by default:
 cargo build -p indicatrix-worker --release --features gpu
 ```
 
-Both `render` and `serve` then trace on `indicatrix`'s GPU megakernel, falling back to
+`render`, `serve --render` and `join` then trace on `indicatrix`'s GPU megakernel, falling back to
 the CPU tracer per sub-batch whenever the GPU declines. Declining is a normal
 outcome, not an error, and happens for three reasons: no usable adapter on this
-machine, `--only-cpu`, or an **HDR environment map** (the megakernel has no
-`env_mode` for it).
+machine (or a device lost mid-run), `--only-cpu`, or an **HDR environment map too
+large** for the device's storage-buffer limit. HDR maps otherwise render on the GPU —
+the megakernel has its own environment mode for them.
 
 Biaxial materials (Alexandrite, Topaz, Tanzanite) do **not** decline.
 The `BiaxialIndicatrix` machinery is ported to WGSL and verified at the same
@@ -179,22 +249,24 @@ unconditionally `true` — see that method's own doc comment, and
 `indicatrix::renderer::gpu_backend`'s module doc comment for the authoritative
 decline list.
 
-`serve` tells the truth about which it is. `WELCOME.backend` reports
+`serve --render` tells the truth about which it is. `WELCOME.render.backend` reports
 `Backend::Gpu { adapter }` **only when an adapter was genuinely acquired at
 startup** — not merely when the feature was compiled in — and `Backend::Cpu`
-otherwise. Note this is a connection-level signal: the wire protocol carries no
-per-request backend field, so a single request that declines (an HDR environment
-map arriving in a `SceneState`) still falls back silently for that request alone.
+otherwise (a `join`ed worker reports the same in its `HELLO`; a coordinator with
+joined workers reports `Backend::Coordinator` with the summed threads and GPUs).
+Without `--render`, `serve` never acquires a GPU at all. Note this is a connection-level signal: the wire protocol carries no
+per-request backend field, so a single request that declines (an oversized HDR
+environment map, say) still falls back silently for that request alone.
 
 | Flag | Effect |
 |---|---|
-| `--only-gpu` | GPU only, on both subcommands — never splits work onto the CPU tracer (see "Hybrid CPU+GPU" below), even when the split would otherwise have been offered a share. Still falls back to the CPU tracer for a request/sub-batch the GPU itself declines. Rejected at parse time without the `gpu` feature. |
-| `--only-cpu` | Runtime opt-out on both subcommands. For A/B comparison against the CPU tracer, and for routing around a misbehaving adapter without recompiling. |
+| `--only-gpu` | GPU only, on every subcommand that traces — never splits work onto the CPU tracer (see "Hybrid CPU+GPU" below), even when the split would otherwise have been offered a share. Still falls back to the CPU tracer for a request/sub-batch the GPU itself declines. Rejected at parse time without the `gpu` feature. |
+| `--only-cpu` | Runtime opt-out on every subcommand that traces. For A/B comparison against the CPU tracer, and for routing around a misbehaving adapter without recompiling. |
 | `--threads` | Still means **CPU** threads. Ignored by GPU dispatch (one compute-pipeline dispatch, not a thread fan-out), but it still governs the CPU fallback — so it remains worth setting even with the GPU active. |
 | (neither `--only-*` flag) | Default: hybrid CPU+GPU — see "Hybrid CPU+GPU" below. |
 
 **Hybrid CPU+GPU (the default).** With neither `--only-gpu` nor `--only-cpu` given,
-`serve` calibrates a CPU/GPU throughput split for any request of at least 8 samples
+`serve --render` (and `join`) calibrates a CPU/GPU throughput split for any request of at least 8 samples
 (`render_core::hybrid::HYBRID_MIN_SPP`) and, once calibrated, runs the two engines
 *concurrently* over disjoint sample sub-ranges for every subsequent sub-batch —
 summed, not averaged, so the split changes nothing about correctness, only wall

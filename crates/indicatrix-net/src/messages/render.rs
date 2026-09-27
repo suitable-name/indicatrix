@@ -8,10 +8,12 @@ use crate::scene::SceneState;
 use serde::{Deserialize, Serialize};
 
 /// Whether a `RENDER` request's full-resolution radiance is delivered progressively
-/// (several small `FRAME`s as sampling proceeds) or only once, at the end.
+/// (several small `FRAME`s as sampling proceeds) or only once, at the end -- or (v14) not
+/// as radiance at all.
 ///
 /// Independent of [`StreamConfig::preview`]: a reduced-resolution `PREVIEW` (if
 /// configured) is still sent on the cadence either way -- see [`StreamConfig`]'s docs.
+/// Variant order is wire-load-bearing; append only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransferMode {
     /// Emit a `FRAME` delta roughly every `cadence_ms` as sampling proceeds, plus a
@@ -21,6 +23,25 @@ pub enum TransferMode {
     /// tracing finishes. `PROGRESS` (and `PREVIEW`, if configured) still arrive on the
     /// cadence in the meantime -- see [`StreamConfig`]'s docs.
     FinalOnly,
+    /// v14, "final picture only" for the live view: the server sends
+    /// no `FRAME`/`PREVIEW` at all, only tone-mapped, denoised 8-bit
+    /// `StreamEvent::DisplayFrame`s at the cadence (plus `PROGRESS` heartbeats and one
+    /// `DONE`). 8-bit frames cannot be merged with local samples, so a viewer using this
+    /// mode shows the remote image alone. A server that cannot produce display frames
+    /// refuses the request with `error_codes::UNSUPPORTED_REQUEST`.
+    DisplayOnly,
+}
+
+/// Why a `RENDER` request is being made, so a coordinator can pick lanes for it (v14).
+/// A plain worker ignores it. Variant order is wire-load-bearing; append only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RequestIntent {
+    /// The live viewport: latency matters more than throughput. A coordinator serves it
+    /// from its own lane (plus at most `--interactive-workers` workers) in short chunks.
+    Interactive,
+    /// An export, tilt video or batch: throughput matters. A coordinator fans it out
+    /// over every joined worker.
+    Batch,
 }
 
 /// The reduced resolution a `PREVIEW` is rendered at, when [`StreamConfig::preview`] is
@@ -57,13 +78,25 @@ pub struct StreamConfig {
 /// that's what makes remote offload correct at all. `request_id` is chosen by the
 /// client and echoed on every reply from this request onward -- see the crate's
 /// `messages` docs on why that's what makes cancellation epochs mechanical.
+///
+/// A reply `FRAME` names the samples it carries by `first_sample`/`samples`; a plain
+/// worker's frames are contiguous sub-ranges, a coordinator's frames carry a SET of
+/// samples inside the request range (see `StreamEvent::Frame`'s docs), so a client
+/// checks containment, never contiguity.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RenderRequest {
+    /// Client-chosen epoch id, echoed on every reply.
     pub request_id: u32,
+    /// The fully resolved scene to trace.
     pub scene: SceneState,
+    /// First absolute sample index of the requested range.
     pub first_sample: u32,
+    /// Number of samples in the requested range.
     pub samples: u32,
+    /// How replies are streamed.
     pub stream: StreamConfig,
+    /// Why this request is made (v14) -- see [`RequestIntent`].
+    pub intent: RequestIntent,
 }
 
 #[cfg(test)]
@@ -93,6 +126,7 @@ mod tests {
             planes: StandardGemCuts::standard_round_brilliant(),
             girdle_frosted: false,
             backdrop: 0.0,
+            environment: crate::scene::SceneEnvironment::Studio,
         }
     }
 
@@ -112,19 +146,49 @@ mod tests {
                 cadence_ms: 1000,
                 preview: None,
             },
+            StreamConfig {
+                transfer_mode: TransferMode::DisplayOnly,
+                cadence_ms: 250,
+                preview: None,
+            },
         ] {
-            let request = RenderRequest {
-                request_id: 99,
-                scene: scene(),
-                first_sample: 10,
-                samples: 20,
-                stream,
-            };
-            let mut buf = Vec::new();
-            write_message(&mut buf, &request).unwrap();
-            let mut cursor = std::io::Cursor::new(buf);
-            let decoded: RenderRequest = read_message(&mut cursor).unwrap();
-            assert_eq!(request, decoded);
+            for intent in [RequestIntent::Interactive, RequestIntent::Batch] {
+                let request = RenderRequest {
+                    request_id: 99,
+                    scene: scene(),
+                    first_sample: 10,
+                    samples: 20,
+                    stream,
+                    intent,
+                };
+                let mut buf = Vec::new();
+                write_message(&mut buf, &request).unwrap();
+                let mut cursor = std::io::Cursor::new(buf);
+                let decoded: RenderRequest = read_message(&mut cursor).unwrap();
+                assert_eq!(request, decoded);
+            }
         }
+    }
+
+    /// `DisplayOnly` is appended after the two v13 transfer modes.
+    #[test]
+    fn transfer_mode_and_intent_discriminants_are_pinned() {
+        assert_eq!(
+            postcard::to_allocvec(&TransferMode::LiveProgressive).unwrap(),
+            [0]
+        );
+        assert_eq!(
+            postcard::to_allocvec(&TransferMode::FinalOnly).unwrap(),
+            [1]
+        );
+        assert_eq!(
+            postcard::to_allocvec(&TransferMode::DisplayOnly).unwrap(),
+            [2]
+        );
+        assert_eq!(
+            postcard::to_allocvec(&RequestIntent::Interactive).unwrap(),
+            [0]
+        );
+        assert_eq!(postcard::to_allocvec(&RequestIntent::Batch).unwrap(), [1]);
     }
 }

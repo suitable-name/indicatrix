@@ -1,0 +1,129 @@
+import { ComboBox, Slider } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+
+// Crystal Classification (crystal system / optical character / biaxial
+// n-beta-n-alpha) plus the optics-validity and built-in-name-collision
+// warning messages -- split out of `material_editor_dialog.slint` to keep
+// that file under its line budget. `selected_crystal_system_idx`/
+// `selected_optical_character_idx`/`biaxial_delta_beta_alpha_val` are
+// two-way bound back to `MaterialEditorDialog`'s own identically-named
+// properties; `biref_val`/`is_biaxial`/`optics_valid`/
+// `optics_validation_message`/`name_collides_with_builtin`/`mat_name` stay
+// computed/owned there (its own `can_save` needs `optics_valid` too) and are
+// passed in read-only.
+export component MaterialCrystalClassification inherits VerticalLayout {
+    spacing: 14px;
+
+    in-out property <int> selected_crystal_system_idx: 0;
+    in-out property <int> selected_optical_character_idx: 0;
+    in-out property <float> biaxial_delta_beta_alpha_val: 0.0;
+    in property <float> biref_val: 0.000;
+    in property <bool> is_biaxial: false;
+    in property <bool> optics_valid: true;
+    in property <string> optics_validation_message: "";
+    in property <bool> name_collides_with_builtin: false;
+    in property <string> mat_name: "";
+
+    // Crystal-optically complete custom materials: these three mirror
+    // `indicatrix::optics::materials::CrystalSystem`/`OpticalCharacter`/
+    // `GemMaterial::biaxial_delta_beta_alpha` -- see `gui::crystal_optics` (the Rust
+    // side of this boundary) for the index<->enum mapping these combo indices feed.
+    // Defaults (0, 0) are Cubic/Isotropic, matching what `GemMaterial::new_custom`
+    // itself infers for the dialog's own default (birefringence 0.000, "Custom
+    // Diamond") -- so a user who never touches either combo gets exactly today's
+    // inferred behaviour, unchanged.
+    property <[string]> crystal_system_options: [
+        "Cubic", "Tetragonal", "Hexagonal", "Trigonal", "Orthorhombic", "Monoclinic", "Triclinic"
+    ];
+    // Index 3/4 (Biaxial +/-) must stay last -- `is_biaxial` reads the index
+    // range, and `gui::crystal_optics::OPTICAL_CHARACTERS` on the Rust side lists the
+    // same five in this same order.
+    property <[string]> optical_character_options: [
+        "Isotropic", "Uniaxial (+)", "Uniaxial (\u{2212})", "Biaxial (+)", "Biaxial (\u{2212})"
+    ];
+
+    // 5b. Crystal Classification: lets the user set crystal_system/
+    // optical_character/biaxial_delta_beta_alpha explicitly instead of only
+    // ever getting `GemMaterial::new_custom`'s two-variant inference (Cubic-
+    // or-Trigonal, Isotropic-or-Uniaxial+/-). See `gui::crystal_optics` for
+    // the Rust-side index<->enum mapping these two combos feed.
+    HorizontalLayout {
+        spacing: 10px;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 4px;
+            Text { text: "Crystal System:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+            Rectangle {
+                height: 32px;
+                background: Theme.surface-raised;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-dialog;
+                ComboBox {
+                    model: root.crystal_system_options;
+                    current-index <=> root.selected_crystal_system_idx;
+                }
+            }
+        }
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            spacing: 4px;
+            Text { text: "Optical Character:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+            Rectangle {
+                height: 32px;
+                background: Theme.surface-raised;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-dialog;
+                ComboBox {
+                    model: root.optical_character_options;
+                    current-index <=> root.selected_optical_character_idx;
+                }
+            }
+        }
+    }
+
+    // n_beta - n_alpha: only meaningful, so only shown, for a biaxial
+    // optical character. Bounded to [0, birefringence] so the slider itself
+    // cannot express an unphysical n_alpha <= n_beta <= n_gamma ordering.
+    if root.is_biaxial: VerticalLayout {
+        spacing: 4px;
+        HorizontalLayout {
+            alignment: space-between;
+            Text { text: "Biaxial n\u{03b2} \u{2212} n\u{03b1}:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+            Text { text: Math.round(root.biaxial_delta_beta_alpha_val * 10000.0) / 10000.0; font-size: 11px; font-weight: 700; color: Theme.accent-purple; }
+        }
+        Slider {
+            minimum: 0.0;
+            maximum: Math.max(root.biref_val, 0.0001);
+            value <=> root.biaxial_delta_beta_alpha_val;
+        }
+        // No GPU consequence to warn about: the `BiaxialIndicatrix` machinery
+        // is ported to WGSL and verified at the same Tier 2 / Tier 3 bar as
+        // every other material, so `GemMaterial::gpu_supported()` is
+        // unconditionally true and a biaxial custom material is dispatched
+        // exactly like any other -- see `indicatrix::renderer::gpu_backend`'s
+        // module doc comment for the current decline list.
+    }
+
+    if !root.optics_valid: Text {
+        text: root.optics_validation_message;
+        font-size: 9px;
+        font-weight: 600;
+        color: Theme.accent-ruby;
+        wrap: word-wrap;
+    }
+
+    // Proactive collision warning -- disables Save (see `MaterialEditorDialog.
+    // can_save`) rather than letting the cutter find out only from an error
+    // toast after clicking.
+    if root.name_collides_with_builtin: Text {
+        text: "\u{26a0} \"" + root.mat_name + "\" is a built-in material name and cannot be used for a custom one.";
+        font-size: 9px;
+        font-weight: 600;
+        color: Theme.accent-ruby;
+        wrap: word-wrap;
+    }
+}

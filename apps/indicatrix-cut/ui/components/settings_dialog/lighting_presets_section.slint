@@ -1,0 +1,201 @@
+import { LineEdit } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { ViewportModel } from "../../models/viewport.slint";
+
+// Named Lighting Presets. A preset bundles light yaw/pitch, exposure, the
+// lighting-rig selection, and camera distance -- deliberately NOT camera
+// yaw/pitch, so applying one never spins the gem out from under the user.
+export component LightingPresetsSection inherits VerticalLayout {
+    property <bool> adding_preset: false;
+    property <string> new_preset_name: "";
+    property <int> renaming_index: -1;
+    property <string> rename_text: "";
+
+    spacing: 6px;
+    HorizontalLayout {
+        alignment: space-between;
+        Rectangle {
+            height: lighting_presets_lbl.preferred-height;
+            Tooltip { text: @markdown("Save the current lighting and camera as a preset; \"export-usable\" lists it in the export fan-out."); }
+            lighting_presets_lbl := Text { text: "Lighting Presets"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+        }
+
+        Rectangle {
+            width: 20px;
+            height: 20px;
+            border-radius: 4px;
+            background: root.adding_preset ? Theme.accent-cyan : (add_preset_touch.has-hover ? #1e293b : transparent);
+
+            add_preset_touch := TouchArea {
+                clicked => {
+                    root.adding_preset = !root.adding_preset;
+                    root.new_preset_name = "";
+                }
+            }
+
+            Image {
+                source: @image-url("../../icons/save.svg");
+                colorize: root.adding_preset ? #0f172a : Theme.accent-cyan;
+                width: 11px;
+                height: 11px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    // Inline "save current lighting as new preset" row
+    if root.adding_preset: HorizontalLayout {
+        spacing: 6px;
+
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 26px;
+            background: #1e293b;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.accent-cyan;
+
+            LineEdit {
+                text <=> root.new_preset_name;
+                placeholder-text: "New preset name...";
+            }
+        }
+
+        Rectangle {
+            width: 26px;
+            height: 26px;
+            border-radius: Theme.radius-sm;
+            background: confirm_new_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
+
+            confirm_new_touch := TouchArea {
+                clicked => {
+                    if (root.new_preset_name != "") {
+                        ViewportModel.save_lighting_preset(root.new_preset_name);
+                        root.adding_preset = false;
+                        root.new_preset_name = "";
+                    }
+                }
+            }
+
+            Image { source: @image-url("../../icons/check.svg"); colorize: #0f172a; width: 12px; height: 12px; horizontal-alignment: center; vertical-alignment: center; }
+        }
+    }
+
+    // Preset rows: click the name to apply; pencil/check to rename (user
+    // presets only); trash to delete (user presets only). Built-in presets
+    // never show rename/delete since the Rust side refuses those operations
+    // on them anyway.
+    for preset[idx] in ViewportModel.lighting_presets: Rectangle {
+        height: 28px;
+        border-radius: Theme.radius-sm;
+        background: #0f172a;
+        border-width: 1px;
+        border-color: #334155;
+
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 6px;
+            spacing: 6px;
+
+            Rectangle {
+                horizontal-stretch: 1;
+
+                apply_touch := TouchArea {
+                    enabled: root.renaming_index != idx;
+                    clicked => { ViewportModel.apply_lighting_preset(idx); }
+                }
+
+                if root.renaming_index != idx: Text {
+                    text: preset.name;
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: apply_touch.has-hover ? Theme.accent-cyan : (preset.built_in ? Theme.text-secondary : Theme.text-primary);
+                    vertical-alignment: center;
+                }
+
+                if root.renaming_index == idx: Rectangle {
+                    height: 22px;
+                    background: #0f172a;
+                    border-radius: 3px;
+                    border-width: 1px;
+                    border-color: Theme.accent-cyan;
+
+                    LineEdit {
+                        text <=> root.rename_text;
+                    }
+                }
+            }
+
+            // "Usable for export" toggle. Shown for EVERY preset, built-ins
+            // included (unlike rename/delete below): whether a lighting mood
+            // is worth re-rendering under is a matter of taste, not identity.
+            Rectangle {
+                width: 18px;
+                height: 18px;
+                border-radius: 3px;
+                background: preset.export_usable ? Theme.accent-cyan : (export_usable_touch.has-hover ? #334155 : transparent);
+
+                export_usable_touch := TouchArea {
+                    clicked => { ViewportModel.toggle_preset_export_usable(idx, !preset.export_usable); }
+                }
+
+                Image {
+                    source: @image-url("../../icons/save.svg");
+                    colorize: preset.export_usable ? #0f172a : Theme.text-muted;
+                    width: 9px;
+                    height: 9px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            if !preset.built_in && root.renaming_index != idx: Rectangle {
+                width: 18px;
+                height: 18px;
+                border-radius: 3px;
+                background: rename_touch.has-hover ? #334155 : transparent;
+
+                rename_touch := TouchArea {
+                    clicked => {
+                        root.renaming_index = idx;
+                        root.rename_text = preset.name;
+                    }
+                }
+
+                Image { source: @image-url("../../icons/pencil.svg"); colorize: Theme.text-muted; width: 10px; height: 10px; horizontal-alignment: center; vertical-alignment: center; }
+            }
+
+            if root.renaming_index == idx: Rectangle {
+                width: 18px;
+                height: 18px;
+                border-radius: 3px;
+                background: confirm_rename_touch.has-hover ? #334155 : transparent;
+
+                confirm_rename_touch := TouchArea {
+                    clicked => {
+                        if (root.rename_text != "") {
+                            ViewportModel.rename_lighting_preset(idx, root.rename_text);
+                        }
+                        root.renaming_index = -1;
+                    }
+                }
+
+                Image { source: @image-url("../../icons/check.svg"); colorize: Theme.accent-emerald; width: 10px; height: 10px; horizontal-alignment: center; vertical-alignment: center; }
+            }
+
+            if !preset.built_in && root.renaming_index != idx: Rectangle {
+                width: 18px;
+                height: 18px;
+                border-radius: 3px;
+                background: delete_touch.has-hover ? #450a0a : transparent;
+
+                delete_touch := TouchArea {
+                    clicked => { ViewportModel.delete_lighting_preset(idx); }
+                }
+
+                Image { source: @image-url("../../icons/trash.svg"); colorize: #f87171; width: 10px; height: 10px; horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+    }
+}

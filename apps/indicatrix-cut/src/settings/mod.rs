@@ -10,7 +10,7 @@ pub mod persist;
 pub mod store;
 
 pub use model::{
-    LightingPreset, LiveComputeTarget, LocalComputeTarget, LocalPreviewScale, PreviewScale,
-    SettingsFile, WorkerSettings,
+    ExportTransfer, LightingPreset, LiveComputeTarget, LiveTransfer, LocalComputeTarget,
+    LocalPreviewScale, PreviewScale, RemoteEndpoint, SettingsFile, WorkerSettings,
 };
 pub use persist::SettingsPersister;

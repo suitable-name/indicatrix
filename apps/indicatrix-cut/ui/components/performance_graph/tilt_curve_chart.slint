@@ -1,0 +1,373 @@
+import { Theme } from "../../theme.slint";
+
+// High-Resolution 181-Point (±90°, 1°-step) Performance Chart Canvas, the
+// graph panel of `PerformanceGraphDialog`. Tilt angle is continuous, so this
+// draws each channel as a line (via `Path`'s SVG `commands`, Slint has no
+// polyline element) rather than discrete bars -- bars would hide the curve
+// shape a reader is here for.
+export component TiltCurveChart inherits Rectangle {
+    // True once all four full-axis sweeps have arrived -- guards the chart
+    // canvas and its hover tooltip; nothing here has an always-available
+    // fallback, since even axis 0 needs its negative half swept off-thread.
+    // Shared with `PerformanceGraphDialog`'s own summary badges and axis
+    // pills, so it is owned there and passed straight through.
+    in property <bool> extra_axes_ready: false;
+    in property <bool> extra_axes_loading: false;
+    // "All axes" overlay: draws every azimuth's line for a visible channel,
+    // faded except the selected one.
+    in property <bool> show_all_axes: false;
+    // Which of the four camera azimuths is plotted -- directly indexes the
+    // `_extra_paths` arrays below.
+    in property <int> selected_axis_index: 0;
+    in property <bool> show_extinction: true;
+    in property <bool> show_windowing: true;
+    in property <bool> show_brilliance: true;
+    // SVG path-data strings (`M x y L x y ...`) for all four camera azimuths,
+    // built by `curve_path::tilt_curve_path` in a 0..100 x 0..100 viewbox --
+    // used by the "All axes" overlay.
+    in property <[string]> graph_extinction_extra_paths;
+    in property <[string]> graph_windowing_extra_paths;
+    in property <[string]> graph_brilliance_extra_paths;
+    // The currently-selected axis's own path/values, in the flat shape this
+    // chart and its hover tooltip both want.
+    in property <string> active_extinction_path;
+    in property <string> active_windowing_path;
+    in property <string> active_brilliance_path;
+    in property <[float]> active_brilliance_values;
+    in property <[float]> active_extinction_values;
+    in property <[float]> active_windowing_values;
+    // Mini stone preview at the hovered angle: rendered off the UI thread by
+    // `gui::tilt_hover_preview` for whichever point the user is hovering/
+    // scrubbing. Retains its last value while the tooltip isn't hovered
+    // (harmless: the preview panel is only shown while hovering).
+    in property <image> tilt_hover_preview_image;
+    // Requests a fresh preview for `(axis_index, tilt_deg)`; `gui::
+    // tilt_hover_preview` debounces on its own end, so firing this on every
+    // hovered pixel is safe.
+    callback request_tilt_hover_preview(int, float);
+
+    // X-axis tick labels for the chart canvas's +-90 deg (tilt-from-table-up)
+    // domain -- 7 ticks, evenly spaced 30 deg apart.
+    property <[string]> axis_tick_labels: ["-90° (edge-on)", "-60°", "-30°", "0° (table-up)", "30°", "60°", "90° (edge-on)"];
+
+    // Linear interpolation between the two 1 deg-spaced measured samples straddling
+    // `tilt_deg`, for reading the curve at finer-than-measured resolution (the hover
+    // tooltip's readout). `values` is indexed like `TILT_ANGLES_DEG`: index 0 is
+    // -90 deg, index 90 is 0 deg, index 180 is +90 deg.
+    // HONESTY: everything this returns between the 181 measured angles is
+    // INTERPOLATED, not traced -- the dialog's subtitle caption says so to the user,
+    // and `copy_curve_data`'s CSV export is the escape hatch to real measured-only
+    // numbers.
+    pure function interpolated_value(values: [float], tilt_deg: float) -> float {
+        if values.length < 181 {
+            return 0.0;
+        }
+        let clamped: float = Math.max(-90.0, Math.min(90.0, tilt_deg));
+        let shifted: float = clamped + 90.0; // 0..180, matching TILT_ANGLES_DEG's index
+        let lower_idx: int = Math.max(0, Math.min(179, Math.floor(shifted)));
+        if lower_idx >= 179 {
+            return values[180];
+        }
+        let frac: float = shifted - lower_idx;
+        return values[lower_idx] * (1.0 - frac) + values[lower_idx + 1] * frac;
+    }
+
+    // Snaps a horizontal pixel offset within the plot to the nearest whole degree
+    // across the full `-90..=+90` tilt range -- the chart's native 1 deg resolution.
+    pure function snap_tilt_deg(mouse_x: length, plot_width: length) -> float {
+        let frac: float = Math.max(0.0, Math.min(1.0, mouse_x / plot_width));
+        return Math.round(frac * 180.0) - 90.0;
+    }
+
+    height: 180px;
+    background: #050811;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: #1e293b;
+    clip: true;
+
+    // Real loading state: no partial/fallback data exists to show in the
+    // meantime, since even axis 0 needs its negative half swept
+    // off-thread, so this is a plain wait state, not a partial chart.
+    if !root.extra_axes_ready: VerticalLayout {
+        alignment: center;
+        Text {
+            text: root.extra_axes_loading
+                ? "Sweeping ±90° across all 4 axes (181 points x 4, ~1.5s)..."
+                : "Preparing tilt sweep...";
+            font-size: 11px;
+            color: Theme.text-muted;
+            horizontal-alignment: center;
+        }
+    }
+
+    // Y-Axis Reference Grid Lines. `plot.y`/`plot.height` (10px/140px) are
+    // mirrored here as literals rather than referenced directly: `plot`
+    // is only instantiated `if root.extra_axes_ready`, and Slint disallows
+    // referencing a conditionally-instantiated element's geometry from an
+    // always-present sibling, so these two literals must stay in sync
+    // with `plot`'s own `y: 10px; height: 140px;` by hand.
+    Rectangle { y: 10px + 140px * 0.25; width: 100%; height: 1px; background: #1e293b44; }
+    Rectangle { y: 10px + 140px * 0.50; width: 100%; height: 1px; background: #1e293b66; }
+    Rectangle { y: 10px + 140px * 0.75; width: 100%; height: 1px; background: #1e293b44; }
+
+    Text { x: 6px; y: 10px - 4px; text: "100%"; font-size: 11px; color: Theme.text-disabled; }
+    Text { x: 6px; y: 10px + 140px * 0.25 - 4px; text: "75%"; font-size: 11px; color: Theme.text-disabled; }
+    Text { x: 6px; y: 10px + 140px * 0.50 - 4px; text: "50%"; font-size: 11px; color: Theme.text-disabled; }
+    Text { x: 6px; y: 10px + 140px * 0.75 - 4px; text: "25%"; font-size: 11px; color: Theme.text-disabled; }
+
+    // Plot area the three line series are scaled into.
+    //
+    // Slint's `Path` element defaults `fit` to `contain` -- uniform,
+    // aspect-ratio-preserving, centered scaling of the viewbox into the
+    // element's own box. For a 100x100 viewbox inside this ~900x140 plot,
+    // that scales by min(900/100, 140/100) = 1.4 and centers the result,
+    // marooning a 140px-wide drawing in the middle of a ~900px box.
+    // `fit: fill` on each `Path` below switches to non-uniform
+    // fill-the-box scaling instead, matching what every gridline/label in
+    // this file already assumes.
+    // Single wrapper `if` around BOTH `plot` and the floating tooltip
+    // card below: Slint's `if` only wraps one element, and `tooltip_card`
+    // (a sibling of `plot`, not a child) reads `plot.width`/
+    // `tooltip_area.*` directly, only valid where `plot` is statically in
+    // scope -- so both must be gated together on `root.extra_axes_ready`.
+    if root.extra_axes_ready: chart_content := Rectangle {
+        width: 100%;
+        height: 100%;
+
+    plot := Rectangle {
+        x: 32px;
+        y: 10px;
+        width: parent.width - 44px;
+        height: 140px;
+
+        // "All axes" overlay: every azimuth's line for a visible channel,
+        // faded except the selected one. Drawn only when `show_all_axes`
+        // is on; the single-line case below covers the default view.
+        // Extinction group first, then Windowing, then Brilliance -- same
+        // per-channel stacking order as the single-line case, so toggling
+        // "All" doesn't change which channel reads as "on top".
+        for path[idx] in root.graph_extinction_extra_paths : Path {
+            visible: root.show_all_axes && root.show_extinction;
+            width: 100%; height: 100%; fit: fill;
+            commands: path;
+            viewbox-width: 100; viewbox-height: 100;
+            stroke: #ef4444;
+            stroke-width: root.selected_axis_index == idx ? 2px : 1.2px;
+            opacity: root.selected_axis_index == idx ? 1.0 : 0.28;
+            fill: transparent;
+        }
+        for path[idx] in root.graph_windowing_extra_paths : Path {
+            visible: root.show_all_axes && root.show_windowing;
+            width: 100%; height: 100%; fit: fill;
+            commands: path;
+            viewbox-width: 100; viewbox-height: 100;
+            stroke: Theme.accent-amber;
+            stroke-width: root.selected_axis_index == idx ? 2px : 1.2px;
+            opacity: root.selected_axis_index == idx ? 1.0 : 0.28;
+            fill: transparent;
+        }
+        for path[idx] in root.graph_brilliance_extra_paths : Path {
+            visible: root.show_all_axes && root.show_brilliance;
+            width: 100%; height: 100%; fit: fill;
+            commands: path;
+            viewbox-width: 100; viewbox-height: 100;
+            stroke: Theme.accent-cyan;
+            stroke-width: root.selected_axis_index == idx ? 2px : 1.2px;
+            opacity: root.selected_axis_index == idx ? 1.0 : 0.28;
+            fill: transparent;
+        }
+
+        // Single-axis view (default): just the selected axis's line per
+        // visible channel, reading `active_*_path` with `fit: fill`.
+        if !root.show_all_axes && root.show_extinction: Path {
+            width: 100%; height: 100%; fit: fill;
+            commands: root.active_extinction_path;
+            viewbox-width: 100; viewbox-height: 100;
+            stroke: #ef4444;
+            stroke-width: 2px;
+            fill: transparent;
+        }
+        if !root.show_all_axes && root.show_windowing: Path {
+            width: 100%; height: 100%; fit: fill;
+            commands: root.active_windowing_path;
+            viewbox-width: 100; viewbox-height: 100;
+            stroke: Theme.accent-amber;
+            stroke-width: 2px;
+            fill: transparent;
+        }
+        if !root.show_all_axes && root.show_brilliance: Path {
+            width: 100%; height: 100%; fit: fill;
+            commands: root.active_brilliance_path;
+            viewbox-width: 100; viewbox-height: 100;
+            stroke: Theme.accent-cyan;
+            stroke-width: 2px;
+            fill: transparent;
+        }
+
+        // The shared table-up (tilt 0 deg) point every axis passes
+        // through, marked with a faint vertical guide so "0°" reads as a
+        // real landmark on the curve, not just a tick label.
+        Rectangle {
+            x: plot.width * 0.5 - 0.5px;
+            width: 1px;
+            height: 100%;
+            background: #33415577;
+        }
+
+        // Hover tooltip: a transparent `TouchArea` over the whole plot
+        // reports `mouse-x`, which `snap_tilt_deg` turns into a
+        // whole-degree tilt angle and `interpolated_value` turns into a
+        // reading for each visible channel -- INTERPOLATED, not
+        // additional raytracing (see the subtitle caption above).
+        tooltip_area := TouchArea {
+            width: 100%;
+            height: 100%;
+        }
+
+        if tooltip_area.has-hover: Rectangle {
+            // -90..+90 domain: (tilt_deg + 90) / 180 is the 0..1 fraction
+            // across the plot's width.
+            x: plot.width * ((root.snap_tilt_deg(tooltip_area.mouse-x, plot.width) + 90.0) / 180.0) - 0.5px;
+            width: 1px;
+            height: 100%;
+            background: #94a3b877;
+        }
+    }
+
+    // Floating tooltip card. Positioned in `plot`'s coordinate space but
+    // drawn as `chart_content`'s own child (a sibling of `plot`, not a
+    // child of it) so it draws on top of every line/crosshair inside
+    // `plot` -- clamped to stay within `plot`'s bounds on both axes
+    // (flipping to the cursor's left once it would overflow the right
+    // edge) rather than relying on the outer chart Rectangle's `clip:
+    // true` to hide an overflow, per the "must not be clipped"
+    // requirement.
+    //
+    // Stacked layout: a tilt-angle heading, then one row per
+    // currently-visible channel (colour swatch + name + value). `card_h`
+    // grows with `visible_channel_count` instead of being fixed, and
+    // `card_w` shrinks accordingly (a stacked row only has to fit ONE
+    // channel's label+value, not all of them end to end).
+    if tooltip_area.has-hover: tooltip_card := Rectangle {
+        property <float> tilt_deg: root.snap_tilt_deg(tooltip_area.mouse-x, plot.width);
+        // -90..+90 domain -- same `(tilt_deg + 90) / 180` remapping as
+        // the crosshair Rectangle just above.
+        property <length> crosshair_x: plot.width * ((self.tilt_deg + 90.0) / 180.0);
+        property <int> visible_channel_count:
+            (root.show_brilliance ? 1 : 0) + (root.show_windowing ? 1 : 0) + (root.show_extinction ? 1 : 0);
+        property <length> card_w: 132px;
+        // Heading row + one 15px row per visible channel + the 58px mini
+        // preview row, plus the VerticalLayout's own padding/spacing --
+        // generous rather than exact, so a font metrics difference can
+        // never clip a row.
+        property <length> card_h: 24px + (self.visible_channel_count * 15px) + 58px;
+        property <bool> flip: self.crosshair_x > (plot.width - self.card_w - 12px);
+        x: plot.x + Math.max(0px, Math.min(plot.width - self.card_w,
+            self.flip ? (self.crosshair_x - self.card_w - 10px) : (self.crosshair_x + 10px)));
+        y: plot.y + Math.max(0px, Math.min(plot.height - self.card_h, tooltip_area.mouse-y - self.card_h - 8px));
+        width: self.card_w;
+        height: self.card_h;
+        background: #0f1523ee;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: #334155;
+
+        // Requests a fresh mini preview render for exactly this hovered
+        // pose whenever the snapped tilt angle changes; `gui::
+        // tilt_hover_preview` debounces on its own end, so firing this
+        // per changed pixel does NOT mean one render per pixel.
+        changed tilt_deg => {
+            root.request_tilt_hover_preview(root.selected_axis_index, self.tilt_deg);
+        }
+
+        // This mini preview is an all-polished trace of the bare
+        // resolved material -- the same honesty this dialog's own
+        // header caption states, repeated here since a reader hovering
+        // the card may never scroll up to the header. Not a layout
+        // child (Tooltip's own requirement) -- a sibling of the
+        // VerticalLayout below, inside this Rectangle.
+        Tooltip { text: @markdown("All-polished preview: inclusions, c-axis orientation, edge rounding, physical size and frosted girdle are excluded."); }
+
+        VerticalLayout {
+            padding: 5px;
+            spacing: 2px;
+
+            HorizontalLayout {
+                alignment: center;
+                Image {
+                    source: root.tilt_hover_preview_image;
+                    width: 48px;
+                    height: 48px;
+                }
+            }
+
+            Text {
+                text: "Tilt " + (Math.round(tooltip_card.tilt_deg * 10.0) / 10.0) + "°";
+                font-size: 11px;
+                font-weight: 700;
+                color: Theme.text-primary;
+            }
+            // Same colours the channel toggle pills above use, so a reader
+            // can match a tooltip row to its toggle/curve at a glance.
+            if root.show_brilliance: HorizontalLayout {
+                spacing: 5px;
+                Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.accent-cyan; }
+                Text {
+                    text: "Brilliance " + Math.round(root.interpolated_value(root.active_brilliance_values, tooltip_card.tilt_deg)) + "%";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.text-primary;
+                }
+            }
+            if root.show_windowing: HorizontalLayout {
+                spacing: 5px;
+                Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.accent-amber; }
+                Text {
+                    text: "Windowing " + Math.round(root.interpolated_value(root.active_windowing_values, tooltip_card.tilt_deg)) + "%";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.text-primary;
+                }
+            }
+            if root.show_extinction: HorizontalLayout {
+                spacing: 5px;
+                Rectangle { width: 7px; height: 7px; border-radius: 3px; background: #ef4444; }
+                Text {
+                    text: "Extinction " + Math.round(root.interpolated_value(root.active_extinction_values, tooltip_card.tilt_deg)) + "%";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.text-primary;
+                }
+            }
+        }
+    } // end tooltip_card
+    } // end chart_content
+
+    // X-Axis Angle Labels: -90° to +90° in 30° steps, evenly spaced (7
+    // ticks span the full ±90° width, so a plain `HorizontalLayout` with
+    // per-tick `horizontal-stretch: 1` places them with no position math).
+    // `x`/`width` mirror `plot`'s own `32px`/`parent.width - 44px`
+    // literally since `plot` is conditional on `root.extra_axes_ready`
+    // and this label row is not.
+    //
+    // "0°" is the shared TABLE-UP point every axis's curve passes
+    // through (pitch 90 deg, camera directly overhead -- genuinely
+    // azimuth-independent, unlike edge-on) and is bolded so it reads as
+    // the sweep's center, not an arbitrary tick.
+    HorizontalLayout {
+        x: 32px;
+        y: 154px;
+        width: parent.width - 44px;
+        spacing: 2px;
+
+        for val[idx] in root.axis_tick_labels : Text {
+            horizontal-stretch: 1;
+            text: val;
+            font-size: 11px;
+            color: idx == 3 ? Theme.accent-cyan : #64748b;
+            font-weight: idx == 3 ? 700 : 400;
+            horizontal-alignment: center;
+        }
+    }
+}

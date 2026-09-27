@@ -1,0 +1,75 @@
+import { Theme } from "../../theme.slint";
+import { SettingsModel } from "../../models/settings.slint";
+
+// Local Compute: which engine(s) the LOCAL (non-remote) render loop uses. Only
+// shown by the caller on a GPU-capable build (`SettingsModel.gpu_build`),
+// since the choice is meaningless without a `gpu` feature to route through.
+export component LocalComputePicker inherits VerticalLayout {
+    spacing: 6px;
+    Text { text: "Local Compute"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+
+    HorizontalLayout {
+        spacing: 4px;
+
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            background: SettingsModel.local_compute_target_index == 0 ? Theme.accent-cyan : (lcpu_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.local_compute_target_index == 0 ? Theme.accent-cyan : #334155;
+
+            lcpu_touch := TouchArea {
+                clicked => {
+                    SettingsModel.local_compute_target_index = 0;
+                    SettingsModel.local_compute_target_changed(0);
+                }
+            }
+
+            Text { text: "CPU"; font-size: 11px; font-weight: 600; color: SettingsModel.local_compute_target_index == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            background: SettingsModel.local_compute_target_index == 1 ? Theme.accent-cyan : (lcpugpu_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.local_compute_target_index == 1 ? Theme.accent-cyan : #334155;
+
+            lcpugpu_touch := TouchArea {
+                clicked => {
+                    SettingsModel.local_compute_target_index = 1;
+                    SettingsModel.local_compute_target_changed(1);
+                }
+            }
+
+            Text { text: "CPU + GPU"; font-size: 11px; font-weight: 600; color: SettingsModel.local_compute_target_index == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            background: SettingsModel.local_compute_target_index == 2 ? Theme.accent-cyan : (lgpu_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.local_compute_target_index == 2 ? Theme.accent-cyan : #334155;
+
+            lgpu_touch := TouchArea {
+                clicked => {
+                    SettingsModel.local_compute_target_index = 2;
+                    SettingsModel.local_compute_target_changed(2);
+                }
+            }
+
+            Text { text: "GPU only"; font-size: 11px; font-weight: 600; color: SettingsModel.local_compute_target_index == 2 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+    }
+
+    Text {
+        text: "Which engine(s) trace the live viewport. \"GPU only\" still falls back to the CPU tracer for a scene the GPU declines (no adapter, or a scene too large for it), so nothing ever fails to render.";
+        font-size: 11px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+}

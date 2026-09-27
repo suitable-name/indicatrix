@@ -24,18 +24,22 @@
 //! still works.
 //!
 //! **The two engines never write one buffer.** `accum_buffer` stays a plain `Vec<Vec3>`
-//! owned outright by this thread, touched under no lock. `RenderContext::remote_accumulator`
-//! is the same `Accumulator` the remote render's socket thread sums `FRAME` deltas
-//! into; this thread only reads its `buffer()`/`samples_done()`, and only at the
-//! display cadence ([`DENOISE_MIN_INTERVAL`], not per traced sample): a short lock, a
-//! full-buffer read, an elementwise add into a scratch buffer for that cycle alone.
-//! Neither engine's buffer is ever discarded or overwritten by the other.
+//! owned outright by this thread, touched under no lock. The remote side's radiance
+//! lives in `RenderContext::live_epoch` (`bridge::sample_cursor::live::LiveEpoch`): one
+//! merged sum of finished chunks plus the in-flight chunk's own `Accumulator`, which
+//! the remote connection thread sums `FRAME` deltas into. This thread only reads them,
+//! and only at the display cadence ([`DENOISE_MIN_INTERVAL`], not per traced sample):
+//! a short lock, a full-buffer read, an elementwise add into a scratch buffer for that
+//! cycle alone. Neither engine's buffer is ever discarded or overwritten by the other.
 //!
-//! **Disjoint sample ranges.** A live remote render is dispatched as one request
-//! covering exactly `[0, remote_render_samples)`, fixed at dispatch time.
-//! `RenderContext::remote_reserved_samples` records that reserved size (`0` when not
-//! combining), and every frame this loop shifts its own absolute sample index (the
-//! jitter/RNG seed) past it, so local's indices always start where remote's range ends.
+//! **Disjoint sample ranges.** There is no fixed reservation any more: the epoch owns
+//! one shared cursor over `[0, target_samples)`. The remote lane claims chunks sized to
+//! a second or two of the worker's measured rate, and every frame this loop claims its
+//! own `spp`-sample range from the same cursor ([`live_split::local_frame_claim`]) and
+//! traces it at that absolute offset. The combined display divides the local sum
+//! plus the remote sum plus the in-flight chunk's buffer by the matching total count,
+//! and is denoised once. Tracing stops once that total reaches `target_samples`, the
+//! single global target.
 //!
 //! **The old suspend-while-remote mechanism.** `remote_active`/`resolve_remote_ownership`
 //! keep an unchanged pure contract, but what a resolved `remote_active == true` does now
@@ -51,6 +55,7 @@ mod denoise;
 mod display_thread;
 mod frame_helpers;
 mod gpu_backend;
+mod live_split;
 mod local_preview;
 mod metrics;
 mod redraw_gate;
@@ -66,7 +71,10 @@ pub use denoise::{
 pub use metrics::hash_planes;
 pub use redraw_gate::RedrawGate;
 
-use crate::bridge::frame_cache::{girdle_finish::GirdleFinishCache, stone_width::StoneWidthCache};
+use crate::bridge::{
+    frame_cache::{girdle_finish::GirdleFinishCache, stone_width::StoneWidthCache},
+    sample_cursor::LiveEpoch,
+};
 use context::{FrameInputs, resolve_material_and_quality, snapshot_frame_inputs};
 use display_thread::{FrameMetricsSnapshot, spawn_display_thread};
 use glam::Vec3;
@@ -105,8 +113,8 @@ const DISPLAY_BUSY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
 use frame_helpers::{
     AccumulationBuffers, FrameActivityFlags, SuspensionFlags, TraceActivitySink,
-    combined_sample_offset, push_metrics_to_ui, remote_suspends_local, resolve_remote_ownership,
-    should_combine_remote, update_accumulation_state,
+    push_metrics_to_ui, remote_suspends_local, resolve_remote_ownership, should_combine_remote,
+    update_accumulation_state,
 };
 
 #[expect(
@@ -210,14 +218,14 @@ pub fn spawn_render_thread<T, F, M, S>(
                 tab_visible,
                 denoise_enabled,
                 remote_active: remote_active_snapshot,
-                remote_accumulator,
-                remote_reserved_samples,
+                live_epoch: live_epoch_snapshot,
                 export_active,
                 live_compute_target,
                 local_compute_target,
                 local_preview_scale,
                 camera_moving,
                 env_map,
+                scene_generation,
             } = snapshot_frame_inputs(&ctx);
 
             if !running {
@@ -231,30 +239,58 @@ pub fn spawn_render_thread<T, F, M, S>(
             // iteration, not after a 100ms suspended sleep.
             let remote_active =
                 resolve_remote_ownership(dirty, remote_active_snapshot, prev_remote_active);
+            // An epoch dispatched for a different scene than this frame traces (a scene
+            // change raced the dispatch) is released too -- see
+            // `live_split::epoch_scene_mismatch`.
+            let scene_mismatch = live_split::epoch_scene_mismatch(
+                remote_active,
+                live_epoch_snapshot
+                    .as_deref()
+                    .map(LiveEpoch::scene_generation),
+                scene_generation,
+            );
+            let remote_active = remote_active && !scene_mismatch;
             if remote_active != remote_active_snapshot {
-                // Write back so other readers (`orchestrator::poll_tick`'s served_by
-                // reconciliation) observe the release promptly.
-                ctx.lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remote_active = false;
+                // Write back so other readers (`orchestrator::poll_tick`'s lane and
+                // served_by reconciliation) observe the release promptly -- but only
+                // if the context still holds the epoch this frame judged (a newer
+                // settle may already have installed a fresh one, with its own `dirty`).
+                // A plain ownership release clears the epoch together with
+                // `remote_active` without setting `dirty` again (see `RenderContext::
+                // clear_remote_state`); a scene mismatch uses the full
+                // `release_remote`, since this frame's `dirty` may not be set and local
+                // must not keep accumulating on top of indices claimed from the epoch.
+                let mut guard = ctx
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let same_epoch = guard.live_epoch.as_ref().map(Arc::as_ptr)
+                    == live_epoch_snapshot.as_ref().map(Arc::as_ptr);
+                if same_epoch {
+                    if scene_mismatch {
+                        guard.release_remote();
+                    } else {
+                        guard.clear_remote_state();
+                    }
+                }
             }
             prev_remote_active = remote_active;
 
-            // Read the remote accumulator's current sample count once per iteration (a
-            // cheap lock + `u32` read, never the full buffer -- that happens at the
-            // display cadence below). Used to decide whether this iteration can skip
-            // tracing (combined total may already reach `target_samples`) and as part
-            // of the combined image's true sample count.
+            // The epoch this frame claims from and combines with -- only while
+            // combining (`Both` with a resolved `remote_active`); a release this very
+            // frame drops it immediately, so local falls back to its own offsets.
+            let live_epoch = if should_combine_remote(remote_active, live_compute_target) {
+                live_epoch_snapshot
+            } else {
+                None
+            };
+
+            // Read the remote side's current sample count once per iteration (a cheap
+            // lock + `u32` read, never the full buffer -- that happens at the display
+            // cadence below). Used to decide whether this iteration can skip tracing
+            // (the combined total may already reach `target_samples`) and as part of the
+            // combined image's true sample count.
             let remote_samples_done_now: u32 =
-                if should_combine_remote(remote_active, live_compute_target) {
-                    remote_accumulator.as_ref().map_or(0, |acc| {
-                        acc.lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .samples_done()
-                    })
-                } else {
-                    0
-                };
+                live_epoch.as_ref().map_or(0, |epoch| epoch.remote_done());
 
             if width == 0 || height == 0 {
                 thread::sleep(std::time::Duration::from_millis(16));
@@ -305,6 +341,9 @@ pub fn spawn_render_thread<T, F, M, S>(
 
             if accumulation_reset {
                 last_denoise_at = None;
+                // A reset starts a new epoch (or none): its remote count starts from 0
+                // again, so "remote advanced past what was shown" must too.
+                last_displayed_remote_samples = 0;
                 // Invalidates any display cycle already in flight/queued from before
                 // this reset -- see `DisplayHandle::bump_generation`.
                 display.bump_generation();
@@ -401,26 +440,37 @@ pub fn spawn_render_thread<T, F, M, S>(
             // In `LiveComputeTarget::Both`, a converged local half must not
             // stall the display forever at whatever combined count it last actually
             // sent. `remote_samples_done_now` rising past `last_displayed_remote_samples`
-            // also catches `RemoteUpdate::Done`, with no separate check needed: `Done`
+            // also catches the remote lane finishing, with no separate check needed: it
             // never clears `remote_active` (`resolve_remote_ownership`'s doc comment),
-            // so `should_combine_remote` keeps reading true, and the accumulator's own
-            // FINAL `samples_done()` is itself a rise past whatever was last shown. So
+            // so `should_combine_remote` keeps reading true, and the epoch's FINAL
+            // remote count is itself a rise past whatever was last shown. So
             // whenever remote has moved on, fall through to send ONE more display cycle
             // below with no new local tracing, instead of sleeping on a stale image;
             // sleep only when local is converged AND remote has nothing new to show.
-            let remote_advanced = should_combine_remote(remote_active, live_compute_target)
-                && remote_samples_done_now > last_displayed_remote_samples;
+            let remote_advanced =
+                live_epoch.is_some() && remote_samples_done_now > last_displayed_remote_samples;
             let local_converged = accum_samples + remote_samples_done_now >= target_samples;
             if local_converged && !dirty && !remote_advanced {
                 thread::sleep(std::time::Duration::from_millis(60));
                 continue;
             }
-            // Nothing left for LOCAL tracing to usefully add -- this iteration only
-            // exists to refresh the display with remote's latest contribution.
-            let skip_local_tracing = local_converged && !dirty;
-
-            if !skip_local_tracing {
-                accum_samples += spp;
+            // This frame's `(sample_offset, spp)`: local's own continuation, or a claim
+            // from the live epoch's shared cursor while combining. `None` when there is
+            // nothing left for LOCAL tracing to usefully add -- converged, or every
+            // remaining index is claimed by an in-flight remote chunk.
+            let local_claim = if local_converged && !dirty {
+                None
+            } else {
+                live_split::local_frame_claim(live_epoch.as_deref(), accum_samples, spp)
+            };
+            if local_claim.is_none() && !remote_advanced && !accumulation_reset {
+                // Waiting on the remote chunk that holds the last unclaimed indices --
+                // nothing new to trace or show yet.
+                thread::sleep(std::time::Duration::from_millis(16));
+                continue;
+            }
+            if let Some((_, count)) = local_claim {
+                accum_samples += count;
             }
 
             // Optical metrics: analytical raytracing from the camera PoV accounting for
@@ -448,8 +498,8 @@ pub fn spawn_render_thread<T, F, M, S>(
             // `HdrMap` and renders it directly; `accumulate_frame_samples` still falls
             // through to the CPU path (`render_frame_scanlines`) on a decline, but that
             // is the same generic per-frame fallback every other scene gets (no
-            // adapter, device lost, `gpu` feature off), not an HDR-specific one -- see
-            // `docs/history/indicatrix-cut.md` for the CPU-only HDR path.
+            // adapter, device lost, `gpu` feature off, or a map past the adapter's
+            // storage-buffer limit), not an HDR-specific one.
             let environment = env_map.as_deref().map_or_else(
                 || {
                     lighting_preset
@@ -466,11 +516,11 @@ pub fn spawn_render_thread<T, F, M, S>(
                 &[]
             };
 
-            // Skipped when this iteration exists only to refresh the
-            // display with remote's latest contribution -- see `skip_local_tracing`'s
-            // own comment above. `accum_samples` was left un-incremented for exactly
-            // this case, so `accum_buffer`'s sample count stays accurate.
-            if !skip_local_tracing {
+            // Skipped when this iteration exists only to refresh the display with
+            // remote's latest contribution -- see `local_claim`'s own comment above.
+            // `accum_samples` was left un-incremented for exactly this case, so
+            // `accum_buffer`'s sample count stays accurate.
+            if let Some((sample_offset, frame_spp)) = local_claim {
                 accumulate_frame_samples(
                     &mut gpu_backend,
                     &BackendFrame {
@@ -485,15 +535,12 @@ pub fn spawn_render_thread<T, F, M, S>(
                         material: &current_mat,
                         max_bounces,
                         environment,
-                        spp,
-                        // Shifted past whatever `remote_reserved_samples` reserves (`0`
-                        // whenever not combining) -- the disjointness guarantee: local's
-                        // sample index (the jitter/RNG seed) never falls inside remote's
-                        // assigned range. See this module's doc comment.
-                        sample_offset: combined_sample_offset(
-                            remote_reserved_samples,
-                            current_sample_count - spp,
-                        ),
+                        spp: frame_spp,
+                        // The claimed range's first absolute index -- the disjointness
+                        // guarantee: while combining, the epoch's cursor never hands
+                        // this range to the remote lane too. See this module's doc
+                        // comment.
+                        sample_offset,
                     },
                     &mut FrameOutputs {
                         accum: &mut accum_buffer,
@@ -576,32 +623,28 @@ pub fn spawn_render_thread<T, F, M, S>(
                 };
 
                 if can_send {
-                    // Fold the remote accumulator's current running total into a
-                    // scratch buffer for THIS display cycle only -- never merged into
-                    // `accum_buffer` itself. This read-lock-and-add happens at the
-                    // display cadence, not the hot per-sample trace path. Falls through
-                    // to `&accum_buffer` with no extra copy when not combining.
-                    let (display_accum, display_sample_count): (&[Vec3], u32) =
-                        if should_combine_remote(remote_active, live_compute_target)
-                            && let Some(remote_acc) = &remote_accumulator
-                        {
-                            let acc = remote_acc
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            let remote_done = acc.samples_done();
-                            combined_scratch.clear();
-                            combined_scratch.extend(
-                                accum_buffer.iter().zip(acc.buffer()).map(|(a, b)| *a + *b),
-                            );
-                            drop(acc);
-                            // Records what THIS cycle actually displayed,
-                            // so the "local converged" check above knows remote has
-                            // nothing new the next time it reads a bigger count.
-                            last_displayed_remote_samples = remote_done;
-                            (&combined_scratch, current_sample_count + remote_done)
-                        } else {
-                            (&accum_buffer, current_sample_count)
-                        };
+                    // Fold the epoch's remote contribution (finished chunks plus the
+                    // in-flight one) into a scratch buffer for THIS display cycle only --
+                    // never merged into `accum_buffer` itself. This read-lock-and-add
+                    // happens at the display cadence, not the hot per-sample trace path.
+                    // The count comes from the SAME locked read as the radiance, so the
+                    // tone mapper's divisor always matches the sum. Falls through to
+                    // `&accum_buffer` with no extra copy when not combining.
+                    let remote_done = live_epoch.as_ref().map(|epoch| {
+                        combined_scratch.clear();
+                        combined_scratch.extend_from_slice(&accum_buffer);
+                        epoch.add_remote_into(&mut combined_scratch)
+                    });
+                    if let Some(done) = remote_done {
+                        // Records what THIS cycle actually displayed, so the "local
+                        // converged" check above knows remote has nothing new the next
+                        // time it reads a bigger count.
+                        last_displayed_remote_samples = done;
+                    }
+                    let (display_accum, display_sample_count): (&[Vec3], u32) = remote_done
+                        .map_or((&accum_buffer, current_sample_count), |done| {
+                            (&combined_scratch, current_sample_count + done)
+                        });
 
                     let mut work = display.reclaim();
                     work.fill(

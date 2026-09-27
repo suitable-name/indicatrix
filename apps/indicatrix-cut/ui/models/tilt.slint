@@ -107,6 +107,12 @@ export global TiltVideoExportModel {
     in-out property <float> sample_exponent_raw: 6.0; // 64 spp default -- multiplied by frame count, so lower than the image export's own default
     in-out property <int> selected_color_space_index: 0; // 0: sRGB, 1: Display P3, 2: Rec.2020
     in-out property <int> selected_bounce_index: 2; // 4/8/12/24/64/128 ladder, matching export_dialog.slint
+    // "Transfer": 0 = Full data, 1 = Final picture only (one PNG per
+    // frame from the remote; the local lanes stay idle). Rust seeds it from the remote
+    // endpoint's own default at startup and whenever the remote is saved; the row is
+    // only shown while a remote is configured (`remote_configured`).
+    in-out property <int> transfer_index: 0;
+    in property <bool> remote_configured: false;
 
     // Output: same folder as the still-image export (`ExportModel.directory`), but its
     // OWN filename template -- a video export names a FOLDER (holding the numbered PNG

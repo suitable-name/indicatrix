@@ -14,6 +14,12 @@
 //! [`tls`], [`enroll`], [`token`], [`framing`], [`handshake`]) is always available,
 //! `indicatrix`-free.
 //!
+//! # The `compression` feature
+//!
+//! On by default. Adds the compressed payload encodings (`zstd`, `lz4_flex`) and the PNG
+//! display codec (`png`). Without it the crate still speaks the full protocol but only
+//! offers, accepts and decodes `PayloadEncoding::Raw` and raw RGBA8 display frames.
+//!
 //! # Why sample-index partitioning
 //!
 //! Samples are additive and order-independent, so a remote node's contribution is just
@@ -30,7 +36,10 @@
 //! - [`scene`] (`render` feature): [`scene::SceneState`], everything a worker needs to
 //!   trace a frame's samples, fully resolved.
 //! - [`radiance`]: per-pixel `Vec<Vec3>` radiance-buffer codec, raw POD bytes via
-//!   `bytemuck` (hot path, no serialization framework).
+//!   `bytemuck` (hot path, no serialization framework), plus the v14 lossless payload
+//!   encodings (byte shuffle + zstd/LZ4) with bounded decoding.
+//! - [`display`]: the v14 8-bit picture payloads (`DISPLAY_FRAME`, `FINAL_IMAGE`), raw
+//!   RGBA8 or PNG.
 //! - [`messages`]: `HELLO`/`WELCOME` and the tagged `ClientMessage`/`StreamEvent`
 //!   families, with `postcard` encode/decode.
 //! - [`framing`]: length-prefixed message framing over any `Read`/`Write`.
@@ -49,6 +58,7 @@
 //!   `indicatrix-cut`'s token-redeem UI.
 
 pub mod client;
+pub mod display;
 pub mod enroll;
 pub mod framing;
 pub mod handshake;

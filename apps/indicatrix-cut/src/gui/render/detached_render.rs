@@ -239,7 +239,7 @@ fn open_detached_window(
 /// (`gui::mod::build_main_window`) must also write into every frame; see this module's
 /// doc comment's "Frame routing" section.
 ///
-/// `preview_state` is B2's solid-inspection preview controller -- the sub-tab change
+/// `preview_state` is the solid-inspection preview controller -- the sub-tab change
 /// handler re-issues the last solved plane set at the new tab's own pose/view-mode
 /// (via `camera_lighting::resubmit_at_current_pose`) so switching tabs shows the right
 /// variant immediately rather than whatever the previous tab last rendered.

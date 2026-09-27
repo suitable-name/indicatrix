@@ -19,8 +19,8 @@
 //! `optics::raytracer::trace_spectral_ray` takes an optional `primary_hit_out` and, at
 //! bounce 0 only, copies that ray's [`crate::optics::raytracer::HitRecord`] (`t`,
 //! `normal`, `facet_idx`) into it.
-//! `apps/indicatrix-cut/src/bridge/render_thread/denoise.rs` owns the accumulation
-//! buffer and a persistent [`AtrousDenoiser`]: it captures each
+//! The GUI's render loop owns the accumulation buffer and a persistent
+//! [`AtrousDenoiser`] (called through `renderer::frame_denoise`): it captures each
 //! pixel's first hit into three parallel depth/normal/facet-id buffers, then calls
 //! [`AtrousDenoiser::denoise_into`] on the averaged-XYZ accumulation buffer plus those
 //! three before tone-mapping. The accumulation buffer itself is never overwritten.

@@ -168,6 +168,9 @@ pub fn load_or_default(path: &Path) -> SettingsFile {
         }
     };
     file.ensure_built_in_presets();
+    // Files from before the single-remote-endpoint rule carry a `remote_workers`
+    // list; fold it into the single endpoint (logged inside). The next save writes only `remote`.
+    file.settings.migrate_legacy_remote_workers();
     file
 }
 
@@ -451,6 +454,34 @@ mod tests {
         assert_eq!(loaded.settings.exposure, 2.0);
         // No leftover temp file.
         assert!(!path.with_extension("toml.tmp").exists());
+    }
+
+    /// An old settings FILE holding two workers loads with the first as the single
+    /// remote endpoint, and the next save no longer carries the retired list.
+    #[test]
+    fn an_old_file_with_two_workers_migrates_on_load_and_saves_without_the_list() {
+        let dir = TempDir::new("two-workers");
+        let path = dir.path().join("settings.toml");
+        std::fs::write(
+            &path,
+            "[settings]\nexposure = 1.0\n\n\
+             [[settings.remote_workers]]\nname = \"A\"\naddress = \"a.lan:7878\"\n\n\
+             [[settings.remote_workers]]\nname = \"B\"\naddress = \"b.lan:7878\"\n",
+        )
+        .unwrap();
+        let loaded = load_or_default(&path);
+        let remote = loaded.settings.remote.as_ref().expect("first worker kept");
+        assert_eq!(remote.connection.address, "a.lan:7878");
+        assert_eq!(loaded.settings.legacy_remote_workers.len(), 0);
+
+        save(&path, &loaded).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("remote_workers"), "{text}");
+        assert!(!text.contains("b.lan"), "{text}");
+        assert_eq!(
+            load_or_default(&path).settings.remote,
+            loaded.settings.remote
+        );
     }
 
     #[test]

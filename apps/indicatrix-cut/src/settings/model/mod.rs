@@ -6,18 +6,23 @@
 //!
 //! Submodules: [`app_settings`] (`AppSettings`, persisted render/UI configuration),
 //! [`worker`] (`PreviewScale`/`LocalPreviewScale`/`WorkerSettings`, remote-rendering
-//! settings), [`local_compute`] (`LocalComputeTarget`, the local CPU/CPU+GPU/GPU
-//! choice), [`lighting_preset`] (`LightingPreset`, saveable lighting-rig snapshots),
-//! and [`settings_file`] (`SettingsFile`, the full on-disk document).
+//! settings), [`remote_endpoint`] (`RemoteEndpoint`, the single configured remote, and
+//! its full-data / final-picture transfer preferences), [`local_compute`] (`LocalComputeTarget`, the local
+//! CPU/CPU+GPU/GPU choice), [`lighting_preset`] (`LightingPreset`, saveable lighting-rig
+//! snapshots), and [`settings_file`] (`SettingsFile`, the full on-disk document).
 
 mod app_settings;
 mod lighting_preset;
 mod local_compute;
+mod remote_endpoint;
 mod settings_file;
+#[cfg(test)]
+mod tests_remote;
 mod worker;
 
 pub use lighting_preset::LightingPreset;
 pub use local_compute::LocalComputeTarget;
+pub use remote_endpoint::{ExportTransfer, LiveTransfer, RemoteEndpoint};
 pub use settings_file::SettingsFile;
 pub use worker::{LiveComputeTarget, LocalPreviewScale, PreviewScale, WorkerSettings};
 // Re-exported for path compatibility only -- each is named only from #[cfg(test)]
@@ -27,9 +32,8 @@ pub use worker::{LiveComputeTarget, LocalPreviewScale, PreviewScale, WorkerSetti
     reason = "used only via model:: from #[cfg(test)] code"
 )]
 pub use app_settings::{
-    AppSettings, Backdrop, DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SPP,
-    DEFAULT_REMOTE_RENDER_SAMPLES, DEFAULT_RENDER_HEIGHT, DEFAULT_RENDER_WIDTH,
-    DEFAULT_TARGET_SAMPLES,
+    AppSettings, Backdrop, DEFAULT_PREVIEW_SIZE, DEFAULT_PREVIEW_SPP, DEFAULT_RENDER_HEIGHT,
+    DEFAULT_RENDER_WIDTH, DEFAULT_TARGET_SAMPLES,
 };
 #[allow(
     unused_imports,
@@ -263,7 +267,7 @@ mod tests {
         assert_eq!(parsed, file);
     }
 
-    // ---- Remote rendering: PreviewScale / WorkerSettings / worker CRUD -----------
+    // ---- Remote rendering: PreviewScale / WorkerSettings / RemoteEndpoint --------
 
     #[test]
     fn preview_scale_percentages_match_their_names() {
@@ -353,79 +357,52 @@ mod tests {
     }
 
     #[test]
-    fn app_settings_default_has_denoise_enabled_and_no_workers() {
+    fn app_settings_default_has_denoise_enabled_and_no_remote() {
         let settings = AppSettings::default();
         assert!(settings.denoise_enabled);
-        assert_eq!(settings.remote_workers.len(), 0);
+        assert_eq!(settings.remote, None);
+        assert_eq!(settings.remote_worker(), None);
     }
 
     #[test]
-    fn add_update_remove_worker_round_trip() {
-        let mut settings = AppSettings::default();
-        settings.add_worker(WorkerSettings {
-            name: "Laptop".to_string(),
-            address: "192.168.1.50:9443".to_string(),
-            ..WorkerSettings::default()
-        });
-        assert_eq!(settings.remote_workers.len(), 1);
-        assert_eq!(settings.remote_workers[0].name, "Laptop");
-
-        settings
-            .update_worker(
-                0,
-                WorkerSettings {
-                    name: "Laptop (renamed)".to_string(),
-                    address: "192.168.1.50:9443".to_string(),
-                    ..WorkerSettings::default()
-                },
-            )
-            .unwrap();
-        assert_eq!(settings.remote_workers[0].name, "Laptop (renamed)");
-
-        settings.remove_worker(0).unwrap();
-        assert_eq!(settings.remote_workers.len(), 0);
-    }
-
-    #[test]
-    fn update_and_remove_worker_report_an_error_for_an_out_of_range_index() {
-        let mut settings = AppSettings::default();
-        assert!(
-            settings
-                .update_worker(0, WorkerSettings::default())
-                .is_err()
-        );
-        assert!(settings.remove_worker(0).is_err());
-    }
-
-    #[test]
-    fn toml_round_trip_preserves_remote_worker_settings_and_denoise_toggle() {
+    fn toml_round_trip_preserves_the_remote_endpoint_and_denoise_toggle() {
         let mut file = SettingsFile::default();
         file.settings.denoise_enabled = false;
-        file.settings.add_worker(WorkerSettings {
-            name: "Workstation".to_string(),
-            address: "10.0.0.5:9443".to_string(),
-            cert_dir: "C:/Users/me/indicatrix-certs".to_string(),
-            transfer_mode: TransferMode::FinalOnly,
-            cadence_ms: 250,
-            preview_scale: PreviewScale::Custom(33),
+        file.settings.remote = Some(RemoteEndpoint {
+            connection: WorkerSettings {
+                name: "Workstation".to_string(),
+                address: "10.0.0.5:9443".to_string(),
+                cert_dir: "C:/Users/me/indicatrix-certs".to_string(),
+                transfer_mode: TransferMode::FinalOnly,
+                cadence_ms: 250,
+                preview_scale: PreviewScale::Custom(33),
+            },
+            export_transfer: ExportTransfer::FinalPicture,
+            live_transfer: LiveTransfer::FinalPicture,
         });
 
         let toml_str = toml::to_string_pretty(&file).expect("serialize");
         let parsed: SettingsFile = toml::from_str(&toml_str).expect("deserialize");
         assert_eq!(parsed, file);
         assert!(!parsed.settings.denoise_enabled);
-        assert_eq!(parsed.settings.remote_workers.len(), 1);
-        assert_eq!(parsed.settings.remote_workers[0].cadence_ms, 250);
+        assert_eq!(
+            parsed.settings.remote_worker().map(|w| w.cadence_ms),
+            Some(250)
+        );
+        assert!(
+            !toml_str.contains("remote_workers"),
+            "the retired list is never written: {toml_str}"
+        );
     }
 
-    /// A settings file saved before remote rendering existed (no `remote_workers`/
+    /// A settings file saved before remote rendering existed (no remote/
     /// `denoise_enabled` keys) must still load.
     #[test]
     fn a_settings_file_predating_remote_rendering_still_parses_with_sensible_defaults() {
         let toml_str = "[settings]\nexposure = 1.1\n";
         let parsed: SettingsFile = toml::from_str(toml_str).expect("deserialize");
         assert!(parsed.settings.denoise_enabled);
-        assert_eq!(parsed.settings.remote_workers.len(), 0);
+        assert_eq!(parsed.settings.remote, None);
     }
 
     /// A settings file carrying the OLD `quality_preset` key (no `target_samples`)
@@ -464,21 +441,23 @@ mod tests {
         assert_eq!(parsed.settings.render_height, 1080);
     }
 
-    /// A well-formed but partially-specified worker entry (missing optional-ish
+    /// A well-formed but partially-specified remote entry (missing optional-ish
     /// fields) must still deserialize, defaulting the rest.
     #[test]
-    fn a_partially_specified_worker_entry_defaults_its_missing_fields() {
+    fn a_partially_specified_remote_entry_defaults_its_missing_fields() {
         let toml_str = r#"
 [settings]
 exposure = 1.0
 
-[[settings.remote_workers]]
+[settings.remote.connection]
 name = "Partial"
 address = "10.0.0.9:9443"
 "#;
         let parsed: SettingsFile = toml::from_str(toml_str).expect("deserialize");
-        assert_eq!(parsed.settings.remote_workers.len(), 1);
-        let worker = &parsed.settings.remote_workers[0];
+        let remote = parsed.settings.remote.as_ref().expect("remote parsed");
+        assert_eq!(remote.export_transfer, ExportTransfer::FullData);
+        assert_eq!(remote.live_transfer, LiveTransfer::FullData);
+        let worker = &remote.connection;
         assert_eq!(worker.name, "Partial");
         assert_eq!(worker.transfer_mode, TransferMode::LiveProgressive);
         assert_eq!(worker.cadence_ms, DEFAULT_WORKER_CADENCE_MS);
@@ -523,33 +502,24 @@ address = "10.0.0.9:9443"
         );
     }
 
-    // ---- Remote render sample budget: AppSettings::remote_render_samples --------
+    // ---- Retired setting: `remote_render_samples` ------------------------------
 
+    /// `remote_render_samples` was removed (the live view's `target_samples` is now the
+    /// single global target for the combined local + remote image). A settings file
+    /// still carrying it must load exactly as before -- every other setting intact --
+    /// and must not write the retired key back out.
     #[test]
-    fn app_settings_default_has_512_remote_render_samples() {
-        assert_eq!(AppSettings::default().remote_render_samples, 512);
-    }
-
-    /// A settings file predating this control must still load, defaulting to
-    /// [`DEFAULT_REMOTE_RENDER_SAMPLES`].
-    #[test]
-    fn a_settings_file_predating_remote_render_samples_still_loads_with_512_defaulted() {
-        let toml_str = "[settings]\nexposure = 1.2\n";
+    fn an_old_settings_file_with_remote_render_samples_still_loads() {
+        let toml_str =
+            "[settings]\ntarget_samples = 128\nremote_render_samples = 4096\nexposure = 1.2\n";
         let parsed: SettingsFile = toml::from_str(toml_str).expect("deserialize");
-        assert_eq!(
-            parsed.settings.remote_render_samples,
-            DEFAULT_REMOTE_RENDER_SAMPLES
+        assert_eq!(parsed.settings.target_samples, 128);
+        assert!((parsed.settings.exposure - 1.2).abs() < 1e-6);
+        let rewritten = toml::to_string_pretty(&parsed).expect("serialize");
+        assert!(
+            !rewritten.contains("remote_render_samples"),
+            "the retired key must be dropped on the next save"
         );
-    }
-
-    #[test]
-    fn toml_round_trip_preserves_remote_render_samples() {
-        let mut file = SettingsFile::default();
-        file.settings.remote_render_samples = 4096;
-
-        let toml_str = toml::to_string_pretty(&file).expect("serialize");
-        let parsed: SettingsFile = toml::from_str(&toml_str).expect("deserialize");
-        assert_eq!(parsed.settings.remote_render_samples, 4096);
     }
 
     // ---- HDR environment maps: AppSettings::env_map_path -------------------------

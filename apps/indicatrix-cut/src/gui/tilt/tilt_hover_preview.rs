@@ -41,7 +41,10 @@ use indicatrix::{
     geometry::plane::GpuFacetPlane,
     optics::{
         materials::GemMaterial,
-        raytracer::{Camera, pixel_rotations, sample_draws, trace_spectral_ray_with_finish},
+        raytracer::{
+            Camera, add_finite_sample, pixel_rotations, sample_draws,
+            trace_spectral_ray_with_finish,
+        },
     },
     renderer::tonemap::tonemap_to_rgba,
 };
@@ -173,7 +176,7 @@ fn render_hover_preview(scene: &HoverPreviewScene<'_>) -> SharedPixelBuffer<Rgba
                 // Preview always renders an all-polished stone (`&[]` facet finishes)
                 // regardless of the live viewport's frosted-girdle toggle -- this
                 // illustrates the curve's own pose/geometry, not every display option.
-                sample_sum += trace_spectral_ray_with_finish(
+                let sample = trace_spectral_ray_with_finish(
                     ray,
                     scene.planes,
                     &[],
@@ -184,6 +187,9 @@ fn render_hover_preview(scene: &HoverPreviewScene<'_>) -> SharedPixelBuffer<Rgba
                     draws.hero_rand,
                     None,
                 );
+                // Same dropped-but-counted non-finite rule as every render backend
+                // (the divisor below stays `PREVIEW_SPP`).
+                add_finite_sample(&mut sample_sum, sample);
             }
             *pixel = sample_sum;
         }

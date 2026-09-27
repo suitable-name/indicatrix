@@ -77,17 +77,7 @@ fn claim_error_to_string(err: ClaimError, addr: &str) -> String {
 pub fn claim(args: &CertClaimArgs) -> Result<(), String> {
     let bundle = indicatrix_net::enroll::claim(&args.token, &args.addr)
         .map_err(|e| claim_error_to_string(e, &args.addr))?;
-
-    std::fs::create_dir_all(&args.out)
-        .map_err(|e| format!("could not create {}: {e}", args.out.display()))?;
-    let out_ca_path = args.out.join(pki::CA_CERT_FILE);
-    let out_cert_path = args.out.join(pki::CLIENT_CERT_FILE);
-    let out_key_path = args.out.join(pki::CLIENT_KEY_FILE);
-    std::fs::write(&out_ca_path, &bundle.ca_pem)
-        .map_err(|e| format!("could not write {}: {e}", out_ca_path.display()))?;
-    std::fs::write(&out_cert_path, &bundle.client_cert_pem)
-        .map_err(|e| format!("could not write {}: {e}", out_cert_path.display()))?;
-    indicatrix_net::tls::write_private_key_pem(&out_key_path, &bundle.client_key_pem)?;
+    write_bundle(&args.out, &bundle)?;
     // `bundle.client_key_pem` is `Zeroizing<String>`, overwritten in place on drop.
 
     tracing::info!(
@@ -98,6 +88,29 @@ pub fn claim(args: &CertClaimArgs) -> Result<(), String> {
         pki::CLIENT_KEY_FILE,
     );
     Ok(())
+}
+
+/// Writes a claimed bundle to `out` as `ca.pem`, `client.pem` and `client.key`.
+///
+/// The key is ACL-restricted via [`indicatrix_net::tls::write_private_key_pem`]; the
+/// layout is what `cert issue-client` writes, shared by `cert claim` and `join --token`.
+///
+/// # Errors
+///
+/// A human-readable message if `out` or a file in it can't be written.
+pub fn write_bundle(
+    out: &Path,
+    bundle: &indicatrix_net::enroll::ClaimedBundle,
+) -> Result<(), String> {
+    std::fs::create_dir_all(out).map_err(|e| format!("could not create {}: {e}", out.display()))?;
+    let out_ca_path = out.join(pki::CA_CERT_FILE);
+    let out_cert_path = out.join(pki::CLIENT_CERT_FILE);
+    let out_key_path = out.join(pki::CLIENT_KEY_FILE);
+    std::fs::write(&out_ca_path, &bundle.ca_pem)
+        .map_err(|e| format!("could not write {}: {e}", out_ca_path.display()))?;
+    std::fs::write(&out_cert_path, &bundle.client_cert_pem)
+        .map_err(|e| format!("could not write {}: {e}", out_cert_path.display()))?;
+    indicatrix_net::tls::write_private_key_pem(&out_key_path, &bundle.client_key_pem)
 }
 
 /// `indicatrix-worker cert issue-token --ca <ca.pem> --admin-addr <host:port> --name <label>`.
@@ -118,9 +131,21 @@ pub fn claim(args: &CertClaimArgs) -> Result<(), String> {
 /// server refuses to issue a token (not a loopback connection, or too many enrollments
 /// already pending -- see `crate::enroll::EnrollRegistry::issue`).
 pub fn run_issue_token(args: &CertIssueTokenArgs) -> Result<(), String> {
-    let response = issue_token_over_tls(&args.ca, &args.admin_addr, &args.name)?;
+    let response = issue_token_over_tls(&args.ca, &args.admin_addr, &issue_name(args))?;
 
     match_issue_response(response, &args.name)
+}
+
+/// The `Issue` name for `args`: the bare `--name` for a viewer, `worker:<name>` for
+/// `--role worker` -- which is how the enrollment listener tells the requested role
+/// (see `crate::enroll`'s module doc comment; no wire change).
+fn issue_name(args: &CertIssueTokenArgs) -> String {
+    match args.role {
+        indicatrix_net::messages::PeerRole::Viewer => args.name.clone(),
+        indicatrix_net::messages::PeerRole::Worker => {
+            format!("{}{}", pki::WORKER_CN_PREFIX, args.name)
+        }
+    }
 }
 
 /// The actual TLS connect-and-exchange behind [`run_issue_token`], factored out so this
@@ -131,7 +156,7 @@ pub fn run_issue_token(args: &CertIssueTokenArgs) -> Result<(), String> {
 ///
 /// A human-readable message if `ca_path` can't be loaded, `admin_addr` isn't
 /// `host:port`, or the connection, TLS handshake, or wire exchange fails.
-fn issue_token_over_tls(
+pub(crate) fn issue_token_over_tls(
     ca_path: &Path,
     admin_addr: &str,
     name: &str,
@@ -178,9 +203,10 @@ fn match_issue_response(response: EnrollResponse, name: &str) -> Result<(), Stri
             );
             println!("  {token}\n");
             println!(
-                "Read or send this to whoever is enrolling -- it carries a one-time secret AND this worker's CA \
-                 fingerprint, so `cert claim` can verify it's really talking to this worker before it ever sends \
-                 anything back. It works once and expires in {expires_in_secs} seconds."
+                "Read or send this to whoever is enrolling -- it carries a one-time secret AND this coordinator's \
+                 CA fingerprint, so `cert claim` (or `join --token`) can verify it's really talking to this \
+                 coordinator before it ever sends anything back. It works once and expires in {expires_in_secs} \
+                 seconds."
             );
             Ok(())
         }
@@ -239,32 +265,16 @@ mod tests {
         let ca_path = dir.join(crate::pki::CA_CERT_FILE);
         let cert_path = dir.join(crate::pki::SERVER_CERT_FILE);
         let key_path = dir.join(crate::pki::SERVER_KEY_FILE);
-        let allowlist_path = dir.join(crate::pki::ALLOWLIST_FILE);
+        let allowlist_path = dir.join(crate::pki::VIEWER_ALLOWLIST_FILE);
 
-        let args = crate::cli::ServeArgs {
-            bind: "127.0.0.1:1".to_string(), // unused: overridden by EnrollConfig::build's own bind_addr
-            threads: 0,
-            allow_remote: false,
-            ca: None,
-            cert: None,
-            key: None,
-            allowlist: None,
-            trust_any_client_cert: false,
-            insecure_no_tls: false,
-            compute_mode: crate::cli::ComputeMode::default(),
-            enroll_bind: Some("127.0.0.1:0".to_string()), // ephemeral port
-            no_enroll: false,
-            db: None,
-            max_connections: 64,
-        };
         let config = crate::enroll::EnrollConfig::build(
-            "127.0.0.1:1".parse().unwrap(), // unused: overridden below
-            &args,
+            "127.0.0.1:0".parse().unwrap(), // ephemeral port
             &ca_path,
             &cert_path,
             &key_path,
             Some(allowlist_path.clone()),
             crate::serve::ConnectionLimiter::new(64),
+            indicatrix_net::messages::PeerRole::Viewer,
         )
         .unwrap();
         let addr = crate::enroll::spawn_enroll_listener(config).unwrap();

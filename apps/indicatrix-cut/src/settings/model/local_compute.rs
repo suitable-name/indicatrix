@@ -30,8 +30,8 @@ pub enum LocalComputeTarget {
     #[default]
     CpuGpu,
     /// GPU carries the WHOLE frame -- no hybrid split -- but still falls back to the
-    /// CPU tracer for any individual frame the GPU declines (no adapter, or an
-    /// unsupported material). Without that per-frame fallback, a declined scene would
-    /// render nothing at all rather than just running slower than `CpuGpu`.
+    /// CPU tracer for any individual frame the GPU declines (no adapter, or a scene past
+    /// the adapter's buffer limits). Without that per-frame fallback, a declined scene
+    /// would render nothing at all rather than just running slower than `CpuGpu`.
     Gpu,
 }

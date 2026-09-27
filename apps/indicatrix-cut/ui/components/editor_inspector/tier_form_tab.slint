@@ -1,0 +1,557 @@
+import { Button, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { EditorTierItem } from "../../types.slint";
+import { Theme } from "../../theme.slint";
+import { EditorModel } from "../../models/editor.slint";
+import { CriticalAngleBar } from "../critical_angle_bar.slint";
+
+// The Inspector's "Tier" tab -- `EditorInspector`'s per-tier add/edit form.
+// The form's own scratch state (`tier_angle`/etc, dirty-tracking, per-field
+// validation, the dirty-draft-vs-selection-moved warning) all still live on
+// `EditorInspector` itself (see that file's own top doc comment on
+// `form_dirty`/`loaded_tier_index`/`show_dirty_warning`): this component only
+// renders that state and reports edits/actions back through two-way
+// properties and callbacks, the same "dumb about the design" split
+// `EditorTierTable`'s own row/header/toolbar components use. The Save/Add
+// Tier button row is pinned outside this tab (and outside the scroll view
+// around it) in `EditorInspector` itself, since it must stay visible even
+// when this tab is shorter than the available height.
+export component TierFormTab inherits VerticalLayout {
+    // `false` while the worked-example guide locks this tab's group (see
+    // `GuideAllow`, `models/guide.slint`); every input and button below ANDs it
+    // into its own `enabled:`. Bound by `EditorInspector` from the same
+    // `GuideModel.allows_*()` helper as this tab's pill.
+    in property <bool> unlocked: true;
+
+    in-out property <string> tier_angle;
+    in-out property <int> tier_constraint_kind;
+    in-out property <string> tier_constraint_text;
+    in-out property <string> tier_name;
+    in-out property <string> tier_indices;
+    // Per-facet scratch fields: typed position for "+ Add" and tooth count for
+    // "Rotate". Not covered by `form_dirty` since they don't commit to Design.
+    in-out property <string> new_facet_position;
+    in-out property <string> rotate_by_text;
+
+    in property <int> loaded_tier_index: -1;
+    in property <bool> show_dirty_warning: false;
+    in property <int> pending_load_index: -1;
+    // Angle field invalid if > 90 degrees (locally checkable) or if Rust
+    // reported an angle-field error.
+    in property <bool> angle_field_invalid: false;
+    // Name, indices, and constraint fields: invalid if Rust-classified error
+    // for that field (rules that require Rust validation).
+    in property <bool> name_field_invalid: false;
+    in property <bool> indices_field_invalid: false;
+    in property <bool> constraint_field_invalid: false;
+
+    // The dirty-warning banner's two answers -- see `EditorInspector.
+    // show_dirty_warning`'s own doc comment for what defers to this.
+    callback keep_draft();
+    callback confirm_discard_and_load();
+    // Commits whichever tier `loaded_tier_index` says the form represents.
+    // Forwarded to `EditorInspector.save_form()`, which reads `loaded_tier_index`
+    // rather than `EditorModel.selected_tier_index` directly -- see that
+    // function's own doc comment for why the two can disagree.
+    callback save_form();
+
+    // Up/Down/Shift/Ctrl step this scratch buffer the SAME +-0.1/1/0.01deg the
+    // tier table's inline cell uses, but purely as local text here -- this form
+    // is a staging area (nothing commits until "Save Tier"/"Add Tier" below),
+    // unlike the inline cell, which nudges an EXISTING tier immediately and
+    // undoably. Nudging an as-yet-unsaved "Add Tier" draft has no `Design` edit
+    // to apply in the first place.
+    function stepped_angle_text(current: string, shift: bool, ctrl: bool, sign: float) -> string {
+        if shift {
+            return (current.to-float() + sign * 1.0).to-fixed(2);
+        } else if ctrl {
+            return (current.to-float() + sign * 0.01).to-fixed(2);
+        }
+        return (current.to-float() + sign * 0.1).to-fixed(2);
+    }
+
+    spacing: 8px;
+    Text {
+        // Names the tier being edited, not just its position, for clarity.
+        text: root.loaded_tier_index < 0
+            ? "Add Tier"
+            : "Edit Tier #" + (root.loaded_tier_index + 1) + (root.tier_name == "" ? "" : " -- " + root.tier_name);
+        font-size: 12px;
+        font-weight: 700;
+        color: Theme.text-primary;
+    }
+    // Shows kept draft when table selection has moved. Stays visible
+    // as long as the mismatch does, not just in a transient popup.
+    if root.show_dirty_warning: Rectangle {
+        background: Theme.bg-input;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.accent-amber;
+        VerticalLayout {
+            padding: 6px;
+            spacing: 4px;
+            Text {
+                text: "\u{26A0} You have unsaved changes to "
+                    + (root.loaded_tier_index < 0 ? "the new tier draft" : "Tier #" + (root.loaded_tier_index + 1))
+                    + ". The table's selection has moved on, but this form still shows your draft.";
+                font-size: 10px;
+                font-weight: 700;
+                color: Theme.accent-amber;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                Button {
+                    enabled: root.unlocked;
+                    text: "Keep Draft";
+                    clicked => { root.keep_draft(); }
+                }
+                Button {
+                    enabled: root.unlocked;
+                    text: root.pending_load_index < 0
+                        ? "Discard Draft, Start New"
+                        : "Discard Draft, Load #" + (root.pending_load_index + 1);
+                    clicked => { root.confirm_discard_and_load(); }
+                }
+            }
+        }
+    }
+    Rectangle {
+        height: angle_lbl.preferred-height;
+        Tooltip { text: @markdown("Angle from the girdle plane in degrees. Negative is pavilion, zero or positive is crown. A signed zero (\"-0.0\") inherits the previous tier's side instead of defaulting to crown."); }
+        // Live side hint from the sign of typed value. An approximation
+        // (can't see previous tier), so exact zero shows no hint.
+        angle_lbl := Text {
+            text: "Angle (deg)" + (root.tier_angle.to-float() < 0
+                ? "  -- pavilion"
+                : (root.tier_angle.to-float() > 0 ? "  -- crown" : ""));
+            font-size: 10px;
+            color: Theme.text-muted;
+        }
+    }
+    // Red border on invalid angle (the one local check possible).
+    // LineEdit has no border-color, so border lives on this wrapper.
+    Rectangle {
+        border-width: root.angle_field_invalid ? 1px : 0px;
+        border-color: Theme.danger;
+        border-radius: Theme.radius-sm;
+        LineEdit {
+            enabled: root.unlocked;
+            text <=> root.tier_angle;
+            accepted => { root.save_form(); }
+            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            // Live critical-angle guidance fires on every keystroke
+            // so the bar updates before the cutter leaves the field.
+            edited => { EditorModel.angle_live_preview(root.tier_angle); }
+            key-pressed(event) => {
+                if event.text == Key.UpArrow {
+                    root.tier_angle = root.stepped_angle_text(root.tier_angle, event.modifiers.shift, event.modifiers.control, 1.0);
+                    EditorModel.angle_live_preview(root.tier_angle);
+                    return accept;
+                } else if event.text == Key.DownArrow {
+                    root.tier_angle = root.stepped_angle_text(root.tier_angle, event.modifiers.shift, event.modifiers.control, -1.0);
+                    EditorModel.angle_live_preview(root.tier_angle);
+                    return accept;
+                }
+                reject
+            }
+        }
+    }
+    CriticalAngleBar {
+        margin_text: EditorModel.angle_live_margin_text;
+        level: EditorModel.angle_live_margin_level;
+        is_estimate: EditorModel.angle_live_margin_is_estimate;
+    }
+    if root.angle_field_invalid: Text {
+        text: "Exceeds 90\u{b0} -- angles are measured from the girdle plane.";
+        font-size: 9px;
+        color: Theme.danger;
+        wrap: word-wrap;
+    }
+    // The manual's worked example describes a
+    // girdle as a 0-degree tier, which `classify_blocks` (only
+    // `|cos(theta)| <= 1e-6`, i.e. exactly +-90) actually reads as
+    // Crown, silently producing a second table instead of a girdle
+    // band. One click fills in the one angle/constraint pair that
+    // IS a real girdle facet -- 90 degrees (either sign classifies
+    // the same way), pinned to the model's own half-width-1
+    // convention -- rather than expecting a newcomer to know that
+    // convention and type it by hand.
+    Button {
+        enabled: root.unlocked;
+        text: "Girdle Facet Preset (90\u{b0}, scale = 1)";
+        clicked => {
+            root.tier_angle = "90";
+            root.tier_constraint_kind = 2;
+            root.tier_constraint_text = "1";
+        }
+    }
+    // What this facet meets, not a depth number -- the constraint
+    // is the authored value; the mast (shown read-only in the
+    // tier table) is only ever solved.
+    Rectangle {
+        height: meets_lbl.preferred-height;
+        Tooltip { text: @markdown("How the depth is derived: an unnamed meet, named facets, or a stated dimension (anchor)."); }
+        meets_lbl := Text { text: "Meets"; font-size: 10px; color: Theme.text-muted; }
+    }
+    ComboBox {
+        enabled: root.unlocked;
+        // Three authoring-level targets (Cut to depth, Girdle thickness,
+        // Table width) that resolve to scale references before solving.
+        model: [
+            "Unspecified vertex",
+            "Named facet(s)",
+            "Exact scale value",
+            "Cut to depth (mm)",
+            "Girdle thickness (mm)",
+            "Table width (mm)",
+        ];
+        current-index <=> root.tier_constraint_kind;
+    }
+    if root.tier_constraint_kind == 1: Text { text: "Facet names (comma-separated)"; font-size: 10px; color: Theme.text-muted; }
+    // Plane offset along this facet's normal, in model units
+    // (girdle half-width = 1), not a caliper dimension.
+    if root.tier_constraint_kind == 2: Text { text: "Scale value: a plane offset along this facet's normal, in model units (girdle half-width = 1) -- not a caliper dimension"; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
+    // Depth, girdle, table-width targets convert through design's girdle diameter.
+    if root.tier_constraint_kind == 3: Text { text: "Depth: this facet's plane offset, in mm, measured the same way the MAST column's own mm tooltip is -- converted through the design's girdle diameter (needs one set in Design Settings)."; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
+    if root.tier_constraint_kind == 4: Text { text: "Girdle thickness: this tier's own mast is searched (bisected) until the solved design's girdle thickness matches this value in mm -- same girdle-diameter mm conversion as Depth, so it costs several solves rather than one."; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
+    if root.tier_constraint_kind == 5: Text { text: "Table width: this tier's own mast is searched (bisected) until the table facet's measured width matches this value in mm -- same girdle-diameter mm conversion as Depth, so it costs several solves rather than one."; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
+    // Red border for Meets constraint validation errors (unresolved
+    // name, empty, or not a number). Same as Angle field above.
+    if root.tier_constraint_kind != 0: Rectangle {
+        border-width: root.constraint_field_invalid ? 1px : 0px;
+        border-color: Theme.danger;
+        border-radius: Theme.radius-sm;
+        HorizontalLayout {
+            spacing: 4px;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> root.tier_constraint_text;
+                accepted => { root.save_form(); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            }
+            // Three targets are in millimetres (unlike kind 2's model-unit scale value).
+            if root.tier_constraint_kind >= 3: Text {
+                text: "mm";
+                font-size: 10px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+        }
+    }
+    Rectangle {
+        height: name_lbl.preferred-height;
+        // Facet names can use '/' to give one tier multiple names (e.g., "P1/P2").
+        Tooltip { text: @markdown("Facet name, referenced by other tiers' named-facet field. Join several names with '/' (e.g. \"P1/P2\") to give one tier more than one name; avoid reusing a name another tier already has."); }
+        name_lbl := Text { text: "Name"; font-size: 10px; color: Theme.text-muted; }
+    }
+    // Red border for name-collision rejection.
+    Rectangle {
+        border-width: root.name_field_invalid ? 1px : 0px;
+        border-color: Theme.danger;
+        border-radius: Theme.radius-sm;
+        LineEdit {
+            enabled: root.unlocked;
+            text <=> root.tier_name;
+            accepted => { root.save_form(); }
+            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+        }
+    }
+    Rectangle {
+        height: indices_lbl.preferred-height;
+        Tooltip { text: @markdown("Gear positions this tier occupies, comma-separated. Several values form a symmetric family."); }
+        indices_lbl := Text { text: "Indices (comma-separated)"; font-size: 10px; color: Theme.text-muted; }
+    }
+    // Red border for invalid index (out-of-range, duplicate, non-numeric).
+    Rectangle {
+        border-width: root.indices_field_invalid ? 1px : 0px;
+        border-color: Theme.danger;
+        border-radius: Theme.radius-sm;
+        LineEdit {
+            enabled: root.unlocked;
+            text <=> root.tier_indices;
+            accepted => { root.save_form(); }
+            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+        }
+    }
+
+    // Per-facet editing with chips: one chip per facet, actions
+    // (toggle detach, remove, add). Only shown for saved tiers.
+    if root.loaded_tier_index >= 0 && root.loaded_tier_index < EditorModel.tiers.length: VerticalLayout {
+        spacing: 4px;
+        Text { text: "Facets"; font-size: 10px; color: Theme.text-muted; }
+        // `EditorModel.selected_tier_chips` -- NOT a field on
+        // `EditorModel.tiers[root.loaded_tier_index]` -- see that
+        // property's own doc comment (`ui/models/editor.slint`)
+        // for why: a per-row `[IndexChipItem]` field would be
+        // `ModelRc`-backed (`Rc`, not `Send`) and cannot cross the
+        // background thread `tiers` itself is sometimes built on.
+        //
+        // A real (if large) gear can carry many facets in one
+        // complete orbit -- `ScrollView` (already how the tier
+        // list's own wide rows fall back to horizontal scroll,
+        // see `editor_tier_table.slint`'s own doc comment) rather
+        // than letting the chip strip force the WHOLE inspector
+        // wider, or wrapping (Slint's layouts have no flow-wrap).
+        ScrollView {
+            height: 50px;
+            HorizontalLayout {
+                spacing: 4px;
+                for chip in EditorModel.selected_tier_chips: Rectangle {
+                    width: 46px;
+                    height: 40px;
+                    // `@markdown(...)` needs a string literal, not an
+                    // arbitrary expression -- the ternary is computed
+                    // here first, then interpolated as a single value
+                    // below (see the SLINT FACTS this task was briefed
+                    // with).
+                    property <string> chip_tooltip: chip.detached
+                        ? "Position " + chip.label + ", detached from orbit-wide propagation. \u{2702} reattaches, \u{2715} removes it."
+                        : "Position " + chip.label + ". \u{2702} detaches it from orbit-wide propagation, \u{2715} removes it.";
+                    background: chip.detached ? Theme.bg-input : Theme.bg-card-hover;
+                    border-radius: Theme.radius-sm;
+                    border-width: chip.detached ? 1px : 0px;
+                    // Dashed-looking (via a muted, thin border) and
+                    // dimmed text is the "looks different" a
+                    // detached facet needs -- Slint has no native
+                    // dashed-stroke property, so a solid but
+                    // visually distinct treatment stands in for it.
+                    border-color: Theme.text-muted;
+                    VerticalLayout {
+                        padding: 3px;
+                        spacing: 2px;
+                        Text {
+                            text: chip.label;
+                            font-size: 10px;
+                            font-weight: 600;
+                            color: chip.detached ? Theme.text-muted : Theme.text-primary;
+                            horizontal-alignment: center;
+                        }
+                        HorizontalLayout {
+                            spacing: 2px;
+                            Rectangle {
+                                height: 16px;
+                                Text {
+                                    text: chip.detached ? "\u{21A9}" : "\u{2702}";
+                                    font-size: 9px;
+                                    color: detach_chip_touch.has-hover ? Theme.accent-cyan : Theme.text-secondary;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                detach_chip_touch := TouchArea {
+                                    enabled: root.unlocked;
+                                    clicked => { EditorModel.facet_toggle_detach(root.loaded_tier_index, chip.position); }
+                                }
+                            }
+                            Rectangle {
+                                height: 16px;
+                                Text {
+                                    text: "\u{2715}";
+                                    font-size: 9px;
+                                    color: remove_chip_touch.has-hover ? Theme.accent-ruby : Theme.text-secondary;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                remove_chip_touch := TouchArea {
+                                    enabled: root.unlocked;
+                                    clicked => { EditorModel.facet_remove(root.loaded_tier_index, chip.position); }
+                                }
+                            }
+                        }
+                    }
+                    Tooltip { text: @markdown("\{chip_tooltip}"); }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> root.new_facet_position;
+                placeholder-text: "position";
+                width: 64px;
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            }
+            Button {
+                enabled: root.unlocked;
+                text: "+ Add";
+                clicked => {
+                    if root.new_facet_position != "" {
+                        EditorModel.facet_add(root.loaded_tier_index, root.new_facet_position.to-float());
+                        root.new_facet_position = "";
+                    }
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> root.rotate_by_text;
+                width: 40px;
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            }
+            Button {
+                enabled: root.unlocked;
+                text: "Rotate \u{27F2}";
+                clicked => { EditorModel.tier_rotate_indices(root.loaded_tier_index, root.rotate_by_text.to-float()); }
+            }
+            Button {
+                enabled: root.unlocked;
+                text: "Rotate \u{27F3}";
+                clicked => { EditorModel.tier_rotate_indices(root.loaded_tier_index, -root.rotate_by_text.to-float()); }
+            }
+            Button {
+                enabled: root.unlocked;
+                text: "Mirror";
+                clicked => { EditorModel.tier_mirror_indices(root.loaded_tier_index); }
+            }
+        }
+    }
+
+    // Cheater/azimuth offset (GCS style): applies immediately,
+    // not staged. Only shown for saved tiers.
+    if root.loaded_tier_index >= 0 && root.loaded_tier_index < EditorModel.tiers.length: VerticalLayout {
+        spacing: 4px;
+        Rectangle {
+            height: cheater_lbl.preferred-height;
+            Tooltip { text: @markdown("Cheater/azimuth offset in degrees -- compensates cutting an off-tooth index or a known machine error. Blank clears it."); }
+            cheater_lbl := Text { text: "Cheater Offset (deg)"; font-size: 10px; color: Theme.text-muted; }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            LineEdit {
+                enabled: root.unlocked;
+                width: 70px;
+                text <=> EditorModel.selected_tier_cheater_offset_text;
+                placeholder-text: "none";
+                accepted => { EditorModel.apply_cheater_offset(root.loaded_tier_index, EditorModel.selected_tier_cheater_offset_text); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            }
+            Button {
+                enabled: root.unlocked;
+                text: "Set";
+                clicked => { EditorModel.apply_cheater_offset(root.loaded_tier_index, EditorModel.selected_tier_cheater_offset_text); }
+            }
+            Button {
+                enabled: root.unlocked;
+                text: "Clear";
+                clicked => {
+                    EditorModel.selected_tier_cheater_offset_text = "";
+                    EditorModel.apply_cheater_offset(root.loaded_tier_index, "");
+                }
+            }
+        }
+    }
+
+    // Cutter-authored note for this tier: applies immediately,
+    // not staged. Only shown for saved tiers.
+    if root.loaded_tier_index >= 0 && root.loaded_tier_index < EditorModel.tiers.length: VerticalLayout {
+        spacing: 4px;
+        Rectangle {
+            height: note_lbl.preferred-height;
+            Tooltip { text: @markdown("A cutter-authored note for this tier, e.g. \"check meet here\" or \"grind slowly\". Blank clears it."); }
+            note_lbl := Text { text: "Note"; font-size: 10px; color: Theme.text-muted; }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> EditorModel.selected_tier_note_text;
+                placeholder-text: "none";
+                accepted => { EditorModel.apply_tier_note(root.loaded_tier_index, EditorModel.selected_tier_note_text); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            }
+            Button {
+                enabled: root.unlocked;
+                text: "Set";
+                clicked => { EditorModel.apply_tier_note(root.loaded_tier_index, EditorModel.selected_tier_note_text); }
+            }
+            Button {
+                enabled: root.unlocked;
+                text: "Clear";
+                clicked => {
+                    EditorModel.selected_tier_note_text = "";
+                    EditorModel.apply_tier_note(root.loaded_tier_index, "");
+                }
+            }
+        }
+    }
+
+    // A real inline validation message under
+    // the form, alongside the corner toast -- `setup_save_tier_
+    // callback` (`gui::editor::callbacks::tier_actions`) sets
+    // `EditorModel.tier_form_error` from every parse/apply
+    // error branch.
+    if EditorModel.tier_form_error != "": Text {
+        text: EditorModel.tier_form_error;
+        font-size: 10px;
+        font-weight: 700;
+        color: Theme.accent-ruby;
+        wrap: word-wrap;
+    }
+
+    // --- A read-only "Solved" section, fed
+    // by what `Design::solve`/`Design::facet_meets` actually
+    // produced for the selected tier -- mast, solve strategy,
+    // block, margin/risk, orbit shape, the meet partners the
+    // real name resolver found, and any manufacturability
+    // warning specifically about this tier. Only shown for an
+    // existing tier (not the "Add Tier" draft, which has
+    // nothing solved yet).
+    if root.loaded_tier_index >= 0 && root.loaded_tier_index < EditorModel.tiers.length: VerticalLayout {
+        // `tier_row`, not `row` -- `row` is a reserved
+        // `GridLayout` cell-placement property every element
+        // inherits, so declaring a same-named custom property
+        // fails with "Cannot override property 'row'". Reads
+        // `root.loaded_tier_index`, not `EditorModel.
+        // selected_tier_index` -- see that property's own doc
+        // comment for why the two can disagree.
+        property <EditorTierItem> tier_row: EditorModel.tiers[root.loaded_tier_index];
+        spacing: 4px;
+        Rectangle { height: 1px; background: Theme.border-subtle; }
+        Text { text: "Solved"; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
+        HorizontalLayout {
+            spacing: 12px;
+            Text { text: "Mast: " + tier_row.mast; font-size: 10px; color: Theme.text-secondary; }
+            Text { text: "Block: " + tier_row.block; font-size: 10px; color: Theme.text-secondary; }
+        }
+        Rectangle {
+            height: strategy_txt.preferred-height;
+            if tier_row.strategy_detail != "": Tooltip { text: @markdown("\{tier_row.strategy_detail}"); }
+            strategy_txt := Text {
+                text: "Strategy: " + tier_row.strategy;
+                font-size: 10px;
+                font-weight: tier_row.strategy_is_uncertain ? 700 : 400;
+                color: tier_row.strategy_is_uncertain ? Theme.accent-amber : Theme.text-secondary;
+            }
+        }
+        if tier_row.margin_text != "": Text {
+            text: "Margin over critical angle: " + tier_row.margin_text;
+            font-size: 10px;
+            font-weight: tier_row.risk_level >= 1 ? 700 : 400;
+            color: tier_row.risk_level == 2 ? Theme.accent-ruby : (tier_row.risk_level == 1 ? Theme.accent-amber : Theme.accent-emerald);
+        }
+        if tier_row.orbit_status != "": Text {
+            text: "Orbit: " + tier_row.orbit_status;
+            font-size: 10px;
+            color: tier_row.orbit_incomplete ? Theme.accent-amber : Theme.accent-emerald;
+        }
+        if tier_row.meet_partners_text != "": Text {
+            text: tier_row.meet_partners_text;
+            font-size: 10px;
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+        }
+        if tier_row.imported_meet_text != "": Text {
+            text: "File says this tier " + tier_row.imported_meet_text + " -- use Adopt in the table to switch to it.";
+            font-size: 10px;
+            color: Theme.accent-cyan;
+            wrap: word-wrap;
+        }
+        if tier_row.warning_text != "": Text {
+            text: "\u{26A0} " + tier_row.warning_text;
+            font-size: 10px;
+            font-weight: 700;
+            color: Theme.accent-amber;
+            wrap: word-wrap;
+        }
+    }
+}

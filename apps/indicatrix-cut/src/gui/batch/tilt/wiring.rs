@@ -48,7 +48,7 @@ pub fn spawn_tilt_batch(
     ui_weak: Weak<MainWindow>,
     db: Arc<Mutex<Database>>,
     render_ctx: Arc<Mutex<RenderContext>>,
-    workers: Vec<WorkerSettings>,
+    remote_worker: Option<WorkerSettings>,
     live_compute_target: LiveComputeTarget,
     entry_ids: Vec<i64>,
 ) -> TiltBatchHandle {
@@ -85,10 +85,6 @@ pub fn spawn_tilt_batch(
 
         let design_total = entry_ids.len() as u32;
         let material_candidates = preview_render::ri_candidates();
-        // First configured worker only -- same "session-wide, first entry" convention
-        // `gui::batch::preview::wiring::spawn_preview_batch` uses for the identical
-        // reason (see that function's own doc comment).
-        let remote_worker = workers.into_iter().next();
         let ctx = BatchContext {
             db: &db,
             material_candidates: &material_candidates,
@@ -173,7 +169,7 @@ pub fn spawn_tilt_batch(
     TiltBatchHandle { cancel }
 }
 
-/// Starts a batch for `entry_ids`, reading the configured remote workers AND the
+/// Starts a batch for `entry_ids`, reading the configured remote endpoint AND the
 /// persisted `LiveComputeTarget` from `settings_store`'s current snapshot -- the SAME
 /// standing "Live Compute" preference the live viewport uses (`settings_dialog.slint`'s
 /// pill, `AppSettings::live_compute_target`), not a separate picker of this batch's own.
@@ -213,7 +209,7 @@ fn start_batch(
         ui.as_weak(),
         Arc::clone(db),
         Arc::clone(render_ctx),
-        snapshot.settings.remote_workers,
+        snapshot.settings.remote_worker(),
         snapshot.settings.live_compute_target,
         entry_ids,
     );

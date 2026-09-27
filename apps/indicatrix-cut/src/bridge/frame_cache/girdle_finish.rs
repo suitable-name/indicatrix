@@ -5,7 +5,7 @@
 //! calls into whichever finish set is active many times per second, and the classified
 //! band only ever changes when the design's own geometry does. [`GirdleFinishCache`]
 //! recomputes only when `render_thread::hash_planes`'s key actually differs from the
-//! last call -- the same cheap `Pod`-bytes identity `bridge::guide_pass::GuideCache`
+//! last call -- the same cheap `Pod`-bytes identity `bridge::frame_cache::guide_pass::GuideCache`
 //! already keys part of its own invalidation on (see that module's doc comment),
 //! reused here rather than a third, parallel geometry-identity scheme.
 
@@ -17,7 +17,7 @@ use indicatrix::{
 
 /// `key` starts `None`, so the very first [`Self::ensure`] call always sees a "stale"
 /// key and populates `finishes` before anything reads it -- same never-empty-but-still-
-/// correct shape `bridge::guide_pass::GuideCache` uses for the identical reason (see
+/// correct shape `bridge::frame_cache::guide_pass::GuideCache` uses for the identical reason (see
 /// that type's doc comment).
 #[derive(Debug, Default)]
 pub struct GirdleFinishCache {

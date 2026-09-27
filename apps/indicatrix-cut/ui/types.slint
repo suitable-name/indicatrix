@@ -336,8 +336,8 @@ export struct OpticalMetricsData {
 // applied/captured there. Slint just needs the name, whether it's a built-in (to hide
 // the rename/delete affordances), `export_usable` (the settings dialog's checkbox
 // state, and the export dialog's fan-out filter), and `has_env_map` (an
-// export-dialog-only hint: an HDR-carrying preset forces the slow CPU path for its
-// render).
+// export-dialog-only hint that the preset carries an HDR environment map; the GPU
+// renders it, and only a very large map falls back to the CPU).
 export struct LightingPresetItem {
     name: string,
     built_in: bool,
@@ -349,9 +349,8 @@ export struct LightingPresetItem {
     selected: bool,
 }
 
-// Remote rendering: one row in the worker-list panel. Rust owns the real
-// `settings::WorkerSettings` -- this is just enough to render/edit a row and
-// round-trip an edit back to Rust by list index.
+// Remote rendering: the "Remote coordinator" form (exactly one remote endpoint). Rust owns the real `settings::RemoteEndpoint` -- this is just
+// enough to show and edit it and round-trip an edit back to Rust.
 export struct WorkerItem {
     name: string,
     address: string,
@@ -363,6 +362,9 @@ export struct WorkerItem {
     preview_scale_index: int,
     // Only meaningful when preview_scale_index == 3.
     preview_scale_percent: int,
+    // The export dialog's and tilt video's default "Transfer":
+    // 0 = Full data, 1 = Final picture only -- matches `settings::ExportTransfer`.
+    export_transfer_index: int,
 }
 
 export struct DiagramDetailData {

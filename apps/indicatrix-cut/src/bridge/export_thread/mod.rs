@@ -10,10 +10,11 @@
 //!
 //! # Wide-gamut export
 //!
-//! `run_export`'s tone-mapping branches on the caller's `ColorSpace`: `Srgb` (default)
-//! goes through [`tonemap_to_rgba`]'s `xyz_to_srgb_gamma` path.
-//! Any other space routes through [`tonemap_wide_gamut`] (`ColorSpace::encode` with
-//! `ToneMap::AcesFilmic { exposure: 1.0 }`), which reproduces `xyz_to_srgb_gamma`'s
+//! `run_export`'s tone-mapping (`tonemap_accumulation`, shared with the server-side
+//! "final picture" path via `indicatrix::renderer::tonemap`) branches on the caller's
+//! `ColorSpace`: `Srgb` (default) goes through the `xyz_to_srgb_gamma` path.
+//! Any other space routes through `ColorSpace::encode` with
+//! `ToneMap::AcesFilmic { exposure: 1.0 }`, which reproduces `xyz_to_srgb_gamma`'s
 //! tone-mapping exactly so the wide-gamut path only changes gamut primaries and
 //! transfer curve, never brightness. [`save_png`] embeds an ICC profile
 //! (`bridge::icc_profile::build`) for any non-`Srgb` space so pixel values are never
@@ -51,11 +52,15 @@ mod hybrid_export_tests;
 mod tests;
 
 pub use filename_template::{DEFAULT_TEMPLATE, TemplateContext, resolve_export_path};
-pub use params::{ComputeTarget, ExportParams, validate_export_params};
-pub use remote::probe_remote;
+pub use params::{ComputeTarget, ExportParams, RemoteSelection, validate_export_params};
+pub use remote::{forget_final_picture_refusals, probe_remote};
 pub use scene_snapshot::SceneSnapshot;
+// Re-exported for `gui::tilt::video_export`, which drives one render per swept frame
+// through the SAME per-image entry point the still-image export uses (either transfer)
+// instead of a video-only tracer -- see `render_image_rgba`'s own doc comment.
+pub use worker::{AccumulationCarry, RenderedImage, render_image_rgba};
 
-use crate::settings::{LocalComputeTarget, WorkerSettings};
+use crate::settings::LocalComputeTarget;
 use indicatrix::color::ColorSpace;
 use slint::{ComponentHandle, Rgba8Pixel, SharedPixelBuffer, Weak};
 use std::{
@@ -110,8 +115,8 @@ impl ExportHandle {
 /// Spawns the export worker thread. `on_progress` is invoked on the UI event loop with
 /// an [`ExportProgress`] after each sample batch; `on_done` is invoked exactly once,
 /// when the export finishes, is cancelled, or fails. `color_space` selects the output
-/// PNG's gamut/transfer curve -- see this module's doc comment. `compute_target`/
-/// `workers` select and configure the remote engine -- see [`ComputeTarget`].
+/// PNG's gamut/transfer curve -- see this module's doc comment. `remote` selects the
+/// engines, the remote endpoint and the transfer -- see [`RemoteSelection`].
 ///
 /// # `on_done` fires on every exit path, including a panic
 ///
@@ -123,9 +128,9 @@ impl ExportHandle {
 #[expect(
     clippy::too_many_arguments,
     reason = "every argument is a distinct piece of one export request's own identity \
-              (scene, output params/path/colour-space, the new compute-target/workers \
-              choice, and the two UI callbacks) -- bundling them into a struct would \
-              just move the same count into field access, not reduce it"
+              (scene, output params/path/colour-space, the remote selection, the local \
+              compute choice, and the two UI callbacks) -- bundling them into a struct \
+              would just move the same count into field access, not reduce it"
 )]
 pub fn spawn_export<T, P, D>(
     ui_weak: Weak<T>,
@@ -133,8 +138,7 @@ pub fn spawn_export<T, P, D>(
     params: ExportParams,
     color_space: ColorSpace,
     output_path: PathBuf,
-    compute_target: ComputeTarget,
-    workers: Vec<WorkerSettings>,
+    remote: RemoteSelection,
     local_compute: LocalComputeTarget,
     on_progress: P,
     on_done: D,
@@ -160,8 +164,7 @@ where
                 params,
                 color_space,
                 &output_path,
-                compute_target,
-                &workers,
+                &remote,
                 local_compute,
                 &cancel_worker,
                 report_progress,

@@ -14,8 +14,9 @@
 //!   visibility-only constraint.
 //!
 //! Split into one file per topic (see each submodule's doc comment); this file holds
-//! what's shared: test scenes/materials, GPU dispatch, CPU reference sampling, and
-//! Welford/z-score statistics.
+//! what's shared: test scenes/materials, GPU dispatch, CPU reference sampling, and the
+//! per-channel `WelfordXyz` bundle. The Welford/z-score/cluster statistics themselves
+//! live in `renderer::gpu::z_stats`, shared with the cross-backend merge test.
 //!
 //! Per-channel exit-transmission primitives get their own kernel-level Tier 2 ULP
 //! checks in `renderer::gpu::transport_check::p6_exit_splitting`, not here.
@@ -42,6 +43,8 @@ use crate::{
     },
 };
 use glam::Vec3;
+
+use super::z_stats::{Welford, z_score};
 
 mod determinism;
 mod furnace;
@@ -550,42 +553,10 @@ where
 }
 
 // ---------------------------------------------------------------------------------
-// Welford online mean/M2 in f64 for accumulator stability (analysis tool applied
-// after the f32 estimator produced its samples).
+// Welford online mean/M2 and the two-sample z-score live in `renderer::gpu::z_stats`,
+// shared with the cross-backend merge test; `WelfordXyz` is this module's own
+// per-channel bundle of them.
 // ---------------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, Default)]
-struct Welford {
-    n: u64,
-    mean: f64,
-    m2: f64,
-}
-
-impl Welford {
-    fn update(&mut self, x: f64) {
-        self.n += 1;
-        let delta = x - self.mean;
-        self.mean += delta / self.n as f64;
-        let delta2 = x - self.mean;
-        self.m2 = delta.mul_add(delta2, self.m2);
-    }
-
-    fn variance(&self) -> f64 {
-        if self.n < 2 {
-            0.0
-        } else {
-            self.m2 / (self.n as f64 - 1.0)
-        }
-    }
-
-    fn standard_error_sq(&self) -> f64 {
-        if self.n == 0 {
-            0.0
-        } else {
-            self.variance() / self.n as f64
-        }
-    }
-}
 
 #[derive(Debug, Clone, Copy, Default)]
 struct WelfordXyz {
@@ -604,12 +575,4 @@ impl WelfordXyz {
     const fn mean(&self) -> Vec3 {
         Vec3::new(self.x.mean as f32, self.y.mean as f32, self.z.mean as f32)
     }
-}
-
-fn z_score(cpu: &Welford, gpu: &Welford) -> f64 {
-    let se2 = cpu.standard_error_sq() + gpu.standard_error_sq();
-    if se2 <= 0.0 {
-        return 0.0;
-    }
-    (gpu.mean - cpu.mean) / se2.sqrt()
 }

@@ -15,12 +15,30 @@ use std::{
 
 mod downsample;
 mod emitter;
+mod producer;
 mod sizing;
 #[cfg(test)]
 mod tests;
 mod tracer;
 
-pub use emitter::run_stream;
+pub use emitter::{RawPoll, poll_raw_client_message, run_stream, run_stream_with};
+pub use producer::{Output, ProducerOutcome, ProducerSink, local_tracer};
+pub use tracer::trace_range;
+
+/// What [`run_stream_with`] streams: the request (its id, scene, range and
+/// `StreamConfig`), the connection's negotiated payload encoding, and what the request
+/// turns into at the end ([`Output`]).
+#[derive(Debug, Clone, Copy)]
+pub struct StreamSpec<'a> {
+    /// The request being streamed (a `FinalImageRequest` is carried as an equivalent
+    /// `FinalOnly` request with no preview; see [`Output::FinalImage`]).
+    pub request: &'a indicatrix_net::messages::RenderRequest,
+    /// The encoding negotiated in `WELCOME` for every `FRAME`/`PREVIEW` (and, derived
+    /// from it, every `DISPLAY_FRAME`).
+    pub payload_encoding: indicatrix_net::messages::PayloadEncoding,
+    /// Radiance or a final picture.
+    pub output: Output,
+}
 
 /// This worker's cadence FLOOR, advertised in `WELCOME::min_cadence_ms` -- see that
 /// field's doc comment. Matches [`TARGET_SUBBATCH`], the sub-batch duration
@@ -163,7 +181,7 @@ pub struct TimeoutCache {
 impl TimeoutCache {
     /// A fresh cache with nothing recorded yet -- the next [`Self::apply`] call always
     /// reaches the real `set_read_timeout`, whatever value it's given.
-    pub(super) const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             last: LastTimeout::Unknown,
         }
@@ -177,7 +195,7 @@ impl TimeoutCache {
     /// last successfully applied is presumably still what the socket actually has, so a
     /// later retry of the same `duration` correctly tries again rather than being
     /// skipped as a false no-op.
-    pub(super) fn apply<S: TimeoutRead + ?Sized>(
+    pub(crate) fn apply<S: TimeoutRead + ?Sized>(
         &mut self,
         stream: &mut S,
         duration: Option<Duration>,
@@ -233,7 +251,7 @@ impl<T: TimeoutWrite + ?Sized> TimeoutWrite for &mut T {
 /// [`TracePanicked`](StreamOutcome::TracePanicked) requires the caller to send
 /// `StreamEvent::Error` itself. Only half of what [`run_stream`] returns -- see its own
 /// doc comment for the `Option<RenderRequest>` alongside it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamOutcome {
     /// The request ran to completion (`DONE { cancelled: false }`) or was cancelled
     /// (`DONE { cancelled: true }`) -- either way, every [`StreamEvent`] this request
@@ -244,4 +262,8 @@ pub enum StreamOutcome {
     /// the panic has been written -- no `DONE`, since there is no valid outcome to
     /// report. The caller is expected to send `StreamEvent::Error` itself.
     TracePanicked,
+    /// The producer could not complete the request (a coordinator that lost every lane:
+    /// `error_codes::ALL_WORKERS_LOST`), or its final picture could not be encoded. No
+    /// `DONE` was written; the caller sends this `ErrorMsg` as `StreamEvent::Error`.
+    Failed(indicatrix_net::messages::ErrorMsg),
 }

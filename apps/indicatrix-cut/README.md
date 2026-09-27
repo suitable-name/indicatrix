@@ -18,10 +18,12 @@ This file is the entry point: building, what the app does, and the code
 structure. Deeper material lives alongside it in `docs/`:
 
 - [`docs/settings.md`](docs/settings.md) — the settings file's location,
-  persistence guarantees, render-quality controls, and remote-worker configuration.
+  persistence guarantees, render-quality controls, and the remote endpoint
+  (coordinator) configuration.
 - [`docs/remote-rendering.md`](docs/remote-rendering.md) — the
-  preview-then-handoff model: when a render moves from local CPU to a remote
-  worker, and how denoising and the TLS connection are handled across that.
+  preview-then-handoff model: how the live view shares its sample budget with the
+  remote coordinator, full-data vs. final-picture transfer, HDR scenes, and how
+  denoising and the TLS connection are handled across that.
 - [`docs/export.md`](docs/export.md) — how `.asc` import and export work.
 - [`docs/gpu.md`](docs/gpu.md) — the `gpu` feature and exactly when and why a
   frame falls back from GPU to the CPU tracer.
@@ -108,8 +110,10 @@ session, and is a normal outcome, not an error — see
 - Every path the app asks for — import source, environment map, certificate
   folder, and each export destination — is chosen through a native OS file
   dialog; the text fields remain, so a pasted path still works.
-- Offload rendering to a remote `indicatrix-worker` over mutual TLS, with a
-  preview-then-handoff model while the camera is moving (below).
+- Offload rendering to a remote `indicatrix-worker serve` coordinator (which can
+  spread it over the render workers that join it) over mutual TLS, with a
+  preview-then-handoff model while the camera is moving — see
+  [`docs/remote-rendering.md`](docs/remote-rendering.md).
 
 ## Structure
 
@@ -118,21 +122,31 @@ src/
   lib.rs            slint::include_modules!(), pub mod gui, crate-private bridge/settings
   main.rs           entry point + the release-build windows_subsystem attribute
   gui/              callback wiring, one module per area of the UI
-    mod.rs            orchestrator: DB, RenderContext, settings, callback wiring
-    library/          import / rename / delete / export-.asc / shape editing
-    detail.rs         detail loading, facet-plane reconstruction, file export
-    search.rs         range-filter reading, diagram-list refresh
-    remote/           settle detection, handoff wiring, merged-frame render/denoise
-    render_export.rs  the high-resolution export's UI side
-    ...               camera/lighting, materials, crystal optics, tilt profile
+    mod.rs            module list; main_window.rs builds and wires the MainWindow
+    library/          browse/search/filter, detail loading, import / rename / delete /
+                      export-.asc, remote library switch and mirror
+    editor/           the Edit sub-tab: tier list, solve, Deep Solve/Optimize/Retarget,
+                      the worked-example guide, templates, native files
+    render/           camera/lighting, materials/quality, the high-resolution export's
+                      UI side (render_export/), the detached Live Render window
+    remote/           the Remote Coordinator form, Test connection, enrollment, and
+                      the preview-then-handoff orchestrator (orchestrator/)
+    batch/            catalogue-wide preview and tilt-curve batches
+    tilt/             tilt profile, hover preview, tilt video export
+    solid_preview/    the solid inspection view
+    optics/           crystal optics, custom materials, tilt-curve paths
   bridge/           everything off the UI thread, plus pure logic it depends on
-    render_thread/    the local progressive render loop and RenderContext
+    render_thread/    the local progressive render loop, RenderContext, denoise/display
     export_thread/    the high-resolution export worker (local + remote engines)
-    handoff.rs        pure preview/remote handoff state machine (no sockets/threads)
-    remote_render.rs  the mutual-TLS TcpStream driver
-    guide_pass.rs     primary-ray-only prepass for remote-frame denoise guides
+    remote/           enrollment, the mutual-TLS connection driver (remote_render/),
+                      the pure handoff state machine (handoff.rs), the live remote
+                      lane, the HDR/remote guard, HDR maps as protocol assets
+    sample_cursor/    the shared sample cursor (from indicatrix-dispatch) + live epoch
+    frame_cache/      per-geometry caches: remote-frame denoise guides (prepass:
+                      indicatrix::renderer::guide_pass), girdle finish, stone width
+    library/          library protocol client, local/remote source, pull mirror
     pixel_buffer.rs   zero-copy RGBA8 -> SharedPixelBuffer transfer
-    ...               enrolment, ICC profiles, library mirror/source, girdle finish
+    preview_render.rs cached catalogue-preview rendering
   settings/
     model/            pure data/logic (no Slint or threading dependency)
     store.rs          on-disk TOML load/save, infallible on failure
@@ -144,7 +158,7 @@ ui/
 ```
 
 `MainWindow` (`ui/app.slint`) layout: a top toolbar (search, shape/gear filters,
-range sliders, import, remote-worker configuration, denoise toggle), a
+range sliders, import, the Remote Coordinator panel with its denoise toggle), a
 diagram-list panel on the left, and on the right a detail header plus three
 tabs — the 3D viewport, the cutting-schedule table, and attachments.
 
@@ -156,8 +170,9 @@ cargo test -p indicatrix-cut
 
 No `tests/` directory — all coverage is inline `#[cfg(test)]`. What's covered:
 the `HandoffMachine` state machine exhaustively (including an all-state-pairs
-no-panic sweep), settings TOML round trips (including remote-worker fields and
-`PreviewScale::Custom`), the debounced settings writer, tonemap/denoise
+no-panic sweep), settings TOML round trips (including the remote endpoint, the
+migration from the old worker list, and `PreviewScale::Custom`), the debounced
+settings writer, the HDR/remote guard, the live remote lane, tonemap/denoise
 correctness and the "denoise is a no-op at converged sample counts" property,
 quality-preset label/index round trips, and filename sanitization. **Nothing
 exercises the actual Slint window, a live socket to a `indicatrix-worker`, or the

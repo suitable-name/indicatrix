@@ -50,6 +50,12 @@ pub enum RemoteError {
     /// connection just stopped saying anything at all, which a bare I/O error would
     /// never distinguish from a worker legitimately taking its time on a slow tick.
     WorkerSilent(Duration),
+    /// Protocol v14: the scene is lit by an HDR map but the remote's `WELCOME` does not
+    /// advertise HDR support (`RenderCapability::hdr`), so the request was not sent.
+    HdrUnsupported,
+    /// Protocol v14: the remote asked for the scene's HDR map (`NEED_ASSET`) and it could
+    /// not be sent (unknown hash, unreadable or changed file, or the upload failed).
+    Asset(String),
 }
 
 impl fmt::Display for RemoteError {
@@ -61,9 +67,14 @@ impl fmt::Display for RemoteError {
             Self::InvalidServerName(host) => write!(f, "not a valid worker hostname: {host:?}"),
             Self::NoRenderCapacity => write!(
                 f,
-                "this worker serves the design library but cannot render -- it was built                  without its `worker` feature"
+                "this worker serves the design library but cannot render -- it was built without its `worker` feature"
             ),
             Self::WorkerSilent(elapsed) => write!(f, "worker silent for {elapsed:.0?}"),
+            Self::HdrUnsupported => write!(
+                f,
+                "the remote cannot render HDR environments (it does not advertise HDR support)"
+            ),
+            Self::Asset(reason) => write!(f, "could not send the HDR map: {reason}"),
         }
     }
 }
@@ -133,12 +144,40 @@ pub enum RemoteUpdate {
         request_id: u32,
         cancelled: bool,
     },
-    /// The attempt failed for any reason -- connection, handshake, or a transport
-    /// error mid-stream. Corresponds to
+    /// The attempt failed for any reason -- connection, handshake, a transport error
+    /// mid-stream, or a server `ERROR` (including a coordinator's `ALL_WORKERS_LOST`,
+    /// whose message then reads "All remote workers were lost"). Corresponds to
     /// `bridge::remote::handoff::HandoffEvent::RemoteFailed`.
     Failed {
         request_id: u32,
         message: String,
+    },
+    /// v14: the server answered `ERROR { code: UNSUPPORTED_REQUEST }` -- it is a plain
+    /// worker that does not implement what was asked (a `FinalImageRequest`, or a
+    /// `TransferMode::DisplayOnly` render). Terminal for the request, but NOT a broken
+    /// server: callers fall back to full-data transfer instead of treating it as a
+    /// failure.
+    Unsupported {
+        request_id: u32,
+        message: String,
+    },
+    /// v14: a `DISPLAY_FRAME` (a finished, denoised 8-bit picture) replaced the
+    /// accumulator's `last_display_frame`; `samples_done` is what it reflects.
+    DisplayFrame {
+        request_id: u32,
+        samples_done: u32,
+    },
+    /// v14: the request's `FINAL_IMAGE` is in the accumulator's `final_image`; `Done`
+    /// follows.
+    FinalImage {
+        request_id: u32,
+    },
+    /// v14: the server's render capability changed since its `WELCOME` (a coordinator
+    /// gained or lost joined workers). Not tied to the request; carried with the
+    /// current request id only so the usual staleness gate applies.
+    CapabilityChanged {
+        request_id: u32,
+        render: Option<indicatrix_net::messages::RenderCapability>,
     },
 }
 
@@ -153,7 +192,11 @@ impl RemoteUpdate {
             | Self::Preview { request_id }
             | Self::Progress { request_id, .. }
             | Self::Done { request_id, .. }
-            | Self::Failed { request_id, .. } => *request_id,
+            | Self::Failed { request_id, .. }
+            | Self::Unsupported { request_id, .. }
+            | Self::DisplayFrame { request_id, .. }
+            | Self::FinalImage { request_id }
+            | Self::CapabilityChanged { request_id, .. } => *request_id,
         }
     }
 }
@@ -220,6 +263,32 @@ pub struct RemoteRenderRequest {
     pub samples: u32,
     pub width: u32,
     pub height: u32,
+    /// Why the request is made (protocol v14): `Interactive` for the live viewport,
+    /// `Batch` for exports, tilt videos and batch previews. A coordinator uses it to pick
+    /// lanes; a plain worker ignores it.
+    pub intent: indicatrix_net::messages::RequestIntent,
+    /// Final-picture live transfer, live view only: ask for finished, denoised display frames
+    /// (`TransferMode::DisplayOnly`, no preview stream) instead of float deltas. Only
+    /// the persistent live connection honours it; every other caller passes `false`.
+    pub display_only: bool,
+}
+
+/// Everything [`super::connection::spawn_final_image_request`] needs for ONE
+/// `FinalImageRequest` ("final picture only" transfer for the still export
+/// and the tilt video): the remote renders the whole range and replies with one PNG.
+pub struct RemoteFinalImageRequest {
+    /// The remote to connect to.
+    pub worker: WorkerSettings,
+    /// Epoch id, echoed on every reply.
+    pub request_id: u32,
+    /// The fully resolved scene; its `width`/`height` are the output size.
+    pub scene: indicatrix_net::SceneState,
+    /// First absolute sample index.
+    pub first_sample: u32,
+    /// Number of samples (the tone-mapping divisor).
+    pub samples: u32,
+    /// The colour space the remote tone-maps into.
+    pub color_space: indicatrix::color::ColorSpace,
 }
 
 /// A handle to one persistent, mutual-TLS connection to a configured remote worker,

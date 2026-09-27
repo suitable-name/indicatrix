@@ -1,0 +1,133 @@
+import { LineEdit } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { ExportModel } from "../../models/export.slint";
+
+// The export directory (chosen once via a native folder picker -- see
+// `ExportModel.export_directory`'s own doc comment -- and just displayed/
+// changeable here) and the filename template every file in this export (the
+// current-view render, and every fanned-out preset render) resolves its own
+// name from -- split out of `export_dialog.slint` to keep that file under its
+// line budget. See `bridge::export_thread::filename_template`'s module doc
+// comment for the full variable list, sanitising, and collision behaviour.
+// Driven entirely by `ExportModel`, so it needs no properties of its own.
+export component ExportOutputLocation inherits VerticalLayout {
+    spacing: 6px;
+    Rectangle {
+        height: output_location_lbl.preferred-height;
+        Tooltip { text: @markdown("Folder new exports save to; remembered after the first choice."); }
+        output_location_lbl := Text { text: "Output Location"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+    }
+
+    HorizontalLayout {
+        spacing: 6px;
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 26px;
+            background: #0f172a;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: #334155;
+            clip: true;
+
+            Text {
+                text: ExportModel.directory == "" ? "Chosen on first export..." : ExportModel.directory;
+                font-size: 10px;
+                color: ExportModel.directory == "" ? Theme.text-muted : Theme.text-secondary;
+                vertical-alignment: center;
+                horizontal-alignment: left;
+                x: 8px;
+                width: parent.width - 16px;
+                overflow: elide;
+            }
+        }
+
+        Rectangle {
+            width: 70px;
+            height: 26px;
+            border-radius: Theme.radius-sm;
+            background: change_dir_touch.has-hover ? #1e293b : #0f172a;
+            border-width: 1px;
+            border-color: #334155;
+
+            change_dir_touch := TouchArea {
+                enabled: !ExportModel.is_exporting;
+                clicked => { ExportModel.change_directory(); }
+            }
+
+            Text { text: "Change..."; font-size: 10px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+    }
+
+    Text { text: "Filename template:"; font-size: 10px; color: Theme.text-muted; }
+    Rectangle {
+        height: 26px;
+        horizontal-stretch: 1;
+        min-width: 200px;
+        background: #0f172a;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: #334155;
+
+        LineEdit {
+            // Fills the full width/height of the enclosing background/
+            // border `Rectangle` -- unlike the directory field just above
+            // (a `HorizontalLayout`, which stretches its own children
+            // itself), a plain `Rectangle` is not a layout, so without an
+            // explicit size here `LineEdit` fell back to its own narrow
+            // default preferred width, leaving it floating at the left
+            // edge of an otherwise-empty-looking full-width background --
+            // reading as "the field is too small" even though its
+            // container already spanned the dialog's full content width,
+            // same as the directory field's own row does. `LineEdit`
+            // already scrolls its own text horizontally past this width
+            // rather than clipping or wrapping it (the same native
+            // single-line behaviour every other `LineEdit` in this dialog
+            // already relies on), so a long template stays fully visible
+            // and editable by scrolling, not truncated.
+            width: 100%;
+            height: 100%;
+            text <=> ExportModel.filename_template;
+            enabled: !ExportModel.is_exporting;
+            edited(text) => { ExportModel.filename_template_changed(text); }
+        }
+    }
+    Text {
+        text: "{design} {designer} {shape} {material} {ri} {width} {height} {spp} {bounces} {colorspace} {preset} {lighting} {yaw} {pitch} {distance} {exposure} {date} {time} {timestamp}";
+        font-size: 11px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+    // `{preset}` is the only placeholder that exists ONLY with preset
+    // fan-out on -- it's the design's own current-view render's `preset`
+    // (empty for that render; the fanned-out preset's own name for each
+    // additional file -- see `bridge::export_thread`'s module doc
+    // comment). Every other placeholder resolves for every export.
+    Text {
+        text: "{preset} only fills in when preset fan-out below is selected -- it stays empty for this design's own current-view render.";
+        font-size: 11px;
+        font-italic: true;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+
+    // A live "resolves to" preview, rendered against a fixed
+    // example (see `preview_filename_template`'s own doc comment for why
+    // not the live selected design). Recomputed on every keystroke via
+    // `<=>`-bound `export_filename_template` above changing.
+    property <string> preview_name: ExportModel.preview_filename_template(ExportModel.filename_template);
+    property <string> unknown_placeholders: ExportModel.filename_template_unknown_placeholders(ExportModel.filename_template);
+    Text {
+        text: "Resolves to: " + preview_name;
+        font-size: 11px;
+        font-weight: 600;
+        color: Theme.accent-cyan;
+        wrap: word-wrap;
+    }
+    if unknown_placeholders != "": Text {
+        text: "Unrecognised placeholder(s), kept literal in the filename: " + unknown_placeholders;
+        font-size: 11px;
+        font-weight: 600;
+        color: Theme.accent-amber;
+        wrap: word-wrap;
+    }
+}

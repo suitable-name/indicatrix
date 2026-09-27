@@ -9,8 +9,8 @@ use super::queue::{
 };
 use crate::{
     ExportModel, LibraryModel, LightingPresetItem, MainWindow,
-    bridge::export_thread::{self, ComputeTarget, ExportParams, SceneSnapshot},
-    settings::{LightingPreset as SavedLightingPreset, SettingsPersister, WorkerSettings},
+    bridge::export_thread::{self, ExportParams, RemoteSelection, SceneSnapshot},
+    settings::{ExportTransfer, LightingPreset as SavedLightingPreset, SettingsPersister},
 };
 use indicatrix::color::ColorSpace;
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
@@ -76,12 +76,18 @@ pub(in crate::gui) fn setup_render_export_callbacks(
                     }
                 };
             let color_space = crate::gui::color_space_from_index(color_space_index);
-            let compute_target = compute_target_from_index(compute_target_index);
-            // A snapshot of whatever workers are configured RIGHT NOW -- `run_export`
-            // re-probes the first one itself (see its own doc comment on why this
-            // isn't trusted from whatever the dialog observed when it opened), so this
-            // is just the current list, not a cached capability.
-            let workers = settings_store_start.snapshot().settings.remote_workers;
+            // A snapshot of the remote endpoint configured RIGHT NOW -- `run_export`
+            // re-probes it itself (see its own doc comment on why this isn't trusted
+            // from whatever the dialog observed when it opened), so this is just the
+            // current setting, not a cached capability. The "Transfer" pill (full
+            // data or final picture only) is read off the dialog's own model.
+            let remote = RemoteSelection {
+                compute_target: compute_target_from_index(compute_target_index),
+                worker: settings_store_start.snapshot().settings.remote_worker(),
+                transfer: ExportTransfer::from_index(
+                    ui.global::<ExportModel>().get_transfer_index(),
+                ),
+            };
 
             // ---- Export directory, prompted ONCE ---------------------------------------
             // A native FOLDER picker (not Save-As -- the template below owns the
@@ -101,8 +107,7 @@ pub(in crate::gui) fn setup_render_export_callbacks(
                 export_queue: export_queue_start.clone(),
                 params,
                 color_space,
-                compute_target,
-                workers,
+                remote,
             };
             if configured.is_empty() {
                 crate::gui::pickers::pick(
@@ -159,8 +164,7 @@ struct StartExportContext {
     export_queue: Rc<RefCell<Option<Arc<Mutex<ExportQueue>>>>>,
     params: ExportParams,
     color_space: ColorSpace,
-    compute_target: ComputeTarget,
-    workers: Vec<WorkerSettings>,
+    remote: RemoteSelection,
 }
 
 /// The rest of "Start Export", once the export directory is known -- split out
@@ -175,8 +179,7 @@ fn finish_start_export(ui: &MainWindow, export_dir: PathBuf, context: StartExpor
         export_queue,
         params,
         color_space,
-        compute_target,
-        workers,
+        remote,
     } = context;
 
     let template = settings_store.snapshot().settings.export_filename_template;
@@ -261,8 +264,7 @@ fn finish_start_export(ui: &MainWindow, export_dir: PathBuf, context: StartExpor
         colorspace: colorspace_label(color_space).to_string(),
         params,
         color_space,
-        compute_target,
-        workers,
+        remote,
         local_compute,
     }));
 
@@ -291,10 +293,10 @@ fn setup_check_remote_availability_callback(
     let ui_weak = ui.as_weak();
     ui.global::<ExportModel>()
         .on_check_remote_availability(move || {
-            let workers = settings_store.snapshot().settings.remote_workers;
+            let worker = settings_store.snapshot().settings.remote_worker();
             let ui_weak_result = ui_weak.clone();
             std::thread::spawn(move || {
-                let result = export_thread::probe_remote(&workers);
+                let result = export_thread::probe_remote(worker.as_ref());
                 let _ = ui_weak_result.upgrade_in_event_loop(move |ui| match result {
                     Ok(_capability) => {
                         ui.global::<ExportModel>().set_remote_available(true);
@@ -351,6 +353,14 @@ fn setup_populate_export_fanout_presets_callback(
                 .set_directory(snapshot.settings.export_directory.into());
             ui.global::<ExportModel>()
                 .set_filename_template(snapshot.settings.export_filename_template.into());
+            // "Transfer" (full data or final picture only): every open starts from the remote
+            // endpoint's own default, like the output location above.
+            ui.global::<ExportModel>().set_transfer_index(
+                snapshot
+                    .settings
+                    .remote
+                    .map_or(0, |r| r.export_transfer.index()),
+            );
         });
 }
 

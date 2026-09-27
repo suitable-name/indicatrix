@@ -11,7 +11,25 @@
 //! it), since `glam::Vec3` isn't `bytemuck::Pod` otherwise. `Vec3` on this target is
 //! exactly `3 * size_of::<f32>()` bytes, `f32`-aligned, no padding (unlike the
 //! SIMD-aligned `Vec3A`), so the cast is a straight reinterpretation.
+//!
+//! # v14 payload encodings
+//!
+//! On the wire a payload may also be byte-shuffled and compressed losslessly
+//! ([`payload`], [`shuffle`]); the functions in this file handle the raw form only.
+//! A receiver decodes a `FRAME`/`PREVIEW` through [`payload::PayloadDecoder`] (as
+//! `crate::client::Accumulator` does), which dispatches on the header's `encoding` and
+//! enforces the bounded-decode rules documented there.
 
+pub mod payload;
+#[cfg(test)]
+mod payload_tests;
+pub mod shuffle;
+#[cfg(test)]
+mod test_support;
+
+pub use payload::{EncodedPayload, PayloadDecoder, PayloadEncoder, decode_payload};
+
+use crate::messages::PayloadEncoding;
 use glam::Vec3;
 
 /// Byte size of one radiance sample on the wire (one pixel's running XYZ sum).
@@ -57,7 +75,76 @@ pub enum RadianceError {
     /// Rejected rather than worked around: reinterpreting misaligned bytes as `Vec3`
     /// would be UB.
     Misaligned,
+    /// v14: `width * height * 12` exceeds `framing::MAX_FRAME_LEN`, the cap every raw
+    /// payload is already held to -- rejected before allocating anything.
+    TooLarge { width: u32, height: u32 },
+    /// v14: the header's `raw_len` disagrees with `width * height * 12` (a lying or
+    /// mismatched header) -- rejected before any decompression starts.
+    RawLenMismatch {
+        width: u32,
+        height: u32,
+        expected_bytes: usize,
+        raw_len: u32,
+    },
+    /// v14: the header names an encoding this build cannot decode (built without the
+    /// `compression` feature).
+    UnsupportedEncoding(PayloadEncoding),
+    /// v14: the codec rejected the payload -- corrupt data, or output that would exceed
+    /// `raw_len` (a decompression bomb). The codec's own message is logged at `warn!`.
+    DecompressFailed(PayloadEncoding),
+    /// v14: the payload decompressed to fewer than `raw_len` bytes.
+    ShortOutput {
+        expected_bytes: usize,
+        got_bytes: usize,
+    },
 }
+
+impl std::fmt::Display for RadianceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LengthMismatch {
+                width,
+                height,
+                expected_bytes,
+                got_bytes,
+            } => write!(
+                f,
+                "radiance payload for {width}x{height} must be {expected_bytes} bytes, got {got_bytes}"
+            ),
+            Self::Misaligned => write!(f, "radiance payload is not f32-aligned"),
+            Self::TooLarge { width, height } => write!(
+                f,
+                "a {width}x{height} radiance payload would exceed the {} byte frame cap",
+                crate::framing::MAX_FRAME_LEN
+            ),
+            Self::RawLenMismatch {
+                width,
+                height,
+                expected_bytes,
+                raw_len,
+            } => write!(
+                f,
+                "header raw_len {raw_len} disagrees with {width}x{height} = {expected_bytes} bytes"
+            ),
+            Self::UnsupportedEncoding(e) => {
+                write!(f, "payload encoding {e:?} is not supported by this build")
+            }
+            Self::DecompressFailed(e) => write!(
+                f,
+                "{e:?} payload failed to decompress within its declared raw_len"
+            ),
+            Self::ShortOutput {
+                expected_bytes,
+                got_bytes,
+            } => write!(
+                f,
+                "payload decompressed to {got_bytes} bytes, raw_len is {expected_bytes}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RadianceError {}
 
 /// Decodes a `FRAME` message's raw `xyz_bytes` payload back into a radiance buffer.
 /// Validates its length against the frame's declared `width * height` before

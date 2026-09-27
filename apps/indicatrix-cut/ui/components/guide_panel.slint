@@ -2,43 +2,133 @@ import { ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { GuideModel } from "../models/guide.slint";
 
-// The worked-example
-// walkthrough's step panel -- opens beside the editor (see `app.slint`'s
-// `edit_row`, this component's own mount point, a third column alongside the
-// viewport and `EditorView`). Bounded to the window's own height (`window_height`,
-// the same `in property <length>` pattern `detail_header.slint` already uses for
-// the identical reason -- see this app's own Slint window-sizing rule: content
-// must never reach back up to force `MainWindow` bigger) and internally
-// scrollable, since a step's body text has no fixed length.
+// The worked-example walkthrough's step panel. Mounted two ways (never both at
+// once): as a third column of the wide Edit layout (`app.slint`'s `edit_row`), and
+// floating at the window's right edge everywhere else -- the narrow Edit stack, the
+// Live Render tab, the catalogue tabs -- through `GuideOverlayLayer` below, so the
+// guide never disappears mid-walkthrough.
+//
+// The panel sets NO height of its own. Docked, it fills the row it sits in (a
+// fixed height here used to cap the whole Edit row: a `HorizontalLayout`'s maximum
+// height is its smallest child's maximum, so a 480px panel left the status strip
+// two thirds of the way down the window). Floating, `GuideOverlayLayer` sizes it
+// against the window. Either way the step text scrolls internally.
+//
+// The header row drags the floating panel (`draggable`, reported through
+// `dragged`), and its collapse button shrinks either mount to a small
+// "Guide · Step N of M" pill that expands again on click
+// (`GuideModel.collapsed`).
+//
+// Layout of one step: title, a muted one-sentence intro, the numbered actions,
+// an emerald "Look for" line, an optional italic "why" note, then the status chip
+// ("Waiting for: ..." until Rust reports the goal reached, then "Done") and the
+// Back / Next-or-Skip row. Action steps advance by themselves; only manual
+// (reading) steps show a primary Next.
 export component GuidePanel inherits Rectangle {
-    in property <length> window_height: 900px;
+    // Whether the header row (and the collapsed pill) drag the panel -- only the
+    // floating mount, whose owner applies the moves.
+    in property <bool> draggable: false;
+    // An incremental move of `(dx, dy)` requested by a drag on the header or pill.
+    callback dragged(length, length);
+    // The collapsed pill's size, read by `GuideOverlayLayer` to size the floating
+    // mount while collapsed.
+    out property <length> collapsed_width: 176px;
+    out property <length> collapsed_height: 30px;
 
-    width: 260px;
-    // `root.height - 80px` leaves headroom for the
-    // status strip below this column and the app bar above it, the same
-    // "bound any new panel against the content tree's own height" rule
-    // `detail_header.slint`'s `window_height`-derived clamps already follow.
-    height: max(160px, min(420px, root.window_height - 80px));
+    width: GuideModel.collapsed ? root.collapsed_width : 260px;
     background: Theme.bg-card;
     border-radius: Theme.radius-md;
     border-width: 1px;
     border-color: Theme.accent-cyan;
     clip: true;
 
-    VerticalLayout {
+    // Swallows clicks on the panel's own background: the floating mount sits over
+    // the viewport, which must not receive a click aimed at the panel.
+    TouchArea { }
+
+    if GuideModel.collapsed: Rectangle {
+        height: root.collapsed_height;
+        // Set once the pointer has actually travelled, so the release that ends
+        // a drag does not also expand the pill.
+        property <bool> drag_moved: false;
+        background: pill_touch.has-hover ? Theme.bg-card-hover : Theme.bg-card;
+        pill_touch := TouchArea {
+            mouse-cursor: pointer;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down {
+                    parent.drag_moved = false;
+                }
+            }
+            moved => {
+                if self.pressed && root.draggable
+                        && Math.abs(self.mouse-x - self.pressed-x) + Math.abs(self.mouse-y - self.pressed-y) > 2px {
+                    parent.drag_moved = true;
+                    root.dragged(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+                }
+            }
+            clicked => {
+                if !parent.drag_moved {
+                    GuideModel.collapsed = false;
+                }
+            }
+        }
+        Text {
+            x: 10px;
+            width: parent.width - 20px;
+            height: parent.height;
+            text: "Guide \u{00B7} Step " + (GuideModel.step_index + 1) + " of " + GuideModel.total_steps + "  \u{25B8}";
+            font-size: 10px;
+            font-weight: 700;
+            color: GuideModel.step_done ? Theme.accent-emerald : Theme.accent-cyan;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Tooltip { text: root.draggable ? @markdown("Expand the guide. Drag to move it.") : @markdown("Expand the guide."); }
+    }
+
+    if !GuideModel.collapsed: VerticalLayout {
         padding: 12px;
         spacing: 8px;
 
         HorizontalLayout {
             spacing: 6px;
-            Text {
+            // The drag handle of the floating mount: the header text's own area.
+            Rectangle {
                 horizontal-stretch: 1;
-                text: "Guide -- Step " + (GuideModel.step_index + 1) + " of " + GuideModel.total_steps;
-                font-size: 10px;
-                font-weight: 700;
-                color: Theme.accent-cyan;
-                vertical-alignment: center;
+                header_drag := TouchArea {
+                    enabled: root.draggable;
+                    mouse-cursor: root.draggable ? MouseCursor.move : MouseCursor.default;
+                    moved => {
+                        if self.pressed {
+                            root.dragged(self.mouse-x - self.pressed-x, self.mouse-y - self.pressed-y);
+                        }
+                    }
+                }
+                Text {
+                    text: "Guide \u{00B7} Step " + (GuideModel.step_index + 1) + " of " + GuideModel.total_steps;
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: Theme.accent-cyan;
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                }
             }
+            Rectangle {
+                width: 18px;
+                height: 18px;
+                border-radius: 3px;
+                background: collapse_touch.has-hover ? Theme.bg-card-hover : transparent;
+                Text {
+                    text: "\u{25BE}";
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                collapse_touch := TouchArea { clicked => { GuideModel.collapsed = true; } }
+                Tooltip { text: @markdown("Collapse the guide to a small pill; click the pill to expand it again. The guide keeps running."); }
+            }
+            // Always enabled: closing the guide lifts every lock it placed.
             Rectangle {
                 width: 18px;
                 height: 18px;
@@ -52,7 +142,7 @@ export component GuidePanel inherits Rectangle {
                     vertical-alignment: center;
                 }
                 close_touch := TouchArea { clicked => { GuideModel.close(); } }
-                Tooltip { text: @markdown("Close the guide. Reopen any time from Help > Guide: New Design Walkthrough."); }
+                Tooltip { text: @markdown("Close the guide and unlock every control. Reopen it any time from Help > Guide: New Design Walkthrough."); }
             }
         }
 
@@ -67,21 +157,79 @@ export component GuidePanel inherits Rectangle {
         ScrollView {
             vertical-stretch: 1;
             VerticalLayout {
-                Text {
-                    text: GuideModel.current.body;
+                alignment: start;
+                spacing: 8px;
+
+                if GuideModel.current.intro != "": Text {
+                    text: GuideModel.current.intro;
                     font-size: 11px;
-                    color: Theme.text-secondary;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+
+                VerticalLayout {
+                    spacing: 5px;
+                    for action[i] in GuideModel.current.actions: HorizontalLayout {
+                        spacing: 6px;
+                        Text {
+                            width: 16px;
+                            text: "" + (i + 1);
+                            font-size: 11px;
+                            font-weight: 700;
+                            color: Theme.accent-cyan;
+                            horizontal-alignment: right;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            text: action;
+                            font-size: 11px;
+                            color: Theme.text-primary;
+                            wrap: word-wrap;
+                        }
+                    }
+                }
+
+                if GuideModel.current.check != "": Text {
+                    text: "\u{2713} Look for: " + GuideModel.current.check;
+                    font-size: 10px;
+                    color: Theme.accent-emerald;
+                    wrap: word-wrap;
+                }
+
+                if GuideModel.current.why != "": Text {
+                    text: GuideModel.current.why;
+                    font-size: 9px;
+                    font-italic: true;
+                    color: Theme.text-muted;
                     wrap: word-wrap;
                 }
             }
         }
 
-        if GuideModel.current.highlight_target == "": Text {
-            text: "(This step's control lives in a panel this guide does not outline -- see its own description above for where to look.)";
-            font-size: 9px;
-            font-italic: true;
-            color: Theme.text-muted;
-            wrap: word-wrap;
+        // Status chip: what the guide is waiting for, then a short "Done" before
+        // the automatic move to the next step.
+        Rectangle {
+            height: chip_txt.preferred-height + 8px;
+            border-radius: Theme.radius-sm;
+            background: GuideModel.step_done ? Theme.toast-success-surface : Theme.bg-input;
+            border-width: 1px;
+            border-color: GuideModel.step_done ? Theme.accent-emerald : Theme.border-subtle;
+            chip_txt := Text {
+                x: 8px;
+                y: 4px;
+                width: parent.width - 16px;
+                height: self.preferred-height;
+                text: GuideModel.step_done
+                    ? "Done \u{2713}"
+                    : (GuideModel.current_is_manual
+                        ? "Read this step, then click " + (GuideModel.has_next ? "Next." : "Finish.")
+                        : "Waiting for: " + GuideModel.current.waiting + "\u{2026}");
+                font-size: 10px;
+                font-weight: GuideModel.step_done ? 700 : 400;
+                color: GuideModel.step_done ? Theme.accent-emerald : Theme.text-secondary;
+                vertical-alignment: center;
+                wrap: word-wrap;
+            }
         }
 
         HorizontalLayout {
@@ -104,21 +252,67 @@ export component GuidePanel inherits Rectangle {
                 }
             }
             Rectangle { horizontal-stretch: 1; }
+            // A manual (reading) step's primary Next/Finish; on an action step the
+            // same slot is a quiet "Skip step" -- those steps advance by themselves
+            // once their goal is reached.
             Rectangle {
                 width: next_txt.preferred-width + 16px;
                 height: 26px;
                 border-radius: Theme.radius-sm;
-                background: next_touch.has-hover ? Theme.primary-glow : Theme.primary;
+                background: GuideModel.current_is_manual
+                    ? (next_touch.has-hover ? Theme.primary-hover : Theme.primary)
+                    : (next_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
                 next_txt := Text {
-                    text: GuideModel.has_next ? "Next" : "Finish";
+                    text: GuideModel.current_is_manual ? (GuideModel.has_next ? "Next" : "Finish") : "Skip step";
                     font-size: 10px;
-                    font-weight: 700;
-                    color: Theme.text-on-primary;
+                    font-weight: GuideModel.current_is_manual ? 700 : 400;
+                    color: GuideModel.current_is_manual ? Theme.text-on-primary : Theme.text-muted;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
-                next_touch := TouchArea { clicked => { GuideModel.next(); } }
+                next_touch := TouchArea {
+                    enabled: !GuideModel.step_done;
+                    clicked => { GuideModel.next(); }
+                }
             }
+        }
+    }
+}
+
+// Mounted once by `app.slint` as an explicitly positioned full-window layer (so none
+// of its constraints reach `MainWindow`). Holds the timer behind the guide's short
+// "Done" moment -- here rather than inside `GuidePanel`, so it runs whichever way the
+// panel is mounted -- and the floating `GuidePanel` for every place the wide Edit
+// layout's own column does not exist. The layer itself has no `TouchArea`, so clicks
+// outside the floating panel reach whatever is underneath.
+export component GuideOverlayLayer inherits Rectangle {
+    // `true` while the wide Edit layout mounts its own `GuidePanel` column, which
+    // then replaces the floating one.
+    in property <bool> docked: false;
+
+    Timer {
+        interval: 700ms;
+        running: GuideModel.step_done;
+        triggered => { GuideModel.complete_advance(); }
+    }
+
+    // Default spot: bottom-right, its bottom edge 50px above the window's (clear
+    // of the Edit tab's status strip) and its top well below the render toolbar.
+    // Once dragged, `GuideModel.float_x`/`float_y` hold the spot; both are clamped
+    // here on every read, so the panel always stays fully inside the window.
+    if GuideModel.open && !root.docked: GuidePanel {
+        draggable: true;
+        height: GuideModel.collapsed ? self.collapsed_height : max(180px, min(480px, root.height - 140px));
+        x: GuideModel.float_placed
+            ? clamp(GuideModel.float_x, 0px, max(0px, root.width - self.width))
+            : max(0px, root.width - self.width - 20px);
+        y: GuideModel.float_placed
+            ? clamp(GuideModel.float_y, 0px, max(0px, root.height - self.height))
+            : max(0px, root.height - self.height - 50px);
+        dragged(dx, dy) => {
+            GuideModel.float_x = clamp(self.x + dx, 0px, max(0px, root.width - self.width));
+            GuideModel.float_y = clamp(self.y + dy, 0px, max(0px, root.height - self.height));
+            GuideModel.float_placed = true;
         }
     }
 }

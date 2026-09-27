@@ -7,7 +7,7 @@ GPU port and its equivalence harness, see [gpu.md](gpu.md).
 
 ## Deliberate deviations from physical truth — do not "fix" these
 
-- **The `r_unpol` clamp** (`optics/raytracer.rs`) — the unpolarized Fresnel
+- **The `r_unpol` clamp** (`optics/raytracer/refraction/`) — the unpolarized Fresnel
   reflectance used as a Monte-Carlo branch-selection probability (and as a
   divisor, for importance-sampling weight correction) is clamped away from exactly
   0 or 1 (`clamp(1e-4, 1.0 - 1e-4)`) before use. Without this, grazing or
@@ -74,7 +74,7 @@ GPU port and its equivalence harness, see [gpu.md](gpu.md).
 
 ## Bit-exact golden tests
 
-`tests/raytracer_tests.rs` and `tests/denoise_tests.rs` pin exact `f32::to_bits()`
+`tests/raytracer_tests/` (notably `golden_regression.rs`) and `tests/denoise_tests.rs` pin exact `f32::to_bits()`
 hex patterns for `trace_spectral_ray`'s output on real materials, and for the
 denoiser's filtering output — these exist to catch *any* unintended drift in
 render output, however small, across a refactor.

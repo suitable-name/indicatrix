@@ -218,6 +218,7 @@ fn fetch_tilt_curves_remote(
         planes: planes.to_vec(),
         girdle_frosted: false,
         backdrop: 0.0,
+        environment: indicatrix_net::scene::SceneEnvironment::Studio,
     };
     let (mut stream, welcome) = remote_render::connect_and_handshake(worker).ok()?;
     if !welcome.tilt_curves {

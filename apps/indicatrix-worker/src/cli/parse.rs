@@ -11,8 +11,9 @@
 
 use super::args::{
     CertClaimArgs, CertInitArgs, CertIssueClientArgs, CertIssueServerArgs, CertIssueTokenArgs,
-    Command, ComputeMode, HelpTopic, RenderArgs, ServeArgs,
+    Command, ComputeMode, HelpTopic, JoinArgs, RenderArgs, ServeArgs,
 };
+use indicatrix_net::messages::PeerRole;
 use std::{net::IpAddr, path::PathBuf};
 
 impl HelpTopic {
@@ -26,6 +27,7 @@ impl HelpTopic {
         match leading.next().map(String::as_str) {
             Some("render") => Self::Render,
             Some("serve") => Self::Serve,
+            Some("join") => Self::Join,
             Some("cert") => match leading.next().map(String::as_str) {
                 Some("init") => Self::CertInit,
                 Some("issue-server") => Self::CertIssueServer,
@@ -91,17 +93,22 @@ pub fn parse(argv: &[String]) -> Result<Command, String> {
     }
     match argv[0].as_str() {
         "render" => parse_render(&argv[1..]).map(Command::Render),
-        "serve" => parse_serve(&argv[1..]).map(Command::Serve),
+        "serve" => parse_serve(&argv[1..]).map(|args| Command::Serve(Box::new(args))),
+        "join" => parse_join(&argv[1..]).map(Command::Join),
         "cert" => parse_cert(&argv[1..]),
         other => Err(format!(
-            "unknown subcommand {other:?} (expected \"render\", \"serve\", or \"cert\"; see --help)"
+            "unknown subcommand {other:?} (expected \"render\", \"serve\", \"join\", or \"cert\"; see --help)"
         )),
     }
 }
 
 fn parse_cert(args: &[String]) -> Result<Command, String> {
     if args.is_empty() {
-        return Err("\"cert\" requires a sub-subcommand: \"init\", \"issue-server\", or \"issue-client\" (see --help)".to_string());
+        return Err(
+            "\"cert\" requires a sub-subcommand: \"init\", \"issue-server\", \"issue-client\", \
+                    \"issue-token\", or \"claim\" (see --help)"
+                .to_string(),
+        );
     }
     match args[0].as_str() {
         "init" => parse_cert_init(&args[1..]).map(Command::CertInit),
@@ -180,6 +187,7 @@ fn parse_cert_issue_client(args: &[String]) -> Result<CertIssueClientArgs, Strin
     let mut dir = None;
     let mut name = None;
     let mut out = None;
+    let mut role = PeerRole::Viewer;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -195,6 +203,10 @@ fn parse_cert_issue_client(args: &[String]) -> Result<CertIssueClientArgs, Strin
                 i += 1;
                 out = Some(PathBuf::from(arg_at(args, i, "--out")?));
             }
+            "--role" => {
+                i += 1;
+                role = parse_role(arg_at(args, i, "--role")?)?;
+            }
             other => {
                 return Err(format!(
                     "unknown flag {other:?} for \"cert issue-client\" (see --help)"
@@ -207,6 +219,7 @@ fn parse_cert_issue_client(args: &[String]) -> Result<CertIssueClientArgs, Strin
         dir: dir.ok_or_else(|| "\"cert issue-client\" requires --dir <path>".to_string())?,
         name: name.ok_or_else(|| "\"cert issue-client\" requires --name <label>".to_string())?,
         out: out.ok_or_else(|| "\"cert issue-client\" requires --out <path>".to_string())?,
+        role,
     })
 }
 
@@ -214,6 +227,7 @@ fn parse_cert_issue_token(args: &[String]) -> Result<CertIssueTokenArgs, String>
     let mut ca = None;
     let mut admin_addr = None;
     let mut name = None;
+    let mut role = PeerRole::Viewer;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -229,6 +243,10 @@ fn parse_cert_issue_token(args: &[String]) -> Result<CertIssueTokenArgs, String>
                 i += 1;
                 name = Some(arg_at(args, i, "--name")?.to_string());
             }
+            "--role" => {
+                i += 1;
+                role = parse_role(arg_at(args, i, "--role")?)?;
+            }
             other => {
                 return Err(format!(
                     "unknown flag {other:?} for \"cert issue-token\" (see --help)"
@@ -242,6 +260,7 @@ fn parse_cert_issue_token(args: &[String]) -> Result<CertIssueTokenArgs, String>
         admin_addr: admin_addr
             .ok_or_else(|| "\"cert issue-token\" requires --admin-addr <host:port>".to_string())?,
         name: name.ok_or_else(|| "\"cert issue-token\" requires --name <label>".to_string())?,
+        role,
     })
 }
 
@@ -277,6 +296,17 @@ fn parse_cert_claim(args: &[String]) -> Result<CertClaimArgs, String> {
         addr: addr.ok_or_else(|| "\"cert claim\" requires --addr <host:port>".to_string())?,
         out: out.ok_or_else(|| "\"cert claim\" requires --out <path>".to_string())?,
     })
+}
+
+/// Parses a `--role` value: `viewer` or `worker`.
+fn parse_role(raw: &str) -> Result<PeerRole, String> {
+    match raw {
+        "viewer" => Ok(PeerRole::Viewer),
+        "worker" => Ok(PeerRole::Worker),
+        other => Err(format!(
+            "--role expects \"viewer\" or \"worker\", got {other:?}"
+        )),
+    }
 }
 
 fn arg_at<'a>(args: &'a [String], i: usize, flag: &str) -> Result<&'a str, String> {
@@ -348,94 +378,193 @@ fn parse_render(args: &[String]) -> Result<RenderArgs, String> {
     })
 }
 
+/// `serve`'s defaults: everything off, `--bind` [`super::DEFAULT_BIND`], 64 connections.
+fn default_serve_args() -> ServeArgs {
+    ServeArgs {
+        bind: super::DEFAULT_BIND.to_string(),
+        threads: 0,
+        allow_remote: false,
+        ca: None,
+        cert: None,
+        key: None,
+        allowlist: None,
+        trust_any_client_cert: false,
+        insecure_no_tls: false,
+        compute_mode: ComputeMode::default(),
+        render: false,
+        enroll_bind: None,
+        no_enroll: false,
+        worker_bind: None,
+        worker_enroll_bind: None,
+        no_workers: false,
+        worker_allowlist: None,
+        db: None,
+        max_connections: super::DEFAULT_MAX_CONNECTIONS,
+        interactive_workers: 0,
+        pin_interactive_worker: None,
+        max_job_memory_mib: super::DEFAULT_MAX_JOB_MEMORY_MIB,
+    }
+}
+
 fn parse_serve(args: &[String]) -> Result<ServeArgs, String> {
-    let mut bind = super::DEFAULT_BIND.to_string();
-    let mut threads = 0usize;
-    let mut allow_remote = false;
-    let mut ca = None;
-    let mut cert = None;
-    let mut key = None;
-    let mut allowlist = None;
-    let mut trust_any_client_cert = false;
-    let mut insecure_no_tls = false;
+    let mut out = default_serve_args();
     let mut compute_mode = None;
-    let mut enroll_bind = None;
-    let mut no_enroll = false;
-    let mut db = None;
-    let mut max_connections = super::DEFAULT_MAX_CONNECTIONS;
+    let mut explicit_render = false;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
-            "--bind" => {
-                i += 1;
-                bind = arg_at(args, i, "--bind")?.to_string();
-            }
-            "--threads" => {
-                i += 1;
-                threads = parse_u32("--threads", arg_at(args, i, "--threads")?)? as usize;
-            }
-            "--allow-remote" => allow_remote = true,
-            "--ca" => {
-                i += 1;
-                ca = Some(PathBuf::from(arg_at(args, i, "--ca")?));
-            }
-            "--cert" => {
-                i += 1;
-                cert = Some(PathBuf::from(arg_at(args, i, "--cert")?));
-            }
-            "--key" => {
-                i += 1;
-                key = Some(PathBuf::from(arg_at(args, i, "--key")?));
-            }
-            "--allowlist" => {
-                i += 1;
-                allowlist = Some(PathBuf::from(arg_at(args, i, "--allowlist")?));
-            }
-            "--trust-any-client-cert" => trust_any_client_cert = true,
-            "--insecure-no-tls" => insecure_no_tls = true,
+            "--render" => explicit_render = true,
             "--only-gpu" => parse_compute_mode_flag(ComputeMode::OnlyGpu, &mut compute_mode)?,
             "--only-cpu" => parse_compute_mode_flag(ComputeMode::OnlyCpu, &mut compute_mode)?,
-            "--enroll-bind" => {
-                i += 1;
-                enroll_bind = Some(arg_at(args, i, "--enroll-bind")?.to_string());
-            }
-            "--no-enroll" => no_enroll = true,
-            "--db" => {
-                i += 1;
-                db = Some(PathBuf::from(arg_at(args, i, "--db")?));
-            }
-            "--max-connections" => {
-                i += 1;
-                max_connections =
-                    parse_u32("--max-connections", arg_at(args, i, "--max-connections")?)? as usize;
-            }
-            other => return Err(format!("unknown flag {other:?} for \"serve\" (see --help)")),
+            flag => i = parse_serve_flag(&mut out, args, i, flag)?,
         }
         i += 1;
     }
 
-    if max_connections == 0 {
+    if out.max_connections == 0 {
         return Err(
             "--max-connections must be at least 1 -- 0 would refuse every connection (see --help)"
                 .to_string(),
         );
     }
+    // `--only-gpu`/`--only-cpu` select the engine of the coordinator's own lane, so
+    // either one implies `--render`.
+    out.render = explicit_render || compute_mode.is_some();
+    if out.render && !cfg!(feature = "worker") {
+        return Err(
+            "--render (and --only-gpu/--only-cpu, which imply it) needs a binary built with the \
+             `worker` feature -- this build serves the design library only (see --help)"
+                .to_string(),
+        );
+    }
+    out.compute_mode = resolve_compute_mode(compute_mode)?;
+    Ok(out)
+}
 
-    Ok(ServeArgs {
-        bind,
-        threads,
-        allow_remote,
-        ca,
-        cert,
-        key,
-        allowlist,
-        trust_any_client_cert,
-        insecure_no_tls,
-        compute_mode: resolve_compute_mode(compute_mode)?,
-        enroll_bind,
-        no_enroll,
-        db,
-        max_connections,
-    })
+/// One `serve` flag other than the compute-mode switches: applies it to `out` and
+/// returns the index of the last argument it consumed.
+fn parse_serve_flag(
+    out: &mut ServeArgs,
+    args: &[String],
+    mut i: usize,
+    flag: &str,
+) -> Result<usize, String> {
+    let value = |i: &mut usize| -> Result<String, String> {
+        *i += 1;
+        arg_at(args, *i, flag).map(str::to_string)
+    };
+    match flag {
+        "--bind" => out.bind = value(&mut i)?,
+        "--threads" => out.threads = parse_u32(flag, &value(&mut i)?)? as usize,
+        "--allow-remote" => out.allow_remote = true,
+        "--ca" => out.ca = Some(PathBuf::from(value(&mut i)?)),
+        "--cert" => out.cert = Some(PathBuf::from(value(&mut i)?)),
+        "--key" => out.key = Some(PathBuf::from(value(&mut i)?)),
+        "--allowlist" => out.allowlist = Some(PathBuf::from(value(&mut i)?)),
+        "--trust-any-client-cert" => out.trust_any_client_cert = true,
+        "--insecure-no-tls" => out.insecure_no_tls = true,
+        "--enroll-bind" => out.enroll_bind = Some(value(&mut i)?),
+        "--no-enroll" => out.no_enroll = true,
+        "--worker-bind" => out.worker_bind = Some(value(&mut i)?),
+        "--worker-enroll-bind" => out.worker_enroll_bind = Some(value(&mut i)?),
+        "--no-workers" => out.no_workers = true,
+        "--worker-allowlist" => out.worker_allowlist = Some(PathBuf::from(value(&mut i)?)),
+        "--db" => out.db = Some(PathBuf::from(value(&mut i)?)),
+        "--max-connections" => out.max_connections = parse_u32(flag, &value(&mut i)?)? as usize,
+        "--interactive-workers" => out.interactive_workers = parse_u32(flag, &value(&mut i)?)?,
+        "--pin-interactive-worker" => {
+            out.pin_interactive_worker = Some(parse_worker_label(&value(&mut i)?)?);
+        }
+        "--max-job-memory-mib" => out.max_job_memory_mib = parse_u32(flag, &value(&mut i)?)?,
+        other => return Err(format!("unknown flag {other:?} for \"serve\" (see --help)")),
+    }
+    Ok(i)
+}
+
+/// `--pin-interactive-worker`'s value: a worker certificate label, given bare (`gpu-box`)
+/// or as the certificate's full Common Name (`worker:gpu-box`).
+fn parse_worker_label(value: &str) -> Result<String, String> {
+    let label = value
+        .strip_prefix(crate::pki::WORKER_CN_PREFIX)
+        .unwrap_or(value);
+    if label.is_empty() {
+        return Err(
+            "--pin-interactive-worker needs a worker certificate label (the --name the worker \
+             certificate was issued with)"
+                .to_string(),
+        );
+    }
+    Ok(label.to_string())
+}
+
+fn parse_join(args: &[String]) -> Result<JoinArgs, String> {
+    let mut out = JoinArgs {
+        coordinator: String::new(),
+        cert_dir: PathBuf::from(super::DEFAULT_JOIN_CERT_DIR),
+        slots: super::DEFAULT_JOIN_SLOTS,
+        threads: 0,
+        compute_mode: ComputeMode::default(),
+        token: None,
+        enroll_addr: None,
+    };
+    let mut coordinator: Option<String> = None;
+    let mut compute_mode = None;
+
+    let mut i = 0;
+    while i < args.len() {
+        let flag = args[i].as_str();
+        let value = |i: &mut usize| -> Result<String, String> {
+            *i += 1;
+            arg_at(args, *i, flag).map(str::to_string)
+        };
+        match flag {
+            "--coordinator" => set_coordinator(&mut coordinator, value(&mut i)?)?,
+            "--cert-dir" => out.cert_dir = PathBuf::from(value(&mut i)?),
+            "--slots" => out.slots = parse_u32(flag, &value(&mut i)?)? as usize,
+            "--threads" => out.threads = parse_u32(flag, &value(&mut i)?)? as usize,
+            "--token" => out.token = Some(value(&mut i)?),
+            "--enroll-addr" => out.enroll_addr = Some(value(&mut i)?),
+            "--only-gpu" => parse_compute_mode_flag(ComputeMode::OnlyGpu, &mut compute_mode)?,
+            "--only-cpu" => parse_compute_mode_flag(ComputeMode::OnlyCpu, &mut compute_mode)?,
+            positional if !positional.starts_with('-') => {
+                set_coordinator(&mut coordinator, positional.to_string())?;
+            }
+            other => return Err(format!("unknown flag {other:?} for \"join\" (see --help)")),
+        }
+        i += 1;
+    }
+
+    if !(1..=super::MAX_JOIN_SLOTS).contains(&out.slots) {
+        return Err(format!(
+            "--slots must be between 1 and {} (see --help)",
+            super::MAX_JOIN_SLOTS
+        ));
+    }
+    out.coordinator = coordinator.ok_or_else(|| {
+        "\"join\" requires the coordinator's worker address (<host:port>, or --coordinator <host:port>)"
+            .to_string()
+    })?;
+    if !cfg!(feature = "worker") {
+        return Err(
+            "\"join\" needs a binary built with the `worker` feature -- this build has no render \
+             capacity to contribute (see --help)"
+                .to_string(),
+        );
+    }
+    out.compute_mode = resolve_compute_mode(compute_mode)?;
+    Ok(out)
+}
+
+/// Records the coordinator address, refusing a second one (positional and
+/// `--coordinator` together, or two positionals).
+fn set_coordinator(slot: &mut Option<String>, addr: String) -> Result<(), String> {
+    if slot.is_some() {
+        return Err(
+            "\"join\" takes exactly one coordinator address (positional or --coordinator)"
+                .to_string(),
+        );
+    }
+    *slot = Some(addr);
+    Ok(())
 }

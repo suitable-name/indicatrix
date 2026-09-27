@@ -1,18 +1,17 @@
-import { Button, LineEdit, ComboBox, SpinBox, Slider } from "std-widgets.slint";
+import { Button, LineEdit, ComboBox, SpinBox } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { WorkerItem } from "../types.slint";
 import { RemoteWorkerModel } from "../models/remote_worker.slint";
 
-// Remote rendering: the worker-list panel -- add/edit/remove configured remote
-// render workers, per-worker transfer mode / cadence / preview scale, a "Test
-// connection" button, and token-based enrollment ("Redeem" -- claims a
-// `indicatrix-worker cert issue-token` token directly, without installing the worker
-// binary or running `cert claim` in a terminal). Kept thin per the task's
-// own instruction: every field here is plain data round-tripped to Rust by list index
-// (same convention as `SettingsDialog`'s lighting-preset list); all the actual
-// protocol/connection logic lives in `indicatrix_net::client`/`indicatrix_net::enroll` and
-// `apps/indicatrix-cut/src/bridge/remote_render.rs`/`bridge::enroll`, already unit-tested
-// there without any GUI involved.
+// Remote rendering: the "Remote coordinator" form -- the ONE remote endpoint this
+// viewer renders with and browses the library of (a coordinator, rendering itself when
+// started with `--render`). Shows the configured endpoint with "Test
+// connection", library browse/mirror and remove; the form edits name/address/
+// certificate folder, token-based enrollment ("Redeem" -- claims an
+// `indicatrix-worker cert issue-token` token directly), the live stream preferences and
+// the default export "Transfer". Kept thin: every field is plain
+// data round-tripped to Rust (`gui::remote::worker_callbacks`); all protocol/connection
+// logic lives in `indicatrix_net::client`/`bridge::remote`, unit-tested there.
 //
 // Inherits `PopupWindow`, not `Rectangle`, because a plain `Rectangle`-based
 // conditional child of `HeaderToolbar` paints as part of `HeaderToolbar`'s
@@ -30,25 +29,24 @@ export component RemoteWorkerDialog inherits PopupWindow {
     in property <string> claimed_cert_dir: RemoteWorkerModel.claimed_cert_dir;
     in property <string> picked_cert_dir: RemoteWorkerModel.picked_cert_dir;
 
-    property <int> remote_samples_rounded_exponent: Math.round(RemoteWorkerModel.render_samples_exponent);
-
-    property <int> editing_index: -1;
+    property <bool> editing: false;
     property <string> form_name: "";
     property <string> form_address: "";
     property <string> form_cert_dir: "";
     property <int> form_transfer_mode_index: 0;
     property <int> form_cadence_ms: 500;
-    property <int> form_preview_scale_index: 0;
+    property <int> form_preview_scale_index: 2;
     property <int> form_preview_scale_percent: 50;
+    property <int> form_export_transfer_index: 0;
     property <string> form_enroll_addr: "";
     property <string> form_token: "";
 
     changed claimed_cert_dir => {
-        if (RemoteWorkerModel.claim_result_index == root.editing_index && root.claimed_cert_dir != "") {
+        if (root.editing && root.claimed_cert_dir != "") {
             root.form_cert_dir = root.claimed_cert_dir;
             root.form_token = "";
             // Save needs a render address; suggest the enrollment host on the
-            // worker's default serve port so a redeemed token is one click from saved.
+            // server's default serve port so a redeemed token is one click from saved.
             if (root.form_address == "") {
                 root.form_address = RemoteWorkerModel.claimed_address;
             }
@@ -65,28 +63,17 @@ export component RemoteWorkerDialog inherits PopupWindow {
         }
     }
 
-    function open_add_form() {
-        root.editing_index = RemoteWorkerModel.workers.length;
-        root.form_name = "";
-        root.form_address = "";
-        root.form_cert_dir = "";
-        root.form_transfer_mode_index = 0;
-        root.form_cadence_ms = 500;
-        root.form_preview_scale_index = 0;
-        root.form_preview_scale_percent = 50;
-        root.form_enroll_addr = "";
-        root.form_token = "";
-    }
-
-    function open_edit_form(idx: int) {
-        root.editing_index = idx;
-        root.form_name = RemoteWorkerModel.workers[idx].name;
-        root.form_address = RemoteWorkerModel.workers[idx].address;
-        root.form_cert_dir = RemoteWorkerModel.workers[idx].cert_dir;
-        root.form_transfer_mode_index = RemoteWorkerModel.workers[idx].transfer_mode_index;
-        root.form_cadence_ms = RemoteWorkerModel.workers[idx].cadence_ms;
-        root.form_preview_scale_index = RemoteWorkerModel.workers[idx].preview_scale_index;
-        root.form_preview_scale_percent = RemoteWorkerModel.workers[idx].preview_scale_percent;
+    // Opens the form on the configured endpoint, or on defaults when there is none.
+    function open_form() {
+        root.editing = true;
+        root.form_name = RemoteWorkerModel.configured ? RemoteWorkerModel.endpoint.name : "";
+        root.form_address = RemoteWorkerModel.configured ? RemoteWorkerModel.endpoint.address : "";
+        root.form_cert_dir = RemoteWorkerModel.configured ? RemoteWorkerModel.endpoint.cert_dir : "";
+        root.form_transfer_mode_index = RemoteWorkerModel.configured ? RemoteWorkerModel.endpoint.transfer_mode_index : 0;
+        root.form_cadence_ms = RemoteWorkerModel.configured ? RemoteWorkerModel.endpoint.cadence_ms : 500;
+        root.form_preview_scale_index = RemoteWorkerModel.configured ? RemoteWorkerModel.endpoint.preview_scale_index : 2;
+        root.form_preview_scale_percent = RemoteWorkerModel.configured ? RemoteWorkerModel.endpoint.preview_scale_percent : 50;
+        root.form_export_transfer_index = RemoteWorkerModel.configured ? RemoteWorkerModel.endpoint.export_transfer_index : 0;
         root.form_enroll_addr = "";
         root.form_token = "";
     }
@@ -118,7 +105,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
             HorizontalLayout {
                 spacing: 8px;
                 Image { source: @image-url("../icons/gem.svg"); colorize: Theme.accent-cyan; width: 15px; height: 15px; vertical-alignment: center; }
-                Text { text: "Remote Render Workers"; font-size: 13px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
+                Text { text: "Remote Coordinator"; font-size: 13px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
             }
 
             Rectangle {
@@ -153,26 +140,27 @@ export component RemoteWorkerDialog inherits PopupWindow {
 
         Rectangle { height: 1px; background: #1e293b; }
 
-        // Which library is currently being browsed. "Local library" is
-        // always available; clicking it while already local is a no-op switch back
-        // (harmless). Each worker row below carries its own "Browse library" toggle --
-        // see the worker-list section further down.
+        // Which library is currently being browsed: the local one, or the remote's.
         HorizontalLayout {
-            alignment: space-between;
-            Text { text: "Library"; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
-            Rectangle {
+            spacing: 6px;
+            Text { text: "Library"; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; horizontal-stretch: 1; }
+            for label[idx] in ["Local", "Remote"]: Rectangle {
                 width: 90px;
                 height: 24px;
                 border-radius: Theme.radius-sm;
-                background: RemoteWorkerModel.library_source_worker_index == -1 ? Theme.accent-cyan : Theme.bg-input;
+                opacity: idx == 0 || RemoteWorkerModel.configured ? 1.0 : 0.45;
+                background: RemoteWorkerModel.library_source_worker_index == idx - 1 ? Theme.accent-cyan : Theme.bg-input;
                 border-width: 1px;
-                border-color: RemoteWorkerModel.library_source_worker_index == -1 ? Theme.accent-cyan : Theme.border-subtle;
-                TouchArea { clicked => { RemoteWorkerModel.switch_library_source(-1); } }
+                border-color: RemoteWorkerModel.library_source_worker_index == idx - 1 ? Theme.accent-cyan : Theme.border-subtle;
+                TouchArea {
+                    enabled: idx == 0 || RemoteWorkerModel.configured;
+                    clicked => { RemoteWorkerModel.switch_library_source(idx - 1); }
+                }
                 Text {
-                    text: "Local";
+                    text: label;
                     font-size: 11px;
                     font-weight: 600;
-                    color: RemoteWorkerModel.library_source_worker_index == -1 ? #0f172a : Theme.text-secondary;
+                    color: RemoteWorkerModel.library_source_worker_index == idx - 1 ? #0f172a : Theme.text-secondary;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
@@ -181,9 +169,9 @@ export component RemoteWorkerDialog inherits PopupWindow {
 
         Rectangle { height: 1px; background: #1e293b; }
 
-        // Denoise toggle -- applies to the merged image regardless of source (Task:
-        // remote rendering). See `settings::model::AppSettings::denoise_enabled`'s doc
-        // comment on why this is one global switch, not per-worker.
+        // Denoise toggle -- applies to the merged image regardless of source. See
+        // `settings::model::AppSettings::denoise_enabled`'s doc comment on why this is
+        // one global switch.
         HorizontalLayout {
             alignment: space-between;
             Rectangle {
@@ -209,188 +197,113 @@ export component RemoteWorkerDialog inherits PopupWindow {
             }
         }
 
-        // Remote render sample budget: the one-shot full-quality request's
-        // total sample count -- global, not per-worker, same reasoning as "Denoise
-        // merged image" above. Moves in powers of two, same continuous-drag-then-round
-        // idiom `settings_dialog.slint`'s own "Target Samples" slider uses (image noise
-        // falls as 1/sqrt(N)), but over a WIDER range: see
-        // `gui::remote::REMOTE_SAMPLES_MIN_EXPONENT`/`MAX_EXPONENT`'s own doc comment
-        // for why a one-shot remote render affords a higher ceiling than the local
-        // interactive target's slider.
-        VerticalLayout {
-            spacing: 4px;
-            HorizontalLayout {
-                alignment: space-between;
-                Rectangle {
-                    height: remote_samples_lbl.preferred-height;
-                    Tooltip { text: @markdown("Sample budget requested from the worker per render."); }
-                    remote_samples_lbl := Text { text: "Remote Render Samples"; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
+        // The configured endpoint.
+        if RemoteWorkerModel.configured && !root.editing: Rectangle {
+            background: #0f172a;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: #334155;
+
+            VerticalLayout {
+                padding: 8px;
+                spacing: 4px;
+
+                HorizontalLayout {
+                    alignment: space-between;
+                    Text { text: RemoteWorkerModel.endpoint.name == "" ? RemoteWorkerModel.endpoint.address : RemoteWorkerModel.endpoint.name; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Rectangle {
+                            width: 20px; height: 20px; border-radius: 4px;
+                            background: edit_touch.has-hover ? #1e293b : transparent;
+                            edit_touch := TouchArea { clicked => { root.open_form(); } }
+                            Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-muted; width: 11px; height: 11px; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                        Rectangle {
+                            width: 20px; height: 20px; border-radius: 4px;
+                            background: remove_touch.has-hover ? #450a0a : transparent;
+                            remove_touch := TouchArea { clicked => { RemoteWorkerModel.remove_remote(); } }
+                            Text { text: "×"; font-size: 13px; color: #f87171; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
                 }
+                Text { text: RemoteWorkerModel.endpoint.address; font-size: 10px; color: Theme.text-muted; }
                 Text {
-                    text: Math.round(Math.pow(2.0, root.remote_samples_rounded_exponent));
-                    font-size: 11px;
-                    font-weight: 700;
-                    color: Theme.accent-cyan;
+                    text: (RemoteWorkerModel.endpoint.transfer_mode_index == 0 ? "Live progressive" : "Final only")
+                        + " · " + RemoteWorkerModel.endpoint.cadence_ms + "ms cadence · export transfer: "
+                        + (RemoteWorkerModel.endpoint.export_transfer_index == 1 ? "final picture only" : "full data");
+                    font-size: 9px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
                 }
-            }
-            Slider {
-                minimum: 7;
-                maximum: 13;
-                step: 1;
-                value <=> RemoteWorkerModel.render_samples_exponent;
-                changed(val) => { RemoteWorkerModel.render_samples_changed(root.remote_samples_rounded_exponent); }
-            }
-        }
 
-        Rectangle { height: 1px; background: #1e293b; }
-
-        // Worker list.
-        VerticalLayout {
-            spacing: 8px;
-            for worker[idx] in RemoteWorkerModel.workers: Rectangle {
-                background: #0f172a;
-                border-radius: Theme.radius-sm;
-                border-width: 1px;
-                border-color: #334155;
-
-                VerticalLayout {
-                    padding: 8px;
-                    spacing: 4px;
-
-                    HorizontalLayout {
-                        alignment: space-between;
-                        Text { text: worker.name == "" ? worker.address : worker.name; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Rectangle {
-                                width: 20px; height: 20px; border-radius: 4px;
-                                background: edit_touch.has-hover ? #1e293b : transparent;
-                                edit_touch := TouchArea { clicked => { root.open_edit_form(idx); } }
-                                Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-muted; width: 11px; height: 11px; horizontal-alignment: center; vertical-alignment: center; }
-                            }
-                            Rectangle {
-                                width: 20px; height: 20px; border-radius: 4px;
-                                background: remove_touch.has-hover ? #450a0a : transparent;
-                                remove_touch := TouchArea { clicked => { RemoteWorkerModel.remove_worker(idx); } }
-                                Text { text: "×"; font-size: 13px; color: #f87171; horizontal-alignment: center; vertical-alignment: center; }
+                HorizontalLayout {
+                    spacing: 6px;
+                    Button {
+                        text: RemoteWorkerModel.testing_connection ? "Testing..." : "Test connection";
+                        enabled: !RemoteWorkerModel.testing_connection;
+                        height: 24px;
+                        clicked => { RemoteWorkerModel.test_worker_connection(RemoteWorkerModel.endpoint.address, RemoteWorkerModel.endpoint.cert_dir); }
+                    }
+                    Button {
+                        text: RemoteWorkerModel.mirror_in_progress ? "Cancel mirror" : "Mirror library to local";
+                        height: 24px;
+                        clicked => {
+                            if (RemoteWorkerModel.mirror_in_progress) {
+                                RemoteWorkerModel.cancel_mirror_sync();
+                            } else {
+                                RemoteWorkerModel.start_mirror_sync();
                             }
                         }
-                    }
-                    Text { text: worker.address; font-size: 10px; color: Theme.text-muted; }
-                    Text {
-                        text: (worker.transfer_mode_index == 0 ? "Live progressive" : "Final only")
-                            + " · " + worker.cadence_ms + "ms cadence · "
-                            + (worker.preview_scale_index == 0 ? "full" : worker.preview_scale_index == 1 ? "half" : worker.preview_scale_index == 2 ? "quarter" : worker.preview_scale_percent + "%")
-                            + " preview";
-                        font-size: 9px;
-                        color: Theme.text-muted;
-                    }
-
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Button {
-                            text: RemoteWorkerModel.testing_worker_index == idx ? "Testing..." : "Test connection";
-                            enabled: RemoteWorkerModel.testing_worker_index != idx;
-                            height: 24px;
-                            clicked => { RemoteWorkerModel.test_worker_connection(idx, worker.address, worker.cert_dir); }
-                        }
-                    }
-                    if RemoteWorkerModel.test_connection_result_index == idx && RemoteWorkerModel.test_connection_result != "": Text {
-                        text: RemoteWorkerModel.test_connection_result;
-                        font-size: 9px;
-                        color: RemoteWorkerModel.test_connection_is_error ? #f87171 : Theme.accent-emerald;
-                        wrap: word-wrap;
-                    }
-
-                    // Browse this worker's design library, and/or pull-mirror
-                    // it into the local database -- see `bridge::library_source`/
-                    // `bridge::library_mirror`. Kept on every row (not gated on a
-                    // successful "Test connection" first) since either action reports
-                    // its own clear failure if the worker is unreachable or has no
-                    // library capacity, matching this dialog's existing "Test
-                    // connection" affordance's own always-available treatment.
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Rectangle {
-                            height: 24px;
-                            horizontal-stretch: 1;
-                            border-radius: Theme.radius-sm;
-                            background: RemoteWorkerModel.library_source_worker_index == idx ? Theme.accent-cyan : Theme.bg-input;
-                            border-width: 1px;
-                            border-color: RemoteWorkerModel.library_source_worker_index == idx ? Theme.accent-cyan : Theme.border-subtle;
-                            TouchArea { clicked => { RemoteWorkerModel.switch_library_source(idx); } }
-                            Text {
-                                text: RemoteWorkerModel.library_source_worker_index == idx ? "Browsing this library" : "Browse library";
-                                font-size: 10px;
-                                font-weight: 600;
-                                color: RemoteWorkerModel.library_source_worker_index == idx ? #0f172a : Theme.text-secondary;
-                                horizontal-alignment: center;
-                                vertical-alignment: center;
-                            }
-                        }
-                        Button {
-                            text: RemoteWorkerModel.mirror_in_progress && RemoteWorkerModel.mirror_worker_index == idx ? "Cancel" : "Mirror to local";
-                            height: 24px;
-                            enabled: !RemoteWorkerModel.mirror_in_progress || RemoteWorkerModel.mirror_worker_index == idx;
-                            clicked => {
-                                if (RemoteWorkerModel.mirror_in_progress && RemoteWorkerModel.mirror_worker_index == idx) {
-                                    RemoteWorkerModel.cancel_mirror_sync();
-                                } else {
-                                    RemoteWorkerModel.start_mirror_sync(idx);
-                                }
-                            }
-                        }
-                    }
-                    if RemoteWorkerModel.mirror_worker_index == idx && RemoteWorkerModel.mirror_in_progress: VerticalLayout {
-                        spacing: 3px;
-                        Rectangle {
-                            height: 4px;
-                            border-radius: 2px;
-                            background: #1e293b;
-                            Rectangle {
-                                width: parent.width * RemoteWorkerModel.mirror_progress_fraction;
-                                height: 4px;
-                                border-radius: 2px;
-                                background: Theme.accent-cyan;
-                                animate width { duration: 150ms; }
-                            }
-                        }
-                        Text {
-                            text: RemoteWorkerModel.mirror_status_text;
-                            font-size: 9px;
-                            color: Theme.text-muted;
-                            wrap: word-wrap;
-                        }
-                    }
-                    if RemoteWorkerModel.mirror_worker_index == idx && !RemoteWorkerModel.mirror_in_progress && RemoteWorkerModel.mirror_status_text != "": Text {
-                        text: RemoteWorkerModel.mirror_status_text;
-                        font-size: 9px;
-                        color: RemoteWorkerModel.mirror_has_error ? #f87171 : Theme.accent-emerald;
-                        wrap: word-wrap;
                     }
                 }
-            }
-
-            if RemoteWorkerModel.workers.length == 0: Text {
-                text: "No remote workers configured yet -- renders stay local.";
-                font-size: 10px;
-                color: Theme.text-muted;
-                wrap: word-wrap;
+                if RemoteWorkerModel.test_connection_result != "": Text {
+                    text: RemoteWorkerModel.test_connection_result;
+                    font-size: 9px;
+                    color: RemoteWorkerModel.test_connection_is_error ? #f87171 : Theme.accent-emerald;
+                    wrap: word-wrap;
+                }
+                if RemoteWorkerModel.mirror_in_progress: Rectangle {
+                    height: 4px;
+                    border-radius: 2px;
+                    background: #1e293b;
+                    Rectangle {
+                        x: 0px;
+                        width: parent.width * RemoteWorkerModel.mirror_progress_fraction;
+                        height: 4px;
+                        border-radius: 2px;
+                        background: Theme.accent-cyan;
+                        animate width { duration: 150ms; }
+                    }
+                }
+                if RemoteWorkerModel.mirror_status_text != "": Text {
+                    text: RemoteWorkerModel.mirror_status_text;
+                    font-size: 9px;
+                    color: RemoteWorkerModel.mirror_in_progress ? Theme.text-muted : (RemoteWorkerModel.mirror_has_error ? #f87171 : Theme.accent-emerald);
+                    wrap: word-wrap;
+                }
             }
         }
 
-        Button {
-            text: "+ Add worker";
-            clicked => { root.open_add_form(); }
+        if !RemoteWorkerModel.configured && !root.editing: Text {
+            text: "No remote coordinator configured -- renders stay local. One remote serves everything: a coordinator (with joined workers), or a single worker started with --render.";
+            font-size: 10px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
         }
 
-        // Add / edit form.
-        if root.editing_index >= 0: VerticalLayout {
+        if !RemoteWorkerModel.configured && !root.editing: Button {
+            text: "Set up remote coordinator";
+            clicked => { root.open_form(); }
+        }
+
+        // The form.
+        if root.editing: VerticalLayout {
             spacing: 6px;
             Rectangle { height: 1px; background: #1e293b; }
-            Text { text: root.editing_index < RemoteWorkerModel.workers.length ? "Edit worker" : "Add worker"; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
+            Text { text: RemoteWorkerModel.configured ? "Edit remote coordinator" : "Set up remote coordinator"; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
 
-            LineEdit { placeholder-text: "Name (e.g. \"Office workstation\")"; text <=> root.form_name; }
+            LineEdit { placeholder-text: "Name (e.g. \"Office coordinator\")"; text <=> root.form_name; }
             LineEdit { placeholder-text: "Address (host:port)"; text <=> root.form_address; }
             HorizontalLayout {
                 spacing: 6px;
@@ -408,13 +321,11 @@ export component RemoteWorkerDialog inherits PopupWindow {
             // Token-based enrollment: redeem a one-time token from `indicatrix-worker cert
             // issue-token` directly, instead of installing the worker binary and running
             // `cert claim` in a terminal by hand. On success this fills in
-            // `form_cert_dir` above automatically (see `changed claimed_cert_dir`) --
-            // the manual field above it still works unchanged, for air-gapped setups
-            // with nothing to dial out to.
+            // `form_cert_dir` above automatically (see `changed claimed_cert_dir`).
             Text { text: "-- or redeem an enrollment token --"; font-size: 11px; color: Theme.text-muted; }
             Rectangle {
                 height: enroll_addr_field.preferred-height;
-                Tooltip { text: @markdown("Paste the address and token from \"cert issue-token\" on the worker."); }
+                Tooltip { text: @markdown("Paste the address and token from \"cert issue-token\" on the coordinator."); }
                 enroll_addr_field := LineEdit {
                     width: 100%;
                     placeholder-text: "Enrollment address (host:port, from \"cert issue-token\")";
@@ -426,7 +337,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                 Rectangle {
                     horizontal-stretch: 1;
                     height: token_field.preferred-height;
-                    Tooltip { text: @markdown("Paste the address and token from \"cert issue-token\" on the worker."); }
+                    Tooltip { text: @markdown("Paste the address and token from \"cert issue-token\" on the coordinator."); }
                     token_field := LineEdit {
                         width: 100%;
                         placeholder-text: "Token (GW1-...)";
@@ -437,11 +348,11 @@ export component RemoteWorkerDialog inherits PopupWindow {
                     text: RemoteWorkerModel.claiming_token ? "Redeeming..." : "Redeem";
                     enabled: !RemoteWorkerModel.claiming_token && root.form_token != "" && root.form_enroll_addr != "";
                     clicked => {
-                        RemoteWorkerModel.claim_token(root.editing_index, root.form_name, root.form_enroll_addr, root.form_token);
+                        RemoteWorkerModel.claim_token(root.form_name, root.form_enroll_addr, root.form_token);
                     }
                 }
             }
-            if RemoteWorkerModel.claim_result_index == root.editing_index && RemoteWorkerModel.claim_result_text != "": Text {
+            if RemoteWorkerModel.claim_result_text != "": Text {
                 text: RemoteWorkerModel.claim_result_text;
                 font-size: 11px;
                 color: RemoteWorkerModel.claim_result_is_error ? #f87171 : Theme.accent-emerald;
@@ -456,7 +367,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                     Rectangle {
                         height: transfer_mode_lbl.preferred-height;
                         Tooltip { text: @markdown("Live progressive shows the image improving; final only waits for the result."); }
-                        transfer_mode_lbl := Text { text: "Transfer mode"; font-size: 11px; color: Theme.text-muted; }
+                        transfer_mode_lbl := Text { text: "Live stream"; font-size: 11px; color: Theme.text-muted; }
                     }
                     ComboBox { model: ["Live progressive", "Final only"]; current-index <=> root.form_transfer_mode_index; }
                 }
@@ -465,7 +376,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                     spacing: 2px;
                     Rectangle {
                         height: cadence_lbl.preferred-height;
-                        Tooltip { text: @markdown("How often the worker sends an updated image. Lower is more frequent and more traffic."); }
+                        Tooltip { text: @markdown("How often the remote sends an updated image. Lower is more frequent and more traffic."); }
                         cadence_lbl := Text { text: "Cadence (ms)"; font-size: 11px; color: Theme.text-muted; }
                     }
                     SpinBox { minimum: 50; maximum: 5000; step-size: 50; value <=> root.form_cadence_ms; }
@@ -492,12 +403,37 @@ export component RemoteWorkerDialog inherits PopupWindow {
                 }
             }
 
+            VerticalLayout {
+                spacing: 2px;
+                Rectangle {
+                    height: export_transfer_lbl.preferred-height;
+                    Tooltip { text: @markdown("Default for the export dialog and the tilt video: full data merges your own CPU/GPU's samples; final picture only has the coordinator send one finished PNG per image."); }
+                    export_transfer_lbl := Text { text: "Export transfer (default)"; font-size: 11px; color: Theme.text-muted; }
+                }
+                ComboBox { model: ["Full data", "Final picture only"]; current-index <=> root.form_export_transfer_index; }
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+                Button {
+                    text: RemoteWorkerModel.testing_connection ? "Testing..." : "Test connection";
+                    enabled: !RemoteWorkerModel.testing_connection && root.form_address != "";
+                    clicked => { RemoteWorkerModel.test_worker_connection(root.form_address, root.form_cert_dir); }
+                }
+            }
+            if RemoteWorkerModel.test_connection_result != "": Text {
+                text: RemoteWorkerModel.test_connection_result;
+                font-size: 9px;
+                color: RemoteWorkerModel.test_connection_is_error ? #f87171 : Theme.accent-emerald;
+                wrap: word-wrap;
+            }
+
             HorizontalLayout {
                 spacing: 8px;
                 Button {
                     text: "Cancel";
                     horizontal-stretch: 1;
-                    clicked => { root.editing_index = -1; }
+                    clicked => { root.editing = false; }
                 }
                 Button {
                     text: "Save";
@@ -505,7 +441,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                     primary: true;
                     enabled: root.form_address != "";
                     clicked => {
-                        RemoteWorkerModel.save_worker(root.editing_index, {
+                        RemoteWorkerModel.save_remote({
                             name: root.form_name,
                             address: root.form_address,
                             cert_dir: root.form_cert_dir,
@@ -513,8 +449,9 @@ export component RemoteWorkerDialog inherits PopupWindow {
                             cadence_ms: root.form_cadence_ms,
                             preview_scale_index: root.form_preview_scale_index,
                             preview_scale_percent: root.form_preview_scale_percent,
+                            export_transfer_index: root.form_export_transfer_index,
                         });
-                        root.editing_index = -1;
+                        root.editing = false;
                     }
                 }
             }

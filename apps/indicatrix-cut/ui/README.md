@@ -10,15 +10,19 @@ declared on a per-feature `export global` in `ui/models/*.slint`:
 
 | Global | File | Owns |
 | --- | --- | --- |
+| `ActivityModel` | `models/activity.slint` | The one list of running long actions (auto-solve, Deep Solve, Optimize, exports, ...) |
 | `BatchModel` | `models/batch.slint` | Preview-batch and tilt-batch dialogs |
 | `EditorModel` | `models/editor.slint` | The Edit tab: tiers, solve, optimize, deep solve, new-design/gear-remap dialogs |
-| `ExportModel` | `models/export.slint` | The render-export dialog |
+| `ExportModel` | `models/export.slint` | The render-export dialog, including its "Transfer" choice |
+| `GuideModel` | `models/guide.slint` | The worked-example guide panel: steps, navigation, control locks |
 | `LibraryModel` | `models/library.slint` | The catalogue/diagram list, filters, metadata editor |
-| `RemoteWorkerModel` | `models/remote_worker.slint` | Remote worker configuration and library mirroring |
+| `RemoteWorkerModel` | `models/remote_worker.slint` | The one remote endpoint ("Remote Coordinator" form), "served by", library switch and mirroring |
 | `RetargetModel` | `models/retarget.slint` | The "Retarget for material" dialog |
-| `SettingsModel` | `models/settings.slint` | The render-quality settings panel |
+| `SettingsModel` | `models/settings.slint` | The render-quality settings panel, including Live Compute / Live Transfer |
+| `ShortcutsModel` | `models/shortcuts.slint` | The keyboard-shortcuts overlay |
 | `SolidPreviewModel` | `models/solid_preview.slint` | The Edit tab's solid-inspection viewport |
-| `TiltModel` | `models/tilt.slint` | Tilt performance graphs |
+| `TemplateGalleryModel` | `models/templates.slint` | The New Design dialog's template gallery |
+| `TiltModel`, `TiltVideoExportModel` | `models/tilt.slint` | Tilt performance graphs; the tilt-video export section |
 | `ViewportModel` | `models/viewport.slint` | The 3D gem viewport's camera/lighting/material controls |
 
 A `.slint` component reads/writes a global directly (`EditorModel.solve()`,

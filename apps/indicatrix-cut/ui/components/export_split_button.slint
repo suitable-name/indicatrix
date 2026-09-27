@@ -1,5 +1,6 @@
 import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
+import { GuideModel } from "../models/guide.slint";
 
 // "Export Cutting Sheet" and "Export Diagram" live on one "Export..." split
 // button on the command bar, next to Save Native, instead of as separate
@@ -8,6 +9,8 @@ import { EditorModel } from "../models/editor.slint";
 // Keeps the existing callback names -- `EditorModel.export_cutting_sheet()`/
 // `export_diagram()`, unchanged from the File menu's own `activated` handlers.
 export component ExportSplitButton inherits Rectangle {
+    // `false` while the worked-example guide locks file actions (see `GuideAllow`).
+    in property <bool> enabled: true;
     property <bool> menu_open: false;
 
     width: btn_row.preferred-width;
@@ -18,6 +21,7 @@ export component ExportSplitButton inherits Rectangle {
             width: main_txt.preferred-width + 16px;
             background: main_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
             border-radius: Theme.radius-sm;
+            opacity: root.enabled ? 1.0 : 0.4;
             main_txt := Text {
                 text: "Export...";
                 font-size: 11px;
@@ -27,13 +31,14 @@ export component ExportSplitButton inherits Rectangle {
                 vertical-alignment: center;
             }
             main_touch := TouchArea {
+                enabled: root.enabled;
                 clicked => { root.menu_open = !root.menu_open; }
             }
-            Tooltip { text: @markdown("Export the Cutting Sheet (HTML) or the Diagram (PNG)."); }
+            Tooltip { text: root.enabled ? @markdown("Export the Cutting Sheet (HTML) or the Diagram (PNG).") : @markdown("\{GuideModel.locked_hint}"); }
         }
     }
 
-    if root.menu_open: Rectangle {
+    if root.menu_open && root.enabled: Rectangle {
         // Backdrop -- dismisses the menu on an outside click, matching
         // `header.slint`'s own floating-panel convention (`filter_popup`/
         // `import_popup`), the closest existing analogue in this app to a
@@ -46,7 +51,7 @@ export component ExportSplitButton inherits Rectangle {
         TouchArea { clicked => { root.menu_open = false; } }
     }
 
-    if root.menu_open: Rectangle {
+    if root.menu_open && root.enabled: Rectangle {
         x: 0px;
         y: root.height + 2px;
         z: 50;

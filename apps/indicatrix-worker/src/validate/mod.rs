@@ -175,6 +175,34 @@ pub fn validate_scene(scene: &SceneState) -> Result<(), String> {
         }
     }
 
+    validate_environment(scene)
+}
+
+/// Validates the scene's HDR environment, if any (v14).
+///
+/// Its declared size must be within `indicatrix::renderer::env_map::HdrLimits::DEFAULT`
+/// -- checked before the server ever asks for the map's bytes, so an over-limit map is
+/// refused without a transfer.
+///
+/// # Errors
+///
+/// A human-readable message when the declared size is zero or over the limits.
+pub fn validate_environment(scene: &SceneState) -> Result<(), String> {
+    let Some(hdr) = scene.hdr() else {
+        return Ok(());
+    };
+    let limits = indicatrix::renderer::env_map::HdrLimits::DEFAULT;
+    if hdr.width == 0 || hdr.height == 0 || !limits.admits(hdr.width, hdr.height) {
+        return Err(format!(
+            "scene.environment declares a {}x{} HDR map; it must be non-empty and within {}x{} \
+             texels ({} MiB decoded)",
+            hdr.width,
+            hdr.height,
+            limits.max_width,
+            limits.max_height,
+            limits.max_decoded_bytes / (1024 * 1024)
+        ));
+    }
     Ok(())
 }
 
@@ -321,6 +349,7 @@ mod tests {
             planes: StandardGemCuts::standard_round_brilliant(),
             girdle_frosted: false,
             backdrop: 0.0,
+            environment: indicatrix_net::scene::SceneEnvironment::Studio,
         }
     }
 

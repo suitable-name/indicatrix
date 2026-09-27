@@ -1,6 +1,7 @@
 # indicatrix-net
 
-Wire protocol between a viewer and a remote server: **offloading `indicatrix` spectral
+Wire protocol between a viewer and a remote server — and between that server (a
+coordinator) and the render workers that join it: **offloading `indicatrix` spectral
 ray-sample computation**, and **reading a remote design library**. Both run over one
 authenticated connection, and a server may offer either or both — `WELCOME` says
 which.
@@ -9,16 +10,17 @@ which.
 this crate operates on an in-memory buffer, a `[u8]` slice, or a generic
 `Read`/`Write`. The whole crate is testable with nothing more than a
 `std::io::Cursor`, and every test in it does exactly that. `apps/indicatrix-worker`
-(the server side) and `apps/indicatrix-cut`'s `bridge::remote_render` /
-`bridge::library_client` (the client side) are what wire these functions to a real
-`TcpStream`/TLS connection.
+(the coordinator, and a `join`ed worker's side of its connection) and
+`apps/indicatrix-cut`'s `bridge::remote::remote_render` / `bridge::library::client`
+(the viewer side) are what wire these functions to a real `TcpStream`/TLS connection.
 
 | Module | What it carries |
 |---|---|
-| `messages` | The render protocol, `HELLO`/`WELCOME`, and the `ClientMessage` envelope |
+| `messages` | The render protocol, `HELLO`/`WELCOME` (with peer roles), the `ClientMessage` envelope, payload-encoding negotiation, and content-addressed assets (`NEED_ASSET`/`ASSET`) |
 | `library` | The read-only design-library protocol |
 | `scene` | `SceneState` — a fully-resolved scene (`render` feature) |
-| `radiance` | The raw radiance-buffer encoding |
+| `radiance` | The raw radiance-buffer encoding and the v14 lossless payload encodings (shuffle + zstd/LZ4) |
+| `display` | The v14 8-bit picture payloads (raw RGBA8 or PNG) |
 | `framing` / `handshake` | Length-prefixed framing; the version and build-hash gate |
 | `tls` | Mutual-TLS config, the fingerprint allowlist, restricted-permission key writes |
 | `enroll` / `token` | One-time enrollment tokens and the CA-pinning claim client |
@@ -39,8 +41,9 @@ partitioning would load-balance badly, while sample partitioning divides the wor
 evenly by construction. This only works because the per-sample RNG seed is a pure
 function of `(pixel_index, sample_number)` — never of which batch a sample happens
 to land in, or how many samples are in that batch. `crates/indicatrix-net/tests/partition_correctness.rs`
-reproduces the exact seed formula from `apps/indicatrix-cut/src/bridge/render_thread.rs`
-and `apps/indicatrix-worker/src/render_core.rs` and proves additivity end to end
+reproduces the exact seed formula the viewer's render loop
+(`apps/indicatrix-cut/src/bridge/render_thread/`) and the worker
+(`apps/indicatrix-worker/src/render_core/`) use and proves additivity end to end
 against the real `trace_spectral_ray`: tracing samples `[0,64)` in one batch sums
 to (within float-rounding tolerance) the same radiance as tracing `[0,32)` and
 `[32,64)` separately and adding the results.
@@ -50,20 +53,49 @@ format. Normalizing a sum into a displayable average (dividing by total sample
 count) is a client-side, display-time operation — the wire payload is always a raw
 radiance sum, which is what makes it valid to keep adding more nodes' contributions
 into the same buffer without knowing in advance how many total samples there will
-be.
+be. Every backend applies the same non-finite rule while summing
+(`indicatrix::optics::raytracer::add_finite_sample` and its GPU twin): a sample with
+any NaN/±Inf component is dropped but still counted, so sums from different nodes
+stay mergeable by plain addition.
 
 ## Protocol version and message set
 
-`messages::PROTOCOL_VERSION: u16 = 9`. Three protocols share one authenticated
+`messages::PROTOCOL_VERSION: u16 = 14`. Three protocols share one authenticated
 connection: **render** (offload sample tracing), **tilt curves** (offload one design's
 full tilt-performance sweep), and **library** (read a design catalogue). A peer may
 serve any subset, and — for a viewer — consume all three.
 
 ```text
--> HELLO    { protocol_version, build_hash }
-<- WELCOME  { protocol_version, build_hash, render: Option<RenderCapability>, library: bool, tilt_curves: bool }
-                                  RenderCapability { backend, max_pixels, min_cadence_ms }
+-> HELLO    { protocol_version, build_hash, source_hash, role: Viewer | Worker,
+              capability: Option<RenderCapability>, accept_encodings: Vec<PayloadEncoding> }
+<- WELCOME  { protocol_version, build_hash, source_hash, render: Option<RenderCapability>, library: bool,
+              tilt_curves: bool, registration: Option<WorkerRegistration>, payload_encoding }
+                                  RenderCapability { backend: Cpu | Gpu | Coordinator, max_pixels, min_cadence_ms, hdr }
 ```
+
+**Roles.** `HELLO.role` says who is dialing. A `Viewer` (the GUI) sends requests. A
+`Worker` is `indicatrix-worker join` dialing *out* to a coordinator's worker port: its
+`HELLO` carries its `RenderCapability`, the coordinator answers with
+`WELCOME.registration = Some { worker_id }`, and from then on the roles on that
+connection are reversed — the coordinator sends requests (and `PING`s), the worker
+answers them. A listener refuses a `HELLO` of the wrong role with `ROLE_REFUSED`
+(error codes: `messages::error_codes`).
+
+The first three fields of `HELLO` and `WELCOME` never change, so a peer on another
+protocol version is refused with a message naming both versions
+(`handshake::read_hello`, and the client's own check of the reply) rather than a
+decode error. **Every machine must run the same build.**
+
+**Payload encodings (v14).** The viewer lists what it can decode
+(`accept_encodings`); the server picks the first entry of its own preference the viewer
+accepts (`messages::negotiate`), else `Raw`. Default server preference:
+`ShuffleZstd { level: 1 }`, `ShuffleLz4`, `Raw`; loopback peers get `Raw`. Every
+`FRAME`/`PREVIEW` header names its own `encoding` and `raw_len` (`payload_len` is the
+on-wire size), and a payload that would not shrink goes out `Raw`. Decoding is bounded:
+`raw_len` must equal `width * height * 12`, output goes into exactly `raw_len` bytes,
+short or overflowing output is rejected (`radiance::payload`). All encodings are
+lossless: a compressed delta sums bit-identically to the raw one. The compressed
+encodings and the PNG display codec sit behind the default-on `compression` feature.
 
 `WELCOME` is where a peer says what it can actually do. **Check it before sending
 anything**: `render` is `None` on a library-only server (one built without
@@ -77,14 +109,39 @@ client-side counterparts.
 **Render** (gated behind this crate's `render` feature — see below):
 
 ```text
--> RENDER   { request_id, scene: SceneState, first_sample, samples, stream: StreamConfig }
-<- FRAME    { request_id, first_sample, samples, payload_len, xyz_bytes }        -- DELTA, full-res
-<- PREVIEW  { request_id, width, height, samples_done, payload_len, xyz_bytes }  -- CUMULATIVE, reduced-res
+-> RENDER   { request_id, scene: SceneState, first_sample, samples, stream: StreamConfig, intent }
+<- FRAME    { request_id, first_sample, samples, payload_len, encoding, raw_len } + payload        -- DELTA, full-res
+<- PREVIEW  { request_id, width, height, samples_done, payload_len, encoding, raw_len } + payload -- CUMULATIVE, reduced-res
 <- PROGRESS { request_id, samples_done }
 -> CANCEL   { request_id }
 <- DONE     { request_id, cancelled, stats: Stats }
-<- ERROR    { code, message }
+<- ERROR    { code, message }                                 -- codes: messages::error_codes
+-> PING     { nonce }                    <- PONG { nonce }     -- v14 liveness
+-> FINAL_IMAGE_REQUEST { request_id, scene, first_sample, samples, width, height, color_space, output }
+<- FINAL_IMAGE   { request_id, width, height, samples_done, encoding, payload_len } + PNG   -- v14
+<- DISPLAY_FRAME { request_id, samples_done, width, height, encoding, payload_len } + RGBA8/PNG (TransferMode::DisplayOnly)
+<- CAPABILITY_CHANGED { render: Option<RenderCapability> }
+<- NEED_ASSET { content_hash }                               -- v14: "send me this HDR map"
+-> ASSET      { content_hash, len } + bytes                    -- the map's exact file bytes
 ```
+
+A `FRAME`'s `samples` is exact and `[first_sample, first_sample + samples)` lies inside
+the request range; a coordinator's frame carries a *set* of samples from several lanes
+with `first_sample = request.first_sample`, so clients check containment, never
+contiguity. `FINAL_IMAGE_REQUEST` and `TransferMode::DisplayOnly` are served by the
+coordinator (`indicatrix-worker serve`, with or without joined workers); a joined
+worker's own connection refuses them with `UNSUPPORTED_REQUEST`, since the coordinator
+only ever sends it radiance chunks. `DISPLAY_FRAME`s are averaged, denoised
+(`indicatrix::renderer::frame_denoise`) and tone-mapped exactly as the viewer would
+have done it itself.
+
+**HDR environments (v14).** `SceneState::environment` is either the analytic studio
+rig or `SceneEnvironment::Hdr { content_hash, width, height }` — an HDR panorama named
+by the SHA-256 of its `.hdr` file, never by path. A server that lacks the bytes answers
+the request with `NEED_ASSET`; the client sends `ASSET` (at most
+`messages::MAX_ASSET_LEN`, 256 MiB), the server verifies the hash and decodes the map
+with the same builder the viewer uses. A viewer sends an HDR scene only to a server
+whose `RenderCapability::hdr` is `true`.
 
 **Tilt curves** (gated behind this crate's `render` feature, same as render — see
 below): a single request, a single reply, never a `StreamEvent` stream. One design's
@@ -137,7 +194,7 @@ crate's* flag from `indicatrix-worker`'s `worker`. Cargo unifies features across
 build, so a library-only worker can be compiled with either variant in scope.
 `indicatrix-worker`'s dispatch handles that as a runtime case rather than a compile-time
 impossibility — a peer can always send one regardless of what `WELCOME` advertised (see
-`apps/indicatrix-worker/src/serve/connection.rs`'s `handle_non_render_message` for exactly
+`apps/indicatrix-worker/src/serve/connection/mod.rs`'s `handle_non_render_message` for exactly
 how, and why it can only answer both with the same `StreamEvent::Error` shape in that
 one narrow fallback path).
 
@@ -146,15 +203,21 @@ one narrow fallback path).
 **This is pre-release software: every peer runs its own private build, so there is no
 deployed fleet to stay wire-compatible with.** There is no compatibility shim between
 versions — `handshake::verify_compatible` simply refuses to pair peers speaking
-different ones; see `messages::PROTOCOL_VERSION`'s own doc comment for the full version
-history (v1 initial, v2 widened `RangeFilterWire`, v3 added `TILT_CURVES`, v4 widened
+different ones. Version history in brief — `messages::PROTOCOL_VERSION`'s own doc
+comment details v9 onward — (v1 initial, v2 widened `RangeFilterWire`, v3 added `TILT_CURVES`, v4 widened
 `library::DesignSummary`/`LibraryResponse::SearchResults`/`SearchResultsPage` so
 remote-browsed catalogue rows carry `ignored` and a missing-tilt-curves exclusion
 count, v5 widened `library::DesignRecord` with `preview_material`, v6 widened
 `library::DesignRecord` again with `hw_ratio`/`tw_ratio`/`uw_ratio`/`pw_ratio`/
 `cw_ratio`/`symmetry_order`/`mirror_symmetry`/`designer` so a remote design's detail
 chips stop blanking out, v7 widened `GemMaterial` with `absorption_path_scale` and
-documents `StreamEvent::Progress` as doubling as this stream's liveness heartbeat).
+documents `StreamEvent::Progress` as doubling as this stream's liveness heartbeat,
+v9/v10 changed `LightingPreset`, v11 appended `SceneState::backdrop`, v12 added
+`source_hash` to `HELLO`/`WELCOME`, v13 added sort order and tag filter to library
+search, and v14 — the current version — added coordinator mode (peer roles, worker
+registration, `Backend::Coordinator`, request intent, `PING`/`PONG`,
+`FINAL_IMAGE_REQUEST`, `DISPLAY_FRAME`, `CAPABILITY_CHANGED`), negotiated lossless
+payload compression, and HDR environments by content hash (`NEED_ASSET`/`ASSET`)).
 
 What matters is knowing when to bump it, and that follows entirely from postcard
 being **not self-describing**:
@@ -313,8 +376,14 @@ pub struct SceneState {
     pub lighting_preset: LightingPreset,
     pub material: GemMaterial,
     pub planes: Vec<GpuFacetPlane>,
+    pub girdle_frosted: bool,             // per-facet finishes are re-derived from `planes`
+    pub backdrop: f32,                    // backdrop-card radiance, 0.0 = none
+    pub environment: SceneEnvironment,    // Studio (the fields above) | Hdr { content_hash, width, height }
 }
 ```
+
+The last three fields are `#[serde(default)]` so an older on-disk `scene.json` still
+loads; on the wire (postcard) every field is always present.
 
 A viewer stores a material as a name plus a list of custom materials loaded from
 its own local SQLite database, and stores a diagram as an id looked up against
@@ -338,7 +407,7 @@ silently lost.
 ### Sending a render request
 
 ```rust
-use indicatrix_net::{client, messages::{RenderRequest, StreamConfig, TransferMode}};
+use indicatrix_net::{client, messages::{RenderRequest, RequestIntent, StreamConfig, TransferMode}};
 use std::io::{Read, Write};
 
 fn send_one_request<S: Read + Write>(
@@ -348,7 +417,7 @@ fn send_one_request<S: Read + Write>(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // 1. Handshake -- refuses to proceed on a protocol or BUILD_ID mismatch.
     let welcome = client::handshake(stream)?;
-    println!("worker backend: {:?}, build {:x?}", welcome.backend, welcome.build_hash);
+    println!("render capability: {:?}, build {:x?}", welcome.render, welcome.build_hash);
 
     // 2. Send a render request and start a new accumulation epoch for it.
     let request = RenderRequest {
@@ -361,6 +430,7 @@ fn send_one_request<S: Read + Write>(
             cadence_ms: 250,
             preview: None,
         },
+        intent: RequestIntent::Interactive, // a live view; exports use `Batch`
     };
     client::send_render_request(stream, &request)?;
     accumulator.begin_request(request.request_id); // before/immediately after sending
@@ -382,8 +452,8 @@ in flight; it does not touch the accumulator (the next `begin_request` call is w
 actually starts ignoring the cancelled epoch's stragglers). Everything here is
 generic over `Read`/`Write` — wrapping an actual `TcpStream` (optionally inside
 `rustls::StreamOwned`, built via `tls::client_config`) happens at the call site;
-see `apps/indicatrix-worker/src/serve.rs` for the server side of the same split, and
-`apps/indicatrix-cut/src/bridge/remote_render.rs` for the client side.
+see `apps/indicatrix-worker/src/serve/` for the server side of the same split, and
+`apps/indicatrix-cut/src/bridge/remote/remote_render/` for the client side.
 
 ### Reading the radiance buffer
 
@@ -393,14 +463,16 @@ use glam::Vec3;
 
 let buffer: Vec<Vec3> = vec![Vec3::new(1.0, 2.0, 3.0); 64 * 64];
 let bytes = radiance::encode(&buffer);          // zero-copy POD view via bytemuck
-let decoded = radiance::decode(&bytes, 64 * 64)?;
+let decoded = radiance::decode(&bytes, 64, 64)?;       // width, height
 assert_eq!(buffer, decoded);
 # Ok::<(), indicatrix_net::radiance::RadianceError>(())
 ```
 
 The radiance payload is raw POD `Vec3` bytes (`bytemuck::cast_slice`), never a
 serialization framework — this is the hot-path payload (up to ~100 MiB for a 4K
-frame), and `postcard` framing overhead has no reason to touch it.
+frame), and `postcard` framing overhead has no reason to touch it. On the wire it may
+additionally be byte-shuffled and zstd/LZ4-compressed (`radiance::payload`, see
+"Payload encodings" above); decoding restores these exact bytes.
 
 ## Key invariants (do not "fix" these)
 

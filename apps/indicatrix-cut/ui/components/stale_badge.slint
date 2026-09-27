@@ -1,4 +1,5 @@
 import { Theme } from "../theme.slint";
+import { GuideModel } from "../models/guide.slint";
 
 // A shared amber "Stale: design
 // changed" chip for any analysis panel whose last result was computed against an
@@ -17,6 +18,11 @@ export component StaleBadge inherits Rectangle {
     // its own (e.g. Snapshot compare has no one-click re-diff action yet) -- the
     // badge text alone still shows.
     in property <bool> show_recompute: true;
+    // `false` while the worked-example guide locks whatever "Recompute" would run
+    // (the caller binds the matching `GuideModel.allows_*()`): the action is dimmed,
+    // ignores clicks, and its tooltip explains the lock. The "Stale" text itself
+    // stays at full strength -- it is information, not an action.
+    in property <bool> enabled: true;
     callback recompute();
 
     width: layout.preferred-width;
@@ -43,10 +49,13 @@ export component StaleBadge inherits Rectangle {
 
         if root.show_recompute: Rectangle {
             width: recompute_label.preferred-width;
+            opacity: root.enabled ? 1.0 : 0.4;
             recompute_touch := TouchArea {
-                mouse-cursor: pointer;
+                enabled: root.enabled;
+                mouse-cursor: root.enabled ? pointer : default;
                 clicked => { root.recompute(); }
             }
+            if !root.enabled: Tooltip { text: @markdown("\{GuideModel.locked_hint}"); }
             recompute_label := Text {
                 text: "Recompute";
                 font-size: 10px;

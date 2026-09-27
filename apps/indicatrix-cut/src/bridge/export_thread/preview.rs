@@ -5,8 +5,9 @@
 //! Split out of `bridge::export_thread` purely to keep that module (already sizeable)
 //! from growing further -- same reasoning as `batch`/`tonemap_png`/`scene_snapshot`.
 
-use super::tonemap_png::tonemap_to_rgba;
+use super::tonemap_png::tonemap_accumulation;
 use glam::Vec3;
+use indicatrix::color::ColorSpace;
 use slint::{Rgba8Pixel, SharedPixelBuffer};
 use std::time::{Duration, Instant};
 
@@ -149,13 +150,13 @@ fn generate_preview_buffer(
 ///
 /// Each combined source pixel is a SUM of `samples_done` samples, not an average --
 /// same convention as `accum` itself. This box-averages within each thumbnail bucket
-/// but leaves sample normalisation to [`tonemap_to_rgba`], called with `samples_done`,
+/// but leaves sample normalisation to [`tonemap_accumulation`], called with `samples_done`,
 /// never the export's target: normalising by the target would leave the preview
 /// looking almost black for most of the export.
 ///
 /// # Reusing the export's sRGB tone-mapping
 ///
-/// Always goes through [`tonemap_to_rgba`] -- the sRGB path -- regardless of the
+/// Always goes through [`tonemap_accumulation`]'s sRGB path regardless of the
 /// export's chosen `ColorSpace`. This thumbnail is displayed on screen by Slint, which
 /// expects sRGB bytes; a preview can't carry an ICC profile the way the exported PNG
 /// can, so it always renders through the one path guaranteed correct without one.
@@ -214,7 +215,13 @@ fn downsample_preview(
         .map(|(s, c)| *s / (*c).max(1) as f32)
         .collect();
 
-    let rgba = tonemap_to_rgba(thumb_w, thumb_h, samples_done.max(1), &thumb_accum);
+    let rgba = tonemap_accumulation(
+        thumb_w,
+        thumb_h,
+        samples_done.max(1),
+        &thumb_accum,
+        ColorSpace::Srgb,
+    );
     (thumb_w, thumb_h, rgba)
 }
 

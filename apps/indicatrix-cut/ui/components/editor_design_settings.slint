@@ -10,6 +10,7 @@ import { SectionHeader } from "section_header.slint";
 // next to the Edit tab's own material combo instead of requiring a tab switch.
 import { ViewportModel } from "../models/viewport.slint";
 import { MaterialGuessBadge } from "material_guess.slint";
+import { GuideLockTip } from "guide_lock.slint";
 
 // The Edit sub-tab's schedule-wide settings -- material combo (built-ins, custom
 // catalogue materials, then "Custom RI…"), RI override/effective/critical-angle
@@ -36,6 +37,12 @@ export component EditorDesignSettings inherits Rectangle {
     // content.preferred-height` -- a layout's preferred height defaults to
     // 100% of its parent, so that binding is circular and grows unbounded.
     vertical-stretch: 0;
+
+    // `false` while the worked-example guide locks this panel (`GuideAllow.
+    // design_settings`): every combo, field, toggle and Apply button below ANDs it
+    // into its own `enabled:`, and the `GuideLockTip` at the end of this component
+    // explains why on hover. The read-only chips stay readable.
+    property <bool> unlocked: GuideModel.allows_design_settings();
 
     // Unapplied-edit markers for the Material/Gear/Symmetry Apply buttons -- the
     // same amber "*" treatment as `editor_inspector.slint`'s `preform_pending`/
@@ -98,6 +105,7 @@ export component EditorDesignSettings inherits Rectangle {
                     mat_combo_lbl := Text { text: "Material"; font-size: 10px; color: Theme.text-muted; }
                 }
                 ComboBox {
+                    enabled: root.unlocked;
                     max-width: 200px;
                     model: EditorModel.material_combo_options;
                     current-index <=> EditorModel.material_combo_index;
@@ -112,6 +120,7 @@ export component EditorDesignSettings inherits Rectangle {
                     ri_lbl := Text { text: "RI Override"; font-size: 10px; color: Theme.text-muted; }
                 }
                 LineEdit {
+                    enabled: root.unlocked;
                     width: 90px;
                     text <=> EditorModel.ri_override_text;
                     placeholder-text: "auto";
@@ -130,6 +139,7 @@ export component EditorDesignSettings inherits Rectangle {
                 // column to its natural content and pins it to the row's bottom.
                 alignment: end;
                 Button {
+                    enabled: root.unlocked;
                     // Amber "*" marks unapplied edits, matching the inspector's
                     // Apply buttons.
                     text: root.material_pending ? "Apply Material *" : "Apply Material";
@@ -178,6 +188,7 @@ export component EditorDesignSettings inherits Rectangle {
             VerticalLayout {
                 alignment: end;
                 Button {
+                    enabled: root.unlocked;
                     text: "New/Edit material...";
                     clicked => { ViewportModel.material_editor_open = true; }
                 }
@@ -203,8 +214,10 @@ export component EditorDesignSettings inherits Rectangle {
                             // "off" toggle-track shade `filter_panel.slint`'s
                             // chip toggles use.
                             background: ViewportModel.viewport_material_linked ? Theme.accent-cyan : Theme.border-dialog;
+                            opacity: root.unlocked ? 1.0 : 0.4;
                             y: (parent.height - self.height) / 2;
                             TouchArea {
+                                enabled: root.unlocked;
                                 clicked => {
                                     ViewportModel.viewport_material_linked = !ViewportModel.viewport_material_linked;
                                     ViewportModel.viewport_material_linked_changed(ViewportModel.viewport_material_linked);
@@ -250,6 +263,7 @@ export component EditorDesignSettings inherits Rectangle {
                     gear_combo_lbl := Text { text: "Index Gear"; font-size: 10px; color: Theme.text-muted; }
                 }
                 ComboBox {
+                    enabled: root.unlocked;
                     max-width: 160px;
                     model: ["96", "80", "77", "72", "64", "120", "Custom"];
                     current-index <=> EditorModel.gear_index;
@@ -259,12 +273,13 @@ export component EditorDesignSettings inherits Rectangle {
             if EditorModel.gear_index == 6: VerticalLayout {
                 spacing: 3px;
                 Text { text: "Custom Teeth"; font-size: 10px; color: Theme.text-muted; }
-                LineEdit { width: 70px; text <=> EditorModel.gear_custom_text; edited => { root.gear_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                LineEdit { enabled: root.unlocked; width: 70px; text <=> EditorModel.gear_custom_text; edited => { root.gear_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
             }
             VerticalLayout {
                 // Bottom-aligned to the fields' baseline, as with Apply Material.
                 alignment: end;
                 Button {
+                    enabled: root.unlocked;
                     // Gear applies through the `GearRemapDialog` confirmation rather
                     // than immediately, so this marks "a remap has been requested
                     // and not yet confirmed" -- cleared by Confirm or Cancel there.
@@ -284,6 +299,7 @@ export component EditorDesignSettings inherits Rectangle {
                     symmetry_lbl := Text { text: "Symmetry Order"; font-size: 10px; color: Theme.text-muted; }
                 }
                 LineEdit {
+                    enabled: root.unlocked;
                     width: 60px;
                     text <=> EditorModel.symmetry_order_text;
                     edited => {
@@ -309,7 +325,9 @@ export component EditorDesignSettings inherits Rectangle {
                         height: 18px;
                         border-radius: 9px;
                         background: EditorModel.mirror ? Theme.accent-cyan : Theme.bg-card-hover;
+                        opacity: root.unlocked ? 1.0 : 0.4;
                         TouchArea {
+                            enabled: root.unlocked;
                             clicked => {
                                 EditorModel.mirror = !EditorModel.mirror;
                                 root.symmetry_pending = true;
@@ -335,6 +353,7 @@ export component EditorDesignSettings inherits Rectangle {
                 // Bottom-aligned to the fields' baseline, as with Apply Material.
                 alignment: end;
                 Button {
+                    enabled: root.unlocked;
                     // Amber "*" marks unapplied edits, as with Apply Material.
                     text: root.symmetry_pending ? "Apply Symmetry *" : "Apply Symmetry";
                     primary: root.symmetry_pending;
@@ -365,7 +384,7 @@ export component EditorDesignSettings inherits Rectangle {
                     Tooltip { text: @markdown("The design's own name -- the .asc file's first header line. Seeds the window title and a saved/exported file's default name."); }
                     title_lbl := Text { text: "Title"; font-size: 10px; color: Theme.text-muted; }
                 }
-                LineEdit { width: 150px; text <=> EditorModel.design_title; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                LineEdit { enabled: root.unlocked; width: 150px; text <=> EditorModel.design_title; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
             }
             VerticalLayout {
                 spacing: 3px;
@@ -374,7 +393,7 @@ export component EditorDesignSettings inherits Rectangle {
                     Tooltip { text: @markdown("Further .asc header lines beyond the title. Join several with \"; \"."); }
                     extra_headers_lbl := Text { text: "Extra Header Lines"; font-size: 10px; color: Theme.text-muted; }
                 }
-                LineEdit { width: 150px; text <=> EditorModel.design_extra_headers; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                LineEdit { enabled: root.unlocked; width: 150px; text <=> EditorModel.design_extra_headers; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
             }
             VerticalLayout {
                 spacing: 3px;
@@ -383,7 +402,7 @@ export component EditorDesignSettings inherits Rectangle {
                     Tooltip { text: @markdown("Footnote lines written at the end of the .asc file. Join several with \"; \"."); }
                     footnotes_lbl := Text { text: "Footnotes"; font-size: 10px; color: Theme.text-muted; }
                 }
-                LineEdit { width: 150px; text <=> EditorModel.design_footnotes; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                LineEdit { enabled: root.unlocked; width: 150px; text <=> EditorModel.design_footnotes; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
             }
             VerticalLayout {
                 spacing: 3px;
@@ -392,12 +411,13 @@ export component EditorDesignSettings inherits Rectangle {
                     Tooltip { text: @markdown("The index wheel's zero-tooth reference angle, in degrees."); }
                     gear_ref_lbl := Text { text: "Gear Ref. Angle"; font-size: 10px; color: Theme.text-muted; }
                 }
-                LineEdit { width: 70px; text <=> EditorModel.design_gear_reference_angle; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                LineEdit { enabled: root.unlocked; width: 70px; text <=> EditorModel.design_gear_reference_angle; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
             }
             VerticalLayout {
                 // Bottom-aligned to the fields' baseline, as with Apply Material.
                 alignment: end;
                 Button {
+                    enabled: root.unlocked;
                     // Amber "*" marks unapplied edits, as with Apply Material.
                     text: root.meta_pending ? "Apply Details *" : "Apply Details";
                     primary: root.meta_pending;
@@ -428,16 +448,17 @@ export component EditorDesignSettings inherits Rectangle {
                 }
                 HorizontalLayout {
                     spacing: 4px;
-                    LineEdit { width: 60px; text <=> EditorModel.printed_vol_w3_text; placeholder-text: "Vol/W\u{b3}"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
-                    LineEdit { width: 50px; text <=> EditorModel.printed_lw_text; placeholder-text: "L/W"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
-                    LineEdit { width: 50px; text <=> EditorModel.printed_cw_text; placeholder-text: "C/W"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
-                    LineEdit { width: 50px; text <=> EditorModel.printed_pw_text; placeholder-text: "P/W"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
-                    LineEdit { width: 50px; text <=> EditorModel.printed_hw_text; placeholder-text: "H/W"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { enabled: root.unlocked; width: 60px; text <=> EditorModel.printed_vol_w3_text; placeholder-text: "Vol/W\u{b3}"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { enabled: root.unlocked; width: 50px; text <=> EditorModel.printed_lw_text; placeholder-text: "L/W"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { enabled: root.unlocked; width: 50px; text <=> EditorModel.printed_cw_text; placeholder-text: "C/W"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { enabled: root.unlocked; width: 50px; text <=> EditorModel.printed_pw_text; placeholder-text: "P/W"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { enabled: root.unlocked; width: 50px; text <=> EditorModel.printed_hw_text; placeholder-text: "H/W"; edited => { root.printed_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                 }
             }
             VerticalLayout {
                 alignment: end;
                 Button {
+                    enabled: root.unlocked;
                     text: root.printed_pending ? "Apply Printed *" : "Apply Printed";
                     primary: root.printed_pending;
                     clicked => {
@@ -456,6 +477,8 @@ export component EditorDesignSettings inherits Rectangle {
         }
         } // if !EditorModel.settings_collapsed
     }
+
+    GuideLockTip { locked: !root.unlocked; }
 }
 
 // The gear-remap confirmation, a real modal mounted by `app.slint` so it blocks

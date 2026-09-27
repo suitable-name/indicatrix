@@ -9,20 +9,33 @@
 //! Split into: [`params`] (pure sweep/resolution math), [`metrics`] (reading the
 //! dialog's already-computed curves at an arbitrary angle), [`overlay`] (layout
 //! selection and the bundled bitmap font), [`template`] (the output folder-name
-//! template), [`render`] (per-frame CPU tracing), [`encode`] (PNG -> MP4/GIF/README),
-//! and [`run`] (the background thread tying all of those together). This file keeps
-//! only the UI-thread wiring: reading `TiltVideoExportModel`'s settings, validating
-//! them, and handing a fully-resolved request to `run::spawn`.
+//! template), [`render`] (per-frame rendering, sharing the still-image export's own
+//! local/remote core), [`encode`] (PNG -> MP4/GIF/README), and [`run`] (the background
+//! thread tying all of those together). This file keeps only the UI-thread wiring:
+//! reading `TiltVideoExportModel`'s settings, validating them, and handing a
+//! fully-resolved request to `run::spawn`.
 //!
-//! # Scope: CPU-only, local-only rendering
+//! # Same compute configuration as the still-image export
 //!
-//! Every frame renders on the CPU via `bridge::export_thread::batch::render_batch`
-//! (see `render`'s own doc comment) -- this app's single shared GPU adapter must never
-//! run two programs at once, and the live viewport keeps using it while a video export
-//! runs in the background, so this deliberately never touches the GPU or a remote
-//! worker. A full sweep is therefore slower than the still-image export dialog's own
-//! hybrid CPU+GPU+remote path; the "Compute" pill offered there has no equivalent here
-//! for the same reason, rather than offering a choice that silently only worked partway.
+//! Every frame renders through `bridge::export_thread::render_accumulation` -- the
+//! SAME local CPU/GPU/hybrid + remote-worker render core the still-image export uses,
+//! not a video-only tracer (see `render`'s own doc comment). [`build_request`] reads
+//! the compute configuration from the SAME two sources the still-image export reads:
+//! `RenderContext::local_compute_target` (the app's persisted CPU/CPU+GPU/GPU setting)
+//! and `AppSettings::remote` (the one configured remote endpoint), plus the section's
+//! own "Transfer" choice (full data or final picture only) -- never a video-only compute picker. The
+//! still-image export's own "Compute" pill
+//! (`ComputeTarget::LocalOnly`/`RemoteOnly`/`Both`) is dialog-local UI state, not a
+//! persisted setting (its own default is `Both` whenever a worker is configured,
+//! `LocalOnly` otherwise -- see `export_dialog.slint`'s `compute_target` property);
+//! since a video has no equivalent dialog control, `run::render_all_frames` always
+//! requests `ComputeTarget::Both` and lets `render_accumulation`'s existing graceful
+//! fallback decide, frame to frame, whether a worker is actually reachable -- the same
+//! end state the dialog's own default reaches for the common case, without a
+//! video-side probe of its own. Because the whole sweep now shares the GPU adapter and
+//! remote workers with the rest of the app, it pauses the live viewport for its own
+//! duration exactly as a still-image export does (`RenderContext::export_active`, see
+//! `run`'s own doc comment) -- never running two GPU programs at once.
 
 mod encode;
 mod metrics;
@@ -35,9 +48,12 @@ mod template;
 use crate::{
     ActivityModel, ExportModel, LibraryModel, MainWindow, TiltModel, TiltVideoExportModel,
     bridge::{
-        export_thread::{SceneSnapshot, filename_template::TemplateContext},
+        export_thread::{
+            ComputeTarget, RemoteSelection, SceneSnapshot, filename_template::TemplateContext,
+        },
         render_thread::RenderContext,
     },
+    settings::{ExportTransfer, SettingsPersister},
 };
 use indicatrix::color::{ColorSpace, metrics::PROFILE_AZIMUTHS_DEG};
 use slint::{ComponentHandle, Model};
@@ -62,6 +78,7 @@ type CurrentExportRun = Arc<Mutex<Option<(i32, Arc<AtomicBool>)>>>;
 pub(in crate::gui) fn setup_video_export_callback(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
+    settings_store: &Arc<SettingsPersister>,
 ) {
     // `Some((activity_id, cancel))` for whichever run is currently in flight --
     // `on_cancel_video_export` signals THIS one; a fresh `on_start_video_export`
@@ -120,13 +137,20 @@ pub(in crate::gui) fn setup_video_export_callback(
 
     let ui_weak_start = ui.as_weak();
     let render_ctx_start = render_ctx.clone();
+    let settings_store_start = settings_store.clone();
     let current_run_start = current_run.clone();
     ui.global::<TiltVideoExportModel>()
         .on_start_video_export(move |axis_index: i32| {
             let Some(ui) = ui_weak_start.upgrade() else {
                 return;
             };
-            handle_start_video_export(&ui, &render_ctx_start, &current_run_start, axis_index);
+            handle_start_video_export(
+                &ui,
+                &render_ctx_start,
+                &settings_store_start,
+                &current_run_start,
+                axis_index,
+            );
         });
 
     let current_run_cancel = current_run.clone();
@@ -178,6 +202,7 @@ pub(in crate::gui) fn setup_video_export_callback(
 fn handle_start_video_export(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
+    settings_store: &Arc<SettingsPersister>,
     current_run: &CurrentExportRun,
     axis_index: i32,
 ) {
@@ -190,6 +215,7 @@ fn handle_start_video_export(
     }
 
     let render_ctx = Arc::clone(render_ctx);
+    let settings_store = settings_store.clone();
     let current_run = Arc::clone(current_run);
     resolve_export_directory_then(ui, move |ui, export_dir| {
         let model = ui.global::<TiltVideoExportModel>();
@@ -198,7 +224,8 @@ fn handle_start_video_export(
             return;
         };
 
-        let request = match build_request(ui, &render_ctx, axis_index, &export_dir) {
+        let request = match build_request(ui, &render_ctx, &settings_store, axis_index, &export_dir)
+        {
             Ok(request) => request,
             Err(message) => {
                 model.set_has_error(true);
@@ -229,7 +256,13 @@ fn handle_start_video_export(
         model.set_total_frames(request.total_frames as i32);
         model.set_progress(0.0);
 
-        run::spawn(ui.as_weak(), request, cancel, activity_id);
+        // Pauses the live viewport for the WHOLE video, matching the still-image
+        // export's own `export_active_count` increment in `gui::render::render_export::
+        // wiring::finish_start_export` -- `run::spawn`'s every exit path (completion,
+        // cancel, error, caught panic) decrements this exactly once, mirroring
+        // `finish_export_queue`'s single decrement point.
+        RenderContext::lock(&render_ctx).export_active_count += 1;
+        run::spawn(ui.as_weak(), render_ctx, request, cancel, activity_id);
     });
 }
 
@@ -243,6 +276,7 @@ fn handle_start_video_export(
 fn build_request(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
+    settings_store: &Arc<SettingsPersister>,
     axis_index: i32,
     export_dir: &std::path::Path,
 ) -> Result<run::VideoExportRequest, String> {
@@ -285,6 +319,20 @@ fn build_request(
     // directly rather than importing it).
     let mut scene = SceneSnapshot::capture(render_ctx);
     scene.max_bounces = max_bounces;
+
+    // The SAME compute configuration source the still-image export reads (see this
+    // module's own doc comment): `RenderContext::local_compute_target` is the app's
+    // persisted CPU/CPU+GPU/GPU setting (a second, short-lived lock -- the video's own
+    // scene capture above already released its lock, so this doesn't extend it), and
+    // `remote` is the same endpoint `gui::render::render_export::wiring` reads.
+    // `compute_target` has no persisted dialog source of its own for a video (see this
+    // module's doc comment on why `Both` is the right stand-in).
+    let local_compute = RenderContext::lock(render_ctx).local_compute_target;
+    let remote = RemoteSelection {
+        compute_target: ComputeTarget::Both,
+        worker: settings_store.snapshot().settings.remote_worker(),
+        transfer: ExportTransfer::from_index(model.get_transfer_index()),
+    };
 
     let selection = metrics::MetricSelection {
         brilliance: model.get_show_values() && model.get_metric_brilliance(),
@@ -344,6 +392,8 @@ fn build_request(
         selection,
         curves,
         keep_frames: model.get_keep_frames(),
+        remote,
+        local_compute,
     })
 }
 
@@ -691,13 +741,19 @@ mod tests {
             ..Default::default()
         };
         let cancel = AtomicBool::new(false);
+        let config = render::VideoComputeConfig {
+            remote: crate::bridge::export_thread::RemoteSelection::local_only(),
+            local_compute: crate::settings::LocalComputeTarget::Cpu,
+        };
+        let gpu = indicatrix::renderer::gpu_backend::GpuBackend::disabled();
+        let mut carry = crate::bridge::export_thread::AccumulationCarry::default();
 
         for index in 0..total_frames {
             let tilt_deg =
                 params::frame_angle_deg(start_deg, end_deg, step_deg, index, total_frames);
             let (cam_yaw, cam_pitch) =
                 crate::gui::tilt::tilt_hover_preview::camera_pose_for_axis_tilt(0, tilt_deg);
-            let mut rgba = render::render_frame_rgba(
+            let outcome = render::render_frame_rgba(
                 &scene,
                 128,
                 128,
@@ -705,7 +761,15 @@ mod tests {
                 cam_yaw,
                 cam_pitch,
                 ColorSpace::Srgb,
+                &config,
+                &gpu,
+                &mut carry,
+                &cancel,
+                |_| {},
             );
+            let render::FrameOutcome::Rendered(mut rgba) = outcome else {
+                panic!("expected a rendered frame");
+            };
             assert_eq!(rgba.len(), 128 * 128 * 4);
             let readings = metrics::readings_for_frame(selection, &curves, tilt_deg);
             overlay::draw_overlay(&mut rgba, 128, 128, &readings);

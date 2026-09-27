@@ -1,4 +1,11 @@
-use super::*;
+use super::{
+    apply_measured_metadata,
+    confirm::{collisions_need_confirmation, count_pending_collisions},
+    folder_memory::last_save_folder,
+    measure::classify_shape,
+    pipeline::{catch_file_panic, import_path},
+    scan::{MAX_RECURSE_DEPTH, collect_asc_files_recursive, find_native_sidecar},
+};
 use crate::{
     gui::library::local::helpers::test_support::{
         VALID_ASC, open_temp_db, temp_db_path_for_test, temp_dir_for_test,
@@ -6,7 +13,14 @@ use crate::{
     settings::{SettingsFile, SettingsPersister},
 };
 use indicatrix::geometry::cuts::StandardGemCuts;
-use std::sync::atomic::{AtomicU32, Ordering};
+use indicatrix_vault::local;
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+};
 
 /// The strongest available anchor: the built-in standard round brilliant has 16
 /// girdle facets, so the outline-based rule must call it Round.

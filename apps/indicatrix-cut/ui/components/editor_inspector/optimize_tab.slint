@@ -1,0 +1,194 @@
+import { Button, LineEdit, CheckBox, Slider } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { EditorModel } from "../../models/editor.slint";
+
+// The Inspector's "Optimize" tab -- weights/budget/seed inputs and the
+// running-status/result report. Everything here reads/writes `EditorModel`
+// directly except the local "preview this pending result in the shared
+// viewport" checkbox state, which stays on `EditorInspector` itself (`
+// EditorModel.optimize_preview_toggled` is a callback-only surface, not a
+// two-way property) and is mirrored here two-way.
+export component OptimizeTab inherits VerticalLayout {
+    // `false` while the worked-example guide locks this tab's group (see
+    // `GuideAllow`, `models/guide.slint`); every input and button below ANDs it
+    // into its own `enabled:`. Bound by `EditorInspector` from the same
+    // `GuideModel.allows_*()` helper as this tab's pill.
+    in property <bool> unlocked: true;
+
+    // Local backing state for the optimize preview checkbox. EditorModel.
+    // optimize_preview_toggled is a callback-only, not a two-way property.
+    in-out property <bool> optimize_preview_checked: false;
+
+    spacing: 8px;
+    Rectangle {
+        height: optimize_header_lbl.preferred-height;
+        // `optimize_hint` is never empty (see `view::optimize_hint`'s
+        // own doc comment: even a disabled Optimize gets an
+        // explanatory reason) -- shown on hover here instead of
+        // permanently occupying the result box below, the same
+        // "move an always-present hint off into a tooltip" fix the
+        // command bar's own Deep Solve/Optimize buttons already got.
+        Tooltip { text: @markdown("\{EditorModel.optimize_hint}"); }
+        optimize_header_lbl := Text { text: "Optimize"; font-size: 12px; font-weight: 700; color: Theme.text-primary; }
+    }
+    Rectangle {
+        height: weights_lbl.preferred-height;
+        Tooltip { text: @markdown("Relative importance, any positive number. 1.0 is neutral."); }
+        weights_lbl := Text { text: "Weights: windowing / extinction / tilt brilliance"; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
+    }
+    HorizontalLayout {
+        spacing: 4px;
+        // The caption above names the three
+        // fields in order; placeholder text repeats which is
+        // which right where the cutter is typing.
+        LineEdit { enabled: root.unlocked; text <=> EditorModel.optimize_weight_windowing; placeholder-text: "windowing"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+        LineEdit { enabled: root.unlocked; text <=> EditorModel.optimize_weight_extinction; placeholder-text: "extinction"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+        LineEdit { enabled: root.unlocked; text <=> EditorModel.optimize_weight_tilt_brilliance; placeholder-text: "tilt brilliance"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+    }
+    // Non-numeric/negative input is rejected Rust-side
+    // (surfaced as an error toast) before it reaches `optimize_design`.
+    Text {
+        text: "Relative weight, any positive number. Higher matters more.";
+        font-size: 9px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+
+    // Yield is
+    // bounded `0..1` (a fraction of the same normalized sum the
+    // three optical weights above share), not a free-form field
+    // like them -- a slider says that at a glance, where a text
+    // field inviting "10" or "-1" would not.
+    Rectangle {
+        height: yield_weight_lbl.preferred-height;
+        Tooltip { text: @markdown("How much throwing away preform volume should cost, blended in alongside the three optical weights above. `0` (default) reproduces every previous Optimize run exactly -- see `ObjectiveWeights::score_with_yield`."); }
+        yield_weight_lbl := Text { text: "Yield weight: " + Math.round(EditorModel.optimize_weight_yield * 100) + "%"; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
+    }
+    Slider {
+        enabled: root.unlocked;
+        minimum: 0.0;
+        maximum: 1.0;
+        value <=> EditorModel.optimize_weight_yield;
+    }
+
+    // A real evaluation-budget/seed/polish
+    // knob each -- `setup_optimize_callback` reads these four
+    // fields when it builds this run's `OptimizeConfig`.
+    Rectangle {
+        height: budget_lbl.preferred-height;
+        Tooltip { text: @markdown("Evaluation budget and a seed for reproducible results."); }
+        budget_lbl := Text { text: "Budget / Seed"; font-size: 10px; color: Theme.text-muted; }
+    }
+    HorizontalLayout {
+        spacing: 4px;
+        LineEdit { enabled: root.unlocked; text <=> EditorModel.optimize_budget_text; placeholder-text: "budget"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+        LineEdit { enabled: root.unlocked; text <=> EditorModel.optimize_seed_text; placeholder-text: "seed"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+    }
+    HorizontalLayout {
+        spacing: 10px;
+        CheckBox { enabled: root.unlocked; text: "Polish"; checked <=> EditorModel.optimize_polish_enabled; }
+        CheckBox {
+            enabled: root.unlocked;
+            text: "Only selected tiers";
+            checked <=> EditorModel.optimize_only_selected;
+        }
+    }
+
+    // Running status / result only -- the always-present hint lives
+    // in the `Tooltip` on the "Optimize" header above instead of
+    // occupying this box permanently; this box appears only while
+    // there is something that just happened or is happening to
+    // report.
+    if EditorModel.optimize_running || EditorModel.optimize_status != "": Rectangle {
+        background: Theme.bg-input;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: EditorModel.optimize_running ? Theme.accent-amber : (EditorModel.optimize_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald);
+        VerticalLayout {
+            padding: 6px;
+            spacing: 4px;
+            Text {
+                text: EditorModel.optimize_status;
+                font-size: 10px;
+                color: EditorModel.optimize_running ? Theme.accent-amber : (EditorModel.optimize_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald);
+                wrap: word-wrap;
+            }
+            // Per-component before/after: windowing/extinction/tilt
+            // brilliance each get their own row, with the blended
+            // score as a separate fourth row, rather than one number
+            // that could hide a trade-off.
+            if EditorModel.optimize_result_rows.length > 0: VerticalLayout {
+                spacing: 2px;
+                for row in EditorModel.optimize_result_rows: HorizontalLayout {
+                    spacing: 4px;
+                    Text { horizontal-stretch: 1; text: row.label; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                    Text { text: row.before; font-size: 10px; color: Theme.text-muted; }
+                    Text { text: "->"; font-size: 10px; color: Theme.text-muted; }
+                    // The direction is the
+                    // point of this table -- coloured so "did it
+                    // help?" reads without parsing the sign out
+                    // of the text beside it.
+                    Text {
+                        text: row.after;
+                        font-size: 10px;
+                        font-weight: 600;
+                        color: row.direction > 0 ? Theme.accent-emerald
+                            : (row.direction < 0 ? Theme.accent-ruby : Theme.text-primary);
+                    }
+                }
+            }
+            // Which tiers a pending result
+            // would actually change, and by how much -- the
+            // aggregate rows above show only the blended
+            // before/after scores, not which tier moved.
+            if EditorModel.optimize_change_rows.length > 0: VerticalLayout {
+                spacing: 2px;
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text { horizontal-stretch: 1; text: "Tiers this would change:"; font-size: 9px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+                    // Shows this pending result's
+                    // candidate geometry in the shared viewport
+                    // before Apply -- `build_optimize_preview_design`/
+                    // `submit_design_ghost_preview` are wired and
+                    // tested, and this checkbox's own `toggled`
+                    // handler below calls
+                    // `EditorModel.optimize_preview_toggled` on
+                    // every change.
+                    CheckBox {
+                        enabled: root.unlocked;
+                        text: "Preview";
+                        checked <=> root.optimize_preview_checked;
+                        toggled => { EditorModel.optimize_preview_toggled(root.optimize_preview_checked); }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text { width: 28px; text: "#"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                    Text { horizontal-stretch: 1; text: "NAME"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                    Text { text: "FROM"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                    Text { text: "TO"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                }
+                for change in EditorModel.optimize_change_rows: HorizontalLayout {
+                    spacing: 4px;
+                    Text { width: 28px; text: change.tier_number; font-size: 10px; color: Theme.text-secondary; }
+                    Text { horizontal-stretch: 1; text: change.name == "" ? "(unnamed)" : change.name; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                    Text { text: change.from_angle; font-size: 10px; color: Theme.text-muted; }
+                    Text { text: change.to_angle; font-size: 10px; font-weight: 600; color: Theme.text-primary; }
+                }
+            }
+            // Only shown while there is a real, current (not stale)
+            // result to commit. Goes through `History::apply`, never
+            // a direct mutation, so it is undoable like every other edit.
+            if EditorModel.optimize_can_apply: Rectangle {
+                height: apply_optimize_btn.preferred-height;
+                Tooltip { text: @markdown("Commit the Optimize result as an undoable edit."); }
+                apply_optimize_btn := Button {
+                    enabled: root.unlocked;
+                    text: "Apply Optimize Result";
+                    primary: true;
+                    clicked => { EditorModel.optimize_apply(); }
+                }
+            }
+        }
+    }
+}

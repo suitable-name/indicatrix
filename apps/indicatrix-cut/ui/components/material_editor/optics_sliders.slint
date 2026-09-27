@@ -1,0 +1,106 @@
+import { Slider } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+
+// The Refractive Index / Dispersion / Specific Gravity / Birefringence
+// sliders -- split out of `material_editor_dialog.slint` to keep that file
+// under its line budget. Each value is two-way bound back to
+// `MaterialEditorDialog`'s own identically-named property (see that file's
+// own doc comments -- `sg_val`'s "0.0 = not recorded" convention in
+// particular).
+export component MaterialOpticsSliders inherits VerticalLayout {
+    spacing: 14px;
+
+    in-out property <float> ri_val: 2.417;
+    in-out property <float> disp_val: 0.044;
+    in-out property <float> sg_val: 0.0;
+    in-out property <float> biref_val: 0.000;
+
+    // 3. Refractive Index (RI) Slider
+    VerticalLayout {
+        spacing: 4px;
+
+        HorizontalLayout {
+            alignment: space-between;
+            Rectangle {
+                height: ri_lbl.preferred-height;
+                Tooltip { text: @markdown("Refractive index n_d, typically 1.4-2.7 for gems (up to 3.2 here for rare high-RI materials)."); }
+                ri_lbl := Text { text: "Refractive Index (nd):"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+            }
+            Text { text: Math.round(root.ri_val * 1000.0) / 1000.0; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+        }
+
+        Slider {
+            minimum: 1.30;
+            maximum: 3.20;
+            value <=> root.ri_val;
+        }
+    }
+
+    // 4. Dispersion (Fire Index) Slider
+    VerticalLayout {
+        spacing: 4px;
+
+        HorizontalLayout {
+            alignment: space-between;
+            Rectangle {
+                height: disp_lbl.preferred-height;
+                Tooltip { text: @markdown("Fire-producing dispersion, typically 0.01-0.044 for gems (diamond is the high end at 0.044)."); }
+                disp_lbl := Text { text: "Dispersion (Fire ΔnF-C):"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+            }
+            Text { text: Math.round(root.disp_val * 1000.0) / 1000.0; font-size: 11px; font-weight: 700; color: Theme.accent-purple; }
+        }
+
+        Slider {
+            minimum: 0.000;
+            maximum: 0.120;
+            value <=> root.disp_val;
+        }
+    }
+
+    // Specific gravity -- without this, a custom
+    // material's Est. Carat Weight stays empty unless a cutter separately
+    // types an SG override in the Yield panel for every design that uses it.
+    // `0.0` reads as "not recorded" on the Rust side (see `MaterialEditorDialog.
+    // sg_val`'s own doc comment) rather than a real zero-density material.
+    VerticalLayout {
+        spacing: 4px;
+
+        HorizontalLayout {
+            alignment: space-between;
+            Rectangle {
+                height: sg_lbl.preferred-height;
+                Tooltip { text: @markdown("Specific gravity (density relative to water) -- used to estimate carat weight. Leave at 0 to leave it unrecorded."); }
+                sg_lbl := Text { text: "Specific Gravity:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+            }
+            Text { text: root.sg_val <= 0.0001 ? "not recorded" : Math.round(root.sg_val * 100.0) / 100.0; font-size: 11px; font-weight: 700; color: Theme.accent-amber; }
+        }
+
+        Slider {
+            minimum: 0.0;
+            maximum: 7.0;
+            step: 0.01;
+            value <=> root.sg_val;
+        }
+    }
+
+    // 5. Birefringence (Double Refraction) Slider
+    VerticalLayout {
+        spacing: 4px;
+
+        HorizontalLayout {
+            alignment: space-between;
+            Rectangle {
+                height: biref_lbl.preferred-height;
+                Tooltip { text: @markdown("Double refraction, 0 for isotropic gems, typically up to 0.05 for most birefringent species (higher for e.g. zircon, calcite)."); }
+                biref_lbl := Text { text: "Birefringence (Δn = ne - no):"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+            }
+            Text { text: Math.round(root.biref_val * 1000.0) / 1000.0; font-size: 11px; font-weight: 700; color: Theme.accent-emerald; }
+        }
+
+        Slider {
+            minimum: -0.050;
+            maximum: 0.100;
+            value <=> root.biref_val;
+        }
+    }
+}

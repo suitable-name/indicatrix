@@ -33,6 +33,21 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        #[cfg(feature = "worker")]
+        Ok(Command::Join(args)) => {
+            if let Err(e) = indicatrix_worker::join::run(&args) {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
+        }
+        // Unreachable in practice: `cli::parse` already refuses `join` on this build.
+        #[cfg(not(feature = "worker"))]
+        Ok(Command::Join(_)) => {
+            eprintln!(
+                "error: this build has no render capacity to contribute -- rebuild with `--features worker` (see --help)"
+            );
+            std::process::exit(1);
+        }
         Ok(Command::CertInit(args)) => {
             if let Err(e) = indicatrix_worker::pki::init(&args.dir) {
                 eprintln!("error: {e}");
@@ -47,7 +62,9 @@ fn main() {
             }
         }
         Ok(Command::CertIssueClient(args)) => {
-            if let Err(e) = indicatrix_worker::pki::issue_client(&args.dir, &args.name, &args.out) {
+            if let Err(e) = indicatrix_worker::pki::issue_client_with_role(
+                &args.dir, &args.name, &args.out, args.role,
+            ) {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }

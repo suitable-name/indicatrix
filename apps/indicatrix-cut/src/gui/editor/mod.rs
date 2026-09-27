@@ -117,8 +117,8 @@ mod deep_solve;
 // `callbacks::retarget_actions::setup_retarget_proposal_changed_callback` each
 // build their own instance -- see that module's own doc comment.
 pub(in crate::gui::editor) mod edit_intent;
-// The worked-example walkthrough's static step list -- see this module's own
-// doc comment.
+// The worked-example walkthrough: step content, automatic advance, and the
+// completion checks every refresh ends in -- see this module's own doc comment.
 mod guide;
 mod loading;
 pub(in crate::gui) mod material_lookup;
@@ -451,12 +451,11 @@ pub fn setup_editor_callbacks(
     );
     // The "Compute Tilt Curves" analysis action.
     callbacks::setup_batch_tilt_for_open_design_callback(ui, &state, render_ctx, db);
-    // None of these three need `state`/`render_ctx` -- the guide and shortcuts
-    // overlays are static data pushed once, and the template gallery's own
-    // "Create" path still goes through `setup_new_design_create_callback`
-    // above (see `templates.rs`'s own doc comment on the still-open
-    // integration step).
-    guide::setup_guide(ui);
+    // The guide pushes its static steps once and re-checks a step's goal against
+    // `state` on entry; the shortcuts overlay is static data, and the template
+    // gallery's own "Create" path goes through `setup_new_design_create_callback`
+    // above (see `templates.rs`'s own doc comment).
+    guide::setup_guide(ui, &state);
     shortcuts::setup_shortcuts_overlay(ui);
     templates::setup_template_gallery(ui);
     setup_editor_secondary_callbacks(

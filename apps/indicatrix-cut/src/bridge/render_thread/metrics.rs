@@ -17,8 +17,9 @@ use std::{
 /// `GpuFacetPlane` is `bytemuck::Pod`, so this is just hashing a byte slice -- far
 /// cheaper than the analytical raytracing it guards against re-running.
 ///
-/// `pub`, not private: `bridge::guide_pass::GuideCache` reuses this exact hash as part
-/// of its own cache-invalidation key rather than a second, parallel implementation.
+/// `pub`, not private: `bridge::frame_cache::guide_pass::GuideCache` reuses this exact
+/// hash as part of its own cache-invalidation key rather than a second, parallel
+/// implementation.
 pub fn hash_planes(planes: &[GpuFacetPlane]) -> u64 {
     let bytes: &[u8] = bytemuck::cast_slice(planes);
     let mut hasher = DefaultHasher::new();

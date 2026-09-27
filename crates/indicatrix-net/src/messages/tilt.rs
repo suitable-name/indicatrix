@@ -145,6 +145,7 @@ mod tests {
             planes: StandardGemCuts::standard_round_brilliant(),
             girdle_frosted: false,
             backdrop: 0.0,
+            environment: crate::scene::SceneEnvironment::Studio,
         }
     }
 

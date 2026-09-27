@@ -50,6 +50,60 @@ pub fn send_render_request<W: Write>(
     Ok(())
 }
 
+/// Sends a `PING` (v14).
+///
+/// The answer arrives as [`StreamEvent::Pong`] with the same `nonce`, reported by
+/// [`run_client_session`] as [`SessionUpdate::Pong`]. Only compiled under this crate's
+/// `render` feature, like the variant itself.
+///
+/// # Errors
+///
+/// Returns [`ClientError::Net`] if writing fails.
+#[cfg(feature = "render")]
+pub fn send_ping<W: Write>(writer: &mut W, nonce: u64) -> Result<(), ClientError> {
+    messages::write_message(writer, &ClientMessage::Ping { nonce })?;
+    Ok(())
+}
+
+/// Sends a `FINAL_IMAGE_REQUEST` (v14).
+///
+/// See `crate::messages::final_image` for the reply sequence. Call
+/// [`Accumulator::begin_request`] with its `request_id` first, as for a `RenderRequest`;
+/// the picture lands in [`Accumulator::final_image`]. Only compiled under this crate's
+/// `render` feature.
+///
+/// # Errors
+///
+/// Returns [`ClientError::Net`] if writing fails.
+#[cfg(feature = "render")]
+pub fn send_final_image_request<W: Write>(
+    writer: &mut W,
+    request: &crate::messages::FinalImageRequest,
+) -> Result<(), ClientError> {
+    messages::write_message(
+        writer,
+        &ClientMessage::FinalImageRequest(Box::new(request.clone())),
+    )?;
+    Ok(())
+}
+
+/// Sends the asset a server asked for with `NEED_ASSET` (v14, HDR environment maps).
+///
+/// The `ASSET` header, then `bytes` as one raw frame (see `crate::messages::asset`).
+/// `bytes` must be exactly the asset the server named -- its SHA-256 is recomputed here
+/// and sent, and a server refuses bytes whose hash is not the one it asked for.
+/// `render`-feature only.
+///
+/// # Errors
+///
+/// Returns [`ClientError::Net`] if `bytes` exceeds `crate::messages::MAX_ASSET_LEN` or
+/// writing fails.
+#[cfg(feature = "render")]
+pub fn send_asset<W: Write>(writer: &mut W, bytes: &[u8]) -> Result<(), ClientError> {
+    messages::write_asset_message(writer, bytes)?;
+    Ok(())
+}
+
 /// Sends a `TILT_CURVES` request -- the client's `-> TiltCurvesRequest(...)`.
 ///
 /// Wraps `request` in the tagged [`ClientMessage::TiltCurvesRequest`] envelope, the way
@@ -155,6 +209,20 @@ pub enum SessionUpdate {
     /// current epoch -- correctly dropped. Surfaced only so a caller can log it at
     /// debug level; no action is expected.
     StaleDropped { request_id: u32 },
+    /// v14: a `DISPLAY_FRAME` for the current epoch replaced
+    /// [`Accumulator::last_display_frame`].
+    DisplayFrame { request_id: u32 },
+    /// v14: the current epoch's `FINAL_IMAGE` is in [`Accumulator::final_image`].
+    FinalImage { request_id: u32 },
+    /// v14: a `PONG` answering the `PING` with this `nonce`.
+    Pong { nonce: u64 },
+    /// v14: the server's render capability changed since `WELCOME`.
+    CapabilityChanged {
+        render: Option<crate::messages::RenderCapability>,
+    },
+    /// v14: the server needs the asset with this SHA-256 before it proceeds --
+    /// answer with [`send_asset`] on the write side.
+    NeedAsset { content_hash: [u8; 32] },
 }
 
 fn to_update(event: &StreamEvent, outcome: ApplyOutcome) -> SessionUpdate {
@@ -202,16 +270,30 @@ fn to_update(event: &StreamEvent, outcome: ApplyOutcome) -> SessionUpdate {
             SessionUpdate::WorkerError(e.clone())
         }
         ApplyOutcome::StaleDropped => {
-            let request_id = match event {
-                StreamEvent::Frame(h) => h.request_id,
-                StreamEvent::Preview(h) => h.request_id,
-                StreamEvent::Progress(p) => p.request_id,
-                StreamEvent::Done(d) => d.request_id,
-                StreamEvent::Error(_) => {
-                    unreachable!("Error is never epoch-gated, so it never yields StaleDropped")
-                }
+            let Some(request_id) = event.request_id() else {
+                unreachable!("request-less events are never epoch-gated, so never StaleDropped")
             };
             SessionUpdate::StaleDropped { request_id }
+        }
+        ApplyOutcome::DisplayFrameReplaced | ApplyOutcome::FinalImageReceived => {
+            let request_id = event
+                .request_id()
+                .expect("picture events always carry a request_id");
+            if outcome == ApplyOutcome::DisplayFrameReplaced {
+                SessionUpdate::DisplayFrame { request_id }
+            } else {
+                SessionUpdate::FinalImage { request_id }
+            }
+        }
+        ApplyOutcome::Pong { nonce } => SessionUpdate::Pong { nonce },
+        ApplyOutcome::NeedAsset { content_hash } => SessionUpdate::NeedAsset { content_hash },
+        ApplyOutcome::CapabilityChanged => {
+            let StreamEvent::CapabilityChanged { render } = event else {
+                unreachable!("CapabilityChanged only ever comes from a CapabilityChanged event")
+            };
+            SessionUpdate::CapabilityChanged {
+                render: render.clone(),
+            }
         }
     }
 }
@@ -288,12 +370,13 @@ mod tests {
             planes: StandardGemCuts::standard_round_brilliant(),
             girdle_frosted: false,
             backdrop: 0.0,
+            environment: crate::scene::SceneEnvironment::Studio,
         }
     }
 
     #[cfg(feature = "render")]
     fn render_request(request_id: u32) -> crate::messages::RenderRequest {
-        use crate::messages::{PreviewConfig, StreamConfig, TransferMode};
+        use crate::messages::{PreviewConfig, RequestIntent, StreamConfig, TransferMode};
         crate::messages::RenderRequest {
             request_id,
             scene: tiny_scene(),
@@ -307,7 +390,32 @@ mod tests {
                     height: 1,
                 }),
             },
+            intent: RequestIntent::Interactive,
         }
+    }
+
+    /// The v14 connection-level events reach `on_update` through the session loop,
+    /// ahead of (and independent of) any request epoch.
+    #[test]
+    fn run_client_session_reports_pong_and_capability_changed() {
+        let mut wire = Vec::new();
+        write_stream_event(&mut wire, &StreamEvent::Pong { nonce: 5 }, None).unwrap();
+        write_stream_event(
+            &mut wire,
+            &StreamEvent::CapabilityChanged { render: None },
+            None,
+        )
+        .unwrap();
+        let mut acc = Accumulator::new(1, 1);
+        let mut updates = Vec::new();
+        run_client_session(&mut Cursor::new(wire), &mut acc, |u| updates.push(u)).unwrap();
+        assert_eq!(
+            updates,
+            vec![
+                SessionUpdate::Pong { nonce: 5 },
+                SessionUpdate::CapabilityChanged { render: None },
+            ]
+        );
     }
 
     #[cfg(feature = "render")]

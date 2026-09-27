@@ -43,11 +43,9 @@ pub fn count_to_exponent(count: u32) -> u32 {
 
 /// Same mapping as [`exponent_to_count`], but clamped to an explicit
 /// `min_exponent..=max_exponent` range instead of this module's own fixed
-/// `MIN_EXPONENT..=MAX_EXPONENT`. The remote render sample budget
-/// (`gui::remote::REMOTE_SAMPLES_MIN_EXPONENT`/`MAX_EXPONENT`) reuses this rather than
-/// a second, parallel power-of-two implementation, since a remote render's one-shot
-/// full-quality nature affords a wider range than the local interactive target's own
-/// slider.
+/// `MIN_EXPONENT..=MAX_EXPONENT` -- for any slider whose power-of-two range differs
+/// from the local interactive target's own, so it reuses this rather than a second,
+/// parallel power-of-two implementation.
 #[must_use]
 pub const fn exponent_to_count_bounded(exponent: u32, min_exponent: u32, max_exponent: u32) -> u32 {
     1u32 << clamp_exponent(exponent, min_exponent, max_exponent)

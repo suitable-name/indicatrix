@@ -14,9 +14,11 @@ apart.
 Two independent gates, both of which must pass:
 
 1. **Chain of trust.** The client presents a certificate signed by the same private CA
-   as the worker's own. Mutual TLS — the client verifies the worker too.
+   as the server's own. Mutual TLS — the client verifies the server too.
 2. **The allowlist.** The client certificate's SHA-256 fingerprint must appear in
-   `allowlist.txt`.
+   the listener's own allowlist: `allowlist-viewers.txt` on the viewer port (a pre-role
+   `allowlist.txt` keeps serving as that list until the new file exists),
+   `allowlist-workers.txt` on the coordinator's worker port.
 
 The second is not redundant. The CA answers "was this certificate issued by me"; the
 allowlist answers "is *this specific* certificate still welcome". Without it, every
@@ -32,6 +34,43 @@ flowchart LR
     C -- no --> R2[refused]
     C -- yes --> D[render requests accepted]
 ```
+
+### Two client roles, two ports (coordinator mode)
+
+`serve` accepts viewers on the viewer port (7878) and `indicatrix-worker join` render
+workers on a separate worker port (7880). A client certificate records its role in its
+Common Name: `worker:<name>` for a worker, anything else for a viewer (a viewer
+`--name` may not start with `worker:`, so the prefix only ever comes from an explicit
+`--role worker`). Each listener checks **both** the certificate's role and its own
+allowlist, and the `HELLO`'s claimed role on top: a viewer certificate on the worker
+port, a worker certificate on the viewer port, or a `HELLO` of the wrong role is
+refused with `ROLE_REFUSED` and never served. A leaked viewer certificate therefore
+cannot register as a worker (and receive scenes to render), and a worker certificate
+cannot browse the library or request renders. `--trust-any-client-cert` skips the
+allowlists, never the role check. Each role has its own enrollment listener (7879 /
+7881) with its own token registry; a token only claims on the listener that issued it.
+
+### What a joined worker is trusted with
+
+An allowlisted worker receives the scenes viewers render — geometry, material and, for
+an HDR-lit scene, the HDR map's bytes — and its returned samples are summed into
+viewers' images. The coordinator checks the shape of what comes back (sample ranges,
+buffer sizes, the same build as everyone else via the handshake), not whether the
+numbers are *right*: a malicious or broken worker that passed both gates can spoil the
+images it contributes to. Only enroll machines you control as workers, and revoke one
+by deleting its line from `allowlist-workers.txt`.
+
+### HDR maps on disk
+
+Scenes lit by an HDR map carry only the map's SHA-256. A node that lacks the bytes asks
+its peer (the viewer, or the coordinator) and stores them in its bounded asset cache
+(`INDICATRIX_ASSET_CACHE_DIR`, see the README). A cached file is named by its hash
+alone — a peer never supplies a path or file name — and its bytes are verified against
+that hash when written and re-verified when read. The cache is capped
+(`INDICATRIX_ASSET_CACHE_MIB`, least recently used files evicted first), and a single
+map is limited to 256 MiB on the wire. A viewer's maps therefore persist on the
+coordinator and on every worker that rendered them until evicted; delete the cache
+directory to remove them.
 
 ## Enrollment: how a client gets its certificate
 
@@ -131,10 +170,12 @@ that client's key.
 
 | Flag | What you give up |
 |---|---|
-| `--trust-any-client-cert` | The allowlist. Any certificate the CA ever signed is accepted, forever — you lose per-client revocability entirely, keeping only "was it signed by my CA". |
+| `--trust-any-client-cert` | Both allowlists (viewers and workers). Any certificate the CA ever signed with the port's role is accepted, forever — you lose per-client revocability entirely, keeping only "was it signed by my CA". |
 | `--allow-remote` | Loopback-only binding. Required for any real remote worker; it exists so that exposing the machine is a visible, deliberate act rather than a default. |
 | `--insecure-no-tls` | Everything: no TLS, no authentication, no client identity. Refused on a non-loopback bind, and every accepted connection logs a warning. Local debugging only. |
-| `--no-enroll` | The token path. The manual `cert issue-client` workflow still works; this just opens no extra port. |
+| `--no-enroll` | The token path, for viewers and workers alike. The manual `cert issue-client` workflow still works; this just opens no extra port. |
+| `--no-workers` | Nothing — it *removes* exposure: no worker port and no worker enrollment listener are opened. |
+| `--max-job-memory-mib` | Raising it lets allowlisted viewers make the coordinator hold more memory for in-flight jobs spread over workers (each job is charged `width × height × 48` bytes). |
 
 ## What this does *not* protect against
 

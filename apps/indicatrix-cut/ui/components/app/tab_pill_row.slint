@@ -1,0 +1,205 @@
+import { Theme } from "../../theme.slint";
+import { EditorModel } from "../../models/editor.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { GuideLockTip } from "../guide_lock.slint";
+
+// Catalogue tab pills (3D Spectral Preview / Cutting Schedule / Files &
+// Downloads) share one 28px row with the Live Render/Edit/Pop Out view pills
+// -- split out of `app.slint` to keep that file under its line budget. The
+// row is always visible (tabs must be reachable from every tab), with the
+// view pills as a conditional right-hand cluster shown only when `active_tab
+// == 0` (they are meaningless on Cutting Schedule/Files).
+//
+// `active_tab`/`render_view_tab` are two-way bound to `MainWindow`'s own
+// properties of the same name (see `app.slint`), so a click here updates
+// `MainWindow`'s copy immediately; the matching `*_changed` callbacks are
+// forwarded up separately since Rust hooks those directly on `MainWindow`.
+// `live_render_detached` is read-only here (`MainWindow` is the only writer,
+// via its own callback's Rust handler) -- only `live_render_detach_toggled`
+// needs forwarding.
+//
+// While the worked-example guide runs, the Cutting Schedule/Files pills, Live
+// Render and Pop Out follow `GuideModel.allows_view_tabs()`. The 3D tab pill and
+// the Edit pill never lock, so the guide can never strand the user away from the
+// Edit sub-tab its steps happen in.
+export component TabViewPillRow inherits HorizontalLayout {
+    height: 28px;
+    spacing: 6px;
+
+    in-out property <int> active_tab: 0;
+    callback active_tab_changed(int);
+    in-out property <int> render_view_tab: 0;
+    callback render_view_tab_changed(int);
+    in property <bool> live_render_detached: false;
+    callback live_render_detach_toggled(bool);
+
+    Rectangle {
+        height: 28px;
+        background: root.active_tab == 0 ? Theme.primary : (tabpill0_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: root.active_tab == 0 ? Theme.accent-cyan : Theme.border-subtle;
+        tabpill0_touch := TouchArea { clicked => { root.active_tab = 0; root.active_tab_changed(0); } }
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            alignment: center;
+            spacing: 6px;
+            Image { source: @image-url("../../icons/gem.svg"); colorize: root.active_tab == 0 ? Theme.text-on-primary : Theme.text-secondary; width: 11px; height: 11px; vertical-alignment: center; }
+            Text { text: "3D Spectral Preview (1)"; font-size: 11px; font-weight: 600; color: root.active_tab == 0 ? Theme.text-on-primary : Theme.text-secondary; vertical-alignment: center; }
+        }
+    }
+
+    Rectangle {
+        height: 28px;
+        opacity: GuideModel.allows_view_tabs() ? 1.0 : 0.4;
+        background: root.active_tab == 1 ? Theme.primary : (tabpill1_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: root.active_tab == 1 ? Theme.accent-cyan : Theme.border-subtle;
+        tabpill1_touch := TouchArea { enabled: GuideModel.allows_view_tabs(); clicked => { root.active_tab = 1; root.active_tab_changed(1); } }
+        GuideLockTip { locked: !GuideModel.allows_view_tabs(); }
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            alignment: center;
+            spacing: 6px;
+            Image { source: @image-url("../../icons/ruler.svg"); colorize: root.active_tab == 1 ? Theme.text-on-primary : Theme.text-secondary; width: 11px; height: 11px; vertical-alignment: center; }
+            Text { text: "Cutting Schedule (2)"; font-size: 11px; font-weight: 600; color: root.active_tab == 1 ? Theme.text-on-primary : Theme.text-secondary; vertical-alignment: center; }
+        }
+    }
+
+    Rectangle {
+        height: 28px;
+        opacity: GuideModel.allows_view_tabs() ? 1.0 : 0.4;
+        background: root.active_tab == 2 ? Theme.primary : (tabpill2_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: root.active_tab == 2 ? Theme.accent-cyan : Theme.border-subtle;
+        tabpill2_touch := TouchArea { enabled: GuideModel.allows_view_tabs(); clicked => { root.active_tab = 2; root.active_tab_changed(2); } }
+        GuideLockTip { locked: !GuideModel.allows_view_tabs(); }
+        HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 12px;
+            alignment: center;
+            spacing: 6px;
+            Image { source: @image-url("../../icons/folder.svg"); colorize: root.active_tab == 2 ? Theme.text-on-primary : Theme.text-secondary; width: 11px; height: 11px; vertical-alignment: center; }
+            Text { text: "Files & Downloads (3)"; font-size: 11px; font-weight: 600; color: root.active_tab == 2 ? Theme.text-on-primary : Theme.text-secondary; vertical-alignment: center; }
+        }
+    }
+
+    Rectangle { horizontal-stretch: 1; }
+
+    // View pills -- Live Render/Edit sub-tab + Pop Out -- only
+    // meaningful while looking at the 3D Preview tab. Kept in this shared row
+    // rather than `GemViewportView`'s own top control row: `GemViewportView`
+    // isn't instantiated at all while `live_render_detached` (see
+    // `app.slint`'s placeholder `Rectangle`, "Dock Back" instead of the
+    // viewport), so these pills would vanish from the main window exactly
+    // when they matter most -- getting back from a popped-out Live Render, or
+    // over to Edit, has no other control on this window
+    // (`detached_render_window.slint` carries no return affordance of its
+    // own).
+    if root.active_tab == 0: HorizontalLayout {
+        spacing: 6px;
+
+        Rectangle {
+            height: 28px;
+            opacity: GuideModel.allows_view_tabs() ? 1.0 : 0.4;
+            background: root.render_view_tab == 0 ? Theme.primary : (live_render_tab_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: root.render_view_tab == 0 ? Theme.accent-cyan : Theme.border-subtle;
+            live_render_tab_touch := TouchArea {
+                enabled: GuideModel.allows_view_tabs();
+                clicked => { root.render_view_tab = 0; root.render_view_tab_changed(0); }
+            }
+            GuideLockTip { locked: !GuideModel.allows_view_tabs(); }
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                alignment: center;
+                spacing: 6px;
+                Image {
+                    source: @image-url("../../icons/gem.svg");
+                    colorize: root.render_view_tab == 0 ? Theme.text-on-primary : Theme.text-secondary;
+                    width: 11px;
+                    height: 11px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "Live Render";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: root.render_view_tab == 0 ? Theme.text-on-primary : Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        if EditorModel.enabled: Rectangle {
+            height: 28px;
+            background: root.render_view_tab == 1 ? Theme.primary : (edit_tab_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: root.render_view_tab == 1 ? Theme.accent-cyan : Theme.border-subtle;
+            edit_tab_touch := TouchArea {
+                clicked => { root.render_view_tab = 1; root.render_view_tab_changed(1); }
+            }
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 12px;
+                alignment: center;
+                spacing: 6px;
+                Image {
+                    source: @image-url("../../icons/pencil.svg");
+                    colorize: root.render_view_tab == 1 ? Theme.text-on-primary : Theme.text-secondary;
+                    width: 11px;
+                    height: 11px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: "Edit";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: root.render_view_tab == 1 ? Theme.text-on-primary : Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        if root.render_view_tab == 0: Rectangle {
+            height: 28px;
+            opacity: GuideModel.allows_view_tabs() ? 1.0 : 0.4;
+            background: root.live_render_detached ? Theme.accent-emerald : (detach_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: root.live_render_detached ? Theme.accent-emerald : Theme.border-subtle;
+            detach_touch := TouchArea {
+                enabled: GuideModel.allows_view_tabs();
+                clicked => { root.live_render_detach_toggled(!root.live_render_detached); }
+            }
+            GuideLockTip { locked: !GuideModel.allows_view_tabs(); }
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 10px;
+                alignment: center;
+                spacing: 6px;
+                Image {
+                    source: @image-url("../../icons/arrow-up-right.svg");
+                    colorize: root.live_render_detached ? Theme.text-on-primary : Theme.text-secondary;
+                    width: 11px;
+                    height: 11px;
+                    vertical-alignment: center;
+                }
+                Text {
+                    text: root.live_render_detached ? "Popped Out" : "Pop Out";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: root.live_render_detached ? Theme.text-on-primary : Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

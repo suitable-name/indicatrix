@@ -25,11 +25,14 @@ pub mod accumulate;
 pub mod handshake;
 pub mod session;
 
-pub use accumulate::{Accumulator, ApplyOutcome, PreviewSnapshot};
-pub use handshake::{ConnectionInfo, test_connection};
+pub use accumulate::{Accumulator, ApplyOutcome, PictureSnapshot, PreviewSnapshot};
+pub use handshake::{ConnectionInfo, handshake_with_hello, test_connection};
 pub use session::{SessionUpdate, run_client_session, send_cancel, send_library_request};
 #[cfg(feature = "render")]
-pub use session::{recv_tilt_curves_response, send_render_request, send_tilt_curves_request};
+pub use session::{
+    recv_tilt_curves_response, send_asset, send_final_image_request, send_ping,
+    send_render_request, send_tilt_curves_request,
+};
 
 use crate::messages::{ErrorMsg, NetError};
 
@@ -49,8 +52,9 @@ pub enum ClientError {
     Incompatible(crate::handshake::Incompatible),
     /// The reply to `HELLO` decoded as neither `WELCOME` nor `ERROR`.
     MalformedHandshakeReply,
-    /// A `FRAME`/`PREVIEW` payload failed [`crate::radiance::decode`] -- wrong length
-    /// (a worker/viewer dimension mismatch) or misaligned bytes.
+    /// A `FRAME`/`PREVIEW` payload failed to decode -- wrong length (a worker/viewer
+    /// dimension mismatch), misaligned bytes, or (v14) a compressed payload that failed
+    /// the bounded-decode checks of `crate::radiance::payload`.
     Radiance(crate::radiance::RadianceError),
 }
 
@@ -63,7 +67,7 @@ impl std::fmt::Display for ClientError {
             Self::MalformedHandshakeReply => {
                 write!(f, "handshake reply decoded as neither WELCOME nor ERROR")
             }
-            Self::Radiance(e) => write!(f, "malformed radiance payload: {e:?}"),
+            Self::Radiance(e) => write!(f, "malformed radiance payload: {e}"),
         }
     }
 }

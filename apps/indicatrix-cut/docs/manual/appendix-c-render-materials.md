@@ -67,7 +67,7 @@ only ones offered by older versions of the drop-down.
   numbers rather than a checked material (Chapter 12). Rutile is included,
   with its anisotropic Fresnel solve verified at its birefringence magnitude —
   see the `built_in_material_rutile` doc comment in
-  `crates/indicatrix/src/optics/materials.rs`.
+  `crates/indicatrix/src/optics/materials/rutile.rs`.
 
 ## Next steps
 

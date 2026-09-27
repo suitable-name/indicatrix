@@ -73,18 +73,21 @@ relative to wherever you launched the program.
 
 ## Starting from nothing: the empty state
 
-Opening the Edit sub-tab (Chapter 3) with no design loaded shows a card grid
-instead of a blank viewport, with four ways in:
+Opening the Edit sub-tab (Chapter 3) before any design has been created,
+loaded or opened shows a card grid instead of a blank viewport, with four ways
+in. Once a design exists the grid is gone for good -- a brand-new design with
+no tiers yet shows its preform with a small "no tiers yet" hint and a
+**+ Add Tier** button instead:
 
 - **New Design...** opens the New Design dialog (Chapter 3), with a
   template gallery of six cards -- Empty plus five built-in faceting
   designs -- each shown with a shape-glyph placeholder rather than a live
   thumbnail. Every card is selectable.
-- **Open the Worked Example** builds the exact stone Chapter 7's worked
-  example walks through (a Cylinder preform, 96-tooth gear, 8-fold mirrored
-  symmetry, the Standard Round Brilliant template) and immediately opens the
-  in-app guide panel at its first step, so you can follow along with a real
-  design already on screen instead of an empty tier table.
+- **Open the Worked Example** opens the in-app guide panel at its first step,
+  which walks you through building Chapter 7's stone yourself: an Empty design
+  from the New Design dialog, then the girdle, pavilion, crown and table tier
+  by tier. (For the finished stone in one click, pick the dialog's "Standard
+  Round Brilliant" template instead.)
 - **Open Recent** lists up to four of your own most-recently-used native
   files -- the same list File > Open Recent uses.
 - **Import a Folder** points you at the Import button in the top toolbar
@@ -94,10 +97,14 @@ instead of a blank viewport, with four ways in:
 ## The worked-example guide and the keyboard-shortcuts overlay
 
 Help > **Guide: New Design Walkthrough** (or the empty state's "Open the
-Worked Example" card) opens a step panel beside the Edit tab's tier table,
-walking through Chapter 7's worked example one step at a time, highlighting
-the tier table or the Design Settings panel where a step's action happens.
-Close it any time with the × in its corner; reopen it from the Help menu.
+Worked Example" card) opens a step panel beside the Edit tab's tier table
+(floating near the window's bottom-right corner on a narrow window, the Live
+Render tab or the catalogue tabs -- drag it by its header to move it), walking
+through Chapter 7's worked example one step at a time. Each step lists
+numbered actions, outlines the control it is about, moves on by itself once
+its goal is reached, and locks the controls it does not need. The ▾ button
+collapses it to a small "Guide · Step N of M" pill. Close it any time with the
+× in its corner -- that unlocks everything -- and reopen it from the Help menu.
 
 Help > **Keyboard Shortcuts** (or press **?** with no text field focused)
 opens an in-app list of every shortcut in Appendix B -- both are generated
@@ -135,10 +142,11 @@ the program the same way you did before. Exporting is not affected by this:
 every export asks you where to save through a normal file-save window, and
 `./exports/` is only ever offered as a suggested starting folder.
 
-You can also point the app at a **remote worker's** library instead of your
-local one — see Chapter 10. A small badge next to the status line always
-shows which library you are currently browsing ("Local library" or the
-remote worker's name), so you can tell at a glance.
+You can also point the app at a **remote** library (the design library of
+the remote coordinator you have set up) instead of your local one — see
+Chapter 10. A small badge next to the status line always shows which library
+you are currently browsing ("Local library" or the remote's name), so you can
+tell at a glance.
 
 ## Bringing your own designs in
 
@@ -163,8 +171,8 @@ in automatically rather than being left blank.
 
 ## Settings and where they are stored
 
-Your rendering and remote-worker preferences (sample count, bounce cap,
-exposure, lighting, remote workers, lighting presets, and more — Chapters
+Your rendering and remote preferences (sample count, bounce cap,
+exposure, lighting, the remote coordinator, lighting presets, and more — Chapters
 2, 9, and 10 cover what each one does) are saved automatically to a settings
 file, so they come back the next time you start the app. Its location
 depends on your operating system:

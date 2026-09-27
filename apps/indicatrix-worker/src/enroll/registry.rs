@@ -2,7 +2,7 @@
 //! `crate::enroll`'s module doc comment for the full security rationale.
 
 use crate::pki;
-use indicatrix_net::{tls::Fingerprint, token};
+use indicatrix_net::{messages::PeerRole, tls::Fingerprint, token};
 use std::{
     fmt,
     path::Path,
@@ -104,23 +104,49 @@ pub(super) struct ClaimedEnrollment {
     pub(super) bundle: EnrollBundle,
 }
 
-/// All enrollments issued by this `serve` process that haven't yet been claimed or
-/// expired.
+/// All unclaimed, unexpired enrollments of one enrollment listener of this `serve`.
+///
+/// One registry per role (see `super`'s module doc comment), so a token only ever
+/// claims where it was issued.
 ///
 /// Lives for exactly the lifetime of one `serve` invocation -- see the module doc
 /// comment on why a restart dropping everything here is intended, not a bug.
-#[derive(Default)]
 pub struct EnrollRegistry {
     pub(super) pending: Mutex<Vec<PendingEnrollment>>,
+    role: PeerRole,
+}
+
+impl Default for EnrollRegistry {
+    fn default() -> Self {
+        Self::for_role(PeerRole::Viewer)
+    }
 }
 
 impl EnrollRegistry {
+    /// A VIEWER enrollment registry.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Mints a new client-certificate bundle for `name` and registers it as pending,
+    /// An enrollment registry minting certificates of `role`.
+    #[must_use]
+    pub const fn for_role(role: PeerRole) -> Self {
+        Self {
+            pending: Mutex::new(Vec::new()),
+            role,
+        }
+    }
+
+    /// The certificate role this registry mints.
+    #[must_use]
+    pub const fn role(&self) -> PeerRole {
+        self.role
+    }
+
+    /// Mints a new client-certificate bundle of this registry's role for `name` (the
+    /// bare label; a worker certificate's Common Name gets the `worker:` prefix) and
+    /// registers it as pending,
     /// with a fresh 256-bit CSPRNG secret (the same CSPRNG this workspace's TLS/PKI
     /// stack already uses internally). Returns the encoded token and its TTL.
     ///
@@ -150,8 +176,10 @@ impl EnrollRegistry {
         name: &str,
         ttl: Duration,
     ) -> Result<(String, u64), EnrollIssueError> {
-        let name = indicatrix_net::tls::sanitize_allowlist_label(name);
-        let bundle = pki::issue_client_in_memory(pki_dir, &name)?;
+        let label = indicatrix_net::tls::sanitize_allowlist_label(name);
+        let bundle = pki::issue_client_in_memory(pki_dir, &label, self.role)?;
+        // The allowlist label is the Common Name (`worker:<name>` for a worker).
+        let name = bundle.common_name.clone();
 
         let mut secret = [0u8; token::SECRET_LEN];
         random_bytes(&mut secret)?;

@@ -8,7 +8,7 @@
 //!
 //! - `tilt_deg` (theta): angle from the table normal (`+Y`), 0-90 degrees -- how
 //!   lapidaries describe a cut-orientation choice (see Tourmaline's `c_axis: Vec3::X`
-//!   comment in `crates/indicatrix/src/optics/materials.rs`).
+//!   comment in `crates/indicatrix/src/optics/materials/mod.rs`).
 //! - `azimuth_deg` (phi): rotation around `+Y`, 0-360 degrees.
 //!
 //! `c_axis = (sin(theta)*cos(phi), cos(theta), sin(theta)*sin(phi))`.

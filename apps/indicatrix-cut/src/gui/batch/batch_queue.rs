@@ -1,5 +1,5 @@
 //! A shared work queue that lets a LOCAL worker and a REMOTE dispatcher process the
-//! same catalogue-wide batch (`gui::preview_batch`, `gui::tilt_batch`) CONCURRENTLY,
+//! same catalogue-wide batch (`gui::batch::preview`, `gui::batch::tilt`) CONCURRENTLY,
 //! each claiming the next unclaimed item as soon as it is free -- the mechanism behind
 //! `settings::model::LiveComputeTarget::Both`.
 //!
@@ -93,8 +93,8 @@ impl<T> WorkQueue<T> {
 }
 
 /// Which lane(s) a batch should run for `target`, given whether a remote worker is
-/// configured -- shared by `gui::preview_batch::spawn_preview_batch` and
-/// `gui::tilt_batch::spawn_tilt_batch` so the two batches can't drift apart on it.
+/// configured -- shared by `gui::batch::preview::wiring::spawn_preview_batch` and
+/// `gui::batch::tilt::wiring::spawn_tilt_batch` so the two batches can't drift apart on it.
 ///
 /// - `LocalOnly`: local only. `RemoteOnly`: remote only, even with no worker configured
 ///   (see `run_remote`'s doc comment).

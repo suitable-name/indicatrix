@@ -2,7 +2,7 @@
 //! accumulation-buffer reset ([`update_accumulation_state`]), the
 //! suspension/ownership/combining decisions for Local+Remote combined live rendering
 //! ([`SuspensionFlags`]/[`remote_suspends_local`]/[`should_combine_remote`]/
-//! [`resolve_remote_ownership`]/[`combined_sample_offset`]), and the UI hand-off
+//! [`resolve_remote_ownership`]), and the UI hand-off
 //! ([`push_frame_to_ui`]). See `mod.rs`'s doc comment for the full design.
 //!
 //! [`spawn_render_thread`]: super::spawn_render_thread
@@ -306,10 +306,10 @@ pub(super) const fn remote_suspends_local(
     remote_active && matches!(live_compute_target, LiveComputeTarget::RemoteOnly)
 }
 
-/// Whether the render loop's display cycle should fold `RenderContext::
-/// remote_accumulator`'s running total into the shown image -- true only for
-/// [`LiveComputeTarget::Both`] while a resolved `remote_active` says a remote render
-/// still owns part of the image (this stays `true` well past completion, so local's
+/// Whether the render loop should claim its per-frame ranges from `RenderContext::
+/// live_epoch` and fold that epoch's remote contribution into the shown image -- true
+/// only for [`LiveComputeTarget::Both`] while a resolved `remote_active` says a remote
+/// epoch still owns part of the image (this stays `true` well past completion, so local's
 /// continued tracing keeps adding to remote's finished contribution). Always `false`
 /// for `RemoteOnly`/`LocalOnly` -- `RemoteOnly` never reaches this at all since
 /// [`remote_suspends_local`] suspends the whole display step outright in that mode.
@@ -320,19 +320,6 @@ pub(super) const fn should_combine_remote(
     live_compute_target: LiveComputeTarget,
 ) -> bool {
     remote_active && matches!(live_compute_target, LiveComputeTarget::Both)
-}
-
-/// The absolute sample index local tracing's `sample_offset` should use for a frame
-/// that has already traced `local_pre_frame_count` samples this epoch -- see the
-/// module doc comment's disjointness argument. `remote_reserved_samples` is `0`
-/// whenever nothing is reserved, making this an identity on `local_pre_frame_count`,
-/// same as before combining existed. Pure and unit-tested.
-#[must_use]
-pub(super) const fn combined_sample_offset(
-    remote_reserved_samples: u32,
-    local_pre_frame_count: u32,
-) -> u32 {
-    remote_reserved_samples + local_pre_frame_count
 }
 
 /// The single choke point that releases stale remote-image ownership -- see
@@ -606,7 +593,7 @@ mod tests {
 
     /// Verify requirement: "a settled combined render is not overwritten by either
     /// engine" -- local's growing sample count only ever ADDS to what
-    /// `remote_accumulator` already holds, so the combined image can only converge
+    /// the live epoch's remote sum already holds, so the combined image can only converge
     /// further, never regress to a from-scratch restart.
     #[test]
     fn a_settled_combined_render_keeps_combining_rather_than_being_overwritten() {
@@ -634,38 +621,6 @@ mod tests {
              reset accum_buffer (see update_accumulation_state's own dirty handling) is \
              never summed with a now-stale-scene remote contribution"
         );
-    }
-
-    // ---- Disjoint sample ranges for the combined live path ---------------------------
-
-    #[test]
-    fn local_sample_offset_never_falls_inside_remotes_reserved_range() {
-        // The same disjoint-sample-range property `export_thread::sample_cursor::
-        // SampleCursor` proves for the export path's dynamically-claimed ranges,
-        // specialised here to the live path's fixed reservation.
-        for remote_reserved_samples in [0u32, 128, 512, 4096] {
-            for local_pre_frame_count in [0u32, 1, 64, 10_000] {
-                let sample_offset =
-                    combined_sample_offset(remote_reserved_samples, local_pre_frame_count);
-                assert!(
-                    sample_offset >= remote_reserved_samples,
-                    "local's sample_offset must never fall inside remote's reserved \
-                     range [0, {remote_reserved_samples})"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn a_reservation_of_zero_reproduces_pre_combining_behaviour_exactly() {
-        // `remote_reserved_samples == 0` is what every non-combining frame feeds this
-        // -- must be a true no-op, bit-identical to before combining existed.
-        for local_pre_frame_count in [0u32, 1, 64, 10_000] {
-            assert_eq!(
-                combined_sample_offset(0, local_pre_frame_count),
-                local_pre_frame_count
-            );
-        }
     }
 
     // ---- resolve_remote_ownership: every dirty/remote_active transition it must

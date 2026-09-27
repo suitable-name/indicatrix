@@ -27,11 +27,11 @@ impl RemoteUnavailable {
     #[must_use]
     pub fn message(&self) -> String {
         match self {
-            Self::NoWorkerConfigured => "No remote worker is configured.".to_string(),
-            Self::Unreachable(e) => format!("Remote worker unreachable ({e})."),
+            Self::NoWorkerConfigured => "No remote coordinator is configured.".to_string(),
+            Self::Unreachable(e) => format!("Remote coordinator unreachable ({e})."),
             Self::LibraryOnly => {
-                "The configured worker serves the design library only -- it has no \
-                 render capacity."
+                "The configured remote serves the design library only -- it has no \
+                 render capacity (no --render lane and no joined workers)."
                     .to_string()
             }
         }
@@ -47,6 +47,9 @@ pub struct RemoteCapability {
     /// export's `width * height` BEFORE ever dispatching, never assumed to be the
     /// hardcoded `indicatrix-worker` default. See `run_export`'s pixel-cap fallback.
     pub max_pixels: u32,
+    /// The remote's `RenderCapability::hdr` (protocol v14): whether it renders scenes lit
+    /// by an HDR map -- `bridge::remote::remote_can_render`'s per-capability input.
+    pub hdr: bool,
 }
 
 /// Whether an export at `width x height` exceeds `capability`'s advertised
@@ -61,22 +64,28 @@ pub(in crate::bridge::export_thread) fn exceeds_pixel_cap(
     u64::from(width) * u64::from(height) > u64::from(capability.max_pixels)
 }
 
-/// Probes the first configured worker -- the same "session-wide, first entry"
-/// convention `gui::remote::orchestrator::poll_tick` uses -- for render capacity.
-/// Blocking (a real TLS handshake); callers run this off the UI thread.
+/// Probes the configured remote endpoint (`AppSettings::remote` --
+/// the one remote every feature uses) for render capacity. Blocking (a real TLS
+/// handshake); callers run this off the UI thread.
 ///
 /// # Errors
 ///
 /// See [`RemoteUnavailable`]'s variants.
-pub fn probe_remote(workers: &[WorkerSettings]) -> Result<RemoteCapability, RemoteUnavailable> {
-    let Some(worker) = workers.first().cloned() else {
+pub fn probe_remote(
+    worker: Option<&WorkerSettings>,
+) -> Result<RemoteCapability, RemoteUnavailable> {
+    let Some(worker) = worker.cloned() else {
         return Err(RemoteUnavailable::NoWorkerConfigured);
     };
     match remote_render::connect_and_handshake(&worker) {
         Ok((_stream, welcome)) => match welcome.render {
-            Some(RenderCapability { max_pixels, .. }) => {
-                Ok(RemoteCapability { worker, max_pixels })
-            }
+            Some(RenderCapability {
+                max_pixels, hdr, ..
+            }) => Ok(RemoteCapability {
+                worker,
+                max_pixels,
+                hdr,
+            }),
             None => Err(RemoteUnavailable::LibraryOnly),
         },
         Err(e) => Err(RemoteUnavailable::Unreachable(e.to_string())),
@@ -88,9 +97,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn probe_remote_reports_no_worker_configured_when_the_list_is_empty() {
+    fn probe_remote_reports_no_worker_configured_without_a_remote() {
         assert_eq!(
-            probe_remote(&[]),
+            probe_remote(None),
             Err(RemoteUnavailable::NoWorkerConfigured)
         );
     }
@@ -102,7 +111,7 @@ mod tests {
             cert_dir: std::env::temp_dir().display().to_string(),
             ..WorkerSettings::default()
         };
-        let err = probe_remote(std::slice::from_ref(&worker)).unwrap_err();
+        let err = probe_remote(Some(&worker)).unwrap_err();
         assert!(matches!(err, RemoteUnavailable::Unreachable(_))); // nothing listens here
     }
 
@@ -110,6 +119,7 @@ mod tests {
         RemoteCapability {
             worker: WorkerSettings::default(),
             max_pixels,
+            hdr: false,
         }
     }
 
@@ -130,7 +140,7 @@ mod tests {
         assert!(
             RemoteUnavailable::NoWorkerConfigured
                 .message()
-                .contains("No remote worker")
+                .contains("No remote coordinator")
         );
         assert!(
             RemoteUnavailable::LibraryOnly

@@ -1,0 +1,249 @@
+import { Theme } from "../../theme.slint";
+import { ExportModel } from "../../models/export.slint";
+
+// Compute target (Local/Remote/Local+Remote) and Max Ray Bounces -- split out
+// of `export_dialog.slint` to keep that file under its line budget.
+// `compute_target`/`selected_bounce_index` are `ExportDialog`'s own cached
+// pill-selection state (see that file's own doc comment on `compute_target`
+// for why each is a plain, not `in-out`, property there that re-derives from
+// a default UNTIL the user clicks a pill) -- two-way bound here so a click in
+// this component writes straight back to the dialog's own copy.
+export component ExportComputeAndBounces inherits VerticalLayout {
+    spacing: 14px;
+
+    in-out property <int> compute_target: 0;
+    in-out property <int> selected_bounce_index: 0;
+
+    // 2c. Compute target: which engine(s) trace this export. Same segmented-
+    // pill idiom as "Output Size"/"Colour Space" in `export_dialog.slint` --
+    // the Remote/Local+Remote pills are disabled (not hidden) with
+    // `remote_unavailable_reason` shown beneath whenever
+    // `!ExportModel.remote_available`, so a user without a worker configured
+    // always sees WHY those choices aren't offered right now.
+    VerticalLayout {
+        spacing: 6px;
+        Text { text: "Compute"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+
+        HorizontalLayout {
+            spacing: 4px;
+
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                background: root.compute_target == 0 ? Theme.accent-cyan : (ct0_touch.has-hover ? #1e293b : #0f172a);
+                border-width: 1px;
+                border-color: root.compute_target == 0 ? Theme.accent-cyan : #334155;
+
+                ct0_touch := TouchArea {
+                    enabled: !ExportModel.is_exporting;
+                    clicked => { root.compute_target = 0; }
+                }
+
+                Text { text: "Local only"; font-size: 11px; font-weight: 600; color: root.compute_target == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                opacity: ExportModel.remote_available ? 1.0 : 0.45;
+                background: root.compute_target == 1 ? Theme.accent-cyan : (ct1_touch.has-hover ? #1e293b : #0f172a);
+                border-width: 1px;
+                border-color: root.compute_target == 1 ? Theme.accent-cyan : #334155;
+
+                ct1_touch := TouchArea {
+                    enabled: !ExportModel.is_exporting && ExportModel.remote_available;
+                    clicked => { root.compute_target = 1; }
+                }
+
+                Text { text: "Remote only"; font-size: 11px; font-weight: 600; color: root.compute_target == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                opacity: ExportModel.remote_available ? 1.0 : 0.45;
+                background: root.compute_target == 2 ? Theme.accent-cyan : (ct2_touch.has-hover ? #1e293b : #0f172a);
+                border-width: 1px;
+                border-color: root.compute_target == 2 ? Theme.accent-cyan : #334155;
+
+                ct2_touch := TouchArea {
+                    enabled: !ExportModel.is_exporting && ExportModel.remote_available;
+                    clicked => { root.compute_target = 2; }
+                }
+
+                Text { text: "Local + Remote"; font-size: 11px; font-weight: 600; color: root.compute_target == 2 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+
+        if !ExportModel.remote_available: Text {
+            text: ExportModel.remote_unavailable_reason == "" ? "Checking for the remote..." : ExportModel.remote_unavailable_reason;
+            font-size: 11px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+    }
+
+    // 2c'. Transfer: how the remote's result comes home. Only
+    // offered while a remote is available and the Compute pill includes it -- with
+    // "Local only" there is nothing to transfer.
+    if ExportModel.remote_available && root.compute_target != 0: VerticalLayout {
+        spacing: 6px;
+        Text { text: "Transfer"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+
+        HorizontalLayout {
+            spacing: 4px;
+            for label[idx] in ["Full data", "Final picture only"]: Rectangle {
+                horizontal-stretch: 1;
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                background: ExportModel.transfer_index == idx ? Theme.accent-cyan : (tr_touch.has-hover ? #1e293b : #0f172a);
+                border-width: 1px;
+                border-color: ExportModel.transfer_index == idx ? Theme.accent-cyan : #334155;
+
+                tr_touch := TouchArea {
+                    enabled: !ExportModel.is_exporting;
+                    clicked => { ExportModel.transfer_index = idx; }
+                }
+
+                Text { text: label; font-size: 11px; font-weight: 600; color: ExportModel.transfer_index == idx ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+
+        Text {
+            text: ExportModel.transfer_index == 1
+                ? "The remote renders and tone-maps the whole image and sends one PNG -- far less data, but your own CPU/GPU do not help. Needs a coordinator; a plain worker falls back to full data."
+                : "The remote sends raw radiance, which is merged with your own CPU/GPU's samples.";
+            font-size: 11px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+    }
+
+    // 2d. Max Ray Bounces -- the export's OWN cap, independent of the live
+    // viewport's. Same segmented-pill idiom and ladder (4/8/12/24/64/128) as
+    // `settings_dialog.slint`'s "Ray Bounces" section -- see that file's own
+    // doc comment for the `bounce_cost.rs` measurements behind these six rungs.
+    // Defaults to `SettingsModel.bounce_index` (see `ExportDialog.
+    // selected_bounce_index`'s own doc comment) so opening this dialog shows
+    // the value an export would have used anyway.
+    VerticalLayout {
+        spacing: 6px;
+        Text { text: "Max Ray Bounces"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+
+        HorizontalLayout {
+            spacing: 4px;
+
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                background: root.selected_bounce_index == 0 ? Theme.accent-cyan : (mb0_touch.has-hover ? #1e293b : #0f172a);
+                border-width: 1px;
+                border-color: root.selected_bounce_index == 0 ? Theme.accent-cyan : #334155;
+
+                mb0_touch := TouchArea {
+                    enabled: !ExportModel.is_exporting;
+                    clicked => { root.selected_bounce_index = 0; }
+                }
+
+                Text { text: "4"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                background: root.selected_bounce_index == 1 ? Theme.accent-cyan : (mb1_touch.has-hover ? #1e293b : #0f172a);
+                border-width: 1px;
+                border-color: root.selected_bounce_index == 1 ? Theme.accent-cyan : #334155;
+
+                mb1_touch := TouchArea {
+                    enabled: !ExportModel.is_exporting;
+                    clicked => { root.selected_bounce_index = 1; }
+                }
+
+                Text { text: "8"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                background: root.selected_bounce_index == 2 ? Theme.accent-cyan : (mb2_touch.has-hover ? #1e293b : #0f172a);
+                border-width: 1px;
+                border-color: root.selected_bounce_index == 2 ? Theme.accent-cyan : #334155;
+
+                mb2_touch := TouchArea {
+                    enabled: !ExportModel.is_exporting;
+                    clicked => { root.selected_bounce_index = 2; }
+                }
+
+                Text { text: "12"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 2 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                background: root.selected_bounce_index == 3 ? Theme.accent-cyan : (mb3_touch.has-hover ? #1e293b : #0f172a);
+                border-width: 1px;
+                border-color: root.selected_bounce_index == 3 ? Theme.accent-cyan : #334155;
+
+                mb3_touch := TouchArea {
+                    enabled: !ExportModel.is_exporting;
+                    clicked => { root.selected_bounce_index = 3; }
+                }
+
+                Text { text: "24"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 3 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                background: root.selected_bounce_index == 4 ? Theme.accent-cyan : (mb4_touch.has-hover ? #1e293b : #0f172a);
+                border-width: 1px;
+                border-color: root.selected_bounce_index == 4 ? Theme.accent-cyan : #334155;
+
+                mb4_touch := TouchArea {
+                    enabled: !ExportModel.is_exporting;
+                    clicked => { root.selected_bounce_index = 4; }
+                }
+
+                Text { text: "64"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 4 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                height: 28px;
+                border-radius: Theme.radius-sm;
+                background: root.selected_bounce_index == 5 ? Theme.accent-cyan : (mb5_touch.has-hover ? #1e293b : #0f172a);
+                border-width: 1px;
+                border-color: root.selected_bounce_index == 5 ? Theme.accent-cyan : #334155;
+
+                mb5_touch := TouchArea {
+                    enabled: !ExportModel.is_exporting;
+                    clicked => { root.selected_bounce_index = 5; }
+                }
+
+                Text { text: "128"; font-size: 11px; font-weight: 600; color: root.selected_bounce_index == 5 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+
+        // Same wording/measurement basis as `settings_dialog.slint`'s own
+        // bounce-ladder hint: flat cost on CPU (the `bounce_cost.rs` benchmark
+        // measured only a 1.3-1.4x spread from a cap of 12 all the way to
+        // 1024), but GPU threads run in lockstep, so the few long paths in the
+        // tail stall the whole workgroup and this rung range costs noticeably
+        // more there than on CPU.
+        if root.selected_bounce_index >= 4: Text {
+            text: "Cheap on CPU, but noticeably steeper on GPU -- lockstep execution makes long paths expensive there.";
+            font-size: 11px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+    }
+}

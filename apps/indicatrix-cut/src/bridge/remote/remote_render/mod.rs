@@ -17,6 +17,8 @@
 //! [`connection::spawn_remote_render`] owns its connection for exactly one
 //! `RenderRequest` (connect, handshake, stream to `DONE`, exit) -- used by
 //! `bridge::export_thread::remote`'s one-shot dispatches.
+//! [`connection::spawn_final_image_request`] is the same lifecycle for one v14
+//! `FinalImageRequest` ("final picture only" transfer).
 //!
 //! [`connection::spawn_remote_connection`] returns a [`types::RemoteConnectionHandle`]
 //! whose background thread outlives any single request, accepting a stream of
@@ -51,9 +53,10 @@ mod connection;
 mod types;
 
 pub use connection::{
-    connect_and_handshake, spawn_remote_connection, spawn_remote_render, test_connection,
+    connect_and_handshake, spawn_final_image_request, spawn_remote_connection, spawn_remote_render,
+    test_connection,
 };
 pub use types::{
-    RemoteConnectionHandle, RemoteError, RemoteRenderHandle, RemoteRenderRequest, RemoteStream,
-    RemoteUpdate,
+    RemoteConnectionHandle, RemoteError, RemoteFinalImageRequest, RemoteRenderHandle,
+    RemoteRenderRequest, RemoteStream, RemoteUpdate,
 };

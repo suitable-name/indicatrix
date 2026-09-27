@@ -53,7 +53,8 @@ pub struct PreviewBatchOutcome {
 /// purely to keep that function's own argument count under clippy's limit (it already
 /// has `ui_weak`/`db`/`render_ctx`/`entry_ids` as genuinely separate concerns).
 pub struct PreviewBatchSettings {
-    pub workers: Vec<WorkerSettings>,
+    /// The remote endpoint's connection (`AppSettings::remote`), if one is configured.
+    pub worker: Option<WorkerSettings>,
     pub live_compute_target: LiveComputeTarget,
     pub preview_size: u32,
     pub preview_spp: u32,
@@ -108,10 +109,9 @@ pub fn spawn_preview_batch(
         // batch, not just the lane it happened on -- see `engine::catch_local_render`'s
         // own doc comment.
         let gpu_retired = AtomicBool::new(false);
-        // First configured worker only -- see this group's `mod.rs` doc comment's
-        // "Local + remote" section, and `export_thread::remote::probe_remote`'s own doc
-        // comment for the same "session-wide, first entry" convention this mirrors.
-        let remote_worker = settings.workers.into_iter().next();
+        // The one remote endpoint -- see this group's `mod.rs` doc
+        // comment's "Local + remote" section.
+        let remote_worker = settings.worker;
         let ctx = BatchContext {
             db: &db,
             material_candidates: &material_candidates,
@@ -203,7 +203,7 @@ pub fn spawn_preview_batch(
 }
 
 /// Starts a batch for `entry_ids`, reading `preview_size`/`preview_spp`/the configured
-/// remote workers AND the persisted `LiveComputeTarget` from `settings_store`'s current
+/// remote endpoint AND the persisted `LiveComputeTarget` from `settings_store`'s current
 /// snapshot -- the SAME standing "Live Compute" preference the live viewport uses
 /// (`settings_dialog.slint`'s pill, `AppSettings::live_compute_target`), not a separate
 /// picker of this batch's own. The one place every trigger (`setup_preview_batch_callbacks`'s
@@ -242,7 +242,7 @@ fn start_batch(
         Arc::clone(db),
         Arc::clone(render_ctx),
         PreviewBatchSettings {
-            workers: snapshot.settings.remote_workers,
+            worker: snapshot.settings.remote_worker(),
             live_compute_target: snapshot.settings.live_compute_target,
             preview_size: snapshot.settings.preview_size,
             preview_spp: snapshot.settings.preview_spp,

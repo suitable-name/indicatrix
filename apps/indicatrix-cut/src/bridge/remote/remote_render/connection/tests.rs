@@ -180,6 +180,114 @@ fn route_event_worker_error_clears_current_regardless_of_epoch() {
     ));
 }
 
+// ---- v14 server errors and picture/capability events -------------------------------
+
+/// A plain worker refusing a v14 coordinator feature ends the request as `Unsupported`
+/// (the fallback trigger), never as a generic failure.
+#[test]
+fn route_event_turns_unsupported_request_into_an_unsupported_update() {
+    let (cur, updates) = current_request(3, 1, 1);
+    let mut current = Some(cur);
+    route_event(
+        &mut current,
+        &StreamEvent::Error(ErrorMsg {
+            code: indicatrix_net::messages::error_codes::UNSUPPORTED_REQUEST,
+            message: "DisplayOnly is not supported by this worker".to_string(),
+        }),
+        None,
+    );
+    assert!(current.is_none(), "UNSUPPORTED_REQUEST ends the request");
+    assert!(matches!(
+        &updates.lock().unwrap()[..],
+        [RemoteUpdate::Unsupported { request_id: 3, .. }]
+    ));
+}
+
+/// A coordinator losing every lane ends the stream with `ALL_WORKERS_LOST` and no
+/// `DONE`: surfaced as an ordinary failure with a clear note.
+#[test]
+fn route_event_reports_all_workers_lost_as_a_failure_with_a_clear_note() {
+    let (cur, updates) = current_request(4, 1, 1);
+    let mut current = Some(cur);
+    route_event(
+        &mut current,
+        &StreamEvent::Error(ErrorMsg {
+            code: indicatrix_net::messages::error_codes::ALL_WORKERS_LOST,
+            message: String::new(),
+        }),
+        None,
+    );
+    assert!(current.is_none());
+    assert!(matches!(
+        &updates.lock().unwrap()[..],
+        [RemoteUpdate::Failed { request_id: 4, message }]
+            if message == "All remote workers were lost"
+    ));
+}
+
+#[test]
+fn route_event_reports_a_display_frame_and_keeps_the_request_open() {
+    use indicatrix_net::messages::{DisplayEncoding, DisplayFrameHeader};
+    let (cur, updates) = current_request(5, 2, 1);
+    let mut current = Some(cur);
+    let rgba = vec![7_u8; 2 * 4];
+    let header = DisplayFrameHeader {
+        request_id: 5,
+        samples_done: 64,
+        width: 2,
+        height: 1,
+        encoding: DisplayEncoding::Rgba8,
+        payload_len: rgba.len() as u32,
+    };
+    route_event(
+        &mut current,
+        &StreamEvent::DisplayFrame(header),
+        Some(&rgba),
+    );
+    assert!(current.is_some(), "a DISPLAY_FRAME is never terminal");
+    assert!(matches!(
+        updates.lock().unwrap()[..],
+        [RemoteUpdate::DisplayFrame {
+            request_id: 5,
+            samples_done: 64
+        }]
+    ));
+}
+
+#[test]
+fn route_event_reports_a_capability_change_for_the_current_request() {
+    let (cur, updates) = current_request(6, 1, 1);
+    let mut current = Some(cur);
+    route_event(
+        &mut current,
+        &StreamEvent::CapabilityChanged { render: None },
+        None,
+    );
+    assert!(current.is_some());
+    assert!(matches!(
+        updates.lock().unwrap()[..],
+        [RemoteUpdate::CapabilityChanged {
+            request_id: 6,
+            render: None
+        }]
+    ));
+}
+
+/// Final-picture live transfer asks for `DisplayOnly` with no preview stream; full data
+/// keeps the worker's own configuration untouched.
+#[test]
+fn live_stream_config_switches_to_display_only_without_a_preview() {
+    use crate::settings::WorkerSettings;
+    use indicatrix_net::messages::TransferMode;
+    let worker = WorkerSettings::default();
+    let full = super::persistent::live_stream_config(&worker, 100, 800, 600, false);
+    assert_eq!(full, worker.stream_config(100, 800, 600));
+    let display = super::persistent::live_stream_config(&worker, 100, 800, 600, true);
+    assert_eq!(display.transfer_mode, TransferMode::DisplayOnly);
+    assert_eq!(display.preview, None);
+    assert_eq!(display.cadence_ms, full.cadence_ms);
+}
+
 // ---- `check_liveness`: the socket-free liveness decision `run_connection`'s `Ok(None)`
 // arm applies -- see that function's own doc comment for why this, not a full
 // `run_connection` run against a fake socket, is what's unit-tested: `RemoteStream` is a

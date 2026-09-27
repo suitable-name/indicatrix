@@ -8,3 +8,5 @@ out.txt
 *.exe
 /bin
 certs
+exports
+exports2

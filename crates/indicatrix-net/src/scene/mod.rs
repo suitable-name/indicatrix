@@ -62,4 +62,54 @@ pub struct SceneState {
     /// same on-disk `scene.json` reason as `girdle_frosted`.
     #[serde(default)]
     pub backdrop: f32,
+    /// What lights the stone where a ray misses it (v14): the analytic studio rig
+    /// described by the fields above, or a loaded HDR panorama named by content hash.
+    /// `#[serde(default)]` (the studio rig) for the same on-disk `scene.json` reason as
+    /// `girdle_frosted`.
+    #[serde(default)]
+    pub environment: SceneEnvironment,
+}
+
+impl SceneState {
+    /// The HDR panorama this scene is lit by, if any.
+    #[must_use]
+    pub const fn hdr(&self) -> Option<&HdrEnvironment> {
+        match &self.environment {
+            SceneEnvironment::Studio => None,
+            SceneEnvironment::Hdr(hdr) => Some(hdr),
+        }
+    }
+}
+
+/// A scene's environment (v14). Variant order is wire-load-bearing; append only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum SceneEnvironment {
+    /// The analytic studio rig: [`SceneState::lighting_preset`] at
+    /// [`SceneState::light_yaw`]/[`SceneState::light_pitch`] with
+    /// [`SceneState::backdrop`].
+    #[default]
+    Studio,
+    /// An equirectangular HDR panorama, lit exactly as the viewer lights it
+    /// (`indicatrix::optics::raytracer::EnvironmentSource::HdrMap`): the lighting preset,
+    /// light angles and backdrop do not apply.
+    Hdr(HdrEnvironment),
+}
+
+/// An HDR panorama named by content, never by path: a worker that lacks the bytes asks
+/// for them (`StreamEvent::NeedAsset`, see `crate::messages::asset`).
+///
+/// Carries no rotation or intensity: the renderer's `EnvironmentSource::HdrMap` applies
+/// neither (the map is used as decoded, in its own orientation, and the scene's
+/// [`SceneState::exposure`] is the only exposure). What the worker must reproduce bit for
+/// bit is the decoded map itself, which `indicatrix::renderer::env_map::
+/// environment_from_hdr_bytes` builds identically on every node from the same bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct HdrEnvironment {
+    /// SHA-256 of the exact `.hdr` file bytes (`crate::messages::content_hash`).
+    pub content_hash: [u8; 32],
+    /// The decoded map's width in texels -- lets a server refuse an over-limit map
+    /// before asking for its bytes, and cross-check the decode.
+    pub width: u32,
+    /// The decoded map's height in texels.
+    pub height: u32,
 }

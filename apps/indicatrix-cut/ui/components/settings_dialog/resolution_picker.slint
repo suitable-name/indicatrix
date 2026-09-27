@@ -1,0 +1,127 @@
+import { Theme } from "../../theme.slint";
+import { SettingsModel } from "../../models/settings.slint";
+
+// Render Resolution - Segmented Pill Selector, same idiom as the Ray Bounces
+// picker below and `export_dialog.slint`'s "Output Size" pills. A fixed list
+// rather than a slider -- see `SettingsDialog.resolution_index` for why.
+export component ResolutionPicker inherits VerticalLayout {
+    spacing: 6px;
+    Text { text: "Render Resolution"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+
+    HorizontalLayout {
+        spacing: 4px;
+
+        // 640x480
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            background: SettingsModel.resolution_index == 0 ? Theme.accent-cyan : (res0_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.resolution_index == 0 ? Theme.accent-cyan : #334155;
+
+            res0_touch := TouchArea {
+                clicked => {
+                    SettingsModel.resolution_index = 0;
+                    SettingsModel.resolution_changed(640, 480);
+                }
+            }
+
+            Text {
+                text: "640×480";
+                font-size: 11px;
+                font-weight: 600;
+                color: SettingsModel.resolution_index == 0 ? #0f172a : Theme.text-secondary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // 800x600 (default)
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            background: SettingsModel.resolution_index == 1 ? Theme.accent-cyan : (res1_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.resolution_index == 1 ? Theme.accent-cyan : #334155;
+
+            res1_touch := TouchArea {
+                clicked => {
+                    SettingsModel.resolution_index = 1;
+                    SettingsModel.resolution_changed(800, 600);
+                }
+            }
+
+            Text {
+                text: "800×600";
+                font-size: 11px;
+                font-weight: 600;
+                color: SettingsModel.resolution_index == 1 ? #0f172a : Theme.text-secondary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // 1280x720
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            background: SettingsModel.resolution_index == 2 ? Theme.accent-cyan : (res2_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.resolution_index == 2 ? Theme.accent-cyan : #334155;
+
+            res2_touch := TouchArea {
+                clicked => {
+                    SettingsModel.resolution_index = 2;
+                    SettingsModel.resolution_changed(1280, 720);
+                }
+            }
+
+            Text {
+                text: "1280×720";
+                font-size: 11px;
+                font-weight: 600;
+                color: SettingsModel.resolution_index == 2 ? #0f172a : Theme.text-secondary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // 1920x1080
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            background: SettingsModel.resolution_index == 3 ? Theme.accent-cyan : (res3_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.resolution_index == 3 ? Theme.accent-cyan : #334155;
+
+            res3_touch := TouchArea {
+                clicked => {
+                    SettingsModel.resolution_index = 3;
+                    SettingsModel.resolution_changed(1920, 1080);
+                }
+            }
+
+            Text {
+                text: "1920×1080";
+                font-size: 11px;
+                font-weight: 600;
+                color: SettingsModel.resolution_index == 3 ? #0f172a : Theme.text-secondary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    // Plain factual cost note, not an estimator -- render time depends on
+    // scene/hardware in ways this dialog has no way to know.
+    Text {
+        text: "Higher resolutions render more pixels per sample and take proportionally longer to converge.";
+        font-size: 11px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+}

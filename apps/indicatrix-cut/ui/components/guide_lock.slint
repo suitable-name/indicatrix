@@ -1,0 +1,17 @@
+import { GuideModel } from "../models/guide.slint";
+
+// A transparent layer that explains a control the worked-example guide has locked:
+// while `locked` is true it shows `GuideModel.locked_hint` as a tooltip over its
+// parent's whole area. Mount it as a child of a control's own (non-layout)
+// wrapper -- a `Rectangle`/`TouchArea` -- with no size of its own, so it fills that
+// wrapper; the control itself carries the matching `enabled: GuideModel.allows_*()`
+// and dimmed opacity. It holds no `TouchArea`, so it never takes a click, and its
+// `Tooltip` lives on this layer rather than on the wrapper, so a wrapper that already
+// has a tooltip of its own keeps it (Slint allows one `Tooltip` per element).
+export component GuideLockTip inherits Rectangle {
+    in property <bool> locked: false;
+
+    if root.locked: Tooltip {
+        text: @markdown("\{GuideModel.locked_hint}");
+    }
+}

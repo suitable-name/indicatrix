@@ -1,9 +1,12 @@
-//! Starting a remote render for a just-settled pose ([`start_remote_render`]), the
-//! persistent-connection staleness check that gates reusing a cached one
-//! ([`connection_is_stale`]), and building the `indicatrix_net::SceneState` it sends
-//! ([`scene_state_from_snapshot`]). See this group's own `mod.rs` doc comment.
+//! Starting a settled epoch's remote work ([`start_remote_render`]), dispatching its
+//! chunks one after another on the persistent connection ([`dispatch_next_chunk`]),
+//! the persistent-connection staleness check that gates reusing a cached connection
+//! ([`connection_is_stale`]), and building the `indicatrix_net::SceneState` every
+//! chunk sends ([`scene_state_from_snapshot`]). See this group's own `mod.rs` doc
+//! comment.
 
 use super::{
+    decisions::wants_display_only,
     state::{Orchestrator, lock},
     update::handle_remote_update,
 };
@@ -12,63 +15,83 @@ use crate::{
     bridge::{
         export_thread::SceneSnapshot,
         frame_cache::guide_pass::GuideCache,
-        remote::remote_render::{self, RemoteUpdate},
+        remote::{
+            live_lane::LiveLane,
+            remote_render::{self, RemoteRenderRequest, RemoteUpdate},
+        },
         render_thread::RenderContext,
+        sample_cursor::LiveEpoch,
     },
-    settings::{LiveComputeTarget, WorkerSettings},
+    settings::{LiveComputeTarget, RemoteEndpoint, WorkerSettings},
 };
 use indicatrix::optics::raytracer::Camera;
-use indicatrix_net::{SceneState, client::Accumulator};
-use slint::ComponentHandle;
+use indicatrix_net::SceneState;
+use slint::{ComponentHandle, Weak};
 use std::{
-    rc::Rc,
-    sync::{
-        Arc, Mutex, PoisonError,
-        atomic::{AtomicU32, Ordering},
-    },
+    sync::{Arc, Mutex, PoisonError, atomic::Ordering},
+    time::Instant,
 };
 
+/// Starts a settled pose's image epoch: installs a fresh [`LiveEpoch`] (the shared
+/// sample cursor over `[0, target_samples)` plus the remote sums) in `RenderContext`
+/// together with `remote_active`/`dirty` in ONE locked mutation, creates the epoch's
+/// [`LiveLane`], and dispatches its first chunk. `target_samples` is the live view's
+/// single global target: local and remote together trace exactly that many samples.
+///
+/// Callers must already have checked `bridge::remote::live_remote_dispatch` (the HDR
+/// guard) -- `poll::poll_tick` does, right before feeding `SettleElapsed`.
+///
+/// Final-picture live transfer: when the endpoint's live transfer is "Final picture" (and this
+/// connection has not refused it, see `decisions::wants_display_only`), the epoch is a
+/// display-only one: ONE `DisplayOnly` request over the budget, no local combining
+/// (`RenderContext::live_display_only` makes a `Both` epoch act as `RemoteOnly`), no
+/// guide prepass (the remote denoises), and the decoded display frames are the image.
 pub(super) fn start_remote_render(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
-    worker: WorkerSettings,
-    next_request_id: &Rc<AtomicU32>,
+    endpoint: RemoteEndpoint,
     state: &Arc<Mutex<Orchestrator>>,
 ) {
-    // `samples`/`live_compute_target` are read live off `RenderContext` here, the exact
-    // same treatment `width`/`height` already get (see this function's own doc comment)
-    // -- a remote render always uses whatever sample budget/mode is CURRENTLY
-    // configured, not a value captured once at some earlier time.
-    let (width, height, samples, live_compute_target) = {
-        let ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
+    // Read live off `RenderContext` at dispatch time -- an epoch always uses whatever
+    // size/budget/mode is CURRENTLY configured. The scene generation is read in the
+    // same lock and BEFORE the scene is captured below: if anything changes after this
+    // point (during the capture, or before the render thread's next frame), the render
+    // thread sees a different generation than the one stamped into the epoch and
+    // releases it rather than merging two scenes (`live_split::epoch_scene_mismatch`).
+    let (width, height, target_samples, live_compute_target, scene_generation) = {
+        let mut ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
         (
             ctx.width,
             ctx.height,
-            ctx.remote_render_samples,
+            ctx.target_samples,
             ctx.live_compute_target,
+            ctx.scene_generation(),
         )
     };
-    if width == 0 || height == 0 {
+    if width == 0 || height == 0 || target_samples == 0 {
         return;
     }
-    let combining = matches!(live_compute_target, LiveComputeTarget::Both);
+    let display_only = wants_display_only(
+        live_compute_target,
+        endpoint.live_transfer,
+        lock(state).display_only_refused,
+    );
+    let combining = matches!(live_compute_target, LiveComputeTarget::Both) && !display_only;
     let snapshot = SceneSnapshot::capture(render_ctx);
     let scene = scene_state_from_snapshot(&snapshot, width, height);
 
     // Kick off the guide-buffer prepass NOW, at dispatch time, rather than waiting for
-    // the first `FRAME`/`PREVIEW` redraw to need it -- camera pose and gem geometry are
-    // both already known here, so this overlaps the network round trip and the remote
-    // render itself instead of stalling the UI thread on the first post-settle redraw
-    // (see `bridge::guide_pass`'s module doc comment). Cancel whatever generation was
-    // still running for a previous pose first -- a fresh dispatch always means a fresh
-    // pose (`start_remote_render` only ever runs after `HandoffEvent::SettleElapsed`).
+    // the first remote redraw to need it -- camera pose and gem geometry are both
+    // already known here, so this overlaps the network round trip and the remote
+    // render itself (see `bridge::frame_cache::guide_pass`'s module doc comment). Cancel whatever
+    // generation was still running for a previous pose first.
     //
-    // Skipped entirely for `LiveComputeTarget::Both`: local tracing keeps running for
-    // that mode (see `render_thread::mod`'s doc comment), producing its OWN first-hit
-    // guide buffers for this exact pose as a side effect of its ordinary trace loop --
-    // fresher and cheaper than a separate async prepass, so this would-be-redundant
-    // dispatch is skipped rather than racing a second computation of the same thing.
-    if !combining {
+    // Skipped for `LiveComputeTarget::Both`: local tracing keeps running in that mode,
+    // producing its OWN first-hit guide buffers for this exact pose as a side effect of
+    // its ordinary trace loop, and the render thread's display cycle (not this
+    // orchestrator) denoises the merged image with them. Skipped for a display-only
+    // epoch too: the remote's frames arrive already denoised.
+    if !combining && !display_only {
         let guide_key = GuideCache::key_for(
             width,
             height,
@@ -91,85 +114,116 @@ pub(super) fn start_remote_render(
         ));
     }
 
-    let accumulator = Arc::new(Mutex::new(Accumulator::new(width, height)));
-    lock(state).accumulator = Some(Arc::clone(&accumulator));
-
-    // Discards the local preview and starts this settle's dispatch in ONE locked
-    // mutation, together with the shared-accumulator hand-off the render thread reads
-    // (`RenderContext::remote_accumulator`/`remote_reserved_samples`), so that thread
-    // can never observe `remote_active`/`dirty` freshly true while still holding a
-    // STALE (previous epoch's, or absent) accumulator/reservation -- see
-    // `RenderContext::remote_accumulator`'s own doc comment. This is also where
-    // `HandoffAction::DiscardLocalPreview`'s actual work happens -- see
-    // `apply_actions`'s now-deferred arm for it.
+    // Discards the local preview and starts this settle's epoch in ONE locked
+    // mutation, so the render thread can never observe `remote_active`/`dirty` freshly
+    // true while still holding a STALE (previous epoch's, or absent) epoch -- and the
+    // `dirty` restarts local accumulation from zero, so the drag-time preview is never
+    // summed into the settled image. This is where `HandoffAction::DiscardLocalPreview`'s
+    // actual work happens -- see `apply_actions`'s deferred arm for it.
+    let epoch = Arc::new(LiveEpoch::new(width, height, target_samples).for_scene(scene_generation));
     {
         let mut ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
         ctx.remote_active = true;
         ctx.dirty = true;
-        ctx.remote_accumulator = combining.then(|| Arc::clone(&accumulator));
-        ctx.remote_reserved_samples = if combining { samples } else { 0 };
+        ctx.live_epoch = Some(Arc::clone(&epoch));
+        ctx.live_display_only = display_only;
     }
 
-    let request_id = next_request_id.fetch_add(1, Ordering::Relaxed);
-    // Recorded BEFORE the request is ever dispatched below, on this same UI-thread call
-    // -- so `handle_remote_update`'s stale-id check always sees the new id in place
-    // before any update for it (or a leftover one for whatever this just superseded)
-    // could possibly reach the event loop. See `Orchestrator::current_request_id`'s own
-    // doc comment.
-    lock(state).current_request_id = Some(request_id);
-    let ui_weak = ui.as_weak();
-    let state_for_updates = Arc::clone(state);
-    let render_ctx_for_updates = Arc::clone(render_ctx);
-    let accumulator_for_redraw = Arc::clone(&accumulator);
-
-    // Reuse the cached connection when its identity already matches `worker` (the
+    // Reuse the cached connection when its identity already matches the endpoint (the
     // common case once a session is under way), or create one lazily when it doesn't
-    // (this settle's own `connection_is_stale`
-    // check, above, already cleared a mismatched one; or this is the very first
-    // dispatch this session has ever made). This is the only place a
-    // `RemoteConnectionHandle` is ever created.
-    let mut s = lock(state);
-    if s.remote_connection
-        .as_ref()
-        .is_none_or(|h| h.worker() != &worker)
+    // (`poll_tick`'s `connection_is_stale` check already cleared a mismatched one; or
+    // this is the very first dispatch this session has ever made). This is the only
+    // place a `RemoteConnectionHandle` is ever created.
     {
-        s.remote_connection = Some(remote_render::spawn_remote_connection(worker.clone()));
+        let mut s = lock(state);
+        if s.remote_connection
+            .as_ref()
+            .is_none_or(|h| h.worker() != &endpoint.connection)
+        {
+            s.remote_connection = Some(remote_render::spawn_remote_connection(endpoint.connection));
+            s.display_only_refused = false;
+            s.remote_hdr = None;
+        }
+        s.live_lane = Some(if display_only {
+            LiveLane::display_only(epoch)
+        } else {
+            LiveLane::new(epoch, combining)
+        });
+        s.lane_scene = Some(scene);
     }
-    let handle = s
-        .remote_connection
-        .as_ref()
-        .expect("just ensured Some immediately above")
-        .render(
-            remote_render::RemoteRenderRequest {
-                worker,
-                request_id,
-                scene,
-                first_sample: 0,
-                samples,
-                width,
-                height,
-            },
-            accumulator,
-            move |update: RemoteUpdate| {
-                handle_remote_update(
-                    &ui_weak,
-                    &render_ctx_for_updates,
-                    &state_for_updates,
-                    &accumulator_for_redraw,
-                    width,
-                    height,
-                    update,
-                );
-            },
+    dispatch_next_chunk(&ui.as_weak(), render_ctx, state);
+}
+
+/// Claims the current epoch's next remote chunk and sends it as one
+/// `RenderRequest{first_sample, samples}` on the persistent connection, recording its
+/// request id as current. Returns `false` (sending nothing) when there is no lane, no
+/// connection, or nothing left to claim -- in the last case the lane is now finished.
+///
+/// Called once per settle by [`start_remote_render`] and then once per finished (or
+/// retried) chunk by `update::handle_remote_update`, so the next request goes out the
+/// moment the previous chunk's `DONE` arrives.
+pub(super) fn dispatch_next_chunk(
+    ui_weak: &Weak<MainWindow>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    state: &Arc<Mutex<Orchestrator>>,
+) -> bool {
+    let mut s = lock(state);
+    let request_id = s.alloc_request_id();
+    let Orchestrator {
+        live_lane,
+        lane_scene,
+        remote_connection,
+        ..
+    } = &mut *s;
+    let (Some(lane), Some(scene), Some(connection)) = (
+        live_lane.as_mut(),
+        lane_scene.as_ref(),
+        remote_connection.as_ref(),
+    ) else {
+        return false;
+    };
+    let Some(chunk) = lane.next_chunk(request_id, Instant::now()) else {
+        return false;
+    };
+    let (width, height) = lane.epoch().dimensions();
+    let request = RemoteRenderRequest {
+        worker: connection.worker().clone(),
+        request_id: chunk.request_id,
+        scene: scene.clone(),
+        first_sample: chunk.first_sample,
+        samples: chunk.samples,
+        width,
+        height,
+        // The live viewport: latency first (a coordinator serves it from its own lane).
+        intent: indicatrix_net::messages::RequestIntent::Interactive,
+        display_only: lane.is_display_only(),
+    };
+    let ui_weak = ui_weak.clone();
+    let render_ctx = Arc::clone(render_ctx);
+    let state_for_updates = Arc::clone(state);
+    // The chunk's accumulator also holds its latest display frame (final-picture live
+    // transfer), which the update handler decodes.
+    let chunk_accumulator = Arc::clone(&chunk.accumulator);
+    let handle = connection.render(request, chunk.accumulator, move |update: RemoteUpdate| {
+        handle_remote_update(
+            &ui_weak,
+            &render_ctx,
+            &state_for_updates,
+            (width, height, &chunk_accumulator),
+            update,
         );
+    });
+    // Recorded on this same UI-thread call, before any update for this request could
+    // reach the event loop -- see `Orchestrator::current_request_id`'s doc comment.
+    s.current_request_id = Some(request_id);
     s.remote_handle = Some(handle);
+    true
 }
 
 /// Whether the persistently-cached connection identity `cached` should be torn down
-/// given the worker `wanted` for the settle currently being checked -- `wanted` being
-/// `None` means "no remote worker configured for this settle" (remote compute switched
-/// off via `LiveComputeTarget::LocalOnly`, or the configured worker's own entry was
-/// removed from `AppSettings::remote_workers`).
+/// given the remote `wanted` for the settle currently being checked -- `wanted` being
+/// `None` means "no remote configured for this settle" (remote compute switched off via
+/// `LiveComputeTarget::LocalOnly`, or `AppSettings::remote` was removed).
 ///
 /// Comparing the WHOLE `WorkerSettings` (not just `address`/`cert_dir`) is deliberately
 /// coarse: a `transfer_mode`/`cadence_ms`/`preview_scale` tweak forces a reconnect it
@@ -225,6 +279,8 @@ fn scene_state_from_snapshot(snapshot: &SceneSnapshot, width: u32, height: u32) 
         planes: snapshot.active_planes.clone(),
         girdle_frosted: !snapshot.facet_finishes.is_empty(),
         backdrop: snapshot.backdrop,
+        // The loaded HDR map by content hash, else the studio rig.
+        environment: crate::bridge::remote::hdr_asset::scene_environment(snapshot.env_map.as_ref()),
     }
 }
 

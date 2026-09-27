@@ -1,0 +1,196 @@
+//! A design's material choice ([`MaterialSelection`]), how it resolves to a real
+//! [`GemMaterial`] plus refractive index ([`MaterialSelection::resolve`]), and the
+//! [`MaterialLookup`] seam that resolution goes through -- see [`crate::material`]'s
+//! module doc comment for the full picture.
+
+use super::specific_gravity::built_in_specific_gravity;
+use crate::optics_hints::critical_angle_deg;
+use indicatrix::optics::materials::GemMaterial;
+
+/// A design's material choice for the carat-weight estimate.
+///
+/// Which built-in preset (if any) to default from, plus an optional per-design
+/// override -- SG varies by variety and specimen even within one named species, so a
+/// design must always be able to state its own number regardless of what (if
+/// anything) [`super::built_in_specific_gravity`] knows about the selected name.
+///
+/// Stored on [`crate::design::Design`] like [`crate::preform::PreformSpec`] -- a
+/// design input, mutated only through [`crate::edit::History`].
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MaterialSelection {
+    /// The selected preset name, exactly a `GemMaterial::name` string, or `None` for
+    /// "no preset selected" (a brand-new design, or one relying entirely on
+    /// `specific_gravity_override` for a species with no preset, e.g. garnet).
+    pub name: Option<String>,
+    /// A user-authored SG that overrides whatever `name` looks up, or supplies one
+    /// outright when `name` is `None` or looks up to `None`. `None` means "use the
+    /// selected preset's own representative figure".
+    pub specific_gravity_override: Option<f64>,
+    /// A user-authored refractive index (sodium D line) that overrides whatever
+    /// `name` resolves to, same precedence as `specific_gravity_override`. `None`
+    /// means "use the resolved material's own `n_D`".
+    pub refractive_index_override: Option<f64>,
+}
+
+impl MaterialSelection {
+    /// No preset selected and no override -- a brand-new design's starting point.
+    /// `const` (the derived `Default` impl is not) for a cheap, allocation-free
+    /// default; [`crate::design::Design::new`] itself stopped being `const fn`
+    /// once it started allocating a fresh `Vec<TierId>` per call, but every other
+    /// caller of this constructor still benefits.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            name: None,
+            specific_gravity_override: None,
+            refractive_index_override: None,
+        }
+    }
+
+    /// Returns a copy of this selection with only `specific_gravity_override`
+    /// replaced -- `name` and `refractive_index_override` carry through unchanged.
+    /// Exists so a caller that owns just the SG field (e.g. the Yield form parser,
+    /// which has no RI-override field of its own) never has to reconstruct this
+    /// whole struct by hand and risk silently dropping `refractive_index_override`
+    /// to `None` in the process, exactly the bug this method closes.
+    #[must_use]
+    pub fn with_specific_gravity_override(&self, specific_gravity_override: Option<f64>) -> Self {
+        Self {
+            specific_gravity_override,
+            ..self.clone()
+        }
+    }
+
+    /// The specific gravity actually in effect: the override when present, else the
+    /// selected preset's own representative figure, else `None` (nothing to estimate
+    /// a carat weight from -- see [`crate::yield_metrics::YieldReport`]).
+    ///
+    /// Built-ins only -- see [`Self::effective_specific_gravity_with`] for a
+    /// catalogue-aware version that also resolves a CUSTOM material's own SG.
+    #[must_use]
+    pub fn effective_specific_gravity(&self) -> Option<f64> {
+        self.specific_gravity_override.or_else(|| {
+            self.name
+                .as_deref()
+                .and_then(built_in_specific_gravity)
+                .map(|sg| sg.representative)
+        })
+    }
+
+    /// Like [`Self::effective_specific_gravity`], but resolves `name` through
+    /// `catalogue` (see [`MaterialLookup::specific_gravity`]) instead of only this
+    /// crate's own built-in table, so a CUSTOM catalogue material's authored SG
+    /// reaches the carat-weight estimate too. The per-design override still wins over
+    /// everything, exactly as in the built-ins-only path.
+    #[must_use]
+    pub fn effective_specific_gravity_with(&self, catalogue: &dyn MaterialLookup) -> Option<f64> {
+        self.specific_gravity_override.or_else(|| {
+            self.name
+                .as_deref()
+                .and_then(|name| catalogue.specific_gravity(name))
+        })
+    }
+
+    /// Resolves this selection to a real [`GemMaterial`] plus its refractive index
+    /// and critical angle, via `catalogue` (see [`MaterialLookup`]).
+    ///
+    /// Always returns something usable: an absent or unrecognized `name` falls back
+    /// to [`GemMaterial::diamond`] rather than failing a caller that needs SOME
+    /// concrete material to run against. `refractive_index_override` always wins
+    /// over the resolved material's own `n_D` when present.
+    #[must_use]
+    pub fn resolve(&self, catalogue: &dyn MaterialLookup) -> ResolvedMaterial {
+        let gem = self
+            .name
+            .as_deref()
+            .and_then(|name| catalogue.lookup(name))
+            .unwrap_or_else(GemMaterial::diamond);
+        let n_d = self
+            .refractive_index_override
+            .unwrap_or_else(|| n_d_of(&gem));
+        ResolvedMaterial {
+            critical_angle_deg: critical_angle_deg(n_d),
+            n_d,
+            gem,
+        }
+    }
+}
+
+/// A material's refractive index at the sodium D line (589.3nm), read from its own
+/// dispersion curve -- the one place this module evaluates `GemMaterial::dispersion`,
+/// shared by [`MaterialSelection::resolve`] and [`built_in_refractive_index`].
+///
+/// Visible across [`crate::material`]'s submodules only: [`super::catalogue`] needs it
+/// too, for [`super::catalogue::MaterialEntry::ri_d`].
+pub(in crate::material) fn n_d_of(gem: &GemMaterial) -> f64 {
+    f64::from(gem.dispersion.evaluate(589.3))
+}
+
+/// Looks up a built-in material's own `n_D` by exactly the name
+/// `indicatrix::optics::materials::GemMaterial::name` uses for that preset.
+///
+/// The refractive-index counterpart to [`super::built_in_specific_gravity`], built-ins
+/// only. Used by [`crate::design::Design::effective_refractive_index`], which
+/// (unlike [`MaterialSelection::resolve`]) has no catalogue to consult and must fall
+/// back to a design's legacy schedule RI rather than to diamond when `name` is
+/// absent or unrecognized.
+#[must_use]
+pub fn built_in_refractive_index(material_name: &str) -> Option<f64> {
+    GemMaterial::by_name(material_name).map(|gem| n_d_of(&gem))
+}
+
+/// Resolves a preset NAME to a real [`GemMaterial`].
+///
+/// The seam that keeps this crate free of a dependency on `indicatrix-vault` while
+/// still letting a caller with a richer catalogue (built-ins plus custom,
+/// user-authored materials) plug its own lookup into [`MaterialSelection::resolve`].
+pub trait MaterialLookup {
+    /// Looks up `name` (exactly a `GemMaterial::name`-style string), or `None` if
+    /// this catalogue has nothing by that name.
+    fn lookup(&self, name: &str) -> Option<GemMaterial>;
+
+    /// Looks up `name`'s specific gravity, or `None` if this catalogue has no SG
+    /// on file for it. Defaults to `None` so an existing implementor keeps compiling
+    /// unchanged; a catalogue that actually stores custom-material SG (e.g. the
+    /// app's `EditorMaterialLookup`) overrides this to read it back, the same way
+    /// [`BuiltinMaterials`] overrides it for the built-in table via
+    /// [`super::built_in_specific_gravity`].
+    fn specific_gravity(&self, name: &str) -> Option<f64> {
+        let _ = name;
+        None
+    }
+}
+
+/// A [`MaterialLookup`] over exactly `indicatrix::optics::materials::GemMaterial`'s
+/// own built-in preset table, no custom/catalogue materials at all -- via
+/// [`GemMaterial::by_name`].
+///
+/// Lets a caller with no real catalogue on hand resolve a [`MaterialSelection`]
+/// immediately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BuiltinMaterials;
+
+impl MaterialLookup for BuiltinMaterials {
+    fn lookup(&self, name: &str) -> Option<GemMaterial> {
+        GemMaterial::by_name(name)
+    }
+
+    fn specific_gravity(&self, name: &str) -> Option<f64> {
+        built_in_specific_gravity(name).map(|sg| sg.representative)
+    }
+}
+
+/// What [`MaterialSelection::resolve`] produces.
+///
+/// A real [`GemMaterial`] (for the optimizer/renderer/tilt curves) alongside the
+/// scalar figures [`crate::optics_hints`] needs, computed once so a caller never
+/// has to re-derive `n_d`/the critical angle from the material by hand.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedMaterial {
+    pub gem: GemMaterial,
+    /// Refractive index at the sodium D line: `refractive_index_override` when
+    /// present, else `gem`'s own dispersion curve evaluated at 589.3nm.
+    pub n_d: f64,
+    /// [`crate::optics_hints::critical_angle_deg`] at `n_d`.
+    pub critical_angle_deg: f64,
+}

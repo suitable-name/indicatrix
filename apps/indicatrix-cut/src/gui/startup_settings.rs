@@ -10,14 +10,12 @@
 //! from growing further -- same reasoning as `gui`'s other submodules.
 
 use crate::{
-    EditorModel, LibraryModel, LightingPresetItem, MainWindow, RemoteWorkerModel, SettingsModel,
-    SolidPreviewModel, ViewportModel,
+    EditorModel, LibraryModel, LightingPresetItem, MainWindow, SettingsModel, SolidPreviewModel,
+    ViewportModel,
     bridge::render_thread::{RenderContext, load_env_map, resolve_material},
     gui::{
-        optics::c_axis::angles_to_c_axis,
-        remote::{live_compute_target_index, remote_samples_count_to_exponent},
-        render::sample_scale::count_to_exponent,
-        show_toast,
+        optics::c_axis::angles_to_c_axis, remote::live_compute_target_index,
+        render::sample_scale::count_to_exponent, show_toast,
     },
     settings::{
         LightingPreset as SavedLightingPreset, LocalComputeTarget, LocalPreviewScale, SettingsFile,
@@ -191,21 +189,20 @@ fn apply_loaded_render_context(
     ctx.material_name = material_name.to_string();
     ctx.denoise_enabled = s.denoise_enabled;
     ctx.backdrop = s.backdrop;
-    // Local preview-then-settle rendering / remote render sample
-    // budget -- both live-update `RenderContext` at startup exactly like every
-    // other setting in this block, `camera_moving` deliberately left at its
+    // Local preview-then-settle rendering and the live compute targets --
+    // live-update `RenderContext` at startup exactly like every other setting in
+    // this block, `camera_moving` deliberately left at its
     // `Default` (`false`): it's re-derived from live camera-pose polling by
     // `gui::remote::poll_tick` within the first tick after the window opens, never
     // something a settings FILE has an opinion on.
     ctx.local_preview_scale = s.local_preview_scale;
-    ctx.remote_render_samples = s.remote_render_samples;
     ctx.live_compute_target = s.live_compute_target;
     ctx.local_compute_target = s.local_compute_target;
     ctx.dirty = true;
 }
 
 /// The UI-mirrored-properties half of [`apply_loaded_settings`]: pushes every
-/// `SettingsModel`/`RemoteWorkerModel`/`LibraryModel`/`SolidPreviewModel`/
+/// `SettingsModel`/`LibraryModel`/`SolidPreviewModel`/
 /// `EditorModel`/`ViewportModel` property this settings load restores. Split out
 /// purely to keep that function under clippy's function-length lint.
 fn apply_loaded_ui_mirrors(
@@ -249,10 +246,6 @@ fn apply_loaded_ui_mirrors(
         .set_live_compute_target_index(live_compute_target_index(s.live_compute_target));
     ui.global::<SettingsModel>()
         .set_local_compute_target_index(local_compute_target_index(s.local_compute_target));
-    ui.global::<RemoteWorkerModel>()
-        .set_render_samples_exponent(
-            remote_samples_count_to_exponent(s.remote_render_samples) as f32
-        );
     ui.global::<SettingsModel>()
         .set_light_yaw_deg(s.light_yaw_deg);
     ui.global::<SettingsModel>()

@@ -179,7 +179,7 @@ fn token_comparison_uses_constant_time_equality() {
 fn allowlist_gains_the_fingerprint_only_after_a_successful_claim() {
     let dir = unique_temp_dir("allowlist-order");
     pki::init(&dir).unwrap();
-    let allowlist_path = dir.join(pki::ALLOWLIST_FILE);
+    let allowlist_path = dir.join(pki::VIEWER_ALLOWLIST_FILE);
     let registry = EnrollRegistry::new();
 
     let (encoded, _ttl) = registry
@@ -233,7 +233,7 @@ fn allowlist_gains_the_fingerprint_only_after_a_successful_claim() {
 fn a_failed_claim_never_touches_the_allowlist() {
     let dir = unique_temp_dir("allowlist-no-touch");
     pki::init(&dir).unwrap();
-    let allowlist_path = dir.join(pki::ALLOWLIST_FILE);
+    let allowlist_path = dir.join(pki::VIEWER_ALLOWLIST_FILE);
     let registry = EnrollRegistry::new();
 
     registry
@@ -362,6 +362,90 @@ fn issue_succeeds_from_a_loopback_peer() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// Sends one `Issue { name }` from loopback through `registry`'s connection handler.
+fn issue_via_handler(
+    registry: &EnrollRegistry,
+    dir: &std::path::Path,
+    name: &str,
+) -> EnrollResponse {
+    let mut input = Vec::new();
+    indicatrix_net::messages::write_message(
+        &mut input,
+        &EnrollRequest::Issue {
+            name: name.to_string(),
+        },
+    )
+    .unwrap();
+    let mut duplex = DuplexHalf::new(input);
+    handle_enroll_connection(&mut duplex, registry, dir, None, Some(loopback_peer())).unwrap();
+    indicatrix_net::messages::read_message(&mut Cursor::new(duplex.out)).unwrap()
+}
+
+/// A worker enrollment registry mints `worker:<name>` certificates and appends them to
+/// the worker allowlist; each listener refuses an `Issue` for the other role.
+#[test]
+fn a_worker_listener_mints_worker_certificates_and_refuses_viewer_issues() {
+    use indicatrix_net::messages::PeerRole;
+    let dir = unique_temp_dir("worker-role");
+    pki::init(&dir).unwrap();
+    let workers = EnrollRegistry::for_role(PeerRole::Worker);
+    let viewers = EnrollRegistry::new();
+
+    assert!(matches!(
+        issue_via_handler(&workers, &dir, "laptop"),
+        EnrollResponse::IssueRefused { reason } if reason.contains("--role worker")
+    ));
+    assert!(matches!(
+        issue_via_handler(&viewers, &dir, "worker:box"),
+        EnrollResponse::IssueRefused { reason } if reason.contains("WORKER enrollment")
+    ));
+    let EnrollResponse::Issued { token, .. } = issue_via_handler(&workers, &dir, "worker:box")
+    else {
+        panic!("a worker issue on the worker listener must succeed");
+    };
+
+    let decoded = token::decode(&token).unwrap();
+    let mut input = Vec::new();
+    indicatrix_net::messages::write_message(
+        &mut input,
+        &EnrollRequest::Claim {
+            secret: *decoded.secret,
+        },
+    )
+    .unwrap();
+    let worker_allowlist = dir.join(pki::WORKER_ALLOWLIST_FILE);
+    let mut duplex = DuplexHalf::new(input);
+    handle_enroll_connection(
+        &mut duplex,
+        &workers,
+        &dir,
+        Some(&worker_allowlist),
+        Some(loopback_peer()),
+    )
+    .unwrap();
+    let response: EnrollResponse =
+        indicatrix_net::messages::read_message(&mut Cursor::new(duplex.out)).unwrap();
+    let EnrollResponse::Claimed {
+        client_cert_pem, ..
+    } = response
+    else {
+        panic!("expected Claimed, got {response:?}");
+    };
+    let der = rustls_pemfile_cert(&client_cert_pem);
+    assert_eq!(pki::role_of_certificate(&der).unwrap(), PeerRole::Worker);
+    let allowlist = indicatrix_net::tls::Allowlist::load(&worker_allowlist).unwrap();
+    assert!(allowlist.contains(&indicatrix_net::tls::fingerprint(&der.into())));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The DER bytes of the one certificate in `pem`.
+fn rustls_pemfile_cert(pem: &str) -> Vec<u8> {
+    let path = unique_temp_dir("pem").join("cert.pem");
+    std::fs::write(&path, pem).unwrap();
+    indicatrix_net::tls::load_certs(&path).unwrap()[0].to_vec()
+}
+
 // ---- A claim connection cannot issue a render request --------------------------
 
 // Only compilable on a `worker` build -- `RenderRequest`/`SceneState` don't exist
@@ -398,8 +482,10 @@ fn a_claim_connection_cannot_issue_a_render_request() {
         planes: StandardGemCuts::standard_round_brilliant(),
         girdle_frosted: false,
         backdrop: 0.0,
+        environment: indicatrix_net::scene::SceneEnvironment::Studio,
     };
     let request = RenderRequest {
+        intent: indicatrix_net::messages::RequestIntent::Batch,
         request_id: 1,
         scene,
         first_sample: 0,

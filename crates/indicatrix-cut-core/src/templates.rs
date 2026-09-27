@@ -2,7 +2,7 @@
 //!
 //! A small, curated gallery of classic faceting designs, each described by a
 //! static [`TemplateSpec`] entry in [`TEMPLATES`] instead of hard-coded in
-//! `apps/indicatrix-cut/src/gui/editor/callbacks/tier_actions.rs`'s
+//! `apps/indicatrix-cut/src/gui/editor/callbacks/tier_actions/new_design.rs`'s
 //! `do_new_design_create`.
 //!
 //! Every template here is built from the exact same proven, tested topology
@@ -189,9 +189,8 @@ fn rich_teaching_tiers() -> Vec<ConstraintTier> {
 /// Index 0 is intentionally the existing standard round brilliant
 /// (`new_design_dialog.slint`'s combo calls this "Standard Round
 /// Brilliant" at its own index 1, with index 0 reserved for "Empty" -- that
-/// mapping is a UI-side concern, not this table's; see this module's own top
-/// doc comment for the still-open integration step in `tier_actions.rs` that
-/// would let a UI index select one of these beyond the two already wired).
+/// mapping is a UI-side concern, not this table's: the app seeds UI index `n >= 1`
+/// from `TEMPLATES[n - 1]`, so every entry here is selectable).
 pub const TEMPLATES: &[TemplateSpec] = &[
     TemplateSpec {
         name: "Standard Round Brilliant",

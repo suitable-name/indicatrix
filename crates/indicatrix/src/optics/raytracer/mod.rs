@@ -66,8 +66,9 @@ pub(crate) use sampling::{
 };
 pub use sampling::{
     HERO_WAVELENGTH_ROTATION_STREAM, PIXEL_JITTER_X_ROTATION_STREAM,
-    PIXEL_JITTER_Y_ROTATION_STREAM, PixelRotations, SampleDraws, cranley_patterson_rotate,
-    hash_u32, low_discrepancy_base2, pixel_rotations, radical_inverse_base, sample_draws,
+    PIXEL_JITTER_Y_ROTATION_STREAM, PixelRotations, SampleDraws, add_finite_sample,
+    cranley_patterson_rotate, hash_u32, low_discrepancy_base2, pixel_rotations,
+    radical_inverse_base, sample_draws,
 };
 
 // environment.rs

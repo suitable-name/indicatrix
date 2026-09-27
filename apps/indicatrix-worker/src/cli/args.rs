@@ -1,6 +1,7 @@
 //! The parsed-argument types [`super::parse::parse`] produces -- one struct per
 //! subcommand, plus the [`Command`] enum that wraps them.
 
+use indicatrix_net::messages::PeerRole;
 use std::{net::IpAddr, path::PathBuf};
 
 /// Which engine(s) trace a request. See `USAGE_RENDER`/`USAGE_SERVE`'s
@@ -53,30 +54,63 @@ pub struct ServeArgs {
     pub ca: Option<PathBuf>,
     pub cert: Option<PathBuf>,
     pub key: Option<PathBuf>,
-    /// Defaults to `pki::default_allowlist_path(ca)` (allowlist.txt next to `--ca`)
-    /// when `None` -- see `serve::run`.
+    /// The VIEWER allowlist. Defaults to `pki::default_viewer_allowlist_path(ca)`
+    /// (`allowlist-viewers.txt` next to `--ca`, or a pre-role `allowlist.txt` while only
+    /// that exists) when `None` -- see `serve::run`.
     pub allowlist: Option<PathBuf>,
     pub trust_any_client_cert: bool,
     pub insecure_no_tls: bool,
     /// `--only-gpu`/`--only-cpu` (default `Hybrid`) -- see [`ComputeMode`]. `OnlyCpu`
-    /// forces `Backend::Cpu` for every request even with a usable GPU adapter.
+    /// forces `Backend::Cpu` for every request even with a usable GPU adapter. Only
+    /// meaningful with [`Self::render`]; either flag implies it.
     pub compute_mode: ComputeMode,
-    /// `--enroll-bind`: address for the token-based enrollment listener. Defaults to
-    /// the same host as `bind`, one port up (`crate::enroll::EnrollConfig::build`).
-    /// Unused when `insecure_no_tls` is set.
+    /// `--render` (implied by `--only-gpu`/`--only-cpu`): this coordinator renders with
+    /// its own CPU/GPU lane. Off by default since coordinator mode: without it `serve`
+    /// serves the library and accepts joining workers, but never traces a sample itself
+    /// and never acquires the GPU.
+    pub render: bool,
+    /// `--enroll-bind`: address for the VIEWER token-based enrollment listener. Defaults
+    /// to the same host as `bind`, one port up (7879 for the default 7878). Unused when
+    /// `insecure_no_tls` is set.
     pub enroll_bind: Option<String>,
-    /// `--no-enroll`: don't start the enrollment listener at all.
+    /// `--no-enroll`: don't start either enrollment listener (viewer or worker).
     pub no_enroll: bool,
+    /// `--worker-bind`: address of the worker port joining workers dial. Defaults to the
+    /// same host as `bind`, two ports up (7880 for 7878).
+    pub worker_bind: Option<String>,
+    /// `--worker-enroll-bind`: address for the WORKER enrollment listener. Defaults to
+    /// the worker port's host, one port up (7881 for 7880).
+    pub worker_enroll_bind: Option<String>,
+    /// `--no-workers`: don't open the worker port (nor its enrollment listener).
+    pub no_workers: bool,
+    /// `--worker-allowlist`: fingerprints of trusted WORKER certificates. Defaults to
+    /// `allowlist-workers.txt` next to `--ca`.
+    pub worker_allowlist: Option<PathBuf>,
     /// `--db <path>`: the design-library database this `serve` instance serves (see
     /// `crate::serve::library`). `None` keeps the existing default -- a
     /// `facet_diagrams.sqlite` resolved relative to the process's working directory.
     pub db: Option<PathBuf>,
     /// `--max-connections <n>`: the most connections `serve::run` handles at once
-    /// (default 64, see `serve::ConnectionLimiter`) -- one cap shared by the one
-    /// listener regardless of transport (TLS or `--insecure-no-tls`) or build mode
-    /// (library-only or `worker`). A connection past the cap is still accepted and told
+    /// (default 64, see `serve::ConnectionLimiter`), counted separately for the viewer
+    /// port and for joined workers on the worker port -- each listener gets its own cap
+    /// of `n`, regardless of transport (TLS or `--insecure-no-tls`) or build mode
+    /// (library-only or `worker`). A connection past its cap is still accepted and told
     /// so with a definitive `<- ERROR` reply, not left to hang.
     pub max_connections: usize,
+    /// `--interactive-workers <n>` (advanced, default 0): how many
+    /// of the fastest idle joined workers an `Interactive` (live-view) request may take
+    /// besides the own lane. `0` keeps the live view on the own lane alone; a coordinator
+    /// without `--render` then uses the single fastest worker.
+    pub interactive_workers: u32,
+    /// `--pin-interactive-worker <label>` (advanced): the joined worker (by its
+    /// certificate label, the `<label>` of `worker:<label>`) that `Interactive` requests
+    /// taking workers use first while it is connected, idle and eligible; otherwise the
+    /// fastest-by-rate rule applies. `None` (default): no pin.
+    pub pin_interactive_worker: Option<String>,
+    /// `--max-job-memory-mib <n>` (default [`super::DEFAULT_MAX_JOB_MEMORY_MIB`]): the
+    /// in-flight buffer budget of multi-lane coordinator jobs (each charged
+    /// width x height x 48 bytes); a job that would exceed it is refused.
+    pub max_job_memory_mib: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +130,8 @@ pub struct CertIssueClientArgs {
     pub dir: PathBuf,
     pub name: String,
     pub out: PathBuf,
+    /// `--role viewer|worker` (default viewer) -- see `crate::pki::role`.
+    pub role: PeerRole,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +139,34 @@ pub struct CertIssueTokenArgs {
     pub ca: PathBuf,
     pub admin_addr: String,
     pub name: String,
+    /// `--role viewer|worker` (default viewer): which enrollment listener `admin_addr`
+    /// must be -- the viewer one (7879) or the worker one (7881). A mismatch is refused
+    /// by the listener, never silently minted in the wrong role.
+    pub role: PeerRole,
+}
+
+/// `indicatrix-worker join <coordinator-host:port> ...` (worker feature): dial a
+/// coordinator's worker port and serve its render requests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JoinArgs {
+    /// The coordinator's WORKER port (`host:port`, default port 7880), given
+    /// positionally or as `--coordinator`.
+    pub coordinator: String,
+    /// Where the worker certificate bundle (`ca.pem`, `client.pem`, `client.key`) lives
+    /// -- or, with `--token`, where the claimed bundle is written first. Default
+    /// `worker-cert` in the working directory.
+    pub cert_dir: PathBuf,
+    /// `--slots K` (default 1): parallel connections, each serving one request stream.
+    pub slots: usize,
+    /// `--threads` for the CPU tracer; `0` = all cores.
+    pub threads: usize,
+    /// `--only-gpu`/`--only-cpu` (default hybrid).
+    pub compute_mode: ComputeMode,
+    /// `--token GW1-...`: claim a WORKER enrollment token first.
+    pub token: Option<String>,
+    /// `--enroll-addr`: the coordinator's worker enrollment listener. Defaults to the
+    /// coordinator host, one port above `coordinator` (7881 for 7880).
+    pub enroll_addr: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,7 +179,9 @@ pub struct CertClaimArgs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Render(RenderArgs),
-    Serve(ServeArgs),
+    /// Boxed: by far the largest variant (`clippy::large_enum_variant`).
+    Serve(Box<ServeArgs>),
+    Join(JoinArgs),
     CertInit(CertInitArgs),
     CertIssueServer(CertIssueServerArgs),
     CertIssueClient(CertIssueClientArgs),
@@ -130,12 +196,14 @@ pub enum Command {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HelpTopic {
     /// `indicatrix-worker --help` / `indicatrix-worker -h` / no arguments at all: the
-    /// three subcommands with one-line descriptions.
+    /// four subcommands (`render`, `serve`, `join`, `cert`) with one-line descriptions.
     Root,
     /// `indicatrix-worker render --help`: render's own usage line and flags only.
     Render,
     /// `indicatrix-worker serve --help`: serve's own usage lines and flags only.
     Serve,
+    /// `indicatrix-worker join --help`.
+    Join,
     /// `indicatrix-worker cert --help`: the CA overview plus the five sub-subcommands
     /// with one-line descriptions.
     Cert,

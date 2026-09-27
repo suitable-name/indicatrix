@@ -7,7 +7,7 @@ use super::{emitter::PendingDelta, sizing::next_batch_size};
 use crate::{cli::ComputeMode, render_core, render_core::hybrid::CalibrationOutcome};
 use glam::Vec3;
 use indicatrix::renderer::gpu_backend::GpuBackend;
-use indicatrix_net::SceneState;
+use indicatrix_net::{SceneState, messages::ErrorMsg};
 use std::{
     sync::{
         Arc, Mutex,
@@ -44,6 +44,31 @@ pub(super) struct SharedState {
     /// defense in depth. `run_stream` checks this once `finished` is set and reports
     /// [`StreamOutcome::TracePanicked`] instead of a normal `FRAME`+`DONE` sequence.
     pub(super) panicked: bool,
+    /// A producer other than [`run_tracer`] (the coordinator's lane pool, see
+    /// [`super::ProducerSink`]) ended without completing and without being cancelled:
+    /// `run_stream` sends this as a stream `ERROR` (no `DONE`) via
+    /// [`super::StreamOutcome::Failed`]. Always `None` for [`run_tracer`].
+    pub(super) failed: Option<ErrorMsg>,
+    /// The producer's own final sum of the whole request, when it has a better one than
+    /// the emitter's running total (the coordinator's deterministic chunk-order merge,
+    /// see `indicatrix_dispatch::Merger`). Used for the final `FRAME` under
+    /// `TransferMode::FinalOnly`, the final `DISPLAY_FRAME`, and `FINAL_IMAGE`; `None`
+    /// falls back to the running total. Always `None` for [`run_tracer`].
+    pub(super) final_total: Option<Vec<Vec3>>,
+}
+
+impl SharedState {
+    /// A fresh state for a `pixel_count`-pixel request: nothing traced, nothing pending.
+    pub(super) fn new(pixel_count: usize) -> Self {
+        Self {
+            pending_delta: PendingDelta::new(pixel_count),
+            samples_done: 0,
+            finished: false,
+            panicked: false,
+            failed: None,
+            final_total: None,
+        }
+    }
 }
 
 /// One tracer job's fixed inputs, bundled so [`run_tracer`] stays within clippy's
@@ -97,7 +122,7 @@ pub(super) fn run_tracer(
     job: &TracerJob,
     gpu: &GpuBackend,
     state: &Arc<Mutex<SharedState>>,
-    cancel: &Arc<AtomicBool>,
+    cancel: &AtomicBool,
     progress_tx: &mpsc::Sender<()>,
 ) {
     let reporter = Reporter { state, progress_tx };
@@ -165,6 +190,55 @@ pub(super) fn run_tracer(
     guard.panicked = result.is_err();
     drop(guard);
     let _ = progress_tx.send(());
+}
+
+/// What [`trace_range`] traced: the summed radiance of a PREFIX of the range.
+pub struct TracedRange {
+    /// Summed radiance of the first `done` samples, `width * height` long.
+    pub sum: Vec<Vec3>,
+    /// Samples traced (a prefix: tracing stops between sub-batches on cancel).
+    pub done: u32,
+    /// The tracer panicked (`sum`/`done` still hold what came before it).
+    pub panicked: bool,
+}
+
+/// Traces `[first_sample, first_sample + samples)` of `scene` synchronously on this
+/// thread with exactly the tracer a streamed request uses ([`run_tracer`]: adaptive
+/// sub-batches, the `compute_mode` hybrid split, `gpu` taking its FIFO turn), stopping
+/// between sub-batches once `cancel` is set. What a coordinator's own lane runs per
+/// chunk.
+pub fn trace_range(
+    scene: &SceneState,
+    (first_sample, samples): (u32, u32),
+    threads: usize,
+    compute_mode: ComputeMode,
+    gpu: &GpuBackend,
+    cancel: &AtomicBool,
+) -> TracedRange {
+    let pixel_count = scene.width as usize * scene.height as usize;
+    let state = Arc::new(Mutex::new(SharedState::new(pixel_count)));
+    let (progress_tx, _progress_rx) = mpsc::channel();
+    let job = TracerJob {
+        scene: scene.clone(),
+        first_sample,
+        samples,
+        threads,
+        compute_mode,
+    };
+    run_tracer(&job, gpu, &state, cancel, &progress_tx);
+    let mut guard = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut sum = vec![Vec3::ZERO; pixel_count];
+    let range = guard.pending_delta.swap_with(&mut sum);
+    let panicked = guard.panicked;
+    drop(guard);
+    // Nothing folded in leaves `sum` as the untouched all-zero initial buffer.
+    TracedRange {
+        sum,
+        done: range.map_or(0, |(_, n)| n),
+        panicked,
+    }
 }
 
 /// Bundles the shared-state plumbing a calibration/sub-batch result needs to fold in and

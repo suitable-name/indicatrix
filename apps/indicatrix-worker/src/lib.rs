@@ -15,8 +15,12 @@
 //!
 //! - `render` (only meaningful with `worker` on): trace a scene straight to a PNG, no
 //!   networking. See [`render_cmd::run`].
-//! - `serve`: accept connections over TCP and serve the library protocol (always) and,
-//!   under `worker`, `RenderRequest`s too. See [`serve::run`].
+//! - `serve`: the coordinator. Serves the library protocol to
+//!   viewers (always); under `worker` also accepts `join`ing workers on a separate
+//!   worker port ([`coordinator`]) and, with `--render`, renders `RenderRequest`s with
+//!   its own CPU/GPU. **`serve` no longer renders by default.** See [`serve::run`].
+//! - `join` (`worker`): dial a coordinator's worker port and serve its render requests
+//!   over that outbound connection. See [`join::run`].
 //!
 //! # GPU
 //!
@@ -38,9 +42,15 @@
 // pulled in. Do not remove: the overflow reproduces on every `--features gpu` build.
 #![recursion_limit = "256"]
 
+#[cfg(feature = "worker")]
+pub mod assets;
 pub mod cli;
+#[cfg(feature = "worker")]
+pub mod coordinator;
 pub mod enroll;
 pub mod enroll_client;
+#[cfg(feature = "worker")]
+pub mod join;
 pub mod pki;
 #[cfg(feature = "worker")]
 pub mod png_out;

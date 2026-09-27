@@ -13,11 +13,11 @@ to parse text, and keeping it that way means every downstream crate that touches
 `.asc`/`.gcs`/`.gem` files (`indicatrix`, `indicatrix-vault`, `apps/indicatrix-cut`)
 pays nothing extra for it.
 
-> **Note on this document:** `indicatrix-formats`'s internals (`src/asc.rs`) are under
+> **Note on this document:** `indicatrix-formats`'s internals (`src/asc/`) are under
 > active development. This README describes the format's semantics and the
 > crate's public API shape at a conceptual level, verified against the source at
 > time of writing — treat exact struct layouts as the current state, not a frozen
-> contract, and re-check `src/asc.rs` itself for anything load-bearing.
+> contract, and re-check `src/asc/` itself for anything load-bearing.
 
 ## Formats
 
@@ -202,7 +202,7 @@ in the first place.
 ## Real usage elsewhere in the workspace
 
 **Importing a user's own `.asc` file into the local catalog**
-(`crates/indicatrix-vault/src/local.rs`):
+(`crates/indicatrix-vault/src/local/`):
 
 ```rust
 use indicatrix_formats::asc::{self, AscSchedule, AscTier};
@@ -226,7 +226,7 @@ let schedule = local::reconstruct_asc_schedule(
 let text = indicatrix_formats::asc::to_asc_string(&schedule);
 ```
 
-**Turning a schedule into real renderable geometry** (`crates/indicatrix/src/geometry/cuts.rs`):
+**Turning a schedule into real renderable geometry** (`crates/indicatrix/src/geometry/cuts/asc_schedule.rs`):
 
 ```rust
 pub fn from_asc_schedule(schedule: &AscSchedule) -> Vec<GpuFacetPlane>
@@ -252,12 +252,12 @@ cargo test -p indicatrix-formats
 There is no `tests/` directory — every test lives inline in each format module's own
 `#[cfg(test)] mod tests`, with fixtures embedded as string/byte constants (several are
 verbatim excerpts of real corpus files, attributed by their `attached_files` row id
-and filename). `src/asc.rs`'s coverage includes field-level parsing, continuation-line
+and filename). `src/asc/`'s coverage includes field-level parsing, continuation-line
 handling, corpus-quirk tolerance (missing `g` keyword, fractional indices, multi-name
 tiers), negative-input error messages, a no-panic-on-garbage smoke test, `MeetInstruction`
 parsing against real note text, and round-trip equality (`parse_asc(&to_asc_string(parse_asc(x))) == parse_asc(x)`)
 against five real fixture files spanning different gear counts, symmetry orders,
-name-free designs, and negative-mast tiers. `src/gcs.rs`'s tests parse a real (trimmed)
+name-free designs, and negative-mast tiers. `src/gcs/`'s tests parse a real (trimmed)
 `.gcs` excerpt and check its angle-convention conversion against its sibling `.asc`;
 `src/gem.rs`'s tests parse real extracted byte slices from an actual `.gem` file and
 check the recovered note text against that same design's own catalog metadata.
@@ -265,4 +265,4 @@ check the recovered note text against that same design's own catalog metadata.
 Broader, corpus-scale validation (the "5,759 files / 2,881 designs" figures, and
 cross-checks of `.asc`-derived geometry against independently published
 measurements) lives outside this crate, in
-`crates/indicatrix/tests/optics_geometry_tests.rs`.
+`crates/indicatrix/tests/optics_geometry_tests/`.

@@ -2,26 +2,42 @@
 //! [`crate::framing`] stream.
 //!
 //! ```text
-//! -> HELLO    { protocol_version, build_hash, source_hash }
-//! <- WELCOME  { protocol_version, build_hash, source_hash, render: Option<RenderCapability>, library, tilt_curves }
-//! -> <ClientMessage>  Cancel | Library(LibraryRequest) | RenderRequest | TiltCurvesRequest  (post-handshake, tagged)
-//! <- <StreamEvent>    Frame | Preview | Progress | Done | Error          (RENDER replies, tagged)
+//! -> HELLO    { protocol_version, build_hash, source_hash, role, capability, accept_encodings }
+//! <- WELCOME  { protocol_version, build_hash, source_hash, render: Option<RenderCapability>, library, tilt_curves,
+//!               registration: Option<WorkerRegistration>, payload_encoding }
+//! -> <ClientMessage>  Cancel | Library(LibraryRequest) | RenderRequest | TiltCurvesRequest
+//!                     | Ping { nonce } | FinalImageRequest | Asset { content_hash, len } + payload
+//!                                                                     (post-handshake, tagged)
+//! <- <StreamEvent>    Frame | Preview | Progress | Done | Error
+//!                     | Pong { nonce } | DisplayFrame | FinalImage | CapabilityChanged { render }
+//!                     | NeedAsset { content_hash }                      (tagged)
 //! <- <TiltCurvesResponse>  Curves | Cancelled | Error   (TILT_CURVES's single reply, not a stream)
 //! ```
 //!
 //! Split across submodules by topic:
 //!
-//! - [`hello`]: handshake messages, `HELLO`/`WELCOME`.
+//! - [`hello`]: handshake messages, `HELLO`/`WELCOME`, peer roles.
+//! - [`asset`]: content-addressed assets (v14): `NEED_ASSET`/`ASSET`, the
+//!   SHA-256 [`content_hash`] and the bounded payload read.
+//! - [`encoding`]: payload-encoding negotiation (v14).
 //! - [`render`]: `RENDER`'s request shape (`render` feature only).
+//! - [`final_image`]: `FINAL_IMAGE_REQUEST`'s shape and reply semantics (`render` feature
+//!   only, v14).
 //! - [`tilt`]: `TILT_CURVES`'s request/response shapes (`render` feature only).
 //! - [`stream`]: everything else post-handshake -- [`stream::ClientMessage`],
 //!   [`stream::StreamEvent`], and [`stream::ErrorMsg`].
+//! - [`error_codes`]: the `ErrorMsg::code` vocabulary.
 //! - [`codec`]: the generic framed codec ([`codec::NetError`],
 //!   [`codec::write_message`]/[`codec::read_message`]) every one of the above builds on.
 //!
 //! Every item is re-exported here at its original flat `messages::` path.
 
+pub mod asset;
 mod codec;
+mod encoding;
+pub mod error_codes;
+#[cfg(feature = "render")]
+mod final_image;
 mod hello;
 #[cfg(feature = "render")]
 mod render;
@@ -29,14 +45,25 @@ mod stream;
 #[cfg(feature = "render")]
 mod tilt;
 
-pub use codec::{NetError, read_message, read_message_bounded, write_message};
-pub use hello::{Backend, Hello, RenderCapability, Welcome};
 #[cfg(feature = "render")]
-pub use render::{PreviewConfig, RenderRequest, StreamConfig, TransferMode};
+pub use asset::write_asset_message;
+pub use asset::{
+    AssetError, AssetHeader, ContentHash, MAX_ASSET_LEN, content_hash, hash_hex, read_asset_payload,
+};
+pub use codec::{NetError, read_message, read_message_bounded, write_message};
+pub use encoding::{
+    DEFAULT_SERVER_PREFERENCE, DisplayEncoding, LOOPBACK_SERVER_PREFERENCE, PayloadEncoding,
+    negotiate,
+};
+#[cfg(feature = "render")]
+pub use final_image::{FinalImageRequest, FinalOutput, WireColorSpace};
+pub use hello::{Backend, Hello, PeerRole, RenderCapability, Welcome, WorkerRegistration};
+#[cfg(feature = "render")]
+pub use render::{PreviewConfig, RenderRequest, RequestIntent, StreamConfig, TransferMode};
 pub use stream::{
-    Cancel, ClientMessage, Done, ErrorMsg, FrameHeader, PreviewHeader, Progress, Stats,
-    StreamEvent, read_frame_message, read_preview_message, read_stream_event, write_frame_message,
-    write_preview_message, write_stream_event,
+    Cancel, ClientMessage, DisplayFrameHeader, Done, ErrorMsg, FinalImageHeader, FrameHeader,
+    PreviewHeader, Progress, Stats, StreamEvent, read_frame_message, read_preview_message,
+    read_stream_event, write_frame_message, write_preview_message, write_stream_event,
 };
 #[cfg(feature = "render")]
 pub use tilt::{
@@ -95,15 +122,28 @@ pub use tilt::{
 ///     ignored in remote mode, even though
 ///     `indicatrix-worker` could already honour both via
 ///     `indicatrix_vault::db::sqlite::Database::search_diagrams_display`.
-pub const PROTOCOL_VERSION: u16 = 13;
+/// 14: coordinator mode and lossless payload compression, one bump for all of it:
+///     `Hello` gained `role`/`capability`/`accept_encodings`; `Welcome` gained
+///     `registration`/`payload_encoding`; `Backend::Coordinator`; `RenderRequest.intent`;
+///     `TransferMode::DisplayOnly`; `FrameHeader`/`PreviewHeader` gained
+///     `encoding`/`raw_len`; `ClientMessage::{Ping, FinalImageRequest}`;
+///     `StreamEvent::{Pong, DisplayFrame, FinalImage, CapabilityChanged}`; error codes
+///     `UNSUPPORTED_REQUEST`, `ALL_WORKERS_LOST`, `ROLE_REFUSED`. The first three
+///     `Hello`/`Welcome` fields are unchanged, so either side can still read the other's
+///     version and refuse with a message naming both (`crate::handshake::read_hello`).
+///     HDR environments over the protocol were added to the same unreleased v14:
+///     `SceneState::environment` (`SceneEnvironment::{Studio, Hdr}`),
+///     `RenderCapability::hdr`, `ClientMessage::Asset`, `StreamEvent::NeedAsset` and the
+///     error code `ASSET_FAILED` -- see [`asset`].
+pub const PROTOCOL_VERSION: u16 = 14;
 
 #[cfg(test)]
 mod tests {
     #[test]
     /// Pins the constant so a bump is always a deliberate, reviewed edit.
     ///
-    /// 13: `LibraryRequest::Search` gained `order`/`tag_filter`.
+    /// 14: coordinator mode + payload compression (see the constant's history).
     fn protocol_version_matches_constant() {
-        assert_eq!(super::PROTOCOL_VERSION, 13);
+        assert_eq!(super::PROTOCOL_VERSION, 14);
     }
 }

@@ -129,11 +129,7 @@ mod tests {
 
     #[test]
     fn messages_split_across_a_dribbling_reader_still_decode() {
-        let hello = Hello {
-            protocol_version: PROTOCOL_VERSION,
-            build_hash: [7; 8],
-            source_hash: [9; 8],
-        };
+        let hello = Hello::viewer(PROTOCOL_VERSION, [7; 8], [9; 8]);
         let mut buf = Vec::new();
         write_message(&mut buf, &hello).unwrap();
 
@@ -144,11 +140,7 @@ mod tests {
 
     #[test]
     fn read_message_bounded_decodes_a_message_within_the_bound() {
-        let hello = Hello {
-            protocol_version: PROTOCOL_VERSION,
-            build_hash: [1; 8],
-            source_hash: [2; 8],
-        };
+        let hello = Hello::viewer(PROTOCOL_VERSION, [1; 8], [2; 8]);
         let mut buf = Vec::new();
         write_message(&mut buf, &hello).unwrap();
 
@@ -159,11 +151,7 @@ mod tests {
 
     #[test]
     fn read_message_bounded_rejects_a_frame_over_the_bound() {
-        let hello = Hello {
-            protocol_version: PROTOCOL_VERSION,
-            build_hash: [1; 8],
-            source_hash: [2; 8],
-        };
+        let hello = Hello::viewer(PROTOCOL_VERSION, [1; 8], [2; 8]);
         let mut buf = Vec::new();
         write_message(&mut buf, &hello).unwrap();
 

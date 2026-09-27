@@ -5,3 +5,4 @@ pub mod pixel_buffer;
 pub mod preview_render;
 pub mod remote;
 pub mod render_thread;
+pub mod sample_cursor;

@@ -165,6 +165,21 @@ impl Distribution1D {
     pub(crate) const fn func_int(&self) -> f32 {
         self.func_int
     }
+
+    /// Whether `self` and `other` hold the identical `f32` bit patterns in every array
+    /// (`func`, `cdf`) and in `func_int` -- the "every node builds the same sampler"
+    /// check behind `super::EnvironmentMap::bitwise_eq`. `to_bits`, not `==`, so a
+    /// `-0.0`/`0.0` or NaN-payload difference still counts as different.
+    pub(crate) fn same_bits(&self, other: &Self) -> bool {
+        self.func_int.to_bits() == other.func_int.to_bits()
+            && bits_equal(&self.func, &other.func)
+            && bits_equal(&self.cdf, &other.cdf)
+    }
+}
+
+/// `a` and `b` have the same length and the same `f32` bit pattern at every index.
+pub(super) fn bits_equal(a: &[f32], b: &[f32]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
 }
 
 /// A piecewise-constant probability distribution over the unit square `[0,1) x [0,1)`,
@@ -264,6 +279,19 @@ impl Distribution2D {
     #[must_use]
     pub(crate) fn width(&self) -> usize {
         self.conditional[0].n()
+    }
+
+    /// Whether the marginal and every conditional [`Distribution1D`] match `other`'s bit
+    /// for bit (see [`Distribution1D::same_bits`]).
+    pub(crate) fn same_bits(&self, other: &Self) -> bool {
+        self.height == other.height
+            && self.marginal.same_bits(&other.marginal)
+            && self.conditional.len() == other.conditional.len()
+            && self
+                .conditional
+                .iter()
+                .zip(&other.conditional)
+                .all(|(a, b)| a.same_bits(b))
     }
 }
 

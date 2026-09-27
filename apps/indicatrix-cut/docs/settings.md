@@ -1,7 +1,7 @@
 # indicatrix-cut — settings file
 
 The on-disk settings format: location, persistence guarantees, render quality,
-and remote-worker configuration. For everything else see [the README](../README.md).
+and the remote endpoint. For everything else see [the README](../README.md).
 
 ## Settings file
 
@@ -40,13 +40,17 @@ camera_distance = 2.4
 selected_material = "Diamond"
 denoise_enabled = true
 
-[[settings.remote_workers]]
-name = "Workstation"
-address = "10.0.0.5:9443"
+[settings.remote]
+export_transfer = "FullData"
+live_transfer = "FullData"
+
+[settings.remote.connection]
+name = "Coordinator"
+address = "10.0.0.5:7878"
 cert_dir = "C:/Users/me/indicatrix-certs"
 transfer_mode = "LiveProgressive"
 cadence_ms = 500
-preview_scale = "Full"
+preview_scale = "Quarter"
 
 [[presets]]
 name = "Studio Softbox"
@@ -64,7 +68,7 @@ Render quality is one setting, `target_samples`: how many samples per pixel the
 progressive accumulation converges to before it stops. Default 256.
 
 The dialog's slider drags an **exponent**, not the count — `2^3 = 8` up to
-`2^10 = 1024` (`gui::sample_scale`). Noise falls as `1/sqrt(N)`, so a linear
+`2^10 = 1024` (`gui::render::sample_scale`). Noise falls as `1/sqrt(N)`, so a linear
 8..1024 control would spend roughly 97% of its travel above 32 spp, where each
 step barely changes anything visible. A `target_samples` value that is not an
 exact power of two still loads: it resolves to the largest power of two not
@@ -74,6 +78,11 @@ An older settings file may still carry a `quality_preset = "High / Quality"`
 string from the four-tier preset selector this replaced. Nothing rejects it —
 there is no `#[serde(deny_unknown_fields)]`, so TOML drops the unknown key and
 `target_samples` takes its default.
+
+`target_samples` is also the one target for a live image rendered with a remote:
+local and remote samples count toward it together. The separate
+`remote_render_samples` key older files carry is ignored on load and dropped on the
+next save.
 
 ### Bounce cap
 
@@ -92,9 +101,20 @@ as written for rendering; only the highlighted pill snaps to the nearest rung.
 Render resolution is its own setting (`render_width`/`render_height`), not part
 of either control.
 
-### Remote worker configuration (`WorkerSettings`)
+### Remote endpoint (`RemoteEndpoint`)
+
+The viewer has exactly one remote: `remote: Option<RemoteEndpoint>`, an
+`indicatrix-worker serve` coordinator (rendering through joined workers, its own
+`--render` lane, or both). `address` is the coordinator's viewer port (7878 by
+default), never a joined worker's.
 
 ```rust
+pub struct RemoteEndpoint {
+    pub connection: WorkerSettings,
+    pub export_transfer: ExportTransfer, // FullData (default) | FinalPicture
+    pub live_transfer: LiveTransfer,     // FullData (default) | FinalPicture
+}
+
 pub struct WorkerSettings {
     pub name: String,
     pub address: String,             // "host:port"
@@ -107,8 +127,17 @@ pub struct WorkerSettings {
 
 `cert_dir` should point at exactly what `indicatrix-worker cert issue-client --dir
 <pki-dir> --name <label> --out <bundle-dir>` writes — `ca.pem`, `client.pem`,
-`client.key` in one directory (see `indicatrix-worker`'s README). The app always
-talks to the *first* configured worker; there is no load-balancing or
-multi-worker selection UI. Render width/height is **not** per-worker — it's
-session-wide, since every worker (and the local CPU path) must agree on it for
-the summed samples to actually compose correctly.
+`client.key` in one directory (see `indicatrix-worker`'s README). Load-balancing
+over several machines is the coordinator's job, not the viewer's. Render
+width/height is **not** part of the endpoint — it's session-wide, since the remote
+(and the local CPU path) must agree on it for the summed samples to actually
+compose correctly.
+
+`export_transfer` is the default of the export dialog's and the tilt video's
+"Transfer" choice; `live_transfer` is the settings dialog's "Live Transfer" -- see
+[remote-rendering.md](remote-rendering.md) for what "final picture" does.
+
+**Migration.** A file written before the single-endpoint model carries a
+`[[settings.remote_workers]]` list. It still loads: the FIRST entry becomes `remote` (it was the only one any
+feature used), the rest are dropped and logged by address, and the next save writes
+only `[settings.remote]`.

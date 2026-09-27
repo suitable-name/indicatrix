@@ -32,8 +32,16 @@ use glam::Vec3;
 // path is spelled out explicitly.
 #[path = "env_map_distribution.rs"]
 mod env_map_distribution;
+// The one `.hdr`-bytes-to-map builder every node shares (viewer and render workers);
+// see that module's doc comment for why bit-identity across machines depends on it.
+#[cfg(feature = "hdr")]
+#[path = "env_map_hdr.rs"]
+mod env_map_hdr;
 #[path = "env_map_spectrum.rs"]
 mod env_map_spectrum;
+
+#[cfg(feature = "hdr")]
+pub use env_map_hdr::{HdrLimits, environment_from_hdr_bytes};
 
 // `Distribution1D` re-exported alongside `Distribution2D` (not just used privately here)
 // so `renderer::env_map_gpu::HdrEnvGpuData::upload` can name the type it
@@ -66,6 +74,17 @@ pub enum EnvMapError {
     /// feature enabled).
     #[cfg(feature = "hdr")]
     Decode(String),
+    /// The HDR header declares an image larger than the decode [`HdrLimits`] allow --
+    /// rejected from the header alone, before any pixel buffer is allocated.
+    #[cfg(feature = "hdr")]
+    TooLarge {
+        /// Declared width in texels.
+        width: u32,
+        /// Declared height in texels.
+        height: u32,
+        /// The bounds it exceeded.
+        limits: HdrLimits,
+    },
 }
 
 impl std::fmt::Display for EnvMapError {
@@ -81,6 +100,18 @@ impl std::fmt::Display for EnvMapError {
             Self::ZeroSized => write!(f, "environment map width and height must both be non-zero"),
             #[cfg(feature = "hdr")]
             Self::Decode(msg) => write!(f, "failed to decode HDR image: {msg}"),
+            #[cfg(feature = "hdr")]
+            Self::TooLarge {
+                width,
+                height,
+                limits,
+            } => write!(
+                f,
+                "HDR image {width}x{height} exceeds the decode limits ({}x{} texels, {} MiB decoded)",
+                limits.max_width,
+                limits.max_height,
+                limits.max_decoded_bytes / (1024 * 1024)
+            ),
         }
     }
 }
@@ -156,24 +187,19 @@ impl EnvironmentMap {
             .expect("uniform() constructs a self-consistent buffer")
     }
 
-    /// Decodes a Radiance `.hdr` equirectangular image from raw bytes.
+    /// Decodes a Radiance `.hdr` equirectangular image from raw bytes under
+    /// [`HdrLimits::DEFAULT`] -- exactly [`environment_from_hdr_bytes`], the one builder
+    /// every node shares.
     ///
     /// Requires the `hdr` feature (pulls in the `image` crate's HDR decoder), kept
     /// behind a feature so the base `indicatrix` build stays at its four core dependencies.
     ///
     /// # Errors
     ///
-    /// Returns [`EnvMapError::Decode`] if the bytes are not a valid Radiance HDR image,
-    /// or [`EnvMapError::ZeroSized`]/[`EnvMapError::DimensionMismatch`] if the decoded
-    /// image is degenerate (should not happen for a well-formed file).
+    /// See [`environment_from_hdr_bytes`].
     #[cfg(feature = "hdr")]
     pub fn from_hdr_bytes(bytes: &[u8]) -> Result<Self, EnvMapError> {
-        let decoded = image::load_from_memory_with_format(bytes, image::ImageFormat::Hdr)
-            .map_err(|e| EnvMapError::Decode(e.to_string()))?;
-        let rgb = decoded.into_rgb32f();
-        let (width, height) = (rgb.width() as usize, rgb.height() as usize);
-        let pixels: Vec<[f32; 3]> = rgb.pixels().map(|p| p.0).collect();
-        Self::from_rgb(width, height, pixels)
+        environment_from_hdr_bytes(bytes, HdrLimits::DEFAULT)
     }
 
     /// Reads and decodes a Radiance `.hdr` file from `path`. Requires the `hdr` feature.
@@ -188,6 +214,24 @@ impl EnvironmentMap {
         Self::from_hdr_bytes(&bytes)
     }
 
+    /// Whether `self` and `other` are the same map bit for bit: dimensions, every texel
+    /// channel and the whole importance-sampling [`Distribution2D`] (marginal and every
+    /// conditional `func`/`cdf`/integral), compared by `f32::to_bits`. What "every node
+    /// builds the identical map from the same bytes" means, checked.
+    #[must_use]
+    pub fn bitwise_eq(&self, other: &Self) -> bool {
+        self.width == other.width
+            && self.height == other.height
+            && self.pixels.len() == other.pixels.len()
+            && self
+                .pixels
+                .iter()
+                .zip(&other.pixels)
+                .all(|(a, b)| env_map_distribution::bits_equal(a, b))
+            && self.distribution.same_bits(&other.distribution)
+    }
+
+    /// Width in texels.
     #[must_use]
     pub const fn width(&self) -> usize {
         self.width

@@ -1,6 +1,7 @@
 import { Button } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
+import { GuideModel } from "../models/guide.slint";
 
 // A small inline badge for
 // `EditorModel.material_guess_text` (e.g. "Sapphire? (from RI 1.76)"), with a
@@ -33,6 +34,9 @@ export component MaterialGuessBadge inherits HorizontalLayout {
     }
     Button {
         text: "Set material";
+        // A design-material edit: locked with Design Settings while the
+        // worked-example guide runs.
+        enabled: GuideModel.allows_design_settings();
         clicked => { EditorModel.set_material_from_guess(EditorModel.material_guess_name); }
     }
 }

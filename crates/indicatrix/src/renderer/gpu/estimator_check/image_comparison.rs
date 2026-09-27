@@ -27,7 +27,10 @@ use super::{
     zircon_material,
 };
 
-use crate::renderer::gpu::frame::{self, classify_material};
+use crate::renderer::gpu::{
+    frame::{self, classify_material},
+    z_stats::{NULL_OVER_3_SIGMA_RATE, SIGMA_THRESHOLD, connected_components, passes_z_criteria},
+};
 
 #[derive(Debug, Clone)]
 pub struct ImageComparisonResult {
@@ -55,10 +58,12 @@ impl ImageComparisonResult {
     /// see this module's doc comment: a structured bias clusters, noise does not.
     #[must_use]
     pub fn passed(&self) -> bool {
-        let expected_count = self.over_3_sigma_expected * self.total_pixels as f64;
-        let observed_ok = (self.over_3_sigma_count as f64) <= (expected_count * 5.0).max(10.0);
-        let largest = self.cluster_sizes.first().copied().unwrap_or(0);
-        observed_ok && largest <= 6
+        passes_z_criteria(
+            self.over_3_sigma_count,
+            self.total_pixels,
+            self.over_3_sigma_expected,
+            &self.cluster_sizes,
+        )
     }
 }
 
@@ -556,8 +561,8 @@ fn compute_image_comparison_result(
         }
     }
 
-    let over_3_sigma_count = z_grid.iter().filter(|z| z.abs() > 3.0).count();
-    let cluster_sizes = connected_components(&z_grid, width, height, 3.0);
+    let over_3_sigma_count = z_grid.iter().filter(|z| z.abs() > SIGMA_THRESHOLD).count();
+    let cluster_sizes = connected_components(&z_grid, width, height, SIGMA_THRESHOLD);
 
     ImageComparisonResult {
         width,
@@ -567,7 +572,7 @@ fn compute_image_comparison_result(
         mean_z: mean_z_sum / num_pixels as f64,
         over_3_sigma_count,
         total_pixels: num_pixels,
-        over_3_sigma_expected: 0.0027,
+        over_3_sigma_expected: NULL_OVER_3_SIGMA_RATE,
         cluster_sizes,
         max_abs_z,
         max_abs_z_pixel,
@@ -695,8 +700,8 @@ pub fn run_specialisation_image_comparison(
         }
     }
 
-    let over_3_sigma_count = z_grid.iter().filter(|z| z.abs() > 3.0).count();
-    let cluster_sizes = connected_components(&z_grid, width, height, 3.0);
+    let over_3_sigma_count = z_grid.iter().filter(|z| z.abs() > SIGMA_THRESHOLD).count();
+    let cluster_sizes = connected_components(&z_grid, width, height, SIGMA_THRESHOLD);
 
     ImageComparisonResult {
         width,
@@ -706,7 +711,7 @@ pub fn run_specialisation_image_comparison(
         mean_z: mean_z_sum / num_pixels as f64,
         over_3_sigma_count,
         total_pixels: num_pixels,
-        over_3_sigma_expected: 0.0027,
+        over_3_sigma_expected: NULL_OVER_3_SIGMA_RATE,
         cluster_sizes,
         max_abs_z,
         max_abs_z_pixel,
@@ -742,49 +747,4 @@ fn pixel_specialisation_z_score(
 
 const fn luminance(xyz: Vec3) -> f32 {
     xyz.y
-}
-
-/// 4-connectivity connected-component sizes of `|z| > threshold` pixels in a `width x
-/// height` grid, largest first. Standard flood fill -- see [`ImageComparisonResult`]'s
-/// doc comment for why this matters more than a bare failing-pixel count: a connected
-/// region (one facet, a grazing-angle band, one branch of the physics) is what a real
-/// porting bug leaves behind, while independent per-sample noise crossing the 3-sigma
-/// threshold lands as scattered singletons.
-fn connected_components(z_grid: &[f64], width: u32, height: u32, threshold: f64) -> Vec<usize> {
-    let w = width as usize;
-    let h = height as usize;
-    let mut visited = vec![false; z_grid.len()];
-    let mut sizes = Vec::new();
-    let mut stack = Vec::new();
-    for start in 0..z_grid.len() {
-        if visited[start] || z_grid[start].abs() <= threshold {
-            continue;
-        }
-        stack.push(start);
-        visited[start] = true;
-        let mut size = 0usize;
-        while let Some(idx) = stack.pop() {
-            size += 1;
-            let x = idx % w;
-            let y = idx / w;
-            let neighbors = [
-                (x.checked_sub(1), Some(y)),
-                (Some(x + 1).filter(|&nx| nx < w), Some(y)),
-                (Some(x), y.checked_sub(1)),
-                (Some(x), Some(y + 1).filter(|&ny| ny < h)),
-            ];
-            for (nx, ny) in neighbors {
-                if let (Some(nx), Some(ny)) = (nx, ny) {
-                    let nidx = ny * w + nx;
-                    if !visited[nidx] && z_grid[nidx].abs() > threshold {
-                        visited[nidx] = true;
-                        stack.push(nidx);
-                    }
-                }
-            }
-        }
-        sizes.push(size);
-    }
-    sizes.sort_unstable_by(|a, b| b.cmp(a));
-    sizes
 }

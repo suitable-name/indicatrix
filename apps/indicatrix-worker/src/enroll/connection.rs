@@ -4,7 +4,10 @@
 //! comment for why this listener structurally cannot reach `RenderRequest` handling.
 
 use super::registry::{EnrollRegistry, ZeroizeLocal};
-use indicatrix_net::enroll::{EnrollRequest, EnrollResponse};
+use indicatrix_net::{
+    enroll::{EnrollRequest, EnrollResponse},
+    messages::PeerRole,
+};
 use std::{
     io::{Read, Write},
     net::{SocketAddr, TcpStream},
@@ -64,6 +67,31 @@ pub(super) fn accept_enroll_tls(
     Some(tls_stream)
 }
 
+/// The certificate label an `Issue { name }` asks for, checked against the listener's
+/// role (see `super`'s module doc comment): a worker listener needs the
+/// `worker:<label>` form `cert issue-token --role worker` sends and returns the bare
+/// label; a viewer listener refuses that form.
+///
+/// # Errors
+///
+/// The refusal reason for an `Issue` of the other role.
+fn issue_label_for_role(name: &str, role: PeerRole) -> Result<&str, String> {
+    match (role, name.strip_prefix(crate::pki::WORKER_CN_PREFIX)) {
+        (PeerRole::Viewer, None) => Ok(name),
+        (PeerRole::Worker, Some(label)) => Ok(label),
+        (PeerRole::Viewer, Some(_)) => Err(
+            "this is the VIEWER enrollment listener -- a worker token must be issued on the coordinator's \
+             WORKER enrollment listener (default port 7881)"
+                .to_string(),
+        ),
+        (PeerRole::Worker, None) => Err(
+            "this is the WORKER enrollment listener -- pass `cert issue-token --role worker` for a worker \
+             token, or use the viewer enrollment listener (default port 7879) for a viewer"
+                .to_string(),
+        ),
+    }
+}
+
 /// Handles exactly one [`EnrollRequest`]/[`EnrollResponse`] exchange on `stream`, then
 /// returns -- not a loop, since both `Issue` and `Claim` are one-shot.
 ///
@@ -99,16 +127,19 @@ pub(super) fn handle_enroll_connection<S: Read + Write>(
         EnrollRequest::Issue { name } => {
             let is_loopback = peer.is_some_and(|p| p.ip().is_loopback());
             let response = if is_loopback {
-                match registry.issue(pki_dir, &name) {
-                    Ok((token, expires_in_secs)) => EnrollResponse::Issued {
-                        token,
-                        expires_in_secs,
+                match issue_label_for_role(&name, registry.role()) {
+                    Ok(label) => match registry.issue(pki_dir, label) {
+                        Ok((token, expires_in_secs)) => EnrollResponse::Issued {
+                            token,
+                            expires_in_secs,
+                        },
+                        // EnrollIssueError -> String at the wire boundary: `reason`
+                        // travels to the peer as plain text, never matched on.
+                        Err(reason) => EnrollResponse::IssueRefused {
+                            reason: reason.to_string(),
+                        },
                     },
-                    // EnrollIssueError -> String at the wire boundary: `reason` travels
-                    // to the claiming peer as plain text, not a value it ever matches on.
-                    Err(reason) => EnrollResponse::IssueRefused {
-                        reason: reason.to_string(),
-                    },
+                    Err(reason) => EnrollResponse::IssueRefused { reason },
                 }
             } else {
                 tracing::warn!(

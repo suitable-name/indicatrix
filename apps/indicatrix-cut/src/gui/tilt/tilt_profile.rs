@@ -42,6 +42,7 @@ use crate::{
     ActivityModel, MainWindow, TiltModel,
     bridge::render_thread::{RenderContext, hash_planes, resolve_material_with_override},
     gui::optics::curve_path::full_axis_curve_path,
+    settings::SettingsPersister,
 };
 use indicatrix::{
     color::metrics::{PROFILE_AZIMUTHS_DEG, evaluate_full_axis_profile_at_azimuth},
@@ -348,6 +349,7 @@ fn spawn_tilt_profile_sweep(
 pub(in crate::gui) fn setup_tilt_profile_callback(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
+    settings_store: &Arc<SettingsPersister>,
 ) {
     // `Some(key)` once a request for exactly these inputs has been launched (whether
     // or not it has finished yet) -- deduplicates re-opening the dialog against the
@@ -421,7 +423,7 @@ pub(in crate::gui) fn setup_tilt_profile_callback(
     // `gui::mod::run_gui` directly, piggy-backing on the fact that
     // `setup_tilt_profile_callback` is already invoked once from there at
     // startup -- see `video_export`'s own module doc comment.
-    super::video_export::setup_video_export_callback(ui, render_ctx);
+    super::video_export::setup_video_export_callback(ui, render_ctx, settings_store);
 }
 
 /// Whether the tilt-curve/preview data currently cached for this design was rendered

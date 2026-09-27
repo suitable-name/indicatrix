@@ -1,5 +1,9 @@
 //! Deterministic PRNG hashing, per-bounce RNG stream salts, and the low-discrepancy
 //! (stratified) sampling helpers used for pixel jitter and hero-wavelength selection.
+//!
+//! Also [`add_finite_sample`], the non-finite-sample rule every render backend shares.
+
+use glam::Vec3;
 
 /// Decorrelated hash salts for per-bounce random draws: each draw is
 /// `hash_u32(rng_seed ^ hash_u32(bounce ^ SALT))`, giving independent streams instead of
@@ -192,6 +196,99 @@ pub fn sample_draws(pixel: u32, sample_num: u32, rot: &PixelRotations) -> Sample
         jitter_x,
         jitter_y,
         hero_rand,
+    }
+}
+
+/// Adds one traced sample's XYZ radiance into a pixel's running sum under the ONE
+/// non-finite rule every render backend applies: a sample with any NaN or ±Inf
+/// component is **dropped but still counted**.
+///
+/// "Dropped" means it adds nothing to `sum`, so one bad sample can never poison a
+/// pixel's accumulator (NaN would otherwise propagate through every later `+=`, and
+/// across every merge with another backend's buffer). "Still counted" means the caller
+/// keeps including it in the sample count it later divides by: accumulators carry one
+/// count per image, not per pixel, so there is no way to not count it for one pixel only.
+/// Because every backend uses the same rule, per-pixel sums from different backends
+/// (CPU scanline, export batch, worker, GPU reduction) merge by plain addition with the
+/// total sample count as divisor, whichever backend traced a bad sample.
+///
+/// The GPU twin is `valid_xyz_bits` in `renderer/shaders/reduce_xyz.wgsl`, which applies
+/// the identical test (an IEEE exponent that is not all ones, per component) while
+/// summing each pixel's samples. Keep the two in lock-step.
+#[inline]
+pub fn add_finite_sample(sum: &mut Vec3, sample: Vec3) {
+    if sample.is_finite() {
+        *sum += sample;
+    }
+}
+
+#[cfg(test)]
+mod non_finite_rule_tests {
+    use super::*;
+
+    /// A pixel's samples, one of them NaN and one +Inf, with a -Inf component in a third:
+    /// only the finite samples reach the sum, yet the divisor is still every sample
+    /// traced, so the displayed mean is finite and exactly the finite sum over the full
+    /// count.
+    #[test]
+    fn non_finite_samples_are_dropped_but_still_counted() {
+        let samples = [
+            Vec3::new(1.0, 2.0, 3.0),
+            Vec3::new(f32::NAN, 1.0, 1.0),
+            Vec3::new(4.0, 5.0, 6.0),
+            Vec3::new(1.0, f32::INFINITY, 1.0),
+            Vec3::new(1.0, 1.0, f32::NEG_INFINITY),
+        ];
+        let mut sum = Vec3::ZERO;
+        for &s in &samples {
+            add_finite_sample(&mut sum, s);
+        }
+        let count = u8::try_from(samples.len()).expect("five samples");
+        assert_eq!(sum, Vec3::new(5.0, 7.0, 9.0));
+        let mean = sum / f32::from(count);
+        assert!(mean.is_finite(), "mean must stay finite, got {mean}");
+        assert_eq!(mean, Vec3::new(5.0, 7.0, 9.0) / 5.0);
+    }
+
+    /// Two backends trace disjoint halves of one pixel's sample range; the first hits a
+    /// NaN sample, the second an Inf one. Their sums merge by plain addition and the
+    /// divisor stays the full sample count: the merged pixel is finite and equals the
+    /// finite samples' sum over every sample traced.
+    #[test]
+    fn a_merged_pixel_stays_finite_when_one_backend_produced_nan_and_another_inf() {
+        let finite = Vec3::new(0.25, 0.5, 0.75);
+        let backend_a = [finite, Vec3::splat(f32::NAN), finite, finite];
+        let backend_b = [finite, finite, Vec3::new(f32::INFINITY, 0.0, 0.0), finite];
+
+        let mut sum_a = Vec3::ZERO;
+        for &s in &backend_a {
+            add_finite_sample(&mut sum_a, s);
+        }
+        let mut sum_b = Vec3::ZERO;
+        for &s in &backend_b {
+            add_finite_sample(&mut sum_b, s);
+        }
+
+        let merged = sum_a + sum_b;
+        let divisor = u8::try_from(backend_a.len() + backend_b.len()).expect("eight samples");
+        assert!(
+            merged.is_finite(),
+            "merged sum must stay finite, got {merged}"
+        );
+        assert_eq!(merged, finite * 6.0);
+        assert_eq!(divisor, 8, "dropped samples still count toward the divisor");
+        assert_eq!(merged / f32::from(divisor), finite * 6.0 / 8.0);
+    }
+
+    /// A pixel whose every sample is non-finite ends at exactly zero radiance (not NaN),
+    /// so it shows black rather than poisoning a later merge.
+    #[test]
+    fn an_all_non_finite_pixel_sums_to_zero() {
+        let mut sum = Vec3::ZERO;
+        add_finite_sample(&mut sum, Vec3::splat(f32::NAN));
+        add_finite_sample(&mut sum, Vec3::splat(f32::INFINITY));
+        add_finite_sample(&mut sum, Vec3::splat(f32::NEG_INFINITY));
+        assert_eq!(sum, Vec3::ZERO);
     }
 }
 

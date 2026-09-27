@@ -1,83 +1,19 @@
 //! Tone-map and PNG/ICC output: turning the finished accumulation buffer into RGBA
 //! bytes (sRGB or wide-gamut) and writing it to disk.
 //!
-//! Split out of `bridge::export_thread` purely to keep that module (already sizeable)
-//! from growing further.
+//! The tone-mapping itself ([`tonemap_accumulation`]) lives in
+//! `indicatrix::renderer::tonemap` so a server answering a "final picture only"
+//! `FinalImageRequest` runs the SAME code and its PNG is byte-identical to what this
+//! viewer would write from the same float sum; it is re-exported here so every caller in
+//! this crate stays unchanged. Writing the file ([`save_png`], ICC embedding included)
+//! stays viewer-side: a server's final picture is decoded to RGBA8 and written through
+//! [`save_png`] exactly like a local render.
 
 use super::icc_profile;
-use glam::Vec3;
 use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
-use indicatrix::{
-    color::{ColorSpace, ToneMap},
-    renderer::tonemap::tonemap_to_rgba as tonemap_xyz_buffer,
-};
-use std::{io::BufWriter, path::Path, thread};
-
-/// Tone-maps the finished accumulation buffer to RGBA bytes using the exact same
-/// `xyz_to_srgb_gamma` the live viewport uses every frame, so an sRGB export matches
-/// what was on screen. The ONLY path used for `ColorSpace::Srgb` -- see
-/// [`tonemap_wide_gamut`] for every other offered space.
-pub(super) fn tonemap_to_rgba(
-    width: u32,
-    height: u32,
-    total_samples: u32,
-    accum: &[Vec3],
-) -> Vec<u8> {
-    debug_assert_eq!(
-        accum.len(),
-        (width as usize) * (height as usize),
-        "accum must hold exactly width*height pixels"
-    );
-    let inv_samples = 1.0 / total_samples as f32;
-    // Parallelised via `indicatrix::renderer::tonemap`'s `xyz_to_srgb_gamma`-based
-    // helper -- `render_thread`'s two tone-mapping call sites share this same function.
-    tonemap_xyz_buffer(accum, inv_samples)
-}
-
-/// Tone-maps the finished accumulation buffer to RGBA bytes for any non-`Srgb`
-/// [`ColorSpace`], via `ColorSpace::encode` with `ToneMap::AcesFilmic { exposure: 1.0
-/// }` -- that reproduces `xyz_to_srgb_gamma`'s gamut-compression/tone-mapping exactly,
-/// so only `color_space`'s primaries and transfer curve change relative to
-/// [`tonemap_to_rgba`], never exposure or tone-curve shape. Parallelised the same way
-/// `indicatrix::renderer::tonemap::tonemap_to_rgba_with_threads` is, duplicated here
-/// since that function is hardwired to `xyz_to_srgb_gamma`.
-pub(super) fn tonemap_wide_gamut(
-    width: u32,
-    height: u32,
-    total_samples: u32,
-    accum: &[Vec3],
-    color_space: ColorSpace,
-) -> Vec<u8> {
-    debug_assert_eq!(
-        accum.len(),
-        (width as usize) * (height as usize),
-        "accum must hold exactly width*height pixels"
-    );
-    let inv_samples = 1.0 / total_samples as f32;
-    let mut out = vec![0u8; accum.len() * 4];
-    if accum.is_empty() {
-        return out;
-    }
-
-    let num_threads = thread::available_parallelism().map_or(8, std::num::NonZero::get);
-    let chunk_len = accum.len().div_ceil(num_threads).max(1);
-
-    thread::scope(|s| {
-        let color_chunks = accum.chunks(chunk_len);
-        let byte_chunks = out.chunks_mut(chunk_len * 4);
-        for (colors, dst) in color_chunks.zip(byte_chunks) {
-            s.spawn(move || {
-                for (i, xyz) in colors.iter().enumerate() {
-                    let rgba = color_space
-                        .encode(*xyz * inv_samples, ToneMap::AcesFilmic { exposure: 1.0 });
-                    dst[i * 4..i * 4 + 4].copy_from_slice(&rgba);
-                }
-            });
-        }
-    });
-
-    out
-}
+use indicatrix::color::ColorSpace;
+pub use indicatrix::renderer::tonemap::tonemap_accumulation;
+use std::{io::BufWriter, path::Path};
 
 /// Writes `rgba` (`width * height * 4` bytes) to `path` as PNG. `ColorSpace::Srgb`
 /// goes through the plain `image::RgbaImage::save` call -- untagged, since every

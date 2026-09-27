@@ -2,22 +2,32 @@
 
 Headless server and CLI for a `indicatrix` design library.
 
-`serve` is, by default, a **design-library server**: it answers read-only catalogue
-queries — search, filter options, fetch a design, fetch an attachment — over mutual
-TLS, so a viewer on another machine can browse or mirror the library. Rendering is
-*optional* on top of that, behind an off-by-default `worker` feature; with it
-enabled the same connection also accepts `RenderRequest`s and streams traced samples
-back. `WELCOME` tells a client which of the two this instance actually offers, so it
-never has to discover the answer by being refused.
+`serve` is the **coordinator**. It always answers read-only catalogue queries —
+search, filter options, fetch a design, fetch an attachment — over mutual TLS, so a
+viewer on another machine can browse or mirror the library. Rendering is *optional*
+on top of that, behind an off-by-default `worker` feature: a `worker` build also
+accepts render workers that `join` it on a separate worker port, spreads viewers'
+render requests over them, and — only when started with `--render` — renders with
+its own CPU/GPU too. `WELCOME` tells a client what this instance actually offers, so
+it never has to discover the answer by being refused.
 
 `render` traces a scene straight to a PNG in one shot, with no networking. `cert`
 manages the private CA that `serve`'s mutual TLS depends on, including one-time
-enrollment tokens so a viewer never needs a bundle copied to it by hand.
+enrollment tokens so a viewer never needs a bundle copied to it by hand. `join`
+(`worker` builds) turns a machine into a render worker that dials OUT to a coordinator.
+
+> **Release note (coordinator mode): `serve` no longer renders by default.** `serve`
+> is now the *coordinator*: it always serves the library and accepts `join`ing workers
+> on a separate worker port, but it renders with its own CPU/GPU only when started
+> with **`--render`** (or `--only-gpu` / `--only-cpu`, which imply it). An existing
+> single-worker setup must add `--render` to keep rendering. Viewer allowlists move to
+> `allowlist-viewers.txt`; an existing `allowlist.txt` keeps working as the viewers
+> list until that file exists.
 
 | Feature | Default | Adds |
 |---|---|---|
 | *(none)* | ✅ | Library server, `cert`, mutual TLS, enrollment |
-| `worker` | off | Render capacity — `RenderRequest`, `render`, `Backend` advertisement |
+| `worker` | off | Render capacity — `RenderRequest`, `render`, `join`, the coordinator's worker port, `Backend` advertisement |
 | `gpu` | off | GPU tracing; implies `worker`, since GPU without render capacity is meaningless |
 
 A default build does not compile `indicatrix` in at all — see [GPU](#gpu).
@@ -45,8 +55,8 @@ that doesn't belong in a command reference:
   both enrollment paths and what a stolen token would get an attacker, what each
   security-relevant flag weakens, and what this explicitly does *not* protect against.
 - [`docs/architecture.md`](docs/architecture.md) — how it works inside. The
-  tracer/emitter split, cancellation and `request_id` epochs, the threading model, and
-  the GPU backend, with diagrams.
+  tracer/emitter split, cancellation and `request_id` epochs, the threading model, the
+  coordinator's job execution over joined workers, and the GPU backend, with diagrams.
 
 ## Install / build
 
@@ -63,23 +73,28 @@ the built binary directly if you prefer.
 Argument parsing is hand-rolled (no `clap`) — `-h`/`--help` anywhere in the
 argument list, or no arguments at all, prints help and exits; this is verified
 behavior, not a guess. Help is split by topic rather than one combined blob:
-`indicatrix-worker --help` prints a short page listing the three subcommands,
-`indicatrix-worker render --help` / `serve --help` / `cert --help` print only that
-subcommand's own flags, and `indicatrix-worker cert <sub-command> --help` drills
+`indicatrix-worker --help` prints a short page listing the four subcommands,
+`indicatrix-worker render --help` / `serve --help` / `join --help` / `cert --help`
+print only that subcommand's own flags, and `indicatrix-worker cert <sub-command> --help` drills
 one level further into `cert`'s five sub-subcommands. The combined usage lines
 below are a README convenience, not what any single `--help` invocation prints.
 
 ```
 indicatrix-worker render --scene <scene.json> --out <render.png> --width <px> --height <px> --samples <n> [--threads <n>] [--only-gpu | --only-cpu]
-indicatrix-worker serve  [--bind <host:port>] [--threads <n>] [--allow-remote] [--only-gpu | --only-cpu] [--db <path>]
+indicatrix-worker serve  [--bind <host:port>] [--allow-remote] [--db <path>] [--max-connections <n>]
+                     [--render] [--threads <n>] [--only-gpu | --only-cpu]
                      --ca <ca.pem> --cert <server.pem> --key <server.key> [--allowlist <path>] [--trust-any-client-cert]
                      [--enroll-bind <host:port>] [--no-enroll]
-indicatrix-worker serve  [--bind <host:port>] [--threads <n>] [--allow-remote] [--only-gpu | --only-cpu] [--db <path>] --insecure-no-tls
+                     [--worker-bind <host:port>] [--worker-enroll-bind <host:port>] [--worker-allowlist <path>] [--no-workers]
+                     [--interactive-workers <n>] [--pin-interactive-worker <label>] [--max-job-memory-mib <n>]
+indicatrix-worker serve  [--bind <host:port>] [--render] [--threads <n>] [--only-gpu | --only-cpu] [--db <path>] [--max-connections <n>] --insecure-no-tls
+indicatrix-worker join   <coordinator-host:port> [--cert-dir <dir>] [--slots <k>] [--threads <n>] [--only-gpu | --only-cpu]
+                         [--token <GW1-...> [--enroll-addr <host:port>]]
 
 indicatrix-worker cert init         --dir <pki-dir>
 indicatrix-worker cert issue-server --dir <pki-dir> --host <name> [--host <name> ...] --ip <addr> [--ip <addr> ...]
-indicatrix-worker cert issue-client --dir <pki-dir> --name <label> --out <bundle-dir>
-indicatrix-worker cert issue-token  --ca <ca.pem> --admin-addr <host:port> --name <label>
+indicatrix-worker cert issue-client --dir <pki-dir> --name <label> --out <bundle-dir> [--role viewer|worker]
+indicatrix-worker cert issue-token  --ca <ca.pem> --admin-addr <host:port> --name <label> [--role viewer|worker]
 indicatrix-worker cert claim        --token <token> --addr <host:port> --out <bundle-dir>
 ```
 
@@ -108,7 +123,7 @@ serializing it:
 
 ```rust
 use indicatrix::{geometry::cuts::StandardGemCuts, optics::materials::GemMaterial, optics::raytracer::LightingPreset};
-use indicatrix_net::SceneState;
+use indicatrix_net::{SceneState, scene::SceneEnvironment};
 
 let scene = SceneState {
     width: 800, height: 600,
@@ -118,6 +133,9 @@ let scene = SceneState {
     lighting_preset: LightingPreset::Daylight,
     material: GemMaterial::diamond(),
     planes: StandardGemCuts::standard_round_brilliant(),
+    girdle_frosted: false,
+    backdrop: 0.0,
+    environment: SceneEnvironment::Studio,
 };
 std::fs::write("scene.json", serde_json::to_string_pretty(&scene)?)?;
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -132,7 +150,51 @@ indicatrix-worker render --scene scene.json --out render.png --width 800 --heigh
 
 produces a real 800x600 PNG at the given path (confirmed by running it).
 
-### `serve` — serve the design library, and optionally render
+### `serve` — the coordinator: library, joined workers, and (with `--render`) rendering
+
+**`serve` no longer renders by default** — see the release note at the top. Ports:
+viewers on `--bind` (7878) plus the viewer enrollment listener (7879); joining workers
+on the worker port (7880) plus the worker enrollment listener (7881). Two TLS
+listeners, two allowlists: a viewer certificate is never accepted on the worker port
+and a worker certificate never on the viewer port — both the certificate's role and
+the port's own allowlist are checked, and a mix-up is refused with `ROLE_REFUSED`.
+
+`WELCOME.render` to a viewer is `None` for a bare coordinator with no joined workers
+(the GUI then sees a library-only remote and renders locally), the plain
+`Backend::Cpu`/`Gpu` with `--render` and no workers (exactly the old single worker),
+and `Backend::Coordinator { workers, threads, gpus }` as soon as a worker has joined.
+When workers join or leave, a connected viewer is told between requests
+(`CAPABILITY_CHANGED`). The worker port needs a `worker` build and mutual TLS (it
+stays closed under `--insecure-no-tls` or `--no-workers`).
+
+**How a viewer's request is executed** (`worker` builds):
+
+- An **export-type** request (a still export, a tilt-video frame, a batch item, a
+  "final picture" request) is split into sample chunks over every idle joined worker
+  whose pixel limit accepts the image, plus the own lane with `--render`. Chunk sums
+  are merged in a fixed order, so the result does not depend on which lane finished
+  first. Each viewer certificate has one such job active at a time; further ones wait
+  their turn.
+- A **live-view** request runs on the own lane alone by default — the lowest-latency
+  path. Without `--render` it takes the single fastest idle worker instead.
+  `--interactive-workers <n>` lets a live-view request also take up to `n` of the
+  fastest idle workers, and `--pin-interactive-worker <label>` prefers one specific
+  worker (both advanced; see the table below).
+- A lost worker's unfinished chunk goes back to the pool and is retried on another
+  lane; a job whose lanes are all gone ends with `ALL_WORKERS_LOST`. With no lane at
+  all (no `--render`, no joined worker), a render request is refused with
+  `NO_RENDER_CAPACITY`.
+- **Live display frames.** For a viewer that asks for finished pictures of the live
+  view ("Live Transfer: Final picture" in the GUI), the coordinator averages the merged
+  sum, denoises it with the same À-Trous denoiser and guide buffers the GUI uses
+  (`indicatrix::renderer::frame_denoise`, guides from
+  `indicatrix::renderer::guide_pass`'s primary-ray prepass) and sends tone-mapped
+  8-bit frames. A "final picture" export is tone-mapped with the GUI export's own
+  function and sent as one lossless PNG.
+- **Compression.** Radiance payloads are compressed losslessly when both sides can
+  decode it: byte shuffle + zstd by default, LZ4 as the alternative, raw for a
+  loopback peer or when compression would not shrink the payload. The two sides
+  negotiate it in the handshake; nothing needs configuring.
 
 Requires **mutual TLS by default** — both sides must present a certificate
 signed by the same private CA (see [Workflow A](#workflow-a--manual-bundle-copy-verified-end-to-end)
@@ -148,34 +210,118 @@ one regardless of what was advertised.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--bind <host:port>` | `127.0.0.1:7878` | Listen address. Loopback-only unless `--allow-remote` is also given. |
+| `--render` | off | Render viewers' requests with this machine's own CPU/GPU lane. Without it no GPU is acquired and no sample is traced here. `--only-gpu`/`--only-cpu` imply it. `worker` builds only. |
 | `--threads <n>` | `0` (all cores) | CPU threads used **per render request**. Governs only the CPU tracer — the GPU path is a single dispatch, not a thread fan-out — but still applies to its CPU fallback. `worker` builds only. |
 | `--db <path>` | `facet_diagrams.sqlite` in the working directory | The design library to serve. Opened **read-only**; this role never writes. The default is deliberate — it matches where the viewer looks — and `--db` exists for long-running servers that shouldn't depend on their launch directory. |
-| `--only-gpu` | off | GPU only — never splits work onto the CPU tracer for any request, even when the hybrid split would otherwise have been offered one. Still falls back to the CPU tracer for a request/sub-batch the GPU itself declines. Rejected at parse time on a binary built without the `gpu` feature. Mutually exclusive with `--only-cpu`. |
-| `--only-cpu` | off | Force the CPU tracer even on a `gpu` build with a working adapter. For A/B comparison, or routing around a misbehaving one. `WELCOME` then honestly reports `Backend::Cpu`. Mutually exclusive with `--only-gpu`. What `--no-gpu` (removed) used to do. Default (neither flag given): hybrid CPU+GPU — CPU and GPU trace concurrently whenever the measured split is worth it, automatically falling back to GPU-only when it isn't (see [Architecture](docs/architecture.md#gpu)). |
+| `--only-gpu` | off | Implies `--render`. GPU only — never splits work onto the CPU tracer for any request, even when the hybrid split would otherwise have been offered one. Still falls back to the CPU tracer for a request/sub-batch the GPU itself declines. Rejected at parse time on a binary built without the `gpu` feature. Mutually exclusive with `--only-cpu`. |
+| `--only-cpu` | off | Implies `--render`. Force the CPU tracer even on a `gpu` build with a working adapter. For A/B comparison, or routing around a misbehaving one. `WELCOME` then honestly reports `Backend::Cpu`. Mutually exclusive with `--only-gpu`. What `--no-gpu` (removed) used to do. Default (neither flag given): hybrid CPU+GPU — CPU and GPU trace concurrently whenever the measured split is worth it, automatically falling back to GPU-only when it isn't (see [Architecture](docs/architecture.md#gpu)). |
 | `--enroll-bind <host:port>` | `--bind`'s host, one port up | Listener for token enrollment (see `cert issue-token` / `cert claim`). Same loopback / `--allow-remote` gate as `--bind`. Ignored with `--insecure-no-tls` — there is no CA to enroll against. |
-| `--no-enroll` | off | Don't open the enrollment listener at all. The manual `cert issue-client` bundle-copy path still works. |
+| `--no-enroll` | off | Open neither enrollment listener (viewer or worker). The manual `cert issue-client` bundle-copy path still works. |
+| `--worker-bind <host:port>` | `--bind`'s host, two ports up (7880) | The worker port `join` dials. Worker certificates only. Same loopback / `--allow-remote` gate as `--bind`. |
+| `--worker-enroll-bind <host:port>` | the worker port's host, one port up (7881) | Worker token enrollment (`cert issue-token --role worker`, claimed by `join --token`). |
+| `--worker-allowlist <path>` | `allowlist-workers.txt` next to `--ca` | SHA-256 fingerprints of trusted **worker** certificates. May not exist yet — every worker is then refused until one is enrolled. Re-read on every connection. |
+| `--no-workers` | off | Don't open the worker port or its enrollment listener. |
+| `--max-connections <n>` | 64 | Authenticated connections handled at once, counted separately for viewers and joined workers. A connection past the cap gets a definitive error reply rather than hanging. At least 1. |
+| `--max-job-memory-mib <n>` | 2048 | Cap on the buffers of all in-flight multi-lane jobs (jobs spread over joined workers). Each job is charged `width × height × 48` bytes (a 4K job is about 380 MiB). A job past the cap is refused, not queued; the viewer treats that like any other failed remote request. `worker` builds only. |
+| `--interactive-workers <n>` | 0 | **Advanced.** Let each live-view request also take up to `n` of the fastest idle joined workers. The default keeps the live view on the own lane alone (or, without `--render`, on the single fastest idle worker) — the lowest-latency path. `worker` builds only. |
+| `--pin-interactive-worker <label>` | none | **Advanced.** When a live-view request takes joined workers (no `--render`, or `--interactive-workers` above 0), use the worker whose certificate label is `<label>` first — the `--name` its worker certificate was issued with; `worker:<label>` also works — while it is connected, idle and accepts the image size. Otherwise the fastest-idle-worker rule applies, and the log says so once per change. `worker` builds only. |
 | `--allow-remote` | off | Required to bind any non-loopback address, TLS or not — exposing this worker beyond localhost must be an explicit, visible choice. |
 | `--ca <path>` | — | CA certificate that issued both `--cert` and every trusted client certificate. Required unless `--insecure-no-tls`. |
-| `--cert <path>` | — | This worker's own certificate (from `cert issue-server`). |
-| `--key <path>` | — | This worker's own private key. |
-| `--allowlist <path>` | `allowlist.txt` next to `--ca` | SHA-256 fingerprints of trusted client certificates, one per line (see `cert issue-client`). Re-read from disk on **every connection** — editing it takes effect immediately, no restart. |
-| `--trust-any-client-cert` | off | Skip the fingerprint allowlist — trust any client whose certificate chains to `--ca`. Off by default deliberately: the allowlist decides *which* signed clients may connect, not just which CA signed them, so skipping that check is required to be explicit, never a silent default. |
-| `--insecure-no-tls` | off | Serve plaintext, no TLS, no authentication at all. Refused on a non-loopback `--bind`. Every connection accepted this way logs a warning. For local debugging only. |
+| `--cert <path>` | — | This coordinator's own certificate (from `cert issue-server`), used on the viewer and the worker port. |
+| `--key <path>` | — | This coordinator's own private key. |
+| `--allowlist <path>` | `allowlist-viewers.txt` next to `--ca` (or the pre-role `allowlist.txt` while only that exists) | SHA-256 fingerprints of trusted **viewer** certificates, one per line (see `cert issue-client`). Re-read from disk on **every connection** — editing it takes effect immediately, no restart. |
+| `--trust-any-client-cert` | off | Skip both fingerprint allowlists — trust any client whose certificate chains to `--ca` and carries the port's role. Off by default deliberately: the allowlist decides *which* signed clients may connect, not just which CA signed them, so skipping that check is required to be explicit, never a silent default. |
+| `--insecure-no-tls` | off | Serve plaintext, no TLS, no authentication at all. Refused on a non-loopback `--bind`. Disables the worker port and both enrollment listeners. Every connection accepted this way logs a warning. For local debugging only. |
 
-Minimal loopback example, no TLS setup needed:
+Minimal loopback example, no TLS setup needed (library only; add `--render` on a
+`worker` build to render too — joined workers always need TLS, so there is no worker
+port here):
 
 ```
 indicatrix-worker serve --insecure-no-tls
 ```
 
-Real remote example, once certificates exist (see below):
+Real remote example, once certificates exist (see below) — a coordinator that also
+renders itself (drop `--render` for a library + joined-workers-only coordinator):
 
 ```
-indicatrix-worker serve --ca pki\ca.pem --cert pki\server.pem --key pki\server.key --allow-remote --bind 0.0.0.0:7878
+indicatrix-worker serve --ca pki\ca.pem --cert pki\server.pem --key pki\server.key --allow-remote --bind 0.0.0.0:7878 --render
 ```
 
-(`--allowlist` defaults to `pki\allowlist.txt`, next to `--ca`, and already
-contains whatever `cert issue-client` runs have added to it.)
+(`--allowlist` defaults to `pki\allowlist-viewers.txt` — or an existing
+`pki\allowlist.txt` — next to `--ca`, and already contains whatever `cert
+issue-client` runs have added to it.)
+
+### `join` — render for a coordinator over an outbound connection (`worker` builds)
+
+```
+indicatrix-worker join coordinator.example:7880 --cert-dir worker-cert [--slots 2] [--only-cpu]
+indicatrix-worker join --coordinator coordinator.example:7880 --token GW1-... --cert-dir worker-cert
+```
+
+Dials the coordinator's **worker port** over mutual TLS with a **worker** certificate
+(Common Name `worker:<name>`), reports this machine's render capability in its
+`HELLO`, receives a `worker_id` in `WELCOME.registration`, and then serves the
+coordinator's render requests on that same connection (the worker is the TLS client
+but the protocol server; it answers the coordinator's `PING`s with `PONG`). No inbound
+port is needed on the worker, so NAT and cloud VMs work. Every slot reconnects forever
+with jittered backoff (1 s doubling to 60 s); the coordinator drops a connection after
+30 s without traffic and the worker gives up on an idle one after 45 s.
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `<host:port>` / `--coordinator` | — | The coordinator's worker port. |
+| `--cert-dir <dir>` | `worker-cert` | `ca.pem`, `client.pem`, `client.key` of a worker certificate (`cert issue-client --role worker`). A viewer certificate is refused before dialling. |
+| `--token <GW1-...>` | — | Claim a worker enrollment token (`cert issue-token --role worker`, issued on the coordinator host) into `--cert-dir` first. |
+| `--enroll-addr <host:port>` | coordinator host, worker port + 1 (7881) | The worker enrollment listener. |
+| `--slots <k>` | 1 | Parallel connections, one request stream each (at most 64). With one GPU, k > 1 mainly helps CPU-only machines. |
+| `--threads <n>` / `--only-gpu` / `--only-cpu` | all cores / hybrid | As for `render`. |
+
+**Setting up a coordinator with joined workers, end to end:**
+
+1. On the coordinator host: `cert init`, then `cert issue-server` with the host name /
+   IP address both viewers and workers will dial (one certificate serves both ports).
+2. Start `serve --ca … --cert … --key … --allow-remote --bind 0.0.0.0:7878` (add
+   `--render` if this machine should render too). It opens the viewer port 7878, the
+   viewer enrollment listener 7879, the worker port 7880 and the worker enrollment
+   listener 7881, and logs each address at startup. Open 7880 (and 7881, for token
+   enrollment) in the firewall for the render machines, 7878/7879 for viewers.
+3. For each render machine, issue a worker certificate — a token with `cert
+   issue-token --role worker` against 7881 ([Workflow C](#workflow-c--joining-a-render-worker-to-a-coordinator)),
+   or a bundle with `cert issue-client --role worker` copied by hand.
+4. On the render machine: `join <coordinator-host>:7880 --cert-dir worker-cert`
+   (`--token GW1-…` the first time). It stays connected and reconnects by itself.
+5. Point the viewer at the coordinator's **viewer** port (7878) with a **viewer**
+   certificate. Its "Test connection" then reports `coordinator (N workers)`.
+
+#### HDR environment maps
+
+A scene lit by an HDR panorama names the `.hdr` file by its SHA-256, never by path.
+Every node keeps a bounded on-disk cache of such files, keyed by hash:
+
+| Node | Cache directory (unless `INDICATRIX_ASSET_CACHE_DIR` is set) | When |
+|---|---|---|
+| `serve` | `asset-cache` next to `--db` | with `--render` or a worker port |
+| `join` | `asset-cache` next to `--cert-dir` (`worker-cert` → `./asset-cache`) | always |
+
+| Environment variable | Default | Meaning |
+|---|---|---|
+| `INDICATRIX_ASSET_CACHE_DIR` | `asset-cache` next to the anchor above | Cache directory for every node started with it set. |
+| `INDICATRIX_ASSET_CACHE_MIB` | 2048 | Size cap in MiB; least recently used files go first, and a single map larger than the whole cap is refused. |
+
+Cached files are named by their hash only and re-verified when read, so a corrupt
+file is dropped and fetched again. A cache that cannot be created or listed turns
+HDR off on that node (logged at startup) — set `INDICATRIX_ASSET_CACHE_DIR` to a
+writable directory to fix it. A coordinator asks the viewer for a map it lacks once (`NEED_ASSET`),
+holds it for the job, and answers each joined worker's own `NEED_ASSET` from that copy
+— the viewer uploads a map once however many workers render it. HDR jobs go only to
+joined workers whose cache opened (their `HELLO` says `hdr`); a worker whose cache
+cannot be opened keeps serving studio-lit jobs. The coordinator advertises HDR to
+viewers (`WELCOME.render.hdr`) only while it holds a cache and some lane (its own, or
+a joined worker) renders HDR. A viewer sends an HDR-lit scene only to a remote that
+advertises HDR, and renders it locally otherwise. Every node decodes the map with the
+same builder the viewer uses, so remote samples are lit identically; HDR maps trace on
+the GPU as well as the CPU.
 
 ### `cert` — manage an in-process private CA for `serve`'s mutual TLS
 
@@ -193,10 +339,10 @@ transits the wire.
 | Subcommand | Required flags | Does |
 |---|---|---|
 | `cert init` | `--dir <pki-dir>` | Generates a new CA keypair + self-signed certificate (10-year lifetime) in `--dir`. **Refuses to run if `--dir` already has one** (regenerating it would invalidate every certificate already issued from it) — there is no `--force`. |
-| `cert issue-server` | `--dir <pki-dir>`, at least one of `--host <name>` / `--ip <addr>` (both repeatable) | Issues this worker's certificate (5-year lifetime), signed by the CA in `--dir`. `--host`/`--ip` become Subject Alternative Names — TLS ignores Common Name entirely, so a viewer connecting by IP address specifically needs an `--ip` SAN, not just a `--host` DNS name. |
-| `cert issue-client` | `--dir <pki-dir>`, `--name <label>`, `--out <bundle-dir>` | Issues one viewer's certificate (5-year lifetime), signed by the CA in `--dir`, and writes a self-contained bundle (`ca.pem`, `client.pem`, `client.key`) to `--out` for copying to that viewer's machine. Also computes the certificate's SHA-256 fingerprint and appends it to `<pki-dir>/allowlist.txt`, labeled with `--name`. |
-| `cert issue-token` | `--ca <ca.pem>`, `--admin-addr <host:port>`, `--name <label>` | Asks a **running** `serve` for a one-time, **180-second** enrollment token and prints it. The certificate is minted immediately but held in that process's memory — nothing on disk, nothing in the allowlist, until it is claimed. Honoured only from a loopback peer. |
-| `cert claim` | `--token <token>`, `--addr <host:port>`, `--out <bundle-dir>` | Redeems a token on the machine being enrolled, writing the same three-file bundle `issue-client` would. Verifies the worker against the CA fingerprint carried in the token **before** sending the secret. Single use. |
+| `cert issue-server` | `--dir <pki-dir>`, at least one of `--host <name>` / `--ip <addr>` (both repeatable) | Issues the server's own certificate — the one `serve` presents on its viewer and worker ports (5-year lifetime), signed by the CA in `--dir`. `--host`/`--ip` become Subject Alternative Names — TLS ignores Common Name entirely, so a viewer connecting by IP address specifically needs an `--ip` SAN, not just a `--host` DNS name. |
+| `cert issue-client` | `--dir <pki-dir>`, `--name <label>`, `--out <bundle-dir>`, optional `--role viewer\|worker` | Issues one client certificate (5-year lifetime), signed by the CA in `--dir`, and writes a self-contained bundle (`ca.pem`, `client.pem`, `client.key`) to `--out` for copying to that machine. Also computes the certificate's SHA-256 fingerprint and appends it to the role's allowlist: `<pki-dir>/allowlist-viewers.txt` (default role; or a pre-role `allowlist.txt` while only that exists) or `<pki-dir>/allowlist-workers.txt` (`--role worker`, Common Name `worker:<label>`). A viewer `--name` may not start with `worker:`. |
+| `cert issue-token` | `--ca <ca.pem>`, `--admin-addr <host:port>`, `--name <label>`, optional `--role viewer\|worker` | Asks a **running** `serve` for a one-time, **180-second** enrollment token and prints it. `--admin-addr` is the viewer enrollment listener (7879) for viewers and the worker one (7881) for `--role worker`; each listener refuses a token for the other role. The certificate is minted immediately but held in that process's memory — nothing on disk, nothing in the allowlist, until it is claimed. Honoured only from a loopback peer. |
+| `cert claim` | `--token <token>`, `--addr <host:port>`, `--out <bundle-dir>` | Redeems a token on the machine being enrolled, writing the same three-file bundle `issue-client` would. Verifies the enrollment listener against the CA fingerprint carried in the token **before** sending the secret. Single use. (A render worker normally claims through `join --token` instead, which does the same and then joins.) |
 
 **Directory layout** (`--dir`):
 
@@ -204,9 +350,11 @@ transits the wire.
 <pki-dir>/
   ca.pem          CA certificate (public)
   ca.key          CA private key (sensitive — ACL-restricted; on Windows, restricted via icacls to the current user + SYSTEM + Administrators)
-  server.pem      this worker's certificate (public)
-  server.key      this worker's private key (sensitive)
-  allowlist.txt   trusted client-certificate fingerprints, one per line, "# label" comments allowed
+  server.pem      the coordinator's own certificate (public)
+  server.key      the coordinator's own private key (sensitive)
+  allowlist-viewers.txt  trusted viewer-certificate fingerprints, one per line, "# label" comments allowed
+                         (a pre-role allowlist.txt keeps serving as this list until this file exists)
+  allowlist-workers.txt  trusted worker-certificate fingerprints (Common Name "worker:<label>")
 ```
 
 ```mermaid
@@ -219,13 +367,13 @@ flowchart TB
 
     CA --> IssueClient["cert issue-client<br/>--name --out"]
     IssueClient --> Bundle["bundle-dir/<br/>ca.pem + client.pem + client.key"]
-    IssueClient --> Allowlist["allowlist.txt<br/>+= fingerprint  # name"]
+    IssueClient --> Allowlist["allowlist-viewers.txt<br/>+= fingerprint  # name"]
     Bundle -- "copy to the viewer's machine" --> Viewer["viewer<br/>WorkerSettings.cert_dir"]
 
     Viewer -- "connects, presents client.pem" --> Serve
     Serve --> ChainCheck{"chains to CA?"}
     ChainCheck -- no --> RejectChain["reject:<br/>UnknownIssuer / Expired / NotValidYet"]
-    ChainCheck -- yes --> FingerprintCheck{"fingerprint in<br/>allowlist.txt?"}
+    ChainCheck -- yes --> FingerprintCheck{"fingerprint in<br/>allowlist-viewers.txt?"}
     FingerprintCheck -- no --> RejectFingerprint["reject:<br/>not present in allowlist"]
     FingerprintCheck -- yes --> Accept["connection accepted"]
 
@@ -234,11 +382,13 @@ flowchart TB
 
 The bundle-copying step is the one manual, out-of-band step in the whole
 chain: `issue-client` writes `bundle-dir/{ca.pem,client.pem,client.key}` next
-to the worker's own `pki/`, and getting that viewer working means physically
+to the coordinator's own `pki/`, and getting that viewer working means physically
 moving those three files to the viewer's machine (nothing here does that for
 you). Revocation is the mirror image — deleting a client's line from
-`allowlist.txt` is the entire mechanism, re-read on the very next connection
-attempt.
+`allowlist-viewers.txt` (or `allowlist-workers.txt` for a worker) is the entire
+mechanism, re-read on the very next connection attempt. The diagram shows the
+viewer role; a worker certificate (`--role worker`) follows the same path into
+`allowlist-workers.txt` and is checked on the worker port.
 
 Every certificate's `not_before` is backdated by one day from the moment of
 issuance, to absorb clock skew between the machine that issued it and whichever
@@ -258,16 +408,19 @@ indicatrix-worker cert issue-server --dir pki --host localhost --ip 127.0.0.1
 # INFO indicatrix_worker::pki: indicatrix-worker cert issue-server: wrote pki\server.pem and pki\server.key (SANs: localhost, 127.0.0.1) -- expires <date+5y> (UTC)
 
 indicatrix-worker cert issue-client --dir pki --name my-laptop --out bundle-my-laptop
-# INFO indicatrix_worker::pki: indicatrix-worker cert issue-client: wrote bundle to bundle-my-laptop (ca.pem, client.pem, client.key)
-#      -- fingerprint <64 hex chars> added to pki\allowlist.txt -- expires <date+5y> (UTC)
+# INFO indicatrix_worker::pki: indicatrix-worker cert issue-client: wrote viewer bundle "my-laptop" to bundle-my-laptop (ca.pem, client.pem, client.key)
+#      -- fingerprint <64 hex chars> added to pki\allowlist-viewers.txt -- expires <date+5y> (UTC)
 
 # copy bundle-my-laptop/{ca.pem,client.pem,client.key} to the viewer's machine
 # (this is exactly what apps/indicatrix-cut's WorkerSettings.cert_dir should point at)
 
-indicatrix-worker serve --ca pki\ca.pem --cert pki\server.pem --key pki\server.key --allow-remote --bind 0.0.0.0:7878
+indicatrix-worker serve --ca pki\ca.pem --cert pki\server.pem --key pki\server.key --allow-remote --bind 0.0.0.0:7878 --render
 ```
 
-`pki\allowlist.txt` after the `issue-client` step above looks like:
+(`--render` makes this machine render the viewer's requests itself; leave it out when
+the rendering comes from joined workers only.)
+
+`pki\allowlist-viewers.txt` after the `issue-client` step above looks like:
 
 ```
 e60856fac53419a890272d5fdeb07c9aad7280cf8e32bf13ad215256fc7e7f4  # my-laptop
@@ -279,15 +432,15 @@ No files to copy. The CA and server steps are identical to Workflow A; only the
 per-viewer step changes.
 
 ```
-# On the worker: serve is already running, and logged its enrollment listener at startup.
+# On the coordinator host: serve is already running, and logged its enrollment listener at startup.
 indicatrix-worker serve --ca pki\ca.pem --cert pki\server.pem --key pki\server.key                     --allow-remote --bind 0.0.0.0:7878
 
-# On the worker, in another shell -- loopback only, uses the CA file you already have:
+# On the coordinator host, in another shell -- loopback only, uses the CA file you already have:
 indicatrix-worker cert issue-token --ca pki\ca.pem --admin-addr 127.0.0.1:7879 --name my-laptop
 # GW1-XXXXX-XXXXX-...   (valid 180 seconds, single use)
 
-# On the machine being enrolled, within 180 seconds:
-indicatrix-worker cert claim --token GW1-XXXXX-XXXXX-... --addr worker.example:7879 --out certs
+# On the machine being enrolled, within 180 seconds (or use the GUI's token field):
+indicatrix-worker cert claim --token GW1-XXXXX-XXXXX-... --addr coordinator.example:7879 --out certs
 # writes certs/{ca.pem,client.pem,client.key} -- the same layout Workflow A produces,
 # so indicatrix-cut's WorkerSettings.cert_dir works unchanged either way
 ```
@@ -297,13 +450,30 @@ expired token leaves no trace and grants nothing. `serve` needs read access to `
 for this (signing a certificate requires it), which it did not before; `--no-enroll`
 opts out entirely and keeps Workflow A.
 
+#### Workflow C — joining a render worker to a coordinator
+
+```
+# On the coordinator host (serve running; its worker enrollment listener logged at startup):
+indicatrix-worker cert issue-token --ca pki\ca.pem --admin-addr 127.0.0.1:7881 --name gpu-box --role worker
+# GW1-XXXXX-...   (valid 180 seconds, single use)
+
+# On the render machine, within 180 seconds -- claims, stores the bundle, then joins:
+indicatrix-worker join --coordinator coordinator.example:7880 --token GW1-XXXXX-... --cert-dir worker-cert
+# later restarts need no token:
+indicatrix-worker join coordinator.example:7880 --cert-dir worker-cert
+```
+
+Or by hand: `cert issue-client --dir pki --name gpu-box --out bundle-gpu-box --role
+worker`, copy the bundle to the render machine, and `join` with `--cert-dir` pointing
+at it.
+
 
 ## Architecture notes
 
 Moved to [`docs/architecture.md`](docs/architecture.md): the tracer/emitter split (and
 why emission is decoupled from sample production), cancellation and `request_id` epochs,
-the per-connection threading model, and the GPU backend. Three Mermaid diagrams live
-there.
+the per-connection threading model, coordinator job execution over joined workers, and
+the GPU backend. Its Mermaid diagrams live there.
 
 ## Limits and validation
 
@@ -317,6 +487,8 @@ neither should hand attacker- or fat-finger-controlled numbers straight through.
 | Max pixels (`width * height`) | 7680×4320 (8K UHD) | both |
 | Max samples per `render` invocation | 1,000,000 | `render` (fat-finger guard) |
 | Max samples per `serve` request | 65,536 | `serve` (one batch out of a larger accumulation — a real DoS bound, much smaller than `render`'s) |
+| In-flight multi-lane job buffers | `--max-job-memory-mib` (default 2048 MiB) | `serve` with joined workers |
+| HDR map file size | 256 MiB (the protocol's asset limit), and at most the asset cache cap | `serve`, `join` |
 | Max bounces | 128 | both |
 | Plausible refractive index | 1.0 – 6.0, checked at 380nm/589.3nm/780nm | both |
 
@@ -359,7 +531,22 @@ the usual `tracing_subscriber` filter syntax.
   `HELLO`/`WELCOME` handshake compares `indicatrix::BUILD_ID` and the wire protocol
   version; any mismatch is refused unconditionally, with no "close enough" tier.
   Rebuild both sides from the same source tree. See `indicatrix-net`'s README for why
-  this check can't be relaxed.
+  this check can't be relaxed. The same applies to a `join`ed worker and its
+  coordinator.
+- **`ROLE_REFUSED`** — a viewer certificate was presented on the worker port, or a
+  worker certificate (Common Name `worker:<name>`) on the viewer port. Viewers dial
+  7878, `join` dials 7880; issue the certificate with the matching `--role`.
+- **`join` keeps reconnecting** — check that the coordinator was started on a
+  `worker` build with TLS and without `--no-workers` (its startup log names the worker
+  port), that the worker's fingerprint is in `allowlist-workers.txt`, and that the
+  worker port is reachable through the firewall.
+- **An HDR scene is refused remotely** (the viewer renders it locally with a note) —
+  the coordinator or every eligible worker has no working asset cache (see
+  [HDR environment maps](#hdr-environment-maps)); the startup log names the cache
+  directory or why it could not be opened.
+- **`coordinator busy: this job needs … MiB`** — in-flight jobs already use the
+  `--max-job-memory-mib` budget. Wait, or raise the cap on a machine with memory to
+  spare.
 - **`rejecting client certificate <fingerprint>: not present in <allowlist path>`**
   — run `cert issue-client` for that viewer (which also adds its fingerprint to
   the allowlist), or pass `--trust-any-client-cert` to skip the check entirely
@@ -383,36 +570,40 @@ the usual `tracing_subscriber` filter syntax.
 cargo test -p indicatrix-worker
 ```
 
-**71 tests** on a default (library-only) build, **161** with `--features worker`, and
-**164** with `--features gpu`. Six of the `worker`/`gpu` totals are `#[ignore]`d — they
-need a real GPU adapter, so `cargo test` skips them unless you pass `--ignored`. Inline
-`#[cfg(test)]` throughout the crate, not concentrated in one or two files:
+Run it once per feature set (`cargo test -p indicatrix-worker --features worker`, and
+`--features gpu` on a machine with an adapter) — most of the crate only compiles with
+`worker`. A few tests are `#[ignore]`d because they need a real GPU adapter or are
+long-running reproductions; `cargo test` skips them unless you pass `--ignored`.
+Coverage is inline `#[cfg(test)]` throughout the crate, not concentrated in one or two
+files:
 
-| Module | Default | `worker` | `gpu` | Covers |
-|---|---|---|---|---|
-| `cli/` | 37 | 37 | 37 | argument parsing for every subcommand, per-topic `-h`/`--help` resolution, error messages for missing/malformed flags |
-| `serve/` | 14 | 39 | 41 | the `HELLO`/`WELCOME` handshake (including a build-hash mismatch), request validation keeping the connection open, real loopback round trips, delta tiling, `FinalOnly` still emitting `PROGRESS`, `CANCEL` mid-stream, stale `request_id` identifiability, the pipelined-`RenderRequest`-as-implicit-cancel path, the `TILT_CURVES` request/response family, and the library request/response dispatch |
-| `validate/` | — | 26 | 26 | every limit in the table above, both accepted and rejected |
-| `stream_emit/` | — | 16 | 16 | delta coalescing, adaptive sub-batch sizing, preview downsampling, effective-cadence averaging, and the write-timeout/backpressure paths |
-| `render_core/` | — | 12 | 12 | including that single- and multi-threaded traces agree bit-exactly, that splitting a sample range across two calls sums to the same result as one, and the CPU+GPU hybrid split |
-| `enroll/` | 9 | 10 | 10 | the token registry: single use, expiry, wrong token, allowlist-only-after-claim, loopback-only issuing, the pending cap, and that a claim connection cannot serve a render request |
-| `pki/` | 7 | 7 | 7 | the certificate workflow |
-| `render_cmd/` | — | 7 | 8 | including a real, fast end-to-end smoke test running the full JSON-load → validate → trace → tone-map → PNG-encode path at 8×8 @ 4spp |
-| `enroll_client/` | 4 | 4 | 4 | two real loopback-TLS round trips through the actual pinning verifier — one successful claim, one refusing a token whose CA fingerprint does not match the server |
-| `png_out/` | — | 3 | 3 | PNG encoding of a traced buffer |
-| `png_out/` | 3 | — |
+| Module | Builds | Covers |
+|---|---|---|
+| `cli/` | all | argument parsing for every subcommand (`render`, `serve`, `join`, `cert`), per-topic `-h`/`--help` resolution, error messages for missing/malformed flags |
+| `serve/` | all (render paths: `worker`) | the `HELLO`/`WELCOME` handshake (including a build-hash mismatch and role refusal), request validation keeping the connection open, real loopback round trips, `FinalOnly` still emitting `PROGRESS`, `CANCEL` mid-stream, stale `request_id` identifiability, the pipelined-`RenderRequest`-as-implicit-cancel path, the `TILT_CURVES` family, the v14 message set, HDR assets over the request loop, mutual TLS with real throwaway certificates, the connection limiter, and the library request/response dispatch |
+| `coordinator/` | `worker` | the joined-worker registry and advertisement, and end-to-end runs of a real coordinator on ephemeral loopback ports with real TLS, `join`, enrollment tokens and liveness: job splitting, per-viewer queues and the memory cap, pinned interactive workers, final pictures and display frames, HDR maps forwarded to joined workers |
+| `assets/` | `worker` | the bounded on-disk cache (hash naming, verification, eviction, atomic writes), the HDR routing policy, and the resolve order |
+| `join/` | `worker` | reconnect backoff and the default enrollment address |
+| `validate/` | `worker` | every limit in the table above, both accepted and rejected |
+| `stream_emit/` | `worker` | delta coalescing, adaptive sub-batch sizing, preview downsampling, cadence, liveness heartbeats, display frames, and the write-timeout/backpressure paths |
+| `render_core/` | `worker` | including that single- and multi-threaded traces agree bit-exactly, that splitting a sample range across two calls sums to the same result as one, and the CPU+GPU hybrid split |
+| `enroll/` | all | the token registry: single use, expiry, wrong token, allowlist-only-after-claim, loopback-only issuing, the pending cap, role mismatch, and that a claim connection cannot serve a render request |
+| `pki/` | all | the certificate workflow and certificate roles |
+| `render_cmd/` | `worker` | including a real, fast end-to-end smoke test running the full JSON-load → validate → trace → tone-map → PNG-encode path at 8×8 @ 4spp |
+| `enroll_client/` | all | real loopback-TLS round trips through the actual pinning verifier — one successful claim, one refusing a token whose CA fingerprint does not match the server |
+| `png_out/` | `worker` | PNG encoding of a traced buffer |
 
 The `GW1-` token codec and the CA-pinning claim client moved to `crates/indicatrix-net`
 (`token`, `enroll`) when the viewer needed them too — their tests went with them.
 
-Almost nothing here needs real I/O. `serve.rs`'s tests drive `handle_connection` over
-an in-memory duplex double or a loopback `TcpStream` with TLS skipped entirely, and
-`pki.rs` exercises certificate generation and ACL-setting without starting `serve` — so
-the suite runs in well under a second with no port conflicts and no certificates to
-provision.
+Much of this needs no real I/O: `serve/`'s tests mostly drive `handle_connection` over
+an in-memory duplex double or a loopback `TcpStream` with TLS skipped, and `pki/`
+exercises certificate generation and ACL-setting without starting `serve`.
 
-The two exceptions are deliberate. `enroll_client.rs` performs **real loopback TLS
-handshakes**, because the thing under test is the pinning verifier itself: that it
-accepts a server whose chain matches the token's CA fingerprint and refuses one that
-doesn't. Mocking the handshake there would test the mock. They still need no external
-network and no provisioned certificates — both ends are generated in-process.
+The exceptions are deliberate. `enroll_client/`, `serve/`'s mutual-TLS tests and the
+coordinator's end-to-end tests perform **real loopback TLS handshakes**, because the
+thing under test is the TLS behaviour itself — the pinning verifier, the role and
+allowlist checks, a real `join`. Mocking the handshake there would test the mock. They
+still need no external network and no provisioned certificates — every CA and
+certificate is generated in-process, and every listener binds an ephemeral loopback
+port.

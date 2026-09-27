@@ -9,12 +9,12 @@ import { BatchModel } from "../models/batch.slint";
 // shared one: see `app.slint`'s `tilt_batch_visible` doc comment for why.
 //
 // `LiveComputeTarget::Both` runs `batch_queue::local_lane_count` local lanes plus a
-// remote dispatcher concurrently (`gui::tilt_batch`'s module doc comment, "Local +
+// remote dispatcher concurrently (`gui::batch::tilt`'s module doc comment, "Local +
 // remote" section), pulling designs off one shared queue -- so `design_index` is a
 // COMPLETED count, not a current-item cursor. With N local lanes each possibly
 // mid-design at once, no single title/axis-index pair can describe "the" local lane's
 // progress any more, so `local_active`/`local_lane_total`
-// report a plain busy-count instead (see `gui::tilt_batch`'s module doc comment's
+// report a plain busy-count instead (see `gui::batch::tilt`'s module doc comment's
 // "Progress with N local lanes (plus remote) in flight" section). `remote_title`/
 // `remote_active` describe the REMOTE lane's own in-flight design -- remote stays a
 // single dispatcher, with no numeric sub-progress since a

@@ -63,7 +63,7 @@ impl PreviewScale {
 /// The resolution reduction applied while the camera is moving, for local
 /// preview-then-settle rendering -- the same idea [`PreviewScale`] offers a remote
 /// worker's `PREVIEW` stream, applied to the LOCAL render loop instead (see
-/// `bridge::local_preview::effective_dimensions`), deliberately without a
+/// `bridge::render_thread::local_preview::effective_dimensions`), deliberately without a
 /// [`PreviewScale::Custom`] equivalent since the settings-dialog control is a
 /// discrete pill choice, not a slider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -123,8 +123,8 @@ pub const DEFAULT_WORKER_CADENCE_MS: u32 = 500;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct WorkerSettings {
-    /// User-facing label for this worker in the list UI. Not required to be unique --
-    /// the worker-list panel addresses entries by position in `AppSettings::remote_workers`.
+    /// User-facing label for this remote in the "Remote coordinator" form and status
+    /// messages; may be empty (the address is shown instead).
     pub name: String,
     /// `host:port` this worker listens on (`indicatrix-worker serve --bind`/`--allow-remote`).
     pub address: String,

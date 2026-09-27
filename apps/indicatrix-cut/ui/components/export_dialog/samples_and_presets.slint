@@ -1,0 +1,126 @@
+import { Slider } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { ExportModel } from "../../models/export.slint";
+
+// Sample Count (a power-of-two slider) and preset fan-out -- split out of
+// `export_dialog.slint` to keep that file under its line budget.
+// `effective_samples`/`sample_exponent` are read-only mirrors of
+// `ExportDialog`'s own identically-named computed properties (kept there,
+// not duplicated here, since the dialog's footer/key handler need them too)
+// -- see that file's own doc comments for the exponent-vs-linear rationale.
+export component ExportSamplesAndPresets inherits VerticalLayout {
+    spacing: 14px;
+
+    in property <int> effective_samples: 0;
+    in property <int> sample_exponent: 0;
+
+    // 3. Sample Count -- a power-of-two slider rather than pills, since the
+    // useful range (8..32768) is now far too wide for a handful of presets.
+    // "higher = slower" is honest at 4096 but understates it badly at 32768,
+    // hence the plain-language cost hint that appears near the top of the range.
+    VerticalLayout {
+        spacing: 6px;
+        Text { text: "Sample Count (higher = slower, smoother)"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+
+        HorizontalLayout {
+            alignment: space-between;
+            Text { text: "Samples per pixel:"; font-size: 10px; color: Theme.text-muted; vertical-alignment: center; }
+            Text { text: root.effective_samples; font-size: 13px; font-weight: 700; color: Theme.accent-cyan; }
+        }
+
+        Slider {
+            minimum: 3;
+            maximum: 15;
+            step: 1;
+            value <=> ExportModel.sample_exponent_raw;
+            enabled: !ExportModel.is_exporting;
+        }
+
+        if root.sample_exponent >= 14: Text {
+            text: "Very high sample counts can take hours to render, especially at large output sizes.";
+            font-size: 11px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+    }
+
+    // 3b. Preset fan-out -- only shown when at least one preset is
+    // export-usable; an empty list here means nobody has checked "usable for
+    // export" on any preset yet (`settings_dialog.slint`'s own checkbox), so
+    // there is nothing to fan out and showing an empty section would just be
+    // clutter.
+    if ExportModel.fanout_presets.length > 0: VerticalLayout {
+        spacing: 6px;
+        Text {
+            text: "Also Render With These Presets";
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.text-secondary;
+        }
+        Text {
+            text: "Each checked preset produces an ADDITIONAL file alongside the current view -- export time multiplies linearly with how many are selected.";
+            font-size: 11px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+
+        for preset[idx] in ExportModel.fanout_presets: Rectangle {
+            height: 26px;
+            border-radius: Theme.radius-sm;
+            background: #0f172a;
+            border-width: 1px;
+            border-color: preset.selected ? Theme.accent-cyan : #334155;
+
+            fanout_touch := TouchArea {
+                enabled: !ExportModel.is_exporting;
+                clicked => { ExportModel.toggle_preset_selected(idx); }
+            }
+
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                spacing: 6px;
+
+                Rectangle {
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 3px;
+                    background: preset.selected ? Theme.accent-cyan : transparent;
+                    border-width: 1px;
+                    border-color: preset.selected ? Theme.accent-cyan : Theme.border-control;
+                    y: (parent.height - self.height) / 2;
+
+                    if preset.selected: Image {
+                        source: @image-url("../../icons/check.svg");
+                        colorize: #0f172a;
+                        width: 9px;
+                        height: 9px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+
+                Text {
+                    text: preset.name;
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+
+                // HDR badge: THIS preset lights the stone with an environment map.
+                // The GPU renders it directly; only a map past the adapter's
+                // storage-buffer limit falls back to the CPU (see the export
+                // wiring in `gui::render::render_export::wiring`).
+                if preset.has_env_map: Text {
+                    text: "HDR";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.accent-amber;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

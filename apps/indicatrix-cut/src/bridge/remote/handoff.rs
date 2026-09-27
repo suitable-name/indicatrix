@@ -3,23 +3,28 @@
 //! While the user manipulates the gem's orientation, the viewport renders locally at
 //! low spp, exactly as it always has (`render_thread`'s ordinary progressive
 //! accumulation). Once the orientation settles (a short debounce with no further
-//! movement), the local low-spp preview is discarded -- never summed into anything --
-//! and a full-quality render is requested from a configured remote worker instead. If
-//! the user resumes dragging before that remote render finishes, it is cancelled and
-//! its partial result discarded too, and the viewport falls back to local preview
-//! rendering again.
+//! movement), the drag-time local preview is discarded -- never summed into anything --
+//! and a new image epoch starts that a configured remote worker contributes to:
+//!
+//! - `LiveComputeTarget::Both` (the default): local tracing KEEPS contributing to the
+//!   settled image. Local and the remote chunk lane claim disjoint sample ranges from
+//!   the epoch's shared cursor (`bridge::sample_cursor::live::LiveEpoch`), and the
+//!   display shows their merged sum, denoised once.
+//! - `LiveComputeTarget::RemoteOnly`: local tracing pauses and the remote lane traces
+//!   the whole epoch.
+//!
+//! If the user resumes dragging before the epoch finishes, the in-flight remote chunk
+//! is cancelled and the epoch's remote contribution discarded, and the viewport falls
+//! back to local preview rendering again.
 //!
 //! This module is deliberately pure: no sockets, no threads, no Slint. Every
 //! transition is a plain function of `(current state, event)` -> `(next state,
 //! actions)`, which is what makes it exercisable by the unit tests below with no GUI
-//! and no worker running. `apps/indicatrix-cut/src/bridge/render_thread.rs` (or a
-//! dedicated orchestration thread alongside it) is the one place that actually DRIVES
-//! this machine -- translating real camera-drag ticks, a real debounce timer, and real
-//! `indicatrix_net::client` events into [`HandoffEvent`]s, and carrying out the
-//! [`HandoffAction`]s this returns (discarding a buffer, sending a `RenderRequest`,
-//! sending `CANCEL`) against the real accumulator/socket. That wiring is the part that
-//! genuinely can't be unit-tested without a live worker; this state machine is the part
-//! that can be, and is, tested exhaustively below.
+//! and no worker running. `gui::remote::orchestrator` is the one place that actually
+//! DRIVES this machine -- translating real camera-drag ticks, a real debounce timer, and
+//! real `indicatrix_net::client` events into [`HandoffEvent`]s, and carrying out the
+//! [`HandoffAction`]s this returns (starting an epoch, sending chunk `RenderRequest`s,
+//! sending `CANCEL`, releasing the epoch) against the real render context and socket.
 //!
 //! # States
 //!
@@ -30,12 +35,11 @@
 //!   accumulation itself is `render_thread`'s ordinary `dirty`-triggered behavior, not
 //!   something this machine has to separately trigger.
 //! - [`HandoffState::Settling`]: the debounce elapsed with no further orientation
-//!   change, a remote worker is configured/reachable, and a `RenderRequest` has just
-//!   been dispatched -- this state covers the connect/handshake/dispatch window, before
-//!   any reply has actually started streaming back.
-//! - [`HandoffState::RemoteRendering`]: the worker's reply stream has started (its
-//!   `WELCOME`/first `StreamEvent` was observed) and samples are actively
-//!   accumulating from the remote side.
+//!   change, a remote worker is configured and allowed for this scene, and the epoch's
+//!   first chunk `RenderRequest` has just been dispatched -- this state covers the
+//!   connect/handshake/dispatch window, before any reply has started streaming back.
+//! - [`HandoffState::RemoteRendering`]: the worker's reply stream has started and the
+//!   remote lane is working through its chunks (later chunks' `WELCOME`s are no-ops).
 //! - [`HandoffState::Cancelled`]: the user resumed dragging while [`Settling`](HandoffState::Settling)
 //!   or [`RemoteRendering`](HandoffState::RemoteRendering) was in progress. Transient --
 //!   the very next [`HandoffEvent::OrientationChanged`] (which is, in practice, exactly
@@ -47,22 +51,24 @@
 //! already means exactly that: nothing is dragging, and whatever's on screen is settled.
 //! The caller is the one that decides how long the CALLER'S OWN `remote_active` flag
 //! (outside this module -- see `render_thread::RenderContext::remote_active`'s doc
-//! comment) keeps local tracing suspended while that Remote image is displayed;
+//! comment) keeps the settled epoch (and, in `RemoteOnly`, the local-tracing pause) in
+//! place while that image is displayed;
 //! [`HandoffEvent::SceneInvalidated`] is how the caller reports back here, once it does
 //! release that flag for a reason other than a fresh drag, so `served_by` stays truthful.
 //!
 //! # The invariant this machine protects
 //!
-//! The local preview buffer and the remote accumulator must never share samples --
-//! that is the same one-backend-per-image guarantee `indicatrix_net::client::Accumulator`
-//! enforces across a single epoch switch, expressed here over TIME instead: a
+//! Nothing is ever carried from one image epoch into another: the drag-time local
+//! preview is never summed into the settled epoch, and a cancelled epoch's remote
+//! contribution is never summed into what comes next. A
 //! [`HandoffAction::DiscardLocalPreview`] always precedes
 //! [`HandoffAction::SendRenderRequestToWorker`] (both fire together, entering
 //! [`Settling`](HandoffState::Settling)), and a
 //! [`HandoffAction::DiscardRemotePartial`] always accompanies
 //! [`HandoffAction::SendCancelToWorker`] (both fire together, entering
-//! [`Cancelled`](HandoffState::Cancelled)) -- there is no transition in this machine
-//! that lets a caller carry a buffer from one source into the other.
+//! [`Cancelled`](HandoffState::Cancelled)). WITHIN one settled epoch, local and remote
+//! samples are merged on purpose -- that is sound because they come from disjoint
+//! ranges of the epoch's one shared cursor for the identical scene.
 
 /// See the module doc comment for what each state covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,6 +126,14 @@ pub enum HandoffEvent {
     /// "served by remote" indicator stops claiming a now-changing image is still
     /// remote-sourced.
     SceneInvalidated,
+    /// The view is settled (`Idle`), no epoch is live any more (a non-drag release: a
+    /// scene/settings change, a live-compute-target change, or the render loop's
+    /// scene-identity check), the scene has been stable for the settle debounce and
+    /// remote is allowed again -- start a fresh epoch without waiting for a drag.
+    /// Handled exactly like a settle with a worker available: `Idle` -> `Settling`.
+    /// The caller decides when this is warranted (including never re-dispatching an
+    /// epoch whose remote lane already gave up); from any other state it is a no-op.
+    Redispatch,
 }
 
 /// Outputs of [`HandoffMachine::handle`] -- what the caller must actually carry out
@@ -131,20 +145,19 @@ pub enum HandoffEvent {
 /// [`DiscardRemotePartial`](Self::DiscardRemotePartial).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HandoffAction {
-    /// Discard whatever the local low-spp accumulation buffer currently holds. Never
-    /// summed into the remote accumulator that's about to start -- see
-    /// `indicatrix_net::client::Accumulator`'s own module docs for the identical rule
-    /// applied across a request-id epoch switch instead of across backends.
+    /// Discard the drag-time local preview and start a fresh image epoch: the local
+    /// accumulation restarts from an empty buffer (never summed into the new epoch),
+    /// and under `LiveComputeTarget::Both` local then keeps contributing to the settled
+    /// image through the epoch's shared cursor.
     DiscardLocalPreview,
-    /// Send the (session-resolution, full-quality) `RenderRequest` to the configured
-    /// worker.
+    /// Start the epoch's remote lane: send its first chunk `RenderRequest` to the
+    /// configured worker (later chunks follow as each one's `DONE` arrives).
     SendRenderRequestToWorker,
-    /// Send `CANCEL` for the request currently in flight.
+    /// Send `CANCEL` for the chunk request currently in flight.
     SendCancelToWorker,
-    /// Discard whatever the remote accumulator currently holds for the
-    /// just-cancelled request -- it must never be shown, and never summed into
-    /// whatever comes next (the next local preview, or a future remote attempt's own
-    /// fresh accumulator).
+    /// Release the cancelled epoch (`RenderContext::release_remote`): its remote sums
+    /// and in-flight chunk must never be shown again, and never summed into whatever
+    /// comes next (the next local preview, or a future epoch).
     DiscardRemotePartial,
 }
 
@@ -198,7 +211,8 @@ impl HandoffMachine {
             SendRenderRequestToWorker,
         };
         use HandoffEvent::{
-            OrientationChanged, RemoteDone, RemoteFailed, RemoteStreamStarted, SettleElapsed,
+            OrientationChanged, Redispatch, RemoteDone, RemoteFailed, RemoteStreamStarted,
+            SettleElapsed,
         };
         use HandoffState::{Cancelled, Idle, Previewing, RemoteRendering, Settling};
 
@@ -206,13 +220,15 @@ impl HandoffMachine {
             // -- Starting / continuing a drag --------------------------------------
             (Idle | Cancelled | Previewing, OrientationChanged) => (Previewing, vec![]),
 
-            // -- The debounce elapsed -----------------------------------------------
+            // -- The debounce elapsed, or a settled view whose epoch was released
+            // -- (non-drag) re-dispatches ---------------------------------------------
             (
                 Previewing,
                 SettleElapsed {
                     worker_available: true,
                 },
-            ) => (
+            )
+            | (Idle, Redispatch) => (
                 Settling,
                 vec![DiscardLocalPreview, SendRenderRequestToWorker],
             ),
@@ -511,6 +527,31 @@ mod tests {
         assert_eq!(m.served_by(), ImageSource::Local);
     }
 
+    /// A settled, idle view re-dispatches without a drag; the same event anywhere else
+    /// (mid-drag, mid-render) changes nothing.
+    #[test]
+    fn redispatch_starts_a_fresh_epoch_only_from_idle() {
+        let mut m = HandoffMachine::new();
+        let actions = m.handle(HandoffEvent::Redispatch);
+        assert_eq!(m.state(), HandoffState::Settling);
+        assert_eq!(
+            actions,
+            vec![
+                HandoffAction::DiscardLocalPreview,
+                HandoffAction::SendRenderRequestToWorker,
+            ]
+        );
+
+        m.handle(HandoffEvent::RemoteStreamStarted);
+        assert_eq!(m.handle(HandoffEvent::Redispatch), Vec::new());
+        assert_eq!(m.state(), HandoffState::RemoteRendering);
+
+        m.handle(HandoffEvent::OrientationChanged);
+        m.handle(HandoffEvent::OrientationChanged);
+        assert_eq!(m.handle(HandoffEvent::Redispatch), Vec::new());
+        assert_eq!(m.state(), HandoffState::Previewing);
+    }
+
     #[test]
     fn stray_events_in_unexpected_states_are_harmless_no_ops() {
         let mut m = HandoffMachine::new();
@@ -549,6 +590,7 @@ mod tests {
             HandoffEvent::RemoteDone,
             HandoffEvent::RemoteFailed,
             HandoffEvent::SceneInvalidated,
+            HandoffEvent::Redispatch,
         ];
 
         for &event in &events {

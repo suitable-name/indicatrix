@@ -1,0 +1,108 @@
+import { Theme } from "../../theme.slint";
+
+// Body Color & Transmission preset swatches -- split out of
+// `material_editor_dialog.slint` to keep that file under its line budget.
+// `selected_color_preset` is `MaterialEditorDialog`'s own state (also written
+// by the template-selector presets), two-way bound so a click here writes
+// straight back to it.
+export component MaterialColorPresets inherits VerticalLayout {
+    spacing: 6px;
+
+    in-out property <int> selected_color_preset: 0;
+
+    Text { text: "Gem Body Color & Transmission:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
+
+    HorizontalLayout {
+        spacing: 6px;
+
+        // 0: Clear / White
+        Rectangle {
+            width: 40px; height: 26px; border-radius: Theme.radius-sm;
+            background: root.selected_color_preset == 0 ? #e2e8f0 : #94a3b844;
+            border-width: root.selected_color_preset == 0 ? 2px : 1px;
+            border-color: root.selected_color_preset == 0 ? Theme.accent-cyan : Theme.border-control;
+            TouchArea { clicked => { root.selected_color_preset = 0; } }
+            Text { text: "Clear"; font-size: 9px; font-weight: 700; color: root.selected_color_preset == 0 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+
+        // 1: Sapphire Blue
+        Rectangle {
+            width: 40px; height: 26px; border-radius: Theme.radius-sm;
+            background: #1e40af;
+            border-width: root.selected_color_preset == 1 ? 2px : 1px;
+            border-color: root.selected_color_preset == 1 ? Theme.accent-cyan : #1d4ed8;
+            TouchArea { clicked => { root.selected_color_preset = 1; } }
+            Text { text: "Blue"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+
+        // 2: Ruby Red
+        Rectangle {
+            width: 40px; height: 26px; border-radius: Theme.radius-sm;
+            background: #be123c;
+            border-width: root.selected_color_preset == 2 ? 2px : 1px;
+            border-color: root.selected_color_preset == 2 ? Theme.accent-cyan : #e11d48;
+            TouchArea { clicked => { root.selected_color_preset = 2; } }
+            Text { text: "Red"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+
+        // 3: Emerald Green
+        Rectangle {
+            width: 40px; height: 26px; border-radius: Theme.radius-sm;
+            background: #047857;
+            border-width: root.selected_color_preset == 3 ? 2px : 1px;
+            border-color: root.selected_color_preset == 3 ? Theme.accent-cyan : #059669;
+            TouchArea { clicked => { root.selected_color_preset = 3; } }
+            Text { text: "Green"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+
+        // 4: Tanzanite Violet
+        Rectangle {
+            width: 40px; height: 26px; border-radius: Theme.radius-sm;
+            background: #6b21a8;
+            border-width: root.selected_color_preset == 4 ? 2px : 1px;
+            border-color: root.selected_color_preset == 4 ? Theme.accent-cyan : #7c3aed;
+            TouchArea { clicked => { root.selected_color_preset = 4; } }
+            Text { text: "Violet"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+
+        // 5: Canary Yellow
+        Rectangle {
+            width: 40px; height: 26px; border-radius: Theme.radius-sm;
+            background: #b45309;
+            border-width: root.selected_color_preset == 5 ? 2px : 1px;
+            border-color: root.selected_color_preset == 5 ? Theme.accent-cyan : #d97706;
+            TouchArea { clicked => { root.selected_color_preset = 5; } }
+            Text { text: "Yellow"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+
+        // 6: Pink Spinel
+        Rectangle {
+            width: 40px; height: 26px; border-radius: Theme.radius-sm;
+            background: #be185d;
+            border-width: root.selected_color_preset == 6 ? 2px : 1px;
+            border-color: root.selected_color_preset == 6 ? Theme.accent-cyan : #db2777;
+            TouchArea { clicked => { root.selected_color_preset = 6; } }
+            Text { text: "Pink"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+
+        // 7: Teal / Zircon
+        Rectangle {
+            width: 40px; height: 26px; border-radius: Theme.radius-sm;
+            background: #0f766e;
+            border-width: root.selected_color_preset == 7 ? 2px : 1px;
+            border-color: root.selected_color_preset == 7 ? Theme.accent-cyan : #0d9488;
+            TouchArea { clicked => { root.selected_color_preset = 7; } }
+            Text { text: "Teal"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+
+        // 8: Amber Topaz
+        Rectangle {
+            width: 40px; height: 26px; border-radius: Theme.radius-sm;
+            background: #9a3412;
+            border-width: root.selected_color_preset == 8 ? 2px : 1px;
+            border-color: root.selected_color_preset == 8 ? Theme.accent-cyan : #c2410c;
+            TouchArea { clicked => { root.selected_color_preset = 8; } }
+            Text { text: "Amber"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+    }
+}

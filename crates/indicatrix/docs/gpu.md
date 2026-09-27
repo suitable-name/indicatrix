@@ -27,10 +27,12 @@ and GPU."
   scene (camera, planes, material, environment) and it accumulates samples into
   a caller-owned buffer. `apps/indicatrix-cut` uses it when built with its own
   `gpu` feature (`cargo build -p indicatrix-cut --features gpu`), falling back to
-  the CPU tracer per frame whenever the GPU declines — no adapter, or an HDR
-  environment map. `apps/indicatrix-worker` can enable it too
-  (its own `gpu` feature), but never for the viewport itself — that binary has
-  no viewport, only `render`/`serve` (see that app's README).
+  the CPU tracer per frame whenever the GPU declines — no adapter, a lost device,
+  or an HDR environment map too large for the device's storage-buffer limit (HDR
+  maps otherwise render on the GPU through their own environment mode).
+  `apps/indicatrix-worker` can enable it too (its own `gpu` feature), but never for
+  a viewport — that binary has none, only `render`, `serve --render` and `join` (see
+  that app's README).
 - **`gpu` is off by default, everywhere.** Nothing in the workspace turns it on
   for you, so an ordinary `cargo build` still pulls neither `wgpu` nor
   `pollster`, and the CPU tracer remains the reference implementation that every

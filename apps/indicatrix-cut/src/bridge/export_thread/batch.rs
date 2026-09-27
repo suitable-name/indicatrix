@@ -8,7 +8,8 @@ use super::{sample_cursor::SampleCursor, scene_snapshot::SceneSnapshot};
 use glam::Vec3;
 use indicatrix::{
     optics::raytracer::{
-        Camera, EnvironmentSource, pixel_rotations, sample_draws, trace_spectral_ray_with_finish,
+        Camera, EnvironmentSource, add_finite_sample, pixel_rotations, sample_draws,
+        trace_spectral_ray_with_finish,
     },
     renderer::gpu_backend::{GpuBackend, GpuSceneRef},
 };
@@ -339,6 +340,11 @@ pub(super) fn run_local_batches(
 /// `render_thread::render_frame_scanlines`, minus per-frame tone-mapping (export
 /// tone-maps once at the end) and progressive-frame bookkeeping.
 ///
+/// A non-finite (NaN/±Inf) sample is dropped but still counted
+/// (`indicatrix::optics::raytracer::add_finite_sample`), the same rule as the live
+/// scanline path, the worker and the GPU reduction, so this buffer merges with theirs by
+/// plain addition.
+///
 /// # Work distribution: a shared atomic row counter, not contiguous row bands
 ///
 /// Rows through the stone cost far more than background rows, so this claims rows
@@ -428,7 +434,7 @@ pub fn render_batch(
                             // Frosted girdle: `scene.facet_finishes` is empty
                             // whenever the toggle was off at capture time, which is
                             // exactly equivalent to `trace_spectral_ray`.
-                            sample_sum += trace_spectral_ray_with_finish(
+                            let sample = trace_spectral_ray_with_finish(
                                 ray,
                                 &scene.active_planes,
                                 &scene.facet_finishes,
@@ -439,6 +445,10 @@ pub fn render_batch(
                                 draws.hero_rand,
                                 None,
                             );
+                            // Non-finite samples are dropped but still counted (the
+                            // caller's `batch_spp` divisor is unchanged), the shared rule
+                            // every backend's sums obey so they merge consistently.
+                            add_finite_sample(&mut sample_sum, sample);
                         }
 
                         *pixel += sample_sum;

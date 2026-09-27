@@ -1,0 +1,128 @@
+import { Theme } from "../../theme.slint";
+import { SettingsModel } from "../../models/settings.slint";
+import { RemoteWorkerModel } from "../../models/remote_worker.slint";
+
+// Live Compute: which engine(s) trace the settled viewport image. Same
+// segmented-pill idiom, and the same disabled-with-a-reason treatment, as
+// `export_dialog.slint`'s "Compute" section.
+export component LiveComputePicker inherits VerticalLayout {
+    // Explanatory text shown when no remote worker is available; empty falls
+    // back to a generic "No remote worker is configured." message below.
+    in property <string> unavailable_reason: "";
+    // The Live Transfer pills only mean something with a remote in the loop.
+    property <bool> transfer_enabled: RemoteWorkerModel.live_remote_available && SettingsModel.live_compute_target_index != 0;
+
+    spacing: 6px;
+    Text { text: "Live Compute"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+
+    HorizontalLayout {
+        spacing: 4px;
+
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            background: SettingsModel.live_compute_target_index == 0 ? Theme.accent-cyan : (lct0_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.live_compute_target_index == 0 ? Theme.accent-cyan : #334155;
+
+            lct0_touch := TouchArea {
+                clicked => {
+                    SettingsModel.live_compute_target_index = 0;
+                    SettingsModel.live_compute_target_changed(0);
+                }
+            }
+
+            Text { text: "Local only"; font-size: 11px; font-weight: 600; color: SettingsModel.live_compute_target_index == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            opacity: RemoteWorkerModel.live_remote_available ? 1.0 : 0.45;
+            background: SettingsModel.live_compute_target_index == 1 ? Theme.accent-cyan : (lct1_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.live_compute_target_index == 1 ? Theme.accent-cyan : #334155;
+
+            lct1_touch := TouchArea {
+                enabled: RemoteWorkerModel.live_remote_available;
+                clicked => {
+                    SettingsModel.live_compute_target_index = 1;
+                    SettingsModel.live_compute_target_changed(1);
+                }
+            }
+
+            Text { text: "Remote only"; font-size: 11px; font-weight: 600; color: SettingsModel.live_compute_target_index == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            opacity: RemoteWorkerModel.live_remote_available ? 1.0 : 0.45;
+            background: SettingsModel.live_compute_target_index == 2 ? Theme.accent-cyan : (lct2_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.live_compute_target_index == 2 ? Theme.accent-cyan : #334155;
+
+            lct2_touch := TouchArea {
+                enabled: RemoteWorkerModel.live_remote_available;
+                clicked => {
+                    SettingsModel.live_compute_target_index = 2;
+                    SettingsModel.live_compute_target_changed(2);
+                }
+            }
+
+            Text { text: "Local + Remote"; font-size: 11px; font-weight: 600; color: SettingsModel.live_compute_target_index == 2 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+    }
+
+    if !RemoteWorkerModel.live_remote_available: Text {
+        text: root.unavailable_reason == "" ? "No remote coordinator is configured." : root.unavailable_reason;
+        font-size: 11px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+
+    if RemoteWorkerModel.live_remote_available: Text {
+        text: "Once the camera settles, Local + Remote lets both engines keep tracing the same image together for a faster converge; Remote only hands the whole image to the remote.";
+        font-size: 11px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+
+    // Live transfer: how the remote's contribution comes home.
+    // Meaningless for "Local only" and without a remote, so disabled (not hidden)
+    // then, the same treatment the Remote pills above get.
+    Text { text: "Live Transfer"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+
+    HorizontalLayout {
+        spacing: 4px;
+        for label[idx] in ["Full data", "Final picture"]: Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            opacity: root.transfer_enabled ? 1.0 : 0.45;
+            background: SettingsModel.live_transfer_index == idx ? Theme.accent-cyan : (lt_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.live_transfer_index == idx ? Theme.accent-cyan : #334155;
+
+            lt_touch := TouchArea {
+                enabled: root.transfer_enabled;
+                clicked => {
+                    SettingsModel.live_transfer_index = idx;
+                    SettingsModel.live_transfer_changed(idx);
+                }
+            }
+
+            Text { text: label; font-size: 11px; font-weight: 600; color: SettingsModel.live_transfer_index == idx ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+    }
+
+    Text {
+        text: "Final picture: the server sends finished, denoised frames -- less bandwidth, but your own GPU/CPU pauses after the handoff; results can't be combined.";
+        font-size: 11px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+}

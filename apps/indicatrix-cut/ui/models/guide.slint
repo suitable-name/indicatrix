@@ -1,26 +1,71 @@
-// An in-app "worked-example walkthrough" -- a step panel that opens beside the editor and highlights the
-// control for each step, driven by a static list derived from
+// An in-app "worked-example walkthrough" -- a step panel that opens beside the editor
+// (or floats over the window where there is no spare column) and outlines the control
+// for each step, driven by a static list derived from
 // `docs/manual/07-new-design-worked-example.md` (see
-// `apps/indicatrix-cut/src/gui/editor/guide.rs`, this global's only writer).
+// `apps/indicatrix-cut/src/gui/editor/guide/steps.rs`, this global's only content
+// source).
 //
-// Deliberately no general tour engine: `GuideStepData` is plain data (title,
-// body, which control to outline), `GuideModel` only tracks which step is
-// current and whether the panel is open, and every navigation callback below
-// is implemented ENTIRELY in this file (see this crate's own "SLINT FACTS":
-// a global's callback can be given a body directly in the file that declares
-// it) -- no Rust registration needed beyond pushing `steps` once at startup.
+// Deliberately no general tour engine: `GuideStepData` is plain data, `GuideModel`
+// tracks which step is current and whether the panel is open, and navigation is
+// implemented in this file (a global's callback can be given a body directly in the
+// file that declares it). Rust's only jobs are pushing `steps` once at startup and
+// calling `notify` whenever the design reaches a step's goal
+// (`gui::editor::guide::check_progress`).
+
+import { EditorModel } from "editor.slint";
+
+// Which groups of controls a step leaves usable while the guide is open. Every
+// control that belongs to a group ANDs the matching `GuideModel.allows_*()` helper
+// into its own `enabled:` (and the matching keyboard shortcut in `app.slint`'s
+// `global_shortcuts` checks the same helper), so the step's own action is the only
+// thing left to click. Closing the guide lifts every lock.
+export struct GuideAllow {
+    // New Design... (command bar, File menu, Ctrl+N, the empty-state card).
+    new_design: bool,
+    // "+ Add Tier", the inspector's Tier tab pill, New Tier, Add/Save Tier.
+    tier_form: bool,
+    // The tier table's toolbar (Adopt all, Select, Steps / Mirror, quick add, batch
+    // actions) and the command bar's Duplicate/Delete/Move buttons.
+    tier_table: bool,
+    // Design Settings: material, gear, symmetry, details and printed proportions.
+    design_settings: bool,
+    // Solve, F5 and the auto-solve budget combo.
+    solve: bool,
+    // The inspector's Preform tab pill and its Apply Preform/Apply Yield Inputs.
+    preform_tab: bool,
+    // Deep Solve, Optimize (button and tab), Retarget, Snapshot/Compare, Tilt Curves.
+    advanced: bool,
+    // Live Render, Pop Out, the Cutting Schedule/Files tabs, Ctrl+2/3, Ctrl+E to Live
+    // Render. The Edit pill, the 3D tab and Ctrl+1 always stay usable.
+    view_tabs: bool,
+    // Load Selected, Open/Save/Export, Open Recent and their shortcuts.
+    file_ops: bool,
+    // Undo/Redo and Ctrl+Z/Ctrl+Y.
+    history: bool,
+}
+
 export struct GuideStepData {
-    /// This step's heading, shown at the top of the guide panel.
+    // This step's heading.
     title: string,
-    /// This step's body text, `@markdown`-rendered by `guide_panel.slint`.
-    body: string,
-    /// Which owned control to draw a 2px accent outline around while this step
-    /// is current -- `"tier_table"`/`"design_settings"`/`"new_design_dialog"`,
-    /// or `""` for a step with nothing to highlight (an introductory step, or
-    /// one whose target lives in a different file -- see
-    /// `guide.rs`'s own doc comment for the full list of recognized values and
-    /// which steps intentionally leave this blank).
+    // One sentence of context, shown muted under the title.
+    intro: string,
+    // The numbered things to do, one short line each.
+    actions: [string],
+    // What to look for once done, shown in emerald with a check glyph.
+    check: string,
+    // An optional explanation, shown small and italic; "" hides it.
+    why: string,
+    // The status chip's "Waiting for: ..." text while the step is not done yet.
+    waiting: string,
+    // Which control draws a 2px accent outline while this step is current:
+    // "new_design_dialog", "inspector_tier", "design_settings", "solve_button",
+    // "tier_table", "preform_tab", or "" for nothing.
     highlight_target: string,
+    // The completion key Rust reports through `GuideModel.notify`, or "manual" for a
+    // step that only advances on Next.
+    completion: string,
+    // Which controls stay usable while this step is current.
+    allow: GuideAllow,
 }
 
 export global GuideModel {
@@ -28,48 +73,121 @@ export global GuideModel {
     in-out property <bool> open: false;
     /// The current step, 0-based into `steps`.
     in-out property <int> step_index: 0;
-    /// The full step list -- pushed once at startup by
-    /// `gui::editor::guide::setup_guide` (`apps/indicatrix-cut/src/gui/editor/guide.rs`).
+    /// The full step list -- pushed once at startup by `gui::editor::guide::setup_guide`.
     in property <[GuideStepData]> steps: [];
+    /// `true` for the short "Done" moment between the current step's goal being
+    /// reached (`notify`) and the automatic move to the next step, driven by
+    /// `GuideAdvanceTimer` (`guide_panel.slint`).
+    in-out property <bool> step_done: false;
+    /// Where the user dragged the FLOATING panel to (`GuideOverlayLayer`,
+    /// `guide_panel.slint`), valid once `float_placed` is `true`; until then the
+    /// panel sits at its default bottom-right spot. Clamped into the window by the
+    /// layer on every read, so a window resize can never push it off-screen.
+    /// Survives step changes; `start()` resets it.
+    in-out property <length> float_x: 0px;
+    in-out property <length> float_y: 0px;
+    in-out property <bool> float_placed: false;
+    /// Whether the panel is collapsed to its small "Guide · Step N of M" pill
+    /// (both mounts). Survives step changes; `start()` expands it again.
+    in-out property <bool> collapsed: false;
+    // What `current` reads while `step_index` is out of range: every field default,
+    // so every `allow` flag is `false` (irrelevant, since `open` gates them anyway).
+    property <GuideStepData> blank_step;
 
     out property <int> total_steps: root.steps.length;
     out property <bool> has_next: root.step_index + 1 < root.steps.length;
     out property <bool> has_back: root.step_index > 0;
     out property <GuideStepData> current: (root.step_index >= 0 && root.step_index < root.steps.length)
         ? root.steps[root.step_index]
-        : { title: "", body: "", highlight_target: "" };
+        : root.blank_step;
+    /// Whether the current step only advances on Next (a reading step).
+    out property <bool> current_is_manual: root.current.completion == "manual";
 
-    /// What `editor_tier_table.slint`/`editor_design_settings.slint` (and
-    /// `new_design_dialog.slint`, while it is open) check to decide whether to
-    /// draw their own highlight outline -- "" (closed, or a step with nothing
-    /// to highlight) never matches a real target name, so nothing outlines
-    /// itself in that case.
+    /// What `editor_tier_table.slint`, `editor_design_settings.slint`,
+    /// `editor_inspector.slint`, `editor_command_bar.slint` and
+    /// `new_design_dialog.slint` compare against to decide whether to draw their own
+    /// highlight outline -- "" (closed, or a step with nothing to highlight) never
+    /// matches a real target name.
     out property <string> highlight_target: root.open ? root.current.highlight_target : "";
 
-    /// Opens the panel at its first step -- called from the empty state's
-    /// "Open the Worked Example" card and from Help > Guide: New Design
-    /// Walkthrough.
+    /// The tooltip every blocked control shows (see `GuideLockTip`).
+    out property <string> locked_hint: "Locked while the guide runs \u{2014} close the guide to use this.";
+
+    /// Whether New Design... is usable (always, while the guide is closed).
+    public pure function allows_new_design() -> bool { return !root.open || root.current.allow.new_design; }
+    /// Whether the tier form (Add Tier, the Tier tab) is usable.
+    public pure function allows_tier_form() -> bool { return !root.open || root.current.allow.tier_form; }
+    /// Whether the tier table's toolbar actions are usable.
+    public pure function allows_tier_table() -> bool { return !root.open || root.current.allow.tier_table; }
+    /// Whether the Design Settings panel is usable.
+    public pure function allows_design_settings() -> bool { return !root.open || root.current.allow.design_settings; }
+    /// Whether Solve (button, F5, auto-solve combo) is usable.
+    public pure function allows_solve() -> bool { return !root.open || root.current.allow.solve; }
+    /// Whether the inspector's Preform tab is usable.
+    public pure function allows_preform_tab() -> bool { return !root.open || root.current.allow.preform_tab; }
+    /// Whether Deep Solve/Optimize/Retarget/Snapshot/Tilt Curves are usable.
+    public pure function allows_advanced() -> bool { return !root.open || root.current.allow.advanced; }
+    /// Whether the Live Render/catalogue tabs are usable.
+    public pure function allows_view_tabs() -> bool { return !root.open || root.current.allow.view_tabs; }
+    /// Whether file actions (load, open, save, export) are usable.
+    public pure function allows_file_ops() -> bool { return !root.open || root.current.allow.file_ops; }
+    /// Whether Undo/Redo are usable.
+    public pure function allows_history() -> bool { return !root.open || root.current.allow.history; }
+
+    /// Opens the panel at its first step -- called from the empty state's "Open the
+    /// Worked Example" card and from Help > Guide: New Design Walkthrough. Also
+    /// points the New Design dialog's "Start From" back at Empty (template 0), so
+    /// the dialog opens exactly as step 1 describes it.
     callback start();
     start => {
+        EditorModel.new_template_index = 0;
+        root.float_placed = false;
+        root.collapsed = false;
+        root.step_done = false;
         root.step_index = 0;
         root.open = true;
+        root.step_entered();
+    }
+    /// Fired whenever a step is entered going forward (start, Next/Skip, an automatic
+    /// advance) -- Rust re-checks the new step's goal right away, so a goal that is
+    /// already met (auto-solve finished first, say) does not wait for the next edit.
+    callback step_entered();
+    /// Rust reports a reached goal here with the step's completion key. Only the
+    /// current step's own key counts, a manual step never completes this way, and a
+    /// step already marked done ignores repeats.
+    callback notify(string);
+    notify(ev) => {
+        if root.open && !root.step_done && !root.current_is_manual && root.current.completion == ev {
+            root.step_done = true;
+        }
+    }
+    /// The end of the "Done" moment -- called by `GuideAdvanceTimer`.
+    callback complete_advance();
+    complete_advance => {
+        if root.step_done {
+            root.next();
+        }
     }
     callback next();
     next => {
+        root.step_done = false;
         if root.has_next {
             root.step_index += 1;
+            root.step_entered();
         } else {
             root.open = false;
         }
     }
     callback back();
     back => {
+        root.step_done = false;
         if root.has_back {
             root.step_index -= 1;
         }
     }
     callback close();
     close => {
+        root.step_done = false;
         root.open = false;
     }
 }

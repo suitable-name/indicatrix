@@ -1,31 +1,28 @@
 import { DiagramItem, AngleItem, FileItem, DiagramDetailData, OpticalMetricsData, LightingPresetItem, WorkerItem, PreviewThumbnails, PerformanceFilterRow, EditorTierItem, OptimizeResultRow, GearRemapRow } from "types.slint";
-import { NewDesignDialog } from "components/new_design_dialog.slint";
 import { Theme } from "theme.slint";
 import { HeaderToolbar } from "components/header.slint";
 import { DiagramListView, CollapsedLibraryRail } from "components/diagram_list.slint";
 import { DetailHeaderView } from "components/detail_header.slint";
-import { MetadataEditorDialog } from "components/metadata_editor_dialog.slint";
 import { GemViewportView } from "components/gem_viewport.slint";
 import { CuttingTableView } from "components/cutting_table.slint";
 import { AttachmentsView } from "components/attachments_view.slint";
 import { Toast } from "components/toast.slint";
-import { PreviewBatchDialog } from "components/preview_batch_dialog.slint";
-import { TiltBatchDialog } from "components/tilt_batch_dialog.slint";
 import { DetachedRenderWindow } from "detached_render_window.slint";
 import { EditorView } from "components/editor_view.slint";
 import { EditorStatusStrip } from "components/editor_status_strip.slint";
-import { RetargetDialog, RetargetRowItem } from "components/retarget_dialog.slint";
-import { GearRemapDialog } from "components/editor_design_settings.slint";
+// `RetargetRowItem` stays imported here (not just where `RetargetDialog` is
+// used) because it is re-exported below -- see the `export { ... }` block.
+import { RetargetRowItem } from "components/retarget_dialog.slint";
 import { UndoRedoLabels } from "components/editor_command_bar.slint";
 import { SolidViewportView } from "components/solid_viewport.slint";
 import { SplitHandle } from "components/split_handle.slint";
 import { ConfirmActionDialog } from "components/confirm_action_dialog.slint";
-// Guidance layer imports: empty state, guide panel, keyboard-shortcuts overlay.
-import { EmptyState } from "components/empty_state.slint";
-import { GuidePanel } from "components/guide_panel.slint";
-import { ShortcutOverlay } from "components/shortcut_overlay.slint";
-// One-time anchor explainer card.
-import { AnchorExplainer } from "components/anchor_explainer.slint";
+// Guidance layer imports: the viewport overlay (empty state + zero-tier hint), guide panel.
+import { EditorViewportOverlay } from "components/app/viewport_overlay.slint";
+import { GuidePanel, GuideOverlayLayer } from "components/guide_panel.slint";
+// Split-out pieces of this file -- see each component's own doc comment.
+import { TabViewPillRow } from "components/app/tab_pill_row.slint";
+import { GlobalDialogsOverlay } from "components/app/global_dialogs.slint";
 
 import { SolidPreviewModel } from "models/solid_preview.slint";
 import { ActivityModel, ActivityItem } from "models/activity.slint";
@@ -39,7 +36,7 @@ import { TiltModel, TiltVideoExportModel } from "models/tilt.slint";
 import { LibraryModel } from "models/library.slint";
 import { EditorModel } from "models/editor.slint";
 // Guidance layer globals: see each file's own doc comment.
-import { GuideModel, GuideStepData } from "models/guide.slint";
+import { GuideModel, GuideStepData, GuideAllow } from "models/guide.slint";
 import { ShortcutsModel, ShortcutItem } from "models/shortcuts.slint";
 import { TemplateGalleryModel, TemplateCardData } from "models/templates.slint";
 
@@ -52,7 +49,7 @@ export {
     // ActivityModel: the app's background-activity/status model -- see ui/models/activity.slint.
     ActivityModel, ActivityItem,
     // Guidance globals: guide, keyboard shortcuts overlay, template gallery -- see each global's doc comment.
-    GuideModel, GuideStepData, ShortcutsModel, ShortcutItem, TemplateGalleryModel, TemplateCardData
+    GuideModel, GuideStepData, GuideAllow, ShortcutsModel, ShortcutItem, TemplateGalleryModel, TemplateCardData
 }
 
 // --- Sizing notes -----------------------------------------------------------
@@ -194,6 +191,10 @@ export component MainWindow inherits Window {
     changed active_tab => { root.sync_library_auto_collapse(); }
 
     // --- MENU BAR ---
+    // NOTE: the Slint compiler requires `MenuBar` to be a direct child of a
+    // `Window`-inheriting component ("MenuBar can only be within a Window
+    // element") -- it cannot be moved into a separate component the way the
+    // tab-pill row and the dialog overlay below were, so it stays here.
     MenuBar {
         Menu {
             title: "File";
@@ -206,17 +207,17 @@ export component MainWindow inherits Window {
                 // start a brand-new design (discarding the current one),
                 // unlike the inspector's unrelated "New Tier" button.
                 title: "New Design... (Ctrl+N)";
-                enabled: EditorModel.enabled;
+                enabled: EditorModel.enabled && GuideModel.allows_new_design();
                 activated => { EditorModel.new_dialog_open = true; }
             }
             MenuItem {
                 title: "Open Native... (Ctrl+O)";
-                enabled: EditorModel.enabled;
+                enabled: EditorModel.enabled && GuideModel.allows_file_ops();
                 activated => { EditorModel.open_native(); }
             }
             Menu {
                 title: "Open Recent";
-                enabled: EditorModel.enabled && root.recent_native_files.length > 0;
+                enabled: EditorModel.enabled && root.recent_native_files.length > 0 && GuideModel.allows_file_ops();
                 for path in root.recent_native_files: MenuItem {
                     title: path;
                     activated => { root.open_recent_native_file(path); }
@@ -224,17 +225,17 @@ export component MainWindow inherits Window {
             }
             MenuItem {
                 title: "Save Native (Ctrl+S)";
-                enabled: EditorModel.enabled;
+                enabled: EditorModel.enabled && GuideModel.allows_file_ops();
                 activated => { EditorModel.save_native(); }
             }
             MenuItem {
                 title: "Save Native As... (Ctrl+Shift+S)";
-                enabled: EditorModel.enabled;
+                enabled: EditorModel.enabled && GuideModel.allows_file_ops();
                 activated => { EditorModel.save_native_as(); }
             }
             MenuItem {
                 title: "Export Edited .asc";
-                enabled: EditorModel.enabled;
+                enabled: EditorModel.enabled && GuideModel.allows_file_ops();
                 activated => { EditorModel.export_asc(); }
             }
             // "Export Cutting Sheet (HTML)..."/"Export Diagram (PNG)..." live on
@@ -254,12 +255,12 @@ export component MainWindow inherits Window {
             // handoff that still needs to push it -- until then both read "".
             MenuItem {
                 title: (EditorModel.can_undo && UndoRedoLabels.undo_label != "" ? "Undo: " + UndoRedoLabels.undo_label : "Undo") + " (Ctrl+Z)";
-                enabled: EditorModel.enabled && EditorModel.can_undo;
+                enabled: EditorModel.enabled && EditorModel.can_undo && GuideModel.allows_history();
                 activated => { EditorModel.undo(); }
             }
             MenuItem {
                 title: (EditorModel.can_redo && UndoRedoLabels.redo_label != "" ? "Redo: " + UndoRedoLabels.redo_label : "Redo") + " (Ctrl+Y)";
-                enabled: EditorModel.enabled && EditorModel.can_redo;
+                enabled: EditorModel.enabled && EditorModel.can_redo && GuideModel.allows_history();
                 activated => { EditorModel.redo(); }
             }
         }
@@ -292,13 +293,16 @@ export component MainWindow inherits Window {
             // Shift-modified first: the plain branch below excludes Shift, so the
             // order is not load-bearing, but reading them adjacently is. Slint
             // reports a shifted letter in upper case, hence "S" here and "s" below.
+            // Every action arm also checks the same `GuideModel.allows_*()` helper
+            // as its button, so a control the worked-example guide locks stays
+            // locked from the keyboard too (the key is still swallowed).
             if (event.modifiers.control || event.modifiers.meta) && event.modifiers.shift && event.text == "S" {
-                if EditorModel.enabled {
+                if EditorModel.enabled && GuideModel.allows_file_ops() {
                     EditorModel.save_native_as();
                 }
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "s" {
-                if EditorModel.enabled {
+                if EditorModel.enabled && GuideModel.allows_file_ops() {
                     EditorModel.save_native();
                 }
                 return accept;
@@ -309,13 +313,13 @@ export component MainWindow inherits Window {
                 // explanation, while the caret sat unmoved in the field. See
                 // `EditorModel.text_focus`'s own doc comment for what sets this
                 // and which files still need to.
-                if EditorModel.enabled && !EditorModel.text_focus {
+                if EditorModel.enabled && !EditorModel.text_focus && GuideModel.allows_history() {
                     EditorModel.undo();
                 }
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && (event.text == "y" || (event.modifiers.shift && event.text == "Z")) {
                 // Same guard as Ctrl+Z above.
-                if EditorModel.enabled && !EditorModel.text_focus {
+                if EditorModel.enabled && !EditorModel.text_focus && GuideModel.allows_history() {
                     EditorModel.redo();
                 }
                 return accept;
@@ -330,20 +334,21 @@ export component MainWindow inherits Window {
                 }
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "n" {
-                if EditorModel.enabled {
+                if EditorModel.enabled && GuideModel.allows_new_design() {
                     EditorModel.new_dialog_open = true;
                 }
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "o" {
-                if EditorModel.enabled {
+                if EditorModel.enabled && GuideModel.allows_file_ops() {
                     EditorModel.open_native();
                 }
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "e" {
                 // Toggles the 3D Gem tab's Live Render/Edit pill --
                 // only meaningful (and only offered as a pill at all) while the Edit
-                // sub-tab exists.
-                if EditorModel.enabled {
+                // sub-tab exists. Back to Edit always works; over to Live Render
+                // only while the guide leaves the view tabs unlocked.
+                if EditorModel.enabled && (root.render_view_tab == 0 || GuideModel.allows_view_tabs()) {
                     root.render_view_tab = root.render_view_tab == 0 ? 1 : 0;
                     root.render_view_tab_changed(root.render_view_tab);
                 }
@@ -353,18 +358,22 @@ export component MainWindow inherits Window {
                 root.active_tab_changed(0);
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && event.text == "2" {
-                root.active_tab = 1;
-                root.active_tab_changed(1);
+                if GuideModel.allows_view_tabs() {
+                    root.active_tab = 1;
+                    root.active_tab_changed(1);
+                }
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && event.text == "3" {
-                root.active_tab = 2;
-                root.active_tab_changed(2);
+                if GuideModel.allows_view_tabs() {
+                    root.active_tab = 2;
+                    root.active_tab_changed(2);
+                }
                 return accept;
             } else if event.text == Key.F5 {
                 // Documented (appendix-b-keyboard-shortcuts.md, 05-solving.md); gated the
                 // same way the command bar's own Solve button is (`editor_command_bar.slint`)
                 // so F5 cannot start a second solve on top of one already running.
-                if EditorModel.enabled && !EditorModel.solve_running {
+                if EditorModel.enabled && !EditorModel.solve_running && GuideModel.allows_solve() {
                     EditorModel.solve();
                 }
                 return accept;
@@ -456,176 +465,16 @@ export component MainWindow inherits Window {
                         window_width: root.width;
                     }
 
-                    // Catalogue tab pills (3D Spectral Preview / Cutting Schedule /
-                    // Files & Downloads) share one 28px row with the Live Render/Edit/
-                    // Pop Out view pills. The row is always visible (tabs must be
-                    // reachable from every tab), with the view pills as a conditional
-                    // right-hand cluster shown only `if root.active_tab ==
-                    // 0` (they are meaningless on Cutting Schedule/Files).
-                    HorizontalLayout {
-                        height: 28px;
-                        spacing: 6px;
-
-                        Rectangle {
-                            height: 28px;
-                            background: root.active_tab == 0 ? Theme.primary : (tabpill0_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-                            border-radius: Theme.radius-sm;
-                            border-width: 1px;
-                            border-color: root.active_tab == 0 ? Theme.accent-cyan : Theme.border-subtle;
-                            tabpill0_touch := TouchArea { clicked => { root.active_tab = 0; root.active_tab_changed(0); } }
-                            HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                alignment: center;
-                                spacing: 6px;
-                                Image { source: @image-url("icons/gem.svg"); colorize: root.active_tab == 0 ? Theme.text-on-primary : Theme.text-secondary; width: 11px; height: 11px; vertical-alignment: center; }
-                                Text { text: "3D Spectral Preview (1)"; font-size: 11px; font-weight: 600; color: root.active_tab == 0 ? Theme.text-on-primary : Theme.text-secondary; vertical-alignment: center; }
-                            }
-                        }
-
-                        Rectangle {
-                            height: 28px;
-                            background: root.active_tab == 1 ? Theme.primary : (tabpill1_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-                            border-radius: Theme.radius-sm;
-                            border-width: 1px;
-                            border-color: root.active_tab == 1 ? Theme.accent-cyan : Theme.border-subtle;
-                            tabpill1_touch := TouchArea { clicked => { root.active_tab = 1; root.active_tab_changed(1); } }
-                            HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                alignment: center;
-                                spacing: 6px;
-                                Image { source: @image-url("icons/ruler.svg"); colorize: root.active_tab == 1 ? Theme.text-on-primary : Theme.text-secondary; width: 11px; height: 11px; vertical-alignment: center; }
-                                Text { text: "Cutting Schedule (2)"; font-size: 11px; font-weight: 600; color: root.active_tab == 1 ? Theme.text-on-primary : Theme.text-secondary; vertical-alignment: center; }
-                            }
-                        }
-
-                        Rectangle {
-                            height: 28px;
-                            background: root.active_tab == 2 ? Theme.primary : (tabpill2_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-                            border-radius: Theme.radius-sm;
-                            border-width: 1px;
-                            border-color: root.active_tab == 2 ? Theme.accent-cyan : Theme.border-subtle;
-                            tabpill2_touch := TouchArea { clicked => { root.active_tab = 2; root.active_tab_changed(2); } }
-                            HorizontalLayout {
-                                padding-left: 12px;
-                                padding-right: 12px;
-                                alignment: center;
-                                spacing: 6px;
-                                Image { source: @image-url("icons/folder.svg"); colorize: root.active_tab == 2 ? Theme.text-on-primary : Theme.text-secondary; width: 11px; height: 11px; vertical-alignment: center; }
-                                Text { text: "Files & Downloads (3)"; font-size: 11px; font-weight: 600; color: root.active_tab == 2 ? Theme.text-on-primary : Theme.text-secondary; vertical-alignment: center; }
-                            }
-                        }
-
-                        Rectangle { horizontal-stretch: 1; }
-
-                        // View pills -- Live Render/Edit sub-tab + Pop Out -- only
-                        // meaningful while looking at the 3D Preview tab. Kept in
-                        // `app.slint` rather than `GemViewportView`'s own top control
-                        // row: `GemViewportView` isn't instantiated at all while
-                        // `root.live_render_detached` (see the placeholder `Rectangle`
-                        // further down, "Dock Back" instead of the viewport), so these
-                        // pills would vanish from the main window exactly when they
-                        // matter most -- getting back from a popped-out Live Render, or
-                        // over to Edit, has no other control on this window
-                        // (`detached_render_window.slint` carries no return affordance
-                        // of its own).
-                        if root.active_tab == 0: HorizontalLayout {
-                            spacing: 6px;
-
-                            Rectangle {
-                                height: 28px;
-                                background: root.render_view_tab == 0 ? Theme.primary : (live_render_tab_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-                                border-radius: Theme.radius-sm;
-                                border-width: 1px;
-                                border-color: root.render_view_tab == 0 ? Theme.accent-cyan : Theme.border-subtle;
-                                live_render_tab_touch := TouchArea {
-                                    clicked => { root.render_view_tab = 0; root.render_view_tab_changed(0); }
-                                }
-                                HorizontalLayout {
-                                    padding-left: 12px;
-                                    padding-right: 12px;
-                                    alignment: center;
-                                    spacing: 6px;
-                                    Image {
-                                        source: @image-url("icons/gem.svg");
-                                        colorize: root.render_view_tab == 0 ? Theme.text-on-primary : Theme.text-secondary;
-                                        width: 11px;
-                                        height: 11px;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: "Live Render";
-                                        font-size: 11px;
-                                        font-weight: 600;
-                                        color: root.render_view_tab == 0 ? Theme.text-on-primary : Theme.text-secondary;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-
-                            if EditorModel.enabled: Rectangle {
-                                height: 28px;
-                                background: root.render_view_tab == 1 ? Theme.primary : (edit_tab_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-                                border-radius: Theme.radius-sm;
-                                border-width: 1px;
-                                border-color: root.render_view_tab == 1 ? Theme.accent-cyan : Theme.border-subtle;
-                                edit_tab_touch := TouchArea {
-                                    clicked => { root.render_view_tab = 1; root.render_view_tab_changed(1); }
-                                }
-                                HorizontalLayout {
-                                    padding-left: 12px;
-                                    padding-right: 12px;
-                                    alignment: center;
-                                    spacing: 6px;
-                                    Image {
-                                        source: @image-url("icons/pencil.svg");
-                                        colorize: root.render_view_tab == 1 ? Theme.text-on-primary : Theme.text-secondary;
-                                        width: 11px;
-                                        height: 11px;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: "Edit";
-                                        font-size: 11px;
-                                        font-weight: 600;
-                                        color: root.render_view_tab == 1 ? Theme.text-on-primary : Theme.text-secondary;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-
-                            if root.render_view_tab == 0: Rectangle {
-                                height: 28px;
-                                background: root.live_render_detached ? Theme.accent-emerald : (detach_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
-                                border-radius: Theme.radius-sm;
-                                border-width: 1px;
-                                border-color: root.live_render_detached ? Theme.accent-emerald : Theme.border-subtle;
-                                detach_touch := TouchArea {
-                                    clicked => { root.live_render_detach_toggled(!root.live_render_detached); }
-                                }
-                                HorizontalLayout {
-                                    padding-left: 10px;
-                                    padding-right: 10px;
-                                    alignment: center;
-                                    spacing: 6px;
-                                    Image {
-                                        source: @image-url("icons/arrow-up-right.svg");
-                                        colorize: root.live_render_detached ? Theme.text-on-primary : Theme.text-secondary;
-                                        width: 11px;
-                                        height: 11px;
-                                        vertical-alignment: center;
-                                    }
-                                    Text {
-                                        text: root.live_render_detached ? "Popped Out" : "Pop Out";
-                                        font-size: 11px;
-                                        font-weight: 600;
-                                        color: root.live_render_detached ? Theme.text-on-primary : Theme.text-secondary;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
+                    // Catalogue tab pills + the Live Render/Edit/Pop Out view pills --
+                    // see `TabViewPillRow`'s own doc comment
+                    // (`components/app/tab_pill_row.slint`) for why this is split out.
+                    TabViewPillRow {
+                        active_tab <=> root.active_tab;
+                        active_tab_changed(v) => { root.active_tab_changed(v); }
+                        render_view_tab <=> root.render_view_tab;
+                        render_view_tab_changed(v) => { root.render_view_tab_changed(v); }
+                        live_render_detached: root.live_render_detached;
+                        live_render_detach_toggled(v) => { root.live_render_detach_toggled(v); }
                     }
 
                     // Tab 0: 3D Preview
@@ -740,18 +589,13 @@ export component MainWindow inherits Window {
                                         height: 100%;
                                     }
 
-                                    // A brand-new (or freshly "New"-ed) zero-tier design
-                                    // would otherwise show `solid_viewport.slint`'s own
-                                    // "Solve to preview" message underneath -- true of a
-                                    // design that failed to solve, but misleading here:
-                                    // there is nothing to solve yet. `solid_viewport.slint`
-                                    // itself belongs to a different component, so this is
-                                    // an opaque overlay drawn OVER it from the wrapping
-                                    // `Rectangle` this file already owns, rather than
-                                    // a change to that message's own condition. Shows a
-                                    // real card grid with actions (`EmptyState`) -- see
-                                    // that component's own doc comment.
-                                    if EditorModel.enabled && EditorModel.tiers.length == 0: EmptyState {
+                                    // Drawn OVER `solid_viewport.slint` from the wrapping
+                                    // `Rectangle` this file owns: the empty-state card grid
+                                    // until a real design is installed
+                                    // (`EditorModel.has_design`), then a small non-blocking
+                                    // "no tiers yet" hint while the design has zero tiers --
+                                    // see `EditorViewportOverlay`'s own doc comment.
+                                    EditorViewportOverlay {
                                         width: 100%;
                                         height: 100%;
                                         recent_native_files: root.recent_native_files;
@@ -759,8 +603,13 @@ export component MainWindow inherits Window {
                                     }
                                 }
 
-                                if GuideModel.open: GuidePanel {
-                                    window_height: root.height;
+                                // Docked guide column. Wrapped so it can never cap
+                                // this row's height (see `GuidePanel`'s doc comment):
+                                // expanded it stretches to the full row; collapsed,
+                                // the stretchy filler below the pill takes the rest.
+                                if GuideModel.open: VerticalLayout {
+                                    GuidePanel { vertical-stretch: GuideModel.collapsed ? 0 : 1; }
+                                    Rectangle { vertical-stretch: GuideModel.collapsed ? 1 : 0; }
                                 }
 
                                 editor_split_handle := SplitHandle {
@@ -801,12 +650,11 @@ export component MainWindow inherits Window {
                                         height: 100%;
                                     }
 
-                                    // Same empty-state overlay as the wide (>=900px)
-                                    // layout's own copy above -- see that Rectangle's doc
-                                    // comment for why it is an overlay rather than a
-                                    // `solid_viewport.slint` change. No `GuidePanel` here:
-                                    // there is no spare column in the narrow stack.
-                                    if EditorModel.enabled && EditorModel.tiers.length == 0: EmptyState {
+                                    // Same overlay as the wide (>=900px) layout's copy
+                                    // above. No `GuidePanel` column here -- the narrow
+                                    // stack has no spare width, so the guide floats
+                                    // instead (`GuideOverlayLayer`, below).
+                                    EditorViewportOverlay {
                                         width: 100%;
                                         height: 100%;
                                         recent_native_files: root.recent_native_files;
@@ -832,254 +680,25 @@ export component MainWindow inherits Window {
             }
         }
 
-        // Dialogs:
-        //
-        // `NewDesignDialog`/`RetargetDialog`/`MetadataEditorDialog`
-        // are plain Rectangles with no key handling of their own -- wrapped here in
-        // a `FocusScope` that takes focus on mount, maps Escape to that dialog's own
-        // cancel/close path and Return to its primary action, and swallows every
-        // other key (`return accept`) so `global_shortcuts` above cannot fire on the
-        // design underneath while one of these is open (e.g. Ctrl+S saving over the
-        // New Design form). `Key.Tab` is let through unhandled so the window's
-        // built-in focus-cycling still moves between the dialog's own fields/
-        // buttons. `MaterialEditorDialog` and `ExportDialog` need the identical
-        // treatment but are mounted in `gem_viewport.slint:808`/`:822` instead; the
-        // fingerprint-mismatch/unsaved-changes/window-close guards below already get
-        // it for free from `ConfirmActionDialog` itself (`confirm_action_dialog.slint`).
-        if EditorModel.new_dialog_open: FocusScope {
+        // The guide's advance timer, and its floating panel wherever the wide Edit
+        // layout's own `GuidePanel` column (above) does not exist -- the narrow
+        // stack, Live Render, the catalogue tabs. Before the dialogs, so they cover it.
+        GuideOverlayLayer {
+            x: 0px;
+            y: 0px;
             width: 100%;
             height: 100%;
-            z: 400;
-            init => { self.focus(); }
-            key-pressed(event) => {
-                if event.text == Key.Escape {
-                    EditorModel.new_dialog_open = false;
-                } else if event.text == Key.Return {
-                    EditorModel.new_dialog_open = false;
-                    EditorModel.new_design_create(
-                        EditorModel.new_preform_shape_index,
-                        EditorModel.new_preform_half_width,
-                        EditorModel.new_preform_length_over_width,
-                        EditorModel.new_preform_depth,
-                        EditorModel.new_gear_index,
-                        EditorModel.new_gear_custom_text,
-                        EditorModel.new_symmetry_order_text,
-                        EditorModel.new_mirror,
-                        EditorModel.new_material_index,
-                        EditorModel.new_template_index
-                    );
-                } else if event.text == Key.Tab {
-                    return reject;
-                }
-                return accept;
-            }
-
-            NewDesignDialog {
-                width: 100%;
-                height: 100%;
-            }
+            docked: root.active_tab == 0 && root.render_view_tab == 1 && EditorModel.enabled && root.width >= 900px;
         }
 
-        if RetargetModel.is_open: FocusScope {
-            width: 100%;
-            height: 100%;
-            z: 400;
-            init => { self.focus(); }
-            key-pressed(event) => {
-                if event.text == Key.Escape {
-                    if !RetargetModel.is_busy {
-                        RetargetModel.is_open = false;
-                        RetargetModel.close();
-                    }
-                } else if event.text == Key.Return {
-                    if RetargetModel.rows.length > 0 && RetargetModel.anchored_tier_errors.length == 0
-                            && RetargetModel.solve_error == "" && !RetargetModel.is_busy {
-                        RetargetModel.apply();
-                    }
-                } else if event.text == Key.Tab {
-                    return reject;
-                }
-                return accept;
-            }
-
-            RetargetDialog {
-                width: 100%;
-                height: 100%;
-            }
-        }
-
-        // The gear-remap confirmation is a modal dialog (rather than an inline
-        // section inside `EditorDesignSettings`, `editor_design_settings.slint`)
-        // so it cannot be missed entirely behind other work. Same
-        // wrapping-`FocusScope` idiom as `RetargetDialog`
-        // above: `GearRemapDialog` already has its own internal Escape/Return
-        // handling, but this outer layer additionally swallows every other key
-        // (e.g. Ctrl+S) so it cannot fire on the design underneath while this
-        // modal is open.
-        if EditorModel.gear_remap_open: FocusScope {
-            width: 100%;
-            height: 100%;
-            z: 400;
-            init => { self.focus(); }
-            key-pressed(event) => {
-                if event.text == Key.Escape {
-                    EditorModel.gear_remap_cancel();
-                } else if event.text == Key.Return {
-                    EditorModel.gear_remap_confirm();
-                } else if event.text == Key.Tab {
-                    return reject;
-                }
-                return accept;
-            }
-
-            GearRemapDialog {
-                width: 100%;
-                height: 100%;
-            }
-        }
-
-        if LibraryModel.metadata_editor_open: FocusScope {
-            width: 100%;
-            height: 100%;
-            z: 400;
-            init => { self.focus(); }
-            key-pressed(event) => {
-                // Enter-to-save is not wired here: `MetadataEditorDialog::save`
-                // needs its own internal draft properties (title_draft/shape_draft/
-                // .../volume_draft), which the dialog resolves itself
-                // (`selected_shape` there is a plain, not externally readable,
-                // property), so that half stays with the dialog's own file.
-                if event.text == Key.Escape {
-                    LibraryModel.metadata_editor_open = false;
-                } else if event.text == Key.Tab {
-                    return reject;
-                }
-                return accept;
-            }
-
-            MetadataEditorDialog {
-                width: 100%;
-                height: 100%;
-            }
-        }
-
-        if BatchModel.preview_visible: PreviewBatchDialog {
-            width: 100%;
-            height: 100%;
-            z: 400;
-        }
-
-        if BatchModel.tilt_visible: TiltBatchDialog {
-            width: 100%;
-            height: 100%;
-            z: 400;
-        }
-
-        // The Keyboard Shortcuts overlay (Help menu, or `?` --
-        // `global_shortcuts` above). Same wrapping-`FocusScope` Escape
-        // convention as `NewDesignDialog`/
-        // `RetargetModel` above.
-        if ShortcutsModel.open: FocusScope {
-            width: 100%;
-            height: 100%;
-            z: 400;
-            init => { self.focus(); }
-            key-pressed(event) => {
-                if event.text == Key.Escape {
-                    ShortcutsModel.close();
-                } else if event.text == Key.Tab {
-                    return reject;
-                }
-                return accept;
-            }
-
-            ShortcutOverlay {
-                width: 100%;
-                height: 100%;
-            }
-        }
-
-        // Unsaved-changes guard for New/Load Selected/Open Native -- see
-        // `EditorModel.unsaved_dialog_*`'s own doc comment.
-        // Deliberately last-but-one in this stack: it only
-        // appears at startup, when none of the others can be open.
-        if EditorModel.startup_restore_path != "": ConfirmActionDialog {
-            heading: EditorModel.startup_restore_is_autosave
-                ? "Recover unsaved work?"
-                : "Reopen last design?";
-            message: EditorModel.startup_restore_is_autosave
-                ? "The previous session ended without saving. A recovery file is still on disk:\n" + EditorModel.startup_restore_path
-                : EditorModel.startup_restore_path;
-            primary_label: EditorModel.startup_restore_is_autosave ? "Recover" : "Reopen";
-            secondary_label: "Not now";
-            primary => { EditorModel.startup_restore_accept(); }
-            secondary => { EditorModel.startup_restore_dismiss(); }
-            cancel => { EditorModel.startup_restore_dismiss(); }
-        }
-
-        if EditorModel.unsaved_dialog_open: ConfirmActionDialog {
-            width: 100%;
-            height: 100%;
-            z: 500;
-            heading: "Unsaved Changes";
-            message: EditorModel.unsaved_dialog_message;
-            primary_label: "Save";
-            secondary_label: "Discard";
-            primary => { EditorModel.unsaved_dialog_save(); }
-            secondary => { EditorModel.unsaved_dialog_discard(); }
-            cancel => {
-                EditorModel.unsaved_dialog_open = false;
-                EditorModel.unsaved_dialog_cancel();
-            }
-        }
-
-        // The native-load fingerprint-mismatch choice -- see
-        // `EditorModel.mismatch_dialog_*`'s own doc comment.
-        if EditorModel.mismatch_dialog_open: ConfirmActionDialog {
-            width: 100%;
-            height: 100%;
-            z: 500;
-            heading: "Native Sidecar Out of Sync";
-            message: "The paired .asc file was changed outside the editor since this native file was last saved, so its per-tier meet constraints and detached facets can no longer be trusted to line up by position. Apply them anyway, or continue with the .asc alone?";
-            primary_label: EditorModel.mismatch_dialog_can_apply ? "Apply Sidecar Anyway" : "";
-            secondary_label: "Use .asc Only";
-            primary => { EditorModel.mismatch_dialog_apply_anyway(); }
-            secondary => { EditorModel.mismatch_dialog_asc_only(); }
-            cancel => {
-                EditorModel.mismatch_dialog_open = false;
-                EditorModel.mismatch_dialog_cancel();
-            }
-        }
-
-        // Replaces the two blocking `rfd::MessageDialog` Yes/No prompts
-        // `gui::editor::native_io` would otherwise show on the UI thread ("not a
-        // closed solid, write anyway?" and "overwrite an unrelated sidecar?") --
-        // see `EditorModel.write_confirm_*`'s own doc comment. No `secondary_label`
-        // set: Cancel alone is the decline.
-        if EditorModel.write_confirm_open: ConfirmActionDialog {
-            width: 100%;
-            height: 100%;
-            z: 500;
-            heading: EditorModel.write_confirm_heading;
-            message: EditorModel.write_confirm_message;
-            primary_label: EditorModel.write_confirm_primary_label;
-            secondary_label: "";
-            show_dont_ask: EditorModel.write_confirm_show_dont_ask;
-            dont_ask <=> EditorModel.write_confirm_dont_ask;
-            primary => { EditorModel.write_confirm_accept(); }
-            cancel => {
-                EditorModel.write_confirm_open = false;
-                EditorModel.write_confirm_cancel();
-            }
-        }
-
-        // The one-time anchor explainer card -- see
-        // `EditorModel.anchor_explainer_open`'s own doc comment.
-        if EditorModel.anchor_explainer_open: AnchorExplainer {
-            width: 100%;
-            height: 100%;
-            z: 500;
-        }
+        // Every dialog driven only by a global model -- see
+        // `GlobalDialogsOverlay`'s own doc comment
+        // (`components/app/global_dialogs.slint`) for the full list and why this
+        // is split out. `MaterialEditorDialog` and `ExportDialog` need the
+        // identical treatment but are mounted in `gem_viewport.slint` instead.
+        // `close_confirm_open`'s dialog and `Toast` below stay here since both
+        // read `MainWindow`'s own local properties/callbacks.
+        GlobalDialogsOverlay {}
 
         // Window-close unsaved-changes guard -- see `close_confirm_open`'s own doc
         // comment. Its own Save/Discard buttons call straight into `MainWindow`'s own

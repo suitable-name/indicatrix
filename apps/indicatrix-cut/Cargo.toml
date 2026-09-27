@@ -41,6 +41,9 @@ indicatrix = { workspace = true, features = ["hdr"] }
 # so a LIBRARY-ONLY `indicatrix-worker` can avoid compiling `indicatrix` at all; a viewer that
 # renders has no such option and would fail to compile without it.
 indicatrix-net = { workspace = true, features = ["render"] }
+# `SampleCursor` (re-exported from `bridge::sample_cursor`): the disjoint sample-range
+# claim point, shared with the render coordinator's lane pool.
+indicatrix-dispatch = { workspace = true }
 # The editor-core crate -- preform, editable cutting schedule, and undo/redo, see
 # `indicatrix-cut-core`'s own module doc comment. A plain, non-optional dependency:
 # an ordinary build always wires up the Edit tab, so nothing gates this crate

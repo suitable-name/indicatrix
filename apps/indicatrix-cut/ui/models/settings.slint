@@ -23,7 +23,7 @@ export global SettingsModel {
     in-out property <float> inclusion_sigma_s: 0.0;
     // Crystal-axis orientation override, off ("as cut") by default. `c_axis_tilt_deg`
     // (0-90 from the table normal) and `c_axis_azimuth_deg` (0-360 around the table
-    // normal) only apply while enabled (`gui::c_axis` for the angle-to-vector mapping).
+    // normal) only apply while enabled (`gui::optics::c_axis` for the angle-to-vector mapping).
     // `c_axis_override_available` (Rust-driven) is `false` for an isotropic material,
     // whose optic axis is meaningless; `settings_dialog.slint` greys the control out
     // rather than letting the user drag a slider that does nothing.
@@ -56,6 +56,10 @@ export global SettingsModel {
     // Live rendering's Local/Remote/Local+Remote choice once the camera settles. `2`
     // (Local+Remote) matches `LiveComputeTarget`'s own `Default`.
     in-out property <int> live_compute_target_index: 2;
+    // Live transfer: 0 = Full data (default; float deltas, combined
+    // with local samples), 1 = Final picture (finished, denoised frames from the
+    // remote; the settled image is remote-only). Persisted on the remote endpoint.
+    in-out property <int> live_transfer_index: 0;
     // Local live-rendering CPU/CPU+GPU/GPU choice. `1` (CPU+GPU) matches
     // `LocalComputeTarget`'s own `Default`. Only shown on a `gpu`-feature build
     // (`gpu_build` below).
@@ -96,6 +100,8 @@ export global SettingsModel {
     callback local_preview_scale_changed(int);
     // Carries the pill's clicked index directly (`gui::remote::live_compute_target_from_index`).
     callback live_compute_target_changed(int);
+    // Carries the pill's clicked index directly (`LiveTransfer::from_index`).
+    callback live_transfer_changed(int);
     // Carries the pill's clicked index directly (`gui::local_compute_target_from_index`).
     callback local_compute_target_changed(int);
     callback bounces_changed(int);

@@ -2,6 +2,11 @@ import { Theme } from "../theme.slint";
 import { ComboBox, Slider, LineEdit } from "std-widgets.slint";
 import { ViewportModel } from "../models/viewport.slint";
 import { ConfirmActionDialog } from "confirm_action_dialog.slint";
+// Split-out sections of this dialog -- see each component's own doc comment.
+import { MaterialTemplateSelector } from "material_editor/template_selector.slint";
+import { MaterialOpticsSliders } from "material_editor/optics_sliders.slint";
+import { MaterialCrystalClassification } from "material_editor/crystal_classification.slint";
+import { MaterialColorPresets } from "material_editor/color_presets.slint";
 
 export component MaterialEditorDialog inherits Rectangle {
     // Delete gates behind an explicit "Are you sure" step, the same modal idiom
@@ -194,16 +199,6 @@ export component MaterialEditorDialog inherits Rectangle {
     // <= n_gamma) by construction rather than by a separate rejected-on-save check.
     in-out property <float> biaxial_delta_beta_alpha_val: 0.0;
 
-    property <[string]> crystal_system_options: [
-        "Cubic", "Tetragonal", "Hexagonal", "Trigonal", "Orthorhombic", "Monoclinic", "Triclinic"
-    ];
-    // Index 3/4 (Biaxial +/-) must stay last -- `is_biaxial` below reads the index
-    // range, and `gui::crystal_optics::OPTICAL_CHARACTERS` on the Rust side lists the
-    // same five in this same order.
-    property <[string]> optical_character_options: [
-        "Isotropic", "Uniaxial (+)", "Uniaxial (\u{2212})", "Biaxial (+)", "Biaxial (\u{2212})"
-    ];
-
     property <bool> is_biaxial: root.selected_optical_character_idx >= 3;
 
     // Physical validity of the character/birefringence combination: this dialog
@@ -359,433 +354,56 @@ export component MaterialEditorDialog inherits Rectangle {
 
             Rectangle { height: 1px; background: Theme.surface-raised; }
 
-            // 2. Base Template Selector & Name Input
-            HorizontalLayout {
-                spacing: 10px;
-
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 4px;
-                    Text { text: "Load Preset Template:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    
-                    Rectangle {
-                        height: 32px;
-                        background: Theme.surface-raised;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: Theme.border-dialog;
-
-                        ComboBox {
-                            model: root.base_templates;
-                            current-index <=> root.selected_template_idx;
-                            selected(val) => {
-                                // Crystal system indices: 0 Cubic, 1 Tetragonal,
-                                // 2 Hexagonal, 3 Trigonal, 4 Orthorhombic,
-                                // 5 Monoclinic, 6 Triclinic. Optical character
-                                // indices: 0 Isotropic, 1 Uniaxial(+), 2 Uniaxial(-),
-                                // 3 Biaxial(+), 4 Biaxial(-). Both orders match
-                                // `indicatrix::optics::materials::{CrystalSystem,
-                                // OpticalCharacter}`'s own declared variant order --
-                                // see `gui::crystal_optics` on the Rust side. Values
-                                // below are each preset's REAL classification, read
-                                // from its `indicatrix` built-in entry in materials.rs.
-                                if (val == "Diamond") {
-                                    root.mat_name = "Custom Diamond";
-                                    root.ri_val = 2.417;
-                                    root.disp_val = 0.044;
-                                    root.biref_val = 0.000;
-                                    root.selected_color_preset = 0;
-                                    root.selected_crystal_system_idx = 0; // Cubic
-                                    root.selected_optical_character_idx = 0; // Isotropic
-                                    root.biaxial_delta_beta_alpha_val = 0.0;
-                                } else if (val == "Sapphire") {
-                                    root.mat_name = "Custom Sapphire";
-                                    root.ri_val = 1.768;
-                                    root.disp_val = 0.018;
-                                    root.biref_val = -0.008;
-                                    root.selected_color_preset = 1;
-                                    root.selected_crystal_system_idx = 3; // Trigonal
-                                    root.selected_optical_character_idx = 2; // Uniaxial(-)
-                                    root.biaxial_delta_beta_alpha_val = 0.0;
-                                } else if (val == "Ruby") {
-                                    root.mat_name = "Custom Ruby";
-                                    root.ri_val = 1.768;
-                                    root.disp_val = 0.018;
-                                    root.biref_val = -0.008;
-                                    root.selected_color_preset = 2;
-                                    root.selected_crystal_system_idx = 3; // Trigonal
-                                    root.selected_optical_character_idx = 2; // Uniaxial(-)
-                                    root.biaxial_delta_beta_alpha_val = 0.0;
-                                } else if (val == "Emerald") {
-                                    root.mat_name = "Custom Emerald";
-                                    root.ri_val = 1.577;
-                                    root.disp_val = 0.014;
-                                    root.biref_val = -0.006;
-                                    root.selected_color_preset = 3;
-                                    root.selected_crystal_system_idx = 2; // Hexagonal
-                                    root.selected_optical_character_idx = 2; // Uniaxial(-)
-                                    root.biaxial_delta_beta_alpha_val = 0.0;
-                                } else if (val == "Tanzanite") {
-                                    root.mat_name = "Custom Tanzanite";
-                                    root.ri_val = 1.691;
-                                    root.disp_val = 0.030;
-                                    root.biref_val = 0.013;
-                                    root.selected_color_preset = 4;
-                                    root.selected_crystal_system_idx = 4; // Orthorhombic
-                                    root.selected_optical_character_idx = 3; // Biaxial(+)
-                                    root.biaxial_delta_beta_alpha_val = 0.0070;
-                                } else if (val == "Synthetic Moissanite") {
-                                    root.mat_name = "Custom Moissanite";
-                                    root.ri_val = 2.650;
-                                    root.disp_val = 0.104;
-                                    root.biref_val = 0.043;
-                                    root.selected_color_preset = 0;
-                                    root.selected_crystal_system_idx = 2; // Hexagonal
-                                    root.selected_optical_character_idx = 1; // Uniaxial(+)
-                                    root.biaxial_delta_beta_alpha_val = 0.0;
-                                } else if (val == "Zircon") {
-                                    root.mat_name = "Custom Zircon";
-                                    root.ri_val = 1.950;
-                                    root.disp_val = 0.039;
-                                    root.biref_val = 0.059;
-                                    root.selected_color_preset = 7;
-                                    root.selected_crystal_system_idx = 1; // Tetragonal
-                                    root.selected_optical_character_idx = 1; // Uniaxial(+)
-                                    root.biaxial_delta_beta_alpha_val = 0.0;
-                                } else if (val == "Topaz") {
-                                    root.mat_name = "Custom Topaz";
-                                    root.ri_val = 1.620;
-                                    root.disp_val = 0.014;
-                                    root.biref_val = 0.008;
-                                    root.selected_color_preset = 8;
-                                    root.selected_crystal_system_idx = 4; // Orthorhombic
-                                    root.selected_optical_character_idx = 3; // Biaxial(+)
-                                    root.biaxial_delta_beta_alpha_val = 0.0024;
-                                } else if (val == "Spinel") {
-                                    root.mat_name = "Custom Spinel";
-                                    root.ri_val = 1.718;
-                                    root.disp_val = 0.020;
-                                    root.biref_val = 0.000;
-                                    root.selected_color_preset = 6;
-                                    root.selected_crystal_system_idx = 0; // Cubic
-                                    root.selected_optical_character_idx = 0; // Isotropic
-                                    root.biaxial_delta_beta_alpha_val = 0.0;
-                                } else if (val == "Quartz") {
-                                    root.mat_name = "Custom Quartz";
-                                    root.ri_val = 1.544;
-                                    root.disp_val = 0.013;
-                                    root.biref_val = 0.009;
-                                    root.selected_color_preset = 0;
-                                    root.selected_crystal_system_idx = 3; // Trigonal
-                                    root.selected_optical_character_idx = 1; // Uniaxial(+)
-                                    root.biaxial_delta_beta_alpha_val = 0.0;
-                                } else if (val == "Cubic Zirconia") {
-                                    root.mat_name = "Custom CZ";
-                                    root.ri_val = 2.160;
-                                    root.disp_val = 0.060;
-                                    root.biref_val = 0.000;
-                                    root.selected_color_preset = 0;
-                                    root.selected_crystal_system_idx = 0; // Cubic
-                                    root.selected_optical_character_idx = 0; // Isotropic
-                                    root.biaxial_delta_beta_alpha_val = 0.0;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 4px;
-                    Text { text: "Material Name:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    
-                    Rectangle {
-                        height: 32px;
-                        background: Theme.surface-raised;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: Theme.border-dialog;
-
-                        LineEdit {
-                            text <=> root.mat_name;
-                            placeholder-text: "Enter gem name...";
-                        }
-                    }
-                }
+            // 2. Base Template Selector & Name Input -- see
+            // `MaterialTemplateSelector`'s own doc comment
+            // (`material_editor/template_selector.slint`) for why this is split
+            // out.
+            MaterialTemplateSelector {
+                base_templates: root.base_templates;
+                selected_template_idx <=> root.selected_template_idx;
+                mat_name <=> root.mat_name;
+                ri_val <=> root.ri_val;
+                disp_val <=> root.disp_val;
+                biref_val <=> root.biref_val;
+                selected_color_preset <=> root.selected_color_preset;
+                selected_crystal_system_idx <=> root.selected_crystal_system_idx;
+                selected_optical_character_idx <=> root.selected_optical_character_idx;
+                biaxial_delta_beta_alpha_val <=> root.biaxial_delta_beta_alpha_val;
             }
 
-            // 3. Refractive Index (RI) Slider
-            VerticalLayout {
-                spacing: 4px;
-
-                HorizontalLayout {
-                    alignment: space-between;
-                    Rectangle {
-                        height: ri_lbl.preferred-height;
-                        Tooltip { text: @markdown("Refractive index n_d, typically 1.4-2.7 for gems (up to 3.2 here for rare high-RI materials)."); }
-                        ri_lbl := Text { text: "Refractive Index (nd):"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    }
-                    Text { text: Math.round(root.ri_val * 1000.0) / 1000.0; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
-                }
-
-                Slider {
-                    minimum: 1.30;
-                    maximum: 3.20;
-                    value <=> root.ri_val;
-                }
+            // 3/4/SG/5. Refractive Index, Dispersion, Specific Gravity and
+            // Birefringence sliders -- see `MaterialOpticsSliders`'s own doc
+            // comment (`material_editor/optics_sliders.slint`) for why this is
+            // split out.
+            MaterialOpticsSliders {
+                ri_val <=> root.ri_val;
+                disp_val <=> root.disp_val;
+                sg_val <=> root.sg_val;
+                biref_val <=> root.biref_val;
             }
 
-            // 4. Dispersion (Fire Index) Slider
-            VerticalLayout {
-                spacing: 4px;
-
-                HorizontalLayout {
-                    alignment: space-between;
-                    Rectangle {
-                        height: disp_lbl.preferred-height;
-                        Tooltip { text: @markdown("Fire-producing dispersion, typically 0.01-0.044 for gems (diamond is the high end at 0.044)."); }
-                        disp_lbl := Text { text: "Dispersion (Fire ΔnF-C):"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    }
-                    Text { text: Math.round(root.disp_val * 1000.0) / 1000.0; font-size: 11px; font-weight: 700; color: Theme.accent-purple; }
-                }
-
-                Slider {
-                    minimum: 0.000;
-                    maximum: 0.120;
-                    value <=> root.disp_val;
-                }
+            // 5b. Crystal Classification, biaxial n-beta-n-alpha, and the
+            // optics-validity/built-in-collision warnings -- see
+            // `MaterialCrystalClassification`'s own doc comment
+            // (`material_editor/crystal_classification.slint`) for why this is
+            // split out.
+            MaterialCrystalClassification {
+                selected_crystal_system_idx <=> root.selected_crystal_system_idx;
+                selected_optical_character_idx <=> root.selected_optical_character_idx;
+                biaxial_delta_beta_alpha_val <=> root.biaxial_delta_beta_alpha_val;
+                biref_val: root.biref_val;
+                is_biaxial: root.is_biaxial;
+                optics_valid: root.optics_valid;
+                optics_validation_message: root.optics_validation_message;
+                name_collides_with_builtin: root.name_collides_with_builtin;
+                mat_name: root.mat_name;
             }
 
-            // Specific gravity -- without this, a custom
-            // material's Est. Carat Weight stays empty unless a cutter separately
-            // types an SG override in the Yield panel for every design that uses it.
-            // `0.0` reads as "not recorded" on the Rust side (see `sg_val`'s own doc
-            // comment) rather than a real zero-density material.
-            VerticalLayout {
-                spacing: 4px;
-
-                HorizontalLayout {
-                    alignment: space-between;
-                    Rectangle {
-                        height: sg_lbl.preferred-height;
-                        Tooltip { text: @markdown("Specific gravity (density relative to water) -- used to estimate carat weight. Leave at 0 to leave it unrecorded."); }
-                        sg_lbl := Text { text: "Specific Gravity:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    }
-                    Text { text: root.sg_val <= 0.0001 ? "not recorded" : Math.round(root.sg_val * 100.0) / 100.0; font-size: 11px; font-weight: 700; color: Theme.accent-amber; }
-                }
-
-                Slider {
-                    minimum: 0.0;
-                    maximum: 7.0;
-                    step: 0.01;
-                    value <=> root.sg_val;
-                }
-            }
-
-            // 5. Birefringence (Double Refraction) Slider
-            VerticalLayout {
-                spacing: 4px;
-
-                HorizontalLayout {
-                    alignment: space-between;
-                    Rectangle {
-                        height: biref_lbl.preferred-height;
-                        Tooltip { text: @markdown("Double refraction, 0 for isotropic gems, typically up to 0.05 for most birefringent species (higher for e.g. zircon, calcite)."); }
-                        biref_lbl := Text { text: "Birefringence (Δn = ne - no):"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    }
-                    Text { text: Math.round(root.biref_val * 1000.0) / 1000.0; font-size: 11px; font-weight: 700; color: Theme.accent-emerald; }
-                }
-
-                Slider {
-                    minimum: -0.050;
-                    maximum: 0.100;
-                    value <=> root.biref_val;
-                }
-            }
-
-            // 5b. Crystal Classification: lets the user set crystal_system/
-            // optical_character/biaxial_delta_beta_alpha explicitly instead of only
-            // ever getting `GemMaterial::new_custom`'s two-variant inference (Cubic-
-            // or-Trigonal, Isotropic-or-Uniaxial+/-). See `gui::crystal_optics` for
-            // the Rust-side index<->enum mapping these two combos feed.
-            HorizontalLayout {
-                spacing: 10px;
-
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 4px;
-                    Text { text: "Crystal System:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    Rectangle {
-                        height: 32px;
-                        background: Theme.surface-raised;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: Theme.border-dialog;
-                        ComboBox {
-                            model: root.crystal_system_options;
-                            current-index <=> root.selected_crystal_system_idx;
-                        }
-                    }
-                }
-
-                VerticalLayout {
-                    horizontal-stretch: 1;
-                    spacing: 4px;
-                    Text { text: "Optical Character:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    Rectangle {
-                        height: 32px;
-                        background: Theme.surface-raised;
-                        border-radius: Theme.radius-sm;
-                        border-width: 1px;
-                        border-color: Theme.border-dialog;
-                        ComboBox {
-                            model: root.optical_character_options;
-                            current-index <=> root.selected_optical_character_idx;
-                        }
-                    }
-                }
-            }
-
-            // n_beta - n_alpha: only meaningful, so only shown, for a biaxial
-            // optical character. Bounded to [0, birefringence] so the slider itself
-            // cannot express an unphysical n_alpha <= n_beta <= n_gamma ordering.
-            if root.is_biaxial: VerticalLayout {
-                spacing: 4px;
-                HorizontalLayout {
-                    alignment: space-between;
-                    Text { text: "Biaxial n\u{03b2} \u{2212} n\u{03b1}:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-                    Text { text: Math.round(root.biaxial_delta_beta_alpha_val * 10000.0) / 10000.0; font-size: 11px; font-weight: 700; color: Theme.accent-purple; }
-                }
-                Slider {
-                    minimum: 0.0;
-                    maximum: Math.max(root.biref_val, 0.0001);
-                    value <=> root.biaxial_delta_beta_alpha_val;
-                }
-                // No GPU consequence to warn about: the `BiaxialIndicatrix` machinery
-                // is ported to WGSL and verified at the same Tier 2 / Tier 3 bar as
-                // every other material, so `GemMaterial::gpu_supported()` is
-                // unconditionally true and a biaxial custom material is dispatched
-                // exactly like any other -- see `indicatrix::renderer::gpu_backend`'s
-                // module doc comment for the current decline list.
-            }
-
-            if !root.optics_valid: Text {
-                text: root.optics_validation_message;
-                font-size: 9px;
-                font-weight: 600;
-                color: Theme.accent-ruby;
-                wrap: word-wrap;
-            }
-
-            // Proactive collision warning -- disables Save (see `can_save`)
-            // rather than letting the cutter find out only from an error toast
-            // after clicking.
-            if root.name_collides_with_builtin: Text {
-                text: "\u{26a0} \"" + root.mat_name + "\" is a built-in material name and cannot be used for a custom one.";
-                font-size: 9px;
-                font-weight: 600;
-                color: Theme.accent-ruby;
-                wrap: word-wrap;
-            }
-
-            // 6. Body Color & Transmission Preset Swatches
-            VerticalLayout {
-                spacing: 6px;
-                Text { text: "Gem Body Color & Transmission:"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
-
-                HorizontalLayout {
-                    spacing: 6px;
-
-                    // 0: Clear / White
-                    Rectangle {
-                        width: 40px; height: 26px; border-radius: Theme.radius-sm;
-                        background: root.selected_color_preset == 0 ? #e2e8f0 : #94a3b844;
-                        border-width: root.selected_color_preset == 0 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 0 ? Theme.accent-cyan : Theme.border-control;
-                        TouchArea { clicked => { root.selected_color_preset = 0; } }
-                        Text { text: "Clear"; font-size: 9px; font-weight: 700; color: root.selected_color_preset == 0 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-
-                    // 1: Sapphire Blue
-                    Rectangle {
-                        width: 40px; height: 26px; border-radius: Theme.radius-sm;
-                        background: #1e40af;
-                        border-width: root.selected_color_preset == 1 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 1 ? Theme.accent-cyan : #1d4ed8;
-                        TouchArea { clicked => { root.selected_color_preset = 1; } }
-                        Text { text: "Blue"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-
-                    // 2: Ruby Red
-                    Rectangle {
-                        width: 40px; height: 26px; border-radius: Theme.radius-sm;
-                        background: #be123c;
-                        border-width: root.selected_color_preset == 2 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 2 ? Theme.accent-cyan : #e11d48;
-                        TouchArea { clicked => { root.selected_color_preset = 2; } }
-                        Text { text: "Red"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-
-                    // 3: Emerald Green
-                    Rectangle {
-                        width: 40px; height: 26px; border-radius: Theme.radius-sm;
-                        background: #047857;
-                        border-width: root.selected_color_preset == 3 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 3 ? Theme.accent-cyan : #059669;
-                        TouchArea { clicked => { root.selected_color_preset = 3; } }
-                        Text { text: "Green"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-
-                    // 4: Tanzanite Violet
-                    Rectangle {
-                        width: 40px; height: 26px; border-radius: Theme.radius-sm;
-                        background: #6b21a8;
-                        border-width: root.selected_color_preset == 4 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 4 ? Theme.accent-cyan : #7c3aed;
-                        TouchArea { clicked => { root.selected_color_preset = 4; } }
-                        Text { text: "Violet"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-
-                    // 5: Canary Yellow
-                    Rectangle {
-                        width: 40px; height: 26px; border-radius: Theme.radius-sm;
-                        background: #b45309;
-                        border-width: root.selected_color_preset == 5 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 5 ? Theme.accent-cyan : #d97706;
-                        TouchArea { clicked => { root.selected_color_preset = 5; } }
-                        Text { text: "Yellow"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-
-                    // 6: Pink Spinel
-                    Rectangle {
-                        width: 40px; height: 26px; border-radius: Theme.radius-sm;
-                        background: #be185d;
-                        border-width: root.selected_color_preset == 6 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 6 ? Theme.accent-cyan : #db2777;
-                        TouchArea { clicked => { root.selected_color_preset = 6; } }
-                        Text { text: "Pink"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-
-                    // 7: Teal / Zircon
-                    Rectangle {
-                        width: 40px; height: 26px; border-radius: Theme.radius-sm;
-                        background: #0f766e;
-                        border-width: root.selected_color_preset == 7 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 7 ? Theme.accent-cyan : #0d9488;
-                        TouchArea { clicked => { root.selected_color_preset = 7; } }
-                        Text { text: "Teal"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-
-                    // 8: Amber Topaz
-                    Rectangle {
-                        width: 40px; height: 26px; border-radius: Theme.radius-sm;
-                        background: #9a3412;
-                        border-width: root.selected_color_preset == 8 ? 2px : 1px;
-                        border-color: root.selected_color_preset == 8 ? Theme.accent-cyan : #c2410c;
-                        TouchArea { clicked => { root.selected_color_preset = 8; } }
-                        Text { text: "Amber"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
-                    }
-                }
+            // 6. Body Color & Transmission Preset Swatches -- see
+            // `MaterialColorPresets`'s own doc comment
+            // (`material_editor/color_presets.slint`) for why this is split out.
+            MaterialColorPresets {
+                selected_color_preset <=> root.selected_color_preset;
             }
 
             Rectangle { height: 1px; background: Theme.surface-raised; }

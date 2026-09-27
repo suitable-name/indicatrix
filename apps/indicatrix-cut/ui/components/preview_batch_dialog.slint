@@ -6,7 +6,7 @@ import { BatchModel } from "../models/batch.slint";
 // with two-level progress). One component, two states:
 //
 // - `confirming: true` -- the "N designs -- Generate previews now?" confirm step
-//   opened by `gui::preview_batch::offer_batch_confirmation` for BOTH triggers #1
+//   opened by `gui::batch::preview::offer_batch_confirmation` for BOTH triggers #1
 //   (post-import) and #2 (missing-previews library scan); see that function's own doc
 //   comment for why both share this one code path.
 // - `confirming: false` -- the running/done progress view: two progress bars (overall
@@ -21,12 +21,12 @@ import { BatchModel } from "../models/batch.slint";
 // stray click outside it would be a worse mistake than the minor inconvenience of
 // requiring an explicit button.
 // `LiveComputeTarget::Both` runs `batch_queue::local_lane_count` local lanes plus a
-// remote dispatcher concurrently (`gui::preview_batch`'s module doc comment, "Local +
+// remote dispatcher concurrently (`gui::batch::preview`'s module doc comment, "Local +
 // remote" section), pulling ONE-VIEW items off one shared queue -- so `design_index` is
 // a COMPLETED count, not a current-item cursor. With N local lanes each possibly
 // mid-item at once, no single title/image-index pair can describe "the" local lane's
 // progress any more, so `local_active`/`local_lane_total` report a plain busy-count
-// instead (see `gui::preview_batch`'s module doc comment's "Progress with N local lanes
+// instead (see `gui::batch::preview`'s module doc comment's "Progress with N local lanes
 // (plus remote) in flight" section). `remote_title`/`remote_active` describe the REMOTE
 // lane's own in-flight item -- remote stays a single dispatcher, with no numeric
 // sub-index since a single preview render is one blocking request with nothing

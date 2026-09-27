@@ -4,7 +4,7 @@
 //! for why this shape (not `bridge::export_thread`'s, not a bespoke one) is the
 //! established pattern for a long-running, cancellable editor action in this crate.
 //!
-//! # Why this is not `gui::tilt_batch`/`gui::batch_queue`'s shape
+//! # Why this is not `gui::batch::tilt`/`gui::batch::batch_queue`'s shape
 //!
 //! Those modules distribute independent whole-design work items (a catalogue design's
 //! render, or its tilt-curve sweep) across local lanes and a remote dispatcher. A

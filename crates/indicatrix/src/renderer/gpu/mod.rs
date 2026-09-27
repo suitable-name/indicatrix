@@ -49,6 +49,10 @@ pub(crate) mod ulp;
 pub mod estimator_check;
 pub mod transport_check;
 
+// Welford/z-score/connected-component statistics and the pass criteria shared by
+// `estimator_check`'s Tier 3 image comparisons and `merge_tests`.
+pub(crate) mod z_stats;
+
 // Self-test for `shading_normal_near_edge`; kept separate (own `planes`
 // binding) from `transport_check`/`transport_functions.wgsl`.
 pub mod shading_normal_check;
@@ -68,6 +72,11 @@ mod shader_validation_tests;
 // never calls this module.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod hybrid;
+
+// Cross-backend merge tests (CPU and GPU over disjoint sample ranges, merged by summed
+// buffers and summed counts) -- see the module's own doc comment.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod merge_tests;
 
 pub use context::{
     GpuAcquireError, GpuContext, MEGAKERNEL_STORAGE_BUFFERS, WAVEFRONT_BOUNCE_TOTAL_BUFFERS,

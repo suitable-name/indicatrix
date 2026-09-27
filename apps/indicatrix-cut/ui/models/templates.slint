@@ -2,14 +2,13 @@
 // gallery's data -- pushed once at startup from
 // `gui::editor::templates::setup_template_gallery`
 // (`apps/indicatrix-cut/src/gui/editor/templates.rs`), which wraps
-// `indicatrix_cut_core::templates::TEMPLATES`. See that Rust module's own doc
-// comment for why only the first two entries are `ready` today.
+// `indicatrix_cut_core::templates::TEMPLATES`. Every entry is `ready` (selectable)
+// today -- see that Rust module's own doc comment.
 export struct TemplateCardData {
     /// The template's display name -- also what `new_design_dialog.slint`
     /// writes into `EditorModel.new_template_index`'s matching selection
-    /// (index 0 = "Empty", 1 = "Standard Round Brilliant", by position in this
-    /// list -- see `templates.rs`'s own doc comment for the still-open
-    /// integration step beyond that).
+    /// (index 0 = "Empty", index n >= 1 = `TEMPLATES[n - 1]`, by position in
+    /// this list).
     name: string,
     /// A short shape/fold description shown under the name.
     shape: string,

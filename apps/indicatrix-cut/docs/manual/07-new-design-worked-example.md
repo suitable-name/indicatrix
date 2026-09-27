@@ -8,30 +8,63 @@ brilliant-style stone: a girdle, pavilion main facets, crown main facets, and
 a table.
 
 **Shortcut: follow this chapter inside the app.** The empty state (shown
-whenever the Edit sub-tab has no design loaded) has an "Open the Worked
-Example" card that builds this exact stone in one click and opens an in-app
-guide panel walking through the same steps below, with the tier table or
-Design Settings panel highlighted for whichever step is current. Reopen the
-guide any time from Help > Guide: New Design Walkthrough. The steps below
-are still the authoritative, fuller description -- the in-app guide's own
-text is a condensed version of them.
+until a design is created, loaded or opened) has an "Open the Worked Example"
+card that opens an in-app guide panel walking through the same steps below.
+Reopen the guide any time from Help > Guide: New Design Walkthrough. The card
+does not build the stone for you: the guide starts at Step 1, where you create
+an **Empty** design yourself, and you add every tier by hand.
 
-**Note on this example.** No built-in round-brilliant template ships with
-the app -- there is no "starter design" library to pick from. Every number
-below (angles, indices) is a constructed, illustrative example consistent
-with how the tier form and constraints actually work, not a design copied
-from a file in the app. Treat the angle values as a reasonable starting
+While the guide is open:
+
+- Each step lists its actions as numbered lines, with the exact values to
+  type, and outlines the control it is about: the New Design dialog, the
+  inspector's Tier tab, the Design Settings panel, the Solve button, the tier
+  table, or the Preform tab.
+- A step moves on by itself once its goal is reached (the tier exists with the
+  right name, angle and indices; the material is applied; the design solves
+  to a closed stone; and so on). The status chip reads "Waiting for: ..."
+  until then, and "Done" for a moment before the next step. Any route to the
+  goal counts: the tier form, the quick-add buttons, an inline edit, Undo/Redo,
+  or auto-solve finishing first. **Skip step** moves on without it; **Back**
+  returns to the previous step. The two reading steps -- checking the orbits
+  (Step 8) and the closing note -- wait for **Next** (**Finish** on the closing
+  note) instead.
+- Controls the current step does not need are locked (dimmed, with a tooltip
+  saying so), and so are their keyboard shortcuts -- including the tier
+  table's per-row actions and the inspector tabs' contents. Selecting rows
+  stays possible. Closing the guide with the
+  x in its corner unlocks everything.
+- On a wide window's Edit tab the guide sits in its own column beside the tier
+  table. Everywhere else -- a narrow window, the Live Render tab, and the
+  catalogue tabs (Cutting Schedule, Files & Downloads) -- it floats near the
+  window's bottom-right corner instead, so it never disappears mid-walkthrough.
+  Drag the floating panel by its header to move it anywhere inside the window;
+  it stays where you put it.
+- The **▾** button in the guide's header collapses it (docked or floating) to a
+  small "Guide · Step N of M ▸" pill; the guide keeps running. Click the pill
+  to expand it again (a floating pill can also be dragged).
+
+The steps below are the authoritative, fuller description -- the in-app
+guide's text is a condensed version of them.
+
+**Note on this example.** Every number below (angles, indices) is a
+constructed, illustrative example consistent with how the tier form and
+constraints actually work. Treat the angle values as a reasonable starting
 point for exploration, not as an authoritative cutting angle table -- refine
-them with Solve and Optimize (Chapters 5 and 8) once the design closes.
+them with Solve and Optimize (Chapters 5 and 8) once the design closes. If you
+just want the finished stone, the New Design dialog's "Standard Round
+Brilliant" template creates a verified eight-tier round brilliant in one step.
 
 ## Step 1: The New Design dialog
 
-Click **New Design...** (or File -> New Design...) to open the New Design
-dialog. Its "Start From" section is a small template gallery -- for this
-walkthrough, leave it on **Empty** (the first card) and build the tiers by
-hand below, so you see every step; picking "Standard Round Brilliant"
-instead seeds the finished eight-tier table immediately, skipping ahead to
-Step 6:
+Click **New Design...** on the command bar (or File -> New Design..., or the
+empty state's **New Design...** card) to open the New Design dialog. Its
+"Start From" section is a small template gallery -- for this walkthrough,
+choose **Start From: Empty** (the first card) and build the tiers by hand
+below, so you see every step. Picking "Standard Round Brilliant" instead
+seeds the finished eight-tier table immediately; every template other than
+Empty also locks Index Gear, Symmetry Order and Mirror to the 96 / 8 / on its
+tier table was built for.
 
 - **Preform Shape**: Cylinder.
 - **Half-Width / Length-Width / Depth**: `1.50` / `1.00` / `1.50` -- a
@@ -44,12 +77,13 @@ Step 6:
   in the Design Settings panel (Chapter 6), including to a custom catalogue
   material.
 
-Click **Create**. This replaces the editor state with a brand-new,
-zero-tier design carrying exactly these settings via
-`indicatrix_cut_core::Design::fresh_from_spec` -- unlike the pre-A5 bare "New" action,
-every one of these five choices is yours to make up front, and every one
-remains editable afterward through the Design Settings panel (gear/symmetry/
-mirror) or the tier form itself.
+Click **Create** (or press Enter while the form is valid). This replaces the
+editor state with a brand-new, zero-tier design carrying exactly these
+settings. The viewport shows the cylinder preform with a small "New design —
+no tiers yet. Add the girdle first." hint and a **+ Add Tier** button above it. Every one of these
+choices remains editable afterward through the Design Settings panel
+(gear/symmetry/mirror) or the tier form itself. If a field does not parse, the
+dialog stays open with your values and a message naming the field.
 
 Because the gear has 96 teeth and the design is 8-fold, one representative
 facet position per repeat, evenly spaced, is:
@@ -75,7 +109,9 @@ the real one instead of a girdle, and the pavilion tiers below would end
 up bounded only by the cylinder preform's own wall rather than by a real
 girdle band.
 
-1. On the inspector's Tier tab: **Angle (deg)**: `90.0`.
+1. Click **+ Add Tier** (the hint over the viewport, the command bar, or the
+   tier table's toolbar), which opens the inspector's Tier tab in Add mode.
+   **Angle (deg)**: `90.0`.
 2. **Meets**: **Exact scale value**. Type the girdle's half-width, e.g.
    `1.0`. This is the design's mandatory anchor for the girdle block -- see
    Chapter 3's "Anchors and blocks." At 90 degrees the facet's normal points
@@ -175,11 +211,13 @@ compare the tier's Indices field against the intended list.
    note on the two). Click **Apply Yield Inputs**, then Solve again --
    Volumetric Yield and Est. Carat Weight show values, and the
    same tab's Proportions group shows table %, crown height, pavilion
-   depth, total depth, and length-to-width for this stone.
+   depth, total depth, and length-to-width for this stone. (With auto-solve
+   on, the solve happens by itself.)
 2. Switch to the Live Render tab to see the stone rendered -- with "Linked
    to design" on (the default), it already shows the Diamond you picked in
    Step 6. Pick a lighting preset and check the brilliance/windowing/
-   extinction readouts.
+   extinction readouts. (The in-app guide completes this step on Apply Yield
+   Inputs and lists the Live Render visit on its closing step.)
 
 ## Step 10: A note on manufacturability
 

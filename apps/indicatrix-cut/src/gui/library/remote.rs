@@ -32,7 +32,7 @@ use std::{
 /// Wires the "Local"/"Browse library" switch (see `remote_worker_dialog.slint`).
 ///
 /// Switching to a worker first PROBES it (handshake only, no data request -- mirrors
-/// `bridge::remote_render::test_connection`'s own shape) on a background thread, and
+/// `bridge::remote::remote_render::test_connection`'s own shape) on a background thread, and
 /// only commits `source` to [`LibrarySource::Remote`] -- updating the always-visible
 /// badge (`header.slint`) and loading that worker's filter options + initial list -- if
 /// the probe succeeds and the worker actually advertises library capacity
@@ -72,14 +72,9 @@ pub fn setup_library_source_callbacks(
             return;
         }
 
-        let Some(worker) = settings_switch
-            .snapshot()
-            .settings
-            .remote_workers
-            .get(idx as usize)
-            .cloned()
-        else {
-            show_toast(&ui, "No such remote worker.", "error");
+        // Any non-negative index is the one remote endpoint (only one can be configured).
+        let Some(worker) = settings_switch.snapshot().settings.remote_worker() else {
+            show_toast(&ui, "No remote coordinator is configured.", "error");
             return;
         };
 
@@ -100,7 +95,7 @@ pub fn setup_library_source_callbacks(
                     *source_probe.lock().unwrap_or_else(PoisonError::into_inner) =
                         new_source.clone();
                     apply_source_badge(&ui, &new_source);
-                    ui.global::<RemoteWorkerModel>().set_library_source_worker_index(idx);
+                    ui.global::<RemoteWorkerModel>().set_library_source_worker_index(0);
                     if let Some(w) = new_source.worker() {
                         load_filter_options_and_initial_list_remote(&ui, w.clone());
                     }
@@ -123,7 +118,7 @@ pub fn setup_library_source_callbacks(
                 Ok(_) => {
                     show_toast(
                         &ui,
-                        "That worker is reachable but does not serve a design library -- staying on the current library.",
+                        "That remote is reachable but does not serve a design library -- staying on the current library.",
                         "error",
                     );
                     ui.global::<LibraryModel>().set_status_message("Ready.".into());
@@ -282,25 +277,18 @@ pub fn setup_mirror_sync_callbacks(
     let handle_start = handle.clone();
     let ui_weak_start = ui.as_weak();
     ui.global::<RemoteWorkerModel>()
-        .on_start_mirror_sync(move |idx: i32| {
+        .on_start_mirror_sync(move || {
             let Some(ui) = ui_weak_start.upgrade() else {
                 return;
             };
-            let Some(worker) = settings_start
-                .snapshot()
-                .settings
-                .remote_workers
-                .get(idx as usize)
-                .cloned()
-            else {
-                show_toast(&ui, "No such remote worker.", "error");
+            let Some(worker) = settings_start.snapshot().settings.remote_worker() else {
+                show_toast(&ui, "No remote coordinator is configured.", "error");
                 return;
             };
 
             ui.global::<RemoteWorkerModel>()
                 .set_mirror_in_progress(true);
-            ui.global::<RemoteWorkerModel>()
-                .set_mirror_worker_index(idx);
+            ui.global::<RemoteWorkerModel>().set_mirror_worker_index(0);
             ui.global::<RemoteWorkerModel>()
                 .set_mirror_progress_fraction(0.0);
             ui.global::<RemoteWorkerModel>().set_mirror_has_error(false);
@@ -502,7 +490,7 @@ mod remote_design_source_tests {
     #[test]
     fn a_server_error_reply_surfaces_its_own_message() {
         let err = map_design_source_response(Ok(LibraryResponse::Error(ErrorMsg {
-            code: 4,
+            code: indicatrix_net::messages::error_codes::LIBRARY_FAILED,
             message: "internal error serving the design library".to_string(),
         })))
         .expect_err("Error must map to Err");

@@ -50,7 +50,7 @@ use std::{
 const CANCEL_POLL_TIMEOUT: Duration = Duration::from_millis(5);
 
 /// What one [`poll_for_cancel`] check found.
-enum CancelPoll {
+pub enum CancelPoll {
     /// Nothing pending within the poll window.
     Pending,
     /// A `CANCEL` for this exact `request_id`.
@@ -79,7 +79,7 @@ enum CancelPoll {
 /// # Errors
 ///
 /// Returns [`NetError`] for a transport-level failure other than the tolerated timeout.
-fn poll_for_cancel<S: Read + TimeoutRead>(
+pub fn poll_for_cancel<S: Read + TimeoutRead>(
     stream: &mut S,
     request_id: u32,
 ) -> Result<CancelPoll, NetError> {
@@ -177,7 +177,7 @@ fn poll_for_cancel<S: Read + TimeoutRead>(
 /// Never panics in practice: the `unreachable!()` converting the axes `Vec` into a
 /// fixed-size array is unreachable by construction (the `debug_assert_eq!` above the
 /// loop pins the two independently-defined axis counts equal in every debug build).
-pub(super) fn handle_tilt_curves_request<S: Read + Write + TimeoutRead>(
+pub fn handle_tilt_curves_request<S: Read + Write + TimeoutRead>(
     stream: &mut S,
     request: &TiltCurvesRequest,
 ) -> Result<(), NetError> {
@@ -366,6 +366,7 @@ mod tests {
             planes: StandardGemCuts::standard_round_brilliant(),
             girdle_frosted: false,
             backdrop: 0.0,
+            environment: indicatrix_net::scene::SceneEnvironment::Studio,
         }
     }
 

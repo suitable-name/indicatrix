@@ -1,0 +1,94 @@
+import { Slider } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { SettingsModel } from "../../models/settings.slint";
+
+// Crystal Axis Orientation: tilt/azimuth of the optic axis relative to the
+// table normal (+Y). Off ("As Cut") by default. `c_axis_override_available`
+// (Rust-driven) is false for an isotropic material, which has no crystal axis
+// to orient: the switch is disabled and greyed out rather than silently doing
+// nothing.
+export component CrystalAxisSection inherits VerticalLayout {
+    spacing: 4px;
+    HorizontalLayout {
+        alignment: space-between;
+        Text {
+            text: "Crystal Axis Orientation";
+            font-size: 11px;
+            font-weight: 600;
+            color: SettingsModel.c_axis_override_available ? Theme.text-muted : Theme.text-disabled;
+        }
+        Rectangle {
+            width: 36px;
+            height: 20px;
+            border-radius: 10px;
+            opacity: SettingsModel.c_axis_override_available ? 1.0 : 0.5;
+            background: SettingsModel.c_axis_override_enabled ? Theme.accent-cyan : #334155;
+
+            axis_toggle_touch := TouchArea {
+                enabled: SettingsModel.c_axis_override_available;
+                clicked => {
+                    SettingsModel.c_axis_override_enabled = !SettingsModel.c_axis_override_enabled;
+                    SettingsModel.c_axis_override_changed(SettingsModel.c_axis_override_enabled);
+                }
+            }
+
+            Rectangle {
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                background: white;
+                x: SettingsModel.c_axis_override_enabled ? parent.width - self.width - 2px : 2px;
+                y: 2px;
+                animate x { duration: 120ms; }
+            }
+        }
+    }
+
+    if SettingsModel.c_axis_override_available: Text {
+        text: "Off renders the material's axis as cut. On: tilt 0-90° from the table normal, azimuth 0-360° around it.";
+        font-size: 11px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+
+    if !SettingsModel.c_axis_override_available: Text {
+        text: "This material is isotropic (e.g. Diamond, Spinel, Cubic Zirconia) -- it has no crystal axis to orient.";
+        font-size: 11px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+
+    if SettingsModel.c_axis_override_available && SettingsModel.c_axis_override_enabled: VerticalLayout {
+        spacing: 8px;
+
+        VerticalLayout {
+            spacing: 2px;
+            HorizontalLayout {
+                alignment: space-between;
+                Text { text: "Tilt"; font-size: 10px; color: Theme.text-muted; }
+                Text { text: Math.round(SettingsModel.c_axis_tilt_deg) + "°"; font-size: 10px; font-weight: 700; color: Theme.accent-cyan; }
+            }
+            Slider {
+                minimum: 0.0;
+                maximum: 90.0;
+                value <=> SettingsModel.c_axis_tilt_deg;
+                changed(val) => { SettingsModel.c_axis_angles_changed(val, SettingsModel.c_axis_azimuth_deg); }
+            }
+        }
+
+        VerticalLayout {
+            spacing: 2px;
+            HorizontalLayout {
+                alignment: space-between;
+                Text { text: "Azimuth"; font-size: 10px; color: Theme.text-muted; }
+                Text { text: Math.round(SettingsModel.c_axis_azimuth_deg) + "°"; font-size: 10px; font-weight: 700; color: Theme.accent-cyan; }
+            }
+            Slider {
+                minimum: 0.0;
+                maximum: 360.0;
+                value <=> SettingsModel.c_axis_azimuth_deg;
+                changed(val) => { SettingsModel.c_axis_angles_changed(SettingsModel.c_axis_tilt_deg, val); }
+            }
+        }
+    }
+}

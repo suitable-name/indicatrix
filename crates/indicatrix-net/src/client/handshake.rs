@@ -54,12 +54,12 @@ fn local_hello_for_this_build() -> Hello {
 }
 
 #[cfg(not(feature = "render"))]
-const fn local_hello_for_this_build() -> Hello {
-    Hello {
-        protocol_version: messages::PROTOCOL_VERSION,
-        build_hash: handshake::UNKNOWN_BUILD_HASH,
-        source_hash: handshake::UNKNOWN_BUILD_HASH,
-    }
+fn local_hello_for_this_build() -> Hello {
+    Hello::viewer(
+        messages::PROTOCOL_VERSION,
+        handshake::UNKNOWN_BUILD_HASH,
+        handshake::UNKNOWN_BUILD_HASH,
+    )
 }
 
 /// Performs `HELLO`/`WELCOME` over `stream` and, when both sides have render capacity,
@@ -78,9 +78,26 @@ const fn local_hello_for_this_build() -> Hello {
 /// [`ClientError::Incompatible`] if the worker replied `WELCOME` with render capacity
 /// but this client's own compatibility check still refuses it.
 /// [`ClientError::MalformedHandshakeReply`] if the reply decoded as neither.
+///
+/// A reply that is neither but starts with a DIFFERENT protocol version (an older or
+/// newer server's `WELCOME`, whose layout differs -- see `messages::hello`'s "version-probe
+/// prefix") is reported as [`ClientError::Incompatible`] with
+/// [`handshake::Incompatible::ProtocolVersionMismatch`], naming both versions.
 pub fn handshake<S: Read + Write>(stream: &mut S) -> Result<Welcome, ClientError> {
-    let local = local_hello_for_this_build();
-    messages::write_message(stream, &local)?;
+    handshake_with_hello(stream, &local_hello_for_this_build())
+}
+
+/// [`handshake`] with a caller-built `HELLO` -- e.g. a narrower `accept_encodings` list,
+/// or a worker's own `handshake::local_worker_hello` when joining a coordinator.
+///
+/// # Errors
+///
+/// See [`handshake`].
+pub fn handshake_with_hello<S: Read + Write>(
+    stream: &mut S,
+    local: &Hello,
+) -> Result<Welcome, ClientError> {
+    messages::write_message(stream, local)?;
 
     let raw = crate::framing::read_frame(stream).map_err(crate::messages::NetError::Framing)?;
 
@@ -89,12 +106,12 @@ pub fn handshake<S: Read + Write>(stream: &mut S) -> Result<Welcome, ClientError
     {
         #[cfg(feature = "render")]
         if welcome.render.is_some() {
-            let remote_as_hello = Hello {
-                protocol_version: welcome.protocol_version,
-                build_hash: welcome.build_hash,
-                source_hash: welcome.source_hash,
-            };
-            handshake::verify_compatible(&local, &remote_as_hello)
+            let remote_as_hello = Hello::viewer(
+                welcome.protocol_version,
+                welcome.build_hash,
+                welcome.source_hash,
+            );
+            handshake::verify_compatible(local, &remote_as_hello)
                 .map_err(ClientError::Incompatible)?;
         }
         return Ok(welcome);
@@ -104,6 +121,17 @@ pub fn handshake<S: Read + Write>(stream: &mut S) -> Result<Welcome, ClientError
         && remainder.is_empty()
     {
         return Err(ClientError::Refused(err));
+    }
+
+    if let Ok((remote, _)) = postcard::take_from_bytes::<u16>(&raw)
+        && remote != messages::PROTOCOL_VERSION
+    {
+        return Err(ClientError::Incompatible(
+            handshake::Incompatible::ProtocolVersionMismatch {
+                local: messages::PROTOCOL_VERSION,
+                remote,
+            },
+        ));
     }
 
     Err(ClientError::MalformedHandshakeReply)
@@ -124,6 +152,9 @@ pub struct ConnectionInfo {
     pub render: Option<RenderCapability>,
     pub library: bool,
     pub tilt_curves: bool,
+    /// The payload encoding the server negotiated (v14) -- see
+    /// [`Welcome::payload_encoding`].
+    pub payload_encoding: crate::messages::PayloadEncoding,
 }
 
 impl From<Welcome> for ConnectionInfo {
@@ -134,6 +165,7 @@ impl From<Welcome> for ConnectionInfo {
             render: w.render,
             library: w.library,
             tilt_curves: w.tilt_curves,
+            payload_encoding: w.payload_encoding,
         }
     }
 }
@@ -201,10 +233,59 @@ mod tests {
                 backend: crate::messages::Backend::Cpu { threads: 8 },
                 max_pixels: 8_294_400,
                 min_cadence_ms: 100,
+                hdr: false,
             }),
             library: true,
             tilt_curves: true,
+            registration: None,
+            payload_encoding: crate::messages::PayloadEncoding::Raw,
         }
+    }
+
+    /// A v13 server's `WELCOME` (no `registration`/`payload_encoding`) is reported as a
+    /// protocol-version mismatch naming both versions, not as a malformed reply.
+    #[test]
+    fn a_v13_welcome_is_reported_as_a_version_mismatch() {
+        #[derive(serde::Serialize)]
+        struct WelcomeV13 {
+            protocol_version: u16,
+            build_hash: [u8; 8],
+            source_hash: [u8; 8],
+            render: Option<RenderCapability>,
+            library: bool,
+            tilt_curves: bool,
+        }
+        let mut input = Vec::new();
+        write_message(
+            &mut input,
+            &WelcomeV13 {
+                protocol_version: 13,
+                build_hash: [1; 8],
+                source_hash: [2; 8],
+                render: None,
+                library: true,
+                tilt_curves: false,
+            },
+        )
+        .unwrap();
+        let mut duplex = DuplexHalf::new(input);
+
+        let err = handshake(&mut duplex).unwrap_err();
+        let ClientError::Incompatible(incompatible) = &err else {
+            panic!("expected ClientError::Incompatible, got {err:?}");
+        };
+        assert_eq!(
+            *incompatible,
+            handshake::Incompatible::ProtocolVersionMismatch {
+                local: PROTOCOL_VERSION,
+                remote: 13
+            }
+        );
+        let message = err.to_string();
+        assert!(
+            message.contains("v13") && message.contains("v14"),
+            "{message}"
+        );
     }
 
     #[test]

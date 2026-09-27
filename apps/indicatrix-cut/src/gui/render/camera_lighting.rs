@@ -276,7 +276,7 @@ pub(in crate::gui) fn resubmit_live_solid(
 /// a restart. Split out of `run_gui` purely to keep that function under
 /// clippy's function-length lint.
 ///
-/// `preview_state` is B2's solid-inspection preview controller -- dragging or
+/// `preview_state` is the solid-inspection preview controller -- dragging or
 /// zooming the Live Render viewport also moves the Solid viewport's shared
 /// camera (yaw/pitch/distance), so both `on_camera_orbit`/`on_camera_zoom` below
 /// re-issue the last solved plane set at the new pose (see

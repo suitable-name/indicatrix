@@ -1,0 +1,210 @@
+import { Button, ComboBox, LineEdit } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { EditorModel } from "../../models/editor.slint";
+import { VerdictChip } from "../proportion_verdicts.slint";
+import { MaterialGuessBadge } from "../material_guess.slint";
+
+// The Inspector's "Preform" tab: starting rough shape/size, the read-only
+// proportions readout, and real-unit yield inputs/results. Almost everything
+// here reads/writes `EditorModel` directly (the actual field values); only
+// the two "has this section been typed/changed since Apply" dirty flags are
+// local UI state, and those still live on `EditorInspector` itself (mirrored
+// here two-way) since `EditorInspector`'s own `form_reset_pulse` watcher
+// clears them on New/Load Selected/Open Native.
+//
+// Every input and both Apply buttons follow `unlocked` (bound by `EditorInspector`
+// to `GuideModel.allows_preform_tab()`) while the worked-example guide runs.
+export component PreformTab inherits VerticalLayout {
+    // `false` while the worked-example guide locks this tab's group (see
+    // `GuideAllow`, `models/guide.slint`); every input and button below ANDs it
+    // into its own `enabled:`. Bound by `EditorInspector` from the same
+    // `GuideModel.allows_*()` helper as this tab's pill.
+    in property <bool> unlocked: true;
+
+    in-out property <bool> preform_pending: false;
+    in-out property <bool> yield_pending: false;
+
+    spacing: 8px;
+    Rectangle {
+        height: preform_lbl.preferred-height;
+        Tooltip { text: @markdown("Starting rough shape and size the design's blank is built from."); }
+        preform_lbl := Text { text: "Preform"; font-size: 12px; font-weight: 700; color: Theme.text-primary; }
+    }
+    ComboBox {
+        enabled: root.unlocked;
+        model: ["Block", "Cylinder"];
+        current-index <=> EditorModel.preform_shape_index;
+        selected => { root.preform_pending = true; }
+    }
+    // Half-Width/Depth are in the design's
+    // own model units (girdle half-width = 1), never
+    // millimetres -- otherwise a typed 0.5 could
+    // read as "half the girdle width" or as some absolute unit.
+    // The mm-equivalent line below each field is read-only and
+    // ADDITIVE (never replaces the editable model-unit value) --
+    // see `state::preform_mm_texts`'s own doc comment for when
+    // it has something to show.
+    Text { text: "Half-Width (model units, girdle half-width = 1)"; font-size: 10px; color: Theme.text-muted; }
+    LineEdit { enabled: root.unlocked; text <=> EditorModel.preform_half_width; edited => { root.preform_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+    if EditorModel.preform_half_width_mm_text != "": Text { text: EditorModel.preform_half_width_mm_text; font-size: 9px; color: Theme.text-muted; }
+    Text { text: "Length / Width (ratio)"; font-size: 10px; color: Theme.text-muted; }
+    LineEdit { enabled: root.unlocked; text <=> EditorModel.preform_length_over_width; edited => { root.preform_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+    Text { text: "Depth (model units, girdle half-width = 1)"; font-size: 10px; color: Theme.text-muted; }
+    LineEdit { enabled: root.unlocked; text <=> EditorModel.preform_depth; edited => { root.preform_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+    if EditorModel.preform_depth_mm_text != "": Text { text: EditorModel.preform_depth_mm_text; font-size: 9px; color: Theme.text-muted; }
+    // Unlike Half-Width/Depth above, this is
+    // typed directly in MILLIMETRES -- the rough's own girdle
+    // plane offset from centre is what a cutter actually
+    // measures on the stone, never a model-unit fraction.
+    // `apply_preform_y_offset`'s Rust handler converts through
+    // the design's own mm-per-unit factor (see that callback's
+    // own doc comment on `ui/models/editor.slint`).
+    Rectangle {
+        height: y_offset_lbl.preferred-height;
+        Tooltip { text: @markdown("How far the rough's girdle plane sits from centre, in millimetres -- positive moves it toward the crown. Needs a Girdle Diameter and a solve to convert; otherwise Apply reports an error instead of guessing."); }
+        y_offset_lbl := Text { text: "Girdle Y-Offset (mm)"; font-size: 10px; color: Theme.text-muted; }
+    }
+    LineEdit { enabled: root.unlocked; text <=> EditorModel.preform_y_offset_mm; edited => { root.preform_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+    Button {
+        enabled: root.unlocked;
+        // `primary` (the same accent-emphasis
+        // property `editor_command_bar.slint`'s own Solve button
+        // already keys off "stale") flags this button amber-cyan
+        // while a typed/changed field here has not been applied
+        // yet, so forgetting to click Apply doesn't revert silently.
+        text: root.preform_pending ? "Apply Preform *" : "Apply Preform";
+        primary: root.preform_pending;
+        clicked => {
+            EditorModel.apply_preform(EditorModel.preform_shape_index, EditorModel.preform_half_width, EditorModel.preform_length_over_width, EditorModel.preform_depth);
+            EditorModel.apply_preform_y_offset(EditorModel.preform_y_offset_mm);
+            root.preform_pending = false;
+        }
+    }
+
+    Rectangle { height: 1px; background: Theme.border-subtle; }
+
+    // --- The proportions every faceter
+    // checks first -- table %, crown
+    // height, pavilion depth, total depth and length-to-width,
+    // from `Design::stone_proportions`. "-" (never a
+    // misleading 0) whenever the design does not currently
+    // solve/close, or has no live girdle plane to measure a
+    // crown/pavilion depth from.
+    Rectangle {
+        height: proportions_lbl.preferred-height;
+        Tooltip { text: @markdown("Table size, crown height, pavilion depth, total depth and length-to-width, from the last Solve. In millimetres once a Girdle Diameter is set, otherwise the design's own model units."); }
+        proportions_lbl := Text { text: "Proportions"; font-size: 12px; font-weight: 700; color: Theme.text-primary; }
+    }
+    // Each raw
+    // number below is paired with a "within/near/outside"
+    // verdict chip (invisible while there is nothing to judge
+    // yet -- see `VerdictChip`'s own doc comment) judged
+    // against `indicatrix_cut_core::proportions_windows`'s
+    // reference table. Table %/crown angle/pavilion angle/
+    // total depth %/girdle % are the five metrics that table
+    // covers; crown height/pavilion depth/L-W below have no
+    // chip of their own (this table has no window for an
+    // absolute length or a ratio, only percentages/angles).
+    HorizontalLayout {
+        spacing: 6px;
+        Text { horizontal-stretch: 1; text: "Table: " + EditorModel.proportions_table_pct + "    L/W: " + EditorModel.proportions_length_to_width; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+        VerdictChip { level: EditorModel.proportion_verdict_table_level; reason: EditorModel.proportion_verdict_table_reason; }
+    }
+    Text { text: "Crown Height: " + EditorModel.proportions_crown_height; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+    Text { text: "Pavilion Depth: " + EditorModel.proportions_pavilion_depth; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+    HorizontalLayout {
+        spacing: 6px;
+        Text { horizontal-stretch: 1; text: "Crown Angle (main facet): " + (EditorModel.proportion_verdict_crown_angle_level >= 0 ? "estimated from schedule" : "-"); font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+        VerdictChip { level: EditorModel.proportion_verdict_crown_angle_level; reason: EditorModel.proportion_verdict_crown_angle_reason; }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Text { horizontal-stretch: 1; text: "Pavilion Angle (main facet): " + (EditorModel.proportion_verdict_pavilion_angle_level >= 0 ? "estimated from schedule" : "-"); font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+        VerdictChip { level: EditorModel.proportion_verdict_pavilion_angle_level; reason: EditorModel.proportion_verdict_pavilion_angle_reason; }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Text { horizontal-stretch: 1; text: "Total Depth: " + EditorModel.proportions_total_depth; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+        VerdictChip { level: EditorModel.proportion_verdict_total_depth_level; reason: EditorModel.proportion_verdict_total_depth_reason; }
+    }
+    // Girdle thickness and the printed C/W%,
+    // P/W% and G/W% ratios every faceting diagram prints.
+    Text { text: "Girdle Thickness: " + EditorModel.girdle_thickness_text; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+    HorizontalLayout {
+        spacing: 6px;
+        Text { horizontal-stretch: 1; text: "C/W: " + EditorModel.crown_to_width_text + "    P/W: " + EditorModel.pavilion_to_width_text + "    G/W: " + EditorModel.girdle_to_width_text; font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+        VerdictChip { level: EditorModel.proportion_verdict_girdle_level; reason: EditorModel.proportion_verdict_girdle_reason; }
+    }
+
+    Rectangle { height: 1px; background: Theme.border-subtle; }
+
+    // --- Real units, the rough, and yield.
+    Text { text: "Yield"; font-size: 12px; font-weight: 700; color: Theme.text-primary; }
+
+    // Which refractive index the critical
+    // angle/MARGIN column/render/export actually use, and where it
+    // came from -- `editor_design_settings.slint` shows the bare
+    // "Eff. RI" number with no source, which is exactly what could
+    // let a selected custom material's RI go silently unused.
+    // `ri_source_text` mirrors `Design::
+    // effective_refractive_index_with`'s own precedence so it can
+    // never disagree with `effective_ri_text`.
+    Rectangle {
+        height: ri_source_row.preferred-height;
+        Tooltip { text: @markdown("What the Eff. RI chip in Design Settings is actually reading -- a typed override, a custom catalogue material, a built-in preset, or this design's legacy imported value."); }
+        ri_source_row := Text {
+            text: "Eff. RI " + (EditorModel.effective_ri_text == "" ? "-" : EditorModel.effective_ri_text) + ": " + EditorModel.ri_source_text;
+            font-size: 10px;
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+        }
+    }
+    MaterialGuessBadge { }
+    Rectangle {
+        height: girdle_lbl.preferred-height;
+        Tooltip { text: @markdown("Real girdle diameter in millimetres, used for the carat estimate."); }
+        girdle_lbl := Text { text: "Girdle Diameter (mm)"; font-size: 10px; color: Theme.text-muted; }
+    }
+    LineEdit { enabled: root.unlocked; text <=> EditorModel.girdle_diameter_mm; placeholder-text: "unset"; edited => { root.yield_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+    // Distinct from `gem_viewport.slint`'s unrelated Render
+    // Material control -- this one is specific gravity only, for
+    // the carat estimate; it never touches the render.
+    Rectangle {
+        height: yield_material_lbl.preferred-height;
+        Tooltip { text: @markdown("Yield Material -- specific gravity for the carat estimate. Does not affect the render."); }
+        yield_material_lbl := Text { text: "Yield Material"; font-size: 10px; color: Theme.text-muted; }
+    }
+    ComboBox {
+        enabled: root.unlocked;
+        // Bound to the same pushed `EditorModel.new_material_options`
+        // that `new_design_dialog.slint` uses -- both are
+        // `MATERIAL_PRESET_NAMES` in the same order, so sharing the
+        // one property (rather than a separate hand-synced literal
+        // here) can never silently drift from the real list.
+        model: EditorModel.new_material_options;
+        current-index <=> EditorModel.material_index;
+        selected => { root.yield_pending = true; }
+    }
+    Rectangle {
+        height: sg_override_lbl.preferred-height;
+        Tooltip { text: @markdown("Specific gravity for the carat estimate. Does not affect the render."); }
+        sg_override_lbl := Text { text: "Specific Gravity Override"; font-size: 10px; color: Theme.text-muted; }
+    }
+    LineEdit { enabled: root.unlocked; text <=> EditorModel.specific_gravity_override; placeholder-text: "use material default"; edited => { root.yield_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+    Button {
+        enabled: root.unlocked;
+        // See the matching "Apply Preform"
+        // comment above -- identical amber-on-unapplied treatment.
+        text: root.yield_pending ? "Apply Yield Inputs *" : "Apply Yield Inputs";
+        primary: root.yield_pending;
+        clicked => {
+            EditorModel.apply_yield_inputs(EditorModel.girdle_diameter_mm, EditorModel.material_index, EditorModel.specific_gravity_override);
+            root.yield_pending = false;
+        }
+    }
+
+    // Read-only results; go blank until the next Solve.
+    Text { text: "Volumetric Yield: " + (EditorModel.volumetric_yield_text == "" ? "-" : EditorModel.volumetric_yield_text); font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+    Text { text: "Est. Carat Weight: " + (EditorModel.carat_weight_text == "" ? "-" : EditorModel.carat_weight_text); font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+    Text { text: "Specific Gravity Used: " + (EditorModel.specific_gravity_used_text == "" ? "-" : EditorModel.specific_gravity_used_text); font-size: 10px; color: Theme.text-secondary; wrap: word-wrap; }
+}

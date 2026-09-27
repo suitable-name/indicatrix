@@ -1,0 +1,417 @@
+import { LineEdit } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { EditorModel } from "../../models/editor.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { GuideLockTip } from "../guide_lock.slint";
+
+// `EditorTierTable`'s toolbar: the name/index/block/strategy/meets filter
+// box, the "+ Add Tier"/"Adopt all"/"Select" row, the quick-add anchor
+// buttons plus the "Steps / Mirror" toggle and its inline form, and the
+// multi-select batch-action bar (shown only while more than one row is
+// selected). Root is a plain `VerticalLayout` (not a `Rectangle`) so it
+// slots into `EditorTierTable`'s own `VerticalLayout` exactly like these five
+// pieces did before extraction -- same `spacing: 4px` as that parent, so the
+// gap above/below this whole group and between the pieces inside it stays
+// the same pixel value either way.
+//
+// While the worked-example guide runs, "+ Add Tier" follows
+// `GuideModel.allows_tier_form()` and every other action here follows
+// `allows_tier_table()`: a locked button is dimmed, ignores clicks and shows the
+// guide's lock tooltip instead of its own (see `GuideAllow`, `models/guide.slint`).
+export component TierTableToolbar inherits VerticalLayout {
+    // Mirrored two-way with `EditorTierTable.select_mode`: the "Select"
+    // button here toggles it, and the tier table's header/rows both read it
+    // (the checkbox column, and per-row multi-select toggling).
+    in-out property <bool> select_mode: false;
+    // Read-only here: the "Mirror" and multi-select "Offset" actions both
+    // apply to whichever tier the tier list's own keyboard cursor is on.
+    in property <int> keyboard_focus_index: -1;
+
+    // Whether the "Generate steps..." inline form is open. Local to this
+    // toolbar -- nothing outside it needs to know.
+    property <bool> generate_steps_open: false;
+
+    // Lets `EditorTierTable.focus_filter()` (Ctrl+F, see that function's own
+    // doc comment) reach `filter_edit`, which now lives in this component
+    // rather than in `EditorTierTable` itself.
+    public function focus_filter() {
+        filter_edit.focus();
+    }
+
+    spacing: 4px;
+
+    // The search/filter box itself -- narrows the rendered rows by
+    // name/index/block/strategy/meets substring (row indices stay whatever
+    // `EditorTierItem.index` already says, so every callback below still
+    // identifies the right tier regardless of what's dimmed). Non-matching
+    // rows are DIMMED rather than removed from layout, so Up/Down/Home/End's
+    // arithmetic (all of it keyed on `EditorModel.tiers.length`, not a
+    // filtered count) keeps working exactly as it does with no filter set.
+    Rectangle {
+        height: 24px;
+        background: Theme.bg-input;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: filter_edit.has-focus ? Theme.accent-cyan : Theme.border-subtle;
+        HorizontalLayout {
+            padding-left: 6px;
+            padding-right: 6px;
+            spacing: 4px;
+            Text {
+                text: "\u{1F50D}";
+                font-size: 10px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            filter_edit := LineEdit {
+                text <=> EditorModel.tier_filter_text;
+                placeholder-text: "Filter tiers by name, index, block or strategy...";
+                font-size: 10px;
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            }
+            if EditorModel.tier_filter_text != "": Rectangle {
+                width: 16px;
+                Text {
+                    text: "\u{2715}";
+                    font-size: 10px;
+                    color: clear_filter_touch.has-hover ? Theme.accent-ruby : Theme.text-muted;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                clear_filter_touch := TouchArea {
+                    clicked => { EditorModel.tier_filter_text = ""; }
+                }
+            }
+        }
+    }
+
+    // Bulk-adopts every tier that still has an unadopted imported meet,
+    // as one undoable step, instead of one Adopt click (and one
+    // re-solve) per tier. Always shown rather than conditioned on "does
+    // anything need adopting" -- Slint has no cheap way to ask that of
+    // `EditorModel.tiers` from a binding here -- so a click with nothing
+    // to adopt is a harmless no-op handled on the Rust side
+    // (`EditorModel.adopt_all`, declared on `EditorModel` and wired to
+    // `gui::editor::callbacks::tier_actions::setup_adopt_all_callback`).
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        spacing: 6px;
+        // A discoverable "+ Add Tier" affordance right in the table
+        // itself, alongside the Tier tab's inspector form below (the
+        // empty-state text names it, but nothing here does). Reuses the
+        // SAME `selected_tier_index
+        // = -1` + `inspector_tab`/`inspector_collapsed` properties the
+        // "Add Anchor" row action below already drives, so no new
+        // `EditorModel` surface is needed. The round-trip-through-another-
+        // value guard (see the "Add Anchor" touch handler's own comment for
+        // why) is not needed here: entering Add mode when already IN Add
+        // mode has nothing to reload, unlike jumping between two different
+        // real tiers.
+        Rectangle {
+            width: 78px;
+            height: 20px;
+            opacity: GuideModel.allows_tier_form() ? 1.0 : 0.4;
+            background: add_tier_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+            border-radius: 3px;
+            Text {
+                text: "+ Add Tier";
+                font-size: 9px;
+                font-weight: 600;
+                color: Theme.accent-emerald;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            add_tier_touch := TouchArea {
+                enabled: GuideModel.allows_tier_form();
+                clicked => {
+                    EditorModel.selected_tier_index = -1;
+                    EditorModel.inspector_tab = 0;
+                    EditorModel.inspector_collapsed = false;
+                }
+            }
+            Tooltip { text: GuideModel.allows_tier_form() ? @markdown("Open the Tier tab in Add mode to author a new tier.") : @markdown("\{GuideModel.locked_hint}"); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Rectangle {
+            width: 64px;
+            height: 20px;
+            opacity: GuideModel.allows_tier_table() ? 1.0 : 0.4;
+            background: adopt_all_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+            border-radius: 3px;
+            Text {
+                text: "Adopt all";
+                font-size: 9px;
+                font-weight: 600;
+                color: Theme.accent-cyan;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            adopt_all_touch := TouchArea {
+                enabled: GuideModel.allows_tier_table();
+                clicked => { EditorModel.adopt_all(); }
+            }
+            Tooltip { text: GuideModel.allows_tier_table() ? @markdown("Adopt every tier's imported meet at once, as one Undo step.") : @markdown("\{GuideModel.locked_hint}"); }
+        }
+        // A visible affordance for the Ctrl/Shift-click multi-select
+        // gesture, which
+        // otherwise has no on-screen hint that it exists at all. Toggling
+        // this does not itself select/deselect anything -- it only shows a
+        // checkbox column (below) that clicking, without holding Ctrl,
+        // acts on the same way Ctrl+click already does.
+        Rectangle {
+            width: 54px;
+            height: 20px;
+            opacity: GuideModel.allows_tier_table() ? 1.0 : 0.4;
+            background: root.select_mode ? Theme.primary : (select_mode_touch.has-hover ? Theme.bg-elevated : Theme.bg-card-hover);
+            border-radius: 3px;
+            Text {
+                text: "Select";
+                font-size: 9px;
+                font-weight: 600;
+                color: root.select_mode ? Theme.text-on-primary : Theme.accent-cyan;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            select_mode_touch := TouchArea {
+                enabled: GuideModel.allows_tier_table();
+                clicked => { root.select_mode = !root.select_mode; }
+            }
+            Tooltip { text: GuideModel.allows_tier_table() ? @markdown("Show a checkbox column for multi-select -- the same group Ctrl+click/Shift+click already build, with a click target that does not need the modifier key.") : @markdown("\{GuideModel.locked_hint}"); }
+        }
+    }
+
+    // Quick-add buttons for three common first anchors. Each calls
+    // `EditorModel.save_tier` with `index -1` and a `ScaleReference`
+    // constraint pre-filled with reasonable starting mast values, so a
+    // first-time cutter has something solvable to adjust. Single-facet by
+    // design, matching `ConstraintTier::girdle` convention.
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        spacing: 6px;
+        Text { text: "Quick add:"; font-size: 9px; color: Theme.text-muted; vertical-alignment: center; }
+        Rectangle {
+            width: 46px;
+            height: 20px;
+            opacity: GuideModel.allows_tier_table() ? 1.0 : 0.4;
+            background: add_table_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+            border-radius: 3px;
+            Text { text: "Table"; font-size: 9px; font-weight: 600; color: Theme.accent-emerald; horizontal-alignment: center; vertical-alignment: center; }
+            add_table_touch := TouchArea {
+                enabled: GuideModel.allows_tier_table();
+                clicked => { EditorModel.save_tier(-1, "0", 2, "0.32", "Table", ""); }
+            }
+            Tooltip { text: GuideModel.allows_tier_table() ? @markdown("Add a Table tier (0\u{b0}, pinned to an exact scale value) -- a starting anchor for the crown.") : @markdown("\{GuideModel.locked_hint}"); }
+        }
+        Rectangle {
+            width: 46px;
+            height: 20px;
+            opacity: GuideModel.allows_tier_table() ? 1.0 : 0.4;
+            background: add_girdle_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+            border-radius: 3px;
+            Text { text: "Girdle"; font-size: 9px; font-weight: 600; color: Theme.accent-emerald; horizontal-alignment: center; vertical-alignment: center; }
+            add_girdle_touch := TouchArea {
+                enabled: GuideModel.allows_tier_table();
+                clicked => { EditorModel.save_tier(-1, "90", 2, "1", "Girdle", ""); }
+            }
+            Tooltip { text: GuideModel.allows_tier_table() ? @markdown("Add a Girdle tier (90\u{b0}, pinned to an exact scale value = half-width) -- 90\u{b0} is required for a real girdle band.") : @markdown("\{GuideModel.locked_hint}"); }
+        }
+        Rectangle {
+            width: 46px;
+            height: 20px;
+            opacity: GuideModel.allows_tier_table() ? 1.0 : 0.4;
+            background: add_culet_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+            border-radius: 3px;
+            Text { text: "Culet"; font-size: 9px; font-weight: 600; color: Theme.accent-emerald; horizontal-alignment: center; vertical-alignment: center; }
+            add_culet_touch := TouchArea {
+                enabled: GuideModel.allows_tier_table();
+                clicked => { EditorModel.save_tier(-1, "-0", 2, "0.88", "Culet", ""); }
+            }
+            Tooltip { text: GuideModel.allows_tier_table() ? @markdown("Add a Culet tier (a flat pavilion facet, pinned to an exact scale value) -- a starting anchor for the pavilion.") : @markdown("\{GuideModel.locked_hint}"); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        // Toggles the "Generate steps..."/"Mirror to other block" panel below.
+        Rectangle {
+            width: 96px;
+            height: 20px;
+            opacity: GuideModel.allows_tier_table() ? 1.0 : 0.4;
+            background: root.generate_steps_open ? Theme.primary : (generate_steps_touch.has-hover ? Theme.bg-elevated : Theme.bg-card-hover);
+            border-radius: 3px;
+            Text {
+                text: "Steps / Mirror";
+                font-size: 9px;
+                font-weight: 600;
+                color: root.generate_steps_open ? Theme.text-on-primary : Theme.accent-cyan;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            generate_steps_touch := TouchArea {
+                enabled: GuideModel.allows_tier_table();
+                clicked => { root.generate_steps_open = !root.generate_steps_open; }
+            }
+            Tooltip { text: GuideModel.allows_tier_table() ? @markdown("Generate a step-cut ladder, or mirror the current tier to the opposite block.") : @markdown("\{GuideModel.locked_hint}"); }
+        }
+    }
+
+    // The "Generate steps" ladder form and "Mirror to other block" buttons.
+    // Both call `EditorModel`, which uses `ConstraintTier::step_series` and
+    // `mirrored_to_other_block` in `indicatrix-cut-core`.
+    if root.generate_steps_open: VerticalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        padding-top: 2px;
+        padding-bottom: 2px;
+        spacing: 4px;
+        Rectangle { height: 1px; background: Theme.border-subtle; }
+        HorizontalLayout {
+            spacing: 4px;
+            step_name_edit := LineEdit { width: 60px; height: 20px; font-size: 9px; placeholder-text: "Step"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+            step_start_edit := LineEdit { width: 44px; height: 20px; font-size: 9px; placeholder-text: "start\u{b0}"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+            step_delta_edit := LineEdit { width: 44px; height: 20px; font-size: 9px; placeholder-text: "step\u{b0}"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+            step_count_edit := LineEdit { width: 32px; height: 20px; font-size: 9px; placeholder-text: "N"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+            step_indices_edit := LineEdit { width: 70px; height: 20px; font-size: 9px; placeholder-text: "indices"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+            step_anchor_edit := LineEdit { width: 50px; height: 20px; font-size: 9px; placeholder-text: "anchor"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+            Rectangle {
+                width: 60px;
+                height: 20px;
+                opacity: GuideModel.allows_tier_table() ? 1.0 : 0.4;
+                background: generate_apply_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+                border-radius: 3px;
+                Text { text: "Generate"; font-size: 9px; font-weight: 600; color: Theme.accent-cyan; horizontal-alignment: center; vertical-alignment: center; }
+                generate_apply_touch := TouchArea {
+                    enabled: GuideModel.allows_tier_table();
+                    clicked => {
+                        if step_name_edit.text != "" && step_count_edit.text != "" {
+                            EditorModel.generate_step_series(
+                                step_name_edit.text,
+                                step_start_edit.text == "" ? "0" : step_start_edit.text,
+                                step_delta_edit.text == "" ? "0" : step_delta_edit.text,
+                                Math.round(step_count_edit.text.to-float()),
+                                step_indices_edit.text,
+                                step_anchor_edit.text
+                            );
+                        }
+                    }
+                }
+                Tooltip { text: GuideModel.allows_tier_table() ? @markdown("Generate N tiers named \"Step1\", \"Step2\", ... stepping by the given angle from the given start angle, all sharing the given indices. If Anchor is set, the first tier is pinned to that exact scale value; otherwise it meets an existing anchor elsewhere in the design.") : @markdown("\{GuideModel.locked_hint}"); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            Text { text: "Mirror current tier ("; font-size: 9px; color: Theme.text-muted; vertical-alignment: center; }
+            mirror_suffix_edit := LineEdit { width: 30px; height: 20px; font-size: 9px; text: "'"; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+            Text { text: ") to other block:"; font-size: 9px; color: Theme.text-muted; vertical-alignment: center; }
+            Rectangle {
+                width: 56px;
+                height: 20px;
+                background: mirror_apply_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+                opacity: GuideModel.allows_tier_table() ? 1.0 : 0.4;
+                border-radius: 3px;
+                Text { text: "Mirror"; font-size: 9px; font-weight: 600; color: Theme.accent-cyan; horizontal-alignment: center; vertical-alignment: center; }
+                mirror_apply_touch := TouchArea {
+                    enabled: root.keyboard_focus_index >= 0 && GuideModel.allows_tier_table();
+                    clicked => {
+                        EditorModel.mirror_tier_to_other_block(root.keyboard_focus_index, mirror_suffix_edit.text);
+                    }
+                }
+                Tooltip { text: GuideModel.allows_tier_table() ? @markdown("Duplicates the currently selected/cursor tier to the opposite block (angle negated), suffixing its name.") : @markdown("\{GuideModel.locked_hint}"); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+
+    // The "N selected" indicator plus Clear/Delete batch actions -- shown only
+    // while a multi-select group of more than one row exists. Lives in the
+    // tier table's header for clear, always-visible placement.
+    if EditorModel.multi_selected_count > 1: HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        spacing: 6px;
+        Rectangle {
+            width: 76px;
+            height: 20px;
+            background: Theme.bg-card-hover;
+            border-radius: 3px;
+            Text {
+                text: EditorModel.multi_selected_count + " selected";
+                font-size: 9px;
+                font-weight: 600;
+                color: Theme.accent-cyan;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        Rectangle {
+            width: 40px;
+            height: 20px;
+            opacity: GuideModel.allows_tier_table() ? 1.0 : 0.4;
+            background: clear_multi_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+            border-radius: 3px;
+            Text { text: "Clear"; font-size: 9px; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+            clear_multi_touch := TouchArea {
+                enabled: GuideModel.allows_tier_table();
+                clicked => { EditorModel.clear_multi_select(); }
+            }
+            GuideLockTip { locked: !GuideModel.allows_tier_table(); }
+        }
+        Rectangle {
+            width: 48px;
+            height: 20px;
+            opacity: GuideModel.allows_tier_table() ? 1.0 : 0.4;
+            background: delete_multi_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+            border-radius: 3px;
+            Text { text: "Delete"; font-size: 9px; color: Theme.accent-ruby; horizontal-alignment: center; vertical-alignment: center; }
+            delete_multi_touch := TouchArea {
+                enabled: GuideModel.allows_tier_table();
+                clicked => { EditorModel.remove_multi_selected(); }
+            }
+            Tooltip { text: GuideModel.allows_tier_table() ? @markdown("Delete every selected tier (one Undo step per tier).") : @markdown("\{GuideModel.locked_hint}"); }
+        }
+        // "Adopt all" restricted to the current multi-selection, freeing a
+        // Ctrl-clicked group for Optimize without disturbing other tiers.
+        Rectangle {
+            width: 64px;
+            height: 20px;
+            opacity: GuideModel.allows_tier_table() ? 1.0 : 0.4;
+            background: adopt_selected_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+            border-radius: 3px;
+            Text { text: "Adopt sel."; font-size: 9px; font-weight: 600; color: Theme.accent-cyan; horizontal-alignment: center; vertical-alignment: center; }
+            adopt_selected_touch := TouchArea {
+                enabled: GuideModel.allows_tier_table();
+                clicked => { EditorModel.adopt_selected(); }
+            }
+            Tooltip { text: GuideModel.allows_tier_table() ? @markdown("Adopt the imported meet of every selected tier, as one Undo step.") : @markdown("\{GuideModel.locked_hint}"); }
+        }
+        // A batch "offset angle by X" mini-form, reusing `nudge_angle` instead
+        // of adding a new callback. `root.keyboard_focus_index` is the anchor.
+        // Edge case: applying after a Ctrl+click that just removed a row from
+        // the group offsets only that single (now-deselected) tier.
+        offset_edit := LineEdit {
+            width: 54px;
+            height: 20px;
+            font-size: 9px;
+            placeholder-text: "deg";
+            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+        }
+        Rectangle {
+            width: 46px;
+            height: 20px;
+            opacity: GuideModel.allows_tier_table() ? 1.0 : 0.4;
+            background: offset_apply_touch.has-hover ? Theme.primary-glow : Theme.bg-card-hover;
+            border-radius: 3px;
+            Text { text: "Offset"; font-size: 9px; font-weight: 600; color: Theme.accent-cyan; horizontal-alignment: center; vertical-alignment: center; }
+            offset_apply_touch := TouchArea {
+                enabled: GuideModel.allows_tier_table();
+                clicked => {
+                    if offset_edit.text != "" {
+                        EditorModel.nudge_angle(root.keyboard_focus_index, offset_edit.text.to-float());
+                        offset_edit.text = "";
+                    }
+                }
+            }
+            Tooltip { text: GuideModel.allows_tier_table() ? @markdown("Offset every selected tier's angle by this many degrees, as one Undo step.") : @markdown("\{GuideModel.locked_hint}"); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+}

@@ -1,0 +1,84 @@
+import { Theme } from "../../theme.slint";
+import { EditorModel } from "../../models/editor.slint";
+import { GuideModel } from "../../models/guide.slint";
+import { EmptyState } from "../empty_state.slint";
+
+// Everything `app.slint` draws over the Edit tab's Solid viewport, in both the wide
+// and the narrow layout -- one component so the two copies cannot drift apart.
+//
+// - No design installed yet (`EditorModel.has_design` is still `false`: only the
+//   startup placeholder exists): the opaque `EmptyState` card grid. It is keyed on
+//   `has_design`, NOT on the tier count -- a freshly created Empty design has zero
+//   tiers but is a real design, and covering it with the card grid made New Design
+//   look like it did nothing.
+// - A real design with zero tiers: a small, NON-blocking hint at the top of the
+//   viewport instead, so the preform render stays visible and the next step is one
+//   click away. The tier table carries its own matching "No tiers yet" line.
+//
+// The hint is positioned with explicit `x`/`y`, so none of its layout constraints
+// reach the viewport's own cell (see `app.slint`'s "Sizing notes", rule 1).
+export component EditorViewportOverlay inherits Rectangle {
+    in property <[string]> recent_native_files: [];
+    callback open_recent(string);
+
+    if EditorModel.enabled && !EditorModel.has_design: EmptyState {
+        width: 100%;
+        height: 100%;
+        recent_native_files: root.recent_native_files;
+        open_recent(path) => { root.open_recent(path); }
+    }
+
+    if EditorModel.enabled && EditorModel.has_design && EditorModel.tiers.length == 0: Rectangle {
+        x: (root.width - self.width) / 2;
+        y: 16px;
+        width: min(root.width - 32px, hint_row.preferred-width);
+        height: hint_row.preferred-height;
+        background: Theme.popup-surface;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-medium;
+        drop-shadow-blur: 12px;
+        drop-shadow-color: Theme.modal-shadow;
+        clip: true;
+
+        hint_row := HorizontalLayout {
+            padding-left: 12px;
+            padding-right: 8px;
+            padding-top: 6px;
+            padding-bottom: 6px;
+            spacing: 10px;
+            Text {
+                text: "New design \u{2014} no tiers yet. Add the girdle first.";
+                font-size: 11px;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Rectangle {
+                width: add_txt.preferred-width + 16px;
+                height: 24px;
+                border-radius: Theme.radius-sm;
+                background: add_touch.has-hover ? Theme.primary-hover : Theme.primary;
+                opacity: GuideModel.allows_tier_form() ? 1.0 : 0.4;
+                add_txt := Text {
+                    text: "+ Add Tier";
+                    font-size: 10px;
+                    font-weight: 700;
+                    color: Theme.text-on-primary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                // Same Add-mode entry the command bar's and tier table's own
+                // "+ Add Tier" buttons use.
+                add_touch := TouchArea {
+                    enabled: GuideModel.allows_tier_form();
+                    clicked => {
+                        EditorModel.selected_tier_index = -1;
+                        EditorModel.inspector_tab = 0;
+                        EditorModel.inspector_collapsed = false;
+                    }
+                }
+            }
+        }
+    }
+}

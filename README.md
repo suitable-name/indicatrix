@@ -42,11 +42,13 @@ geometry rather than approximating it:
 | Crate / app | What it is |
 |---|---|
 | [`crates/indicatrix`](crates/indicatrix/README.md) | The spectral path tracer — the physics core. Facet planes + material in, rendered pixels and/or brilliance/fire/scintillation metrics out. |
-| [`crates/indicatrix-net`](crates/indicatrix-net/README.md) | Wire protocol between a viewer and a remote server: offloading `indicatrix` sample tracing, and reading a remote design library. Types and framing only — no sockets. |
+| [`crates/indicatrix-net`](crates/indicatrix-net/README.md) | Wire protocol between a viewer, a coordinator and its render workers: offloading `indicatrix` sample tracing, and reading a remote design library. Types and framing only — no sockets. |
+| `crates/indicatrix-dispatch` | Sample-range scheduling for render lanes: the shared disjoint sample cursor, per-lane rate models and chunk sizing, a lane pool that merges chunk sums deterministically, and a whole-item batch queue. No networking and no GUI types; used by both the desktop app and the coordinator. |
+| `crates/indicatrix-cut-core` | The editor core behind `indicatrix-cut`'s Edit tab: preform, editable cutting schedule, undo/redo, design templates. |
 | [`crates/indicatrix-formats`](crates/indicatrix-formats/README.md) | Reader/writer for GemCAD-style `.asc` cutting-schedule files. Zero runtime dependencies. |
 | [`crates/indicatrix-vault`](crates/indicatrix-vault/README.md) | Local SQLite-backed design library — models, storage, and local `.asc` import/export. |
 | [`apps/indicatrix-cut`](apps/indicatrix-cut/README.md) | The desktop faceting-design editor, built with [Slint](https://slint.dev/): browse, search, and render your library in 3D, with a faceting editor for material retargeting and a solid inspection view. |
-| [`apps/indicatrix-worker`](apps/indicatrix-worker/README.md) | Headless render CLI and remote server — serves a design library over mutual TLS, and optionally accepts render requests too. |
+| [`apps/indicatrix-worker`](apps/indicatrix-worker/README.md) | Headless render CLI and remote server — `serve` is a coordinator that serves a design library over mutual TLS and (on a `worker` build) spreads render requests over the machines that `join` it, rendering itself too with `--render`. |
 
 ## Build and run
 
@@ -74,8 +76,8 @@ neither `indicatrix` nor the render path in at all (see
 without it, but running it just prints an error telling you to rebuild with
 `--features worker`. See
 [`apps/indicatrix-worker`'s README](apps/indicatrix-worker/README.md) for how to
-produce a `scene.json`, and for the `serve`/`cert` subcommands that let a
-second machine's GPU or CPU help render over the network.
+produce a `scene.json`, and for the `serve`/`join`/`cert` subcommands that let
+other machines' GPUs and CPUs help render over the network.
 
 ### Testing
 
@@ -142,17 +144,18 @@ give it a worse code layout than no BOLT at all.
 
 ## Feature flags
 
-All of the following are **off by default**.
+All of the following are **off by default**, except `indicatrix-net`'s `compression`.
 
 | Crate | Feature | Adds |
 |---|---|---|
+| `indicatrix-net` | `compression` (**on** by default) | The lossless compressed payload encodings (byte shuffle + zstd / LZ4) and the PNG display-frame codec. Without it the protocol still works, sending raw payloads. |
 | `indicatrix` | `gpu` | `renderer::gpu`: the verified GPU port of the spectral transport physics and its equivalence harness. Pulls in `wgpu`, `pollster`. |
 | `indicatrix` | `hdr` | Radiance `.hdr` equirectangular environment-map *decoding* for `renderer::env_map`. Pulls in `image` (default features off, `hdr` format only). |
 | `indicatrix` | `serde` | `Serialize`/`Deserialize` on the scene-description types (`GemMaterial`, `GpuFacetPlane`, `LightingPreset`) that `indicatrix-net`'s wire protocol needs. |
 | `indicatrix-net` | `render` | `SceneState`/`RenderRequest` and everything else that needs `indicatrix`'s resolved scene/material types. Off by default so a library-only `indicatrix-worker` build never compiles `indicatrix` in at all. |
 | `apps/indicatrix-cut` | `gpu` | Routes the viewport's progressive accumulation and the high-resolution export worker through `indicatrix`'s GPU megakernel, falling back to the CPU tracer per frame whenever it declines. See [`apps/indicatrix-cut/docs/gpu.md`](apps/indicatrix-cut/docs/gpu.md). |
-| `apps/indicatrix-worker` | `worker` | Render capacity: `RenderRequest` handling on `serve`, and the `render` subcommand actually working. Turns on `indicatrix-net/render`. Without it, `indicatrix-worker` serves a read-only design library only. |
-| `apps/indicatrix-worker` | `gpu` | Implies `worker`. Routes `render`/`serve` tracing through `indicatrix`'s GPU megakernel, falling back to the CPU tracer whenever it declines. |
+| `apps/indicatrix-worker` | `worker` | Render capacity: the coordinator's worker port and job execution on `serve`, `serve --render`, the `join` subcommand, and the `render` subcommand actually working. Turns on `indicatrix-net/render`. Without it, `indicatrix-worker` serves a read-only design library only. |
+| `apps/indicatrix-worker` | `gpu` | Implies `worker`. Routes `render`/`serve --render`/`join` tracing through `indicatrix`'s GPU megakernel, falling back to the CPU tracer whenever it declines. |
 
 ## Screenshots
 
@@ -180,7 +183,8 @@ crate's own README, then its `docs/` folder if it has one:
   format, the preview-then-handoff remote-rendering model, import/export, and
   the `gpu` feature's fallback rules.
 - [`apps/indicatrix-worker/docs/`](apps/indicatrix-worker/docs/) — the trust model
-  behind its mutual-TLS server, and its internal architecture.
+  behind its mutual-TLS server (viewer and worker roles), and its internal
+  architecture, including the coordinator.
 
 ## License
 

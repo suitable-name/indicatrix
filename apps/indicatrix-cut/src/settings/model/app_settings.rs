@@ -3,6 +3,7 @@
 
 use super::{
     local_compute::LocalComputeTarget,
+    remote_endpoint::{LegacyWorkerMigration, RemoteEndpoint, migrate_legacy_workers},
     worker::{LiveComputeTarget, LocalPreviewScale, WorkerSettings},
 };
 use crate::bridge::export_thread::DEFAULT_TEMPLATE as DEFAULT_EXPORT_FILENAME_TEMPLATE;
@@ -30,13 +31,10 @@ pub const DEFAULT_GIRDLE_FROSTED: bool = false;
 pub const DEFAULT_EDGE_ROUNDING_RADIUS: f32 = 0.0;
 pub const DEFAULT_STONE_WIDTH_MM: f32 = 0.0;
 pub const DEFAULT_LOCAL_PREVIEW_SCALE: LocalPreviewScale = LocalPreviewScale::Off;
-/// `512` -- so a settings file predating this becoming configurable still renders
-/// remote batches at the sample count they always used.
-pub const DEFAULT_REMOTE_RENDER_SAMPLES: u32 = 512;
-/// `LiveComputeTarget::Both` is a no-op without a configured worker
-/// (`orchestrator::poll_tick` only dispatches remote when a worker is both selected
-/// and present in `remote_workers`), so a fresh install behaves exactly as before --
-/// `Both` only starts doing anything once a worker is added.
+/// `LiveComputeTarget::Both` is a no-op without a configured remote
+/// (`orchestrator::poll_tick` only dispatches remote when `AppSettings::remote` is set),
+/// so a fresh install behaves exactly as before -- `Both` only starts doing anything
+/// once a remote is configured.
 pub const DEFAULT_LIVE_COMPUTE_TARGET: LiveComputeTarget = LiveComputeTarget::Both;
 /// `CpuGpu` matches `LocalComputeTarget::Default`, reproducing today's hybrid CPU+GPU
 /// behaviour on a `gpu`-feature build (CPU-only otherwise, since `ViewportGpu` always
@@ -145,6 +143,12 @@ pub const DEFAULT_EDITOR_INSPECTOR_HEIGHT: f32 = 260.0;
 /// deserialization: a settings file that predates a field still loads successfully
 /// with that field defaulted. Full-document parse failure is handled one level up, in
 /// `store::load_or_default`.
+///
+/// Unknown keys are IGNORED (no `deny_unknown_fields`), which is how a removed setting
+/// retires without a migration: a file still carrying the old `remote_render_samples`
+/// key (removed when the live view's `target_samples` became the single global target
+/// for the combined local + remote image) loads fine and simply drops it on the next
+/// save.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AppSettings {
@@ -171,10 +175,16 @@ pub struct AppSettings {
     pub camera_pitch: f32,
     pub camera_distance: f32,
     pub selected_material: String,
-    /// Configured remote render workers, global (not per-session) -- see
-    /// `add_worker`/`update_worker`/`remove_worker`.
+    /// The one remote this viewer renders with and browses the library of (a
+    /// coordinator, rendering itself when started with `--render`). `None` renders
+    /// locally only. See [`RemoteEndpoint`].
     #[serde(default)]
-    pub remote_workers: Vec<WorkerSettings>,
+    pub remote: Option<RemoteEndpoint>,
+    /// The retired multi-worker list, read (never written) only so an old settings file
+    /// migrates: [`AppSettings::migrate_legacy_remote_workers`] moves its first entry into
+    /// [`Self::remote`] and logs the rest as dropped. Always empty after a load.
+    #[serde(rename = "remote_workers", default, skip_serializing)]
+    pub legacy_remote_workers: Vec<WorkerSettings>,
     /// Whether the À-Trous denoiser is applied to the merged accumulation, regardless
     /// of which backend produced it -- a single toggle covering the whole image, never
     /// per-source, since denoising is nonlinear and can only be applied once to the
@@ -186,12 +196,12 @@ pub struct AppSettings {
     pub backdrop: Backdrop,
     /// Inclusion/subsurface scattering amount: the Henyey-Greenstein `sigma_s`
     /// applied via `GemMaterial::with_scattering_amount` -- see `scattering_sigma_s`
-    /// in `crates/indicatrix/src/optics/materials.rs` for the `0.05`-`3.0` useful
+    /// in `crates/indicatrix/src/optics/materials/mod.rs` for the `0.05`-`3.0` useful
     /// range. `0.0` (default) is off: the exact deterministic Beer-Lambert path.
     pub inclusion_sigma_s: f32,
     /// Crystal-axis orientation override -- off ("as cut") by default, leaving each
     /// material's own `GemMaterial::c_axis` untouched. When on, `c_axis_tilt_deg`/
-    /// `c_axis_azimuth_deg` below replace it via `gui::c_axis::angles_to_c_axis`.
+    /// `c_axis_azimuth_deg` below replace it via `gui::optics::c_axis::angles_to_c_axis`.
     /// Disabled in the UI for an isotropic material, whose optic axis is physically
     /// meaningless.
     pub c_axis_override_enabled: bool,
@@ -219,12 +229,8 @@ pub struct AppSettings {
     /// Local preview-then-settle rendering -- while the camera moves, trace at a
     /// fraction of `render_width`/`render_height`, then snap to full resolution once
     /// settled. `Off` (default) reproduces pre-existing behaviour -- see
-    /// `bridge::local_preview::effective_dimensions` for the mechanism.
+    /// `bridge::render_thread::local_preview::effective_dimensions` for the mechanism.
     pub local_preview_scale: LocalPreviewScale,
-    /// The one-shot full-quality remote render's total sample count -- global (like
-    /// `denoise_enabled`), not per-worker, since every worker renders the identical
-    /// request. `512` by default -- see [`DEFAULT_REMOTE_RENDER_SAMPLES`].
-    pub remote_render_samples: u32,
     /// Live rendering's Local/Remote/Local+Remote choice -- see `LiveComputeTarget`.
     #[serde(default)]
     pub live_compute_target: LiveComputeTarget,
@@ -378,7 +384,8 @@ impl Default for AppSettings {
             camera_pitch: DEFAULT_CAMERA_PITCH,
             camera_distance: DEFAULT_CAMERA_DISTANCE,
             selected_material: DEFAULT_MATERIAL.to_string(),
-            remote_workers: Vec::new(),
+            remote: None,
+            legacy_remote_workers: Vec::new(),
             denoise_enabled: true,
             backdrop: Backdrop::default(),
             inclusion_sigma_s: DEFAULT_INCLUSION_SIGMA_S,
@@ -389,7 +396,6 @@ impl Default for AppSettings {
             edge_rounding_radius: DEFAULT_EDGE_ROUNDING_RADIUS,
             stone_width_mm: DEFAULT_STONE_WIDTH_MM,
             local_preview_scale: DEFAULT_LOCAL_PREVIEW_SCALE,
-            remote_render_samples: DEFAULT_REMOTE_RENDER_SAMPLES,
             live_compute_target: DEFAULT_LIVE_COMPUTE_TARGET,
             local_compute_target: DEFAULT_LOCAL_COMPUTE_TARGET,
             env_map_path: String::new(),
@@ -415,36 +421,18 @@ impl Default for AppSettings {
 }
 
 impl AppSettings {
-    /// Adds a new remote worker to the end of the list.
-    pub fn add_worker(&mut self, worker: WorkerSettings) {
-        self.remote_workers.push(worker);
+    /// The remote endpoint's connection settings, if one is configured -- what every
+    /// render/library code path connects with.
+    #[must_use]
+    pub fn remote_worker(&self) -> Option<WorkerSettings> {
+        self.remote.as_ref().map(|r| r.connection.clone())
     }
 
-    /// Overwrites the worker at `index`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if `index` is out of range.
-    pub fn update_worker(&mut self, index: usize, worker: WorkerSettings) -> Result<(), String> {
-        let slot = self
-            .remote_workers
-            .get_mut(index)
-            .ok_or_else(|| format!("No worker at index {index}."))?;
-        *slot = worker;
-        Ok(())
-    }
-
-    /// Removes the worker at `index`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error message if `index` is out of range.
-    pub fn remove_worker(&mut self, index: usize) -> Result<(), String> {
-        if index >= self.remote_workers.len() {
-            return Err(format!("No worker at index {index}."));
-        }
-        self.remote_workers.remove(index);
-        Ok(())
+    /// Folds a legacy multi-worker `remote_workers` list into [`Self::remote`] -- see
+    /// [`migrate_legacy_workers`]. Called by `settings::store::load_or_default` right
+    /// after parsing; idempotent (a second call finds the legacy list empty).
+    pub fn migrate_legacy_remote_workers(&mut self) -> Option<LegacyWorkerMigration> {
+        migrate_legacy_workers(&mut self.legacy_remote_workers, &mut self.remote)
     }
 
     /// Records `path` as the most-recently-used native design file: moves it to the

@@ -21,7 +21,8 @@ pub(super) struct BackendFrame<'a> {
     pub(super) width: u32,
     pub(super) height: u32,
     /// Pose, carried separately from `camera` because the guide-buffer cache keys on
-    /// it (see `bridge::guide_pass`) and cannot recover it from a built `Camera`.
+    /// it (see `bridge::frame_cache::guide_pass`) and cannot recover it from a built
+    /// `Camera`.
     pub(super) yaw: f32,
     pub(super) pitch: f32,
     pub(super) distance: f32,
@@ -53,9 +54,9 @@ pub(super) struct FrameOutputs<'a> {
 ///
 /// The megakernel returns radiance only, with no first-hit depth/normal/facet-id, so
 /// the A-Trous denoiser has nothing to key on -- the same gap a remote worker's `FRAME`
-/// payload has, solved the same way: `bridge::guide_pass`'s local primary-ray prepass,
-/// cached on pose plus geometry. When the `gpu` feature is off, `GpuBackend` always
-/// declines and the guide cache is never consulted.
+/// payload has, solved the same way: `bridge::frame_cache::guide_pass`'s local
+/// primary-ray prepass, cached on pose plus geometry. When the `gpu` feature is off,
+/// `GpuBackend` always declines and the guide cache is never consulted.
 pub(super) struct ViewportGpu {
     gpu: GpuBackend,
     guides: crate::bridge::frame_cache::guide_pass::GuideCache,
@@ -265,7 +266,7 @@ impl ViewportGpu {
 /// The CPU fallback is not exceptional: it runs whenever the `gpu` feature is off, no
 /// adapter exists, or the device is otherwise unavailable. An HDR-mapped environment is
 /// not a special case here either, since the GPU megakernel renders HDR maps directly
-/// (see `docs/history/indicatrix-cut.md` for the CPU-only HDR path). Both
+/// (only a map past the adapter's storage-buffer limit declines, like any decline). Both
 /// backends add into the same buffer with the same sample-counter
 /// meaning, so switching between them mid-render (including a live
 /// `local_compute_target` change) continues a correct running average.

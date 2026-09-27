@@ -43,7 +43,8 @@ use std::time::{Duration, Instant};
 use glam::Vec3;
 
 use crate::optics::raytracer::{
-    build_plane_soa, pixel_rotations, sample_draws, trace_spectral_ray_with_finish_soa,
+    add_finite_sample, build_plane_soa, pixel_rotations, sample_draws,
+    trace_spectral_ray_with_finish_soa,
 };
 
 use super::frame::{GpuFrameError, GpuFrameRenderer, GpuFrameScene};
@@ -352,7 +353,8 @@ fn cpu_sample_xyz(
 
 /// Traces `spp` samples per pixel on the CPU, sample indices `[sample_offset,
 /// sample_offset + spp)`, across every available core, and returns one SUMMED `Vec3` per
-/// pixel (never an average -- see the module doc's "Merge convention" section).
+/// pixel (never an average -- see the module doc's "Merge convention" section). A
+/// non-finite sample is dropped but still counted, like the GPU reduction it merges with.
 ///
 /// Pixels are partitioned across threads INTERLEAVED (thread `t` owns pixels `t`, `t +
 /// num_threads`, ...) rather than in contiguous blocks, so a spatially clustered cost
@@ -385,7 +387,12 @@ fn cpu_trace_range(scene: &GpuFrameScene<'_>, sample_offset: u32, spp: u32) -> V
                         let mut sum = Vec3::ZERO;
                         for local_sample in 0..spp {
                             let sample_num = sample_offset + local_sample;
-                            sum += cpu_sample_xyz(scene, plane_soa, pixel as u32, sample_num);
+                            // Dropped-but-counted non-finite rule, the CPU twin of
+                            // `reduce_xyz.wgsl`'s -- see `add_finite_sample`.
+                            add_finite_sample(
+                                &mut sum,
+                                cpu_sample_xyz(scene, plane_soa, pixel as u32, sample_num),
+                            );
                         }
                         local.push((pixel, sum));
                         pixel += num_threads;

@@ -9,8 +9,8 @@
 //! name, e.g. `"Trigonal"`. This module is the one place that knows both types, and
 //! is where the string <-> enum and Slint-combo-index <-> enum conversions live. No
 //! dependency on Slint itself -- pure data, exercised directly by the unit tests,
-//! matching this app's `gui::c_axis`/`gui::sample_scale` precedent for where such a
-//! helper lives.
+//! matching this app's `gui::optics::c_axis`/`gui::render::sample_scale` precedent for
+//! where such a helper lives.
 
 use indicatrix::optics::materials::{CrystalSystem, GemMaterial, OpticalCharacter};
 use indicatrix_vault::{
@@ -399,8 +399,8 @@ mod tests {
     ///
     /// The final assertion reflects that `gpu_supported()` supports biaxial materials
     /// (see `indicatrix::optics::materials::GemMaterial::gpu_supported`'s own
-    /// doc comment, and `docs/history/indicatrix-core.md`, for the eigenvector-
-    /// conditioning fix that makes this safe), so a row with
+    /// doc comment for the eigenvector-conditioning fix that makes this safe), so a
+    /// row with
     /// `biaxial_delta_beta_alpha = Some(_)` is GPU-supported like every other material,
     /// not excluded from it.
     #[test]

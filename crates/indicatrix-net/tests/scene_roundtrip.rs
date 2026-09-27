@@ -43,6 +43,7 @@ fn sample_scene() -> SceneState {
         planes,
         girdle_frosted: false,
         backdrop: 0.0,
+        environment: indicatrix_net::scene::SceneEnvironment::Studio,
     }
 }
 
@@ -113,6 +114,31 @@ fn scene_state_round_trip_preserves_girdle_frosted_both_ways() {
         assert_eq!(decoded.girdle_frosted, girdle_frosted);
         assert_eq!(scene, decoded);
     }
+}
+
+/// The v14 (Part E) environment round-trips both ways, and a `scene.json` written before
+/// the field existed still loads as the studio rig (`#[serde(default)]`).
+#[test]
+fn scene_state_round_trip_preserves_the_environment_both_ways() {
+    use indicatrix_net::scene::{HdrEnvironment, SceneEnvironment};
+    let hdr = HdrEnvironment {
+        content_hash: [0x5A; 32],
+        width: 4096,
+        height: 2048,
+    };
+    for environment in [SceneEnvironment::Studio, SceneEnvironment::Hdr(hdr)] {
+        let mut scene = sample_scene();
+        scene.environment = environment;
+        let bytes = postcard::to_allocvec(&scene).unwrap();
+        let decoded: SceneState = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.environment, environment);
+        assert_eq!(scene, decoded);
+    }
+    let mut scene = sample_scene();
+    scene.environment = SceneEnvironment::Hdr(hdr);
+    assert_eq!(scene.hdr(), Some(&hdr));
+    scene.environment = SceneEnvironment::Studio;
+    assert_eq!(scene.hdr(), None);
 }
 
 /// `GemMaterial::absorption_path_scale` is embedded inside `SceneState::material`, not

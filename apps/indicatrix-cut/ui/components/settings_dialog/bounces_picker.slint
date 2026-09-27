@@ -1,0 +1,186 @@
+import { Theme } from "../../theme.slint";
+import { SettingsModel } from "../../models/settings.slint";
+
+// Ray Bounces - Segmented Pill Selector.
+//
+// Ladder is 4/8/12/24/64/128, backed by
+// `crates/indicatrix/examples/bounce_cost.rs` measurements: cost is nearly
+// flat in the cap (an 85x spread from 12 to 1024 costs under 1.4x wall-clock,
+// CPU) because the path population is short-tailed (median 4 bounces, p95 29,
+// only 0.03% ever reach 128). 12 is the default, the sane interactive middle.
+// 64 and 128 are the measured points where the hardest case (Diamond) crosses
+// 99.5% and 99.99% converged against a 1024-bounce reference; nothing above
+// 128 is offered since the measurement shows zero further change up to 1024.
+export component BouncesPicker inherits VerticalLayout {
+    spacing: 6px;
+    Text { text: "Max Ray Bounces (Dispersion Depth)"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+
+    HorizontalLayout {
+        spacing: 4px;
+
+        // 4 Bounces
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            background: SettingsModel.bounce_index == 0 ? Theme.accent-cyan : (b0_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.bounce_index == 0 ? Theme.accent-cyan : #334155;
+
+            b0_touch := TouchArea {
+                clicked => {
+                    SettingsModel.bounce_index = 0;
+                    SettingsModel.bounces_changed(4);
+                }
+            }
+
+            Text {
+                text: "4";
+                font-size: 11px;
+                font-weight: 600;
+                color: SettingsModel.bounce_index == 0 ? #0f172a : Theme.text-secondary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // 8 Bounces
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            background: SettingsModel.bounce_index == 1 ? Theme.accent-cyan : (b1_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.bounce_index == 1 ? Theme.accent-cyan : #334155;
+
+            b1_touch := TouchArea {
+                clicked => {
+                    SettingsModel.bounce_index = 1;
+                    SettingsModel.bounces_changed(8);
+                }
+            }
+
+            Text {
+                text: "8";
+                font-size: 11px;
+                font-weight: 600;
+                color: SettingsModel.bounce_index == 1 ? #0f172a : Theme.text-secondary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // 12 Bounces (default)
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            background: SettingsModel.bounce_index == 2 ? Theme.accent-cyan : (b2_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.bounce_index == 2 ? Theme.accent-cyan : #334155;
+
+            b2_touch := TouchArea {
+                clicked => {
+                    SettingsModel.bounce_index = 2;
+                    SettingsModel.bounces_changed(12);
+                }
+            }
+
+            Text {
+                text: "12";
+                font-size: 11px;
+                font-weight: 600;
+                color: SettingsModel.bounce_index == 2 ? #0f172a : Theme.text-secondary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // 24 Bounces
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            background: SettingsModel.bounce_index == 3 ? Theme.accent-cyan : (b3_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.bounce_index == 3 ? Theme.accent-cyan : #334155;
+
+            b3_touch := TouchArea {
+                clicked => {
+                    SettingsModel.bounce_index = 3;
+                    SettingsModel.bounces_changed(24);
+                }
+            }
+
+            Text {
+                text: "24";
+                font-size: 11px;
+                font-weight: 600;
+                color: SettingsModel.bounce_index == 3 ? #0f172a : Theme.text-secondary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // 64 Bounces
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            background: SettingsModel.bounce_index == 4 ? Theme.accent-cyan : (b4_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.bounce_index == 4 ? Theme.accent-cyan : #334155;
+
+            b4_touch := TouchArea {
+                clicked => {
+                    SettingsModel.bounce_index = 4;
+                    SettingsModel.bounces_changed(64);
+                }
+            }
+
+            Text {
+                text: "64";
+                font-size: 11px;
+                font-weight: 600;
+                color: SettingsModel.bounce_index == 4 ? #0f172a : Theme.text-secondary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        // 128 Bounces (ceiling)
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 28px;
+            border-radius: Theme.radius-sm;
+            background: SettingsModel.bounce_index == 5 ? Theme.accent-cyan : (b5_touch.has-hover ? #1e293b : #0f172a);
+            border-width: 1px;
+            border-color: SettingsModel.bounce_index == 5 ? Theme.accent-cyan : #334155;
+
+            b5_touch := TouchArea {
+                clicked => {
+                    SettingsModel.bounce_index = 5;
+                    SettingsModel.bounces_changed(128);
+                }
+            }
+
+            Text {
+                text: "128";
+                font-size: 11px;
+                font-weight: 600;
+                color: SettingsModel.bounce_index == 5 ? #0f172a : Theme.text-secondary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    // Flat cost holds on CPU, but GPU threads run in lockstep, so the few
+    // long paths in the tail stall the whole workgroup at this rung range.
+    if SettingsModel.bounce_index >= 4: Text {
+        text: "Modest cost on CPU, but noticeably steeper on GPU -- long paths stall the whole workgroup there since threads run in lockstep.";
+        font-size: 11px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+}

@@ -1,5 +1,6 @@
 //! `cert init` / `cert issue-server` / `cert issue-client`: an in-process private CA
-//! for `indicatrix-worker`'s mutual TLS.
+//! for `indicatrix-worker`'s mutual TLS, with two client roles (viewer and joining
+//! worker -- see [`role`]).
 //!
 //! Certificate GENERATION only -- one-shot CLI operations that produce PEM files on
 //! disk. Private-key writing (including Windows-ACL permissioning) and loading an
@@ -19,15 +20,20 @@
 //! <pki-dir>/
 //!   ca.pem          CA certificate (public -- ships to every worker and every viewer)
 //!   ca.key          CA private key (sensitive -- ACL-restricted, never leaves this dir)
-//!   server.pem       this worker's certificate (public)
-//!   server.key       this worker's private key (sensitive -- ACL-restricted)
-//!   allowlist.txt     trusted client-certificate fingerprints -- see `indicatrix_net::tls`
+//!   server.pem       the coordinator's (`serve`'s) certificate (public)
+//!   server.key       the coordinator's private key (sensitive -- ACL-restricted)
+//!   allowlist-viewers.txt  trusted VIEWER certificate fingerprints -- see `indicatrix_net::tls`
+//!                          (a pre-role `allowlist.txt` keeps serving until this exists)
+//!   allowlist-workers.txt  trusted WORKER certificate fingerprints (coordinator worker port)
 //!
-//! <bundle-dir>/        (from `issue-client --out`, copied to the viewer machine)
+//! <bundle-dir>/        (from `issue-client --out`, copied to the viewer/worker machine)
 //!   ca.pem
 //!   client.pem
 //!   client.key        (sensitive -- ACL-restricted)
 //! ```
+//!
+//! A worker certificate's Common Name is `worker:<name>`; see [`role`] for how roles
+//! are recorded and checked.
 //!
 //! `issue-server` and `issue-client` both re-derive the CA's signing identity from the
 //! saved `ca.pem`/`ca.key` in `<pki-dir>` (via [`rcgen::Issuer::from_ca_cert_pem`]),
@@ -53,7 +59,7 @@
 //! of a message) can match on the enum instead -- `crate::enroll::registry::EnrollIssueError`
 //! does exactly that, wrapping [`PkiError`] rather than flattening it to a `String`.
 
-use indicatrix_net::tls;
+use indicatrix_net::{messages::PeerRole, tls};
 use rcgen::{
     BasicConstraints, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
     KeyUsagePurpose,
@@ -65,14 +71,22 @@ use std::{
 };
 use time::{Duration, OffsetDateTime};
 
+pub mod role;
+#[cfg(test)]
+mod tests;
+
+pub use role::{
+    LEGACY_ALLOWLIST_FILE, VIEWER_ALLOWLIST_FILE, WORKER_ALLOWLIST_FILE, WORKER_CN_PREFIX,
+    allowlist_in, role_of_certificate, viewer_allowlist_in, worker_allowlist_in,
+    worker_label_of_certificate,
+};
+
 pub const CA_CERT_FILE: &str = "ca.pem";
 pub const CA_KEY_FILE: &str = "ca.key";
 pub const SERVER_CERT_FILE: &str = "server.pem";
 pub const SERVER_KEY_FILE: &str = "server.key";
 pub const CLIENT_CERT_FILE: &str = "client.pem";
 pub const CLIENT_KEY_FILE: &str = "client.key";
-/// Lives alongside the CA (`<pki-dir>/allowlist.txt`), never in a viewer bundle.
-pub const ALLOWLIST_FILE: &str = "allowlist.txt";
 
 const CA_LIFETIME_DAYS: i64 = 365 * 10;
 const LEAF_LIFETIME_DAYS: i64 = 365 * 5;
@@ -109,6 +123,9 @@ pub enum PkiError {
     NoServerSan,
     /// [`sign_client_leaf`] was given an empty (or all-whitespace) `--name`.
     EmptyClientName,
+    /// A VIEWER certificate was requested for a `--name` starting with
+    /// [`WORKER_CN_PREFIX`], which would make it look like a worker certificate.
+    ReservedRolePrefix { name: String },
     /// An [`rcgen`] operation failed (key generation, building a SAN list,
     /// self-signing, or leaf-signing). `context` names what was being built, matching
     /// this module's existing "<what> failed: <e>" messages.
@@ -167,6 +184,11 @@ impl fmt::Display for PkiError {
                  --help"
             ),
             Self::EmptyClientName => write!(f, "--name must not be empty"),
+            Self::ReservedRolePrefix { name } => write!(
+                f,
+                "--name {name:?} starts with {WORKER_CN_PREFIX:?}, which marks WORKER certificates -- pick \
+                 another name for a viewer, or pass --role worker for a worker certificate"
+            ),
             Self::Rcgen { context, source } => write!(f, "{context}: {source}"),
             Self::RcgenAtPath { path, source } => write!(f, "{}: {source}", path.display()),
             Self::Message(msg) => f.write_str(msg),
@@ -197,6 +219,7 @@ impl std::error::Error for PkiError {
             Self::CaAlreadyExists { .. }
             | Self::NoServerSan
             | Self::EmptyClientName
+            | Self::ReservedRolePrefix { .. }
             | Self::Message(_) => None,
         }
     }
@@ -409,24 +432,43 @@ pub fn issue_server(dir: &Path, hosts: &[String], ips: &[IpAddr]) -> Result<(), 
     Ok(())
 }
 
-/// `indicatrix-worker cert issue-client --dir <pki-dir> --name <name> --out <bundle-dir>`.
-///
-/// Issues a viewer's client certificate signed by the CA in `<pki-dir>`, writes a
-/// self-contained bundle (`ca.pem`, `client.pem`, `client.key`) to `<bundle-dir>`, and
-/// appends the new certificate's fingerprint to `<pki-dir>/allowlist.txt` (labeled
-/// `name`) so the worker trusts it immediately -- no separate enrollment step.
-///
-/// `name` becomes the certificate's Subject Common Name, purely a human label; unlike
-/// `issue-server`, no SAN is set since a client cert is never validated by hostname.
+/// `indicatrix-worker cert issue-client --dir <pki-dir> --name <name> --out <bundle-dir>`
+/// for a VIEWER -- [`issue_client_with_role`] with [`PeerRole::Viewer`].
 ///
 /// # Errors
 ///
-/// A human-readable message if `name` is empty, the CA can't be loaded, signing fails,
-/// `bundle-dir` or its files can't be written, or the fingerprint can't be appended to
-/// the allowlist (in which case the printed message includes the line to add by hand).
+/// See [`issue_client_with_role`].
 pub fn issue_client(dir: &Path, name: &str, out: &Path) -> Result<(), PkiError> {
+    issue_client_with_role(dir, name, out, PeerRole::Viewer)
+}
+
+/// `indicatrix-worker cert issue-client --dir <pki-dir> --name <name> --out <bundle-dir>
+/// [--role viewer|worker]`.
+///
+/// Issues a client certificate for `role` signed by the CA in `<pki-dir>`, writes a
+/// self-contained bundle (`ca.pem`, `client.pem`, `client.key`) to `<bundle-dir>`, and
+/// appends the new certificate's fingerprint to that role's allowlist in `<pki-dir>`
+/// ([`allowlist_in`]: `allowlist-viewers.txt` or `allowlist-workers.txt`), so the
+/// matching listener trusts it immediately -- no separate enrollment step.
+///
+/// The Common Name is `name` for a viewer and `worker:<name>` for a worker (see
+/// [`role`]); unlike `issue-server`, no SAN is set since a client cert is never
+/// validated by hostname.
+///
+/// # Errors
+///
+/// A human-readable message if `name` is empty (or a viewer name carrying the worker
+/// prefix), the CA can't be loaded, signing fails, `bundle-dir` or its files can't be
+/// written, or the fingerprint can't be appended to the allowlist (in which case the
+/// printed message includes the line to add by hand).
+pub fn issue_client_with_role(
+    dir: &Path,
+    name: &str,
+    out: &Path,
+    role: PeerRole,
+) -> Result<(), PkiError> {
     let ca_issuer = load_ca(dir)?;
-    let (cert, key_pair, not_after) = sign_client_leaf(&ca_issuer, name)?;
+    let (cert, key_pair, not_after, common_name) = sign_client_leaf(&ca_issuer, name, role)?;
 
     std::fs::create_dir_all(out).map_err(|source| PkiError::Io {
         verb: "create",
@@ -457,20 +499,21 @@ pub fn issue_client(dir: &Path, name: &str, out: &Path) -> Result<(), PkiError> 
 
     let fingerprint = tls::fingerprint(cert.der());
     let fingerprint_hex = tls::fingerprint_to_hex(&fingerprint);
-    let allowlist_path = dir.join(ALLOWLIST_FILE);
-    tls::append_to_allowlist(&allowlist_path, &fingerprint, name).map_err(|source| {
+    let allowlist_path = allowlist_in(dir, role);
+    tls::append_to_allowlist(&allowlist_path, &fingerprint, &common_name).map_err(|source| {
         PkiError::AllowlistUpdate {
             out_dir: out.to_path_buf(),
             path: allowlist_path.clone(),
             fingerprint_hex: fingerprint_hex.clone(),
-            name: name.to_string(),
+            name: common_name.clone(),
             source,
         }
     })?;
 
     tracing::info!(
-        "indicatrix-worker cert issue-client: wrote bundle to {} ({CA_CERT_FILE}, {CLIENT_CERT_FILE}, {CLIENT_KEY_FILE}) -- \
-         fingerprint {fingerprint_hex} added to {} -- expires {} (UTC)",
+        "indicatrix-worker cert issue-client: wrote {} bundle {common_name:?} to {} ({CA_CERT_FILE}, {CLIENT_CERT_FILE}, \
+         {CLIENT_KEY_FILE}) -- fingerprint {fingerprint_hex} added to {} -- expires {} (UTC)",
+        role::role_name(role),
         out.display(),
         allowlist_path.display(),
         not_after.date()
@@ -478,27 +521,37 @@ pub fn issue_client(dir: &Path, name: &str, out: &Path) -> Result<(), PkiError> 
     Ok(())
 }
 
-/// The signing logic shared by [`issue_client`] (writes the bundle to disk and
-/// allowlists it immediately) and [`issue_client_in_memory`] (returns PEM strings,
-/// touches neither disk nor the allowlist).
+/// The signing logic shared by [`issue_client_with_role`] (writes the bundle to disk
+/// and allowlists it immediately) and [`issue_client_in_memory`] (returns PEM strings,
+/// touches neither disk nor the allowlist). Returns the certificate, its key, its expiry
+/// and the Common Name it was issued under ([`role::common_name_for`]).
 ///
 /// # Errors
 ///
-/// A human-readable message if `name` is empty, or signing fails.
+/// A human-readable message if `name` is empty, a viewer `name` carries the worker
+/// prefix, or signing fails.
 fn sign_client_leaf(
     ca_issuer: &Issuer<'static, KeyPair>,
     name: &str,
-) -> Result<(rcgen::Certificate, KeyPair, OffsetDateTime), PkiError> {
-    if name.trim().is_empty() {
+    role: PeerRole,
+) -> Result<(rcgen::Certificate, KeyPair, OffsetDateTime, String), PkiError> {
+    let label = name.strip_prefix(WORKER_CN_PREFIX).unwrap_or(name);
+    if label.trim().is_empty() {
         return Err(PkiError::EmptyClientName);
     }
+    let common_name =
+        role::common_name_for(role, name).ok_or_else(|| PkiError::ReservedRolePrefix {
+            name: name.to_string(),
+        })?;
 
     let mut params =
         CertificateParams::new(Vec::<String>::new()).map_err(|source| PkiError::Rcgen {
             context: "unexpected error building an empty SAN list",
             source,
         })?;
-    params.distinguished_name.push(DnType::CommonName, name);
+    params
+        .distinguished_name
+        .push(DnType::CommonName, common_name.as_str());
     params.not_before = not_before_with_skew_slack();
     params.not_after = not_after(LEAF_LIFETIME_DAYS);
     params.use_authority_key_identifier_extension = true;
@@ -516,14 +569,14 @@ fn sign_client_leaf(
             source,
         })?;
 
-    Ok((cert, key_pair, params.not_after))
+    Ok((cert, key_pair, params.not_after, common_name))
 }
 
 /// A freshly issued client certificate bundle, held entirely in memory.
 ///
-/// The counterpart to the three files [`issue_client`] writes to `<bundle-dir>`, for
-/// callers (`crate::enroll`) that must not write secret key material to disk while an
-/// enrollment token is unclaimed.
+/// The counterpart to the three files [`issue_client_with_role`] writes to
+/// `<bundle-dir>`, for callers (`crate::enroll`) that must not write secret key material
+/// to disk while an enrollment token is unclaimed.
 pub struct InMemoryClientBundle {
     /// PEM text of the CA certificate at `<pki-dir>/ca.pem` -- included so the claiming
     /// side gets the same self-contained three-file bundle `issue_client` would write.
@@ -532,28 +585,37 @@ pub struct InMemoryClientBundle {
     /// so a claiming client can verify this worker's identity before sending its bearer
     /// secret. See `indicatrix_net::token`'s doc comment.
     pub ca_fingerprint: tls::Fingerprint,
+    /// PEM text of the issued client certificate.
     pub client_cert_pem: String,
+    /// PEM text of the issued client certificate's private key.
     pub client_key_pem: String,
-    /// The issued client certificate's SHA-256 fingerprint, appended to
-    /// `allowlist.txt` only once the enrollment token is actually claimed (never at
-    /// issue time -- see `crate::enroll`).
+    /// The issued client certificate's SHA-256 fingerprint, appended to the role's
+    /// allowlist only once the enrollment token is actually claimed (never at issue
+    /// time -- see `crate::enroll`).
     pub client_fingerprint: tls::Fingerprint,
+    /// The Common Name the certificate was issued under (`worker:<name>` for a worker).
+    pub common_name: String,
 }
 
-/// Mints a client certificate exactly like [`issue_client`] does, but in memory only.
+/// Mints a client certificate for `role` exactly like [`issue_client_with_role`] does,
+/// but in memory only.
 ///
 /// Same CA, lifetime, and `ClientAuth` leaf, returned as PEM strings instead of written
-/// to `<bundle-dir>`, and never touches `<pki-dir>/allowlist.txt`. This is what makes
-/// token-based enrollment possible -- `crate::enroll` holds the bundle in an
+/// to `<bundle-dir>`, and never touches an allowlist. This is what makes token-based
+/// enrollment possible -- `crate::enroll` holds the bundle in an
 /// [`crate::enroll::EnrollRegistry`] entry until claimed or expired.
 ///
 /// # Errors
 ///
-/// Same as [`issue_client`]: a human-readable message if `name` is empty, the CA can't be
-/// loaded, or signing fails.
-pub fn issue_client_in_memory(dir: &Path, name: &str) -> Result<InMemoryClientBundle, PkiError> {
+/// Same as [`issue_client_with_role`]: a human-readable message if `name` is empty (or
+/// a viewer name carrying the worker prefix), the CA can't be loaded, or signing fails.
+pub fn issue_client_in_memory(
+    dir: &Path,
+    name: &str,
+    role: PeerRole,
+) -> Result<InMemoryClientBundle, PkiError> {
     let ca_issuer = load_ca(dir)?;
-    let (cert, key_pair, _not_after) = sign_client_leaf(&ca_issuer, name)?;
+    let (cert, key_pair, _not_after, common_name) = sign_client_leaf(&ca_issuer, name, role)?;
 
     let ca_cert_path = dir.join(CA_CERT_FILE);
     let ca_pem = std::fs::read_to_string(&ca_cert_path).map_err(|source| PkiError::Io {
@@ -574,137 +636,23 @@ pub fn issue_client_in_memory(dir: &Path, name: &str) -> Result<InMemoryClientBu
         client_cert_pem: cert.pem(),
         client_key_pem: key_pair.serialize_pem(),
         client_fingerprint,
+        common_name,
     })
 }
 
-/// The default path `serve --allowlist` uses when not given explicitly.
+/// The default path of `serve --allowlist` (the VIEWER allowlist).
 ///
-/// Sits alongside the `--ca` file, named [`ALLOWLIST_FILE`] -- matching where
-/// [`issue_client`] writes by default, so the common case needs no separate
-/// `--allowlist` flag.
+/// [`viewer_allowlist_in`] the `--ca` file's directory: `allowlist-viewers.txt`, or a
+/// pre-role `allowlist.txt` while only that exists. Matches where [`issue_client`]
+/// writes by default.
 #[must_use]
-pub fn default_allowlist_path(ca_path: &Path) -> PathBuf {
-    ca_path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."))
-        .join(ALLOWLIST_FILE)
+pub fn default_viewer_allowlist_path(ca_path: &Path) -> PathBuf {
+    viewer_allowlist_in(&role::pki_dir_of(ca_path))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn temp_dir(label: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "indicatrix-worker-pki-test-{label}-{}-{}",
-            std::process::id(),
-            fastrand_seed()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    // No rand dependency: a nanosecond timestamp keeps parallel test temp dirs unique.
-    fn fastrand_seed() -> u128 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    }
-
-    #[test]
-    fn init_writes_a_ca_and_refuses_to_overwrite_it() {
-        let dir = temp_dir("init");
-        init(&dir).unwrap();
-        assert!(dir.join(CA_CERT_FILE).exists());
-        assert!(dir.join(CA_KEY_FILE).exists());
-
-        let err = init(&dir).unwrap_err().to_string();
-        assert!(err.contains("already contains a CA"), "{err}");
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn issue_server_requires_at_least_one_san() {
-        let dir = temp_dir("issue-server-no-san");
-        init(&dir).unwrap();
-
-        let err = issue_server(&dir, &[], &[]).unwrap_err().to_string();
-        assert!(err.contains("--host or --ip"), "{err}");
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn issue_server_writes_a_cert_with_the_requested_sans() {
-        let dir = temp_dir("issue-server");
-        init(&dir).unwrap();
-        issue_server(
-            &dir,
-            &["worker.lan".to_string()],
-            &["10.0.0.5".parse().unwrap()],
-        )
-        .unwrap();
-
-        let cert_pem = std::fs::read_to_string(dir.join(SERVER_CERT_FILE)).unwrap();
-        assert!(cert_pem.contains("BEGIN CERTIFICATE"));
-        assert!(dir.join(SERVER_KEY_FILE).exists());
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn issue_client_writes_a_bundle_and_updates_the_allowlist() {
-        let dir = temp_dir("issue-client-dir");
-        let out = temp_dir("issue-client-out");
-        init(&dir).unwrap();
-        issue_client(&dir, "laptop", &out).unwrap();
-
-        assert!(out.join(CA_CERT_FILE).exists());
-        assert!(out.join(CLIENT_CERT_FILE).exists());
-        assert!(out.join(CLIENT_KEY_FILE).exists());
-
-        let allowlist_text = std::fs::read_to_string(dir.join(ALLOWLIST_FILE)).unwrap();
-        assert!(allowlist_text.contains("# laptop"), "{allowlist_text}");
-
-        let client_der = tls::load_certs(&out.join(CLIENT_CERT_FILE)).unwrap();
-        let fp = tls::fingerprint(&client_der[0]);
-        let allowlist = tls::Allowlist::load(&dir.join(ALLOWLIST_FILE)).unwrap();
-        assert!(allowlist.contains(&fp));
-
-        std::fs::remove_dir_all(&dir).ok();
-        std::fs::remove_dir_all(&out).ok();
-    }
-
-    #[test]
-    fn issue_client_rejects_an_empty_name() {
-        let dir = temp_dir("issue-client-empty-name");
-        init(&dir).unwrap();
-        let err = issue_client(&dir, "  ", &dir.join("bundle"))
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("--name"), "{err}");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn issue_server_and_issue_client_fail_clearly_without_an_existing_ca() {
-        let dir = temp_dir("no-ca");
-        let err = issue_server(&dir, &["worker.lan".to_string()], &[])
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("cert init"), "{err}");
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn default_allowlist_path_sits_beside_the_ca_file() {
-        let ca = Path::new("C:/pki/ca.pem");
-        assert_eq!(
-            default_allowlist_path(ca),
-            PathBuf::from("C:/pki").join(ALLOWLIST_FILE)
-        );
-    }
+/// The default path `serve --worker-allowlist` uses when not given explicitly:
+/// `allowlist-workers.txt` next to the `--ca` file.
+#[must_use]
+pub fn default_worker_allowlist_path(ca_path: &Path) -> PathBuf {
+    worker_allowlist_in(&role::pki_dir_of(ca_path))
 }

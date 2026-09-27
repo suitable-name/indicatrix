@@ -1,11 +1,11 @@
 //! The preview-then-handoff orchestrator: a repeating `slint::Timer` that polls
-//! `RenderContext`'s camera/light pose, feeds `bridge::handoff::HandoffMachine`, and
-//! dispatches to `bridge::remote_render` when the machine decides to hand off --
+//! `RenderContext`'s camera/light pose, feeds `bridge::remote::handoff::HandoffMachine`, and
+//! dispatches to `bridge::remote::remote_render` when the machine decides to hand off --
 //! including the async guide-buffer and denoise generations that keep the (multi-second
 //! at 4K) denoise pass off the Slint UI thread.
 //!
 //! `poll_tick` (in [`tick`]) is also the one place that decides "is the camera
-//! currently moving" for `bridge::local_preview` -- it writes
+//! currently moving" for `bridge::render_thread::local_preview` -- it writes
 //! `RenderContext::camera_moving` from this same `HandoffMachine` instance's state
 //! every tick, so both features share one definition of "settled".
 //!

@@ -35,10 +35,12 @@ one place.
 | Test connection fails with a message starting "TLS error: ..." | A problem with the mutual-TLS handshake itself -- often an expired or mismatched certificate bundle. | Re-generate or re-request the certificate bundle (Chapter 10) and re-enter it; confirm the worker's own certificates have not been reissued or revoked since you last connected. |
 | Test connection fails with "not a valid worker hostname: ..." | The **Address (host:port)** field is not a usable hostname or IP. | Re-check the address you entered against what the worker's operator gave you. |
 | Test connection fails with a message starting "connection error: ..." | An ordinary network problem -- the worker is unreachable at that address, or a firewall is blocking it. | Confirm the address and port, that the worker machine is on and reachable, and that no firewall is blocking the connection. |
-| Test connection succeeds but says "library only (no render capacity)" | The worker was built without render support -- it only serves its design library. | This is not a fault; use it for browsing/mirroring its library (Chapter 10), and point at a different worker if you need remote rendering. |
+| Test connection succeeds but says "library only (no render capacity)" | The remote has nothing to render with: it was built without render support, or it is a coordinator started without `--render` that no worker has joined yet. | This is not a fault; use it for browsing/mirroring its library (Chapter 10). For remote rendering, ask its operator to join a worker to it or start it with `--render`. |
+| An HDR-lit scene renders locally with the note "This remote doesn't support HDR environments; rendering locally" | The remote does not report HDR support -- typically its asset cache could not be opened. | Ask the remote's operator to check the asset cache (worker README, "HDR environment maps"). Studio-lit scenes are unaffected (Chapter 10). |
+| "This HDR environment can't be sent to the remote; rendering locally" | The loaded map has no source file the app could send, or the file is larger than 256 MiB. | Load the map from a smaller `.hdr` file, or render that scene locally (Chapter 10). |
 | "Security warning: &lt;address&gt; did not present the certificate authority this token was issued for..." during enrollment | The address you redeemed the token against is not the worker your token was actually issued for -- possibly a wrong address, or something intercepting the connection. | Stop. Do not retry against a different address on your own judgement -- confirm the correct address with whoever gave you the token first (Chapter 10). |
 | "This token was not accepted -- it may be mistyped, already used, or expired..." | Enrollment tokens are single-use and expire 180 seconds after being issued. | Ask whoever manages the worker for a fresh token and redeem it promptly (Chapter 10). |
-| Live viewport or export silently uses the CPU even though your build has GPU support | The current scene declined the GPU path for this frame or batch -- either this machine has no usable graphics adapter, or the scene uses a loaded HDR environment map (the GPU path has no equivalent for that yet). | This is a normal, per-frame fallback, not an error -- nothing fails to render. If you expect GPU rendering and never see it, confirm your build was compiled with GPU support and that **Local Compute** is not set to plain **CPU** (Chapter 2). |
+| Live viewport or export silently uses the CPU even though your build has GPU support | The current scene declined the GPU path for this frame or batch -- either this machine has no usable graphics adapter (or it stopped responding), or the scene uses an HDR environment map too large for the graphics card's buffer limits. | This is a normal, per-frame fallback, not an error -- nothing fails to render. If you expect GPU rendering and never see it, confirm your build was compiled with GPU support and that **Local Compute** is not set to plain **CPU** (Chapter 2). |
 | High-resolution export fails outright partway through | You have **Compute: Remote only** selected and a remote chunk timed out or failed, with no local fallback available to pick up the remainder. | Switch to **Local + Remote** and re-export, or fix the remote worker first (Chapter 9). |
 | "Cannot export: &lt;reason&gt;" when clicking Export Edited .asc from the editor | The design is not currently in a solvable state. | Solve the design successfully first (Chapter 5), then export. |
 
@@ -123,9 +125,13 @@ a full backtrace; attach that too if it exists.
   constant-offset approximation for the extraordinary ray. Both are flagged
   follow-up work rather than permanent limits, and neither affects a
   CPU-only build at all.
-- **A remote worker connection always uses the first configured worker.**
-  There is no load-balancing or per-job worker selection if you have
-  several configured (Chapter 10).
+- **The app talks to exactly one remote.** Spreading work over several
+  machines is the coordinator's job: let them join it and point the app at
+  the coordinator (Chapter 10).
+- **"Final picture" transfer does not combine with your own samples.** The
+  remote renders the whole image; your own CPU/GPU sit that image out. If a
+  remote ever answers that it cannot send finished pictures, the app falls
+  back to full data once, with a note (Chapter 10).
 - **Loading a remote design into the editor needs a real attached `.asc`
   file on the worker's side.** "Load Selected" fetches a remote design's
   original cutting-schedule file over the network and loads it exactly

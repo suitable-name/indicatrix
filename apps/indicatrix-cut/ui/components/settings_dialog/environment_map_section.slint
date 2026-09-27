@@ -1,0 +1,86 @@
+import { LineEdit } from "std-widgets.slint";
+import { Theme } from "../../theme.slint";
+import { SettingsModel } from "../../models/settings.slint";
+
+// Environment Map (HDR): loads a Radiance .hdr equirectangular panorama as the
+// render's environment in place of the analytic studio rig (Studio Exposure /
+// Light Azimuth / Light Elevation), superseded while a map is loaded.
+export component EnvironmentMapSection inherits VerticalLayout {
+    spacing: 4px;
+    Rectangle {
+        height: env_map_lbl.preferred-height;
+        Tooltip { text: @markdown("Load a Radiance .hdr panorama in place of the studio rig. Very large maps fall back to the CPU."); }
+        env_map_lbl := Text { text: "Environment Map (HDR)"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+    }
+
+    LineEdit {
+        placeholder-text: "C:\\path\\to\\studio.hdr";
+        text <=> SettingsModel.env_map_path;
+        accepted => { SettingsModel.load_env_map(SettingsModel.env_map_path); }
+    }
+
+    HorizontalLayout {
+        spacing: 6px;
+
+        Rectangle {
+            width: 76px;
+            height: 26px;
+            border-radius: Theme.radius-sm;
+            background: browse_hdr_touch.has-hover ? #1e293b : #0f172a;
+            border-width: 1px;
+            border-color: #334155;
+
+            browse_hdr_touch := TouchArea {
+                clicked => { SettingsModel.pick_hdr_file(SettingsModel.env_map_path); }
+            }
+
+            Text { text: "Browse..."; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+
+        Rectangle {
+            horizontal-stretch: 1;
+            height: 26px;
+            border-radius: Theme.radius-sm;
+            background: load_env_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
+
+            load_env_touch := TouchArea {
+                enabled: SettingsModel.env_map_path != "";
+                clicked => { SettingsModel.load_env_map(SettingsModel.env_map_path); }
+            }
+
+            Text { text: "Load"; font-size: 11px; font-weight: 700; color: #0f172a; horizontal-alignment: center; vertical-alignment: center; }
+        }
+
+        if SettingsModel.env_map_loaded: Rectangle {
+            width: 60px;
+            height: 26px;
+            border-radius: Theme.radius-sm;
+            background: clear_env_touch.has-hover ? #1e293b : #0f172a;
+            border-width: 1px;
+            border-color: #334155;
+
+            clear_env_touch := TouchArea {
+                clicked => { SettingsModel.clear_env_map(); }
+            }
+
+            Text { text: "Clear"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+    }
+
+    if SettingsModel.env_map_status != "": Text {
+        text: SettingsModel.env_map_status;
+        font-size: 10px;
+        color: Theme.accent-emerald;
+        wrap: word-wrap;
+    }
+
+    // A loaded environment map replaces the studio-rig controls below, which needs a
+    // visible explanation. The GPU renders HDR maps directly; only a map too large for
+    // the adapter's storage-buffer limit falls back to the slower CPU tracer.
+    if SettingsModel.env_map_loaded: Text {
+        text: "Replaces the studio lighting rig, exposure, and light-position controls below. Very large maps fall back to the CPU, which is slower.";
+        font-size: 11px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+}

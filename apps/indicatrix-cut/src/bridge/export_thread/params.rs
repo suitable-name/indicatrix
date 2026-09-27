@@ -4,6 +4,8 @@
 //! further. The default output path lives in `filename_template`'s configurable
 //! resolver, not here.
 
+use crate::settings::{ExportTransfer, WorkerSettings};
+
 /// Sane bounds for user-supplied export dimensions. `MAX_EXPORT_DIM` exists so
 /// nobody can point the exporter at, say, 100000x100000 and lock up the machine.
 pub const MIN_EXPORT_DIM: u32 = 16;
@@ -44,6 +46,34 @@ pub enum ComputeTarget {
     /// `export_thread::remote` and `run_export`. The default whenever a worker
     /// advertising render capacity is configured.
     Both,
+}
+
+/// Everything about the REMOTE side of one export or tilt video, bundled so the render
+/// entry points take one argument for it: which engines ([`ComputeTarget`]), the
+/// configured remote endpoint's connection (`None` when no remote is configured -- there
+/// is at most one), and how its result travels ([`ExportTransfer`]: full data or final
+/// picture only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteSelection {
+    /// The export dialog's "Compute" pill (always `Both` for a tilt video).
+    pub compute_target: ComputeTarget,
+    /// The remote endpoint's connection settings, if one is configured.
+    pub worker: Option<WorkerSettings>,
+    /// "Transfer: Full data / Final picture only".
+    pub transfer: ExportTransfer,
+}
+
+#[cfg(test)]
+impl RemoteSelection {
+    /// A local-only selection (no remote involved at all) -- test fixtures.
+    #[must_use]
+    pub const fn local_only() -> Self {
+        Self {
+            compute_target: ComputeTarget::LocalOnly,
+            worker: None,
+            transfer: ExportTransfer::FullData,
+        }
+    }
 }
 
 /// Validates raw (Slint-supplied, hence signed) export request fields, rejecting zero,

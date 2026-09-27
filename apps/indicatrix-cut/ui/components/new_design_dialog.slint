@@ -13,25 +13,15 @@ import { TemplateGallery } from "template_gallery.slint";
 // Same full-viewport modal backdrop + centered content-sized card convention as
 // metadata_editor_dialog.slint/material_editor_dialog.slint.
 export component NewDesignDialog inherits Rectangle {
-    // A "Start from" template locks gear/symmetry/mirror to match the built-in
-    // tier table (96/8/mirror-on) rather than trying to remap the table onto
-    // whatever gear/symmetry the cutter already chose -- remapping is
-    // significantly more costly to implement for no real benefit, since a
-    // cutter picking a template wants its known-good angles as-is.
-    // `0` = Empty (today's only behavior), `1` = Standard Round Brilliant.
-    //
-    // This locks the VISIBLE fields to match the template's own tier table --
-    // genuinely useful on its own, since the resulting design starts on the
-    // same gear/symmetry/mirror the template's angles assume. `Create` with
-    // this template selected ALSO seeds the actual eight-tier table
-    // (`ConstraintTier::standard_round_brilliant`,
-    // `crates/indicatrix-cut-core/src/design/tier.rs`) --
-    // `gui::editor::callbacks::tier_actions::do_new_design_create` sets
-    // `st.design.tiers = ConstraintTier::standard_round_brilliant()` right
-    // after replacing the design, keyed on the same `new_template_index`
-    // this dialog already threads through `new_design_create`'s trailing
-    // argument.
-    property <bool> template_locks_fields: EditorModel.new_template_index == 1;
+    // Every "Start from" template (any index >= 1; `0` is Empty) locks
+    // gear/symmetry/mirror to match its built-in tier table (all five are
+    // 96/8/mirror-on) rather than trying to remap the table onto whatever
+    // gear/symmetry the cutter already chose -- a template created on a different
+    // gear would seed indices that no longer mean what the template intended.
+    // `Create` then seeds that template's tiers: `gui::editor::callbacks::
+    // tier_actions::do_new_design_create` indexes
+    // `indicatrix_cut_core::templates::TEMPLATES` at `new_template_index - 1`.
+    property <bool> template_locks_fields: EditorModel.new_template_index >= 1;
 
     function apply_template_lock() {
         if root.template_locks_fields {
@@ -60,7 +50,10 @@ export component NewDesignDialog inherits Rectangle {
         EditorModel.new_dialog_open = false;
     }
 
-    function do_create() {
+    // `public` so `GlobalDialogsOverlay`'s wrapping `FocusScope`
+    // (`components/app/global_dialogs.slint`) routes its Return key through this
+    // same `form_valid` gate instead of calling `new_design_create` itself.
+    public function do_create() {
         if !root.form_valid {
             return;
         }
@@ -92,11 +85,8 @@ export component NewDesignDialog inherits Rectangle {
 
     // The worked-example guide's step 1 targets this dialog --
     // `GuideModel.highlight_target == "new_design_dialog"` while that step is
-    // current. The guide only ever opens once a design already exists (see
-    // `guide.rs`'s own step list), so this outline is mostly cosmetic today
-    // (the dialog that matters is the one the empty state's "Open the Worked
-    // Example" card bypasses entirely) but is wired for when a cutter opens
-    // this dialog manually mid-guide.
+    // current (the command bar's New Design... button and the empty state's
+    // New Design... card carry the same outline until the dialog is open).
     property <bool> guide_highlighted: GuideModel.highlight_target == "new_design_dialog";
 
     // Enter = Create (while the form validates), Escape = Cancel -- same
@@ -160,7 +150,7 @@ export component NewDesignDialog inherits Rectangle {
 
             Rectangle {
                 height: template_lbl.preferred-height;
-                Tooltip { text: @markdown("Standard Round Brilliant locks the gear, symmetry and mirror settings below to match its built-in tier table."); }
+                Tooltip { text: @markdown("Every template except Empty locks the gear, symmetry and mirror settings below to match its built-in tier table."); }
                 template_lbl := Text { text: "Start From"; font-size: 10px; color: Theme.text-muted; }
             }
             TemplateGallery {
@@ -168,7 +158,7 @@ export component NewDesignDialog inherits Rectangle {
                 selected => { root.apply_template_lock(); }
             }
             if root.template_locks_fields: Text {
-                text: "Locks Index Gear to 96, Symmetry Order to 8 and Mirror on, and seeds the standard round-brilliant's eight tiers -- Create yields a design that solves immediately.";
+                text: "Locks Index Gear to 96, Symmetry Order to 8 and Mirror on, and seeds this template's tiers -- Create yields a design that solves immediately.";
                 font-size: 8px;
                 color: Theme.text-muted;
                 wrap: word-wrap;
@@ -224,7 +214,7 @@ export component NewDesignDialog inherits Rectangle {
                     spacing: 2px;
                     Rectangle {
                         height: gear_lbl.preferred-height;
-                        Tooltip { text: root.template_locks_fields ? @markdown("Locked to 96 by the Standard Round Brilliant template.") : @markdown("The index-gear tooth count -- how many positions the wheel that cuts facets around the stone has."); }
+                        Tooltip { text: root.template_locks_fields ? @markdown("Locked to 96 by the selected template.") : @markdown("The index-gear tooth count -- how many positions the wheel that cuts facets around the stone has."); }
                         gear_lbl := Text { text: "Index Gear"; font-size: 9px; color: Theme.text-muted; }
                     }
                     ComboBox {
@@ -247,7 +237,7 @@ export component NewDesignDialog inherits Rectangle {
                     spacing: 2px;
                     Rectangle {
                         height: sym_lbl.preferred-height;
-                        Tooltip { text: root.template_locks_fields ? @markdown("Locked to 8 by the Standard Round Brilliant template.") : @markdown("How many repeats the design has around the stone -- an 8-fold design repeats every 45 degrees."); }
+                        Tooltip { text: root.template_locks_fields ? @markdown("Locked to 8 by the selected template.") : @markdown("How many repeats the design has around the stone -- an 8-fold design repeats every 45 degrees."); }
                         sym_lbl := Text { text: "Symmetry Order"; font-size: 9px; color: Theme.text-muted; }
                     }
                     LineEdit { text <=> EditorModel.new_symmetry_order_text; enabled: !root.template_locks_fields; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
@@ -257,7 +247,7 @@ export component NewDesignDialog inherits Rectangle {
                     spacing: 2px;
                     Rectangle {
                         height: mirror_lbl.preferred-height;
-                        Tooltip { text: root.template_locks_fields ? @markdown("Locked on by the Standard Round Brilliant template.") : @markdown("Whether each repeat is also mirrored -- most brilliant-style cuts are."); }
+                        Tooltip { text: root.template_locks_fields ? @markdown("Locked on by the selected template.") : @markdown("Whether each repeat is also mirrored -- most brilliant-style cuts are."); }
                         mirror_lbl := Text { text: "Mirror"; font-size: 9px; color: Theme.text-muted; }
                     }
                     HorizontalLayout {

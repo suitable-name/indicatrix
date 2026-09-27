@@ -1,5 +1,7 @@
 pub mod buffers;
 pub mod denoise;
+pub mod frame_denoise;
+pub mod guide_pass;
 pub mod tonemap;
 
 /// CPU-side HDR environment-map loading and importance sampling.
