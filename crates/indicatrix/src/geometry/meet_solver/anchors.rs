@@ -70,23 +70,23 @@ fn geometric_ratio_anchor(theta_deg: f64, ratio: f64, girdle_r: f64, is_flat: bo
     }
 }
 
-/// Finds a block's explicit flat table/culet tier -- angle exactly `0.0` (signed
-/// per [`tier_sides`](super::blocks::tier_sides)'s convention) with at most one
-/// index instance, i.e. a single azimuth-independent facet, which is what a
-/// printed `C/W`/`P/W` ratio actually measures. `None` when the block has no
-/// such tier (a pointed table/culet, common on the pavilion side).
+/// Finds a block's explicit flat table/culet tier -- angle exactly `0.0` on a
+/// tier [`classify_blocks`] already placed in `want` -- with at most one index
+/// instance, i.e. a single azimuth-independent facet, which is what a printed
+/// `C/W`/`P/W` ratio actually measures. `None` when the block has no such tier
+/// (a pointed table/culet, common on the pavilion side).
+///
+/// The side test is `blocks[i] == want` alone: [`tier_sides`](super::blocks::tier_sides)
+/// already read it from the zero's sign (a sign-negative zero is the culet,
+/// which `parse_asc` produces from the file's negative culet distance), so
+/// nothing here needs to look at the sign again.
 pub(super) fn explicit_table_or_culet(
     tiers: &[MeetTierInput],
     blocks: &[Block],
     want: Block,
 ) -> Option<usize> {
-    let want_negative_zero = want == Block::Pavilion;
-    (0..tiers.len()).find(|&i| {
-        blocks[i] == want
-            && tiers[i].angle_deg == 0.0
-            && tiers[i].angle_deg.is_sign_negative() == want_negative_zero
-            && tiers[i].indices.len() <= 1
-    })
+    (0..tiers.len())
+        .find(|&i| blocks[i] == want && tiers[i].angle_deg == 0.0 && tiers[i].indices.len() <= 1)
 }
 
 /// Fills in per-block [`MeetConstraint::ScaleReference`] anchors from a design's
@@ -339,9 +339,8 @@ mod tests {
     /// change with it -- not stay pinned at `GIRDLE_REFERENCE_MAST`.
     #[test]
     fn apply_ratio_anchors_uses_this_designs_own_girdle_radius_not_a_fixed_one() {
-        // Table listed first so its unsigned-zero angle inherits the crown side
-        // from the default initial `last_crown = true` (see `tier_sides`), keeping
-        // this test's classification independent of the girdle tiers' own sign.
+        // A positive-zero table is always crown (see `tier_sides`), whatever
+        // position it takes in the tier list.
         let mut tiers = vec![
             MeetTierInput {
                 angle_deg: 0.0,

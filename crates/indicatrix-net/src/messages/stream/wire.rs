@@ -10,12 +10,13 @@ use super::types::{FrameHeader, PreviewHeader, StreamEvent};
 /// `payload` must be `Some` exactly for the payload-carrying variants
 /// ([`StreamEvent::payload_len`] is `Some`: `Frame`, `Preview`, `DisplayFrame`,
 /// `FinalImage` -- the bytes the header describes, as encoded) and `None` for every
-/// other variant -- debug-asserted: a mismatch would silently corrupt the stream for
-/// whatever's read next.
+/// other variant -- a mismatch would silently corrupt the stream for whatever's read
+/// next, so it is refused before anything is written.
 ///
 /// # Errors
 ///
-/// Returns [`crate::messages::codec::NetError::Postcard`] or
+/// Returns [`crate::messages::codec::NetError::PayloadPresenceMismatch`] if `payload`'s
+/// presence disagrees with the event's variant, and returns [`crate::messages::codec::NetError::Postcard`] or
 /// [`crate::messages::codec::NetError::Framing`] under the same conditions as
 /// [`crate::messages::codec::write_message`] (for the event) and
 /// [`crate::framing::write_frame`] (for the raw payload, when present).
@@ -24,11 +25,9 @@ pub fn write_stream_event<W: std::io::Write>(
     event: &StreamEvent,
     payload: Option<&[u8]>,
 ) -> Result<(), crate::messages::codec::NetError> {
-    debug_assert_eq!(
-        event.payload_len().is_some(),
-        payload.is_some(),
-        "payload-carrying StreamEvents must carry a payload; every other variant must not"
-    );
+    if event.payload_len().is_some() != payload.is_some() {
+        return Err(crate::messages::codec::NetError::PayloadPresenceMismatch);
+    }
     crate::messages::codec::write_message(writer, event)?;
     if let Some(bytes) = payload {
         crate::framing::write_frame(writer, bytes)?;
@@ -54,7 +53,7 @@ pub fn write_stream_event<W: std::io::Write>(
 pub fn read_stream_event<R: std::io::Read>(
     reader: &mut R,
 ) -> Result<(StreamEvent, Option<Vec<u8>>), crate::messages::codec::NetError> {
-    let event: StreamEvent = crate::messages::codec::read_message(reader)?;
+    let event: StreamEvent = crate::messages::codec::read_control_message(reader)?;
     let payload = match event.payload_len() {
         Some(expected) => {
             let bytes = crate::framing::read_frame(reader)?;
@@ -105,7 +104,7 @@ pub fn write_frame_message<W: std::io::Write>(
 pub fn read_frame_message<R: std::io::Read>(
     reader: &mut R,
 ) -> Result<(FrameHeader, Vec<u8>), crate::messages::codec::NetError> {
-    let header: FrameHeader = crate::messages::codec::read_message(reader)?;
+    let header: FrameHeader = crate::messages::codec::read_control_message(reader)?;
     let payload = crate::framing::read_frame(reader)?;
     if payload.len() as u32 != header.payload_len {
         return Err(crate::messages::codec::NetError::FramePayloadLenMismatch {
@@ -144,7 +143,7 @@ pub fn write_preview_message<W: std::io::Write>(
 pub fn read_preview_message<R: std::io::Read>(
     reader: &mut R,
 ) -> Result<(PreviewHeader, Vec<u8>), crate::messages::codec::NetError> {
-    let header: PreviewHeader = crate::messages::codec::read_message(reader)?;
+    let header: PreviewHeader = crate::messages::codec::read_control_message(reader)?;
     let payload = crate::framing::read_frame(reader)?;
     if payload.len() as u32 != header.payload_len {
         return Err(crate::messages::codec::NetError::FramePayloadLenMismatch {

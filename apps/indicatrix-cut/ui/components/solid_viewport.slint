@@ -3,27 +3,21 @@ import { Theme } from "../theme.slint";
 import { SolidPreviewModel } from "../models/solid_preview.slint";
 import { ViewportModel } from "../models/viewport.slint";
 import { EditorModel } from "../models/editor.slint";
-// The Tilt Curve pill/dialog is reachable from this tab too, not only from the
-// Live Render tab's `GemViewportView` -- `PerformanceGraphDialog`
-// (`components/performance_graph_dialog.slint`) is bound entirely through
-// globals (`TiltModel`/`ViewportModel`), so mounting it here too is safe: it
-// carries no dependency on `GemViewportView`'s own local state.
+// The Tilt Curve pill is reachable from this tab too; its dialog (and the
+// custom-material editor's) is mounted at window size in `GlobalDialogsOverlay`
+// (`components/app/global_dialogs.slint`), driven entirely by `TiltModel`/
+// `ViewportModel`. `TiltModel.dialog_open` is still read below to disable the
+// drag area while the chart is open.
 import { TiltModel } from "../models/tilt.slint";
-import { PerformanceGraphDialog } from "performance_graph_dialog.slint";
-// The custom-material editor is mounted here too, not only in the Live Render
-// tab's `GemViewportView` (which also mounts `MaterialEditorDialog`), so a
-// cutter working the Edit tab can create/edit a custom material without
-// switching tabs -- mirroring the same mounting pattern used above for
-// `PerformanceGraphDialog`: `SolidViewportView` and `GemViewportView` are
-// mutually exclusive (only the Edit tab OR the Live Render tab is ever
-// mounted at once, see `app.slint`), so there is never a second copy of this
-// dialog on screen despite both files mounting it conditionally on the same
-// `ViewportModel.material_editor_open`.
-import { MaterialEditorDialog } from "material_editor_dialog.slint";
 // The mode toggle/cut slider, camera pose pills, Tilt Curve/Preform toggles
 // and status strip -- see `SolidViewportToolbar`'s own doc comment
 // (`solid_viewport/toolbar.slint`) for why this is split out.
 import { SolidViewportToolbar } from "solid_viewport/toolbar.slint";
+// The angle/depth/index drag handles on the selected facet, and the hint line under
+// the toolbar -- see `ManipulateModel` (`models/manipulate.slint`).
+import { ManipulateModel } from "../models/manipulate.slint";
+import { ManipulateOverlay, SliceLineOverlay } from "solid_viewport/manipulate_overlay.slint";
+import { ManipulateHintBar } from "solid_viewport/hint_bar.slint";
 
 // The Edit tab's solid-inspection viewport: a flat-shaded software render of the
 // current design's solid, shown as a static image after Solve. Reads
@@ -61,8 +55,20 @@ export component SolidViewportView inherits Rectangle {
     // forwards to `facet_click`/`diagram_facet_click` below this threshold, so an
     // orbit drag that happens to release over a facet doesn't also re-select it.
     property <float> drag_distance: 0;
+    // `true` from a left-press that grabbed a drag handle (`ManipulateModel.
+    // drag_begin` granted it) until the button is released or Escape cancels it.
+    // While set, pointer moves drive the handle drag instead of the orbit.
+    property <bool> handle_dragging: false;
+    // `true` from a left-press that started a Slice-mode line (`ManipulateModel.
+    // slice_begin`) until the button is released or Escape drops the line. While set,
+    // pointer moves stretch the line: no orbit, no hover pick, no facet click.
+    property <bool> slice_dragging: false;
+    // Set by a handle press and left set until the next press elsewhere: the
+    // release after a handle drag (or an Escape cancel) ends in a `clicked` that
+    // must not also pick whatever facet ends up under the pointer.
+    property <bool> swallow_click: false;
 
-    // #29: Diagram mode's own zoom/pan -- the fixed orthographic 2D facet diagram
+    // #29: Diagram mode's own zoom/pan -- the fixed orthographic 2D faceting diagram
     // has no shared orbit camera to reuse (unlike Solid/Path-traced/Both), so this
     // is a plain scale + translate applied to the whole three-panel image, entirely
     // presentational (the underlying `diagram_image` raster is unchanged). `1.0`/
@@ -115,6 +121,16 @@ export component SolidViewportView inherits Rectangle {
     property <int> resize_pulse_seen: 0;
     changed width => { SolidPreviewModel.viewport_width = self.width; root.resize_pulse += 1; }
     changed height => { SolidPreviewModel.viewport_height = self.height; root.resize_pulse += 1; }
+    // Also pushed once on mount -- same reasoning as `gem_viewport.slint`'s own
+    // `init` size push (see that file's own comment): a fresh instance (this
+    // component sits inside a conditional elsewhere -- a view-mode switch
+    // remounts it) never fires the two `changed` handlers above for its OWN
+    // first size, which can otherwise leave `SolidPreviewModel.viewport_*`
+    // reading a stale size from whatever WAS mounted before.
+    init => {
+        SolidPreviewModel.viewport_width = self.width;
+        SolidPreviewModel.viewport_height = self.height;
+    }
 
     // #116: a global's own property can't get a `changed` handler outside the
     // file that declares it -- mirrored into this plain local property so a
@@ -126,6 +142,17 @@ export component SolidViewportView inherits Rectangle {
     changed hover_view_mode => {
         SolidPreviewModel.hover_text = "";
         SolidPreviewModel.diagram_hover_text = "";
+    }
+    // Whichever path changes the enlarged panel (a pill, a double-click, Escape),
+    // the new picture is a different image, so a zoom/pan set on the old one would
+    // leave it off-centre: reset both. Mirrored into a plain local property for the
+    // same reason as `hover_view_mode` above (a global's own property can't get a
+    // `changed` handler here).
+    property <int> seen_enlarged_panel: SolidPreviewModel.diagram_enlarged_panel;
+    changed seen_enlarged_panel => {
+        root.diagram_zoom = 1.0;
+        root.diagram_pan_x = 0px;
+        root.diagram_pan_y = 0px;
     }
     Timer {
         interval: 50ms;
@@ -170,10 +197,71 @@ export component SolidViewportView inherits Rectangle {
         }
         EditorModel.selected_tier_index = Math.max(0, Math.min(EditorModel.tiers.length - 1, EditorModel.selected_tier_index + delta));
     }
+    // Ends whichever pointer gesture is still flagged as running after the pointer
+    // state says none can be: the orbit/pan, a handle drag (cancelled through the
+    // same `ManipulateModel.drag_cancel` Escape uses, which undoes the gesture's
+    // step and closes its coalescing run) and a slice line (`slice_cancel`). A no-op
+    // when nothing is running, so the normal `up` path, which already cleared the
+    // flags by the time this queued handler runs, is unaffected.
+    function end_lost_gestures() {
+        if (root.handle_dragging) {
+            root.handle_dragging = false;
+            ManipulateModel.drag_cancel();
+        }
+        if (root.slice_dragging) {
+            root.slice_dragging = false;
+            ManipulateModel.slice_cancel();
+        }
+        if (root.is_dragging) {
+            root.is_dragging = false;
+            ViewportModel.camera_drag_end();
+        }
+    }
     viewport_focus := FocusScope {
         key-pressed(event) => {
             if event.text == Key.Escape {
+                // A handle drag in progress is cancelled first (the design goes
+                // back to how it was at the press); only a plain Escape clears
+                // the selection.
+                if (ManipulateModel.dragging) {
+                    root.handle_dragging = false;
+                    ManipulateModel.drag_cancel();
+                    return accept;
+                }
+                // Slice tool, innermost first: a line being drawn is dropped; then
+                // a provisional tier is discarded; then Slice mode itself is left.
+                if (root.slice_dragging) {
+                    root.slice_dragging = false;
+                    ManipulateModel.slice_cancel();
+                    return accept;
+                }
+                if (ManipulateModel.provisional_active) {
+                    ManipulateModel.slice_discard();
+                    return accept;
+                }
+                if (ManipulateModel.slice_mode) {
+                    ManipulateModel.slice_mode = false;
+                    ManipulateModel.slice_toggled();
+                    return accept;
+                }
+                // Diagram mode: an enlarged panel goes back to all three before
+                // Escape clears the selection.
+                if (SolidPreviewModel.view_mode == 3 && SolidPreviewModel.diagram_enlarged_panel >= 0) {
+                    SolidPreviewModel.diagram_enlarged_panel = -1;
+                    return accept;
+                }
                 EditorModel.selected_tier_index = -1;
+                return accept;
+            } else if event.text == Key.Return && ManipulateModel.provisional_active {
+                // Enter keeps the provisional slice tier (one undo step).
+                ManipulateModel.slice_keep();
+                return accept;
+            } else if (event.text == "f" || event.text == "F") && ManipulateModel.provisional_active && !event.modifiers.control && !event.modifiers.meta {
+                ManipulateModel.slice_flip();
+                return accept;
+            } else if (event.text == "s" || event.text == "S") && !ManipulateModel.dragging && !root.handle_dragging && !root.slice_dragging && !event.modifiers.control && !event.modifiers.meta && SolidPreviewModel.view_mode != 3 {
+                ManipulateModel.slice_mode = !ManipulateModel.slice_mode;
+                ManipulateModel.slice_toggled();
                 return accept;
             } else if event.text == Key.DownArrow {
                 root.step_selection(1);
@@ -206,11 +294,62 @@ export component SolidViewportView inherits Rectangle {
             // the stone here instead -- there is no light to move in this
             // viewport, so a right or middle drag does nothing rather than
             // surprise-orbiting.
-            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
-                root.last_mouse_x = drag_area.mouse-x;
-                root.last_mouse_y = drag_area.mouse-y;
-                root.drag_distance = 0;
-                root.is_dragging = true;
+            //
+            // Direct manipulation (`ManipulateModel`): a left press on a drag
+            // handle's tip grabs the handle instead of starting an orbit, and
+            // while it is held the pointer moves (with `event.modifiers.shift`
+            // for fine snapping) drive the handle. `PointerEventKind.move`, not
+            // the `moved` callback below, carries the modifiers.
+            //
+            // Slint's `moved` callback fires ONLY while a button is held (the
+            // TouchArea docs say so, and i-slint-core 1.18 implements exactly
+            // that), so the plain hover paths -- the handle highlight and the facet /
+            // diagram tooltip -- live here on `move`, which fires for every pointer
+            // motion. `moved` keeps the orbit and the diagram pan; nothing is driven
+            // from both, and nothing hovers while a handle drag, a slice line or an
+            // orbit is in progress.
+            if (event.kind == PointerEventKind.move) {
+                if (root.handle_dragging) {
+                    ManipulateModel.drag_move(drag_area.mouse-x, drag_area.mouse-y, event.modifiers.shift);
+                } else if (root.slice_dragging) {
+                    ManipulateModel.slice_move(drag_area.mouse-x, drag_area.mouse-y);
+                } else if (!root.is_dragging) {
+                    if (SolidPreviewModel.view_mode == 3) {
+                        SolidPreviewModel.diagram_facet_hover(root.diagram_unzoomed_x(drag_area.mouse-x), root.diagram_unzoomed_y(drag_area.mouse-y));
+                    } else {
+                        if (ManipulateModel.handles_visible) {
+                            ManipulateModel.handle_hover(drag_area.mouse-x, drag_area.mouse-y);
+                        }
+                        // Only picking, not dragging -- the hover tooltip.
+                        SolidPreviewModel.facet_hover(drag_area.mouse-x, drag_area.mouse-y);
+                    }
+                }
+            } else if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                root.swallow_click = false;
+                if (SolidPreviewModel.view_mode != 3 && ManipulateModel.handles_visible) {
+                    let hit = ManipulateModel.handle_hit_test(drag_area.mouse-x, drag_area.mouse-y);
+                    if (hit >= 0) {
+                        ManipulateModel.drag_begin(hit, drag_area.mouse-x, drag_area.mouse-y);
+                        // Rust sets `dragging` only when it grants the drag; a
+                        // refused press falls through to the orbit below.
+                        root.handle_dragging = ManipulateModel.dragging;
+                    }
+                }
+                // Slice mode: a press that did not grab a handle (the provisional
+                // tier's handles stay grabbable) draws a line instead of orbiting.
+                if (!root.handle_dragging && SolidPreviewModel.view_mode != 3 && ManipulateModel.slice_mode) {
+                    ManipulateModel.slice_begin(drag_area.mouse-x, drag_area.mouse-y);
+                    root.slice_dragging = true;
+                }
+                if (root.handle_dragging || root.slice_dragging) {
+                    root.swallow_click = true;
+                } else {
+                    root.last_mouse_x = drag_area.mouse-x;
+                    root.last_mouse_y = drag_area.mouse-y;
+                    root.drag_distance = 0;
+                    root.is_dragging = true;
+                    ViewportModel.camera_drag_begin();
+                }
                 // #229: grabs keyboard focus so Escape (handled by the wrapping
                 // `viewport_focus` FocusScope above) works right after a click,
                 // without requiring a separate Tab into the viewport.
@@ -224,11 +363,59 @@ export component SolidViewportView inherits Rectangle {
                 // exactly on `down`+`up` with no `moved` at all.
                 SolidPreviewModel.hover_text = "";
                 SolidPreviewModel.diagram_hover_text = "";
-            } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
-                root.is_dragging = false;
+            } else if ((event.kind == PointerEventKind.up && event.button == PointerEventButton.left) || event.kind == PointerEventKind.cancel) {
+                // Only the LEFT release ends a gesture: a right or middle click made
+                // while a handle is held must not drop it (a cancel carries no button).
+                if (root.handle_dragging) {
+                    root.handle_dragging = false;
+                    if (event.kind == PointerEventKind.up) {
+                        ManipulateModel.drag_end();
+                    } else {
+                        ManipulateModel.drag_cancel();
+                    }
+                }
+                if (root.slice_dragging) {
+                    root.slice_dragging = false;
+                    if (event.kind == PointerEventKind.up) {
+                        ManipulateModel.slice_end(drag_area.mouse-x, drag_area.mouse-y);
+                    } else {
+                        ManipulateModel.slice_cancel();
+                    }
+                }
+                if (root.is_dragging) {
+                    root.is_dragging = false;
+                    ViewportModel.camera_drag_end();
+                }
+            }
+        }
+        // Belt and braces for a release that never arrives as `up`/`cancel` (a lost
+        // grab, focus loss) or an area disabled mid-drag (the Tilt Curve dialog):
+        // whenever Slint's own pressed state drops, every gesture is over -- the
+        // orbit, and a handle drag or slice line too, which would otherwise leave
+        // `ManipulateModel.dragging` true and the gesture's coalescing run open. The
+        // handle drag and slice line take the same path as Escape (`drag_cancel`/
+        // `slice_cancel`): with no release there is no pointer value to keep.
+        changed pressed => {
+            if (!self.pressed) {
+                root.end_lost_gestures();
+            }
+        }
+        changed enabled => {
+            if (!self.enabled) {
+                root.end_lost_gestures();
+            }
+        }
+        // Lights no handle once the pointer has left the viewport.
+        changed has-hover => {
+            if (!drag_area.has-hover && !root.handle_dragging) {
+                ManipulateModel.handle_hover(-1px, -1px);
             }
         }
         moved => {
+            if (root.handle_dragging || root.slice_dragging) {
+                // The handle drag / slice line owns the pointer: no orbit, no hover pick.
+                return;
+            }
             if (SolidPreviewModel.view_mode == 3) {
                 if (root.is_dragging) {
                     // #29: pan, clamped so the zoomed diagram can't be dragged
@@ -240,8 +427,6 @@ export component SolidViewportView inherits Rectangle {
                     root.drag_distance += Math.abs(dx / 1px) + Math.abs(dy / 1px);
                     root.diagram_pan_x = root.clamp_diagram_pan(root.diagram_pan_x + dx, root.width, root.diagram_zoom);
                     root.diagram_pan_y = root.clamp_diagram_pan(root.diagram_pan_y + dy, root.height, root.diagram_zoom);
-                } else {
-                    SolidPreviewModel.diagram_facet_hover(root.diagram_unzoomed_x(drag_area.mouse-x), root.diagram_unzoomed_y(drag_area.mouse-y));
                 }
             } else if (root.is_dragging) {
                 let dx = (drag_area.mouse-x - root.last_mouse_x) / 1px;
@@ -250,9 +435,6 @@ export component SolidViewportView inherits Rectangle {
                 root.last_mouse_y = drag_area.mouse-y;
                 root.drag_distance += Math.abs(dx) + Math.abs(dy);
                 ViewportModel.camera_orbit(dx, dy);
-            } else {
-                // Only picking, not dragging -- the hover tooltip.
-                SolidPreviewModel.facet_hover(drag_area.mouse-x, drag_area.mouse-y);
             }
         }
         clicked => {
@@ -264,12 +446,21 @@ export component SolidViewportView inherits Rectangle {
                 if (root.drag_distance < 3) {
                     SolidPreviewModel.diagram_facet_click(root.diagram_unzoomed_x(drag_area.mouse-x), root.diagram_unzoomed_y(drag_area.mouse-y));
                 }
-            } else if (root.drag_distance < 3) {
+            } else if (root.drag_distance < 3 && !root.swallow_click) {
                 // An orbit drag ends in a `clicked` too -- only forward it as a real
                 // pick when the pointer barely moved between down and up, so
                 // rotating the stone never also re-selects whatever facet ends up
                 // under the cursor.
                 SolidPreviewModel.facet_click(drag_area.mouse-x, drag_area.mouse-y);
+            }
+        }
+        // Diagram mode: double-click enlarges the panel under the pointer, or goes
+        // back to all three (`SolidPreviewModel.diagram_double_click`). The two
+        // `clicked`s that come with a double-click still run (the first may pick a
+        // facet, as in the web app); a double-click after a pan drag is ignored.
+        double-clicked => {
+            if (SolidPreviewModel.view_mode == 3 && root.drag_distance < 3 && !root.swallow_click) {
+                SolidPreviewModel.diagram_double_click(root.diagram_unzoomed_x(drag_area.mouse-x), root.diagram_unzoomed_y(drag_area.mouse-y));
             }
         }
         // Scroll-to-zoom (#27, and #29 for Diagram mode): the same shared orbit
@@ -316,20 +507,24 @@ export component SolidViewportView inherits Rectangle {
     // (defaults to `true`, so this composites normally until something actually
     // sets it `false`); when mismatched, the base dims and a small note explains
     // why, rather than silently overlaying stale edges.
+    //
+    // While `root.is_dragging` (an orbit drag, `ViewportModel.camera_drag_begin`) the layers compose
+    // as if matching: the dim and the note wait for the release, and the edges stay
+    // visible as the orientation aid over the low-resolution preview trace.
     if SolidPreviewModel.view_mode == 2 && ViewportModel.has_render: Image {
         width: 100%;
         height: 100%;
         source: ViewportModel.render_image;
         image-fit: contain;
-        opacity: SolidPreviewModel.trace_matches_solid ? 1.0 : 0.5;
+        opacity: (SolidPreviewModel.trace_matches_solid || root.is_dragging) ? 1.0 : 0.5;
     }
-    if SolidPreviewModel.view_mode == 2 && SolidPreviewModel.has_solid_edges && SolidPreviewModel.trace_matches_solid: Image {
+    if SolidPreviewModel.view_mode == 2 && SolidPreviewModel.has_solid_edges && (SolidPreviewModel.trace_matches_solid || root.is_dragging): Image {
         width: 100%;
         height: 100%;
         source: SolidPreviewModel.edges_image;
         image-fit: contain;
     }
-    if SolidPreviewModel.view_mode == 2 && ViewportModel.has_render && !SolidPreviewModel.trace_matches_solid: Text {
+    if SolidPreviewModel.view_mode == 2 && ViewportModel.has_render && !SolidPreviewModel.trace_matches_solid && !root.is_dragging: Text {
         text: "Render is behind the current edit -- edges hidden until it catches up";
         font-size: 12px;
         color: Theme.text-primary;
@@ -339,7 +534,7 @@ export component SolidViewportView inherits Rectangle {
         wrap: word-wrap;
     }
 
-    // Diagram mode: the three-panel 2D facet diagram (`gui::solid_preview::diagram2d`)
+    // Diagram mode: the three-panel 2D faceting diagram (`gui::solid_preview::diagram2d`)
     // -- see this component's own doc comment. #29: scaled/translated by
     // `diagram_zoom`/`diagram_pan_x`/`diagram_pan_y` -- `root`'s own `clip: true`
     // (set above) is what keeps a zoomed-in image from spilling outside the
@@ -385,6 +580,18 @@ export component SolidViewportView inherits Rectangle {
         }
     }
 
+    // The angle/depth/index drag handles of the selected facet, above the images
+    // (`ManipulateModel`, pushed by `gui::editor::manipulate`). Pointer input is
+    // never handled here: `drag_area` above stays the only TouchArea.
+    if ManipulateModel.handles_visible && SolidPreviewModel.view_mode != 3: ManipulateOverlay { }
+
+    // The Slice tool's rubber band while a line is being drawn.
+    if ManipulateModel.slice_line_visible && SolidPreviewModel.view_mode != 3: SliceLineOverlay { }
+
+    // The one-line hint under the toolbar row (with the Slice tool's buttons at its
+    // right end); hidden while it has nothing to say.
+    if (ManipulateModel.hint_text != "" || ManipulateModel.provisional_active) && SolidPreviewModel.view_mode != 3: ManipulateHintBar { toolbar_height: toolbar.top_height; }
+
     // A small hover tooltip panel, bottom-left of the image -- see `hover_text`'s own
     // doc comment above.
     //
@@ -419,31 +626,16 @@ export component SolidViewportView inherits Rectangle {
     // `diagram_zoom`/`diagram_pan_x`/`diagram_pan_y` stay on THIS component
     // (its own Image rendering and drag handling above read them too) and are
     // shared two-way so the toolbar's "Reset View" pill can reset them.
-    SolidViewportToolbar {
+    // `toolbar.top_height` (28px in one row, more when the toolbar wraps) positions
+    // the hint strip above under the toolbar's rows.
+    toolbar := SolidViewportToolbar {
         diagram_zoom <=> root.diagram_zoom;
         diagram_pan_x <=> root.diagram_pan_x;
         diagram_pan_y <=> root.diagram_pan_y;
     }
 
-    // Mounted here too (mirroring `GemViewportView`'s own identical mount) so
-    // the Tilt Curve pill above has a dialog to open -- `SolidViewportView`
-    // and `GemViewportView` are mutually exclusive (only the Edit tab OR the
-    // Live Render tab is ever mounted at once, see `app.slint`), so there is
-    // never a second copy of this dialog on screen at once despite both
-    // files mounting it conditionally on the same `TiltModel.dialog_open`.
-    if TiltModel.dialog_open: PerformanceGraphDialog {
-        width: 100%;
-        height: 100%;
-        z: 350;
-    }
-
-    // Mounted here too (mirroring `GemViewportView`'s own identical mount,
-    // same `z` value) so the "New/Edit material..." button
-    // `editor_design_settings.slint` adds next to the Design Settings material
-    // combo has a dialog to open without leaving the Edit tab.
-    if ViewportModel.material_editor_open: MaterialEditorDialog {
-        width: 100%;
-        height: 100%;
-        z: 300;
-    }
+    // The Tilt Curve dialog and the material editor are no longer mounted here:
+    // both live at window size in `GlobalDialogsOverlay`
+    // (`components/app/global_dialogs.slint`), since this viewport can be only
+    // 170-260px tall in the narrow stack.
 }

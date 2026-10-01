@@ -7,14 +7,17 @@ use glam::Vec3;
 
 use super::{GpuAccumulate, GpuPipelineKind, GpuSceneRef};
 
+/// Gpu backend.
 pub struct GpuBackend;
 
 impl GpuBackend {
+    /// Creates the backend (a no-op stand-in without the `gpu` feature).
     #[must_use]
     pub const fn acquire() -> Self {
         Self
     }
 
+    /// Creates a backend that never renders on the GPU.
     #[must_use]
     pub const fn disabled() -> Self {
         Self
@@ -39,6 +42,13 @@ impl GpuBackend {
         false
     }
 
+    /// Always `true` ("not lost, nothing to recover"): with no `gpu` feature there is no
+    /// device to ever lose -- see the `gpu`-gated [`super::backend::GpuBackend::try_recover`].
+    #[must_use]
+    pub const fn try_recover(&self) -> bool {
+        true
+    }
+
     /// Always `None`, for the same reason [`Self::is_lost`] is always `false`.
     #[must_use]
     pub const fn last_lost_reason(&self) -> Option<String> {
@@ -54,6 +64,7 @@ impl GpuBackend {
         clippy::unused_self,
         reason = "signature must match the `gpu`-gated GpuBackend::try_accumulate"
     )]
+    /// Always reports the GPU as unavailable, matching the `gpu` build's signature.
     pub const fn try_accumulate(
         &self,
         _scene: &GpuSceneRef<'_>,

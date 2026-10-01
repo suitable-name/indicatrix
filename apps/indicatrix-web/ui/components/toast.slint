@@ -1,0 +1,71 @@
+import { Theme } from "theme.slint";
+
+// A transient message card, modelled on the desktop's `components/toast.slint`// (text glyphs instead of its SVG icons). `kind` is "info", "success", "warning"
+// or "error"; `src/app/push.rs::show_message` decides whether it auto-dismisses.
+export component Toast inherits Rectangle {
+    in property <string> text;
+    in property <string> kind: "info";
+    callback dismiss();
+
+    property <color> accent: root.kind == "success" ? Theme.accent-emerald
+        : (root.kind == "error" ? Theme.danger
+        : (root.kind == "warning" ? Theme.accent-amber : Theme.accent-cyan));
+
+    width: 380px;
+    height: content.preferred-height;
+    background: root.kind == "success" ? Theme.toast-success-surface
+        : (root.kind == "error" ? Theme.toast-error-surface
+        : (root.kind == "warning" ? Theme.toast-warning-surface : Theme.toast-info-surface));
+    border-color: root.accent;
+    border-width: 1px;
+    border-radius: Theme.radius-md;
+    drop-shadow-blur: 20px;
+    drop-shadow-color: Theme.toast-shadow;
+    drop-shadow-offset-y: 6px;
+    clip: true;
+
+    content := HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 10px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        spacing: 10px;
+
+        Text {
+            text: root.kind == "success" ? "\u{2713}" : (root.kind == "info" ? "i" : "!");
+            font-size: 13px;
+            font-weight: 700;
+            color: root.accent;
+        }
+
+        // Wraps rather than elides, so a long error stays readable in full.
+        Text {
+            horizontal-stretch: 1;
+            text: root.text;
+            font-size: 12px;
+            font-weight: 600;
+            color: Theme.text-primary;
+            wrap: word-wrap;
+        }
+
+        Rectangle {
+            width: 22px;
+            height: 22px;
+            border-radius: Theme.radius-sm;
+            background: close-touch.has-hover ? Theme.overlay-hover : transparent;
+            accessible-role: button;
+            accessible-label: "Dismiss the message";
+            close-touch := TouchArea {
+                clicked => { root.dismiss(); }
+            }
+            Tooltip { text: @markdown("Dismiss (Esc)."); }
+            Text {
+                text: "\u{00D7}";
+                font-size: 15px;
+                color: Theme.text-secondary;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

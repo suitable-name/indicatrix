@@ -1,30 +1,50 @@
 [workspace]
 resolver = "3"
-members = ["crates/indicatrix", "crates/indicatrix-net", "crates/indicatrix-dispatch", "crates/indicatrix-formats", "crates/indicatrix-vault", "crates/indicatrix-cut-core", "apps/indicatrix-cut", "apps/indicatrix-worker", "apps/indicatrix-web"]
+members = [
+    "crates/indicatrix",
+    "crates/indicatrix-net",
+    "crates/indicatrix-dispatch",
+    "crates/indicatrix-formats",
+    "crates/indicatrix-vault",
+    "crates/indicatrix-cut-core",
+    "crates/indicatrix-solid",
+    "crates/indicatrix-editor",
+    "apps/indicatrix-cut",
+    "apps/indicatrix-worker",
+    "apps/indicatrix-web",
+    "crates/indicatrix-web-core",
+    "apps/indicatrix-web-compute",
+]
 # indicatrix: a physically-based spectral gemstone renderer and faceting-design
 # library. `indicatrix` is the spectral path tracer at the center; `indicatrix-formats` reads and
-# writes GemCAD-style `.asc` cutting schedules; `indicatrix-vault` is the local
+# writes GemCAD-style `.asc` cutting instructions; `indicatrix-vault` is the local
 # SQLite-backed design library; `indicatrix-cut-core` is the editor-core crate (preform, editable
-# cutting schedule, undo/redo); `indicatrix-dispatch` is the coordinator's job-execution
+# cutting instructions, undo/redo); `indicatrix-solid` is the pure-CPU solid
+# rasterizer and 2D faceting diagram, shared by the desktop and the wasm web app;
+# `indicatrix-editor` is the GUI-free editor session, forms and view models both
+# editors share;
+# `indicatrix-dispatch` is the coordinator's job-execution
 # core (lane pool, sample cursor, rate models, deterministic merge); `apps/indicatrix-cut`
 # is the desktop faceting-design editor and `apps/indicatrix-worker` the headless
 # coordinator (`serve`), joining render worker (`join`) and render CLI, connected by
-# `indicatrix-net`'s wire protocol.
+# `indicatrix-net`'s wire protocol. `apps/indicatrix-web` is the browser app;
+# `apps/indicatrix-web-core` is its DOM-free compute side (Worker protocol, scene,
+# CPU chunk tracing, solve, host-side Worker pool) and `apps/indicatrix-web-compute`
+# its Web Worker entry point.
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.95"
 authors = ["Suitable-Name"]
 license = "MIT"
 repository = "https://github.com/suitable-name/indicatrix"
-documentation = "https://docs.rs/indicatrix"
+homepage = "https://indicatrix-suite.com"
 publish = true
 
 [workspace.dependencies]
 anyhow = "1.0.104"
 bytemuck = { version = "1.22", features = ["derive"] }
-chull = "0.2.4"                                        # or try parry3d if this fails
 # Pinned exactly: glam 0.33.8 reordered DMat3::determinant/inverse ("align with
 # Mat4", glam #828/#836/#837), and crates/indicatrix's SIMD twins
 # (simd/triple_solve.rs, geometry/meet_solver/candidates.rs) are checked bitwise
@@ -56,7 +76,11 @@ rcgen = { version = "0.14.10", default-features = false, features = ["ring", "pe
 # `IFileDialog`, no extra deps either way) while not silently breaking dialogs on a
 # Linux build of this workspace.
 rfd = "0.17.2"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+# "functions" (pure `cfg`, `functions = []` in rusqlite's own Cargo.toml -- no new
+# transitive dependency, no Cargo.lock change) is needed by indicatrix-vault's
+# `fold()` SQL scalar function (case-/typography-insensitive title/designer search,
+# see `crates/indicatrix-vault/src/db/sqlite/search/predicate.rs::register_fold_function`).
+rusqlite = { version = "0.40.2", features = ["bundled", "functions"] }
 # Mutual-TLS stack for indicatrix-net/indicatrix-worker (see crates/indicatrix-net's `tls` module
 # and apps/indicatrix-worker's `pki` module). `ring` is pinned explicitly as the crypto
 # provider across rustls/rcgen -- it's already resolved in this workspace's dependency
@@ -97,16 +121,21 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # own default set verbatim; its wasm32 arm names only the browser backend.
 wgpu = { version = "30.0.1", default-features = false }
 # Embeds the Windows .ico resource into each app binary -- see either app's
-# `build.rs`. Build-dependency only, and only for windows targets.
+# `build.rs`. Build-dependency only; declared unconditionally (the build script
+# gates on the TARGET OS at run time, so Windows binaries cross-built from Linux
+# get their icon too).
 winresource = "0.1.31"
 
 # Workspace members
-indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.5.0" }
-indicatrix = { path = "crates/indicatrix", version = "0.5.0" }
-indicatrix-net = { path = "crates/indicatrix-net", version = "0.5.0" }
-indicatrix-dispatch = { path = "crates/indicatrix-dispatch", version = "0.5.0" }
-indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.5.0" }
-indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.5.0" }
+indicatrix-vault = { path = "crates/indicatrix-vault", version = "0.6.0" }
+indicatrix = { path = "crates/indicatrix", version = "0.6.0" }
+indicatrix-net = { path = "crates/indicatrix-net", version = "0.6.0" }
+indicatrix-dispatch = { path = "crates/indicatrix-dispatch", version = "0.6.0" }
+indicatrix-formats = { path = "crates/indicatrix-formats", version = "0.6.0" }
+indicatrix-cut-core = { path = "crates/indicatrix-cut-core", version = "0.6.0" }
+indicatrix-solid = { path = "crates/indicatrix-solid", version = "0.6.0" }
+indicatrix-editor = { path = "crates/indicatrix-editor", version = "0.6.0" }
+indicatrix-web-core = { path = "crates/indicatrix-web-core", version = "0.6.0" }
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }
@@ -134,10 +163,53 @@ debug-assertions = true
 overflow-checks = true
 debug = 2
 
+# The browser app's dev builds (`trunk serve` / `trunk build`): BOTH the page
+# (`apps/indicatrix-web`) and its Web Worker (`apps/indicatrix-web-compute`), selected by
+# `data-cargo-profile-dev="indicatrix-web-compute"` on their two `<link>`s in
+# `apps/indicatrix-web/index.html`. The worker traces every render sample and runs every
+# solve, and the page rasterises the Solid and Diagram views and solves small designs on
+# the main thread; debug wasm is far too slow for either (a solid frame took about 1.8 s and
+# the page stalled). One profile for both means the shared dependencies compile once.
+# `trunk build --release` ignores this and uses `indicatrix-web-release` below. Its own output
+# directory (`target/wasm32-unknown-unknown/indicatrix-web-compute/`), so it never evicts the
+# native `dev` artefacts (`[profile.dev]` itself is unchanged).
+[profile.indicatrix-web-compute]
+inherits = "dev"
+opt-level = 3
+debug = false
+debug-assertions = false
+overflow-checks = false
+
+# The page crate alone at opt-level 1 inside that same dev profile. `apps/indicatrix-web` is
+# mostly Slint-generated UI code, which at opt-level 3 dominates a dev rebuild, while its hot
+# loops (the Solid/Diagram rasteriser, the meet solver) live in dependency crates that keep
+# opt-level 3 here, and the Worker (`indicatrix-web-compute`, a different package) is
+# untouched. One profile still means the dependencies compile once. Measured 2026-09-29
+# (page rebuild after an edit, then Solid / Diagram frame time): opt-level 3 about 3 min
+# for a Rust-only edit; opt-level 1 40 s for a Rust-only edit and 3 to 6 min for an edit to
+# a `.slint` file (the generated UI code is recompiled whole), Solid 4-8 ms, Diagram 8-23 ms;
+# opt-level 0 33 s and 2 min, Solid 9 ms but Diagram 29 ms with one panel, so too slow.
+[profile.indicatrix-web-compute.package.indicatrix-web]
+opt-level = 1
+
+# Applies to future `cargo bench` targets; no crate has a benches/ directory today, so it is unused.
 [profile.bench]
 debug = true
 lto = false
 strip = false
+
+# The browser app's release builds (`trunk build --release`), selected by
+# `data-cargo-profile-release="indicatrix-web-release"` on the page and Worker `<link>`s in
+# `apps/indicatrix-web/index.html`. It is `[profile.release]` (LTO, one codegen unit,
+# symbols stripped) with one change: the page crate, which is mostly Slint-generated UI code,
+# is optimised for size. The hot loops (Slint's renderer, the rasteriser, the meet solver and
+# the Worker's tracer) all live in dependency crates and keep opt-level 3. Native release
+# builds never use it. Both `<link>`s name it so their shared dependencies compile once.
+[profile.indicatrix-web-release]
+inherits = "release"
+
+[profile.indicatrix-web-release.package.indicatrix-web]
+opt-level = "s"
 
 # For the long-running validation harnesses under `crates/indicatrix/examples/` --
 # `gpu_equivalence_harness` and `meet_solver_validation` -- which are rebuilt often
@@ -151,3 +223,20 @@ strip = false
 inherits = "release"
 lto = false
 codegen-units = 16
+
+# The rough planner and the tracer are pure arithmetic, and their tests run them at
+# length: the cancel sweep alone plans some sixty roughs, the desktop driver tests plan
+# once per lane count, and the tilt tests trace whole sweeps. Unoptimised code turns
+# those minutes into hours. This optimises only these two crates inside the `test`
+# profile, also when another crate's tests pull them in as dependencies, and keeps every
+# check the profile inherits from `dev` (debug assertions, overflow checks, debug info).
+# The optimised tracer rounds a few ULP differently from the unoptimised one in its
+# studio sampler (measured up to 12 ULP at the softbox falloff cone, within 2 ULP
+# elsewhere), so the tracer's pinned bit tables are captured from this optimised
+# level, which a release build reproduces; `cargo test` and `cargo test --release`
+# therefore agree. The price is one optimised compile of each crate per test build.
+[profile.test.package.indicatrix]
+opt-level = 3
+
+[profile.test.package.indicatrix-cut-core]
+opt-level = 3

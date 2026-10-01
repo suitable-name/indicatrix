@@ -44,7 +44,7 @@ fn render_chromaticity_under_preset(
     (xyz_avg.x / sum, xyz_avg.y / sum)
 }
 
-/// The decisive test for Task B: real ruby shifts noticeably REDDER under warm
+/// The decisive test: real ruby shifts noticeably REDDER under warm
 /// incandescent (3200K) light than under daylight (D65), because tungsten's blackbody
 /// spectrum emits little energy in the blue where ruby's SMALLER of its two
 /// transmission windows sits (see the Ruby entry's doc comment in

@@ -25,6 +25,7 @@ pub struct ChunkEquivalenceResult {
     pub chunks_forced: usize,
     /// Pixels whose accumulated XYZ differed between the two runs, in raw bits.
     pub differing_pixels: usize,
+    /// Total number of pixels compared.
     pub total_pixels: usize,
     /// Largest absolute component difference seen, for a failure message that says how
     /// far off it was rather than only that it differed.
@@ -124,7 +125,9 @@ pub fn run_chunk_equivalence(renderer: &mut GpuFrameRenderer) -> ChunkEquivalenc
 
 /// Result of [`run_pipeline_equivalence`]/[`run_wavefront_determinism`].
 pub struct PipelineEquivalenceResult {
+    /// Differing pixels.
     pub differing_pixels: usize,
+    /// Total number of pixels compared.
     pub total_pixels: usize,
     /// Largest absolute component difference seen, for a failure message that says how
     /// far off it was rather than only that it differed.
@@ -308,6 +311,7 @@ pub fn run_wavefront_determinism(renderer: &mut GpuFrameRenderer) -> PipelineEqu
 /// merely a differently-scheduled but internally-consistent kernel.
 #[derive(Debug, Clone)]
 pub struct SpecialisationCaseResult {
+    /// Material name.
     pub material_name: String,
     /// Which [`material_class`] value [`classify_material`] picked for this material --
     /// the specialised pipeline actually under test.
@@ -321,11 +325,14 @@ pub struct SpecialisationCaseResult {
     /// difference seen. The rigorous pass/fail gate for this comparison is
     /// `estimator_check::run_specialisation_image_comparison`.
     pub generic_vs_specialised_differing_pixels: usize,
+    /// Total number of pixels compared.
     pub total_pixels: usize,
+    /// Generic vs specialised max abs diff.
     pub generic_vs_specialised_max_abs_diff: f32,
 }
 
 impl SpecialisationCaseResult {
+    /// Whether every compared value stayed within its budget.
     #[must_use]
     pub const fn passed(&self) -> bool {
         self.self_determinism_differing_pixels == 0
@@ -334,10 +341,12 @@ impl SpecialisationCaseResult {
 
 /// Result of [`run_specialisation_equivalence`].
 pub struct SpecialisationEquivalenceResult {
+    /// Cases.
     pub cases: Vec<SpecialisationCaseResult>,
 }
 
 impl SpecialisationEquivalenceResult {
+    /// Whether every compared value stayed within its budget.
     #[must_use]
     pub fn passed(&self) -> bool {
         !self.cases.is_empty() && self.cases.iter().all(SpecialisationCaseResult::passed)

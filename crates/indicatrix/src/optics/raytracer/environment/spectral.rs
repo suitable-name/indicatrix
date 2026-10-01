@@ -42,15 +42,66 @@ pub fn d65_relative_spectral_power(lambda_nm: f32) -> f32 {
     frac.mul_add(v1 - v0, v0) / 100.0
 }
 
+/// `hc / k_B` in nm * K, the Planck exponent's numerator.
+const H_C_OVER_K_NM_K: f32 = 14_388_000.0;
+
+/// The wavelength-independent constants of [`blackbody_spectrum`] at one colour
+/// temperature: the clamped temperature and the 560nm reference denominator
+/// `max(exp(hc / (k 560 T)) - 1, 1e-6)`.
+///
+/// Both depend on `temp_k` alone, so a caller evaluating many wavelengths at one fixed
+/// temperature builds this once and calls [`blackbody_spectrum_with`]; every value that
+/// comes out is bit-identical to a per-call [`blackbody_spectrum`], because the same
+/// expressions run on the same operands -- only the point in time they run at moves.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct BlackbodyNorm {
+    /// `temp_k` floored at 1000K, as [`blackbody_spectrum`] clamps it.
+    t_k: f32,
+    /// The 560nm normalisation point's denominator.
+    denom_560: f32,
+}
+
+impl BlackbodyNorm {
+    /// The constants for colour temperature `temp_k`.
+    pub(super) fn new(temp_k: f32) -> Self {
+        let t_k = temp_k.max(1000.0);
+        let exp_560 = (H_C_OVER_K_NM_K / (560.0 * t_k)).min(80.0).exp();
+        let denom_560 = (exp_560 - 1.0).max(1e-6);
+        Self { t_k, denom_560 }
+    }
+}
+
+/// [`blackbody_spectrum`] with the temperature-only constants precomputed in `norm`.
+pub(super) fn blackbody_spectrum_with(norm: BlackbodyNorm, lambda_nm: f32) -> f32 {
+    let exp_val = (H_C_OVER_K_NM_K / (lambda_nm * norm.t_k)).min(80.0).exp();
+    let denom = (exp_val - 1.0).max(1e-6);
+    let ratio = norm.denom_560 / denom;
+    ((560.0 / lambda_nm).powi(5) * ratio).clamp(0.01, 20.0)
+}
+
 /// Physical Planck Blackbody Spectral Radiance S(lambda, T) normalized to 1.0 at 560nm
 #[must_use]
 pub fn blackbody_spectrum(lambda_nm: f32, temp_k: f32) -> f32 {
-    let t_k = temp_k.max(1000.0);
-    let h_c_k = 14_388_000.0_f32; // hc / k_B in nm * K
-    let exp_val = (h_c_k / (lambda_nm * t_k)).min(80.0).exp();
-    let exp_560 = (h_c_k / (560.0 * t_k)).min(80.0).exp();
-    let denom = (exp_val - 1.0).max(1e-6);
-    let denom_560 = (exp_560 - 1.0).max(1e-6);
-    let ratio = denom_560 / denom;
-    ((560.0 / lambda_nm).powi(5) * ratio).clamp(0.01, 20.0)
+    blackbody_spectrum_with(BlackbodyNorm::new(temp_k), lambda_nm)
+}
+
+/// A lighting preset's illuminant curve with its per-temperature constants resolved, so a
+/// loop over wavelengths evaluates [`Self::power`] without redoing them. Built by
+/// `LightingPreset::illuminant_spectrum`.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum IlluminantSpectrum {
+    /// The tabulated CIE D65 curve ([`d65_relative_spectral_power`]).
+    D65,
+    /// A Planckian fit at a fixed colour temperature.
+    Blackbody(BlackbodyNorm),
+}
+
+impl IlluminantSpectrum {
+    /// Relative spectral power at `lambda_nm`.
+    pub(super) fn power(self, lambda_nm: f32) -> f32 {
+        match self {
+            Self::D65 => d65_relative_spectral_power(lambda_nm),
+            Self::Blackbody(norm) => blackbody_spectrum_with(norm, lambda_nm),
+        }
+    }
 }

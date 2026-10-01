@@ -65,6 +65,36 @@ use super::{
 /// Relative tolerance for comparisons that differ only in f32 summation order.
 const FOLD_ORDER_TOLERANCE: f32 = 1e-5;
 
+/// Environment variable that turns a missing GPU adapter from a clean skip into a test
+/// failure, for machines that are supposed to have one (`INDICATRIX_REQUIRE_GPU=1`).
+const REQUIRE_GPU_ENV: &str = "INDICATRIX_REQUIRE_GPU";
+
+/// Whether the environment demands a real adapter ([`REQUIRE_GPU_ENV`] set to `1`).
+fn gpu_required() -> bool {
+    std::env::var(REQUIRE_GPU_ENV).is_ok_and(|value| value == "1")
+}
+
+/// Acquires a [`GpuFrameRenderer`] for a test that needs real hardware.
+///
+/// With no adapter the test skips: a note is printed and `None` returned. With
+/// `INDICATRIX_REQUIRE_GPU=1` the same situation fails the test instead, so a machine
+/// that is meant to exercise the GPU cannot pass by silently skipping. This is the one
+/// place that rule lives for this crate's adapter-dependent unit tests; the hardware tests
+/// in `frame::gpu_hardware_tests` call it too.
+pub(super) fn renderer_or_skip(test_name: &str) -> Option<GpuFrameRenderer> {
+    match GpuFrameRenderer::new() {
+        Ok(renderer) => Some(renderer),
+        Err(error) => {
+            assert!(
+                !gpu_required(),
+                "{test_name}: {REQUIRE_GPU_ENV}=1 but no usable GPU adapter: {error}"
+            );
+            println!("skipping {test_name}: no GPU adapter");
+            None
+        }
+    }
+}
+
 /// The representative scene: a Diamond Standard Round Brilliant under the Light tent
 /// preset with the grey backdrop -- the same stone, camera and lighting as
 /// `estimator_check::run_image_comparison_light_tent`.
@@ -296,12 +326,13 @@ fn cpu_accumulate_over_disjoint_ranges_sums_to_the_single_run() {
     );
 }
 
-/// Every test here needs a real `wgpu` adapter; each skips cleanly without one. Run with
+/// Every test here needs a real `wgpu` adapter; each skips cleanly without one unless
+/// `INDICATRIX_REQUIRE_GPU=1` is set, which makes a missing adapter a failure. Run with
 /// `cargo test -p indicatrix --features gpu -- --test-threads=1 gpu_hardware_tests`.
 mod gpu_hardware_tests {
     use super::{
-        DiamondFixture, FOLD_ORDER_TOLERANCE, GpuFrameRenderer, Instant, MergeComparison,
-        MomentAccumulator, Vec3, cpu_accumulate, max_relative_difference,
+        DiamondFixture, FOLD_ORDER_TOLERANCE, Instant, MergeComparison, MomentAccumulator, Vec3,
+        cpu_accumulate, max_relative_difference, renderer_or_skip,
     };
 
     /// 64x64 pixels, N = 256 samples per backend half.
@@ -316,11 +347,9 @@ mod gpu_hardware_tests {
     /// count) must fail the same criteria.
     #[test]
     fn cpu_gpu_merged_render_matches_an_independent_cpu_reference_statistically() {
-        let Ok(mut renderer) = GpuFrameRenderer::new() else {
-            println!(
-                "skipping cpu_gpu_merged_render_matches_an_independent_cpu_reference_\
-                 statistically: no GPU adapter"
-            );
+        let Some(mut renderer) = renderer_or_skip(
+            "cpu_gpu_merged_render_matches_an_independent_cpu_reference_statistically",
+        ) else {
             return;
         };
         let started = Instant::now();

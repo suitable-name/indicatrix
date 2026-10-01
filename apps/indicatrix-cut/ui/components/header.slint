@@ -26,19 +26,44 @@ export component HeaderToolbar inherits Rectangle {
     // 64px -> 48px -> 40px, every control/font below shrunk to
     // match. See the flattened `VerticalLayout`/`HorizontalLayout` below for how the
     // logo/title/status-badge stack fits one line at this height.
-    height: 40px;
+    //
+    // Wide (the default): one 40px row -- the logo cluster on the left, the controls
+    // right-aligned. `compact` (set by `app.slint` below 1100px) stacks two 38px rows --
+    // logo, title, status and badge on top, the controls (their combos sharing the width)
+    // underneath. The two clusters are positioned explicitly from `root.width` (a single
+    // set of controls serves both modes, so `search_input`/`focus_search()` and the popup
+    // ids stay unique); this Rectangle's own width comes from its parent, so reading
+    // `root.width` here cannot loop.
+    in property <bool> compact: false;
+    height: root.compact ? 76px : 40px;
     background: Theme.bg-card;
     border-radius: Theme.radius-md;
     border-width: 1px;
     border-color: Theme.border-subtle;
 
-    HorizontalLayout {
-        padding-left: 10px;
-        padding-right: 10px;
-        alignment: space-between;
+    // Row geometry shared by the two clusters below.
+    property <length> controls_spacing: root.compact ? 6px : 10px;
+    property <length> combo_min_w: root.compact ? 72px : 96px;
+    property <length> search_min_w: root.compact ? 100px : 140px;
+    // Smallest / preferred width of the control cluster (Filters is a fixed 84px; Import
+    // and Remote are their buttons' own widths; six gaps between seven controls).
+    property <length> controls_min_w: root.search_min_w + 3 * root.combo_min_w + 84px
+        + import_btn.preferred-width + remote_btn.preferred-width + 6 * root.controls_spacing;
+    property <length> controls_pref_w: 260px + 160px + 130px + 140px + 84px
+        + import_btn.preferred-width + remote_btn.preferred-width + 6 * root.controls_spacing;
+    // Wide row: the logo cluster keeps what the controls leave, never less than its own minimum width.
+    property <length> row_avail_w: root.width - 20px - 8px;
+    property <length> left_w: root.compact ? root.width - 20px
+        : max(left_cluster.min-width, min(left_cluster.preferred-width, root.row_avail_w - root.controls_pref_w));
+    property <length> controls_w: root.compact ? root.width - 20px
+        : max(root.controls_min_w, min(root.controls_pref_w, root.row_avail_w - root.left_w));
 
-        // Logo & Title Area
-        HorizontalLayout {
+    // Logo & Title Area
+    left_cluster := HorizontalLayout {
+            x: 10px;
+            y: 0px;
+            width: root.left_w;
+            height: root.compact ? 38px : 40px;
             spacing: 8px;
             alignment: start;
 
@@ -89,6 +114,7 @@ export component HeaderToolbar inherits Rectangle {
                         font-size: 11px;
                         color: LibraryModel.is_busy ? Theme.accent-amber : Theme.text-muted;
                         overflow: elide;
+                        min-width: 0px;
                         max-width: 220px;
                         vertical-alignment: center;
                     }
@@ -129,14 +155,21 @@ export component HeaderToolbar inherits Rectangle {
         }
 
         // Search & Filter Controls. Every control below is 28px tall (38px -> 32px ->
-        // 28px across both passes), matching the bar's own shrink to 40px.
-        HorizontalLayout {
-            spacing: 10px;
+        // 28px across both passes), matching the bar's own shrink to 40px. Right-aligned
+        // in the wide row; the full-width second row when `compact`.
+        controls := HorizontalLayout {
+            x: root.width - 10px - root.controls_w;
+            y: root.compact ? 38px : 0px;
+            width: root.controls_w;
+            height: root.compact ? 38px : 40px;
+            spacing: root.controls_spacing;
             alignment: center;
 
             // Search Bar with icon
             Rectangle {
-                width: 260px;
+                min-width: root.search_min_w;
+                preferred-width: 260px;
+                horizontal-stretch: 1;
                 height: 28px;
                 background: Theme.bg-input;
                 border-radius: Theme.radius-sm;
@@ -159,6 +192,7 @@ export component HeaderToolbar inherits Rectangle {
                     }
 
                     search_input := LineEdit {
+                        min-width: 0px;
                         text <=> LibraryModel.search_text;
                         placeholder-text: "Search diagram, designer, notes... (Ctrl+F)";
                         edited => { LibraryModel.search_changed(self.text); }
@@ -190,12 +224,16 @@ export component HeaderToolbar inherits Rectangle {
 
             // Shape Selector
             Rectangle {
-                width: 160px;
+                min-width: root.combo_min_w;
+                preferred-width: 160px;
+                horizontal-stretch: 1;
                 height: 28px;
 
                 Tooltip { text: @markdown("Filter the catalogue to one shape classification."); }
 
                 ComboBox {
+                    width: 100%;
+                    height: 100%;
                     model: LibraryModel.shape_options;
                     current-index <=> LibraryModel.selected_shape_index;
                     selected(val) => { LibraryModel.filter_shape_changed(val); }
@@ -204,12 +242,16 @@ export component HeaderToolbar inherits Rectangle {
 
             // Gear Selector
             Rectangle {
-                width: 130px;
+                min-width: root.combo_min_w;
+                preferred-width: 130px;
+                horizontal-stretch: 1;
                 height: 28px;
 
                 Tooltip { text: @markdown("Filter to designs cut on this index gear (number of teeth)."); }
 
                 ComboBox {
+                    width: 100%;
+                    height: 100%;
                     model: LibraryModel.gear_options;
                     current-index <=> LibraryModel.selected_gear_index;
                     selected(val) => { LibraryModel.filter_gear_changed(val); }
@@ -227,12 +269,16 @@ export component HeaderToolbar inherits Rectangle {
             // and `apps/indicatrix-worker::serve::library` applies it, so a remote
             // library sorts exactly like a local one.
             Rectangle {
-                width: 140px;
+                min-width: root.combo_min_w;
+                preferred-width: 140px;
+                horizontal-stretch: 1;
                 height: 28px;
 
                 Tooltip { text: @markdown("Sort the catalogue by title, or by when a design was added or last edited."); }
 
                 ComboBox {
+                    width: 100%;
+                    height: 100%;
                     model: ["Catalogue order", "Title", "Newest", "Recently edited"];
                     current-index <=> LibraryModel.sort_order_index;
                     selected(val) => { LibraryModel.filters_changed(); }
@@ -285,11 +331,11 @@ export component HeaderToolbar inherits Rectangle {
                 }
             }
 
-            // Import your own `.asc` file(s) into the local library.
+            // Import your own `.asc`/`.gem`/`.gcs` file(s) into the local library.
             Rectangle {
                 width: import_btn.preferred-width;
                 height: 28px;
-                Tooltip { text: @markdown("Import one .asc file or a whole folder into your local library."); }
+                Tooltip { text: @markdown("Import one .asc, .gem or .gcs file or a whole folder into your local library."); }
                 import_btn := Button {
                     text: "Import";
                     icon: @image-url("../icons/folder.svg");
@@ -326,7 +372,6 @@ export component HeaderToolbar inherits Rectangle {
                 }
             }
         }
-    }
 
     // --- MODAL BACKDROP FOR THE FILTER PANEL ---
     if root.filters_open: Rectangle {

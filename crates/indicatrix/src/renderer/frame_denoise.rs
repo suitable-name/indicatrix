@@ -15,29 +15,55 @@
 
 use crate::renderer::{
     denoise::{AtrousDenoiser, AtrousParams, GBuffers},
-    tonemap::tonemap_to_rgba,
+    tonemap::tonemap_to_rgba_into,
 };
 use glam::Vec3;
 
 /// Denoises and tone-maps one frame into a fresh `width * height * 4` RGBA byte buffer.
 ///
+/// [`denoise_and_tonemap_frame_into`] into a new allocation; see it for what is computed
+/// and what the caller must uphold.
+pub fn denoise_and_tonemap_frame(
+    frame: FirstHitSnapshot<'_>,
+    scratch: &mut DenoiseScratch<'_>,
+) -> Vec<u8> {
+    let mut rgba = vec![0u8; frame.width as usize * frame.height as usize * 4];
+    denoise_and_tonemap_frame_into(frame, scratch, &mut rgba);
+    rgba
+}
+
+/// Denoises and tone-maps one frame into the caller's `width * height * 4` RGBA buffer.
+///
 /// Runs the À-Trous denoiser over `frame.accum_buffer`'s running average -- NEVER over
 /// `accum_buffer` itself, which stays the raw unfiltered sum so filtered output is
 /// never fed back into the progressive-accumulation estimator (that would bias it) --
-/// and tone-maps the result.
+/// and tone-maps the result. A frame with no samples yet (`current_sample_count == 0`)
+/// is a finite black frame rather than an average of nothing.
 ///
 /// `scratch`'s denoiser and buffers are owned by the caller and passed by mutable
-/// reference so steady-state use does no per-frame heap allocation beyond the returned
-/// byte buffer.
+/// reference, and `rgba` is written in place (for example a display surface), so
+/// steady-state use does no per-frame heap allocation. `rgba` should hold exactly
+/// `width * height * 4` bytes; see [`tonemap_to_rgba_into`] for what a mismatched length
+/// converts.
 ///
 /// Denoising is nonlinear: call this once, on the whole merged sum, never per source.
 /// The guide buffers depend only on pose and geometry, so they may come from traced
 /// samples (the GUI's local loop) or from [`crate::renderer::guide_pass`]'s prepass (a
 /// remote-sourced or coordinator-merged image) with the same result for the same guides.
-pub fn denoise_and_tonemap_frame(
+pub fn denoise_and_tonemap_frame_into(
     frame: FirstHitSnapshot<'_>,
     scratch: &mut DenoiseScratch<'_>,
-) -> Vec<u8> {
+    rgba: &mut [u8],
+) {
+    if frame.current_sample_count == 0 {
+        scratch.filtered_buf.clear();
+        scratch
+            .filtered_buf
+            .resize(frame.width as usize * frame.height as usize, Vec3::ZERO);
+        tonemap_to_rgba_into(scratch.filtered_buf, 1.0, rgba);
+        return;
+    }
+
     let inv_samples = 1.0 / frame.current_sample_count as f32;
     scratch.avg_color_buf.clear();
     scratch
@@ -58,7 +84,7 @@ pub fn denoise_and_tonemap_frame(
         .denoise_into(&gbuffers, &AtrousParams::default(), scratch.filtered_buf);
 
     // `filtered_buf` is already averaged and filtered, so no further scaling.
-    tonemap_to_rgba(scratch.filtered_buf, 1.0)
+    tonemap_to_rgba_into(scratch.filtered_buf, 1.0, rgba);
 }
 
 /// One frame's accumulated radiance plus its first-hit guide buffers.
@@ -101,7 +127,7 @@ mod tests {
     use crate::{
         geometry::{cuts::StandardGemCuts, plane::GpuFacetPlane},
         optics::raytracer::{Camera, intersect_polyhedron, xyz_to_srgb_gamma},
-        renderer::guide_pass::generate_guide_buffers,
+        renderer::{guide_pass::generate_guide_buffers, tonemap::tonemap_to_rgba},
     };
 
     /// FNV-1a 64 over `bytes` -- a dependency-free fingerprint for the pin below.
@@ -185,7 +211,9 @@ mod tests {
     /// here first. The hash is the pre-move code's output.
     #[test]
     fn denoised_output_is_pinned_to_the_pre_move_gui_code() {
-        const PINNED: u64 = 0xca39_c692_af52_3c71;
+        // Pinned with the denoiser copying background pixels (negative facet id) through
+        // unfiltered and the sRGB encode's final 8-bit quantisation at round-to-nearest.
+        const PINNED: u64 = 0x4b0e_fd3c_897e_809c;
         let planes = StandardGemCuts::standard_round_brilliant();
         let camera = Camera::new(PIN_POSE.0, PIN_POSE.1, PIN_POSE.2, 42.0);
         let accum = pin_accum();
@@ -225,6 +253,37 @@ mod tests {
         );
         let hash = fnv1a64(&before);
         assert_eq!(hash, PINNED, "pre-move hash: {hash:#018x}");
+    }
+
+    /// Writing into a caller's (dirty, reused) byte buffer gives exactly the bytes the
+    /// allocating form returns, and the scratch state carries no history between calls.
+    #[test]
+    fn the_into_form_matches_the_allocating_form() {
+        let planes = StandardGemCuts::standard_round_brilliant();
+        let camera = Camera::new(PIN_POSE.0, PIN_POSE.1, PIN_POSE.2, 42.0);
+        let accum = pin_accum();
+        let guides = generate_guide_buffers(PIN_SIZE.0, PIN_SIZE.1, &camera, &planes);
+        let snapshot = FirstHitSnapshot {
+            width: PIN_SIZE.0,
+            height: PIN_SIZE.1,
+            current_sample_count: PIN_SAMPLES,
+            accum_buffer: &accum,
+            first_hit_depth: &guides.depth,
+            first_hit_normal: &guides.normal,
+            first_hit_facet_id: &guides.facet_id,
+        };
+
+        let mut denoiser = AtrousDenoiser::new();
+        let (mut avg_color_buf, mut filtered_buf) = (Vec::new(), Vec::new());
+        let mut scratch = DenoiseScratch {
+            denoiser: &mut denoiser,
+            avg_color_buf: &mut avg_color_buf,
+            filtered_buf: &mut filtered_buf,
+        };
+        let allocated = denoise_and_tonemap_frame(snapshot, &mut scratch);
+        let mut reused = vec![0x5A_u8; (PIN_SIZE.0 * PIN_SIZE.1 * 4) as usize];
+        denoise_and_tonemap_frame_into(snapshot, &mut scratch, &mut reused);
+        assert_eq!(reused, allocated);
     }
 
     /// Convergence requirement: at a high enough sample count the À-Trous filter's

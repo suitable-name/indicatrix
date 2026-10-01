@@ -13,7 +13,9 @@ pub const MAX_STEP_DEG: f64 = 5.0;
 /// Frame count above which the dialog must ask the user to confirm before starting.
 pub const CONFIRM_FRAME_THRESHOLD: usize = 2000;
 
+/// Smallest tilt angle the video sweep accepts, in degrees.
 pub const MIN_ANGLE_DEG: f64 = -90.0;
+/// Largest tilt angle the video sweep accepts, in degrees.
 pub const MAX_ANGLE_DEG: f64 = 90.0;
 
 /// Clamps a requested step into the accepted range. A non-finite input (a half-typed
@@ -132,18 +134,32 @@ pub const CUSTOM_RESOLUTION_INDEX: i32 = RESOLUTION_PRESETS.len() as i32;
 const MIN_VIDEO_DIM: i32 = 128;
 const MAX_VIDEO_DIM: i32 = 8192;
 
+/// Rounds `dim` down to the nearest even value -- `encode::mux_mp4`'s libx264 pass
+/// (`-pix_fmt yuv420p`) rejects an odd width or height outright (chroma
+/// subsampling needs an even number of samples per axis), and previously fell back
+/// to GIF with nothing but a `tracing::warn!` no one watching a release build ever
+/// sees (see [`super::encode`]'s own doc comment for the other half of that fix).
+/// Rounds DOWN, never up, so the result never exceeds an already-clamped bound
+/// (every caller here clamps to `[128, 8192]` first, both already even, so rounding
+/// down can never underflow below `MIN_VIDEO_DIM` either).
+const fn round_down_to_even(dim: i32) -> i32 {
+    dim & !1
+}
+
 /// Resolves `preset_index`/`custom_width`/`custom_height` into the actual pixel size to
 /// render. A custom size is clamped to `[128, 8192]` per axis independently -- `128`
 /// (not the still-image export's `16`) since the smallest preset this dialog itself
-/// offers is 128x128.
+/// offers is 128x128 -- and then rounded to even (see [`round_down_to_even`]); every
+/// fixed [`RESOLUTION_PRESETS`] entry is already even, so this only ever changes a
+/// custom size.
 #[must_use]
 pub fn resolve_resolution(preset_index: i32, custom_width: i32, custom_height: i32) -> (u32, u32) {
     if preset_index >= 0 && (preset_index as usize) < RESOLUTION_PRESETS.len() {
         RESOLUTION_PRESETS[preset_index as usize]
     } else {
         (
-            custom_width.clamp(MIN_VIDEO_DIM, MAX_VIDEO_DIM) as u32,
-            custom_height.clamp(MIN_VIDEO_DIM, MAX_VIDEO_DIM) as u32,
+            round_down_to_even(custom_width.clamp(MIN_VIDEO_DIM, MAX_VIDEO_DIM)) as u32,
+            round_down_to_even(custom_height.clamp(MIN_VIDEO_DIM, MAX_VIDEO_DIM)) as u32,
         )
     }
 }
@@ -298,6 +314,18 @@ mod tests {
             (128, 8192)
         );
         assert_eq!(resolve_resolution(-1, 500, 500), (500, 500));
+    }
+
+    /// libx264's `-pix_fmt yuv420p` rejects an odd width or height outright -- see
+    /// `round_down_to_even`'s own doc comment. An odd custom dimension must round
+    /// down to the nearest even one rather than reaching `encode::mux_mp4` unchanged
+    /// and silently falling back to GIF.
+    #[test]
+    fn resolve_resolution_rounds_an_odd_custom_dimension_down_to_even() {
+        assert_eq!(resolve_resolution(-1, 501, 723), (500, 722));
+        // An odd dimension right at the upper clamp bound must round down, not
+        // overflow past `MAX_VIDEO_DIM` by rounding up instead.
+        assert_eq!(resolve_resolution(-1, 8191, 8191), (8190, 8190));
     }
 
     #[test]

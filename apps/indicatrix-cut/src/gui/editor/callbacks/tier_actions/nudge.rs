@@ -7,7 +7,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use indicatrix_cut_core::Edit;
+use indicatrix_editor::session::InlineAngle;
 use slint::{ComponentHandle, SharedString};
 
 use crate::{
@@ -15,9 +15,9 @@ use crate::{
     bridge::render_thread::RenderContext,
     gui::{
         editor::{
-            edit_intent, loading,
+            edit_intent,
             stall_guard::stall_guard,
-            state::{EditorState, angle_nudge_coalesce_key},
+            state::EditorState,
             view::{SolidLastSolved, refresh_editor_panel_stale, submit_preview_replan},
         },
         show_toast,
@@ -26,7 +26,7 @@ use crate::{
 };
 
 /// The tier list's inline angle cell (`editor_view.slint`'s `TierAngleCell`): commits
-/// on Enter or focus loss as one [`Edit::ModifyTier`] (angle only, everything else on
+/// on Enter or focus loss as one `Edit::ModifyTier` (angle only, everything else on
 /// the tier untouched) through `EditorState::apply`. Invalid text is reported via
 /// toast and left uncommitted -- since [`refresh_editor_panel_stale`] is skipped on
 /// that path, `editor_tiers` (and so the cell's own display) is untouched too, which
@@ -56,98 +56,49 @@ pub(in crate::gui::editor) fn setup_inline_set_angle_callback(
                 return;
             };
             let mut st = state.borrow_mut();
-            let Some(current) = st.design.tiers.get(index) else {
-                return;
-            };
-            match loading::parse_angle_only(&text) {
-                Ok(angle_deg) => {
-                    // Bit-exact, not `==` (clippy::float_cmp): the parsed text
-                    // round-tripping to a genuinely unchanged value is the only case this
-                    // needs to catch -- committing a real no-op should not spend an undo
-                    // slot -- and comparing bit patterns rather than magnitudes sidesteps
-                    // that lint without needing an epsilon whose size would be arbitrary
-                    // here.
-                    if angle_deg.to_bits() == current.angle_deg.to_bits() {
-                        // Committing back the SAME value is a
-                        // real interaction boundary (the cutter opened the cell,
-                        // looked, and closed it) -- end any scroll-wheel nudge
-                        // coalescing run in progress rather than leaving it open
-                        // for a later, unrelated nudge to merge into.
-                        st.history.end_coalesce_run();
-                        // Without this toast, a committed-but-unchanged edit would
-                        // be silent and indistinguishable from a dropped one.
-                        show_toast(&ui, "No change.", "info");
-                        return;
-                    }
-                    let mut tier = current.clone();
-                    tier.angle_deg = angle_deg;
-                    match st.apply(Edit::ModifyTier { index, tier }) {
-                        Ok(()) => {
-                            refresh_editor_panel_stale(
-                                &ui,
-                                &render_ctx,
-                                &st,
-                                &BTreeSet::from([index]),
-                            );
-                            submit_preview_replan(
-                                &ui,
-                                &render_ctx,
-                                &preview_state,
-                                &solid_last_solved,
-                                &st,
-                                BTreeSet::from([index]),
-                                false,
-                            );
-                        }
-                        Err(e) => show_toast(&ui, &e.to_string(), "error"),
-                    }
+            // The parse, the bit-exact "unchanged" check (which also ends any
+            // scroll-wheel nudge coalescing run) and the one `Edit::ModifyTier` live in
+            // `EditorSession::set_tier_angle_from_text`, shared with the web app.
+            match st.set_tier_angle_from_text(index, &text) {
+                Ok(InlineAngle::Missing) => {}
+                // Without this toast, a committed-but-unchanged edit would be silent and
+                // indistinguishable from a dropped one.
+                Ok(InlineAngle::NoChange) => show_toast(&ui, "No change.", "info"),
+                Ok(InlineAngle::Applied(_)) => {
+                    refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::from([index]));
+                    submit_preview_replan(
+                        &ui,
+                        &render_ctx,
+                        &preview_state,
+                        &solid_last_solved,
+                        &st,
+                        BTreeSet::from([index]),
+                        false,
+                    );
                 }
                 Err(e) => show_toast(&ui, &e, "error"),
             }
         });
 }
 
-/// Clamps a nudged angle to the ORIGINAL tier's crown/pavilion side instead of
-/// letting it cross zero -- `meet_solver::blocks::tier_sides`'s side rule
-/// (negative is pavilion, non-negative crown, `-0.0` forces pavilion) means a
-/// nudge that crosses zero silently reclassifies the tier into the other block
-/// with no confirmation and no visible change other than the sign. `-0.0`/`0.0`
-/// are used as the two boundary values so the clamped result still carries the
-/// correct side under that same unsigned-zero rule, rather than merely being
-/// "close to zero" with an arbitrary sign.
-const fn clamp_nudge_to_side(current: f64, nudged: f64) -> f64 {
-    if current.is_sign_negative() == nudged.is_sign_negative() {
-        return nudged;
-    }
-    if current.is_sign_negative() {
-        -0.0
-    } else {
-        0.0
-    }
-}
+// `clamp_nudge_to_side` (a nudge stops at 0 degrees instead of crossing blocks) and
+// the clamped tier's label moved to `indicatrix_editor::session` with the nudge
+// itself (`EditorSession::nudge_angles`); `tier_nudge_label` is re-exported here at
+// its old path for the Save Tier form and tier-detach paths.
+pub(super) use indicatrix_editor::session::tier_nudge_label;
 
-/// A tier's short label for [`clamp_nudge_to_side`]'s explanatory toast --
-/// `"tier 5 (Girdle)"` when named, else `"tier 5"` (1-based, matching the tier
-/// table's own `#` column).
-///
-/// `pub(super)` since the Save Tier form and tier-detach paths label a tier the
-/// same way.
-pub(super) fn tier_nudge_label(tier: &indicatrix_cut_core::ConstraintTier, index: usize) -> String {
-    if tier.name.is_empty() {
-        format!("tier {}", index + 1)
-    } else {
-        format!("tier {} ({})", index + 1, tier.name)
-    }
-}
-
-/// The tier list's angle-nudge path -- the inline cell's Up/Down/wheel and the tier
-/// form's Angle field's Up/Down (see `editor_view.slint`'s `TierAngleCell::step`,
-/// `TierAngleCell::nudge`, and the form's own `LineEdit.key-pressed`) all forward
-/// here as `(anchor_index, delta_deg)`.
+/// The tier list's angle-nudge path -- the inline cell's Up/Down/wheel (see
+/// `tier_angle_cell.slint`'s `TierAngleCell::step`/`TierAngleCell.nudge`) forwards
+/// here as `(anchor_index, delta_deg)`. The tier FORM's own Angle field Up/Down
+/// (`editor_inspector/tier_form_tab.slint`'s `LineEdit.key-pressed`) does NOT --
+/// it calls `stepped_angle_text` (declared on `TierFormTab` itself), a pure
+/// function over the field's own local scratch text, since the form is a
+/// staging area with nothing committed to `Design` yet (see that function's own
+/// doc comment); this path only ever nudges an EXISTING, already-saved tier.
 ///
 /// When `anchor_index` is part of a multi-select group of two or more
 /// (`EditorState::multi_selected`), every selected tier is nudged together as ONE
-/// undoable [`Edit::RetargetAngles`] -- reusing that existing "several tiers, one
+/// undoable `Edit::RetargetAngles` -- reusing that existing "several tiers, one
 /// undo step, exact per-tier inverse" primitive rather than a new `Edit::Batch`
 /// variant, since `RetargetAngles` already is exactly that (see its own doc comment
 /// in `indicatrix_cut_core::Edit`). A lone tier still goes through the same
@@ -156,7 +107,7 @@ pub(super) fn tier_nudge_label(tier: &indicatrix_cut_core::ConstraintTier, index
 ///
 /// Applied through [`EditorState::apply_coalescing`] (not [`EditorState::apply`]) so
 /// several nudges typed/scrolled in quick succession collapse into one undo step --
-/// see [`angle_nudge_coalesce_key`] for how the coalescing key is derived from the
+/// see `indicatrix_editor::session::angle_nudge_coalesce_key` for how the coalescing key is derived from the
 /// nudge's actual target set, distinguishing a lone tier's nudge from a
 /// multi-selected group containing that same tier.
 ///
@@ -229,7 +180,7 @@ pub(in crate::gui::editor) fn setup_nudge_angle_callback(
 /// SUMMED `delta_deg` of the whole coalesced burst -- see that function's own doc
 /// comment. `targets`/`delta_deg` are read fresh against the design's CURRENT
 /// angle at drain time (not whatever it was when the first tick of the burst
-/// posted), so [`clamp_nudge_to_side`]'s zero-crossing clamp always judges the
+/// posted), so the zero-crossing clamp always judges the
 /// real, final position, exactly as if the summed delta had been applied in one
 /// step -- which, after this change, it is.
 fn apply_nudge_intent(
@@ -242,29 +193,9 @@ fn apply_nudge_intent(
     delta_deg: f64,
 ) {
     let mut st = state.borrow_mut();
-    let mut clamped_labels: Vec<String> = Vec::new();
-    let changes: Option<Vec<(usize, f64, f64)>> = targets
-        .iter()
-        .map(|&index| {
-            st.design.tiers.get(index).map(|tier| {
-                let wanted = tier.angle_deg + delta_deg;
-                let nudged = clamp_nudge_to_side(tier.angle_deg, wanted);
-                if nudged != wanted {
-                    clamped_labels.push(tier_nudge_label(tier, index));
-                }
-                (index, tier.angle_deg, nudged)
-            })
-        })
-        .collect();
-    let Some(changes) = changes else {
-        return;
-    };
-    if changes.is_empty() {
-        return;
-    }
-    let key = angle_nudge_coalesce_key(targets);
-    match st.apply_coalescing(Edit::RetargetAngles { changes }, key) {
-        Ok(()) => {
+    match st.nudge_angles(targets, delta_deg) {
+        Ok(None) => {}
+        Ok(Some(outcome)) => {
             let dirty: BTreeSet<usize> = targets.iter().copied().collect();
             refresh_editor_panel_stale(ui, render_ctx, &st, &dirty);
             submit_preview_replan(
@@ -277,18 +208,18 @@ fn apply_nudge_intent(
                 false,
             );
             // The angle's sign is the only thing that says which block a
-            // tier belongs to (`clamp_nudge_to_side`'s own doc comment), so
-            // a nudge that would cross zero is clamped there instead of
+            // tier belongs to (`indicatrix_editor::session::clamp_nudge_to_side`),
+            // so a nudge that would cross zero is clamped there instead of
             // silently reclassifying the tier -- explain the stop instead
             // of leaving it looking like the nudge simply refused to move.
-            if !clamped_labels.is_empty() {
+            if !outcome.clamped_labels.is_empty() {
                 show_toast(
                     ui,
                     &format!(
                         "{} stopped at 0° -- nudging further would move it into the \
                          other block. Type the angle directly (e.g. \"-0\") to cross \
                          blocks on purpose.",
-                        clamped_labels.join(", ")
+                        outcome.clamped_labels.join(", ")
                     ),
                     "info",
                 );

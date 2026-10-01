@@ -99,7 +99,8 @@ pub fn handshake_with_hello<S: Read + Write>(
 ) -> Result<Welcome, ClientError> {
     messages::write_message(stream, local)?;
 
-    let raw = crate::framing::read_frame(stream).map_err(crate::messages::NetError::Framing)?;
+    let raw = crate::framing::read_frame_bounded(stream, crate::framing::MAX_CONTROL_FRAME_LEN)
+        .map_err(crate::messages::NetError::Framing)?;
 
     if let Ok((welcome, remainder)) = postcard::take_from_bytes::<Welcome>(&raw)
         && remainder.is_empty()
@@ -147,10 +148,15 @@ pub fn handshake_with_hello<S: Read + Write>(
 /// `TiltCurvesRequest`) -- see [`Welcome`]'s own doc comment.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConnectionInfo {
+    /// Wire protocol version the peer speaks.
     pub protocol_version: u16,
+    /// Short hash identifying the peer build.
     pub build_hash: [u8; 8],
+    /// Render capability the peer offers, if any.
     pub render: Option<RenderCapability>,
+    /// Whether the peer serves the design library.
     pub library: bool,
+    /// Whether the peer computes tilt curves.
     pub tilt_curves: bool,
     /// The payload encoding the server negotiated (v14) -- see
     /// [`Welcome::payload_encoding`].
@@ -282,8 +288,9 @@ mod tests {
             }
         );
         let message = err.to_string();
+        let local = format!("v{PROTOCOL_VERSION}");
         assert!(
-            message.contains("v13") && message.contains("v14"),
+            message.contains("v13") && message.contains(&local),
             "{message}"
         );
     }
@@ -311,6 +318,7 @@ mod tests {
             &ErrorMsg {
                 code: 1,
                 message: "refusing to pair: build hash mismatch".to_string(),
+                request_id: None,
             },
         )
         .unwrap();

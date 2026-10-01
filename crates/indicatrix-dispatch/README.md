@@ -28,7 +28,6 @@ guarantee, and `SampleCursor` provides it by construction.
 - **`LanePool`** / **`PoolConfig`** — N lanes against one cursor for one image epoch,
   with failure reclaim, backoff, retirement, cancellation and `PoolEvent`s.
 - **`Merger`** — the deterministic merge of chunk sums (see below).
-- **`ItemQueue`** — whole-item distribution (catalogue batches) over N lanes.
 - **`CancelToken`** — a cloneable cancellation flag.
 
 ## Determinism
@@ -56,5 +55,4 @@ cargo test -p indicatrix-dispatch
 ```
 
 Every test lives inline next to its module (`sample_cursor`, `rate`, `merge`,
-`item_queue`, `pool`); the pool tests drive fake lanes, so no network or GPU is
-needed.
+`pool`); the pool tests drive fake lanes, so no network or GPU is needed.

@@ -415,6 +415,75 @@ fn run_into_refuses_a_merger_for_another_image_and_streams_into_a_fresh_one() {
     assert_eq!(snapshot, reference(4, &samples));
 }
 
+/// Coordinator load balancing: two lanes at a 10:1 rate ratio,
+/// pre-calibrated to match their real per-sample cost exactly, tracing a job whose
+/// total range is small next to either lane's own target-duration chunk. Tail-aware
+/// sizing (`Epoch::want` -> `ChunkPolicy::tail_aware_samples`) caps each lane's chunk
+/// to its own proportional share of what is left, so neither one can grab an
+/// oversized tail chunk and force the other to wait out the whole thing. The test
+/// asserts the resulting split (samples per lane, full coverage), which does not
+/// depend on the host's sleep granularity.
+#[test]
+fn two_lanes_at_a_ten_to_one_rate_finish_a_small_tail_close_together() {
+    let fast = fake(
+        "fast",
+        Values::Integer,
+        Duration::from_millis(2),
+        Failure::Never,
+    );
+    let slow = fake(
+        "slow",
+        Values::Integer,
+        Duration::from_millis(20),
+        Failure::Never,
+    );
+    let policy = ChunkPolicy {
+        target: Duration::from_millis(200),
+        min_samples: 1,
+        max_samples: 100_000,
+        calibration_samples: 1,
+    };
+    let mut pool = LanePool::new(config(policy));
+    pool.add_lane(
+        Arc::clone(&fast) as Arc<dyn WorkerLane>,
+        RateModel::calibrated(500.0), // matches 2 ms/sample exactly.
+    );
+    pool.add_lane(
+        Arc::clone(&slow) as Arc<dyn WorkerLane>,
+        RateModel::calibrated(50.0), // matches 20 ms/sample exactly: 10:1.
+    );
+
+    let range = SampleRange::new(0, 340);
+    let outcome = pool.run(&scene(1, 1), range, &CancelToken::new(), &|_| {});
+    assert_eq!(outcome.status, PoolStatus::Complete);
+
+    let fast_samples = fast.traced();
+    let slow_samples = slow.traced();
+    let mut all: Vec<u32> = fast_samples.iter().chain(&slow_samples).copied().collect();
+    all.sort_unstable();
+    assert_eq!(
+        all,
+        (0..340).collect::<Vec<u32>>(),
+        "every sample traced exactly once"
+    );
+    // The scheduler's decision, not wall-clock timing: the slow lane is given a
+    // share in line with its rate, never the oversized tail chunk that would make the
+    // fast lane wait. Its proportional share is 340 / 11 (about 31); one of its own
+    // target chunks (10 samples) of slack covers claim-order races.
+    assert!(!slow_samples.is_empty(), "the slow lane took part");
+    assert!(
+        slow_samples.len() <= 31 + 10,
+        "the slow lane must not be handed a disproportionate tail: {} of 340",
+        slow_samples.len()
+    );
+    assert!(
+        fast_samples.len() > 10 * slow_samples.len() / 2,
+        "the fast lane carries the bulk: fast={} slow={}",
+        fast_samples.len(),
+        slow_samples.len()
+    );
+}
+
 #[test]
 fn backoff_follows_the_export_schedule() {
     let config = PoolConfig::EXPORT;

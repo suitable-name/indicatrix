@@ -8,10 +8,15 @@
 /// `biaxial_delta_beta_alpha` on top.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CustomMaterialRow {
+    /// Display name.
     pub name: String,
+    /// Refractive index.
     pub refractive_index: f32,
+    /// Dispersion value.
     pub dispersion: f32,
+    /// Birefringence value.
     pub birefringence: f32,
+    /// Per-channel absorption coefficients.
     pub absorption_rgb: [f32; 3],
     /// `indicatrix::optics::materials::CrystalSystem`'s variant name as plain text (e.g.
     /// `"Trigonal"`), or `None`. Stored as a string, not the enum, so this crate still

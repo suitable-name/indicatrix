@@ -11,7 +11,12 @@ use super::{
     types::{CameraPose, FacetOverlay},
 };
 use glam::Vec3;
-use std::sync::{Arc, Mutex, PoisonError, Weak, mpsc::Sender};
+use indicatrix_solid::preview::{Outlines, SharedOutlines};
+use std::sync::{
+    Arc, Mutex, PoisonError, Weak,
+    atomic::{AtomicU64, Ordering},
+    mpsc::Sender,
+};
 
 /// The editor-side controller described in the parent module's doc comment.
 pub struct SolidPreviewState {
@@ -40,6 +45,30 @@ pub struct SolidPreviewState {
     /// "Show through tier N" slider: `Some(n)` truncates the plane arrangement
     /// to `design.tiers[..=n]`. Cached here for UI access via [`Self::set_tier_cutoff`].
     pub(super) tier_cutoff: Mutex<Option<usize>>,
+    /// bumped by `gui::editor::auto_solve::scheduling::
+    /// reset_for_new_design` on every wholesale design replacement (New/Load
+    /// Selected/Open Native) via [`Self::bump_generation_floor`] -- lets the
+    /// PLAN worker (`super::plan_worker::spawn_plan_worker`) tell a `PlanJob`
+    /// queued or in flight for the design being REPLACED apart from one for
+    /// the design that replaced it, even though `self.plan_gate`
+    /// (`super::RedrawGate`) itself only ever coalesces to "the latest queued
+    /// job," never "the latest queued job for the CURRENT design." A `PlanJob`
+    /// whose own `generation` is below this floor is dropped rather than
+    /// solved and handed back as a frame.
+    pub(super) generation_floor: Arc<AtomicU64>,
+    /// The Slice tool's provisional-tier outline and the drag-follower outline, shared
+    /// with the RENDER worker's `WorkerMemory::outlines`. Written synchronously by
+    /// [`Self::set_outlines`] (from the overlay's `provisional` / `moved` fields) and
+    /// read by the worker when it DRAWS, so a `Planned` request that
+    /// rebuilds the style, or a later request that supersedes an overlay update in
+    /// the "latest wins" gate, can neither drop nor resurrect them.
+    pub(super) outlines: SharedOutlines,
+    /// When `Some`, replaces the `planes` of every [`Self::request_redraw_with_gear`]
+    /// call: the Slice tool sets it to the provisional design's planes so a camera
+    /// orbit, a view-mode switch or a background-solve redraw (all of which reproject
+    /// the COMMITTED `RenderContext::active_planes`) keeps showing the provisional
+    /// facet instead of snapping back to the committed stone.
+    pub(super) planes_override: Mutex<Option<Vec<(Vec3, f32)>>>,
 }
 
 impl SolidPreviewState {
@@ -55,6 +84,9 @@ impl SolidPreviewState {
             plan_wake: Mutex::new(None),
             self_weak: Mutex::new(Weak::new()),
             tier_cutoff: Mutex::new(None),
+            generation_floor: Arc::new(AtomicU64::new(0)),
+            outlines: Arc::new(Mutex::new(Outlines::default())),
+            planes_override: Mutex::new(None),
         });
         *state
             .self_weak
@@ -110,6 +142,12 @@ impl SolidPreviewState {
         view_mode: u8,
         gear: Option<(u32, f32)>,
     ) {
+        let planes = self
+            .planes_override
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+            .unwrap_or(planes);
         self.submit(RedrawRequest::Reproject {
             planes,
             camera,
@@ -129,6 +167,31 @@ impl SolidPreviewState {
     /// rendered anything at all.
     pub fn request_facet_overlay(&self, overlay: FacetOverlay) {
         self.submit(RedrawRequest::UpdateFacetOverlay(overlay));
+    }
+
+    /// Stores the provisional-tier and drag-follower outlines where the RENDER worker
+    /// reads them when it draws -- see [`Self::outlines`] -- so they survive a
+    /// `Planned` request and an overlay update superseded in the "latest wins" gate
+    /// alike. Does NOT redraw: follow with [`Self::request_facet_overlay`]. The
+    /// editor's 3D overlay path calls this with the merged overlay's two fields on
+    /// every update; the Diagram view's own hover/click overlays never do, so they
+    /// cannot clear an outline they know nothing about.
+    pub fn set_outlines(&self, provisional: &[u32], moved: &[u32]) {
+        let mut outlines = self.outlines.lock().unwrap_or_else(PoisonError::into_inner);
+        outlines.provisional.clear();
+        outlines.provisional.extend_from_slice(provisional);
+        outlines.moved.clear();
+        outlines.moved.extend_from_slice(moved);
+    }
+
+    /// Makes every later [`Self::request_redraw_with_gear`] draw `planes` instead of
+    /// the planes its caller passes (`None` restores the caller's). Used by the Slice
+    /// tool while a provisional facet is on screen -- see [`Self::planes_override`].
+    pub fn set_planes_override(&self, planes: Option<Vec<(Vec3, f32)>>) {
+        *self
+            .planes_override
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = planes;
     }
 
     /// Submits a replan-on-edit request to the PLAN worker.
@@ -172,5 +235,16 @@ impl SolidPreviewState {
             .tier_cutoff
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = cutoff;
+    }
+
+    /// bumps [`Self::generation_floor`] to (at least) `floor` -- called
+    /// once per wholesale design replacement by `gui::editor::auto_solve::
+    /// scheduling::reset_for_new_design`. `fetch_max`, not a plain store: this
+    /// must never move BACKWARDS even if called out of order (defensive only
+    /// -- `EditorState::generation` is itself only ever bumped, never reset,
+    /// so a caller's own `floor` values are already non-decreasing in
+    /// practice).
+    pub fn bump_generation_floor(&self, floor: u64) {
+        self.generation_floor.fetch_max(floor, Ordering::Relaxed);
     }
 }

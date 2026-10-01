@@ -9,7 +9,11 @@ use super::{
     },
     fixtures::{RBC_445, rbc_445},
 };
-use crate::{design::Design, edit::History, preform::PreformSpec};
+use crate::{
+    design::Design,
+    edit::{Edit, History},
+    preform::PreformSpec,
+};
 use indicatrix::{geometry::meet_solver::MeetConstraint, optics::materials::GemMaterial};
 
 // --- optimize_design: acceptance-gate-shaped tests ---
@@ -172,6 +176,87 @@ fn optimize_design_never_worsens_the_score_and_never_touches_a_pinned_tier() {
     }
 }
 
+/// The same acceptance-gate invariant as
+/// [`optimize_design_never_worsens_the_score_and_never_touches_a_pinned_tier`]
+/// (never worsens the score, never touches a pinned tier, applying the result
+/// closes and leaves pinned tiers untouched) -- kept fast by cutting
+/// the two knobs that actually drive that test's wall-clock cost: the
+/// coordinate budget (`max_evaluations: 8` instead of `120`) and the polish
+/// stage (disabled outright). What is NOT cut is the two mandatory
+/// [`ObjectiveFidelity::Full`](super::super::ObjectiveFidelity) scorings every
+/// `optimize_design` call pays for regardless (the before/after report, ~1.3s
+/// each on RBC-445 in `--release`, see the parent module's "Cost first" doc
+/// section) -- this run's own wall time is printed with `--nocapture` rather
+/// than asserted against, since that cost is inherent to `Full` fidelity
+/// itself, not to anything this test's own budget controls.
+#[test]
+fn optimize_design_never_worsens_the_score_and_never_touches_a_pinned_tier_on_a_small_budget() {
+    let mut design = rbc_445();
+    let free = free_tier_indices(&design);
+    assert!(!free.is_empty(), "fixture must have something free to move");
+    let mut state = 777u64;
+    for &i in &free {
+        let r = (search::splitmix64_next(&mut state) % 1000) as f64 / 1000.0; // [0, 1)
+        design.tiers[i].angle_deg = (r - 0.5).mul_add(6.0, design.tiers[i].angle_deg); // +/- 3 degrees
+    }
+    let pinned: Vec<(usize, f64)> = design
+        .tiers
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| matches!(t.constraint, MeetConstraint::ScaleReference(_)))
+        .map(|(i, t)| (i, t.angle_deg))
+        .collect();
+
+    let material = GemMaterial::diamond();
+    let config = OptimizeConfig {
+        seed: 42,
+        max_evaluations: 8,
+        polish_start_step_deg: None,
+        polish_max_evaluations: None,
+        ..OptimizeConfig::default()
+    };
+    let start = std::time::Instant::now();
+    let outcome = optimize_design(&design, &material, &config, &SearchHooks::default())
+        .expect("perturbed design must still solve");
+    let elapsed = start.elapsed();
+    println!(
+        "small-budget optimize invariant: {} evaluation(s) in {:.3}s wall time \
+         (max_evaluations={}, polish disabled)",
+        outcome.evaluations,
+        elapsed.as_secs_f64(),
+        config.max_evaluations,
+    );
+
+    assert!(
+        outcome.after_score <= outcome.before_score + 1e-4,
+        "optimizer must not worsen the score: before={} after={}",
+        outcome.before_score,
+        outcome.after_score
+    );
+    assert!(
+        outcome.evaluations <= config.max_evaluations + 2,
+        "evaluations {} should not exceed the coordinate budget {} (+2)",
+        outcome.evaluations,
+        config.max_evaluations
+    );
+    for change in &outcome.changes {
+        assert!(
+            pinned.iter().all(|&(pi, _)| pi != change.index),
+            "optimizer must never change a pinned tier's angle (tier {})",
+            change.index
+        );
+    }
+
+    let mut history = History::new();
+    let mut applied_design = design.clone();
+    apply_optimize_outcome(&mut history, &mut applied_design, &outcome)
+        .expect("applying the outcome must succeed against the same design it was computed from");
+    assert!(applied_design.is_closed());
+    for &(pi, angle) in &pinned {
+        assert_eq!(applied_design.tiers[pi].angle_deg, angle);
+    }
+}
+
 /// `apply_optimize_outcome` must go through `History` -- an applied optimization
 /// is undoable as a single [`crate::edit::Edit::Batch`] step, exactly like any
 /// other edit, rather than one `Ctrl+Z` per tier.
@@ -317,4 +402,63 @@ fn apply_optimize_outcome_rejects_out_of_range_index_without_mutating_design() {
     assert_eq!(err.tier_count, tier_count);
     assert!((design.tiers[7].angle_deg - original_a).abs() < 1e-9);
     assert!(!history.undo(&mut design).unwrap());
+}
+
+/// An [`AngleChange`] computed against `design`'s OLD tier ordering must
+/// never be silently written to whatever tier a later edit shifted into its
+/// `index` -- caught by comparing that tier's CURRENT angle against
+/// `change.from_deg` bit-for-bit before anything is applied, not just checking
+/// the index is in range. Scenario: a
+/// `MoveTier` shifts tier 9 down into index 7, so an `AngleChange` computed
+/// for the tier that USED to be at index 7 must be rejected rather than
+/// silently applied to tier 9's new occupant.
+#[test]
+fn apply_optimize_outcome_rejects_a_stale_change_after_move_tier_without_mutating_design() {
+    let mut design = rbc_445();
+    let stale_from_deg = design.tiers[7].angle_deg;
+
+    let mut history = History::new();
+    history
+        .apply(&mut design, Edit::MoveTier { from: 9, to: 7 })
+        .expect("move must apply");
+    assert_ne!(
+        design.tiers[7].angle_deg.to_bits(),
+        stale_from_deg.to_bits(),
+        "the move must actually change which tier sits at index 7, or this test proves nothing"
+    );
+
+    let outcome = OptimizeOutcome {
+        before: ObjectiveComponents {
+            windowing_pct: 10.0,
+            extinction_pct: 10.0,
+            tilt_brilliance_pct: 80.0,
+        },
+        before_score: 10.0,
+        before_yield_loss_pct: 0.0,
+        after: ObjectiveComponents {
+            windowing_pct: 5.0,
+            extinction_pct: 10.0,
+            tilt_brilliance_pct: 80.0,
+        },
+        after_score: 5.0,
+        after_yield_loss_pct: 0.0,
+        evaluations: 4,
+        changes: vec![AngleChange {
+            index: 7,
+            from_deg: stale_from_deg,
+            to_deg: stale_from_deg + 2.0,
+        }],
+        cancelled: false,
+        polish_evaluations: 0,
+        polish_improvement: 0.0,
+    };
+
+    let before_apply = design.clone();
+    let err = apply_optimize_outcome(&mut history, &mut design, &outcome)
+        .expect_err("a stale from_deg must be rejected, not silently written to the wrong tier");
+    assert_eq!(err.index, 7);
+    assert_eq!(
+        design, before_apply,
+        "a rejected outcome must leave the design completely untouched"
+    );
 }

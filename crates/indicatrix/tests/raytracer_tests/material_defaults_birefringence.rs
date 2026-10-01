@@ -126,10 +126,26 @@ fn test_birefringence_splits_produce_measurable_difference_zircon_vs_flat() {
     // effect (same seed feeds both traces, so this is not sampling noise), just correctly
     // SMALL rather than artificially large. 3e-4 stays comfortably below the measured
     // value while still catching a regression that zeroes the effect out entirely.
+    //
+    // Upper bound: the effect is first order in the walk-off angle (at most ~2 degrees =
+    // 0.035 rad for Zircon-class birefringence), and the measured diff is 3.73e-4. Using
+    // the walk-off direction `S` where the wave normal `k` belongs re-enters the
+    // refraction with an error of that same angle at every one of the up-to-12 internal
+    // bounces, so the error compounds rather than staying a single small perturbation;
+    // a trace that has lost the k/S separation therefore moves by a multiple of the
+    // correct effect, not a fraction. 3e-3 (about 8x the measured value) leaves room for
+    // ordinary changes to the shared sampling and lighting while still failing on an
+    // order-of-magnitude inflation.
     assert!(
         diff > 3e-4,
         "birefringent Zircon should render measurably differently (averaged over {samples} samples) than an \
          otherwise-identical flat (delta=0) material -- got diff={diff} (birefringent={avg_birefringent:?}, flat={avg_flat:?})"
+    );
+    assert!(
+        diff < 3e-3,
+        "birefringent Zircon's difference from the flat material should stay at the size of the walk-off \
+         effect (order 4e-4), not be inflated by evaluating the extraordinary mode against the wrong \
+         direction -- got diff={diff} (birefringent={avg_birefringent:?}, flat={avg_flat:?})"
     );
 }
 

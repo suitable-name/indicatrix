@@ -133,3 +133,69 @@ fn the_moving_average_converges_to_a_new_steady_rate() {
     );
     assert_eq!(model.observations(), 25);
 }
+
+/// While `remaining` is plentiful (far larger than the target-duration chunk), a
+/// single lane's tail-aware size matches [`ChunkPolicy::samples_for_rate`] exactly --
+/// the share term (`remaining` itself, since `sum_rates == rate` for one lane) never
+/// binds until the run's genuine tail. Chunk sizing is therefore unaffected for a
+/// single lane outside that tail.
+#[test]
+fn tail_aware_samples_matches_plain_sizing_for_one_lane_with_plenty_of_room() {
+    let policy = ChunkPolicy::EXPORT;
+    let rate = 1000.0;
+    let plain = policy.samples_for_rate(rate);
+    // `remaining` comfortably exceeds the plain chunk many times over.
+    let remaining = plain * 50;
+    assert_eq!(policy.tail_aware_samples(rate, remaining, rate), plain);
+}
+
+/// A single lane's very own tail (nothing else contributes to `sum_rates`) is still
+/// capped at what is actually left, never past it -- `share == remaining` exactly.
+/// `INTERACTIVE`'s `min_samples` floor is `1`, so it never masks the share term the
+/// way `EXPORT`'s 32-sample floor would for a tail this small.
+#[test]
+fn tail_aware_samples_caps_a_single_lanes_own_tail_at_what_remains() {
+    let policy = ChunkPolicy::INTERACTIVE;
+    let rate = 1000.0;
+    let remaining = 5; // far below the plain target-duration chunk (1500 samples).
+    assert_eq!(policy.tail_aware_samples(rate, remaining, rate), remaining);
+}
+
+/// Two lanes at a 10:1 rate ratio sharing a small tail: each one's want, converted
+/// back to the TIME it would take that lane to trace it (`want / rate`), lands within
+/// about one fast-lane chunk duration of the other's -- the fast lane can no longer be
+/// starved by a slow lane grabbing an oversized share of what is left.
+#[test]
+fn tail_aware_samples_shares_a_small_tail_close_to_proportionally() {
+    let policy = ChunkPolicy {
+        target: Duration::from_millis(300),
+        min_samples: 1,
+        max_samples: DEFAULT_MAX_CHUNK_SAMPLES,
+        calibration_samples: 1,
+    };
+    let fast_rate = 1000.0;
+    let slow_rate = 100.0; // 10:1, as the coordinator's A100-vs-780M report.
+    let sum_rates = fast_rate + slow_rate;
+    // Small relative to either lane's own target-duration chunk (300 and 30 samples).
+    let remaining = 20;
+
+    let fast_want = policy.tail_aware_samples(fast_rate, remaining, sum_rates);
+    let slow_want = policy.tail_aware_samples(slow_rate, remaining, sum_rates);
+    assert!(
+        fast_want + slow_want <= remaining + 1,
+        "shares must not overshoot what is left by more than rounding"
+    );
+
+    let fast_chunk_duration = f64::from(fast_want) / fast_rate;
+    let slow_chunk_duration = f64::from(slow_want) / slow_rate;
+    let fast_lane_chunk = policy.samples_for_rate(fast_rate);
+    let fast_lane_chunk_duration = f64::from(fast_lane_chunk) / fast_rate;
+    assert!(
+        (fast_chunk_duration - slow_chunk_duration).abs() <= fast_lane_chunk_duration,
+        "fast={fast_chunk_duration}s slow={slow_chunk_duration}s bound={fast_lane_chunk_duration}s"
+    );
+    // Without tail-awareness the slow lane's plain chunk would be
+    // `policy.samples_for_rate(slow_rate)` (30, target-duration, ignoring `remaining`
+    // entirely) -- several times the whole tail; the tail-aware share is much smaller.
+    assert!(slow_want < policy.samples_for_rate(slow_rate));
+}

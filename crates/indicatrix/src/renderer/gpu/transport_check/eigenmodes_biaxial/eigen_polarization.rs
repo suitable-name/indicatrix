@@ -12,6 +12,7 @@ use crate::{
 
 use super::{biaxial_test_directions, biaxial_test_indicatrices};
 
+/// One input case for the biaxial eigen polarization check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BiaxialEigenPolarizationCase {
@@ -60,6 +61,7 @@ fn build_biaxial_eigen_polarization_cases() -> Vec<BiaxialEigenPolarizationCase>
     cases
 }
 
+/// Runs the biaxial eigen polarization check against the CPU reference.
 #[must_use]
 pub fn run_biaxial_eigen_polarization(
     ctx: &crate::renderer::gpu::GpuContext,

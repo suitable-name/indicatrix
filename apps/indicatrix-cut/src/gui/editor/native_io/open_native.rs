@@ -7,8 +7,8 @@
 
 use super::{
     open_commit::{
-        LoadedNativeOutcome, SelfContainedLoad, commit_loaded_native, open_native_self_contained,
-        open_plain_asc,
+        LoadedNativeOutcome, ReplaceGuard, SelfContainedLoad, commit_loaded_native,
+        open_converted_design, open_native_self_contained, open_plain_asc,
     },
     open_picker::{
         NativePairOrSelfContained, PickedNative, PickedPair, pick_native_or_asc_then,
@@ -46,7 +46,10 @@ use std::{
 /// design stashes [`PendingUnsavedAction::OpenNative`] and opens the guard dialog
 /// instead of proceeding; [`setup_unsaved_guard_dispatch`]
 /// (`gui::editor::callbacks::tier_actions`) resumes by calling [`do_open_native`]
-/// again once Save/Discard is chosen, which re-shows the picker from scratch.
+/// again once Save/Discard is chosen, which re-shows the picker from scratch. The
+/// picker and the file read are asynchronous and the editor stays interactive, so
+/// [`do_open_native`] re-checks for edits made since that decision
+/// ([`ReplaceGuard`]) when the pick lands, before anything is replaced.
 ///
 /// Also registers the fingerprint-mismatch dialog's three callbacks
 /// ([`PENDING_MISMATCH`]) -- bundled in here rather than a separate `setup_*` for the
@@ -155,6 +158,7 @@ pub(in crate::gui::editor) fn open_recent_native_path(
         );
         return;
     }
+    let guard = ReplaceGuard::capture(&state.borrow(), false);
     let state = Rc::clone(state);
     let render_ctx = Arc::clone(render_ctx);
     let preview_state = Arc::clone(preview_state);
@@ -163,6 +167,11 @@ pub(in crate::gui::editor) fn open_recent_native_path(
     // being constructed below (it moves its own copy in).
     let native_path_for_read = native_path.clone();
     read_native_pair_then(ui, &native_path_for_read, move |ui, result| {
+        // The read is asynchronous: re-check for edits made since the dirty check
+        // above before anything is replaced.
+        if result.is_some() && !guard.allows_replace(ui, &state) {
+            return;
+        }
         match result {
             Some(NativePairOrSelfContained::Pair {
                 parsed_native,
@@ -180,6 +189,7 @@ pub(in crate::gui::editor) fn open_recent_native_path(
                     asc_text,
                     native_text,
                 },
+                guard,
             ),
             // The same autosave-restore fallback `do_open_native` gets, reached
             // here too since a leftover autosave file is reopened through this
@@ -219,6 +229,9 @@ struct PendingMismatch {
     asc_filename: String,
     asc_text: String,
     native_text: String,
+    /// The edit check made when the file was picked; re-run when the cutter answers
+    /// the dialog, which commits the design.
+    guard: ReplaceGuard,
 }
 
 thread_local! {
@@ -237,8 +250,8 @@ thread_local! {
 /// The actual "Open Native" work -- see [`setup_open_native_callback`]'s own doc
 /// comment for why the unsaved-changes guard runs before this is ever called, not
 /// inside it. Reads whichever file the cutter picked via [`pick_native_or_asc_then`],
-/// then dispatches to [`open_native_pair`] (a real pair) or [`open_plain_asc`] (a
-/// bare `.asc`, no sidecar).
+/// then dispatches to [`open_native_pair`] (a real pair), [`open_plain_asc`] (a
+/// bare `.asc`, no sidecar) or [`open_converted_design`] (a `.gem`/`.gcs` file).
 pub(in crate::gui::editor) fn do_open_native(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -246,11 +259,16 @@ pub(in crate::gui::editor) fn do_open_native(
     preview_state: &Arc<SolidPreviewState>,
     solid_last_solved: &crate::gui::editor::view::SolidLastSolved,
 ) {
+    // Captured now -- the dirty check (or the Save/Discard answer that resumed this
+    // call) just happened; the picker below is asynchronous and the editor stays
+    // interactive while it is up.
+    let guard = ReplaceGuard::capture(&state.borrow(), true);
     let state = Rc::clone(state);
     let render_ctx = Arc::clone(render_ctx);
     let preview_state = Arc::clone(preview_state);
     let solid_last_solved = Arc::clone(solid_last_solved);
     pick_native_or_asc_then(ui, move |ui, picked| match picked {
+        Some(_) if !guard.allows_replace(ui, &state) => {}
         Some(PickedNative::Pair(picked)) => {
             open_native_pair(
                 ui,
@@ -259,6 +277,7 @@ pub(in crate::gui::editor) fn do_open_native(
                 &preview_state,
                 &solid_last_solved,
                 *picked,
+                guard,
             );
         }
         Some(PickedNative::AscOnly { asc_path, asc_text }) => open_plain_asc(
@@ -286,6 +305,14 @@ pub(in crate::gui::editor) fn do_open_native(
                 asc_filename: &asc_filename,
             },
         ),
+        Some(PickedNative::Converted(converted)) => open_converted_design(
+            ui,
+            &state,
+            &render_ctx,
+            &preview_state,
+            &solid_last_solved,
+            converted,
+        ),
         None => {}
     });
 }
@@ -305,6 +332,7 @@ fn open_native_pair(
     preview_state: &Arc<SolidPreviewState>,
     solid_last_solved: &crate::gui::editor::view::SolidLastSolved,
     picked: PickedPair,
+    guard: ReplaceGuard,
 ) {
     let PickedPair {
         native_path,
@@ -328,6 +356,7 @@ fn open_native_pair(
                         asc_filename: parsed_native.asc_filename,
                         asc_text,
                         native_text,
+                        guard,
                     });
                 });
                 ui.global::<EditorModel>()
@@ -380,6 +409,9 @@ fn setup_mismatch_dialog_callbacks(
             let Some(pending) = PENDING_MISMATCH.with(RefCell::take) else {
                 return;
             };
+            if !pending.guard.allows_replace(&ui, &state_apply) {
+                return;
+            }
             // `true`: the cutter just explicitly asked for the sidecar's meets to
             // apply despite the mismatch -- see `TierOverlay::AppliedDespiteMismatch`.
             match load_paired(&pending.asc_text, &pending.native_text, true) {
@@ -415,6 +447,9 @@ fn setup_mismatch_dialog_callbacks(
             let Some(pending) = PENDING_MISMATCH.with(RefCell::take) else {
                 return;
             };
+            if !pending.guard.allows_replace(&ui, &state_asc_only) {
+                return;
+            }
             // `false` again: the cutter chose to keep the mismatch's overlay SKIPPED,
             // i.e. `TierOverlay::SkippedFingerprintMismatch` -- every authored meet
             // constraint and detached facet the sidecar carried is dropped, kept only

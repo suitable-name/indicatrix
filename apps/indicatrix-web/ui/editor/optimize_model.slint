@@ -1,0 +1,56 @@
+// Optimize's state (modelled on the desktop's `EditorModel.optimize_*`), pushed by
+// `src/editor/optimize`. A global is only a Rust type if `app.slint`'s export block
+// names it.
+
+// One row of the result table: a metric's before figure, its after figure with delta
+// and verdict, and the direction it is coloured by (1 better, -1 worse, 0 unchanged).
+export struct OptimizeResultRow {
+    label: string,
+    before: string,
+    after: string,
+    direction: int,
+}
+
+// One row of "Tiers this would change".
+export struct OptimizeChangeRow {
+    tier-number: string,
+    name: string,
+    from-angle: string,
+    to-angle: string,
+}
+
+export global OptimizeModel {
+    // -- Inputs (the Optimize tab's fields) -------------------------------------------------
+    in-out property <string> weight-windowing: "1.0";
+    in-out property <string> weight-extinction: "1.0";
+    in-out property <string> weight-tilt-brilliance: "1.0";
+    in-out property <float> weight-yield: 0.0;
+    in-out property <string> budget-text: "200";
+    in-out property <string> seed-text: "0";
+    in-out property <bool> polish-enabled: true;
+    in-out property <bool> only-selected: false;
+
+    // -- State ----------------------------------------------------------------------------
+    // Whether any tier is free to move, and the explanatory hint either way.
+    in property <bool> available: false;
+    in property <string> hint: "";
+    in property <bool> running: false;
+    // The live status line while running, the result summary after.
+    in property <string> status: "";
+    in property <bool> status-is-problem: false;
+    // Fraction of the run's evaluation budget, -1 when the stage does not count.
+    in property <float> progress: -1;
+    in property <[OptimizeResultRow]> result-rows: [];
+    in property <[OptimizeChangeRow]> change-rows: [];
+    // A current (not stale) result with changes is waiting for Apply.
+    in property <bool> can-apply: false;
+    // The result on screen was computed for an older design: the tab badges it "Stale:
+    // design changed" with a Recompute (the desktop's `optimize_stale`).
+    in property <bool> result-stale: false;
+    // Cancel was asked and the Worker is stopping with its best result so far.
+    in property <bool> cancelling: false;
+
+    callback run();
+    callback cancel();
+    callback apply();
+}

@@ -10,7 +10,7 @@ use indicatrix_net::library::{
 };
 use indicatrix_vault::{
     db::sqlite::{Database, SortOrder},
-    model::entry::FacetDiagramEntry,
+    model::entry::FacetingDiagramEntry,
 };
 
 #[test]
@@ -54,7 +54,7 @@ fn two_designs_with_different_fields_get_different_version_hashes() {
     let path = populated_temp_db();
     let db = Database::new(Some(path.to_str().unwrap())).unwrap();
     db.save_diagram_entry(
-        &FacetDiagramEntry {
+        &FacetingDiagramEntry {
             title: "Emerald Cut".to_string(),
             url: "https://example.test/diagram/2".to_string(),
             design_id: "EC-1".to_string(),
@@ -129,7 +129,7 @@ fn search_page_cursor_excludes_rows_already_returned_by_an_earlier_page() {
     let db = Database::new(Some(path.to_str().unwrap())).unwrap();
     let second_entry_id = db
         .save_diagram_entry(
-            &FacetDiagramEntry {
+            &FacetingDiagramEntry {
                 title: "Emerald Cut".to_string(),
                 url: "https://example.test/diagram/2".to_string(),
                 design_id: "EC-1".to_string(),
@@ -317,7 +317,7 @@ fn search_with_title_order_returns_titles_sorted() {
     let db = Database::new(Some(path.to_str().unwrap())).unwrap();
     for (title, design_id) in [("Zircon Cut", "ZC-1"), ("Asscher Cut", "AC-1")] {
         db.save_diagram_entry(
-            &FacetDiagramEntry {
+            &FacetingDiagramEntry {
                 title: title.to_string(),
                 url: format!("https://example.test/diagram/{design_id}"),
                 design_id: design_id.to_string(),
@@ -362,7 +362,7 @@ fn search_with_tag_filter_restricts_to_designs_carrying_that_tag() {
     let db = Database::new(Some(path.to_str().unwrap())).unwrap();
     let tagged_entry_id = db
         .save_diagram_entry(
-            &FacetDiagramEntry {
+            &FacetingDiagramEntry {
                 title: "Emerald Cut".to_string(),
                 url: "https://example.test/diagram/2".to_string(),
                 design_id: "EC-1".to_string(),

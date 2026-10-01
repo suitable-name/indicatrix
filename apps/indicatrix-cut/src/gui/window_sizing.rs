@@ -6,9 +6,9 @@
 //! scaling the usable area is only about 1536 x 830 logical pixels, so that request
 //! would spill past the screen edge. This module shrinks the request to a fraction of
 //! the monitor the window actually landed on, using the `winit` window behind Slint's
-//! (the same accessor `render::detached_render` uses for always-on-top). Nothing here
-//! sets a minimum: the window stays freely resizable, and content clips instead of
-//! pushing the window around (see the sizing notes at the top of `ui/app.slint`).
+//! (via `WinitWindowAccessor::with_winit_window`). Nothing here sets a minimum: the
+//! window stays freely resizable, and content clips instead of pushing the window
+//! around (see the sizing notes at the top of `ui/app.slint`).
 //!
 //! The same fit pass also decides whether the resulting window is small enough that
 //! the Edit sub-tab should start with its inspector collapsed and its dock narrower --

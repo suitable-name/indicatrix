@@ -4,7 +4,7 @@
 // and `Camera::generate_ray` (screen coordinates + jitter -> world-space ray), run back
 // to back per case exactly as the CPU renderer does per-frame/per-sample. See that
 // module's own doc comment: this is a translation of the CURRENT `raytracer.rs`, never
-// a repair of the quarantined old shader.
+// a repair of the retired first-draft shader.
 //
 // Each case is fully self-contained (no shared uniform state), so a single dispatch can
 // sweep a dense, independently-generated grid of `(yaw, pitch, distance, fov_deg,
@@ -54,9 +54,15 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let origin = vec3<f32>(c.distance * cos_p * sin_y, c.distance * sin_p, c.distance * cos_p * cos_y);
     let forward = normalize(-origin);
+    // Mirrors `Camera::new`'s own three-way branch in full -- past +/-90 deg of pitch
+    // (`cos_p < 0.0`) the camera is over the pole and `+Y` would flip `right`, so the CPU
+    // uses `-Y` there to keep `right` continuous through the pole. Dropping that branch
+    // would disagree with the CPU for any case with `cos_p < 0.0` and `abs(cos_p) >= 1e-4`.
     var world_up: vec3<f32>;
     if (abs(cos_p) < 1e-4) {
         world_up = vec3<f32>(0.0, 0.0, -1.0);
+    } else if (cos_p < 0.0) {
+        world_up = vec3<f32>(0.0, -1.0, 0.0);
     } else {
         world_up = vec3<f32>(0.0, 1.0, 0.0);
     }

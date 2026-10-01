@@ -132,16 +132,26 @@ pub struct Capacity {
     pub hdr_workers: u32,
 }
 
+/// The most CPU threads one joined worker is credited with. The figure is self-reported
+/// in the worker's `HELLO`, so it is capped before it enters a sum.
+const MAX_REPORTED_THREADS: u32 = 1024;
+
 impl Capacity {
+    /// Adds one worker's self-reported capability. Saturating throughout: the inputs are
+    /// peer-supplied, and a wrapped sum would under-report capacity (or panic in debug).
     fn add(&mut self, capability: &RenderCapability) {
-        self.workers += 1;
-        self.hdr_workers += u32::from(capability.hdr);
+        self.workers = self.workers.saturating_add(1);
+        self.hdr_workers = self.hdr_workers.saturating_add(u32::from(capability.hdr));
         match &capability.backend {
-            Backend::Cpu { threads } => self.threads += threads,
-            Backend::Gpu { .. } => self.gpus += 1,
+            Backend::Cpu { threads } => {
+                self.threads = self
+                    .threads
+                    .saturating_add((*threads).min(MAX_REPORTED_THREADS));
+            }
+            Backend::Gpu { .. } => self.gpus = self.gpus.saturating_add(1),
             Backend::Coordinator { threads, gpus, .. } => {
-                self.threads += threads;
-                self.gpus += gpus;
+                self.threads = self.threads.saturating_add(*threads);
+                self.gpus = self.gpus.saturating_add(*gpus);
             }
         }
         self.max_pixels = self.max_pixels.max(capability.max_pixels);

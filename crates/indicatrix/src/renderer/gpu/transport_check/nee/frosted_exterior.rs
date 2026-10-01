@@ -22,6 +22,7 @@ use crate::{
 
 use super::synthetic_test_map;
 
+/// One input case for the nee frosted exterior check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct NeeFrostedExteriorCase {

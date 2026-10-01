@@ -2,35 +2,32 @@
 //! design's [`indicatrix::geometry::stone_metrics::SolidMesh`], independent of the
 //! GPU path tracer.
 //!
-//! [`raster`] is a pure-Rust, Slint-free rasterizer with its own unit tests.
-//! [`to_pixel_buffer`] is the one bridge into Slint types, kept here so `raster.rs`
-//! stays independently testable and reusable as the seam for a possible future `wgpu`
-//! backend.
+//! [`raster`], [`diagram2d`], [`facet_map`], [`mesh_cache`], [`edges_layer`],
+//! [`live_update`] and `pixel_font` (re-exported at `gui::pixel_font`, see
+//! `gui::mod`) are all re-exported here, unchanged at their old paths, from the
+//! shared [`indicatrix_solid`] crate -- see that crate's own doc comment for what
+//! each one does. They moved out of this app (`crates/indicatrix-solid`) so the wasm web app
+//! can reuse the exact same solid renderer and 2D diagram, with no behaviour
+//! change here: every module below is the identical code, just imported rather
+//! than declared locally.
 //!
-//! [`mesh_cache`] caches the `SolidMesh` build plus a one-time ring-simplification
-//! pass against the design's plane-set hash. [`preview_state`] is the editor-side
-//! controller: one dedicated worker thread owning the cache and rasterizer,
-//! coalescing redraw requests via `RedrawGate`, handing finished frames to a
-//! [`preview_state::PreviewSink`] kept generic over Slint rather than depending on
-//! `MainWindow` directly.
+//! [`to_pixel_buffer`] is the one bridge into Slint types, kept here (rather than
+//! moving with `raster`) so the shared crate stays independently testable and
+//! reusable as the seam for a possible future `wgpu` backend, with no Slint
+//! dependency at all.
 //!
-//! [`facet_map`] maps a rasterized `facet_id` back to its tier/orbit-member for
-//! hover/click/selection and the critical-angle overlay; [`live_update`] decides
-//! which geometry to draw after an edit (`plan_preview`, budgeted `resolve_dirty` with
-//! a pinned/fresh/stale/unsolvable outcome); [`edges_layer`] is the "Both" view mode's
-//! transparent-fill, opaque-edges render; [`diagram2d`] is view mode 3's GemCAD-style
-//! three-panel (crown/pavilion/profile) 2D facet diagram, with its own per-pixel
-//! facet-picking buffer. All four are Slint-free.
+//! [`preview_state`] is the editor-side controller: one dedicated worker thread
+//! owning the mesh cache and rasterizer, coalescing redraw requests via
+//! `RedrawGate`, handing finished frames to a [`preview_state::PreviewSink`] kept
+//! generic over Slint rather than depending on `MainWindow` directly. It (plus
+//! [`diagram_wiring`], the Slint callback wiring) stays in this app: it owns
+//! threads and Slint types, neither of which the shared crate may depend on.
 
-pub mod mesh_cache;
+pub use indicatrix_solid::{diagram2d, edges_layer, facet_map, live_update, mesh_cache, raster};
+
 pub mod preview_state;
-pub mod raster;
 
-pub mod diagram2d;
 pub mod diagram_wiring;
-pub mod edges_layer;
-pub mod facet_map;
-pub mod live_update;
 
 /// Converts a finished [`raster::SolidRasterizer`] frame into a `Send`-safe pixel
 /// buffer for [`preview_state::PreviewSink::apply`] to hand to the UI thread.

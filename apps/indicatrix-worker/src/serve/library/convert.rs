@@ -2,8 +2,9 @@
 //! `indicatrix_vault`'s local storage-layer types, in both directions: request-side
 //! (`from_*`) validates and narrows a wire filter into the vault's own
 //! [`RangeFilter`]/[`PerformanceFilter`]; response-side (`to_*`) builds a
-//! [`DesignSummary`]/[`DesignRecord`] from a vault row, stamping in its content-hash
-//! `version` via `super::version_hash`.
+//! [`DesignSummary`]/[`DesignRecord`] from a vault row, stamping in the summary's
+//! content-hash `version` and the revision-token `design_version`/`version` via
+//! `super::version_hash`.
 
 use indicatrix_net::{
     library::{
@@ -13,15 +14,20 @@ use indicatrix_net::{
     },
     messages::ErrorMsg,
 };
-use indicatrix_vault::model::{
-    entry::{DiagramListItem, FullDiagramMeta},
-    filter::{AttributeRanges, RangeFilter},
-    performance::{PerformanceAggregate, PerformanceBound, PerformanceFilter, PerformanceMetric},
+use indicatrix_vault::{
+    db::sqlite::Database,
+    model::{
+        entry::{DiagramListItem, FullDiagramMeta},
+        filter::{AttributeRanges, RangeFilter},
+        performance::{
+            PerformanceAggregate, PerformanceBound, PerformanceFilter, PerformanceMetric,
+        },
+    },
 };
 
 use super::{
     LIBRARY_VALIDATION_ERROR_CODE,
-    version_hash::{hash_record, hash_summary},
+    version_hash::{Revision, hash_summary, revision_token},
 };
 
 /// Maps a wire [`RangeFilterWire`] onto the local, storage-layer [`RangeFilter`].
@@ -38,6 +44,8 @@ pub(super) fn from_range_wire(r: &RangeFilterWire) -> Result<RangeFilter, Librar
             LibraryResponse::Error(ErrorMsg {
                 code: LIBRARY_VALIDATION_ERROR_CODE,
                 message: "invalid tilt-performance filter in search request".to_string(),
+                // The library protocol has no request_id/epoch to be stale against.
+                request_id: None,
             })
         })?);
     }
@@ -93,6 +101,9 @@ pub(super) const fn to_ranges_wire(r: AttributeRanges) -> AttributeRangesWire {
     }
 }
 
+/// Builds the summary of one search row. [`DesignSummary::design_version`] is left all
+/// zero: the vault's list row carries no revision stamp, so the caller fills it with
+/// [`stamp_design_versions`] once the whole reply is built.
 pub(super) fn to_summary(item: &DiagramListItem) -> DesignSummary {
     let mut summary = DesignSummary {
         entry_id: item.id,
@@ -109,12 +120,29 @@ pub(super) fn to_summary(item: &DiagramListItem) -> DesignSummary {
         competition_diagram: item.competition_diagram.clone(),
         ignored: item.ignored,
         version: [0u8; 32],
+        design_version: [0u8; 32],
     };
     summary.version = hash_summary(&summary);
     summary
 }
 
-pub(super) fn to_record(meta: &FullDiagramMeta, preview_material: Option<String>) -> DesignRecord {
+/// Fills [`DesignSummary::design_version`] on every row with the design's revision token:
+/// one primary-key lookup of the revision stamp per row, never a record load. A row
+/// whose stamp cannot be read keeps the all-zero token, which a client treats as "changed".
+pub(super) fn stamp_design_versions(summaries: &mut [DesignSummary], db: &Database) {
+    for summary in summaries {
+        summary.design_version = revision_token(&summary.url, Revision::read(db, summary.entry_id));
+    }
+}
+
+/// Builds the full record of one design. `revision` must have been read BEFORE `meta`
+/// was loaded, so an edit landing in between leaves the token older than the content
+/// (one harmless extra re-fetch) rather than newer (a missed edit).
+pub(super) fn to_record(
+    meta: &FullDiagramMeta,
+    preview_material: Option<String>,
+    revision: Revision,
+) -> DesignRecord {
     let angle_settings = meta
         .angle_settings
         .iter()
@@ -137,7 +165,7 @@ pub(super) fn to_record(meta: &FullDiagramMeta, preview_material: Option<String>
         })
         .collect();
 
-    let mut record = DesignRecord {
+    DesignRecord {
         entry_id: meta.entry_id,
         title: meta.title.clone(),
         url: meta.url.clone(),
@@ -164,8 +192,10 @@ pub(super) fn to_record(meta: &FullDiagramMeta, preview_material: Option<String>
         symmetry_order: meta.symmetry_order.clone(),
         mirror_symmetry: meta.mirror_symmetry,
         designer: meta.designer.clone(),
-        version: [0u8; 32],
-    };
-    record.version = hash_record(&record);
-    record
+        source_citation: meta.source_citation.clone(),
+        pdf_file: meta.pdf_file.clone(),
+        gem_file: meta.gem_file.clone(),
+        shape_category: meta.shape_category.clone(),
+        version: revision_token(&meta.url, revision),
+    }
 }

@@ -77,7 +77,7 @@ pub(super) fn design_with_real_meet_structure(name: &str, text: &str) -> Design 
 /// `clippy::too_many_lines` budget.
 pub(super) mod real_fixtures {
     /// Not invented here: the exact bar
-    /// `crates/indicatrix/examples/meet_solver_validation.rs` itself reports
+    /// `crates/indicatrix/examples/meet_solver_validation/main.rs` itself reports
     /// against ("every meet-derived tier within 10%", both in its per-design
     /// success section and in `print_verified_extras`).
     pub(in crate::design::tests) const TOLERANCE: f64 = 0.10;
@@ -107,7 +107,7 @@ pub(super) mod real_fixtures {
     // "Mini Square Barion #4" (PC 11.051) -- 8 tiers across crown and
     // pavilion, no stated scale reference or named meet references at all
     // (every tier is implicit `MeetExisting`), which is exactly the
-    // corpus's dominant, hardest case (Report A: `MeetExisting` tiers carry
+    // corpus's dominant, hardest case (`MeetExisting` tiers carry
     // the worst median relative error of any `ConstraintKind`).
     const MINI_SQUARE_BARION: &str = "GemCad 4.41\ng 96 0.0\ny 4 y\nI 1.54\n\
          H PC 11.051  Mini Square Barion #4\n\

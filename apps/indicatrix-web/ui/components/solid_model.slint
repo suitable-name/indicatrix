@@ -1,0 +1,66 @@
+// The Solid and Diagram tabs' shared state (`src/views/` pushes into it and wires
+// its callbacks). The web counterpart of the desktop's `SolidPreviewModel`
+// (`apps/indicatrix-cut/ui/models/solid_preview.slint`): the Solid tab is the
+// desktop's view mode 0 and the Diagram tab its view mode 3. Named in
+// `app.slint`'s export block, which is what makes it a Rust type.
+export global SolidModel {
+    // -- Solid tab (view mode 0) -------------------------------------------------
+    // The flat-shaded raster (`indicatrix_solid::raster::SolidRasterizer`).
+    in property <image> frame;
+    in property <bool> has-solid: false;
+    // The desktop's `SolidPreviewModel.status`: why nothing (or a held-over solid)
+    // shows -- "Unbounded: ...", "Preview cannot be solved: ...", or "".
+    in property <string> status: "";
+    // `live_update::Freshness::Stale`: the shown solid is one edit behind.
+    in property <bool> stale: false;
+    // The facet under the pointer ("Crown Main -- index 12 of 96 ..."), or the last
+    // clicked facet's label once the pointer leaves it (the desktop's rule).
+    in property <string> hover-text: "";
+    // "Preform" pill: draw the rough's own bounding planes (tinted) or hide them.
+    in-out property <bool> show-preform: true;
+    // "Cut" slider: draw the stone as it stands after this many tiers; -1 is all.
+    in-out property <int> tier-cutoff: -1;
+    // A small "12.3 ms" readout of the last frame's plan + raster time.
+    in property <string> timing-text: "";
+
+    // -- Diagram tab (view mode 3) -----------------------------------------------
+    in property <image> diagram-frame;
+    in property <bool> has-diagram: false;
+    in property <string> diagram-hover-text: "";
+    // -1 is the three-panel layout; 0/1/2 enlarge Crown/Pavilion/Profile
+    // (`diagram2d::PanelKind`'s order, the desktop's `diagram_enlarged_panel`).
+    in-out property <int> enlarged-panel: -1;
+    // True once the Diagram tab has decided its first layout for this page load (a view
+    // narrower than `diagram.slint`'s `small-view-width` opens on the Crown panel), so
+    // coming back to the tab, or choosing all three panels, never re-applies it.
+    in-out property <bool> panel-default-applied: false;
+    // The index-wheel tooth last clicked, or -1 (the desktop's
+    // `diagram_clicked_tooth`).
+    in property <int> clicked-tooth: -1;
+
+    // -- Callbacks (both tabs) -----------------------------------------------------
+    // The view's logical size, on mount and on every resize.
+    callback view-size-changed(length, length);
+    // An orbit drag step in logical pixels (desktop `ViewportModel.camera_orbit`).
+    callback orbit(float, float);
+    // A wheel step in logical pixels (desktop `ViewportModel.camera_zoom`).
+    callback zoom(float);
+    // 0 Front, 1 Top, 2 Bottom, 3 Left, 4 Right, 5 Fit (desktop `set_view`).
+    callback set-view(int);
+    // The desktop's Reset pill: yaw 0.60, pitch 0.45, distance 2.4.
+    callback reset-camera();
+    // Pointer position over the view, logical pixels relative to the view (for the
+    // Diagram tab: already un-zoomed/un-panned, the desktop's convention).
+    callback hover(length, length);
+    callback click(length, length);
+    // A double click on a Diagram panel enlarges it (again: back to three panels).
+    callback double-click(length, length);
+    // The pointer left the view: clears the hover highlight.
+    callback pointer-left();
+    // Up/Down/PageUp/PageDown in the view (desktop `step_selection`).
+    callback step-selection(int);
+    // Escape in the view: nothing selected.
+    callback clear-selection();
+    // `show-preform`, `tier-cutoff` or `enlarged-panel` changed: replan.
+    callback options-changed();
+}

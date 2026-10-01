@@ -47,6 +47,7 @@ impl SortOrder {
 /// expands into once `offset`/`limit` are known for a given page.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DisplayFilters<'a> {
+    /// Sort direction.
     pub order: SortOrder,
     /// "My designs" restriction.
     pub local_only: bool,

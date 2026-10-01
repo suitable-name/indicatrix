@@ -1,9 +1,9 @@
-//! [`AscParseError`]: everything that can go wrong parsing an `.asc` cutting
-//! schedule with [`super::parse_asc`].
+//! [`AscParseError`]: everything that can go wrong parsing an `.asc` file's cutting
+//! instructions with [`super::parse_asc`].
 
 use std::fmt;
 
-/// Everything that can go wrong parsing an `.asc` cutting schedule with [`super::parse_asc`].
+/// Everything that can go wrong parsing an `.asc` file's cutting instructions with [`super::parse_asc`].
 ///
 /// Every variant's [`Display`](fmt::Display) reproduces, verbatim, the same
 /// human-readable message a plain `String` would -- callers that only ever
@@ -43,6 +43,16 @@ pub enum AscParseError {
     /// (see [`super::AscSchedule::gear_teeth_abs`]) divides by this value downstream, so a
     /// zero-tooth gear is nonsensical, not merely unusual.
     GearTeethZero { line: usize },
+    /// The `g` line's gear tooth count was larger in magnitude than
+    /// [`AscParseError::MAX_GEAR_TEETH`]. Real index gears have a few hundred teeth
+    /// at most, and every consumer that draws the wheel does work per tooth, so a
+    /// count in the billions is a hostile file, not a gear.
+    GearTeethTooLarge {
+        /// 1-based line of the `g` record.
+        line: usize,
+        /// The tooth count as written (sign kept).
+        teeth: i32,
+    },
     /// The `y` line's mirror-flag field was neither `y` nor `n` (case-insensitive).
     MirrorFlagInvalid { line: usize, token: String },
     /// The file had no `g` (gear teeth) header line at all.
@@ -59,6 +69,33 @@ pub enum AscParseError {
     AngleNotNumeric { line: usize, token: String },
     /// An `a` record's mast-distance field did not parse as a number.
     MastNotNumeric { line: usize, token: String },
+    /// A field that must be finite (an `a` record's angle, mast, or an index-wheel
+    /// position; the `I` (refractive index) line; or the `g` line's reference angle)
+    /// parsed to `NaN` or an infinity. These fields feed the meet solver and stone
+    /// measurement directly, where a non-finite value silently poisons a result
+    /// (e.g. a "converged" solve with a `NaN` mast) instead of failing loudly, so
+    /// they are rejected here instead.
+    NonFiniteValue {
+        line: usize,
+        field: &'static str,
+        token: String,
+        value: f64,
+    },
+    /// The `y` line's symmetry order was exactly zero. Every azimuth computation in
+    /// the crate divides by the symmetry order (directly or via the gear-tooth
+    /// count it partitions), so a zero order is nonsensical, not merely unusual.
+    SymmetryOrderZero { line: usize },
+    /// The `I` line's refractive index was not greater than `1.0`. A refractive
+    /// index of `1.0` or less has no physical meaning for a faceted gemstone (it is
+    /// the index of a vacuum), and a negative one is nonsensical outright.
+    RefractiveIndexOutOfRange { line: usize, value: f64 },
+}
+
+impl AscParseError {
+    /// The largest gear tooth count (in magnitude) [`super::parse_asc`] accepts. The
+    /// `.gem`/`.gcs` converters substitute a default gear beyond it, so their text
+    /// always parses.
+    pub const MAX_GEAR_TEETH: u32 = 720;
 }
 
 impl fmt::Display for AscParseError {
@@ -101,6 +138,11 @@ impl fmt::Display for AscParseError {
             Self::GearTeethZero { line } => {
                 write!(f, "line {line}: 'g' (gear) tooth count must not be zero")
             }
+            Self::GearTeethTooLarge { line, teeth } => write!(
+                f,
+                "line {line}: 'g' (gear) tooth count {teeth} exceeds the limit of {} teeth",
+                Self::MAX_GEAR_TEETH
+            ),
             Self::MirrorFlagInvalid { line, token } => write!(
                 f,
                 "line {line}: 'y' (symmetry) line's mirror flag {token:?} is neither 'y' nor 'n'"
@@ -123,6 +165,22 @@ impl fmt::Display for AscParseError {
             Self::MastNotNumeric { line, token } => {
                 write!(f, "line {line}: mast distance {token:?} is not numeric")
             }
+            Self::NonFiniteValue {
+                line,
+                field,
+                token,
+                value,
+            } => write!(
+                f,
+                "line {line}: {field} {token:?} must be finite, got {value}"
+            ),
+            Self::SymmetryOrderZero { line } => {
+                write!(f, "line {line}: 'y' (symmetry) order must not be zero")
+            }
+            Self::RefractiveIndexOutOfRange { line, value } => write!(
+                f,
+                "line {line}: refractive index {value} must be greater than 1.0"
+            ),
         }
     }
 }

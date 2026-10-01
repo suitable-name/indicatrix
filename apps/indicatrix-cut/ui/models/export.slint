@@ -72,6 +72,10 @@ export global ExportModel {
 
     in property <bool> is_exporting: false;
     in property <float> progress: 0.0; // 0.0 .. 1.0
+    // A short "about N s/min/h left" reading alongside `progress`'s percentage --
+    // `""` while there isn't yet enough history for an estimate (see
+    // `gui::progress_eta::EtaEstimator`), never a raw seconds count.
+    in property <string> eta_text: "";
     in property <string> status_message: "";
     in property <bool> has_error: false;
     // Live preview: a small in-progress thumbnail of the accumulation buffer, pushed
@@ -82,7 +86,6 @@ export global ExportModel {
     in property <int> preview_samples_done: 0;
     in property <int> preview_samples_total: 0;
 
-    callback close();
     // width, height, samples-per-pixel, colour-space index, compute-target index, max
     // ray bounces (the resolved rung VALUE, not the pill index).
     callback start_export(int, int, int, int, int, int);

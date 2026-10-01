@@ -160,6 +160,187 @@ fn a_fresh_database_already_has_the_ignored_column_and_the_two_new_side_tables()
     let _ = std::fs::remove_file(&path);
 }
 
+const SOLID_EXTENTS_COLUMNS: [&str; 10] = [
+    "entry_id",
+    "width_caliper",
+    "length_caliper",
+    "width_axis",
+    "length_axis",
+    "height",
+    "volume",
+    "source",
+    "measured_at",
+    "extents_version",
+];
+
+#[test]
+fn a_fresh_database_already_has_the_solid_extents_table() {
+    let path = temp_db_path("fresh_solid_extents");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create fresh db");
+    for column in SOLID_EXTENTS_COLUMNS {
+        assert!(
+            Database::column_exists(&db.conn, "diagram_solid_extents", column).unwrap(),
+            "fresh diagram_solid_extents must already have column {column}"
+        );
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn migrating_an_old_database_creates_the_solid_extents_table_idempotently() {
+    let path = temp_db_path("migrate_solid_extents");
+    seed_pre_migration_db(&path, &[("A", "url-a", None, None, None, None, None)]);
+
+    let db = Database::new(Some(path.to_str().unwrap())).expect("open + migrate");
+    for column in SOLID_EXTENTS_COLUMNS {
+        assert!(
+            Database::column_exists(&db.conn, "diagram_solid_extents", column).unwrap(),
+            "migration must create diagram_solid_extents.{column}"
+        );
+    }
+    // Re-running the migration on an existing table is a no-op, not an error.
+    db.migrate_diagram_solid_extents_table()
+        .expect("re-run migration");
+    drop(db);
+    let _ = std::fs::remove_file(&path);
+}
+
+const SOLID_HULL_COLUMNS: [&str; 5] = [
+    "entry_id",
+    "hull_version",
+    "vertex_count",
+    "measured_at",
+    "vertices",
+];
+
+#[test]
+fn a_fresh_database_already_has_the_solid_hull_table() {
+    let path = temp_db_path("fresh_solid_hull");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create fresh db");
+    for column in SOLID_HULL_COLUMNS {
+        assert!(
+            Database::column_exists(&db.conn, "diagram_solid_hull", column).unwrap(),
+            "fresh diagram_solid_hull must already have column {column}"
+        );
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn migrating_an_old_database_creates_the_solid_hull_table_idempotently() {
+    let path = temp_db_path("migrate_solid_hull");
+    seed_pre_migration_db(&path, &[("A", "url-a", None, None, None, None, None)]);
+
+    let db = Database::new(Some(path.to_str().unwrap())).expect("open + migrate");
+    for column in SOLID_HULL_COLUMNS {
+        assert!(
+            Database::column_exists(&db.conn, "diagram_solid_hull", column).unwrap(),
+            "migration must create diagram_solid_hull.{column}"
+        );
+    }
+    // Re-running the migration on an existing table is a no-op, not an error.
+    db.migrate_diagram_solid_hull_table()
+        .expect("re-run migration");
+    drop(db);
+    let _ = std::fs::remove_file(&path);
+}
+
+const SAVED_ROUGH_PLANS_COLUMNS: [&str; 7] = [
+    "plan_id",
+    "name",
+    "created_at",
+    "updated_at",
+    "payload_version",
+    "payload",
+    "summary",
+];
+
+#[test]
+fn a_fresh_database_already_has_the_saved_rough_plans_table() {
+    let path = temp_db_path("fresh_saved_rough_plans");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create fresh db");
+    for column in SAVED_ROUGH_PLANS_COLUMNS {
+        assert!(
+            Database::column_exists(&db.conn, "saved_rough_plans", column).unwrap(),
+            "fresh saved_rough_plans must already have column {column}"
+        );
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn migrating_an_old_database_creates_the_saved_rough_plans_table_idempotently() {
+    let path = temp_db_path("migrate_saved_rough_plans");
+    seed_pre_migration_db(&path, &[("A", "url-a", None, None, None, None, None)]);
+
+    let db = Database::new(Some(path.to_str().unwrap())).expect("open + migrate");
+    for column in SAVED_ROUGH_PLANS_COLUMNS {
+        assert!(
+            Database::column_exists(&db.conn, "saved_rough_plans", column).unwrap(),
+            "migration must create saved_rough_plans.{column}"
+        );
+    }
+    // Re-running the migration on an existing table is a no-op, not an error.
+    db.migrate_saved_rough_plans_table()
+        .expect("re-run migration");
+    drop(db);
+    let _ = std::fs::remove_file(&path);
+}
+
+const PLANNER_EXCLUSION_COLUMNS: [&str; 1] = ["entry_id"];
+
+#[test]
+fn a_fresh_database_already_has_the_planner_exclusion_table() {
+    let path = temp_db_path("fresh_planner_exclusions");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create fresh db");
+    for column in PLANNER_EXCLUSION_COLUMNS {
+        assert!(
+            Database::column_exists(&db.conn, "diagram_planner_exclusions", column).unwrap(),
+            "fresh diagram_planner_exclusions must already have column {column}"
+        );
+    }
+    assert!(
+        db.planner_excluded_ids().unwrap().is_empty(),
+        "a fresh database excludes nothing"
+    );
+    drop(db);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn migrating_an_old_database_creates_the_planner_exclusion_table_idempotently() {
+    let path = temp_db_path("migrate_planner_exclusions");
+    seed_pre_migration_db(&path, &[("A", "url-a", None, None, None, None, None)]);
+
+    let db = Database::new(Some(path.to_str().unwrap())).expect("open + migrate");
+    for column in PLANNER_EXCLUSION_COLUMNS {
+        assert!(
+            Database::column_exists(&db.conn, "diagram_planner_exclusions", column).unwrap(),
+            "migration must create diagram_planner_exclusions.{column}"
+        );
+    }
+    assert!(
+        db.planner_excluded_ids().unwrap().is_empty(),
+        "every design that predates the table starts unexcluded"
+    );
+
+    // The migrated table is live: a mark written now survives a re-run of the migration.
+    db.set_planner_excluded(1, true).unwrap();
+    // Re-running the migration on an existing table is a no-op, not an error.
+    db.migrate_planner_exclusion_table()
+        .expect("re-run migration");
+    assert_eq!(
+        db.planner_excluded_ids()
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>(),
+        vec![1],
+        "re-running the migration must keep an existing mark"
+    );
+    drop(db);
+    let _ = std::fs::remove_file(&path);
+}
+
 /// Pins down `migrate_prune_tilt_curve_aggregate_columns`'s cleanup against a database
 /// that ran the never-released first-draft 36-column `diagram_tilt_curves` schema:
 /// seeds that old shape by hand, then asserts the 30 obsolete columns are gone, the 6
@@ -262,8 +443,9 @@ fn tilt_curve_aggregate_pruning_drops_obsolete_columns_and_renames_the_survivors
             .flatten()
             .count()
     };
-    // entry_id, curves, curve_image, generated_at, + 6 global columns = 10.
-    assert_eq!(column_count, 10);
+    // entry_id, generated_at, params_fingerprint, + 6 global columns, curves,
+    // curve_image = 11.
+    assert_eq!(column_count, 11);
 
     let _ = std::fs::remove_file(&path);
 }

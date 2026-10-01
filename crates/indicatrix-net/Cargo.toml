@@ -4,9 +4,10 @@ version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 authors = { workspace = true }
-description = "Wire protocol for offloading indicatrix spectral ray samples to a remote render worker: scene-state and radiance-buffer codecs, message framing, and a build-compatibility handshake. Types and framing only -- no networking, no sockets."
+description = "Wire protocol for offloading indicatrix spectral ray samples to a remote render worker: scene-state and radiance-buffer codecs, message framing, a build-compatibility handshake, and the TLS helpers and enrollment client (one outbound TCP connection to claim a certificate) shared by the viewer and the worker. It runs no server and opens no listening sockets."
 license = { workspace = true }
 repository = { workspace = true }
+homepage = { workspace = true }
 documentation = "https://docs.rs/indicatrix-net"
 keywords = ["gemstone", "raytracer", "spectral", "protocol", "rendering"]
 categories = ["encoding", "rendering", "network-programming"]
@@ -36,10 +37,10 @@ glam = { workspace = true, features = ["bytemuck"] }
 # section 11): `ShuffleZstd { level: 1 }` is the default, `ShuffleLz4` the gigabit-LAN
 # opt-in. Optional behind the default-on `compression` feature below; without it only
 # `PayloadEncoding::Raw` is offered, accepted and decodable.
-lz4_flex = { version = "0.11", optional = true }
+lz4_flex = { version = "0.14.0", optional = true }
 # `display`: lossless PNG encode/decode of the v14 8-bit `DisplayFrame`/`FinalImage`
 # payloads. The same `png` 0.18 the `image` crate already pulls into the workspace.
-png = { version = "0.18", optional = true }
+png = { version = "0.18.1", optional = true }
 postcard = { workspace = true }
 # `tls` module: mutual-TLS config building and the fingerprint allowlist. Socket-free --
 # see this crate's own doc comment on why ("types, codec, and framing only") and the
@@ -60,7 +61,7 @@ tracing = { workspace = true }
 zeroize = "1.9"
 # See `lz4_flex` above. The C library (`zstd-sys`) builds with the MSVC toolchain; use
 # the one-shot `bulk` API only, so decode memory stays bounded by `raw_len`.
-zstd = { version = "0.13", optional = true }
+zstd = { version = "0.14.0", optional = true }
 
 [features]
 default = ["compression"]
@@ -78,16 +79,11 @@ compression = ["dep:lz4_flex", "dep:png", "dep:zstd"]
 # concern (the wire types), not the worker binary's.
 render = ["dep:indicatrix"]
 
-# Both integration tests trace real samples through `indicatrix::optics::raytracer` (or
-# round-trip a real `SceneState`) directly -- they need `indicatrix`, so (like `indicatrix`'s
-# own `gpu`-only examples) they're skipped entirely by a default `cargo test`, not just
-# skipped at runtime, and only built under `--features render`.
+# The integration test round-trips a real `SceneState` directly -- it needs `indicatrix`,
+# so (like `indicatrix`'s own `gpu`-only examples) it is skipped entirely by a default
+# `cargo test`, not just skipped at runtime, and only built under `--features render`.
 [[test]]
 name = "scene_roundtrip"
-required-features = ["render"]
-
-[[test]]
-name = "partition_correctness"
 required-features = ["render"]
 
 [lints]

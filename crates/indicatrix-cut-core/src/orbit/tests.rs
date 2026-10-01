@@ -43,8 +43,8 @@ fn one_complete_orbit_is_a_single_complete_unit() {
 
 /// Mirroring an off-axis facet must produce TWO residue clusters (the
 /// facet and its mirror image), each needing `symmetry_order` members --
-/// the correction this module's brief called out explicitly (a naive
-/// single-cluster read would misclassify this as broken).
+/// the case a naive
+/// single-cluster read would misclassify as broken.
 #[test]
 fn mirrored_offaxis_facet_folds_two_clusters_into_one_complete_orbit() {
     let m = meta(96, 4, true);
@@ -254,9 +254,10 @@ fn import_orbit_edit_export_reimport_round_trips() {
 
     let solved_before = design.solve().expect("both tiers are anchored");
     let exported = design.to_asc_schedule().expect("must export");
+    let exported_text = indicatrix_formats::asc::to_asc_string(&exported)
+        .expect("fixture tier names/notes are all asc-safe");
     let reparsed =
-        indicatrix_formats::asc::parse_asc(&indicatrix_formats::asc::to_asc_string(&exported))
-            .expect("exported text must reparse");
+        indicatrix_formats::asc::parse_asc(&exported_text).expect("exported text must reparse");
     let reimported = Design::from_asc_schedule(preform, &reparsed);
 
     assert_eq!(reimported.tiers[1].indices, design.tiers[1].indices);
@@ -297,9 +298,10 @@ fn non_orbit_design_exports_unchanged_without_an_explicit_edit() {
     assert!(units.iter().all(|u| !u.is_complete()));
 
     let exported = design.to_asc_schedule().expect("must export");
+    let exported_text = indicatrix_formats::asc::to_asc_string(&exported)
+        .expect("fixture tier names/notes are all asc-safe");
     let reparsed =
-        indicatrix_formats::asc::parse_asc(&indicatrix_formats::asc::to_asc_string(&exported))
-            .expect("exported text must reparse");
+        indicatrix_formats::asc::parse_asc(&exported_text).expect("exported text must reparse");
     let reimported = Design::from_asc_schedule(preform, &reparsed);
 
     assert_eq!(

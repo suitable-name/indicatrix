@@ -1,5 +1,5 @@
 //! [`CutError`]: everything that can go wrong reconstructing a validated B-Rep
-//! from an `.asc` cutting schedule.
+//! from an `.asc` file's cutting instructions.
 
 use std::fmt;
 

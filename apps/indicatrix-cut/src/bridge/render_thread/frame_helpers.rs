@@ -11,7 +11,7 @@ use super::{display_thread::FrameMetricsSnapshot, redraw_gate::RedrawGate};
 use crate::{ActivityModel, settings::model::LiveComputeTarget};
 use glam::Vec3;
 use slint::{ComponentHandle, Weak};
-use std::{cell::RefCell, sync::Arc};
+use std::{cell::RefCell, sync::Arc, time::Duration};
 
 thread_local! {
     /// The `crate::ActivityModel` id for the "full quality trace" activity
@@ -354,9 +354,51 @@ pub(super) const fn resolve_remote_ownership(
     }
 }
 
+/// How long the render loop should sleep at the end of an iteration that took `elapsed`,
+/// given the target iteration length `frame`.
+///
+/// `paced` is whether this iteration handled a moving camera or had a display cycle due
+/// (see `mod.rs`'s `FRAME_PACE`): only those iterations are held to the frame interval,
+/// and then only by the remainder the work itself did not already use. An iteration that
+/// has nothing to show, or that already ran past `frame`, does not sleep. Pure and
+/// unit-tested.
+#[must_use]
+pub(super) fn pacing_sleep(paced: bool, elapsed: Duration, frame: Duration) -> Option<Duration> {
+    if !paced {
+        return None;
+    }
+    frame.checked_sub(elapsed).filter(|rest| !rest.is_zero())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- pacing_sleep: only the unused remainder of the frame interval ---------------
+
+    #[test]
+    fn a_paced_iteration_sleeps_only_the_unused_remainder() {
+        let frame = Duration::from_millis(16);
+        assert_eq!(
+            pacing_sleep(true, Duration::from_millis(5), frame),
+            Some(Duration::from_millis(11))
+        );
+    }
+
+    #[test]
+    fn a_paced_iteration_that_ran_long_does_not_sleep() {
+        let frame = Duration::from_millis(16);
+        assert_eq!(pacing_sleep(true, Duration::from_millis(16), frame), None);
+        assert_eq!(pacing_sleep(true, Duration::from_millis(40), frame), None);
+    }
+
+    #[test]
+    fn an_unpaced_iteration_never_sleeps() {
+        assert_eq!(
+            pacing_sleep(false, Duration::ZERO, Duration::from_millis(16)),
+            None
+        );
+    }
 
     // ---- tracing_suspended: the four independent suspend flags ----------------------
 

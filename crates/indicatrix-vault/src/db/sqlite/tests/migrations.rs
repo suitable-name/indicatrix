@@ -446,6 +446,9 @@ fn designer_and_attachment_migration_adds_the_columns_and_is_idempotent() {
         }
         // designer_info is kept, not dropped -- other callers still read it.
         assert!(Database::column_exists(&db.conn, "diagram_details", "designer_info").unwrap());
+        // idx_diagram_details_designer used to be created here too, but
+        // nothing ever queries it -- see `Database::migrate_drop_unused_designer_index`.
+        // It must be gone, not merely absent from this migration's own CREATE list.
         let indexed: i64 = db
             .conn
             .query_row(
@@ -455,7 +458,10 @@ fn designer_and_attachment_migration_adds_the_columns_and_is_idempotent() {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(indexed, 1, "designer index must exist after migrating");
+        assert_eq!(
+            indexed, 0,
+            "the unused designer index must be dropped, never created"
+        );
     }
 
     // Second open: no-op, pre-existing rows survive untouched.
@@ -483,5 +489,34 @@ fn a_fresh_database_already_has_the_designer_and_attachment_columns() {
             "a fresh database's CREATE TABLE must already include {column}"
         );
     }
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn migrate_drop_unused_designer_index_removes_a_pre_existing_index() {
+    let path = temp_db_path("drop_designer_index");
+    seed_pre_migration_db(&path, &[("A", "url-a", None, None, None, None, None)]);
+    {
+        // Simulate a database from a build old enough to still have the now-removed
+        // index (indexed column doesn't matter -- this only proves ANY pre-existing
+        // index of this name gets dropped).
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE INDEX idx_diagram_details_designer ON diagram_details (designer_info);",
+        )
+        .unwrap();
+    }
+
+    let db = Database::new(Some(path.to_str().unwrap())).expect("open + migrate");
+    let indexed: i64 = db
+        .conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master
+             WHERE type = 'index' AND name = 'idx_diagram_details_designer'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(indexed, 0);
     let _ = std::fs::remove_file(&path);
 }

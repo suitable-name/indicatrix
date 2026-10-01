@@ -65,11 +65,11 @@ fn cancel_mid_stream_produces_done_cancelled_and_no_further_payload() {
     );
 }
 
-/// Why this passes while the real bug (`repro::repro_slow_reader_blocks_the_emitter_and_delays_cancel`,
-/// in the sibling `repro` module) doesn't reproduce on `DuplexHalf`: `CANCEL` is already
-/// sitting in the scripted input at time zero, and `DuplexHalf::write`'s unbounded `Vec`
-/// can never block. The real bug needs `CANCEL` arriving *while* the emitter is stuck
-/// inside a blocked `write()` -- `BackpressureDuplex` supplies that.
+/// The scenario a slow reader creates: the emitter gets stuck inside a blocked `write()`
+/// and a `CANCEL` arrives only while it is stuck. `DuplexHalf` cannot express that --
+/// its `CANCEL` is already sitting in the scripted input at time zero and its unbounded
+/// `Vec` write can never block -- so this test uses `BackpressureDuplex`, whose writes
+/// stall once its small capacity is full.
 #[test]
 fn a_peer_that_never_drains_ends_the_connection_rather_than_hanging_forever() {
     let mut input = Vec::new();

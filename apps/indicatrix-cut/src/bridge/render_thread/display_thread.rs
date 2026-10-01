@@ -4,15 +4,19 @@
 //! cycle.
 
 use super::{
-    denoise::{
-        DenoiseScratch, FirstHitSnapshot, denoise_and_tonemap_frame, tonemap_running_average,
-    },
+    denoise::{DenoiseScratch, FirstHitSnapshot},
     frame_helpers::{FrameActivityFlags, FramePayload, TraceActivitySink, push_frame_to_ui},
     redraw_gate::RedrawGate,
 };
 use crate::bridge::pixel_buffer::FramebufferTransfer;
 use glam::Vec3;
-use indicatrix::{color::metrics::GemOpticalMetrics, renderer::denoise::AtrousDenoiser};
+use indicatrix::{
+    color::metrics::GemOpticalMetrics,
+    renderer::{
+        denoise::AtrousDenoiser, frame_denoise::denoise_and_tonemap_frame_into,
+        tonemap::tonemap_to_rgba_into,
+    },
+};
 use slint::Weak;
 use std::{
     sync::{
@@ -53,6 +57,8 @@ pub(super) struct DisplayWork {
     current_sample_count: u32,
     denoise_enabled: bool,
     accum: Vec<Vec3>,
+    /// The first-hit guide buffers feed only the denoiser, so they are filled only when
+    /// `denoise_enabled` and are empty otherwise.
     depth: Vec<f32>,
     normal: Vec<Vec3>,
     facet_id: Vec<i32>,
@@ -99,7 +105,9 @@ impl DisplayWork {
     }
 
     /// Overwrites every field from this frame's live render-loop state, reusing (not
-    /// reallocating) the `accum`/`depth`/`normal`/`facet_id` heap buffers.
+    /// reallocating) the `accum`/`depth`/`normal`/`facet_id` heap buffers. The three
+    /// guide buffers (20 of the 32 bytes per pixel) are copied only when the denoiser
+    /// will read them; otherwise they are just emptied.
     pub(super) fn fill(
         &mut self,
         generation: u64,
@@ -117,11 +125,13 @@ impl DisplayWork {
         self.accum.clear();
         self.accum.extend_from_slice(frame.accum_buffer);
         self.depth.clear();
-        self.depth.extend_from_slice(frame.first_hit_depth);
         self.normal.clear();
-        self.normal.extend_from_slice(frame.first_hit_normal);
         self.facet_id.clear();
-        self.facet_id.extend_from_slice(frame.first_hit_facet_id);
+        if denoise_enabled {
+            self.depth.extend_from_slice(frame.first_hit_depth);
+            self.normal.extend_from_slice(frame.first_hit_normal);
+            self.facet_id.extend_from_slice(frame.first_hit_facet_id);
+        }
         self.metrics_snapshot = metrics_snapshot;
     }
 }
@@ -264,33 +274,34 @@ where
                         last_height = work.height;
                     }
 
-                    let output_bytes = if work.denoise_enabled {
-                        denoise_and_tonemap_frame(
-                            FirstHitSnapshot {
-                                width: work.width,
-                                height: work.height,
-                                current_sample_count: work.current_sample_count,
-                                accum_buffer: &work.accum,
-                                first_hit_depth: &work.depth,
-                                first_hit_normal: &work.normal,
-                                first_hit_facet_id: &work.facet_id,
-                            },
-                            &mut DenoiseScratch {
-                                denoiser: &mut denoiser,
-                                avg_color_buf: &mut avg_color_buf,
-                                filtered_buf: &mut filtered_buf,
-                            },
-                        )
-                    } else {
-                        tonemap_running_average(
-                            work.width,
-                            work.height,
-                            work.current_sample_count,
-                            &work.accum,
-                        )
-                    };
-
-                    let image = fb_transfer.copy_from_gpu_slice(&output_bytes);
+                    // The frame is tone-mapped straight into the buffer handed to Slint:
+                    // no intermediate byte vector and no second copy.
+                    let image = fb_transfer.fill_with(|rgba| {
+                        if work.denoise_enabled {
+                            denoise_and_tonemap_frame_into(
+                                FirstHitSnapshot {
+                                    width: work.width,
+                                    height: work.height,
+                                    current_sample_count: work.current_sample_count,
+                                    accum_buffer: &work.accum,
+                                    first_hit_depth: &work.depth,
+                                    first_hit_normal: &work.normal,
+                                    first_hit_facet_id: &work.facet_id,
+                                },
+                                &mut DenoiseScratch {
+                                    denoiser: &mut denoiser,
+                                    avg_color_buf: &mut avg_color_buf,
+                                    filtered_buf: &mut filtered_buf,
+                                },
+                                rgba,
+                            );
+                        } else {
+                            // The plain running average (what `tonemap_running_average`
+                            // computes), with a zero sample count read as one.
+                            let inv_samples = 1.0 / work.current_sample_count.max(1) as f32;
+                            tonemap_to_rgba_into(&work.accum, inv_samples, rgba);
+                        }
+                    });
                     push_frame_to_ui(
                         &ui_weak,
                         &update_image,

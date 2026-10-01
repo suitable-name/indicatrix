@@ -46,7 +46,7 @@ fn average_luminance(
     y_sum / samples as f32
 }
 
-/// Task B (pleochroism data) -- the DECISIVE orientation-sign test. Tourmaline's
+/// The DECISIVE orientation-sign test. Tourmaline's
 /// `c_axis` was deliberately set to `Vec3::X` (into the table plane) rather than every
 /// other material's `Vec3::Y` default (see the Tourmaline entry's comment in
 /// `GemMaterial::all_materials` and `test_gem_materials_default_c_axis_to_y`), because

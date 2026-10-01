@@ -10,7 +10,10 @@ use crate::{
         export_thread::{self, ComputeTarget, SceneSnapshot, TemplateContext},
         render_thread::{RenderContext, load_env_map},
     },
-    gui::show_toast,
+    gui::{
+        progress_eta::{EtaEstimator, format_eta},
+        show_toast,
+    },
     settings::{LightingPreset as SavedLightingPreset, LocalComputeTarget},
 };
 use indicatrix::{color::ColorSpace, optics::raytracer::LightingPreset};
@@ -19,6 +22,7 @@ use std::{
     collections::VecDeque,
     path::PathBuf,
     sync::{Arc, Mutex},
+    time::Instant,
 };
 
 /// `export_dialog.slint`'s "Compute" pill index (0/1/2, see that property's own doc
@@ -75,15 +79,29 @@ pub(super) const fn apply_export_bounce_cap(
 /// Material and geometry are never touched here: a preset is a captured VIEW (this
 /// type's own doc comment), never a material or cut choice, so every fanned-out render
 /// shares the exact material/geometry the base current-view capture already resolved.
+///
+/// `mesh_bounding_radius` is the SAME live figure `gui::render::lighting_presets`'
+/// live-apply and the live orbit camera both clamp `distance` against (`main_window`'s
+/// own `Arc<Mutex<f64>>`, read once by the caller before the fan-out starts) -- without
+/// it, a preset's `camera_distance` reached the exported scene completely unclamped,
+/// unlike every other path that ever sets `RenderContext::distance`/`SceneSnapshot::
+/// distance`.
 #[must_use]
 pub(super) fn apply_preset_to_scene(
     mut scene: SceneSnapshot,
     preset: &SavedLightingPreset,
+    mesh_bounding_radius: f64,
 ) -> SceneSnapshot {
     scene.light_yaw = preset.light_yaw_deg.to_radians();
     scene.light_pitch = preset.light_pitch_deg.to_radians().clamp(0.15, 1.55);
     scene.exposure = preset.exposure.clamp(0.2, 5.0);
     scene.lighting_preset = LightingPreset::from_label(&preset.lighting_rig);
+    // Applied unconditionally, matching `lighting_presets`' own live-apply -- unlike
+    // camera yaw/pitch just below, `camera_distance` is a plain field (not an
+    // `Option`), so every preset carries one.
+    let (min_distance, max_distance) =
+        crate::gui::render::camera_lighting::orbit_distance_bounds(mesh_bounding_radius);
+    scene.distance = preset.camera_distance.clamp(min_distance, max_distance);
 
     if let (Some(yaw), Some(pitch)) = (preset.camera_yaw, preset.camera_pitch) {
         scene.yaw = yaw;
@@ -154,6 +172,17 @@ pub(super) struct ExportQueue {
     /// Compute target, remote endpoint and transfer, fixed for the whole queue.
     pub(super) remote: export_thread::RemoteSelection,
     pub(super) local_compute: LocalComputeTarget,
+
+    /// The CURRENTLY RUNNING job's own time-remaining estimator -- reset every time
+    /// `start_next_export_job` starts a new job (see that function's own doc
+    /// comment), fed a fresh observation on every progress tick
+    /// (`handle_export_job_progress`), and read back into `ExportModel.eta_text`
+    /// right alongside it. Deliberately per-job, not per-whole-fan-out: a fresh
+    /// preset render can trace at a very different rate than the one before it
+    /// (a different lighting rig, a moved HDR environment, remote vs. local), so
+    /// carrying one job's observations into the next would fit a line across two
+    /// unrelated rates.
+    pub(super) eta: EtaEstimator,
 }
 
 /// `ColorSpace`'s own display label, matching `export_dialog.slint`'s pill text --
@@ -216,6 +245,10 @@ pub(super) fn finish_export_queue(
     RenderContext::lock(render_ctx).export_active_count -= 1;
     ui.global::<ExportModel>()
         .set_preview_image(slint::Image::default());
+    // No estimate makes sense once the whole queue has stopped, on every exit path
+    // (finished, cancelled, or every job failed).
+    ui.global::<ExportModel>()
+        .set_eta_text(String::new().into());
 
     if queue.cancelled {
         ui.global::<ExportModel>().set_has_error(false);
@@ -284,11 +317,14 @@ pub(super) fn start_next_export_job(
     };
 
     let (current_index, total, output_path) = {
-        let q = queue
+        let mut q = queue
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let ctx = template_context_for_job(&q, &job);
         let output_path = export_thread::resolve_export_path(&q.export_dir, &q.template, &ctx);
+        // A fresh job's own render rate starts fresh too -- see `ExportQueue::eta`'s
+        // own doc comment on why this resets per job rather than per whole fan-out.
+        q.eta.reset();
         (q.current_index, q.total, output_path)
     };
     set_starting_job_ui_state(ui, current_index, total, &job);
@@ -348,6 +384,11 @@ fn set_starting_job_ui_state(ui: &MainWindow, current_index: usize, total: usize
     ui.global::<ExportModel>().set_preview_samples_done(0);
     ui.global::<ExportModel>()
         .set_preview_image(slint::Image::default());
+    // The previous job's own estimate must not linger over this one's first tick --
+    // `handle_export_job_progress` sets a fresh reading again as soon as this job's
+    // own progress starts arriving.
+    ui.global::<ExportModel>()
+        .set_eta_text(String::new().into());
 }
 
 /// `export_thread::spawn_export`'s `on_progress` callback body for
@@ -358,14 +399,18 @@ fn handle_export_job_progress(
     queue: &Arc<Mutex<ExportQueue>>,
     progress: export_thread::ExportProgress,
 ) {
-    let (current_index, total) = {
-        let q = queue
+    let (current_index, total, eta_text) = {
+        let mut q = queue
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        (q.current_index, q.total)
+        let now = Instant::now();
+        q.eta.observe(now, f64::from(progress.fraction));
+        let eta_text = format_eta(q.eta.eta(now));
+        (q.current_index, q.total, eta_text)
     };
     let combined = (current_index as f32 + progress.fraction) / total as f32;
     ui.global::<ExportModel>().set_progress(combined);
+    ui.global::<ExportModel>().set_eta_text(eta_text.into());
     ui.global::<ExportModel>()
         .set_preview_samples_done(progress.samples_done as i32);
     ui.global::<ExportModel>()
@@ -421,7 +466,7 @@ mod tests {
             max_bounces: 12, // the viewport's own setting, left untouched by this test
             ..Default::default()
         });
-        let captured = SceneSnapshot::capture(&viewport_ctx);
+        let captured = SceneSnapshot::capture(&viewport_ctx).expect("Diamond resolves");
         assert_eq!(
             captured.max_bounces, 12,
             "capture must still read the viewport's own setting by itself"
@@ -469,7 +514,8 @@ mod tests {
             yaw: 1.23,
             pitch: 0.44,
             ..Default::default()
-        }));
+        }))
+        .expect("Diamond resolves");
         let preset = SavedLightingPreset {
             name: "Mood Only".to_string(),
             built_in: false,
@@ -483,7 +529,7 @@ mod tests {
             env_map_path: None,
             export_usable: true,
         };
-        let overlaid = apply_preset_to_scene(base.clone(), &preset);
+        let overlaid = apply_preset_to_scene(base.clone(), &preset, 1.5);
         assert_eq!(overlaid.yaw, base.yaw);
         assert_eq!(overlaid.pitch, base.pitch);
         assert_eq!(overlaid.light_yaw, preset.light_yaw_deg.to_radians());
@@ -499,7 +545,8 @@ mod tests {
             yaw: 1.23,
             pitch: 0.44,
             ..Default::default()
-        }));
+        }))
+        .expect("Diamond resolves");
         let preset = SavedLightingPreset {
             name: "Full Shot".to_string(),
             built_in: false,
@@ -513,7 +560,7 @@ mod tests {
             env_map_path: None,
             export_usable: true,
         };
-        let overlaid = apply_preset_to_scene(base, &preset);
+        let overlaid = apply_preset_to_scene(base, &preset, 1.5);
         assert_eq!(overlaid.yaw, 0.75);
         assert_eq!(overlaid.pitch, 0.3);
     }

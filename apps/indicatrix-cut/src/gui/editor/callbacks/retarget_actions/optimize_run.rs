@@ -12,9 +12,10 @@ use super::{
         RetargetRowView, RetargetView, push_retarget_view, push_target_error, push_target_readout,
         row_view,
     },
+    sync_embedded_comparison,
 };
 use crate::{
-    EditorModel, MainWindow, RetargetModel,
+    EditorModel, MainWindow, RetargetModel, ViewportModel,
     bridge::render_thread::RenderContext,
     gui::{
         editor::{
@@ -28,7 +29,10 @@ use crate::{
         solid_preview::preview_state::SolidPreviewState,
     },
 };
-use indicatrix::{geometry::meet_solver::Block, optics::materials::GemMaterial};
+use indicatrix::{
+    geometry::meet_solver::Block,
+    optics::{LightingPreset, materials::GemMaterial},
+};
 use indicatrix_cut_core::{Design, ObjectiveWeights, OptimizeConfig, ResolvedMaterial};
 use slint::ComponentHandle;
 use std::{
@@ -51,6 +55,9 @@ fn optimize_config_from_ui(ui: &MainWindow) -> OptimizeConfig {
     .unwrap_or_else(|_| ObjectiveWeights::default());
     OptimizeConfig {
         weights,
+        lighting: LightingPreset::from_index(
+            ui.global::<ViewportModel>().get_selected_lighting_index(),
+        ),
         ..OptimizeConfig::default()
     }
 }
@@ -365,15 +372,14 @@ fn finish_optimize_run(
         target: ctx.target.clone(),
         notes: notes.clone(),
     });
-    // Shows the ghost preview for THIS finished search's own
-    // candidate (when the toggle is on and a proposal actually built), against the
-    // SAME `original` design `apply::apply_pending_retarget` would retarget from --
-    // before `proposal` is moved into `RETARGET_ASYNC` below. No live
-    // `EditorState` is reachable from this `Send`-bound closure (see this group's
-    // own `mod.rs` doc comment) to revert through the ordinary
-    // `submit_preview_replan` path if this shows nothing, but there is nothing
-    // stale to revert either: `start_optimize_run` already put the real design
-    // back the moment this search started.
+    // Queues the ghost preview for THIS finished search's own candidate (when the
+    // toggle is on and a proposal actually built), against the SAME `original` design
+    // `apply::apply_pending_retarget` would retarget from -- before `proposal` is
+    // moved into `RETARGET_ASYNC` below. No live `EditorState` is reachable from this
+    // `Send`-bound closure to revert through the ordinary `submit_preview_replan`
+    // path if nothing is queued, but there is nothing stale to revert either:
+    // `start_optimize_run` already put the real design back the moment this search
+    // started.
     let _ = apply_ghost_preview_or_revert(
         ui,
         &ctx.render_ctx,
@@ -402,4 +408,8 @@ fn finish_optimize_run(
     };
     push_retarget_view(ui, view);
     ui.global::<RetargetModel>().set_is_busy(false);
+    // The finished search's proposal now sits in `RETARGET_ASYNC::pending`, where
+    // the embedded comparison pane reads it from. This handler holds no editor-state
+    // borrow (it is reached through a `Send` closure), so the call is safe here.
+    sync_embedded_comparison(ui, has_proposal);
 }

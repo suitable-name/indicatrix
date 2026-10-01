@@ -19,7 +19,8 @@ impl GemMaterial {
             // `uniaxial_extraordinary_dispersion` and `birefringence_delta`
             // bit-for-bit, differing only in absorption. n_d = 1.54421, Delta n(F-C)
             // = 0.00781 (quartz's well-known "0.013" figure is the B-G interval, not
-            // F-C -- see the Quartz entry above).
+            // F-C; x0.579 gives 0.00753 -- see the Quartz entry above. The stored
+            // convention is F-C, 486.1-656.3 nm).
             Self {
                 name: "Amethyst".to_string(),
                 crystal_system: CrystalSystem::Trigonal,

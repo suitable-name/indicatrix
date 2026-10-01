@@ -18,7 +18,7 @@ use std::{
     cell::RefCell,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{Arc, Mutex},
 };
 
 /// Records where a Save/Export just wrote, for the status strip's own persistent
@@ -51,6 +51,13 @@ pub(super) struct WriteNativeOutcome {
     pub(super) asc_filename: String,
     pub(super) paired: indicatrix_cut_core::native::PairedSave,
     pub(super) catalogue: Result<(i64, CatalogueWriteBack), String>,
+    /// `EditorState::generation`'s value at the moment `design` was cloned out
+    /// of `state`, well before this write ever started (`NativeSaveContext::
+    /// snapshot_generation`'s own doc comment) -- what
+    /// [`finish_save_native_success`] actually marks the design clean AT,
+    /// instead of whatever `generation` reads once this outcome lands (which
+    /// may already include post-click edits this save never saw).
+    pub(super) snapshot_generation: u64,
 }
 
 /// [`write_native_save`]'s success tail, run back on the UI thread once its
@@ -75,6 +82,7 @@ pub(super) fn finish_save_native_success(
         asc_filename,
         paired,
         catalogue,
+        snapshot_generation,
     } = outcome;
     // The real save just landed -- any in-progress autosave is now strictly
     // older than what's on disk, so drop it rather than leaving a stale
@@ -98,7 +106,16 @@ pub(super) fn finish_save_native_success(
         // currently solving does not fail `save_paired` at all (see
         // `PairedSave::draft_reason`'s own doc comment) -- so this is unconditional,
         // not only on the ordinary branch below.
-        st.saved_generation = st.generation.load(Ordering::Relaxed);
+        //
+        // `snapshot_generation` (the generation `design` was cloned out of
+        // `state` at, before this write even started), never the LIVE
+        // `st.generation` read here -- see `WriteNativeOutcome::
+        // snapshot_generation`'s own doc comment. Reading the live
+        // counter instead let edits made while this save was still
+        // resolving/writing read as clean the moment the (already stale) save
+        // completed, so the close guard never prompted for them and they were
+        // silently lost.
+        st.saved_generation = snapshot_generation;
     }
     ui.global::<EditorModel>()
         .set_is_dirty(state.borrow().is_dirty());
@@ -154,7 +171,47 @@ pub(super) fn finish_save_native_success(
     // the event loop") -- this only reports `catalogue`'s own outcome. Never runs
     // after "Export .asc" (`setup_export_asc_callback`), which keeps its own
     // documented "file only, no database write of any kind" rule.
+    report_catalogue_write_back(ui, state, db, source, &dest_path, catalogue);
+
+    // the save this guard's own Save resolution triggered just actually
+    // landed -- see `AfterSave`'s own doc comment. Runs last, after this
+    // function's own bookkeeping/toasts above, so a listener that hides the
+    // window (the close-confirm guard) does so only once every other effect
+    // of a successful save has already happened.
+    super::notify_save_completed(ui, state);
+}
+
+/// Reports [`write_back_to_catalogue`]'s result on the UI thread: adopts the written
+/// row as the design's `source_entry_id`, refreshes the library list, and toasts the
+/// outcomes the cutter should not miss. `dest_path` names the saved `.asc` for the
+/// collision wording.
+fn report_catalogue_write_back(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+    db: &Arc<Mutex<Database>>,
+    source: &Arc<Mutex<LibrarySource>>,
+    dest_path: &Path,
+    catalogue: Result<(i64, CatalogueWriteBack), String>,
+) {
     match catalogue {
+        // Another catalogue design already owns this file name, so the catalogue was
+        // left untouched. The id is that design's: adopting it as `source_entry_id`
+        // would make the next save overwrite it, so it is deliberately not adopted.
+        Ok((_, CatalogueWriteBack::UrlCollision { existing_id, title })) => {
+            let file = dest_path.file_name().map_or_else(
+                || dest_path.display().to_string(),
+                |name| name.to_string_lossy().into_owned(),
+            );
+            show_toast(
+                ui,
+                &format!(
+                    "Saved to disk; the catalogue already holds a design named '{file}' \
+                     (id {existing_id}, \"{title}\"), catalogue not updated. Import it \
+                     explicitly to replace."
+                ),
+                "warning",
+            );
+        }
         Ok((id, catalogue_outcome)) => {
             // Every save after this one for a previously row-less (or
             // now-row-less, see `CatalogueWriteBack::SourceRowGoneNewRowCreated`)
@@ -188,10 +245,12 @@ pub(super) fn finish_save_native_success(
                         "warning",
                     );
                 }
+                // `UrlCollision` is reported by the arm above and never reaches here.
                 CatalogueWriteBack::UpdatedExisting {
                     stale_cache_invalidation_failed: false,
                 }
-                | CatalogueWriteBack::NewRow => {}
+                | CatalogueWriteBack::NewRow
+                | CatalogueWriteBack::UrlCollision { .. } => {}
             }
         }
         Err(message) => show_toast(ui, &format!("Catalogue not updated: {message}"), "error"),

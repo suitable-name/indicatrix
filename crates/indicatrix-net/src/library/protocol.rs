@@ -71,7 +71,7 @@ pub enum LibraryRequest {
         range: RangeFilterWire,
         cursor: Option<i64>,
     },
-    /// Fetch one design's original `.asc` cutting-schedule TEXT (its actual file
+    /// Fetch one design's original `.asc` cutting-instructions TEXT (its actual file
     /// bytes, decoded as UTF-8 -- see [`LibraryResponse::DesignSource`]), so a remote
     /// design can be loaded into the local cutting-design editor the same way a
     /// locally-attached `.asc` already is (`gui::editor::loading::design_from_full_record`

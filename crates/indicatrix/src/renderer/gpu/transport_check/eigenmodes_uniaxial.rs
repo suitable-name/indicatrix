@@ -19,6 +19,7 @@ use super::{SHADER_SRC, UlpAccumulator, UlpCheckResult};
 // ordinary_eigen_polarization / extraordinary_eigen_polarization
 // ---------------------------------------------------------------------------------
 
+/// One input case for the eigen polarization check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct EigenPolarizationCase {
@@ -75,6 +76,7 @@ fn build_eigen_polarization_cases() -> Vec<EigenPolarizationCase> {
     cases
 }
 
+/// Runs the eigen polarization check against the CPU reference.
 #[must_use]
 pub fn run_eigen_polarization(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -154,6 +156,7 @@ pub fn run_eigen_polarization(
 // (-0.0210, strongly negative).
 // ---------------------------------------------------------------------------------
 
+/// One input case for the theta c check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ThetaCCase {
@@ -307,6 +310,7 @@ fn cpu_theta_c(c: &ThetaCCase) -> f32 {
     )
 }
 
+/// Runs the theta c check against the CPU reference.
 #[must_use]
 pub fn run_theta_c(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<ThetaCCase> {
     let cases = build_theta_c_cases();
@@ -354,6 +358,7 @@ pub fn run_theta_c(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<The
 // wave normal).
 // ---------------------------------------------------------------------------------
 
+/// One input case for the walk off check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct WalkOffCase {
@@ -448,6 +453,7 @@ fn cpu_walk_off(c: &WalkOffCase) -> Vec3 {
     )
 }
 
+/// Runs the walk off check against the CPU reference.
 #[must_use]
 pub fn run_walk_off(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<WalkOffCase> {
     let cases = build_walk_off_cases();
@@ -503,6 +509,7 @@ pub fn run_walk_off(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<Wa
 // own real Cauchy dispersion fits, not a synthetic curve.
 // ---------------------------------------------------------------------------------
 
+/// One input case for the per mode index check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PerModeIndexCase {
@@ -615,6 +622,7 @@ fn cpu_per_mode_index(case: &PerModeIndexCase, model: DispersionModel) -> (f32, 
     (n_o_ch[0], n_eff_ch[0])
 }
 
+/// Runs the per mode index check against the CPU reference.
 #[must_use]
 pub fn run_per_mode_index(
     ctx: &crate::renderer::gpu::GpuContext,

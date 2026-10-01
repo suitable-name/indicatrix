@@ -95,8 +95,8 @@ fn verified_mast_for(deltas: &[deep_solve::TierMastDelta], tier_index: usize) ->
 /// action alongside Deep Solve's per-tier disagreement table
 /// (`EditorModel.deep_solve_tier_rows`). Takes the SAME `"#N"` tier-number text that
 /// table already prints (see [`tier_index_from_row_number`]) rather than a raw
-/// index, so the button this still needs (not yet wired in
-/// `editor_status_strip.slint`) needs no new field on `DeepSolveTierRow` to add.
+/// index, so the button (`editor_status_strip.slint` calls
+/// `EditorModel.pin_verified_mast`) needs no extra field on `DeepSolveTierRow`.
 ///
 /// Applies through [`EditorState::apply`] like every other edit in this crate --
 /// `Edit::SetConstraint(ScaleReference(verified_mast))`, never a wholesale "apply

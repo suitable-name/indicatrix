@@ -24,6 +24,14 @@ export component ConfirmActionDialog inherits Rectangle {
     in property <string> message: "";
     in property <string> primary_label: "Save";
     in property <string> secondary_label: "Discard";
+    // A third, optional action alongside primary/secondary -- "" (the default)
+    // hides it entirely, same convention as `secondary_label`/`primary_label`
+    // above. Every existing call site (the unsaved-changes/close/fingerprint-
+    // mismatch guards) leaves this at "", so adding it here does not change
+    // their own layout at all; the startup-restore prompt's "Delete" action
+    // (only ever shown for a leftover autosave, never an ordinary recent file)
+    // is the first caller.
+    in property <string> tertiary_label: "";
     // An optional "Don't ask
     // again" checkbox for a confirmation the cutter may want to silence once
     // they've seen it -- hidden (`false`, the default) for dialogs like the
@@ -44,6 +52,7 @@ export component ConfirmActionDialog inherits Rectangle {
     callback primary();
     callback secondary();
     callback cancel();
+    callback tertiary();
 
     background: Theme.overlay-backdrop;
 
@@ -134,6 +143,10 @@ export component ConfirmActionDialog inherits Rectangle {
                     spacing: 8px;
                     alignment: end;
 
+                    if root.tertiary_label != "": Button {
+                        text: root.tertiary_label;
+                        clicked => { root.tertiary(); }
+                    }
                     Button {
                         text: "Cancel";
                         clicked => { root.cancel(); }

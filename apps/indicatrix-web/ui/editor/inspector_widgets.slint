@@ -1,0 +1,140 @@
+import { Button } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { GuideModel } from "../models/guide_model.slint";
+import { DesignSettingsModel } from "design_settings.slint";
+
+// The small parts the inspector's tabs share (modelled on the desktop's
+// `proportion_verdicts.slint`, `material_guess.slint` and `critical_angle_bar.slint`).
+
+// A small muted field label.
+export component FieldLabel inherits Text {
+    font-size: 10px;
+    color: Theme.text-muted;
+}
+
+// A bold sub-section title.
+export component SectionTitle inherits Text {
+    font-size: 12px;
+    font-weight: 700;
+    color: Theme.text-primary;
+}
+
+// A one-pixel divider.
+export component Divider inherits Rectangle {
+    height: 1px;
+    background: Theme.border-subtle;
+}
+
+// A wrapped read-only line of secondary text.
+export component InfoLine inherits Text {
+    font-size: 10px;
+    color: Theme.text-secondary;
+    wrap: word-wrap;
+}
+
+// A "Within" / "Near" / "Outside" chip beside a proportion figure, judged against
+// `indicatrix_cut_core::proportions_windows`. Renders nothing at `level == -1` ("nothing to
+// judge yet") rather than a misleading chip; the reason is shown as a caption when set.
+export component VerdictChip inherits Rectangle {
+    in property <int> level: -1;
+
+    property <string> chip-label: root.level == 0 ? "Within" : (root.level == 1 ? "Near" : (root.level == 2 ? "Outside" : ""));
+    property <color> chip-color: root.level == 0 ? Theme.accent-emerald : (root.level == 1 ? Theme.accent-amber : Theme.danger);
+
+    visible: root.level >= 0;
+    width: root.level >= 0 ? label.preferred-width + 12px : 0px;
+    height: root.level >= 0 ? label.preferred-height + 4px : 0px;
+    background: root.chip-color.with-alpha(0.16);
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: root.chip-color;
+
+    label := Text {
+        text: root.chip-label;
+        font-size: 9px;
+        font-weight: 700;
+        color: root.chip-color;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// The inferred-material badge with a one-click "Set material"; renders nothing while
+// there is no guess (a named material, or nothing built in close enough).
+export component MaterialGuessBadge inherits HorizontalLayout {
+    spacing: 6px;
+    visible: DesignSettingsModel.guess-text != "";
+
+    Rectangle {
+        width: guess-lbl.preferred-width + 10px;
+        height: guess-lbl.preferred-height + 6px;
+        background: Theme.accent-amber.with-alpha(0.14);
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.accent-amber;
+        guess-lbl := Text {
+            text: DesignSettingsModel.guess-text;
+            font-size: 10px;
+            font-italic: true;
+            color: Theme.accent-amber;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    Button {
+        text: "Set material";
+        enabled: GuideModel.allows-design-settings();
+        clicked => { DesignSettingsModel.set-material-from-guess(); }
+    }
+    Rectangle { horizontal-stretch: 1; }
+}
+
+// A coloured bar for how far an angle sits from the critical angle at the design's
+// refractive index. `level` is 0 safe / 1 marginal / 2 windows / -1 nothing to show.
+export component CriticalAngleBar inherits Rectangle {
+    in property <string> margin-text: "";
+    in property <int> level: -1;
+    in property <bool> is-estimate: false;
+
+    property <color> bar-color: root.level == 0 ? Theme.accent-emerald : (root.level == 1 ? Theme.accent-amber : Theme.danger);
+    property <string> reason: root.level == 2
+        ? "Below the critical angle -- light leaks through."
+        : (root.level == 1
+            ? "Within 2\u{b0} of the critical angle -- a thin margin."
+            : (root.level == 0 ? "Comfortably past the critical angle." : ""));
+
+    visible: root.level >= 0;
+    height: root.level >= 0 ? 22px : 0px;
+
+    VerticalLayout {
+        spacing: 2px;
+        Rectangle {
+            height: 6px;
+            border-radius: 3px;
+            background: Theme.bg-input;
+            Rectangle {
+                x: 0;
+                width: parent.width * (root.level == 0 ? 1.0 : (root.level == 1 ? 0.66 : 0.33));
+                height: 100%;
+                border-radius: 3px;
+                background: root.bar-color;
+            }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            Text {
+                text: root.margin-text + (root.is-estimate ? " (estimate)" : "");
+                font-size: 9px;
+                font-weight: 700;
+                color: root.bar-color;
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: root.reason;
+                font-size: 9px;
+                color: Theme.text-muted;
+                overflow: elide;
+            }
+        }
+    }
+}

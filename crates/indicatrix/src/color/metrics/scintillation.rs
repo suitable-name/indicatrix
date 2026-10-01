@@ -1,10 +1,10 @@
 //! Scintillation: the spatial (per-pose grid contrast) and temporal
 //! (per-cell, across-pose flicker) terms, combined into `scintillation_pct`.
 
-use glam::Vec3;
-
 use super::{
     camera::camera_view_basis,
+    fan::FanGeometry,
+    lighting::ExitLighting,
     ray_trace::{RayFate, trace_wavelength},
     visibility::ray_is_visibly_returned,
 };
@@ -35,9 +35,10 @@ pub(super) struct TemporalPoseContext<'a> {
     pub(super) nd: f32,
     pub(super) cam_yaw: f32,
     pub(super) cam_pitch: f32,
-    pub(super) key_dir: Vec3,
-    pub(super) fill_dir: Vec3,
-    pub(super) sin_lp: f32,
+    /// Where the fan's rays start, scaled to the stone.
+    pub(super) fan: FanGeometry,
+    /// The illumination an exit direction is judged against.
+    pub(super) lighting: ExitLighting<'a>,
 }
 
 /// Fires a single, non-jittered ray at grid cell `(u, v)` (same screen-space coordinates
@@ -64,7 +65,7 @@ fn cell_returned_at_yaw_offset(
     let (forward, right, up) =
         camera_view_basis(ctx.cam_yaw + yaw_offset_deg.to_radians(), ctx.cam_pitch);
     let ray = Ray {
-        origin: -forward * 2.5 + (u * 0.95) * right + (v * 0.95) * up,
+        origin: ctx.fan.origin(forward, right, up, u, v),
         dir: forward,
     };
     let Some(hit_rec) = intersect_polyhedron_soa(ray, ctx.plane_soa) else {
@@ -75,9 +76,7 @@ fn cell_returned_at_yaw_offset(
     let cos_i = (-ray.dir).dot(n_entry).clamp(0.0, 1.0);
 
     match trace_wavelength(hit_point, ray.dir, n_entry, cos_i, ctx.plane_soa, ctx.nd) {
-        RayFate::ExitedUpward(exit) => {
-            ray_is_visibly_returned(exit.dir, forward, ctx.key_dir, ctx.fill_dir, ctx.sin_lp)
-        }
+        RayFate::ExitedUpward(exit) => ray_is_visibly_returned(exit.dir, forward, &ctx.lighting),
         RayFate::EntryBlocked | RayFate::Leaked | RayFate::Absorbed => false,
     }
 }

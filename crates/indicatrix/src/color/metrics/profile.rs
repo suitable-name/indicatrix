@@ -4,7 +4,10 @@
 //! sweep ([`evaluate_full_axis_profile_at_azimuth`]).
 
 use super::{evaluate::evaluate_gem_optical_metrics, types::PROFILE_ANGLES_DEG};
-use crate::{geometry::plane::GpuFacetPlane, optics::materials::GemMaterial};
+use crate::{
+    geometry::plane::GpuFacetPlane,
+    optics::{materials::GemMaterial, raytracer::EnvironmentSource},
+};
 
 /// Camera azimuths the Tilt Performance dialog sweeps a full tilt-elevation profile at,
 /// in degrees -- see [`evaluate_angular_profile_at_azimuth`].
@@ -30,16 +33,15 @@ pub fn evaluate_angular_profile_at_azimuth(
     planes: &[GpuFacetPlane],
     material: &GemMaterial,
     cam_yaw: f32,
-    light_yaw: f32,
-    light_pitch: f32,
+    environment: EnvironmentSource<'_>,
 ) -> ([f32; 19], [f32; 19], [f32; 19]) {
     sample_elevation_sweep(
         planes,
         material,
         cam_yaw,
         &PROFILE_ANGLES_DEG,
-        light_yaw,
-        light_pitch,
+        environment,
+        &mut || true,
     )
 }
 
@@ -51,28 +53,29 @@ pub fn evaluate_angular_profile_at_azimuth(
 /// sequence of floating-point operations rather than two hand-copies that could drift
 /// apart. Const-generic over `N` so one function body serves both grids without a
 /// `Vec`-based version paying an allocation per sweep.
+///
+/// `gate` is asked before every evaluation; when it answers `false` the sweep stops and
+/// the rest of the curves stay `0.0` (the caller that passed a gate that can say no
+/// discards them). A gate that always answers `true` leaves the sequence of
+/// floating-point operations exactly as it was without one.
 fn sample_elevation_sweep<const N: usize>(
     planes: &[GpuFacetPlane],
     material: &GemMaterial,
     cam_yaw: f32,
     angles_deg: &[f32; N],
-    light_yaw: f32,
-    light_pitch: f32,
+    environment: EnvironmentSource<'_>,
+    gate: &mut dyn FnMut() -> bool,
 ) -> ([f32; N], [f32; N], [f32; N]) {
     let mut brilliance_curve = [0.0f32; N];
     let mut extinction_curve = [0.0f32; N];
     let mut windowing_curve = [0.0f32; N];
 
     for (i, &deg) in angles_deg.iter().enumerate() {
+        if !gate() {
+            break;
+        }
         let cam_pitch_rad = deg.to_radians();
-        let m = evaluate_gem_optical_metrics(
-            planes,
-            material,
-            cam_yaw,
-            cam_pitch_rad,
-            light_yaw,
-            light_pitch,
-        );
+        let m = evaluate_gem_optical_metrics(planes, material, cam_yaw, cam_pitch_rad, environment);
         brilliance_curve[i] = m.brilliance_pct;
         extinction_curve[i] = m.extinction_pct;
         windowing_curve[i] = m.windowing_pct;
@@ -191,8 +194,8 @@ fn merge_full_axis_halves(
 ///
 /// # Why the negative half is a real sweep, not a mirror
 ///
-/// [`evaluate_gem_optical_metrics`] takes a FIXED `light_yaw`/`light_pitch`. Tilting
-/// toward vs. away from the light gives genuinely different brilliance/extinction/
+/// [`evaluate_gem_optical_metrics`] takes a FIXED environment (for the studio rigs, one
+/// light pose). Tilting toward vs. away from the light gives genuinely different brilliance/extinction/
 /// windowing, even for a symmetric round brilliant, and an asymmetric outline (pear,
 /// heart, half-moon) is not 2-fold symmetric geometrically either. So
 /// `positive_azimuth_deg + 180°` is independently raytraced at every pitch, never
@@ -218,9 +221,65 @@ pub fn evaluate_full_axis_profile_at_azimuth(
     planes: &[GpuFacetPlane],
     material: &GemMaterial,
     positive_azimuth_deg: f32,
-    light_yaw: f32,
-    light_pitch: f32,
+    environment: EnvironmentSource<'_>,
 ) -> ([f32; 181], [f32; 181], [f32; 181]) {
+    full_axis_profile(
+        planes,
+        material,
+        positive_azimuth_deg,
+        environment,
+        &mut || true,
+    )
+}
+
+/// [`evaluate_full_axis_profile_at_azimuth`] with a hook before every evaluation.
+///
+/// `step` is called before each of the [`EVALUATIONS_PER_AXIS`] raytrace evaluations and
+/// can stop the sweep by answering `false` (then `None`). The browser app's tilt Worker
+/// uses it to report progress and to honour Cancel between points; with a `step` that
+/// always answers `true` the result is bit-identical to
+/// [`evaluate_full_axis_profile_at_azimuth`]'s.
+#[must_use]
+pub fn evaluate_full_axis_profile_at_azimuth_stepped(
+    planes: &[GpuFacetPlane],
+    material: &GemMaterial,
+    positive_azimuth_deg: f32,
+    environment: EnvironmentSource<'_>,
+    step: &mut dyn FnMut() -> bool,
+) -> Option<([f32; 181], [f32; 181], [f32; 181])> {
+    let mut stopped = false;
+    let mut gate = || {
+        if !stopped && !step() {
+            stopped = true;
+        }
+        !stopped
+    };
+    let curves = full_axis_profile(
+        planes,
+        material,
+        positive_azimuth_deg,
+        environment,
+        &mut gate,
+    );
+    (!stopped).then_some(curves)
+}
+
+/// Raytrace evaluations one full-axis profile costs: the shared table-up pole, then 90
+/// pitches (0..=89) at each of the two opposite azimuths.
+pub const EVALUATIONS_PER_AXIS: usize = 181;
+
+/// The body of [`evaluate_full_axis_profile_at_azimuth`] with a `gate` asked before every
+/// evaluation (see `sample_elevation_sweep`). The pole is always evaluated, even when the
+/// gate has already said no: one evaluation is cheaper than another code path.
+fn full_axis_profile(
+    planes: &[GpuFacetPlane],
+    material: &GemMaterial,
+    positive_azimuth_deg: f32,
+    environment: EnvironmentSource<'_>,
+    gate: &mut dyn FnMut() -> bool,
+) -> ([f32; 181], [f32; 181], [f32; 181]) {
+    // The gate is asked once for the pole, so it counts as one of the evaluations.
+    let _ = gate();
     // The shared table-up (pitch 90) pole -- see this function's doc comment for why
     // evaluating it once is sound. Evaluated at the positive azimuth by convention
     // (azimuth is provably irrelevant here, but a concrete choice is still needed).
@@ -229,16 +288,15 @@ pub fn evaluate_full_axis_profile_at_azimuth(
         material,
         positive_azimuth_deg.to_radians(),
         90.0f32.to_radians(),
-        light_yaw,
-        light_pitch,
+        environment,
     );
     let (positive_brilliance, positive_extinction, positive_windowing) = sample_elevation_sweep(
         planes,
         material,
         positive_azimuth_deg.to_radians(),
         &HALF_AXIS_PITCH_DEG,
-        light_yaw,
-        light_pitch,
+        environment,
+        gate,
     );
     let negative_azimuth_deg = positive_azimuth_deg + 180.0;
     let (negative_brilliance, negative_extinction, negative_windowing) = sample_elevation_sweep(
@@ -246,8 +304,8 @@ pub fn evaluate_full_axis_profile_at_azimuth(
         material,
         negative_azimuth_deg.to_radians(),
         &HALF_AXIS_PITCH_DEG,
-        light_yaw,
-        light_pitch,
+        environment,
+        gate,
     );
 
     (
@@ -280,8 +338,7 @@ pub fn evaluate_full_axis_profile_at_azimuth(
 pub fn evaluate_angular_profile(
     planes: &[GpuFacetPlane],
     material: &GemMaterial,
-    light_yaw: f32,
-    light_pitch: f32,
+    environment: EnvironmentSource<'_>,
 ) -> ([f32; 19], [f32; 19], [f32; 19]) {
-    evaluate_angular_profile_at_azimuth(planes, material, 0.0, light_yaw, light_pitch)
+    evaluate_angular_profile_at_azimuth(planes, material, 0.0, environment)
 }

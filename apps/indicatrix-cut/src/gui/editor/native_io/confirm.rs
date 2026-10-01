@@ -3,11 +3,14 @@
 //! [`decide_write_status`] (pure decision) and [`ask_write_confirm`] (shows the
 //! dialog, stashes the continuation).
 
-use crate::{EditorModel, MainWindow};
+use crate::{
+    EditorModel, MainWindow, gui::editor::state::EditorState, settings::SettingsPersister,
+};
 use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_cut_core::Design;
 use slint::ComponentHandle;
-use std::cell::RefCell;
+use std::{cell::RefCell, rc::Rc};
+use tracing::warn;
 
 // --- Group 2: in-window write confirmations (no more blocking native message dialogs) -
 
@@ -75,30 +78,31 @@ pub(super) mod confirm_keys {
         "write_confirm.overwrite_unrelated_native";
 }
 
-/// Reads whether the confirm prompt named `key` is currently suppressed -- a
-/// direct settings-file read (not the debounced `SettingsPersister`, which this
-/// module has no handle to; same precedent [`record_recent_native_file`]
-/// documents on itself for the identical constraint).
+/// Reads whether the confirm prompt named `key` is currently suppressed, from the
+/// application's [`SettingsPersister`] (the handle installed by `gui::main_window`; see
+/// [`SettingsPersister::install_for_this_thread`]) so a suppression chosen earlier in
+/// this same session counts immediately. With no persister installed nothing is
+/// suppressed, so the prompt is shown.
 fn confirm_is_suppressed(key: &str) -> bool {
-    let settings_path = crate::settings::store::default_settings_path();
-    crate::settings::store::load_or_default(&settings_path)
-        .settings
-        .is_confirm_suppressed(key)
+    SettingsPersister::installed_for_this_thread()
+        .is_some_and(|persister| persister.snapshot().settings.is_confirm_suppressed(key))
 }
 
-/// Persists that the confirm prompt named `key` should not be shown again.
+/// Records that the confirm prompt named `key` should not be shown again.
 ///
-/// `let _ =` on the write: a failure here (a read-only settings directory, say)
-/// only means the NEXT save/export asks again -- never that this save/export
-/// itself failed or that any design data was lost, and `record_recent_native_file`
-/// already accepts the identical direct-write race/failure mode on this exact
-/// settings file for the same reason (no debounced-persister handle in this
-/// module).
+/// The choice goes through the [`SettingsPersister`], never straight into the
+/// settings file: the persister's in-memory snapshot is what every close path flushes
+/// over the file, so a suppression written around it would be erased on exit. The
+/// in-memory update is synchronous (the very next `confirm_is_suppressed` sees it);
+/// only the disk write is debounced, and a failed write only means the NEXT
+/// save/export asks again -- never that this save/export itself failed or that any
+/// design data was lost.
 fn suppress_confirm_permanently(key: &'static str) {
-    let settings_path = crate::settings::store::default_settings_path();
-    let mut file = crate::settings::store::load_or_default(&settings_path);
-    file.settings.suppress_confirm(key);
-    let _ = crate::settings::store::save(&settings_path, &file);
+    let Some(persister) = SettingsPersister::installed_for_this_thread() else {
+        warn!("No settings persister is installed; not suppressing the prompt `{key}`");
+        return;
+    };
+    persister.update(|file| file.settings.suppress_confirm(key));
 }
 
 thread_local! {
@@ -156,7 +160,10 @@ pub(in crate::gui) fn ask_write_confirm(
 /// [`setup_save_native_callback`] (called exactly once, like every other `setup_*`
 /// entry point here) rather than given its own, the same reasoning
 /// [`setup_dirty_tracking`]/[`setup_autosave_timer`] document on themselves.
-pub(super) fn setup_write_confirm_dialog_callbacks(ui: &MainWindow) {
+pub(super) fn setup_write_confirm_dialog_callbacks(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+) {
     let ui_weak = ui.as_weak();
     ui.global::<EditorModel>().on_write_confirm_accept(move || {
         let Some(ui) = ui_weak.upgrade() else {
@@ -167,9 +174,9 @@ pub(super) fn setup_write_confirm_dialog_callbacks(ui: &MainWindow) {
         let Some(pending) = PENDING_WRITE_CONFIRM.with(RefCell::take) else {
             return;
         };
-        // Persist the suppression BEFORE running `on_accept` -- that closure may
-        // itself trigger a save that reads this same settings file back (e.g.
-        // `record_recent_native_file`), so the write must land first.
+        // Record the suppression BEFORE running `on_accept` -- that closure may itself
+        // trigger a save whose settings snapshot (e.g. `record_recent_native_file`) must
+        // already include it; the persister's in-memory update is synchronous.
         if let Some(key) = pending.suppress_key
             && model.get_write_confirm_dont_ask()
         {
@@ -179,8 +186,20 @@ pub(super) fn setup_write_confirm_dialog_callbacks(ui: &MainWindow) {
             (pending.on_accept)(&ui);
         });
     });
+    let state_cancel = Rc::clone(state);
     ui.global::<EditorModel>().on_write_confirm_cancel(move || {
         // The cutter's explicit cancel -- no toast, nothing runs.
         PENDING_WRITE_CONFIRM.with(|cell| *cell.borrow_mut() = None);
+        // This dialog is shared with `gui::library::local::import`'s own
+        // "replace existing design(s)?" prompt (see this module's own doc
+        // comment), which never touches `after_save` at all -- clearing it
+        // unconditionally here is still correct: a Save/Export flow is the
+        // only thing that ever SETS it, and the two dialogs cannot be open at
+        // once (both are modal), so there is nothing else this could
+        // possibly clobber. Left dangling otherwise, a stashed `after_save`
+        // would make some LATER, unrelated successful save spuriously close
+        // the window or resume a stale pending action; see `AfterSave`'s own doc
+        // comment.
+        state_cancel.borrow_mut().after_save = None;
     });
 }

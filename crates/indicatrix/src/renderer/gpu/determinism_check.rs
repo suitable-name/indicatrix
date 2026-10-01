@@ -24,19 +24,27 @@ struct Params {
 /// One pixel's disagreement between the two runs.
 #[derive(Debug, Clone, Copy)]
 pub struct DeterminismMismatch {
+    /// Index of the pixel.
     pub pixel: u32,
+    /// Run1.
     pub run1: f32,
+    /// Run2.
     pub run2: f32,
 }
 
+/// Outcome of the determinism check check.
 #[derive(Debug, Clone)]
 pub struct DeterminismCheckResult {
+    /// Number of pixels in the dispatch.
     pub num_pixels: u32,
+    /// Number of samples per pixel.
     pub num_samples: u32,
+    /// Mismatches found.
     pub mismatches: Vec<DeterminismMismatch>,
 }
 
 impl DeterminismCheckResult {
+    /// Whether every compared value stayed within its budget.
     #[must_use]
     pub const fn passed(&self) -> bool {
         self.mismatches.is_empty()

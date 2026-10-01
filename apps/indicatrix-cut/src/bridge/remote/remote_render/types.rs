@@ -4,6 +4,7 @@
 //! command/request bookkeeping types. See this group's own `mod.rs` doc comment.
 
 use crate::settings::WorkerSettings;
+use glam::Vec3;
 use indicatrix_net::{
     client::{Accumulator, ClientError, ConnectionInfo},
     messages::NetError,
@@ -16,6 +17,7 @@ use std::{
     time::Duration,
 };
 
+/// Buffered TLS stream to a remote worker.
 pub type RemoteStream = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
 
 /// One decoded [`indicatrix_net::messages::StreamEvent`] paired with its raw payload
@@ -56,6 +58,12 @@ pub enum RemoteError {
     /// Protocol v14: the remote asked for the scene's HDR map (`NEED_ASSET`) and it could
     /// not be sent (unknown hash, unreadable or changed file, or the upload failed).
     Asset(String),
+    /// A `CANCEL` was written and the worker neither ended the request nor closed the
+    /// stream within `super::connection::CANCEL_ACK_TIMEOUT`. Distinct from
+    /// [`Self::WorkerSilent`] on purpose: a worker that keeps heartbeating resets the
+    /// silence clock on every `PROGRESS`, so a wedged tracer that ignores the cancel
+    /// would otherwise keep this one-shot thread alive for as long as the socket lives.
+    CancelUnacknowledged(Duration),
 }
 
 impl fmt::Display for RemoteError {
@@ -75,6 +83,9 @@ impl fmt::Display for RemoteError {
                 "the remote cannot render HDR environments (it does not advertise HDR support)"
             ),
             Self::Asset(reason) => write!(f, "could not send the HDR map: {reason}"),
+            Self::CancelUnacknowledged(waited) => {
+                write!(f, "worker did not acknowledge CANCEL within {waited:.0?}")
+            }
         }
     }
 }
@@ -105,6 +116,10 @@ impl From<NetError> for RemoteError {
 /// touching the socket directly.
 pub enum RemoteCommand {
     Cancel,
+    /// v16: the viewer's own float-XYZ sum for a `FinalImageRequest`'s reserved tail,
+    /// ready to upload as one `CONTRIBUTION`. One-shot only -- see
+    /// [`RemoteRenderHandle::contribute`].
+    Contribute(Vec<Vec3>),
 }
 
 /// One update surfaced to the caller's `on_update` callback as a remote render
@@ -223,6 +238,7 @@ pub(super) enum HandleKind {
 pub struct RemoteRenderHandle(pub(super) HandleKind);
 
 impl RemoteRenderHandle {
+    /// Requests cancellation; the running job stops at its next check.
     pub fn cancel(&self) {
         match &self.0 {
             HandleKind::OneShot(commands) => {
@@ -238,16 +254,33 @@ impl RemoteRenderHandle {
             }
         }
     }
+
+    /// Uploads `sum` (the viewer's own float-XYZ radiance sum) as one `CONTRIBUTION`
+    /// for the in-flight `FinalImageRequest` -- v16, final-picture-only exports with a
+    /// reserved local tail. Returns `true` once the upload is queued for the one-shot
+    /// worker thread to send; `false` on a persistent connection, which never dispatches
+    /// a `FinalImageRequest` with `viewer_samples > 0` in the first place (the live
+    /// viewport's own transfer is a different one entirely -- see
+    /// [`RemoteConnectionHandle`]'s own doc comment on why it stays one-shot-only for
+    /// exports).
+    #[must_use]
+    pub fn contribute(&self, sum: Vec<Vec3>) -> bool {
+        match &self.0 {
+            HandleKind::OneShot(commands) => commands.send(RemoteCommand::Contribute(sum)).is_ok(),
+            HandleKind::Connection { .. } => false,
+        }
+    }
 }
 
 /// Extracts the host portion of a `host:port` address (whatever follows the last `:` is
-/// the port, matching `WorkerSettings::address`'s plain `host:port` convention, not a
-/// bracketed URI authority). Falls back to the whole string if there's no `:` at all,
-/// so a malformed address still produces some `ServerName` attempt and a clear
-/// TLS-layer error rather than silently doing nothing.
+/// the port, matching `WorkerSettings::address`'s plain `host:port` convention), with the
+/// brackets of an IPv6 literal removed -- the one shared rule,
+/// [`indicatrix_net::tls::host_for_server_name`]. Falls back to the whole string if
+/// there's no `:` at all, so a malformed address still produces some `ServerName` attempt
+/// and a clear TLS-layer error rather than silently doing nothing.
 #[must_use]
 pub(super) fn host_from_address(address: &str) -> &str {
-    address.rsplit_once(':').map_or(address, |(host, _)| host)
+    indicatrix_net::tls::host_for_server_name(address).unwrap_or(address)
 }
 
 /// Everything [`super::connection::spawn_remote_render`] needs to know about the ONE
@@ -256,12 +289,19 @@ pub(super) fn host_from_address(address: &str) -> &str {
 /// for why `width`/`height` travel alongside `worker` here rather than living on
 /// `WorkerSettings` itself (render resolution is session-wide, not per-worker).
 pub struct RemoteRenderRequest {
+    /// Connection settings of the remote worker.
     pub worker: WorkerSettings,
+    /// Identifier correlating replies with this request.
     pub request_id: u32,
+    /// Scene state sent to the worker.
     pub scene: indicatrix_net::SceneState,
+    /// Index of the first sample in this chunk.
     pub first_sample: u32,
+    /// Number of samples in this chunk.
     pub samples: u32,
+    /// Image width in pixels.
     pub width: u32,
+    /// Image height in pixels.
     pub height: u32,
     /// Why the request is made (protocol v14): `Interactive` for the live viewport,
     /// `Batch` for exports, tilt videos and batch previews. A coordinator uses it to pick
@@ -289,6 +329,11 @@ pub struct RemoteFinalImageRequest {
     pub samples: u32,
     /// The colour space the remote tone-maps into.
     pub color_space: indicatrix::color::ColorSpace,
+    /// v16: the LAST `viewer_samples` of `[first_sample, first_sample + samples)`,
+    /// reserved for the viewer's own local render -- `0` reproduces today's behaviour
+    /// (the server plans and renders the whole range). See
+    /// `indicatrix_net::messages::FinalImageRequest::viewer_samples`'s own doc comment.
+    pub viewer_samples: u32,
 }
 
 /// A handle to one persistent, mutual-TLS connection to a configured remote worker,
@@ -411,6 +456,11 @@ mod tests {
     fn host_from_address_strips_the_trailing_port() {
         assert_eq!(host_from_address("worker.local:9443"), "worker.local");
         assert_eq!(host_from_address("192.168.1.50:9443"), "192.168.1.50");
+    }
+
+    #[test]
+    fn host_from_address_strips_ipv6_brackets() {
+        assert_eq!(host_from_address("[::1]:9443"), "::1");
     }
 
     #[test]

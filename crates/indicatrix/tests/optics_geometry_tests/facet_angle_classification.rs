@@ -1,4 +1,4 @@
-//! FIX C: `StandardGemCuts::from_database_angles` crown/pavilion classification and
+//! `StandardGemCuts::from_database_angles` crown/pavilion classification and
 //! angle-parsing robustness tests -- classification must trust explicit evidence
 //! (facet-name prefixes / `index_val` markers actually observed in the scraped
 //! facetdiagrams.org data) over the blind positional guess, and the parser must
@@ -9,7 +9,7 @@ use glam::Vec3;
 use indicatrix::{FacetSpec, geometry::cuts::StandardGemCuts};
 
 // ---------------------------------------------------------------------------
-// FIX C: crown/pavilion classification in from_database_angles should trust
+// Crown/pavilion classification in from_database_angles should trust
 // explicit evidence (facet-name prefixes / index_val markers actually observed
 // in the scraped facetdiagrams.org data) over the blind positional guess.
 // ---------------------------------------------------------------------------

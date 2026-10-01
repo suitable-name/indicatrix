@@ -84,8 +84,8 @@ export component PerformanceGraphDialog inherits Rectangle {
     in-out property <bool> show_all_axes: false;
 
     // "Export tilt video" collapsible section (see near the footer, below the chart).
-    // Both reset every time this dialog is re-instantiated (`gem_viewport.slint`/
-    // `solid_viewport.slint` mount it fresh via `if TiltModel.dialog_open:
+    // Both reset every time this dialog is re-instantiated (`GlobalDialogsOverlay` in
+    // `components/app/global_dialogs.slint` mounts it fresh, window-wide, via `if TiltModel.dialog_open:
     // PerformanceGraphDialog { ... }`), matching the task's own "collapsed on popup
     // open, not persisted" requirement -- every OTHER video-export setting lives on
     // `TiltVideoExportModel` instead, which DOES persist across re-opens, matching how
@@ -97,6 +97,11 @@ export component PerformanceGraphDialog inherits Rectangle {
 
     property <[string]> axis_labels: ["0° (length)", "45°", "90° (width)", "135°"];
     property <string> selected_axis_label: root.axis_labels[root.selected_axis_index];
+    // Below 900px the channel/axis pill rows put their caption on its own line and
+    // use short labels. `root` is pinned to the full backdrop by its parent, so
+    // reading its width here cannot loop.
+    property <bool> narrow: root.width < 900px;
+    property <[string]> axis_short_labels: ["0°", "45°", "90°", "135°"];
     // True once all four full-axis sweeps have arrived -- guards the axis pills, the
     // summary badges, and the chart canvas; nothing here has an always-available
     // fallback, since even axis 0 needs its negative half swept off-thread.
@@ -135,7 +140,7 @@ export component PerformanceGraphDialog inherits Rectangle {
     copy_curve_data => { TiltModel.copy_curve_data(); }
 
     // Full Viewport Modal Backdrop
-    background: #00000088;
+    background: Theme.overlay-backdrop;
 
     TouchArea {
         clicked => { root.close(); }
@@ -163,7 +168,7 @@ export component PerformanceGraphDialog inherits Rectangle {
     }
 
     // Modal Card Container. Sized off the backdrop (`root`, pinned to the full
-    // viewport by `gem_viewport.slint`) rather than a fixed pixel width.
+    // window by `GlobalDialogsOverlay`, `components/app/global_dialogs.slint`) rather than a fixed pixel width.
     Rectangle {
         width: Math.min(960px, root.width - 80px);
         // Bounded to the backdrop (`root`), NOT `content.preferred-height`: the
@@ -180,7 +185,7 @@ export component PerformanceGraphDialog inherits Rectangle {
         background: #0f1523;
         border-radius: Theme.radius-lg;
         border-width: 1px;
-        border-color: #334155;
+        border-color: Theme.border-dialog;
         drop-shadow-blur: 32px;
         drop-shadow-color: #000000ee;
         drop-shadow-offset-y: 8px;
@@ -195,9 +200,11 @@ export component PerformanceGraphDialog inherits Rectangle {
 
             // 1. Header Bar
             HorizontalLayout {
-                alignment: space-between;
+                spacing: 8px;
 
                 VerticalLayout {
+                    horizontal-stretch: 1;
+                    min-width: 0px;
                     spacing: 3px;
                     HorizontalLayout {
                         spacing: 8px;
@@ -208,13 +215,57 @@ export component PerformanceGraphDialog inherits Rectangle {
                             font-weight: 700;
                             color: Theme.text-primary;
                             vertical-alignment: center;
+                            wrap: word-wrap;
                         }
                     }
                     Text {
                         text: "Analytical raytracing across -90° to +90° tilt away from table-up (1° step resolution) for " + root.material_name;
                         font-size: 11px;
                         color: Theme.text-muted;
+                        wrap: word-wrap;
                     }
+                }
+
+                Rectangle {
+                    width: 26px;
+                    height: 26px;
+                    border-radius: 13px;
+                    background: close_touch.has-hover ? Theme.surface-raised : transparent;
+
+                    close_touch := TouchArea {
+                        clicked => { root.close(); }
+                    }
+
+                    Image {
+                        source: @image-url("../icons/close.svg");
+                        colorize: Theme.text-muted;
+                        width: 13px;
+                        height: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            Rectangle { height: 1px; background: Theme.surface-raised; }
+
+            // Scrollable body: everything between the fixed title row above and
+            // the fixed footer below (badges, channel/axis toggles, the chart,
+            // and the "Export Tilt Video" section) -- `vertical-stretch: 1` lets
+            // this take whatever room the card's now-bounded `height` leaves
+            // after the fixed header/divider/footer, and scrolls the rest
+            // rather than overflowing the window. The "Start Video Export" /
+            // Cancel / progress row (inside the video section below) is always
+            // reachable by scrolling here even when it doesn't fit on screen.
+            body := ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    spacing: 14px;
+                    // Top-aligned: while the video section is collapsed the content
+                    // is shorter than the viewport, and the default stretch spread
+                    // the spare height into the three caption texts as big gaps.
+                    alignment: start;
+
                     // HONESTY: the 181 markers are the only MEASURED points on this
                     // chart -- everything the curve and hover tooltip show between
                     // them (`interpolated_value` below) is linearly interpolated, not
@@ -225,6 +276,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                         font-size: 11px;
                         font-italic: true;
                         color: Theme.text-disabled;
+                        wrap: word-wrap;
                     }
                     // `crates/indicatrix-cut-core/src/optimize/objective.rs` scores
                     // every fixed-pose measurement (including Optimize's own
@@ -242,6 +294,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                         font-size: 11px;
                         font-italic: true;
                         color: Theme.text-disabled;
+                        wrap: word-wrap;
                     }
                     // The sweep and the hover-preview thumbnail both trace an
                     // all-polished stone against the bare resolved material (see
@@ -255,44 +308,8 @@ export component PerformanceGraphDialog inherits Rectangle {
                         font-size: 11px;
                         font-italic: true;
                         color: Theme.text-disabled;
+                        wrap: word-wrap;
                     }
-                }
-
-                Rectangle {
-                    width: 26px;
-                    height: 26px;
-                    border-radius: 13px;
-                    background: close_touch.has-hover ? #1e293b : transparent;
-
-                    close_touch := TouchArea {
-                        clicked => { root.close(); }
-                    }
-
-                    Image {
-                        source: @image-url("../icons/close.svg");
-                        colorize: Theme.text-muted;
-                        width: 13px;
-                        height: 13px;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
-                }
-            }
-
-            Rectangle { height: 1px; background: #1e293b; }
-
-            // Scrollable body: everything between the fixed title row above and
-            // the fixed footer below (badges, channel/axis toggles, the chart,
-            // and the "Export Tilt Video" section) -- `vertical-stretch: 1` lets
-            // this take whatever room the card's now-bounded `height` leaves
-            // after the fixed header/divider/footer, and scrolls the rest
-            // rather than overflowing the window. The "Start Video Export" /
-            // Cancel / progress row (inside the video section below) is always
-            // reachable by scrolling here even when it doesn't fit on screen.
-            body := ScrollView {
-                vertical-stretch: 1;
-                VerticalLayout {
-                    spacing: 14px;
 
             // 2. Key Performance Metric Badges.
             // Read at TILT_ANGLES_DEG[90] (tilt 0 deg, the shared TABLE-UP pose every
@@ -310,7 +327,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                     background: #131b2e;
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
-                    border-color: #1e293b;
+                    border-color: Theme.surface-raised;
 
                     VerticalLayout {
                         padding: 8px;
@@ -333,7 +350,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                     background: #131b2e;
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
-                    border-color: #1e293b;
+                    border-color: Theme.surface-raised;
 
                     VerticalLayout {
                         padding: 8px;
@@ -356,7 +373,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                     background: #131b2e;
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
-                    border-color: #1e293b;
+                    border-color: Theme.surface-raised;
 
                     VerticalLayout {
                         padding: 8px;
@@ -422,7 +439,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                             text: "Re-render fresh";
                             font-size: 10px;
                             font-weight: 700;
-                            color: #0f172a;
+                            color: Theme.text-on-accent;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -430,11 +447,23 @@ export component PerformanceGraphDialog inherits Rectangle {
                 }
             }
 
-            // 3. Channel Toggle Filters
+            // 3. Channel Toggle Filters. Below 900px the caption moves onto its
+            // own line above the pills, and the pills drop their long
+            // parenthetical labels and colour dots so the row fits.
+            VerticalLayout {
+                spacing: 6px;
+
+            if root.narrow: Text {
+                text: "Optical Channels:";
+                font-size: 11px;
+                font-weight: 600;
+                color: Theme.text-secondary;
+            }
+
             HorizontalLayout {
                 alignment: space-between;
 
-                Text {
+                if !root.narrow: Text {
                     text: "Optical Channels:";
                     font-size: 11px;
                     font-weight: 600;
@@ -449,9 +478,9 @@ export component PerformanceGraphDialog inherits Rectangle {
                     Rectangle {
                         height: 24px;
                         border-radius: Theme.radius-sm;
-                        background: root.show_brilliance ? #0284c733 : #0f172a;
+                        background: root.show_brilliance ? #0284c733 : Theme.surface-sunken;
                         border-width: 1px;
-                        border-color: root.show_brilliance ? Theme.accent-cyan : #334155;
+                        border-color: root.show_brilliance ? Theme.accent-cyan : Theme.border-dialog;
 
                         TouchArea {
                             clicked => { root.show_brilliance = !root.show_brilliance; }
@@ -462,8 +491,8 @@ export component PerformanceGraphDialog inherits Rectangle {
                             padding-right: 8px;
                             spacing: 5px;
                             alignment: center;
-                            Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.accent-cyan; }
-                            Text { text: "Brilliance % (Light Return)"; font-size: 10px; font-weight: 600; color: root.show_brilliance ? Theme.accent-cyan : Theme.text-muted; }
+                            if !root.narrow: Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.accent-cyan; }
+                            Text { text: root.narrow ? "Brilliance" : "Brilliance % (Light Return)";font-size: 10px; font-weight: 600; color: root.show_brilliance ? Theme.accent-cyan : Theme.text-muted; }
                         }
                     }
 
@@ -471,9 +500,9 @@ export component PerformanceGraphDialog inherits Rectangle {
                     Rectangle {
                         height: 24px;
                         border-radius: Theme.radius-sm;
-                        background: root.show_windowing ? #d9770633 : #0f172a;
+                        background: root.show_windowing ? #d9770633 : Theme.surface-sunken;
                         border-width: 1px;
-                        border-color: root.show_windowing ? Theme.accent-amber : #334155;
+                        border-color: root.show_windowing ? Theme.accent-amber : Theme.border-dialog;
 
                         TouchArea {
                             clicked => { root.show_windowing = !root.show_windowing; }
@@ -484,8 +513,8 @@ export component PerformanceGraphDialog inherits Rectangle {
                             padding-right: 8px;
                             spacing: 5px;
                             alignment: center;
-                            Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.accent-amber; }
-                            Text { text: "Windowing % (TIR Leakage)"; font-size: 10px; font-weight: 600; color: root.show_windowing ? Theme.accent-amber : Theme.text-muted; }
+                            if !root.narrow: Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.accent-amber; }
+                            Text { text: root.narrow ? "Windowing" : "Windowing % (TIR Leakage)";font-size: 10px; font-weight: 600; color: root.show_windowing ? Theme.accent-amber : Theme.text-muted; }
                         }
                     }
 
@@ -493,9 +522,9 @@ export component PerformanceGraphDialog inherits Rectangle {
                     Rectangle {
                         height: 24px;
                         border-radius: Theme.radius-sm;
-                        background: root.show_extinction ? #b91c1c33 : #0f172a;
+                        background: root.show_extinction ? #b91c1c33 : Theme.surface-sunken;
                         border-width: 1px;
-                        border-color: root.show_extinction ? #ef4444 : #334155;
+                        border-color: root.show_extinction ? #ef4444 : Theme.border-dialog;
 
                         TouchArea {
                             clicked => { root.show_extinction = !root.show_extinction; }
@@ -506,20 +535,45 @@ export component PerformanceGraphDialog inherits Rectangle {
                             padding-right: 8px;
                             spacing: 5px;
                             alignment: center;
-                            Rectangle { width: 7px; height: 7px; border-radius: 3px; background: #ef4444; }
-                            Text { text: "Extinction % (Shadows)"; font-size: 10px; font-weight: 600; color: root.show_extinction ? #ef4444 : Theme.text-muted; }
+                            if !root.narrow: Rectangle { width: 7px; height: 7px; border-radius: 3px; background: #ef4444; }
+                            Text { text: root.narrow ? "Extinction" : "Extinction % (Shadows)"; font-size: 10px; font-weight: 600; color: root.show_extinction ? #ef4444 : Theme.text-muted; }
                         }
                     }
                 }
             }
+            } // end channel-row VerticalLayout
 
             // 3.5. Tilt Axis Switcher. Styled to match the "Optical Channels" pills
             // above, but in purple rather than per-channel colour so the two rows
             // read as separate axes of control (WHICH channels vs. WHICH sweep).
+            // Below 900px the caption sits on its own line above the pills and
+            // the pills use the short angle labels alone.
+            VerticalLayout {
+                spacing: 6px;
+
+            if root.narrow: HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Tilt Axis:";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+                if root.extra_axes_loading: Text {
+                    text: "(sweeping ±90° across all 4 axes, ~1.5s)";
+                    font-size: 10px;
+                    font-italic: true;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
             HorizontalLayout {
                 alignment: space-between;
 
-                HorizontalLayout {
+                if !root.narrow: HorizontalLayout {
                     spacing: 6px;
                     Text {
                         text: "Tilt Axis:";
@@ -548,9 +602,9 @@ export component PerformanceGraphDialog inherits Rectangle {
                     for label[idx] in root.axis_labels : Rectangle {
                         height: 24px;
                         border-radius: Theme.radius-sm;
-                        background: root.selected_axis_index == idx ? #a855f733 : #0f172a;
+                        background: root.selected_axis_index == idx ? #a855f733 : Theme.surface-sunken;
                         border-width: 1px;
-                        border-color: root.selected_axis_index == idx ? Theme.accent-purple : #334155;
+                        border-color: root.selected_axis_index == idx ? Theme.accent-purple : Theme.border-dialog;
                         // Every axis (0 included) needs `extra_axes_ready`'s
                         // background sweep to have landed: axis 0's negative half is
                         // not something the live render thread can supply.
@@ -569,7 +623,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                             padding-right: 8px;
                             alignment: center;
                             Text {
-                                text: label;
+                                text: root.narrow ? root.axis_short_labels[idx] : label;
                                 font-size: 10px;
                                 font-weight: 600;
                                 color: root.selected_axis_index == idx ? Theme.accent-purple : Theme.text-muted;
@@ -582,9 +636,9 @@ export component PerformanceGraphDialog inherits Rectangle {
                     Rectangle {
                         height: 24px;
                         border-radius: Theme.radius-sm;
-                        background: root.show_all_axes ? #a855f733 : #0f172a;
+                        background: root.show_all_axes ? #a855f733 : Theme.surface-sunken;
                         border-width: 1px;
-                        border-color: root.show_all_axes ? Theme.accent-purple : #334155;
+                        border-color: root.show_all_axes ? Theme.accent-purple : Theme.border-dialog;
                         opacity: root.extra_axes_ready ? 1.0 : 0.4;
 
                         TouchArea {
@@ -610,6 +664,7 @@ export component PerformanceGraphDialog inherits Rectangle {
                 }
                 } // axis_pills_hover wrapper
             }
+            } // end axis-row VerticalLayout
 
             // 4. High-Resolution 181-Point (±90°, 1°-step) Performance Chart Canvas.
             // Tilt angle is continuous, so this draws each channel as a line (via
@@ -661,9 +716,9 @@ export component PerformanceGraphDialog inherits Rectangle {
                 Rectangle {
                     height: 32px;
                     border-radius: Theme.radius-sm;
-                    background: copy_btn.has-hover ? #1e293b : #0f172a;
+                    background: copy_btn.has-hover ? Theme.surface-raised : Theme.surface-sunken;
                     border-width: 1px;
-                    border-color: #334155;
+                    border-color: Theme.border-dialog;
 
                     copy_btn := TouchArea {
                         clicked => { root.copy_curve_data(); }
@@ -675,7 +730,12 @@ export component PerformanceGraphDialog inherits Rectangle {
                         padding-right: 12px;
                         spacing: 6px;
                         alignment: center;
-                        Image { source: @image-url("../icons/clipboard.svg"); colorize: Theme.text-primary; width: 12px; height: 12px; vertical-alignment: center; }
+                        // Wrapped so the fixed-size icon is centred in the row; a bare
+                        // fixed-height Image in a HorizontalLayout sits at its top.
+                        VerticalLayout {
+                            alignment: center;
+                            Image { source: @image-url("../icons/clipboard.svg"); colorize: Theme.text-primary; width: 12px; height: 12px; }
+                        }
                         Text { text: "Copy 181-Point Data Table (4 Axes, ±90°)"; font-size: 11px; font-weight: 600; color: Theme.text-primary; vertical-alignment: center; }
                     }
                 }
@@ -684,13 +744,13 @@ export component PerformanceGraphDialog inherits Rectangle {
                     width: 90px;
                     height: 32px;
                     border-radius: Theme.radius-sm;
-                    background: done_btn.has-hover ? #7dd3fc : Theme.accent-cyan;
+                    background: done_btn.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
 
                     done_btn := TouchArea {
                         clicked => { root.close(); }
                     }
 
-                    Text { text: "Close"; font-size: 12px; font-weight: 700; color: #0f172a; horizontal-alignment: center; vertical-alignment: center; }
+                    Text { text: "Close"; font-size: 12px; font-weight: 700; color: Theme.text-on-accent; horizontal-alignment: center; vertical-alignment: center; }
                 }
             }
         }

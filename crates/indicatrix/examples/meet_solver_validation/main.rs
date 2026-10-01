@@ -1,7 +1,7 @@
 //! Corpus-wide validation harness for `indicatrix::geometry::meet_solver`.
 //!
 //! Reads every real `.asc` file directly out of `facet_diagrams.sqlite` (one per
-//! design, deduplicated by `detail_id` the same way `asc_corpus_report.rs` does),
+//! design, deduplicated by `detail_id` keeping the first row seen),
 //! blanks out nothing but the *masts* (angles/indices/gear/meet-text all stay), asks
 //! [`meet_solver::solve_meet_points`] to re-derive them from angles and meets alone,
 //! and compares the result against the file's own real recorded masts -- perfect
@@ -82,8 +82,7 @@ fn main() {
         rows.len()
     );
 
-    // Dedup by detail_id, keeping the first row seen per design (matches
-    // `asc_corpus_report.rs`'s convention) -- sequential, since it's a single cheap
+    // Dedup by detail_id, keeping the first row seen per design -- sequential, since it's a single cheap
     // pass and establishes the fixed processing order every run reports against.
     let mut seen_designs: HashSet<i64> = HashSet::new();
     let unique_rows: Vec<AscRow> = rows

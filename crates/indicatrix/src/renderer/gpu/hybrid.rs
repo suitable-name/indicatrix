@@ -42,9 +42,9 @@ use std::time::{Duration, Instant};
 
 use glam::Vec3;
 
-use crate::optics::raytracer::{
-    add_finite_sample, build_plane_soa, pixel_rotations, sample_draws,
-    trace_spectral_ray_with_finish_soa,
+use crate::{
+    optics::raytracer::build_plane_soa,
+    renderer::cpu_frame::{scatter_interleaved, trace_pixels_interleaved},
 };
 
 use super::frame::{GpuFrameError, GpuFrameRenderer, GpuFrameScene};
@@ -56,7 +56,9 @@ use super::frame::{GpuFrameError, GpuFrameRenderer, GpuFrameScene};
 /// an explicit split, even one from [`Self::calibrated`] a moment earlier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HybridSplit {
+    /// Samples contributed by the GPU.
     pub gpu_samples: u32,
+    /// Samples contributed by the CPU.
     pub cpu_samples: u32,
 }
 
@@ -159,7 +161,9 @@ pub struct HybridStats {
     /// Wall-clock time for the whole hybrid render, from just before the GPU dispatch
     /// and CPU tracing both start to just after their results are merged.
     pub wall_time: Duration,
+    /// Samples contributed by the GPU.
     pub gpu_samples: u32,
+    /// Samples contributed by the CPU.
     pub cpu_samples: u32,
     /// `0.0` when `gpu_samples == 0` (no dispatch happened, so no rate was measured).
     pub gpu_samples_per_sec: f64,
@@ -306,50 +310,12 @@ pub fn cpu_accumulate(scene: &GpuFrameScene<'_>, sample_offset: u32, spp: u32, a
     }
 }
 
-// CPU sample construction -- mirrors renderer::gpu::estimator_check's own CPU reference
-// loop exactly, both drawn from optics::raytracer::sampling::{pixel_rotations,
-// sample_draws} rather than each hand-copying the arithmetic inline.
-
-/// One `(pixel, sample_num)` sample, traced through the real
-/// `optics::raytracer::trace_spectral_ray_with_finish_soa` -- never a reimplementation
-/// of the estimator, only of the per-sample seed/jitter construction around it.
-///
-/// Takes the batch's `plane_soa` arena (built once by [`cpu_trace_range`]) rather than
-/// rebuilding it from `scene.planes` on every one of the many calls this batch makes.
-fn cpu_sample_xyz(
-    scene: &GpuFrameScene<'_>,
-    plane_soa: &crate::simd::PlanesSoA32,
-    pixel: u32,
-    sample_num: u32,
-) -> Vec3 {
-    let width = scene.width;
-    let x = pixel % width;
-    let y = pixel / width;
-
-    let rot = pixel_rotations(pixel);
-    let draws = sample_draws(pixel, sample_num, &rot);
-
-    let ray = scene.camera.generate_ray(
-        x as f32,
-        y as f32,
-        width as f32,
-        scene.height as f32,
-        draws.jitter_x,
-        draws.jitter_y,
-    );
-    trace_spectral_ray_with_finish_soa(
-        ray,
-        scene.planes,
-        plane_soa,
-        scene.facet_finishes,
-        scene.material,
-        scene.max_bounces,
-        scene.environment,
-        draws.seed,
-        draws.hero_rand,
-        None,
-    )
-}
+// CPU sample construction now lives in `renderer::cpu_frame` (wasm-safe, thread-free),
+// so it can also be called per-pixel-partition by a browser's Web Worker pool -- see
+// that module's doc comment. This function is only the THREADING wrapper around it:
+// each thread traces its own interleaved pixel partition via
+// `trace_pixels_interleaved` and the results are summed back with `scatter_interleaved`,
+// exactly as a Worker pool would, but over `std::thread::scope` instead of Workers.
 
 /// Traces `spp` samples per pixel on the CPU, sample indices `[sample_offset,
 /// sample_offset + spp)`, across every available core, and returns one SUMMED `Vec3` per
@@ -358,7 +324,11 @@ fn cpu_sample_xyz(
 ///
 /// Pixels are partitioned across threads INTERLEAVED (thread `t` owns pixels `t`, `t +
 /// num_threads`, ...) rather than in contiguous blocks, so a spatially clustered cost
-/// difference doesn't pile all its extra work onto one thread.
+/// difference doesn't pile all its extra work onto one thread. Each thread's partition
+/// is traced by [`trace_pixels_interleaved`] and merged back with [`scatter_interleaved`]
+/// -- the same wasm-safe, thread-free core a browser's Web Worker pool calls -- so this
+/// function is bit-identical to summing one [`trace_pixels_interleaved`] call per thread
+/// by hand.
 fn cpu_trace_range(scene: &GpuFrameScene<'_>, sample_offset: u32, spp: u32) -> Vec<Vec3> {
     let num_pixels = scene.width as usize * scene.height as usize;
     let mut out = vec![Vec3::ZERO; num_pixels];
@@ -369,35 +339,27 @@ fn cpu_trace_range(scene: &GpuFrameScene<'_>, sample_offset: u32, spp: u32) -> V
     let num_threads = std::thread::available_parallelism()
         .map_or(4, std::num::NonZero::get)
         .min(num_pixels);
+    let num_threads_u32 = num_threads as u32;
 
     // Built ONCE for this batch and shared by reference across every worker thread --
     // std::thread::scope guarantees every thread joins before plane_soa goes out of scope.
     let plane_soa = build_plane_soa(scene.planes);
 
-    let partials: Vec<Vec<(usize, Vec3)>> = std::thread::scope(|s| {
+    let partials: Vec<Vec<Vec3>> = std::thread::scope(|s| {
         // Collected into a `Vec` deliberately: every thread must be SPAWNED before any
         // is joined, or the trace would silently serialize into spawn, join, spawn, ...
-        let handles: Vec<_> = (0..num_threads)
+        let handles: Vec<_> = (0..num_threads_u32)
             .map(|thread_idx| {
                 let plane_soa = &plane_soa;
                 s.spawn(move || {
-                    let mut local = Vec::with_capacity(num_pixels / num_threads + 1);
-                    let mut pixel = thread_idx;
-                    while pixel < num_pixels {
-                        let mut sum = Vec3::ZERO;
-                        for local_sample in 0..spp {
-                            let sample_num = sample_offset + local_sample;
-                            // Dropped-but-counted non-finite rule, the CPU twin of
-                            // `reduce_xyz.wgsl`'s -- see `add_finite_sample`.
-                            add_finite_sample(
-                                &mut sum,
-                                cpu_sample_xyz(scene, plane_soa, pixel as u32, sample_num),
-                            );
-                        }
-                        local.push((pixel, sum));
-                        pixel += num_threads;
-                    }
-                    local
+                    trace_pixels_interleaved(
+                        scene,
+                        plane_soa,
+                        thread_idx,
+                        num_threads_u32,
+                        sample_offset,
+                        spp,
+                    )
                 })
             })
             .collect();
@@ -413,10 +375,8 @@ fn cpu_trace_range(scene: &GpuFrameScene<'_>, sample_offset: u32, spp: u32) -> V
         partials
     });
 
-    for part in partials {
-        for (pixel, sum) in part {
-            out[pixel] = sum;
-        }
+    for (thread_idx, sums) in partials.into_iter().enumerate() {
+        scatter_interleaved(&mut out, thread_idx as u32, num_threads_u32, &sums);
     }
     out
 }

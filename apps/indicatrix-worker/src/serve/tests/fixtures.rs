@@ -26,6 +26,21 @@ pub(super) fn test_db() -> Database {
     Database::new(Some(path.to_str().unwrap())).unwrap()
 }
 
+/// A unique, freshly created temp directory named after `label`, the process id and a
+/// nanosecond timestamp, so parallel tests never collide.
+pub fn unique_temp_dir(label: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "indicatrix-worker-test-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
 pub(super) fn tiny_scene() -> SceneState {
     SceneState {
         width: 4,
@@ -158,9 +173,8 @@ impl crate::stream_emit::TimeoutWrite for DuplexHalf {
 /// of `capacity`, like a real unbounded-by-default socket.
 ///
 /// [`DuplexHalf`]'s unbounded-`Vec` `Write` side can never model this backpressure, so
-/// it can't reproduce the real bug (the emitter blocking inside an unbounded
-/// `write()`) that `repro_slow_reader_blocks_the_emitter_and_delays_cancel` shows
-/// against real sockets. `BackpressureDuplex` closes that gap deterministically.
+/// it can't reproduce the emitter blocking inside an unbounded `write()` against
+/// real sockets. `BackpressureDuplex` closes that gap deterministically.
 pub(super) struct BackpressureDuplex {
     in_: Cursor<Vec<u8>>,
     pub(super) out: Vec<u8>,

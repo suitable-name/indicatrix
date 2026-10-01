@@ -6,7 +6,7 @@ use super::{
     material::{target_display_name, target_material_selection},
 };
 use crate::{
-    MainWindow, RetargetModel,
+    CompareModel, MainWindow, RetargetModel,
     bridge::render_thread::RenderContext,
     gui::{
         editor::{
@@ -16,6 +16,7 @@ use crate::{
             state::EditorState,
             view,
         },
+        render::render_visibility::recompute_tab_visible,
         show_toast,
         solid_preview::preview_state::SolidPreviewState,
     },
@@ -162,6 +163,7 @@ pub(in crate::gui::editor) fn setup_retarget_apply_callback(
                         false,
                     );
                     ui.global::<RetargetModel>().set_is_open(false);
+                    release_modal_viewport(&ui, &render_ctx);
                     show_toast(
                         &ui,
                         &format!("Retargeted {applied} tier(s) for {target_name}."),
@@ -182,6 +184,14 @@ pub(in crate::gui::editor) fn setup_retarget_apply_callback(
             }
         });
     });
+}
+
+/// Runs after `RetargetModel.is_open` went `false` (Apply, Cancel, the header X,
+/// Escape or the backdrop): drops the embedded comparison session, then recomputes
+/// the viewport's visibility so local tracing and remote dispatch resume.
+fn release_modal_viewport(ui: &MainWindow, render_ctx: &Arc<Mutex<RenderContext>>) {
+    ui.global::<CompareModel>().invoke_close_embedded();
+    recompute_tab_visible(ui, render_ctx);
 }
 
 /// "Cancel"/the backdrop click: discards whatever proposal was pending and closes
@@ -215,15 +225,32 @@ pub(in crate::gui::editor) fn setup_retarget_close_callback(
         state.borrow_mut().pending_retarget = None;
         stale::clear(ResultKind::Retarget);
         ui.global::<RetargetModel>().set_is_open(false);
+        release_modal_viewport(&ui, &render_ctx);
         let st = state.borrow();
-        view::submit_preview_replan(
-            &ui,
-            &render_ctx,
-            &preview_state,
-            &solid_last_solved,
-            &st,
-            BTreeSet::new(),
-            false,
-        );
+        revert_ghost_to_live_design(&ui, &render_ctx, &preview_state, &solid_last_solved, &st);
     });
+}
+
+/// Puts the REAL, live design back into the shared solid viewport, undoing any
+/// candidate ghost [`super::apply_ghost_preview_or_revert`] left there -- the close
+/// handler's revert above, shared with the visual compare window's "Discard"
+/// ([`super::compare_hooks::discard_retarget_preview`]) so the two can never revert
+/// differently. An ordinary [`view::submit_preview_replan`] with an empty dirty set:
+/// nothing about the design changed, only what the viewport shows.
+pub(super) fn revert_ghost_to_live_design(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
+    solid_last_solved: &view::SolidLastSolved,
+    st: &EditorState,
+) {
+    view::submit_preview_replan(
+        ui,
+        render_ctx,
+        preview_state,
+        solid_last_solved,
+        st,
+        BTreeSet::new(),
+        false,
+    );
 }

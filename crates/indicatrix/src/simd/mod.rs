@@ -11,6 +11,10 @@
 //! [`exp_f32x8`] is a polynomial exponential, bit-identical across its own
 //! levels but deliberately **not** identical to `f32::exp` (libm) -- callers
 //! switching to it change results by a couple of ULP, once, uniformly.
+//! Non-finite inputs are part of that contract: its range clamp follows the
+//! `_mm256_min_ps`/`_mm256_max_ps` second-operand rule, so a NaN lane becomes
+//! the clamp's upper bound at every level (the scalar lane reproduces this
+//! explicitly rather than using `f32::clamp`, which propagates NaN).
 //!
 //! The `f64`/`f32` geometry kernels replicate the exact operation order of the
 //! `glam` scalar code (left-associated dot products, separate multiply and

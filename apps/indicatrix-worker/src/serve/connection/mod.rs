@@ -101,6 +101,8 @@ pub fn refuse_for_capacity<S: Write>(
                 "this worker is already handling {max} concurrent connection(s) (--max-connections); try again \
                  later"
             ),
+            // Refused before HELLO -- no request exists yet.
+            request_id: None,
         },
     );
 }
@@ -157,6 +159,9 @@ pub fn handle_non_render_message<S: Write>(
                         message: "this connection is a joined render worker's; the design library \
                                   is served by the coordinator"
                             .to_string(),
+                        // The library protocol has no request_id/epoch to be stale
+                        // against.
+                        request_id: None,
                     })
                 },
                 |db| super::library::handle_request(req, db),
@@ -183,31 +188,60 @@ pub fn handle_non_render_message<S: Write>(
                               compute tilt curves; its WELCOME advertises both capacities as \
                               absent"
                         .to_string(),
+                    // `msg` is only known to be a RenderRequest/TiltCurvesRequest by
+                    // exclusion here (see the `#[allow]` reason above); naming its
+                    // request_id would need the same feature-gated match this arm
+                    // deliberately avoids.
+                    request_id: None,
                 }),
             )
         }
     }
 }
 
-/// Reads and dispatches the peer's next post-handshake message (a blocking read).
-/// `Cancel`/`Library` are handled inline and the loop continues; a clean EOF ends the
-/// connection.
+/// True if `e` is a socket read timeout elapsing. The `WriteZero` member is what a TLS
+/// stream reports when the inner I/O of a read times out (see
+/// `stream_emit::is_stream_timeout`, which this build cannot reach).
+#[cfg(not(feature = "worker"))]
+fn is_idle_timeout(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::WouldBlock
+            | std::io::ErrorKind::TimedOut
+            | std::io::ErrorKind::WriteZero
+    )
+}
+
+/// Reads and dispatches the peer's next post-handshake message. `Cancel`/`Library` are
+/// handled inline and the loop continues; a clean EOF ends the connection. Each read is
+/// bounded in size ([`indicatrix_net::messages::read_control_message`]) and in time (the
+/// [`indicatrix_net::framing::IDLE_READ_TIMEOUT`] that [`ClearHandshakeTimeout`] arms).
 ///
 /// # Errors
 ///
 /// Returns [`NetError`] for a transport-level failure. `Ok(None)` (not an error) for a
-/// clean EOF.
+/// clean EOF, and for a connection that sent nothing for the idle timeout, which is
+/// closed with a logged reason.
 #[cfg(not(feature = "worker"))]
 fn serve_until_render_request_or_eof<S: Read + Write>(
     stream: &mut S,
     db: &Database,
 ) -> Result<Option<std::convert::Infallible>, NetError> {
     loop {
-        let msg: ClientMessage = match indicatrix_net::messages::read_message(stream) {
+        let msg: ClientMessage = match indicatrix_net::messages::read_control_message(stream) {
             Ok(m) => m,
             Err(NetError::Framing(indicatrix_net::framing::FramingError::Io(e)))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
+                return Ok(None);
+            }
+            Err(NetError::Framing(indicatrix_net::framing::FramingError::Io(e)))
+                if is_idle_timeout(&e) =>
+            {
+                tracing::info!(
+                    "closing a library-only connection that sent nothing for {} s (idle timeout)",
+                    indicatrix_net::framing::IDLE_READ_TIMEOUT.as_secs()
+                );
                 return Ok(None);
             }
             Err(e) => return Err(e),
@@ -216,26 +250,27 @@ fn serve_until_render_request_or_eof<S: Read + Write>(
     }
 }
 
-/// Restores blocking reads/writes once `HELLO` has arrived, releasing the pre-`HELLO`
-/// deadline the accept loop applied to the raw socket (see `serve::HANDSHAKE_TIMEOUT`)
-/// -- the library-only build's counterpart to `stream_emit::TimeoutRead`/`TimeoutWrite`,
-/// which the worker handler uses for the same purpose but which don't exist here:
-/// `stream_emit` is gated on the `worker` feature this build doesn't have. Implemented
-/// only for the two concrete transports the accept loop ever hands to
-/// [`handle_connection`] -- a plain `TcpStream`, or one wrapped in mutual TLS.
+/// Ends the pre-`HELLO` deadline once `HELLO` has arrived: releases the deadline the
+/// accept loop applied to the raw socket (see `serve::HANDSHAKE_TIMEOUT`), re-arming
+/// reads with [`indicatrix_net::framing::IDLE_READ_TIMEOUT`] so a peer that goes silent
+/// cannot hold a connection slot forever, and making writes blocking again. The
+/// library-only build's counterpart to `stream_emit::TimeoutRead`/`TimeoutWrite`, which
+/// the worker handler uses for the same purpose but which don't exist here: `stream_emit`
+/// is gated on the `worker` feature this build doesn't have. Implemented only for the two
+/// concrete transports the accept loop ever hands to [`handle_connection`] -- a plain
+/// `TcpStream`, or one wrapped in mutual TLS.
 #[cfg(not(feature = "worker"))]
 pub trait ClearHandshakeTimeout {
     /// Best-effort, like `serve::tune_accepted_socket`: a failed `set_*_timeout` call is
     /// swallowed rather than turned into a connection-ending error, since the loop ahead
-    /// works fine either way -- it would just run unbounded by a timeout, the same as a
-    /// connection this deadline was never applied to.
+    /// works fine either way -- it would just keep the previous deadline.
     fn clear_handshake_timeout(&mut self);
 }
 
 #[cfg(not(feature = "worker"))]
 impl ClearHandshakeTimeout for std::net::TcpStream {
     fn clear_handshake_timeout(&mut self) {
-        let _ = self.set_read_timeout(None);
+        let _ = self.set_read_timeout(Some(indicatrix_net::framing::IDLE_READ_TIMEOUT));
         let _ = self.set_write_timeout(None);
     }
 }
@@ -243,7 +278,9 @@ impl ClearHandshakeTimeout for std::net::TcpStream {
 #[cfg(not(feature = "worker"))]
 impl ClearHandshakeTimeout for rustls::StreamOwned<rustls::ServerConnection, std::net::TcpStream> {
     fn clear_handshake_timeout(&mut self) {
-        let _ = self.sock.set_read_timeout(None);
+        let _ = self
+            .sock
+            .set_read_timeout(Some(indicatrix_net::framing::IDLE_READ_TIMEOUT));
         let _ = self.sock.set_write_timeout(None);
     }
 }
@@ -268,7 +305,7 @@ pub fn handle_connection<S: Read + Write + ClearHandshakeTimeout>(
 ) -> Result<(), NetError> {
     let check = super::handshake::read_and_check_hello(&mut stream, PeerRole::Viewer, cert_role)?;
     // HELLO has arrived -- the pre-protocol deadline (`serve::HANDSHAKE_TIMEOUT`) has
-    // done its job. Restore blocking reads/writes before anything below relies on it.
+    // done its job. Swap it for the idle read deadline before anything below relies on it.
     stream.clear_handshake_timeout();
 
     match check {

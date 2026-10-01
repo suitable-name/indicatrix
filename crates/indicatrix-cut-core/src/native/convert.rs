@@ -115,6 +115,7 @@ pub(super) fn material_table_from_selection(selection: &MaterialSelection) -> Ma
         selection.specific_gravity_override,
         selection.refractive_index_override,
     )
+    .with_body_colour_override(selection.body_colour_override.map(body_colour_to_table))
 }
 
 #[must_use]
@@ -123,7 +124,28 @@ pub(super) fn material_selection_from_table(table: &MaterialTable) -> MaterialSe
         name: table.name.clone(),
         specific_gravity_override: table.specific_gravity_override,
         refractive_index_override: table.refractive_index_override,
+        body_colour_override: table.body_colour_override.map(body_colour_from_table),
     }
+}
+
+/// `f32` triple -> the `f64` triple `MaterialTable` stores, by way of each
+/// component's SHORTEST round-trip decimal (`f32`'s `Display`): a plain
+/// `f64::from(0.2f32)` would serialise as `0.20000000298023224`, which is what the
+/// on-disk file would then show a cutter for a colour they picked as "0.2". The
+/// decimal text uniquely identifies the `f32`, so [`body_colour_from_table`]'s cast
+/// back returns the identical bits (asserted by the native round-trip tests).
+fn body_colour_to_table(rgb: [f32; 3]) -> [f64; 3] {
+    rgb.map(|v| {
+        v.to_string()
+            .parse::<f64>()
+            .unwrap_or_else(|_| f64::from(v))
+    })
+}
+
+/// The inverse of [`body_colour_to_table`]: nearest `f32` per component, which for a
+/// value written by that function is the original `f32` exactly.
+fn body_colour_from_table(rgb: [f64; 3]) -> [f32; 3] {
+    rgb.map(|v| v as f32)
 }
 
 /// Mirrors an [`ExternalProportions`] into its on-disk [`SourceTable`] row -- see
@@ -167,6 +189,14 @@ pub(super) const fn external_proportions_from_source(table: &SourceTable) -> Ext
 /// position or by [`TierId`] (see those fields' own doc comments for why); the
 /// caller (`to_native_file`) looks each up by the tier's array position before
 /// calling this.
+///
+/// Also carries `tier.indices` verbatim (the design's own AUTHORED, never
+/// shifted, index-wheel positions) -- needed so [`super::load::load_paired`] can
+/// restore them over whatever a cheater-offset-shifted `.asc` re-import would
+/// otherwise produce (see [`Design::cheater_offsets_deg`]'s own doc comment):
+/// without this, the shift `Design::to_asc_schedule_from_solved_with_cheater_offsets`
+/// bakes into the exported `.asc` would be re-interpreted as the tier's own base
+/// indices on the very next load, and doubled on the save after that.
 #[must_use]
 pub(super) fn tier_table_from_tier(
     tier: &ConstraintTier,
@@ -180,6 +210,7 @@ pub(super) fn tier_table_from_tier(
         native_meet_constraint_from(&tier.constraint),
         tier.detached.clone(),
     )
+    .with_indices(Some(tier.indices.clone()))
     .with_imported_meet(tier.imported_meet.as_ref().map(native_meet_constraint_from))
     .with_original_notes(tier.original_notes.clone())
     .with_note(note)
@@ -233,11 +264,9 @@ pub struct SaveExtras<'a> {
 /// `material.name` in its own catalogue so the design's real optics survive the
 /// round trip instead of silently resolving to [`GemMaterial::diamond`].
 ///
-/// `absorption_rgb` is always black (`[0.0; 3]`): [`CustomMaterialSnapshot`]
-/// deliberately does not carry an absorption color (it would need this crate's own
-/// dependency on `indicatrix` to interpret meaningfully, which the format crate
-/// avoids -- see that type's own doc comment), so a restored material renders
-/// colorless until a cutter picks a swatch again. `crystal_system`/
+/// The body colour is the snapshot's [`CustomMaterialSnapshot::absorption_rgb`]
+/// triple; a snapshot written before that field existed (or for a colourless
+/// material) carries none and restores colourless (`[0.0; 3]`). `crystal_system`/
 /// `optical_character` are NOT read from the snapshot's own string fields: exactly
 /// like [`GemMaterial::new_custom`] itself, both are re-derived from the sign of
 /// `birefringence_delta`, which is what every other caller of `new_custom` in this
@@ -252,7 +281,7 @@ pub fn gem_material_from_custom_snapshot(
         snapshot.mean_ri as f32,
         snapshot.dispersion_delta as f32,
         snapshot.birefringence_delta as f32,
-        [0.0, 0.0, 0.0],
+        snapshot.body_colour().unwrap_or([0.0, 0.0, 0.0]),
     )
 }
 

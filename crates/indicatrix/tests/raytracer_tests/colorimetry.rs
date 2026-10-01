@@ -1,7 +1,10 @@
 //! CIE 1931 colour-matching-function integrals and XYZ-to-sRGB gamma mapping tests.
 
 use glam::Vec3;
-use indicatrix::optics::raytracer::{cie_1931_cmf, xyz_to_srgb_gamma};
+use indicatrix::{
+    color::ColorSpace,
+    optics::raytracer::{cie_1931_cmf, xyz_to_srgb_gamma},
+};
 
 #[test]
 fn test_cmf_equal_energy_white_is_neutral() {
@@ -58,11 +61,23 @@ fn test_xyz_to_srgb_neutral_grey() {
     let xyz = Vec3::new(0.9505 * k, 1.0 * k, 1.0890 * k);
     let rgba = xyz_to_srgb_gamma(xyz);
 
-    let max_c = rgba[0].max(rgba[1]).max(rgba[2]);
-    let min_c = rgba[0].min(rgba[1]).min(rgba[2]);
+    // Decode the 8-bit pixel back to linear sRGB, then to XYZ, and compare its
+    // chromaticity with D65. The tolerance covers the half-code-value quantisation
+    // error of a mid-grey pixel (up to ~0.003 in xy), which a max-min channel spread
+    // cannot express in colorimetric terms.
+    let transfer = ColorSpace::Srgb.transfer_function();
+    let lin = |c: u8| transfer.decode(f32::from(c) / 255.0);
+    let [red, green, blue] = [lin(rgba[0]), lin(rgba[1]), lin(rgba[2])];
+    let decoded = Vec3::new(
+        0.412_456_4f32.mul_add(red, 0.357_576_1f32.mul_add(green, 0.180_437_5 * blue)),
+        0.212_672_9f32.mul_add(red, 0.715_152_2f32.mul_add(green, 0.072_175 * blue)),
+        0.019_333_9f32.mul_add(red, 0.119_192f32.mul_add(green, 0.950_304_1 * blue)),
+    );
+    let sum = decoded.x + decoded.y + decoded.z;
+    let [cx, cy] = [decoded.x / sum, decoded.y / sum];
     assert!(
-        max_c - min_c <= 4,
-        "D65-neutral XYZ should map to a genuinely grey pixel (got {rgba:?})"
+        (cx - 0.3127).abs() < 0.004 && (cy - 0.3290).abs() < 0.004,
+        "D65-neutral XYZ should map to a pixel at the D65 chromaticity (got xy = ({cx}, {cy}) from {rgba:?})"
     );
 }
 

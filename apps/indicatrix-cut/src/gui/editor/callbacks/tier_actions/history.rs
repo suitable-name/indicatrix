@@ -55,6 +55,11 @@ pub(in crate::gui::editor) fn setup_undo_callback(
                     &st,
                     &(0..st.design.tiers.len()).collect(),
                 );
+                // An out-of-range selection reaches `EditorInspector.clear_form`
+                // through `clamp_selection_to_tier_count`'s own `form_reset_pulse`
+                // bump; a selection that SURVIVED (which may itself have just been
+                // retargeted) was already re-seeded by the refresh above, since
+                // its own index did not move and so raises no `changed`.
                 clamp_selection_to_tier_count(&ui, st.design.tiers.len());
                 submit_preview_replan(
                     &ui,
@@ -104,6 +109,8 @@ pub(in crate::gui::editor) fn setup_redo_callback(
                     &st,
                     &(0..st.design.tiers.len()).collect(),
                 );
+                // See `setup_undo_callback`'s matching arm for how the
+                // out-of-range clear and the in-range reseed are split.
                 clamp_selection_to_tier_count(&ui, st.design.tiers.len());
                 submit_preview_replan(
                     &ui,

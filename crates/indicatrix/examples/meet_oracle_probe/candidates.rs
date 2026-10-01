@@ -8,22 +8,13 @@ use indicatrix_formats::asc::AscSchedule;
 
 use crate::types::{BLANK, Cand, EPS_FEAS, LEVEL_TOL, MIN_DET, Plane};
 
+/// Per-tier side flags and facet normals of the schedule.
 pub fn side_and_normals(schedule: &AscSchedule) -> (Vec<bool>, Vec<Vec<DVec3>>) {
     let gear = f64::from(schedule.gear_teeth_abs().max(1));
     let mut is_crown = Vec::with_capacity(schedule.tiers.len());
     let mut normals = Vec::with_capacity(schedule.tiers.len());
-    let mut last_crown = true;
     for tier in &schedule.tiers {
-        let crown = if tier.angle_deg == 0.0 {
-            if tier.angle_deg.is_sign_negative() {
-                false
-            } else {
-                last_crown
-            }
-        } else {
-            tier.angle_deg > 0.0
-        };
-        last_crown = crown;
+        let crown = indicatrix::geometry::plane::tier_is_crown_side(tier.angle_deg);
         is_crown.push(crown);
         let theta = tier.angle_deg.abs().to_radians();
         let (st, ct) = (theta.sin(), theta.cos());

@@ -106,6 +106,7 @@ fn fresh_design_spec_round_trips_through_native_and_paired_asc() {
             name: Some("Quartz".to_string()),
             specific_gravity_override: Some(2.66),
             refractive_index_override: Some(1.545),
+            body_colour_override: None,
         },
         preform: PreformSpec::cylinder(80, 1.2, 1.0, 0.9),
     };
@@ -134,6 +135,13 @@ fn fresh_design_spec_round_trips_through_native_and_paired_asc() {
     assert_eq!(loaded.design.preform, design.preform);
     assert_eq!(loaded.design.tiers.len(), 1);
     assert_eq!(loaded.design.tiers[0].angle_deg, 0.0);
+    // The authored `ScaleReference(0.5)` itself must survive too -- not just the
+    // angle -- since `Design::from_asc_schedule` pins every reloaded tier to its
+    // own recorded mast, which must still be the value this design solved to.
+    assert_eq!(
+        loaded.design.tiers[0].constraint,
+        MeetConstraint::ScaleReference(0.5)
+    );
 }
 
 /// [`crate::native::save_paired`]'s `placeholder_note` parameter must mark the

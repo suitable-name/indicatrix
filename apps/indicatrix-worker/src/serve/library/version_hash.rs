@@ -1,10 +1,13 @@
-//! Computes `DesignSummary::version`/`DesignRecord::version`: a SHA-256 hash over
-//! exactly the fields each response carries, in a fixed order, each length-prefixed so
-//! adjacent fields can never collide, and each `Option` tagged present/absent before its
-//! value. See the `serve::library` module doc comment for why this is computed here
-//! rather than read from the database.
+//! Computes the two version fields of the library protocol. `DesignSummary::version` is a
+//! SHA-256 hash over exactly the fields a search row carries, in a fixed order, each
+//! length-prefixed so adjacent fields can never collide, and each `Option` tagged
+//! present/absent before its value. `DesignSummary::design_version` and
+//! `DesignRecord::version` are one revision token ([`revision_token`]) derived from the
+//! design's url and the vault's per-entry revision stamp, so a search row can carry it at
+//! O(1) cost per row. See the `serve::library` module doc comment.
 
-use indicatrix_net::library::{DesignRecord, DesignSummary};
+use indicatrix_net::library::DesignSummary;
+use indicatrix_vault::db::sqlite::Database;
 use sha2::{Digest, Sha256};
 
 fn hash_str(hasher: &mut Sha256, s: &str) {
@@ -22,30 +25,16 @@ fn hash_opt_str(hasher: &mut Sha256, s: Option<&str>) {
     }
 }
 
-fn hash_opt_bytes(hasher: &mut Sha256, b: Option<&[u8]>) {
-    match b {
-        Some(b) => {
-            hasher.update([1u8]);
-            hasher.update((b.len() as u64).to_le_bytes());
-            hasher.update(b);
-        }
-        None => hasher.update([0u8]),
-    }
-}
-
-/// [`hash_opt_str`]'s counterpart for [`DesignRecord::mirror_symmetry`]: same presence
-/// tag before the payload byte, so `Some(false)` still hashes differently from `None`.
-fn hash_opt_bool(hasher: &mut Sha256, b: Option<bool>) {
-    match b {
-        Some(b) => hasher.update([1u8, u8::from(b)]),
-        None => hasher.update([0u8]),
-    }
-}
-
-/// SHA-256 over every [`DesignSummary`] field except [`DesignSummary::version`] itself.
+/// SHA-256 over every [`DesignSummary`] field except [`DesignSummary::version`] itself,
+/// [`DesignSummary::design_version`] and [`DesignSummary::entry_id`].
+///
+/// `entry_id` is the server database's row number, not part of the design: a mirror
+/// keys designs by `url`, so renumbering the server's database (a rebuilt or
+/// re-imported catalogue) must not make every design look changed and force a full
+/// re-fetch. The price, paid once: the hash of every design differs from what earlier
+/// builds produced, so each existing mirror re-syncs its whole catalogue one time.
 pub(super) fn hash_summary(s: &DesignSummary) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(s.entry_id.to_le_bytes());
     hash_str(&mut hasher, &s.title);
     hash_str(&mut hasher, &s.url);
     hash_opt_str(&mut hasher, s.design_id.as_deref());
@@ -61,48 +50,89 @@ pub(super) fn hash_summary(s: &DesignSummary) -> [u8; 32] {
     hasher.finalize().into()
 }
 
-/// SHA-256 over every [`DesignRecord`] field except [`DesignRecord::version`] itself --
-/// including each attachment's metadata (id/name/url/size), never content.
-pub(super) fn hash_record(r: &DesignRecord) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(r.entry_id.to_le_bytes());
-    hash_str(&mut hasher, &r.title);
-    hash_str(&mut hasher, &r.url);
-    hash_opt_str(&mut hasher, r.design_id.as_deref());
-    hash_str(&mut hasher, &r.page_url);
-    hash_opt_str(&mut hasher, r.diagram_image_name.as_deref());
-    hash_opt_bytes(&mut hasher, r.diagram_image_data.as_deref());
-    hash_opt_str(&mut hasher, r.competition_diagram.as_deref());
-    hash_opt_str(&mut hasher, r.lw_ratio.as_deref());
-    hash_opt_str(&mut hasher, r.refractive_index.as_deref());
-    hash_opt_str(&mut hasher, r.index_gear.as_deref());
-    hash_opt_str(&mut hasher, r.volume.as_deref());
-    hash_opt_str(&mut hasher, r.facets_count.as_deref());
-    hash_opt_str(&mut hasher, r.shape.as_deref());
-    hash_opt_str(&mut hasher, r.designer_info.as_deref());
-    hash_opt_str(&mut hasher, r.preview_material.as_deref());
-    hash_opt_str(&mut hasher, r.hw_ratio.as_deref());
-    hash_opt_str(&mut hasher, r.tw_ratio.as_deref());
-    hash_opt_str(&mut hasher, r.uw_ratio.as_deref());
-    hash_opt_str(&mut hasher, r.pw_ratio.as_deref());
-    hash_opt_str(&mut hasher, r.cw_ratio.as_deref());
-    hash_opt_str(&mut hasher, r.symmetry_order.as_deref());
-    hash_opt_bool(&mut hasher, r.mirror_symmetry);
-    hash_opt_str(&mut hasher, r.designer.as_deref());
-    hasher.update((r.angle_settings.len() as u64).to_le_bytes());
-    for a in &r.angle_settings {
-        hasher.update(a.order_index.to_le_bytes());
-        hash_str(&mut hasher, &a.facet);
-        hash_str(&mut hasher, &a.angle);
-        hash_str(&mut hasher, &a.index);
-        hash_str(&mut hasher, &a.notes);
+/// The vault's revision stamp of one design (`diagram_entries.updated_at`), or the fact
+/// that it could not be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Revision {
+    /// The stamp as stored; `None` for a row that predates the column and was never
+    /// re-saved.
+    Stamped(Option<i64>),
+    /// The stamp could not be read (no such row, or the query failed).
+    Unreadable,
+}
+
+impl Revision {
+    /// Reads `entry_id`'s stamp. Every write that replaces or edits a design bumps it
+    /// strictly upward, so it moves on any change to the design's entry, detail,
+    /// angle table or attachments.
+    pub(super) fn read(db: &Database, entry_id: i64) -> Self {
+        match db.entry_updated_at(entry_id) {
+            Ok(stamp) => Self::Stamped(stamp),
+            Err(e) => {
+                tracing::debug!("library: no readable revision stamp for entry {entry_id}: {e:#}");
+                Self::Unreadable
+            }
+        }
     }
-    hasher.update((r.attachments.len() as u64).to_le_bytes());
-    for f in &r.attachments {
-        hasher.update(f.id.to_le_bytes());
-        hash_str(&mut hasher, &f.name);
-        hash_str(&mut hasher, &f.url);
-        hasher.update(f.size.to_le_bytes());
+}
+
+/// The revision token of the design at `url`: SHA-256 over a domain tag, the url and the
+/// stamp -- O(1) per design, so a whole search page carries it. A version token, not a
+/// content hash: it changes exactly when the stamp does, which is on every edit, and says
+/// nothing about what changed. All zero bytes for [`Revision::Unreadable`], which no
+/// stamped design can produce, so a client comparing it against a stored token always
+/// sees a change.
+///
+/// Neither the server's `entry_id` (renumbering a rebuilt catalogue must not look like
+/// an edit of every design -- a mirror keys designs by `url`) nor any content goes in.
+pub(super) fn revision_token(url: &str, revision: Revision) -> [u8; 32] {
+    let Revision::Stamped(stamp) = revision else {
+        return [0u8; 32];
+    };
+    let mut hasher = Sha256::new();
+    hash_str(&mut hasher, "indicatrix/design-revision/1");
+    hash_str(&mut hasher, url);
+    match stamp {
+        Some(t) => {
+            hasher.update([1u8]);
+            hasher.update(t.to_le_bytes());
+        }
+        None => hasher.update([0u8]),
     }
     hasher.finalize().into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Revision, revision_token};
+
+    #[test]
+    fn the_token_follows_the_url_and_the_stamp_only() {
+        let a = revision_token("https://example.test/1", Revision::Stamped(Some(100)));
+        assert_eq!(
+            a,
+            revision_token("https://example.test/1", Revision::Stamped(Some(100)))
+        );
+        assert_ne!(
+            a,
+            revision_token("https://example.test/1", Revision::Stamped(Some(101)))
+        );
+        assert_ne!(
+            a,
+            revision_token("https://example.test/2", Revision::Stamped(Some(100)))
+        );
+        assert_ne!(
+            revision_token("https://example.test/1", Revision::Stamped(None)),
+            revision_token("https://example.test/1", Revision::Stamped(Some(0)))
+        );
+        assert_ne!(a, [0u8; 32]);
+    }
+
+    #[test]
+    fn an_unreadable_revision_is_the_all_zero_token() {
+        assert_eq!(
+            revision_token("https://example.test/1", Revision::Unreadable),
+            [0u8; 32]
+        );
+    }
 }

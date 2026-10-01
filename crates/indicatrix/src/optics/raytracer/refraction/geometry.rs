@@ -115,9 +115,22 @@ pub(crate) fn theta_c_for_bounce(
     }
 }
 
+/// Per-channel ordinary indices only -- the `theta_c`-independent half of
+/// `per_channel_uniaxial_indices`, evaluated with the identical
+/// `dispersion.evaluate(lambdas[k])` expression, for callers (the per-sample
+/// [`RayWavelengthCache`] build) that never use the effective-extraordinary half.
+pub(super) fn per_channel_ordinary_indices(ctx: &RayMaterialContext) -> [f32; NUM_CHANNELS] {
+    std::array::from_fn(|k| ctx.material.dispersion.evaluate(ctx.lambdas[k]))
+}
+
 /// Per-channel uniaxial ordinary (`n_o_ch`) and effective-extraordinary (`n_eff_ch`)
-/// indices, each channel evaluated at its OWN wavelength (Fix F) against the shared
+/// indices, each channel evaluated at its OWN wavelength against the shared
 /// `theta_c` (see [`theta_c_for_bounce`]).
+///
+/// The scalar reference the GPU transport self-test compares the shader's per-mode index
+/// evaluation against; production tracing uses the cached split form instead, so this
+/// exists only under the `gpu` feature.
+#[cfg(feature = "gpu")]
 pub(crate) fn per_channel_uniaxial_indices(
     ctx: &RayMaterialContext,
     theta_c: f32,
@@ -129,7 +142,7 @@ pub(crate) fn per_channel_uniaxial_indices(
     for k in 0..NUM_CHANNELS {
         let n_o_k = material.dispersion.evaluate(ctx.lambdas[k]);
         // Wavelength-dependent extraordinary index when the material carries one
-        // (currently only Quartz); falls back to the constant-offset
+        // (Quartz, Amethyst, Citrine and Rutile); falls back to the constant-offset
         // `n_o_k + birefringence_delta` otherwise -- see
         // `GemMaterial::extraordinary_index_at`'s own doc comment.
         let n_e_k = material.extraordinary_index_at(ctx.lambdas[k], n_o_k);

@@ -19,10 +19,6 @@ export global ShortcutsModel {
     in-out property <bool> open: false;
     in property <[ShortcutItem]> shortcuts: [];
 
-    callback toggle();
-    toggle => {
-        root.open = !root.open;
-    }
     callback close();
     close => {
         root.open = false;

@@ -9,7 +9,9 @@ use crate::settings::{ExportTransfer, WorkerSettings};
 /// Sane bounds for user-supplied export dimensions. `MAX_EXPORT_DIM` exists so
 /// nobody can point the exporter at, say, 100000x100000 and lock up the machine.
 pub const MIN_EXPORT_DIM: u32 = 16;
+/// Largest allowed export width or height in pixels.
 pub const MAX_EXPORT_DIM: u32 = 8192;
+/// Smallest allowed export samples per pixel.
 pub const MIN_EXPORT_SPP: u32 = 1;
 /// Deliberately generous: at 4K, 32768 spp is ~272 billion spectral paths (roughly
 /// 3+ hours on this project's integrated AMD Radeon, ~23M samples/sec). The cap only
@@ -23,12 +25,17 @@ pub const MAX_EXPORT_SPP: u32 = 32768;
 /// change up to a 1024-bounce reference. Validated defensively even though the
 /// dialog only ever sends one of the six rungs.
 pub const MIN_EXPORT_BOUNCES: u32 = 1;
+/// Largest allowed export bounce count.
 pub const MAX_EXPORT_BOUNCES: u32 = 128;
 
+/// User-chosen parameters of one export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExportParams {
+    /// Image width in pixels.
     pub width: u32,
+    /// Image height in pixels.
     pub height: u32,
+    /// Samples per pixel.
     pub samples_per_pixel: u32,
     /// The export's OWN max-bounce cap, independent of the live viewport -- must
     /// override `SceneSnapshot::capture`'s `guard.max_bounces` rather than being read
@@ -61,6 +68,14 @@ pub struct RemoteSelection {
     pub worker: Option<WorkerSettings>,
     /// "Transfer: Full data / Final picture only".
     pub transfer: ExportTransfer,
+    /// v16: whether this machine's own idle CPU/GPU may trace a share of a
+    /// final-picture export's sample budget alongside the remote -- the settings
+    /// dialog's "Final-picture exports: this machine renders a share too" switch
+    /// (`AppSettings::contribute_to_final_picture`). Only ever matters when `transfer`
+    /// is [`ExportTransfer::FinalPicture`] and `compute_target` is
+    /// [`ComputeTarget::Both`] -- see
+    /// `worker::final_picture::contribution_allowed`'s own guards.
+    pub contribute_local: bool,
 }
 
 #[cfg(test)]
@@ -72,6 +87,7 @@ impl RemoteSelection {
             compute_target: ComputeTarget::LocalOnly,
             worker: None,
             transfer: ExportTransfer::FullData,
+            contribute_local: false,
         }
     }
 }

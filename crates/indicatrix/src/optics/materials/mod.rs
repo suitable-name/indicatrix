@@ -6,7 +6,8 @@
 //! `built_in_materials_*`/`built_in_material_*` builder function that actually
 //! constructs the built-in table lives in its own file, named for the species it
 //! covers; [`custom`] holds the builder-style constructors
-//! ([`GemMaterial::new_custom`], `with_*`), [`lookup`] holds [`GemMaterial::by_name`]
+//! ([`GemMaterial::new_custom`], `with_*`), [`body_colour`] holds the body-colour
+//! preset table [`GemMaterial::with_body_colour`] is fed from, [`lookup`] holds [`GemMaterial::by_name`]
 //! and the convenience accessors, and [`optics`] holds the biaxial-indicatrix/
 //! extraordinary-index/GPU-routing methods. Every path reachable as `materials::X`
 //! before the split is still reachable at exactly that path: [`GemMaterial`],
@@ -18,6 +19,7 @@ use glam::Vec3;
 mod amethyst_through_citrine;
 mod andalusite_through_glass;
 mod aquamarine_through_citrine;
+pub mod body_colour;
 mod custom;
 mod diamond_through_emerald;
 mod garnets_grossular_and_andradite;
@@ -32,6 +34,16 @@ mod tanzanite_through_cubic_zirconia;
 mod tests;
 mod zircon_through_topaz;
 
+/// A gemstone material's crystallographic system.
+///
+/// [`OpticalCharacter`] selects the birefringence regime, but the crystal system also
+/// gates the optics path: a material is treated as anisotropic only when its system is
+/// not `Cubic` AND `|birefringence_delta| > 1e-4` (the `is_anisotropic` field built by
+/// `build_ray_material_context` in `optics::raytracer::transport::inner`, mirrored by
+/// `DispersionParams` in `renderer::buffers`' material encode). A `Cubic` system
+/// therefore forces the isotropic path whatever the stored `birefringence_delta` says;
+/// the same predicate is true for biaxial (orthorhombic) materials, which then branch
+/// on `biaxial_delta_beta_alpha` instead of the uniaxial machinery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CrystalSystem {
@@ -44,6 +56,11 @@ pub enum CrystalSystem {
     Triclinic,
 }
 
+/// Which birefringence regime a material's optics take.
+///
+/// None (isotropic), uniaxial with a positive or negative sign (`n_e` above or below
+/// `n_o`), or biaxial with a positive or negative sign (the same convention applied to
+/// `n_beta`'s position between `n_alpha` and `n_gamma`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum OpticalCharacter {
@@ -54,14 +71,25 @@ pub enum OpticalCharacter {
     BiaxialNegative,
 }
 
+/// A gemstone material's full optical description.
+///
+/// Dispersion, birefringence, pleochroic absorption, and optional inclusion
+/// scattering / edge rounding / path scale. Built by [`Self::all_materials`] for the
+/// built-in table, or [`Self::new_custom`] for a caller-supplied one.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GemMaterial {
+    /// Display name of the material.
     pub name: String,
+    /// Crystal system of the material.
     pub crystal_system: CrystalSystem,
+    /// Optical character (isotropic, uniaxial or biaxial).
     pub optical_character: OpticalCharacter,
+    /// Wavelength-dependent refractive-index model.
     pub dispersion: DispersionModel,
-    pub birefringence_delta: f32, // n_e - n_o (or max-min)
+    /// Birefringence `n_e - n_o` (or max - min for biaxial).
+    pub birefringence_delta: f32,
+    /// Absorption bands per eigenmode.
     pub absorption: AbsorptionTensor,
     /// Optical (crystallographic) c-axis direction, in crystal/model space. Uniaxial
     /// birefringence (`effective_extraordinary_index`, `extraordinary_poynting_dir`)
@@ -130,9 +158,9 @@ pub struct GemMaterial {
     /// `n_e(lambda) = n_o(lambda) + birefringence_delta` (see
     /// [`Self::extraordinary_index_at`], the single place both are read). Real
     /// birefringence is not wavelength-flat, but modelling that needs the
-    /// extraordinary ray's own independent dispersion curve; only Quartz (and the
-    /// quartz-derived Amethyst/Citrine) carry a genuine primary o/e Sellmeier pair
-    /// (G. Ghosh 1999 -- see that entry's comment).
+    /// extraordinary ray's own independent dispersion curve. Four built-ins set it:
+    /// Quartz, Amethyst and Citrine (all one `SiO2` host, from G. Ghosh 1999 -- see the
+    /// Quartz entry's comment) and Rutile (`DeVore` 1951).
     ///
     /// `None` (every other built-in, and [`Self::new_custom`]'s default) falls back to
     /// `n_o + birefringence_delta` in `extraordinary_index_at`. Meaningless for an
@@ -142,13 +170,21 @@ pub struct GemMaterial {
     /// Threaded through to the GPU backend: `renderer::buffers::GpuGemMaterial` carries
     /// this curve as its own `has_extraordinary_dispersion`/`extraordinary_model_type`/
     /// `extraordinary_param_a`/`extraordinary_param_b` fields (via
-    /// `renderer::buffers::encode_dispersion_model`), and
-    /// `shaders/spectral_transport.wgsl`'s `extraordinary_index_at` evaluates it with
-    /// the identical formula (same `n >= 1.0` floor) and the same fallback.
+    /// `renderer::buffers::encode_dispersion_model`). The WGSL twin of
+    /// [`Self::extraordinary_index_at`] is the per-channel loop in
+    /// `shaders/transport_bounce/08_bounce_step.wgsl` (and the hero seed in
+    /// `09_finalize_and_ray_gen.wgsl`), which calls `extraordinary_dispersion_evaluate`
+    /// (`shaders/transport_physics/03_dispersion_absorption_frosted.wgsl`, the same
+    /// formula and `n >= 1.0` floor) when `has_extraordinary_dispersion != 0` and
+    /// otherwise uses `n_o + birefringence_delta`. The standalone
+    /// `per_channel_uniaxial_index` in that physics file takes only the constant-offset
+    /// form and does not read this curve.
     pub uniaxial_extraordinary_dispersion: Option<DispersionModel>,
 }
 
 impl GemMaterial {
+    /// The full built-in material table, aggregated from each species-range builder
+    /// module (see this module's own doc comment for the split rationale).
     #[must_use]
     pub fn all_materials() -> Vec<Self> {
         let mut materials = Self::built_in_materials_diamond_through_emerald();

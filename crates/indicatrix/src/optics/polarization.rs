@@ -1,24 +1,37 @@
 use glam::{Mat4, Vec3, Vec4};
 
+/// A ray's polarization state in the Stokes representation.
+///
+/// Total intensity plus the three polarization-ellipse degrees of freedom
+/// (`q`/`u`/`v`), in the current local frame (see [`MuellerMatrix`] for the
+/// frame-rotation operators that act on it).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StokesVector {
-    pub i: f32, // Total intensity
-    pub q: f32, // Linear horizontal (+Q) vs vertical (-Q)
-    pub u: f32, // Linear +45 deg (+U) vs -45 deg (-U)
-    pub v: f32, // Circular right (+V) vs left (-V)
+    /// Total intensity.
+    pub i: f32,
+    /// Linear horizontal (+Q) vs vertical (-Q).
+    pub q: f32,
+    /// Linear +45 deg (+U) vs -45 deg (-U).
+    pub u: f32,
+    /// Circular right (+V) vs left (-V).
+    pub v: f32,
 }
 
 impl StokesVector {
+    /// Builds a Stokes vector from its four components directly.
     #[must_use]
     pub const fn new(i: f32, q: f32, u: f32, v: f32) -> Self {
         Self { i, q, u, v }
     }
 
+    /// An unpolarized ray at the given total intensity (`q == u == v == 0`).
     #[must_use]
     pub const fn unpolarized(intensity: f32) -> Self {
         Self::new(intensity, 0.0, 0.0, 0.0)
     }
 
+    /// Reinterprets the four Stokes components as a plain [`Vec4`] (`i, q, u, v`), for
+    /// feeding into matrix arithmetic.
     #[must_use]
     pub const fn to_vec4(self) -> Vec4 {
         Vec4::new(self.i, self.q, self.u, self.v)
@@ -48,15 +61,19 @@ impl StokesVector {
             reason = "const-eligible only on wasm32's scalar glam backend; see above"
         )
     )]
+    /// Inverse of [`Self::to_vec4`]: reinterprets a plain [`Vec4`] (`x, y, z, w`) as
+    /// `i, q, u, v`.
     pub fn from_vec4(v: Vec4) -> Self {
         Self::new(v.x, v.y, v.z, v.w)
     }
 
+    /// Total intensity `I`, clamped to be non-negative.
     #[must_use]
     pub const fn intensity(&self) -> f32 {
         self.i.max(0.0)
     }
 
+    /// Degree of polarization in `[0, 1]`; zero when the intensity is negligible.
     #[must_use]
     pub fn degree_of_polarization(&self) -> f32 {
         if self.i <= 1e-7 {
@@ -82,18 +99,21 @@ impl StokesVector {
         0.5 * self.u.atan2(self.q)
     }
 
+    /// Applies a 4x4 Mueller matrix to this Stokes vector.
     #[must_use]
     pub fn apply_matrix(&self, m: &Mat4) -> Self {
         let v = m.mul_vec4(self.to_vec4());
         Self::from_vec4(v)
     }
 
+    /// Multiplies all four Stokes components by `s`.
     #[must_use]
     pub fn scale(&self, s: f32) -> Self {
         Self::new(self.i * s, self.q * s, self.u * s, self.v * s)
     }
 }
 
+/// Namespace for the Mueller-matrix constructors acting on a [`StokesVector`].
 pub struct MuellerMatrix;
 
 impl MuellerMatrix {

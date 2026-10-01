@@ -8,7 +8,10 @@ use indicatrix::renderer::gpu::{
     polyhedron_check, rng_check,
 };
 
-use crate::common::LayoutCheckFn;
+use crate::{
+    common::LayoutCheckFn,
+    summary::{UlpComparison, UlpTier, record_ulp},
+};
 
 // ~10^6 (pixel, sample, bounce) tuples: 4096 pixels * 64 samples * 4 bounces = 1,048,576.
 const NUM_PIXELS: u32 = 4096;
@@ -113,6 +116,16 @@ fn report_rng_check(ctx: &GpuContext) -> bool {
         float.total_values_compared, float.budget
     );
     let tier2_passed = float.passed();
+    record_ulp(&UlpComparison {
+        tier: UlpTier::Tier2,
+        label: "jx/jy/hero_rand/lambdas",
+        comparisons: float.total_values_compared,
+        max_genuine_ulp: float.max_ulp,
+        max_raw_ulp: float.max_raw_ulp,
+        exempted: float.exempted_count,
+        budget: Some(float.budget),
+        passed: tier2_passed,
+    });
     if tier2_passed {
         println!(
             "PASS (max genuine ULP = {}, max raw ULP = {}, {} exempted near-zero)",
@@ -176,6 +189,16 @@ fn report_determinism_check(ctx: &GpuContext) -> bool {
 fn report_camera_check(ctx: &GpuContext) -> bool {
     print!("[Tier 2] Phase 1 camera ray generation (dense + adversarial case grid) ... ");
     let result = camera_check::run(ctx);
+    record_ulp(&UlpComparison {
+        tier: UlpTier::Tier2,
+        label: "camera ray generation",
+        comparisons: result.total_cases * 6,
+        max_genuine_ulp: result.max_ulp,
+        max_raw_ulp: result.max_raw_ulp,
+        exempted: result.exempted_count,
+        budget: Some(result.budget),
+        passed: result.passed(),
+    });
     if result.passed() {
         println!(
             "PASS ({} cases, {} components compared, max genuine ULP = {}, max raw ULP = {}, {} exempted near-zero)",
@@ -240,6 +263,16 @@ fn report_ulp_check<Case: Clone + std::fmt::Debug>(
     result: &environment_check::UlpCheckResult<Case>,
 ) -> bool {
     print!("[Tier 2] {label} ... ");
+    record_ulp(&UlpComparison {
+        tier: UlpTier::Tier2,
+        label,
+        comparisons: result.total_comparisons,
+        max_genuine_ulp: result.max_ulp,
+        max_raw_ulp: result.max_raw_ulp,
+        exempted: result.exempted_count,
+        budget: Some(result.budget),
+        passed: result.passed(),
+    });
     if result.passed() {
         println!(
             "PASS ({} comparisons, max genuine ULP = {}, max raw ULP = {}, {} exempted near-zero)",
@@ -274,6 +307,16 @@ fn report_furnace_check(ctx: &GpuContext) -> bool {
     );
     let result = furnace_check::run(ctx);
     let passed = result.passed();
+    record_ulp(&UlpComparison {
+        tier: UlpTier::Furnace,
+        label: "furnace anchor per-tuple CPU vs GPU",
+        comparisons: result.total_tuples,
+        max_genuine_ulp: result.per_tuple_max_ulp,
+        max_raw_ulp: result.per_tuple_max_ulp,
+        exempted: 0,
+        budget: Some(result.per_tuple_ulp_budget),
+        passed: result.per_tuple_over_budget_count == 0,
+    });
     if passed {
         println!("PASS");
     } else {

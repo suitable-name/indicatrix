@@ -1,10 +1,17 @@
 //! Reads/parses whichever file the "Open Native" picker (or File > Open Recent)
 //! names -- a real native+`.asc` pair, a self-contained native file with no paired
-//! `.asc` involved, or a directly-picked bare `.asc` -- translating the result into
+//! `.asc` involved, a directly-picked bare `.asc`, or a `.gem`/`.gcs` design
+//! converted to `.asc` cutting instructions -- translating the result into
 //! a [`PickedNative`] for [`super::open_native::do_open_native`] to dispatch.
 
 use super::picker::{PickKind, pick_file};
-use crate::{MainWindow, gui::show_toast};
+use crate::{
+    MainWindow,
+    gui::{
+        library::local::{ForeignFormat, convert_foreign_design, converted_asc_file_name},
+        show_toast,
+    },
+};
 use indicatrix_cut_core::{
     NativeDesignFile,
     native::{LoadNativeOnlyResult, load_native_only},
@@ -43,6 +50,62 @@ pub(super) enum PickedNative {
         loaded: Box<LoadNativeOnlyResult>,
         asc_filename: String,
     },
+    /// A directly-picked `.gem` (`GemCAD`) or `.gcs` (Gem Cut Studio) file,
+    /// already converted to `.asc` cutting instructions by
+    /// `gui::library::local::convert_foreign_design` -- the same conversion Import
+    /// uses. Committed through the bare-`.asc` path in
+    /// `super::open_commit::open_converted_design`.
+    Converted(ConvertedPick),
+}
+
+/// [`PickedNative::Converted`]'s payload: the picked file and the `.asc` text its
+/// design converted to.
+pub(super) struct ConvertedPick {
+    /// The `.gem`/`.gcs` file the cutter picked; named in the toast and the window
+    /// title, and never written to.
+    pub(super) source_path: PathBuf,
+    /// The `.asc` name the design is recorded under (`<stem>.asc`), so Save offers
+    /// a new `.asc`/native pair rather than the source file.
+    pub(super) asc_file_name: String,
+    /// The converted cutting instructions as `.asc` text.
+    pub(super) asc_text: String,
+    /// The reader's and converter's warnings, shown in the open toast.
+    pub(super) warnings: Vec<String>,
+}
+
+/// Reads and converts a picked `.gem`/`.gcs` file (`path`'s extension picks the
+/// reader).
+///
+/// # Errors
+///
+/// A toast-ready message when the file cannot be read, is neither a `.gem` nor a
+/// `.gcs`, or does not parse.
+pub(super) fn read_foreign_design(path: &Path) -> Result<ConvertedPick, String> {
+    let format = ForeignFormat::from_path(path)
+        .ok_or_else(|| format!("'{}' is not a .gem or .gcs file.", path.display()))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("Failed to read {}: {e}", path.display()))?;
+    let converted =
+        crate::gui::library::local::catch_file_panic(std::panic::AssertUnwindSafe(|| {
+            convert_foreign_design(format, &bytes)
+        }))
+        .map_err(|panic_msg| {
+            format!(
+                "Cannot open {}: internal error: {panic_msg}",
+                path.display()
+            )
+        })?
+        .map_err(|e| format!("Cannot open {}: {e}", path.display()))?;
+    let file_name = path.file_name().map_or_else(
+        || format!("design{}", format.dotted_extension()),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    Ok(ConvertedPick {
+        source_path: path.to_path_buf(),
+        asc_file_name: converted_asc_file_name(&file_name),
+        asc_text: converted.asc_text,
+        warnings: converted.warnings,
+    })
 }
 
 /// [`PickedNative::Pair`]'s payload -- bundled into its own struct (rather than four
@@ -82,7 +145,7 @@ pub(super) enum NativePairOrSelfContained {
 ///
 /// [`resolve_paired_asc_text_then`]'s own "Locate the paired .asc" recovery picker
 /// runs off the UI thread, so this (and every caller up the chain) is
-/// continuation-passing too. The `std::fs::read_to_string`/TOML-parse calls
+/// continuation-passing too. The file-read/TOML-parse calls
 /// themselves stay synchronous -- reading one small file is cheap enough not to
 /// need the same treatment.
 ///
@@ -173,6 +236,15 @@ pub(super) fn read_native_pair_then(
     );
 }
 
+/// Reads an `.asc` file's text through
+/// [`indicatrix_formats::asc::decode_asc_bytes`] rather than `read_to_string`:
+/// `GemCAD` for Windows writes Windows-1252 (a legacy `°` is byte `0xB0`), which
+/// `read_to_string` rejects outright, and a UTF-8 byte-order mark or CR-only line
+/// endings are normalised on the way in.
+fn read_asc_text(path: &Path) -> std::io::Result<String> {
+    std::fs::read(path).map(|bytes| indicatrix_formats::asc::decode_asc_bytes(&bytes).into_owned())
+}
+
 /// Reads the paired `.asc`'s text, recovering from a moved/renamed file (common
 /// after `GemCad`'s own Save As) instead of giving up outright. Tries, in
 /// order: `recorded_asc_path` (the native file's own authoritative
@@ -191,13 +263,13 @@ fn resolve_paired_asc_text_then(
     recorded_asc_filename: &str,
     on_done: impl FnOnce(&MainWindow, Option<String>) + 'static,
 ) {
-    if let Ok(text) = std::fs::read_to_string(recorded_asc_path) {
+    if let Ok(text) = read_asc_text(recorded_asc_path) {
         on_done(ui, Some(text));
         return;
     }
     if let Some(guessed) = indicatrix_cut_core::asc_path_for_native(native_path)
         && guessed != recorded_asc_path
-        && let Ok(text) = std::fs::read_to_string(&guessed)
+        && let Ok(text) = read_asc_text(&guessed)
     {
         on_done(ui, Some(text));
         return;
@@ -217,7 +289,7 @@ fn resolve_paired_asc_text_then(
             on_done(ui, None);
             return;
         };
-        match std::fs::read_to_string(&located) {
+        match read_asc_text(&located) {
             Ok(text) => on_done(ui, Some(text)),
             Err(e) => {
                 show_toast(
@@ -287,7 +359,7 @@ fn read_picked_asc_then(
         return;
     }
 
-    let asc_text = match std::fs::read_to_string(&asc_path) {
+    let asc_text = match read_asc_text(&asc_path) {
         Ok(text) => text,
         Err(e) => {
             show_toast(
@@ -302,9 +374,9 @@ fn read_picked_asc_then(
     on_done(ui, Some(PickedNative::AscOnly { asc_path, asc_text }));
 }
 
-/// Shows the "Open Native" picker (accepting `.toml` OR `.asc`) and reads
-/// whichever one the cutter picked. `on_done`'s `None` is a cancellation or any
-/// read/parse failure, each already toasted before calling it.
+/// Shows the "Open Native" picker (accepting `.toml`, `.asc`, `.gem` or `.gcs`)
+/// and reads whichever one the cutter picked. `on_done`'s `None` is a
+/// cancellation or any read/parse failure, each already toasted before calling it.
 ///
 /// The picker itself ([`PickKind::OpenNativeOrAsc`]) runs on a background
 /// thread via [`pick_file`] -- see that function's own `match` for the filter
@@ -325,6 +397,16 @@ pub(super) fn pick_native_or_asc_then(
             .is_some_and(|e| e.eq_ignore_ascii_case("asc"))
         {
             read_picked_asc_then(ui, picked_path, on_done);
+            return;
+        }
+        if ForeignFormat::from_path(&picked_path).is_some() {
+            match read_foreign_design(&picked_path) {
+                Ok(converted) => on_done(ui, Some(PickedNative::Converted(converted))),
+                Err(message) => {
+                    show_toast(ui, &message, "error");
+                    on_done(ui, None);
+                }
+            }
             return;
         }
         // `picked_path` itself is still borrowed for this very call while

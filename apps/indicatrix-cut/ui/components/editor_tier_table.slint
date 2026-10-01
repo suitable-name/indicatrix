@@ -35,11 +35,10 @@ import { TierTableRow } from "editor_tier_table/tier_table_row.slint";
 // to unreadable slivers before MAST/SOLVE/MARGIN/ORBIT/etc. give up any
 // space. This means the row's natural width can genuinely exceed a narrow
 // dock -- `tier_scroll` (a `ScrollView`, scrollable on both axes already)
-// picks that up as a horizontal-scroll fallback with no extra code. The
-// column HEADER, however, does NOT scroll in lockstep with the body on that
-// rare narrow-dock path (it lives outside `tier_scroll`, kept there so it
-// stays visible while the body scrolls vertically) -- a known, accepted
-// limitation.
+// picks that up as a horizontal-scroll fallback. The column HEADER follows
+// that sideways scroll: it lives outside `tier_scroll` (so it stays visible
+// while the body scrolls vertically) in a clipping wrapper, offset by
+// `tier_scroll.content-x` and as wide as the scrolled content.
 export component EditorTierTable inherits Rectangle {
     vertical-stretch: 1;
     min-height: 120px;
@@ -126,9 +125,9 @@ export component EditorTierTable inherits Rectangle {
     /// still moves the keyboard cursor, the same as an in-list click already does via
     /// `row_touch`'s own `clicked` handler below. Scrolling the row into view is a
     /// side effect of `keyboard_focus_index` changing (see the `FocusScope` below's
-    /// own `scroll_target` watcher), not done here directly: `tier_scroll`'s id lives
-    /// inside that conditional `FocusScope`, and Slint refuses to resolve a
-    /// conditional element's id from a function declared on `root`.
+    /// own `scroll_target` watcher), not done here directly: `tier_scroll` lives
+    /// inside that `FocusScope`, whose `scroll_target` handler is the one place
+    /// that drives the scroll.
     public function focus_row(idx: int) {
         root.keyboard_focus_index = idx;
     }
@@ -169,41 +168,48 @@ export component EditorTierTable inherits Rectangle {
             keyboard_focus_index: root.keyboard_focus_index;
         }
 
-        TierTableHeader {
-            select_mode: root.select_mode;
-            col_hash_width: root.col_hash_width;
-            col_warn_width: root.col_warn_width;
-            col_block_width: root.col_block_width;
-            col_angle_width: root.col_angle_width;
-            col_name_min_width: root.col_name_min_width;
-            col_indices_min_width: root.col_indices_min_width;
-            col_meets_width: root.col_meets_width;
-            col_mast_width: root.col_mast_width;
-            col_solve_width: root.col_solve_width;
-            col_margin_width: root.col_margin_width;
-            col_orbit_width: root.col_orbit_width;
-            col_adopt_width: root.col_adopt_width;
-            col_pin_width: root.col_pin_width;
-            col_detach_width: root.col_detach_width;
-            col_anchor_width: root.col_anchor_width;
-            col_move_width: root.col_move_width;
-            col_dup_width: root.col_dup_width;
-            col_remove_width: root.col_remove_width;
+        // The header follows the body's sideways scroll: it is clipped by this
+        // wrapper and offset by `tier_scroll.content-x`, at least as wide as the
+        // scrolled content. (A plain `Rectangle` wrapper contributes no minimum
+        // width of its own, so the header cannot widen the dock.)
+        Rectangle {
+            height: 26px;
+            clip: true;
+            TierTableHeader {
+                x: tier_scroll.content-x;
+                width: max(tier_scroll.content-width, tier_scroll.visible-width);
+                select_mode: root.select_mode;
+                col_hash_width: root.col_hash_width;
+                col_warn_width: root.col_warn_width;
+                col_block_width: root.col_block_width;
+                col_angle_width: root.col_angle_width;
+                col_name_min_width: root.col_name_min_width;
+                col_indices_min_width: root.col_indices_min_width;
+                col_meets_width: root.col_meets_width;
+                col_mast_width: root.col_mast_width;
+                col_solve_width: root.col_solve_width;
+                col_margin_width: root.col_margin_width;
+                col_orbit_width: root.col_orbit_width;
+                col_adopt_width: root.col_adopt_width;
+                col_pin_width: root.col_pin_width;
+                col_detach_width: root.col_detach_width;
+                col_anchor_width: root.col_anchor_width;
+                col_move_width: root.col_move_width;
+                col_dup_width: root.col_dup_width;
+                col_remove_width: root.col_remove_width;
+            }
         }
 
-        if EditorModel.tiers.length == 0: Text {
-            text: "No tiers yet -- open the Tier tab below to add one.";
-            font-size: 11px;
-            color: Theme.text-muted;
-            horizontal-alignment: center;
-        }
-        // With no rows the list below is not mounted, and every other child of this
-        // layout (toolbar, header, the line above) is fixed-height -- which would
-        // make this table's MAXIMUM height small, and through `EditorView`'s column
-        // and `app.slint`'s `edit_row` (a `HorizontalLayout` takes its smallest
-        // child's maximum) cap the whole Edit row for a fresh zero-tier design. This
-        // empty, stretchy filler keeps the maximum unbounded.
-        if EditorModel.tiers.length == 0: Rectangle { vertical-stretch: 1; }
+        // The list area is always mounted (so `tier_scroll` can be referenced by
+        // the header above). With no rows it stays a stretchy box, which keeps
+        // this table's MAXIMUM height unbounded -- otherwise every other child of
+        // this layout (toolbar, header) is fixed-height and would cap, through
+        // `EditorView`'s column and `app.slint`'s `edit_row` (a `HorizontalLayout`
+        // takes its smallest child's maximum), the whole Edit row for a fresh
+        // zero-tier design. The "No tiers yet" text is a sibling shown when empty.
+        Rectangle {
+            vertical-stretch: 1;
+            min-height: 60px;
 
         // Wrapped in a `FocusScope` for keyboard navigation (Up/Down/Home/End/
         // PageUp/PageDown/Enter/Delete/Ctrl+D/F2/Alt+Up/Alt+Down -- see the
@@ -212,12 +218,15 @@ export component EditorTierTable inherits Rectangle {
         // global shortcuts in `app.slint` (Ctrl+Z/Y/S, F5, 1/2/3) still work while
         // this list has focus -- none of those keys are handled here, so they
         // always fall to `reject` and bubble up.
-        if EditorModel.tiers.length > 0: table_focus := FocusScope {
+        table_focus := FocusScope {
+            // Empty design: do not take focus, so Tab/arrows cannot select a
+            // non-existent row 0.
+            enabled: EditorModel.tiers.length > 0;
             // Mirrors `root.keyboard_focus_index` so scrolling the cursor into view
             // is driven from ONE place regardless of what moved it (arrow keys/F2
             // below, an in-list click, or `focus_row` called from outside this
-            // table): `tier_scroll` is a child of this SAME conditional `FocusScope`,
-            // so it (unlike `root`'s own `focus_row`, see that function's own doc
+            // table): `tier_scroll` is a child of this SAME `FocusScope`, so this
+            // handler (unlike `root`'s own `focus_row`, see that function's own doc
             // comment) can reference it directly.
             property <int> scroll_target: root.keyboard_focus_index;
             changed scroll_target => {
@@ -367,5 +376,17 @@ export component EditorTierTable inherits Rectangle {
             }
         }
         } // FocusScope (tier list keyboard navigation)
+
+        if EditorModel.tiers.length == 0: Text {
+            x: 0px;
+            y: 4px;
+            width: parent.width;
+            text: "No tiers yet -- open the Tier tab below to add one.";
+            font-size: 11px;
+            color: Theme.text-muted;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        } // Rectangle (tier list area)
     }
 }

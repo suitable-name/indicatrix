@@ -1,0 +1,73 @@
+import { LineEdit } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { AppModel } from "../models/app_model.slint";
+import { GuideModel } from "../models/guide_model.slint";
+
+// The dock's own colour tokens and its small button, kept next to the tier table so the
+// shared `Theme` (edited by several lanes) does not have to grow. Same values as the
+// desktop's `theme.slint`.
+export global TableStyle {
+    out property <color> ruby: #f43f5e;
+    out property <color> ruby-glow: #f43f5e26;
+    out property <color> amber-glow: #f59e0b26;
+    out property <color> amber-tint: #f59e0b14;
+    out property <color> primary: #3b82f6;
+    out property <color> text-on-primary: #ffffff;
+    out property <color> cyan-hover: #7dd3fc;
+    // The fixed row pitch: `TierTableRow.height` plus the list's spacing. The keyboard
+    // cursor's scroll-into-view arithmetic depends on it.
+    out property <length> row-height: 26px;
+    out property <length> row-pitch: 28px;
+}
+
+// A small text field for the steps / offset / quick-add forms; keeps `AppModel.text-focus`
+// set while it has focus so the global shortcuts (Ctrl+Z/Y) stay with the field.
+export component MiniField inherits LineEdit {
+    // The std LineEdit's own 160 px minimum would push a row of these past a narrow dock.
+    min-width: 0px;
+    height: 22px;
+    font-size: 10px;
+    changed has-focus => { AppModel.text-focus = self.has-focus; }
+}
+
+// A compact text button for the command bar and the table toolbar (the std `Button` is
+// too wide for a 340px dock). `accent` picks the label colour.
+export component ToolButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    // True while the guided walkthrough locks the button's group (the caller binds
+    // `!GuideModel.allows-*()`): it dims, ignores clicks and its tooltip says why.
+    in property <bool> locked: false;
+    // The guided walkthrough's 2px accent outline around the control the step points at.
+    in property <bool> highlighted: false;
+    // A filled, "on" look (toggles, the Solve button while the design is stale).
+    in property <bool> active: false;
+    in property <color> accent: Theme.accent-cyan;
+    in property <string> hint;
+    callback clicked();
+
+    property <bool> usable: root.enabled && !root.locked;
+
+    height: 22px;
+    min-width: label.preferred-width + 14px;
+    border-radius: 3px;
+    border-width: root.highlighted ? 2px : 0px;
+    border-color: Theme.accent-cyan;
+    opacity: root.usable ? 1.0 : 0.4;
+    background: root.active ? TableStyle.primary
+        : (touch.has-hover && root.usable ? Theme.primary-glow : Theme.bg-card-hover);
+
+    label := Text {
+        text: root.text;
+        font-size: 10px;
+        font-weight: 600;
+        color: root.active ? TableStyle.text-on-primary : root.accent;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        enabled: root.usable;
+        clicked => { root.clicked(); }
+    }
+    if root.hint != "" || root.locked: Tooltip { text: root.locked ? @markdown("\{GuideModel.locked-hint}") : @markdown("\{root.hint}"); }
+}

@@ -1,0 +1,222 @@
+import { Theme } from "../../theme.slint";
+import { ComboBox } from "std-widgets.slint";
+import { RoughPlanModel } from "../../models/rough_plan.slint";
+import { RoughField, RoughRadio, RoughPill } from "fields.slint";
+
+// Left column rough base definition, dimensions, material, weighed carat,
+// and the weight-check readout chip.
+export component RoughForm inherits VerticalLayout {
+    spacing: 8px;
+
+    // Header
+    Text {
+        text: "ROUGH";
+        font-size: 11px;
+        font-weight: 700;
+        color: Theme.text-muted;
+    }
+
+    // Base shape picker
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+
+        RoughRadio {
+            label: "Block";
+            selected: RoughPlanModel.base_kind == 0;
+            editable: !RoughPlanModel.running;
+            picked => { RoughPlanModel.set_base(0); }
+        }
+        RoughRadio {
+            label: "Cylinder";
+            selected: RoughPlanModel.base_kind == 1;
+            editable: !RoughPlanModel.running;
+            picked => { RoughPlanModel.set_base(1); }
+        }
+        RoughRadio {
+            label: "Pebble";
+            selected: RoughPlanModel.base_kind == 2;
+            editable: !RoughPlanModel.running;
+            picked => { RoughPlanModel.set_base(2); }
+        }
+    }
+
+    // Block or Pebble dimensions (X, Y, Z in mm)
+    if RoughPlanModel.base_kind == 0 || RoughPlanModel.base_kind == 2: HorizontalLayout {
+        spacing: 6px;
+        RoughField {
+            label: "Rough X (mm)";
+            placeholder: "e.g. 18.4";
+            editable: !RoughPlanModel.running;
+            value <=> RoughPlanModel.rough_x;
+            committed => { RoughPlanModel.base_field_committed(); }
+        }
+        RoughField {
+            label: "Rough Y (mm)";
+            placeholder: "e.g. 11.0";
+            editable: !RoughPlanModel.running;
+            value <=> RoughPlanModel.rough_y;
+            committed => { RoughPlanModel.base_field_committed(); }
+        }
+        RoughField {
+            label: "Rough Z (mm)";
+            placeholder: "e.g. 9.6";
+            editable: !RoughPlanModel.running;
+            value <=> RoughPlanModel.rough_z;
+            committed => { RoughPlanModel.base_field_committed(); }
+        }
+    }
+
+    // Cylinder dimensions (Diameter, Length, Axis)
+    if RoughPlanModel.base_kind == 1: VerticalLayout {
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: 6px;
+            RoughField {
+                label: "Diameter (mm)";
+                placeholder: "e.g. 10.0";
+                editable: !RoughPlanModel.running;
+                value <=> RoughPlanModel.cyl_diameter;
+                committed => { RoughPlanModel.base_field_committed(); }
+            }
+            RoughField {
+                label: "Length (mm)";
+                placeholder: "e.g. 24.0";
+                editable: !RoughPlanModel.running;
+                value <=> RoughPlanModel.cyl_length;
+                committed => { RoughPlanModel.base_field_committed(); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            Text {
+                text: "Axis:";
+                font-size: 10px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            RoughPill {
+                text: "X";
+                active: RoughPlanModel.cyl_axis == 0;
+                enabled: !RoughPlanModel.running;
+                clicked => { RoughPlanModel.cyl_axis = 0; RoughPlanModel.base_field_committed(); }
+            }
+            RoughPill {
+                text: "Y";
+                active: RoughPlanModel.cyl_axis == 1;
+                enabled: !RoughPlanModel.running;
+                clicked => { RoughPlanModel.cyl_axis = 1; RoughPlanModel.base_field_committed(); }
+            }
+            RoughPill {
+                text: "Z";
+                active: RoughPlanModel.cyl_axis == 2;
+                enabled: !RoughPlanModel.running;
+                clicked => { RoughPlanModel.cyl_axis = 2; RoughPlanModel.base_field_committed(); }
+            }
+        }
+    }
+
+    // Material dropdown
+    VerticalLayout {
+        spacing: 2px;
+        Text {
+            text: "Material";
+            font-size: 10px;
+            color: Theme.text-muted;
+        }
+        ComboBox {
+            min-width: 0px;
+            model: RoughPlanModel.materials;
+            current-index <=> RoughPlanModel.material_index;
+            enabled: !RoughPlanModel.running && RoughPlanModel.materials.length > 0;
+            selected(value) => { RoughPlanModel.base_field_committed(); }
+        }
+    }
+    if RoughPlanModel.materials.length == 0: Text {
+        text: "No material with a known specific gravity is available.";
+        font-size: 10px;
+        color: Theme.accent-amber;
+        wrap: word-wrap;
+    }
+
+    // Carat: the model's own weight until a weighed carat is typed over it, and the
+    // Fit to weight action that scales the model to the typed weight.
+    HorizontalLayout {
+        spacing: 6px;
+        alignment: stretch;
+        RoughField {
+            label: "Carat (ct)";
+            placeholder: "e.g. 8.90";
+            editable: !RoughPlanModel.running;
+            value <=> RoughPlanModel.weighed_ct;
+            committed => { RoughPlanModel.base_field_committed(); }
+        }
+        VerticalLayout {
+            alignment: end;
+            RoughPill {
+                text: "Fit to weight";
+                enabled: !RoughPlanModel.running && RoughPlanModel.weight_check_level != 0;
+                clicked => { RoughPlanModel.fit_to_weight(); }
+            }
+        }
+    }
+
+    // Model volume & weight text
+    if RoughPlanModel.model_text != "": Text {
+        text: RoughPlanModel.model_text;
+        font-size: 11px;
+        color: Theme.text-secondary;
+        wrap: word-wrap;
+    }
+
+    // Weight check chip
+    if RoughPlanModel.weight_check_text != "": Rectangle {
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: RoughPlanModel.weight_check_level == 1 ? Theme.success
+            : (RoughPlanModel.weight_check_level == 2 ? Theme.accent-amber
+            : (RoughPlanModel.weight_check_level == 3 ? Theme.danger : Theme.border-subtle));
+        background: RoughPlanModel.weight_check_level == 1 ? Theme.toast-success-surface
+            : (RoughPlanModel.weight_check_level == 2 ? Theme.surface-warning
+            : (RoughPlanModel.weight_check_level == 3 ? Theme.danger-surface : Theme.surface-sunken));
+
+        HorizontalLayout {
+            padding-left: 6px;
+            padding-right: 6px;
+            padding-top: 4px;
+            padding-bottom: 4px;
+            spacing: 6px;
+            alignment: start;
+
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: RoughPlanModel.weight_check_level == 1 ? Theme.success
+                        : (RoughPlanModel.weight_check_level == 2 ? Theme.accent-amber
+                        : (RoughPlanModel.weight_check_level == 3 ? Theme.danger : Theme.text-muted));
+                }
+            }
+
+            Text {
+                text: RoughPlanModel.weight_check_text;
+                font-size: 11px;
+                color: RoughPlanModel.weight_check_level == 1 ? Theme.success
+                    : (RoughPlanModel.weight_check_level == 2 ? Theme.accent-amber
+                    : (RoughPlanModel.weight_check_level == 3 ? Theme.danger : Theme.text-secondary));
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    // Model error if invalid
+    if RoughPlanModel.model_error != "": Text {
+        text: RoughPlanModel.model_error;
+        font-size: 11px;
+        color: Theme.danger;
+        wrap: word-wrap;
+    }
+}

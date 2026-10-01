@@ -2,6 +2,7 @@
 //! scripted, in-memory [`LibraryTransport`](crate::bridge::library::mirror::options::LibraryTransport).
 
 mod fixtures;
+mod revision;
 
 use super::pass::run_mirror_sync;
 use crate::{
@@ -11,7 +12,7 @@ use crate::{
 use fixtures::{FakeTransport, design_record, design_summary, temp_db};
 use indicatrix_net::library::{AttachedFileMeta, DesignRecord, DesignSummary};
 use indicatrix_vault::model::{
-    detail::FacetDiagramDetail, entry::FacetDiagramEntry, file::AttachedFile,
+    detail::FacetingDiagramDetail, entry::FacetingDiagramEntry, file::AttachedFile,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -24,7 +25,7 @@ fn a_local_only_design_survives_a_mirror_sync() {
         let guard = db.lock().unwrap();
         guard
             .save_diagram_entry(
-                &FacetDiagramEntry {
+                &FacetingDiagramEntry {
                     title: "My Own Trichecker".to_string(),
                     url: "local://my_trichecker.asc".to_string(),
                     design_id: String::new(),
@@ -37,14 +38,14 @@ fn a_local_only_design_survives_a_mirror_sync() {
         let guard = db.lock().unwrap();
         guard
             .save_diagram_detail(
-                &FacetDiagramDetail {
+                &FacetingDiagramDetail {
                     shape: Some("Trichecker".to_string()),
                     attached_files: vec![AttachedFile {
                         name: "my_trichecker.asc".to_string(),
                         url: String::new(),
                         content: b"a real user file".to_vec(),
                     }],
-                    ..FacetDiagramDetail::default()
+                    ..FacetingDiagramDetail::default()
                 },
                 local_entry_id,
             )
@@ -77,6 +78,89 @@ fn a_local_only_design_survives_a_mirror_sync() {
     assert_eq!(guard.get_total_count().unwrap(), 2);
     drop(guard);
 
+    std::fs::remove_file(&path).ok();
+}
+
+/// unlike [`a_local_only_design_survives_a_mirror_sync`] (a local row and a
+/// remote design at DIFFERENT urls, which never touch each other regardless of any
+/// guard), this scripts a remote design whose `url` is IDENTICAL to a pre-existing
+/// local row's -- exactly the collision a worker serving its own `local://` imports
+/// (or a coincidentally-matching hand import) can produce. The local row must survive
+/// completely untouched, and the attempt must be counted as
+/// `local_conflicts_skipped`, never as `new_count`/`updated_count`/`failed`.
+#[test]
+fn a_remote_design_colliding_with_an_unmirrored_local_urls_identity_is_left_untouched() {
+    let (db, path) = temp_db();
+    let collision_url = "local://collide.asc";
+    let local_entry_id = {
+        let guard = db.lock().unwrap();
+        guard
+            .save_diagram_entry(
+                &FacetingDiagramEntry {
+                    title: "Local Original".to_string(),
+                    url: collision_url.to_string(),
+                    design_id: String::new(),
+                },
+                indicatrix_vault::local::LOCAL_SOURCE_ID,
+            )
+            .unwrap()
+    };
+    {
+        let guard = db.lock().unwrap();
+        guard
+            .save_diagram_detail(
+                &FacetingDiagramDetail {
+                    attached_files: vec![AttachedFile {
+                        name: "collide.asc".to_string(),
+                        url: String::new(),
+                        content: b"original local bytes".to_vec(),
+                    }],
+                    ..FacetingDiagramDetail::default()
+                },
+                local_entry_id,
+            )
+            .unwrap();
+    }
+
+    let remote_summary = design_summary(1, "Remote Version", collision_url, "v1");
+    let remote_design = design_record(1, "Remote Version", collision_url, "v1");
+    let transport = FakeTransport::new(vec![remote_summary], vec![remote_design]);
+
+    let outcome = run_mirror_sync(
+        &db,
+        &transport,
+        "remote-library:w",
+        MirrorOptions::default(),
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    let MirrorOutcome::Completed(counts) = outcome else {
+        panic!("expected Completed, got {outcome:?}");
+    };
+    assert_eq!(counts.local_conflicts_skipped, 1);
+    assert_eq!(counts.new_count, 0);
+    assert_eq!(counts.updated_count, 0);
+    assert_eq!(counts.failed, 0);
+
+    let guard = db.lock().unwrap();
+    assert_eq!(
+        guard.get_total_count().unwrap(),
+        1,
+        "the collision must never be inserted as a second row"
+    );
+    let local_full = guard.get_diagram_full(local_entry_id).unwrap().unwrap();
+    assert_eq!(local_full.title, "Local Original");
+    assert_eq!(local_full.attached_files.len(), 1);
+    assert_eq!(
+        local_full.attached_files[0].content,
+        b"original local bytes"
+    );
+    assert_eq!(
+        guard.get_mirror_state(collision_url).unwrap(),
+        None,
+        "a skipped conflict must never be marked as synced"
+    );
+    drop(guard);
     std::fs::remove_file(&path).ok();
 }
 
@@ -126,6 +210,54 @@ fn a_new_design_is_saved_with_its_attachment() {
     let record = guard.get_diagram_full(entry_id).unwrap().unwrap();
     assert_eq!(record.attached_files.len(), 1);
     assert_eq!(record.attached_files[0].content, vec![1, 2, 3, 4, 5]);
+    drop(guard);
+    std::fs::remove_file(&path).ok();
+}
+
+/// `source_citation`/`pdf_file`/`gem_file`/`shape_category` (added to
+/// `DesignRecord` under `PROTOCOL_VERSION` v15) must survive a mirror sync into the
+/// local `diagram_details` row -- `save_diagram_detail` fully replaces that row on
+/// every sync, so leaving any of these four unmapped in `sync::design::build_detail`
+/// would silently blank them, exactly like the eight ratio/symmetry fields the
+/// pre-existing test coverage on this module already pins.
+#[test]
+fn a_synced_designs_citation_and_shape_category_fields_are_saved_locally() {
+    let (db, path) = temp_db();
+    let mut record = design_record(1, "Competition Entry", "https://example.test/1", "v1");
+    record.source_citation = Some("Lapidary Journal, May 1994, p95".to_string());
+    record.pdf_file = Some("2002SSCMasters.pdf".to_string());
+    record.gem_file = Some("USFG-SSC-2020-Novice-1.gem".to_string());
+    record.shape_category = Some("5".to_string());
+    let summary = design_summary(1, "Competition Entry", "https://example.test/1", "v1");
+    let transport = FakeTransport::new(vec![summary], vec![record]);
+
+    let outcome = run_mirror_sync(
+        &db,
+        &transport,
+        "remote-library:w",
+        MirrorOptions::default(),
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert!(matches!(outcome, MirrorOutcome::Completed(c) if c.new_count == 1));
+
+    let guard = db.lock().unwrap();
+    let items = guard
+        .search_diagrams(
+            "",
+            "All",
+            "All",
+            &indicatrix_vault::model::filter::RangeFilter::default(),
+        )
+        .unwrap();
+    let full = guard.get_diagram_full(items[0].id).unwrap().unwrap();
+    assert_eq!(
+        full.source_citation.as_deref(),
+        Some("Lapidary Journal, May 1994, p95")
+    );
+    assert_eq!(full.pdf_file.as_deref(), Some("2002SSCMasters.pdf"));
+    assert_eq!(full.gem_file.as_deref(), Some("USFG-SSC-2020-Novice-1.gem"));
+    assert_eq!(full.shape_category.as_deref(), Some("5"));
     drop(guard);
     std::fs::remove_file(&path).ok();
 }
@@ -518,6 +650,68 @@ fn a_multi_page_mirror_reaches_designs_beyond_the_first_page() {
     // actually landed locally, not just been counted.
     assert!(titles.contains("Fourth"), "titles were: {titles:?}");
     assert!(titles.contains("Fifth"), "titles were: {titles:?}");
+    drop(guard);
+    std::fs::remove_file(&path).ok();
+}
+
+/// "Local delete wins" must hold after the remote design CHANGES, not only while its
+/// hash still matches: deleting a mirrored design tombstones its mirror state, and a
+/// later pass skips the tombstoned url before fetching anything.
+#[test]
+fn a_locally_deleted_design_is_not_resurrected_when_the_remote_changes() {
+    let (db, path) = temp_db();
+    let url = "https://example.test/1";
+    let first = run_mirror_sync(
+        &db,
+        &FakeTransport::new(
+            vec![design_summary(1, "Round Brilliant", url, "v1")],
+            vec![design_record(1, "Round Brilliant", url, "v1")],
+        ),
+        "remote-library:w",
+        MirrorOptions::default(),
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    assert!(matches!(first, MirrorOutcome::Completed(c) if c.new_count == 1));
+
+    {
+        let guard = db.lock().unwrap();
+        let id = guard.diagram_entry_id_for_url(url).unwrap().unwrap();
+        guard.delete_diagram_entry(id).unwrap();
+    }
+
+    // The remote design changed: its summary hash no longer matches the stored one.
+    let transport = FakeTransport::new(
+        vec![design_summary(1, "Round Brilliant", url, "v2-updated")],
+        vec![design_record(1, "Round Brilliant", url, "v2-updated")],
+    );
+    let outcome = run_mirror_sync(
+        &db,
+        &transport,
+        "remote-library:w",
+        MirrorOptions::default(),
+        &AtomicBool::new(false),
+        |_| {},
+    );
+    let MirrorOutcome::Completed(counts) = outcome else {
+        panic!("expected Completed, got {outcome:?}");
+    };
+    assert_eq!(counts.new_count, 0);
+    assert_eq!(counts.updated_count, 0);
+    assert_eq!(counts.failed, 0);
+    assert_eq!(counts.orphaned_mirror_states, 1);
+    assert_eq!(counts.skipped_deleted, 1);
+    assert_eq!(
+        transport.fetch_design_calls.load(Ordering::Relaxed),
+        0,
+        "a tombstoned design must not even be fetched"
+    );
+
+    let guard = db.lock().unwrap();
+    assert_eq!(guard.get_total_count().unwrap(), 0);
+    assert_eq!(guard.diagram_entry_id_for_url(url).unwrap(), None);
+    let state = guard.get_mirror_state(url).unwrap().unwrap();
+    assert!(state.deleted_locally, "the tombstone must survive the pass");
     drop(guard);
     std::fs::remove_file(&path).ok();
 }

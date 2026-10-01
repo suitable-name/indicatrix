@@ -50,29 +50,9 @@ impl Design {
     /// tier index the current schedule doesn't have -- `SetPreform` can
     /// never fail, since it names no index.
     pub fn apply_edit(&mut self, edit: Edit) -> Result<Edit, EditError> {
-        // Self-heals `tier_ids` against a caller that mutated `self.tiers`
-        // directly (`Vec::push`/etc, bypassing `Edit` entirely) -- a real,
-        // pervasive pattern this crate's OWN test fixtures use throughout (build
-        // a `Design` via `Design::fresh`, then `design.tiers.push(tier(...))`
-        // straight onto the public field, never through `History`). Every
-        // `tier_ids`-touching arm below assumes `self.tier_ids.len() ==
-        // self.tiers.len()`; without this, the very first `AddTier`/
-        // `RemoveTier`/`MoveTier` after such a direct push would index or pop
-        // past the end of a `tier_ids` that never grew to match.
-        self.sync_tier_ids();
         let tier_count = self.tiers.len();
         match edit {
-            Edit::AddTier { index, tier } => {
-                if index > tier_count {
-                    return Err(EditError { index, tier_count });
-                }
-                self.tiers.insert(index, tier);
-                let id = self.allocate_tier_id();
-                self.tier_ids.insert(index, id);
-                self.shift_cheater_offsets_for_insert(index);
-                self.shift_tier_notes_for_insert(index);
-                Ok(Edit::RemoveTier { index })
-            }
+            Edit::AddTier { index, tier } => self.apply_add_tier(index, tier, tier_count),
             Edit::RemoveTier { index } => self.apply_remove_tier(index, tier_count),
             Edit::MoveTier { from, to } => self.apply_move_tier(from, to, tier_count),
             Edit::ModifyTier { index, tier } => {
@@ -138,7 +118,10 @@ impl Design {
                 gear_teeth,
                 symmetry_order,
                 mirror,
-            } => Ok(self.apply_set_schedule(gear_teeth, symmetry_order, mirror)),
+            } => {
+                Self::validate_schedule(gear_teeth, symmetry_order, tier_count)?;
+                Ok(self.apply_set_schedule(gear_teeth, symmetry_order, mirror))
+            }
             Edit::RemapIndices {
                 from_gear,
                 to_gear,
@@ -153,61 +136,140 @@ impl Design {
             Edit::SetTierTarget { index, target } => {
                 self.apply_set_tier_target(index, target, tier_count)
             }
+            Edit::RestoreTierId { index, id } => self.apply_restore_tier_id(index, id, tier_count),
             Edit::Batch(edits) => self.apply_batch(edits),
         }
     }
 
+    /// Gives every tier that has no [`crate::design::TierId`] yet a freshly
+    /// allocated one, so [`Design::tier_ids`] ends up exactly as long as
+    /// [`Design::tiers`].
+    ///
+    /// A caller that seeds `tiers` directly (a template, a hand-built fixture)
+    /// instead of through [`Edit::AddTier`] leaves the parallel `tier_ids` short,
+    /// and [`Edit::SetTierTarget`] -- which finds its tier by id -- then fails with
+    /// "tier index N out of range" until some other edit happens to heal the
+    /// list. Existing ids are never changed or reordered and `tier_ids` is never
+    /// shortened, so calling this on a consistent design changes nothing.
+    pub fn ensure_tier_ids(&mut self) {
+        while self.tier_ids.len() < self.tiers.len() {
+            let id = self.allocate_tier_id();
+            self.tier_ids.push(id);
+        }
+    }
+
     /// Grows [`Design::tier_ids`] with freshly allocated ids until it matches
-    /// [`Design::tiers`]' current length, or truncates it if `tiers` somehow
+    /// [`Design::tiers`]' current length (see [`Self::ensure_tier_ids`]), or
+    /// truncates it if `tiers` somehow
     /// got SHORTER than `tier_ids` (defensive only -- nothing in this crate
     /// removes a tier without also removing its id via [`Self::apply_edit`]
     /// itself; only a direct `tiers.truncate()`/`tiers.pop()` outside `Edit`
-    /// could cause this side). See [`Self::apply_edit`]'s own doc comment for
-    /// why this exists at all: a caller that pushes onto `self.tiers` directly
+    /// could cause this side). A caller that pushes onto `self.tiers` directly
     /// (this crate's own test fixtures do, throughout) leaves `tier_ids` behind,
-    /// and every `Edit` arm that indexes or pops `tier_ids` by position needs
-    /// the two back in lockstep before it runs.
+    /// and the three `Edit` arms that index or pop `tier_ids` by position
+    /// (`AddTier`, [`Self::apply_remove_tier`], [`Self::apply_move_tier`]) each
+    /// call this themselves, AFTER their own bounds check has already passed --
+    /// never before, and never once unconditionally for every `Edit` variant the
+    /// way this used to run at the very top of [`Self::apply_edit`]: healing
+    /// `tier_ids` is itself a mutation, and running it before validation would
+    /// leave `self` partly modified even when the edit is about to be rejected,
+    /// breaking [`Self::apply_edit`]'s own "without modifying `self`" error
+    /// contract for every OTHER variant in between.
     fn sync_tier_ids(&mut self) {
         match self.tier_ids.len().cmp(&self.tiers.len()) {
-            std::cmp::Ordering::Less => {
-                while self.tier_ids.len() < self.tiers.len() {
-                    let id = self.allocate_tier_id();
-                    self.tier_ids.push(id);
-                }
-            }
+            std::cmp::Ordering::Less => self.ensure_tier_ids(),
             std::cmp::Ordering::Greater => self.tier_ids.truncate(self.tiers.len()),
             std::cmp::Ordering::Equal => {}
         }
     }
 
+    /// [`Edit::AddTier`]'s own apply/inverse half, split out of
+    /// [`Self::apply_edit`] purely to stay under clippy's `too_many_lines`.
+    fn apply_add_tier(
+        &mut self,
+        index: usize,
+        tier: crate::design::ConstraintTier,
+        tier_count: usize,
+    ) -> Result<Edit, EditError> {
+        if index > tier_count {
+            return Err(EditError { index, tier_count });
+        }
+        // Self-heals `tier_ids` -- see `Self::sync_tier_ids`'s own doc comment
+        // for why, and why this runs only after the bounds check above.
+        self.sync_tier_ids();
+        self.tiers.insert(index, tier);
+        let id = self.allocate_tier_id();
+        self.tier_ids.insert(index, id);
+        self.shift_cheater_offsets_for_insert(index);
+        self.shift_tier_notes_for_insert(index);
+        Ok(Edit::RemoveTier { index })
+    }
+
+    /// [`Edit::RestoreTierId`]'s own apply/inverse half, split out of
+    /// [`Self::apply_edit`] purely to stay under clippy's `too_many_lines`. See
+    /// that variant's own doc comment -- never constructed by a caller directly.
+    fn apply_restore_tier_id(
+        &mut self,
+        index: usize,
+        id: crate::design::TierId,
+        tier_count: usize,
+    ) -> Result<Edit, EditError> {
+        let Some(slot) = self.tier_ids.get_mut(index) else {
+            return Err(EditError { index, tier_count });
+        };
+        let previous = std::mem::replace(slot, id);
+        Ok(Edit::RestoreTierId {
+            index,
+            id: previous,
+        })
+    }
+
     /// [`Edit::RemoveTier`]'s own apply/inverse half, split out of
     /// [`Self::apply_edit`] purely to stay under clippy's `too_many_lines` (same
     /// reasoning as [`Self::apply_set_schedule`]). Restoring the removed tier's own
-    /// cheater offset and/or note (if either was set) each needs a further step
-    /// beyond a plain `AddTier` inverse -- see the inline comment below -- so the
-    /// inverse is a multi-step [`Edit::Batch`] whenever either was recorded, else
-    /// the plain `AddTier` every other tier removal already used.
+    /// [`crate::design::TierId`], cheater offset and/or note (if either was set)
+    /// each needs a further step beyond a plain `AddTier` inverse -- see the inline
+    /// comment below -- so the inverse is always a multi-step [`Edit::Batch`], not
+    /// the plain `AddTier` a naive inverse would be.
     fn apply_remove_tier(&mut self, index: usize, tier_count: usize) -> Result<Edit, EditError> {
         if index >= tier_count {
             return Err(EditError { index, tier_count });
         }
+        // See `Self::apply_add_tier`'s matching comment: self-heals against a
+        // caller that mutated `self.tiers` directly, run only after the bounds
+        // check above so a rejected edit still leaves `self` untouched.
+        self.sync_tier_ids();
         let removed = self.tiers.remove(index);
         let removed_id = self.tier_ids.remove(index);
         let removed_target = self.tier_targets.remove(&removed_id);
         let removed_offset = self.shift_cheater_offsets_for_remove(index);
         let removed_note = self.shift_tier_notes_for_remove(index);
-        let mut steps = vec![Edit::AddTier {
-            index,
-            tier: removed,
-        }];
+        let mut steps = vec![
+            Edit::AddTier {
+                index,
+                tier: removed,
+            },
+            // `AddTier`'s own apply allocates a FRESH `TierId` (the only way one
+            // is ever created outside a reload -- see `Design::allocate_tier_id`),
+            // never the removed one, so this step overwrites it back to
+            // `removed_id` -- restoring the SAME identity, not a merely distinct
+            // one, is the whole point of undoing a removal (see `TierId`'s own
+            // "never reused" doc comment: this is the one case a plain `AddTier`
+            // inverse would otherwise silently violate). Ordered BEFORE
+            // `SetTierTarget` below: that step resolves its own id via
+            // `Design::tier_id_at(index)`, which must already read back
+            // `removed_id` for the restored target to attach to the right tier.
+            Edit::RestoreTierId {
+                index,
+                id: removed_id,
+            },
+        ];
         // Restore the removed tier's own cheater offset/note/target (if any) as
-        // further steps: `AddTier`'s own apply allocates a FRESH `TierId` (never
-        // the removed one, since a `TierId` is never reused -- see that type's own
-        // doc comment) and only reindexes every OTHER positional entry (see
-        // `Self::shift_cheater_offsets_for_insert`/`Self::shift_tier_notes_for_
-        // insert`), so the specific values have to be set back explicitly,
-        // resolved against whichever id now occupies `index`, to reproduce exact
-        // pre-removal state on undo.
+        // further steps: `AddTier`/`RestoreTierId` above only reindex every OTHER
+        // positional entry (see `Self::shift_cheater_offsets_for_insert`/
+        // `Self::shift_tier_notes_for_insert`), so the specific values have to be
+        // set back explicitly, resolved against whichever id now occupies
+        // `index`, to reproduce exact pre-removal state on undo.
         if let Some(offset_deg) = removed_offset {
             steps.push(Edit::SetCheaterOffset {
                 index,
@@ -226,11 +288,10 @@ impl Design {
                 target: Some(target),
             });
         }
-        Ok(if steps.len() == 1 {
-            steps.remove(0)
-        } else {
-            Edit::Batch(steps)
-        })
+        // Always at least `[AddTier, RestoreTierId]` now, so this is always a
+        // real `Batch` -- unlike before `RestoreTierId` existed, there is no
+        // remaining single-step case to collapse to.
+        Ok(Edit::Batch(steps))
     }
 
     /// [`Edit::SetMeta`]'s own apply/inverse half, split out of
@@ -474,6 +535,11 @@ impl Design {
                 tier_count,
             });
         }
+        // See `Self::apply_edit`'s matching `AddTier` comment: self-heals
+        // against a caller that mutated `self.tiers` directly, run only after
+        // both bounds checks above so a rejected edit still leaves `self`
+        // untouched.
+        self.sync_tier_ids();
         let tier = self.tiers.remove(from);
         self.tiers.insert(to, tier);
         let id = self.tier_ids.remove(from);
@@ -483,10 +549,36 @@ impl Design {
         Ok(Edit::MoveTier { from: to, to: from })
     }
 
+    /// [`Edit::SetSchedule`]'s own validation, split out of [`Self::apply_edit`]
+    /// purely to stay under clippy's `too_many_lines`: rejects a zero
+    /// index-gear tooth count or symmetry order, both of which make every
+    /// tier's index-wheel position meaningless downstream (division/modulo by
+    /// zero in `crate::orbit`/`crate::design::export`) and produce a
+    /// `g 0 ...`/`y 0 ...` schedule `indicatrix_formats::asc::parse_asc` rejects
+    /// outright, so the written file could never be reopened. Reuses
+    /// [`EditError`]'s only shape (no tier index is meaningful for a
+    /// schedule-wide validation failure) rather than widening this crate's one
+    /// edit-error type for this single caller.
+    const fn validate_schedule(
+        gear_teeth: i32,
+        symmetry_order: u32,
+        tier_count: usize,
+    ) -> Result<(), EditError> {
+        if gear_teeth == 0 || symmetry_order == 0 {
+            Err(EditError {
+                index: 0,
+                tier_count,
+            })
+        } else {
+            Ok(())
+        }
+    }
+
     /// [`Edit::SetSchedule`]'s own apply/inverse half, split out of
     /// [`Self::apply_edit`] purely to stay under clippy's `too_many_lines`. Never
-    /// fails (no tier index involved), so this returns the inverse [`Edit`]
-    /// directly rather than a `Result`.
+    /// fails on its own (validated by [`Self::validate_schedule`] first, in
+    /// [`Self::apply_edit`]), so this returns the inverse [`Edit`] directly
+    /// rather than a `Result`.
     const fn apply_set_schedule(
         &mut self,
         gear_teeth: i32,

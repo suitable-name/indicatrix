@@ -1,0 +1,71 @@
+import { Theme } from "theme.slint";
+import { AppModel } from "../models/app_model.slint";
+
+// The one-line status strip along the bottom, modelled on the desktop's
+// `components/editor_status_strip.slint`: a state dot, the design name with its
+// unsaved marker, the solve status, the last message (red for an error), and the
+// backend/performance slot the renderer writes into.
+export component StatusStrip inherits Rectangle {
+    height: 26px;
+    background: Theme.bg-card;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 10px;
+
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 7px;
+                height: 7px;
+                border-radius: 3.5px;
+                background: !AppModel.has-design ? Theme.text-muted
+                    : (AppModel.solve-problem ? Theme.accent-amber : Theme.accent-emerald);
+            }
+        }
+
+        Text {
+            text: !AppModel.has-design ? "No design"
+                : (AppModel.design-name + (AppModel.is-dirty ? "  \u{2022} unsaved" : ""));
+            font-size: 11px;
+            font-weight: 600;
+            color: AppModel.is-dirty ? Theme.accent-amber : Theme.text-primary;
+            vertical-alignment: center;
+            overflow: elide;
+            max-width: 260px;
+        }
+
+        if AppModel.has-design: Text {
+            text: AppModel.solve-status;
+            font-size: 11px;
+            color: AppModel.solve-problem ? Theme.accent-amber : Theme.text-secondary;
+            vertical-alignment: center;
+            overflow: elide;
+            max-width: 320px;
+        }
+
+        Text {
+            horizontal-stretch: 1;
+            text: AppModel.message;
+            font-size: 11px;
+            color: AppModel.message-kind == "error" ? Theme.danger
+                : (AppModel.message-kind == "warning" ? Theme.accent-amber : Theme.text-muted);
+            vertical-alignment: center;
+            overflow: elide;
+        }
+
+        Text {
+            text: AppModel.backend-text;
+            font-size: 10px;
+            color: Theme.accent-cyan;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            overflow: elide;
+            max-width: 280px;
+        }
+    }
+}

@@ -1,0 +1,263 @@
+import { Theme } from "../../theme.slint";
+import { LineEdit } from "std-widgets.slint";
+
+// A labelled text field. `min-width: 0px` overrides the fluent `LineEdit`'s 160px
+// minimum so three of them fit side by side in a narrow card. `committed` fires on
+// Enter and when the field loses focus, so a field's owner can react once per edit.
+export component RoughField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> placeholder;
+    in property <bool> editable: true;
+    in-out property <string> value;
+    callback committed();
+
+    // Set by a keystroke, cleared by the commit, so Enter followed by the focus
+    // loss it causes reports one edit, not two.
+    property <bool> dirty: false;
+
+    horizontal-stretch: 1;
+    spacing: 2px;
+
+    Text {
+        text: root.label;
+        font-size: 10px;
+        color: Theme.text-muted;
+    }
+    LineEdit {
+        min-width: 0px;
+        text <=> root.value;
+        placeholder-text: root.placeholder;
+        enabled: root.editable;
+        edited(t) => { root.dirty = true; }
+        accepted => {
+            if root.dirty {
+                root.dirty = false;
+                root.committed();
+            }
+        }
+        changed has-focus => {
+            if !self.has-focus && root.dirty {
+                root.dirty = false;
+                root.committed();
+            }
+        }
+    }
+}
+
+// A single line of text that shows an ellipsis instead of pushing its row wider.
+// It is a wrapper with a fixed-size `Text` inside because that is what lets a
+// stretching row shrink below the text's natural width.
+export component ElidedText inherits Rectangle {
+    in property <string> text;
+    in property <length> font_size: 11px;
+    in property <int> font_weight: 400;
+    in property <color> text_color: Theme.text-primary;
+    in property <TextHorizontalAlignment> alignment: TextHorizontalAlignment.left;
+
+    horizontal-stretch: 1;
+    min-width: 0px;
+    min-height: root.font_size + 5px;
+
+    Text {
+        width: parent.width;
+        height: parent.height;
+        text: root.text;
+        font-size: root.font_size;
+        font-weight: root.font_weight;
+        color: root.text_color;
+        horizontal-alignment: root.alignment;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+// One radio-style choice row (the candidates picker). Drawn by hand: a std
+// `CheckBox` cannot be driven by a model property without losing its binding on
+// the first click. It takes keyboard focus (Tab) and Space or Enter picks it.
+export component RoughRadio inherits Rectangle {
+    in property <bool> selected;
+    in property <string> label;
+    in property <bool> editable: true;
+    callback picked();
+
+    height: 22px;
+    background: radio_touch.has-hover && root.editable ? Theme.surface-control-hover : transparent;
+    border-radius: Theme.radius-sm;
+    border-width: radio_focus.has-focus ? 1px : 0px;
+    border-color: Theme.accent-cyan;
+
+    accessible-role: radio-button;
+    accessible-label: root.label;
+    accessible-checkable: true;
+    accessible-checked: root.selected;
+    accessible-enabled: root.editable;
+    accessible-action-default => {
+        if root.editable {
+            root.picked();
+        }
+    }
+
+    radio_focus := FocusScope {
+        enabled: root.editable;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.picked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 8px;
+        alignment: start;
+
+        Rectangle {
+            width: 14px;
+            Rectangle {
+                x: 0px;
+                y: (parent.height - self.height) / 2;
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                border-width: 1px;
+                border-color: root.selected ? Theme.accent-cyan
+                    : (radio_touch.has-hover && root.editable ? Theme.text-secondary : Theme.border-control);
+                background: Theme.surface-sunken;
+                Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: 6px;
+                    height: 6px;
+                    border-radius: 3px;
+                    background: Theme.accent-cyan;
+                    visible: root.selected;
+                }
+            }
+        }
+        Text {
+            text: root.label;
+            font-size: 12px;
+            color: root.editable ? Theme.text-primary : Theme.text-disabled;
+            vertical-alignment: center;
+        }
+    }
+    radio_touch := TouchArea {
+        enabled: root.editable;
+        mouse-cursor: pointer;
+        clicked => { root.picked(); }
+    }
+}
+
+// A small text-button pill. A disabled pill is greyed out and swallows clicks. It
+// takes keyboard focus (Tab) and Space or Enter presses it.
+export component RoughPill inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 20px;
+    border-radius: 10px;
+    border-width: pill_focus.has-focus ? 2px : 1px;
+    border-color: !root.enabled ? Theme.border-subtle
+        : (pill_focus.has-focus ? Theme.accent-cyan-hover
+            : (root.active ? Theme.accent-cyan : Theme.border-control));
+    background: !root.enabled ? Theme.surface-disabled
+        : (ta.has-hover ? Theme.surface-control-hover : Theme.surface-control);
+
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => {
+        if root.enabled {
+            root.clicked();
+        }
+    }
+
+    pill_focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 7px;
+        padding-right: 7px;
+        Text {
+            text: root.text;
+            font-size: 10px;
+            color: !root.enabled ? Theme.text-disabled
+                : (root.active ? Theme.accent-cyan : Theme.text-secondary);
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+}
+
+// An expander chevron drawn with Path (never unicode glyphs).
+export component Chevron inherits Rectangle {
+    in property <bool> open: false;
+    in property <color> stroke_color: Theme.text-secondary;
+    width: 8px;
+    height: 8px;
+
+    if root.open: Path {
+        width: 100%;
+        height: 100%;
+        stroke: root.stroke_color;
+        stroke-width: 1.5px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 8;
+        viewbox-height: 8;
+        MoveTo { x: 1; y: 2; }
+        LineTo { x: 4; y: 6; }
+        LineTo { x: 7; y: 2; }
+    }
+
+    if !root.open: Path {
+        width: 100%;
+        height: 100%;
+        stroke: root.stroke_color;
+        stroke-width: 1.5px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 8;
+        viewbox-height: 8;
+        MoveTo { x: 2; y: 1; }
+        LineTo { x: 6; y: 4; }
+        LineTo { x: 2; y: 7; }
+    }
+}
+
+// A left-pointing chevron ("back"), drawn with Path.
+export component BackChevron inherits Rectangle {
+    in property <color> stroke_color: Theme.text-secondary;
+    width: 8px;
+    height: 8px;
+
+    Path {
+        width: 100%;
+        height: 100%;
+        stroke: root.stroke_color;
+        stroke-width: 1.5px;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: 8;
+        viewbox-height: 8;
+        MoveTo { x: 6; y: 1; }
+        LineTo { x: 2; y: 4; }
+        LineTo { x: 6; y: 7; }
+    }
+}

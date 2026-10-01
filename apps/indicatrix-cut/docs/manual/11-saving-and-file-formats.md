@@ -4,9 +4,11 @@
 
 This chapter explains the two file formats the editor writes — `.asc` and
 `.indicatrix.toml` — when to use each, and how the app handles a catalogue
-design's original file versus a locally edited one.
+design's original file versus a locally edited one. It also covers the
+experimental Gem Cut Studio `.gcs` export and opening `.gem`/`.gcs` files
+directly in the editor.
 
-## `.asc` — the plain cutting-schedule file
+## `.asc` — the plain cutting-instructions file
 
 `.asc` is the long-standing GemCAD-style schedule format: a plain text
 file listing every facet's angle, index, and meet instruction. Two
@@ -40,6 +42,43 @@ file stored in the catalogue, not your edits"):
   see the file's RECONSTRUCTED header)." Do not treat a reconstructed
   file's masts as real cutting depths — solve it properly first.
 
+## `.gcs` — Gem Cut Studio export (experimental)
+
+**Export as Gem Cut Studio (.gcs)...** writes the same cutting instructions
+**Export Edited .asc** would write, as a Gem Cut Studio `.gcs` file. In the
+editor it sits in the command bar's **Export...** menu and in the File menu;
+it re-solves the design first and asks the same "not a closed solid"
+question as the `.asc` export. In the catalogue, the small **gcs** button next
+to Export .asc exports a design's original `.gcs` file unchanged when it was
+imported from one, and otherwise writes one from its attached `.asc` (a design
+with no attached `.asc` has no mast distances, so the app asks you to solve it
+in the editor and export from there). The app computes every facet's polygon
+from the facet planes and rescales the stone the way Gem Cut Studio does. The
+export is marked **experimental**: it follows the published Gem Cut Studio
+1.1 file description and reads back correctly in this app, but it has not yet
+been checked in Gem Cut Studio itself, and chiral designs (crown and pavilion
+twisted against each other) are untested. Open the file in Gem Cut Studio and
+compare it with the faceting diagram before cutting from it.
+
+## Opening `.gem` and `.gcs` files in the editor
+
+**Open Native** also accepts a GemCAD `.gem` file or a Gem Cut Studio `.gcs`
+file. The design is converted to `.asc` cutting instructions exactly as Import
+converts it (Chapter 1) and opens like a plain `.asc` with no sidecar. The
+window title names the file you opened, but the design is recorded under
+`<name>.asc`: **Save Native** asks where to write a new `.asc` and
+`.indicatrix.toml` pair and never overwrites the `.gem` or `.gcs`. Anything the
+converter noted (a preform that is not converted, a hidden tier, a missing
+refractive index) is listed in the toast.
+
+The same conversion applies to catalogue designs. When a design's attachments
+include no `.asc` but do include a `.gem` (or, failing that, a `.gcs`), **Load
+Selected**, the detail view's 3D preview and a remote worker's library all
+build the design from that file's real facet geometry instead of the
+placeholder angle-table reconstruction, and the catalogue's **Export .asc**
+writes the converted cutting instructions. A file that cannot be read falls
+back to the angle table exactly as an unreadable `.asc` does.
+
 ## `.indicatrix.toml` — this app's own native format
 
 `.asc` has no place to record everything this editor tracks: the rough's
@@ -69,6 +108,21 @@ that any other GemCAD-compatible tool can open.
 - Saving keeps the file's previous version as a `.bak` backup alongside
   it, for both the `.asc` and the `.toml` — one generation back, so a
   second save overwrites the previous `.bak` in turn.
+- If a tier's name has an embedded space (e.g. "Crown Main"), the paired
+  `.asc` never carries it as-is — every run of whitespace becomes a single
+  `_` (so it round-trips through `.asc`'s single-token name field without
+  splitting apart on reopen), and it shows up there as "Crown_Main". Your
+  actual, human-typed name is not lost: it still lives in the
+  `.indicatrix.toml` sidecar and is restored whenever you open that native
+  file again — a plain `.asc` export is the only place the underscored form
+  is ever seen.
+- `.asc` has no field of its own for a cheater/azimuth offset (Chapter 4),
+  so a tier you have offset is exported with its index-wheel position(s)
+  shifted by a fraction of a tooth instead — `offset_deg / 360 * gear
+  teeth`, added to each of that tier's indices and rounded to three decimal
+  places — rather than the offset simply being dropped. Any GemCAD-compatible
+  tool reading the plain `.asc` alone sees the shifted index positions, not
+  a separate azimuth field.
 
 A design with no anchor tiers, or no tiers at all, can still be saved --
 Save Native writes it as a **draft**: a placeholder `.asc` (real angles and
@@ -78,6 +132,15 @@ draft (no scale-reference tier yet). Add a scale-reference tier to finish
 it." Opening a draft back up rebuilds its tiers from the sidecar, ignoring
 the placeholder `.asc` masts entirely, so nothing is lost by parking a
 design mid-thought.
+
+A design with more facet planes than the solver can verify (currently more
+than 400 total planes) is saved the same way, as a draft, rather than being
+rejected outright: the solved masts it would otherwise produce are not
+trustworthy placeholders, so the app treats it exactly like the
+no-anchor-tier case above — a placeholder `.asc` plus a native sidecar that
+still carries every tier's real constraint, so nothing about the design
+itself is lost. Solve down to 400 planes or fewer (or split the design) to
+get real cutting instructions out of it.
 
 The `.indicatrix.toml` file is plain text (TOML format), which means you can
 open it in a text editor, read it, add your own comments, and put it under
@@ -129,9 +192,13 @@ pair is safely written to disk, and only ever adds to your success — a
 failure to update the catalogue is reported as its own toast ("Catalogue
 not updated: ...") without undoing or invalidating the file save you just
 made, since the files on disk are already the design of record either
-way. The ordinary success toast itself only mentions the files ("Saved
-'...' and '...' ..."), not the catalogue update, since the update is the
-normal case.
+way. This holds even for an unexpected internal error while the catalogue
+write-back re-measures the design's geometry: that step is guarded so it
+cannot bring down the save in progress, and instead reports "...updating
+the catalogue failed unexpectedly... the file itself is safe; try Save
+again to retry the catalogue update." The ordinary success toast itself
+only mentions the files ("Saved '...' and '...' ..."), not the catalogue
+update, since the update is the normal case.
 
 ### What a Save Native update deletes
 
@@ -180,11 +247,14 @@ the previous session did not shut down cleanly), it offers to recover it
 **before** offering to reopen your last design — a dialog headed
 **"Recover unsaved work?"** with the message "The previous session ended
 without saving. A recovery file is still on disk: `<path>`", and buttons
-**Recover** / **Not now**. Declining leaves the file exactly where it is;
-it is only ever cleared by a later successful save, not by declining the
-offer. (With no leftover autosave, the same dialog instead offers to
-reopen your most recently used native file, headed **"Reopen last
-design?"** with **Reopen** / **Not now**.)
+**Recover** / **Not now** / **Delete**. Declining ("Not now") leaves the
+file exactly where it is; it is only ever cleared by a later successful
+save, not by declining the offer. Choosing **Delete** instead removes
+exactly that one offered autosave file immediately, without opening it.
+(With no leftover autosave, the same dialog instead offers to reopen your
+most recently used native file, headed **"Reopen last design?"** with only
+**Reopen** / **Not now** — no Delete, since that file is your own real
+save, not a recovery snapshot.)
 
 An autosave is self-contained: it carries the full tier list, material,
 offsets and notes, so recovery never asks for a paired `.asc`.
@@ -256,6 +326,7 @@ or drifted file is the trusted original.
 | Hand a plain schedule to another cutter or another program | **Export Edited .asc** (editor) |
 | Keep working on this design later in this app, with everything preserved | **Save Native** |
 | Get the design's original file back out unchanged | **Export .asc** from the catalogue (when an original is attached) |
+| Hand the design to a Gem Cut Studio user | **Export as Gem Cut Studio (.gcs)...** (experimental) |
 
 Save Native is the safer everyday choice while you are actively working on
 a design, since it never leaves you with only a format this app can open —

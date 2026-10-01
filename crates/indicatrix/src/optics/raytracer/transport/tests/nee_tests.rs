@@ -295,3 +295,170 @@ fn frosted_girdle_nee_on_and_off_converge_to_the_same_mean_on_a_uniform_hdr_map(
          rel_err=({ex}, {ey}, {ez}), tolerance={TOLERANCE})"
     );
 }
+
+/// Regression: the two tests above use a colourless, NON-dispersive scattering
+/// probe, which cannot see either bug fixed alongside this test -- (a) the exit-split
+/// radiance a scatter event's continuation picks up had no MIS weight against a live
+/// NEE carry, and (b) the scattering-point NEE deposit was weighted by the FINAL
+/// post-loop `path_pdf` rather than its own moment's `path_pdf`/`compat`. Both biases
+/// are chromatic MIS-family effects that a same-index-every-channel material cannot
+/// exercise (every channel shares one family). `GemMaterial::diamond()` is genuinely
+/// dispersive (`Sellmeier3`) and colourless (`sigma_a == 0`), isolating both fixes from
+/// chromatic absorption -- see `ruby_scattering_nee_on_and_off_agree_within_half_a_percent`
+/// below for the absorbing-medium companion. Before the fix this measured NEE-on/NEE-off
+/// disagreeing by several percent (review-measured: 1.0598 vs 0.9911 relative to the
+/// furnace's own true value); after the fix both sides agree with each other (each
+/// converges independently to the analytic furnace target -- see
+/// `scattering_tests::dispersive_lossless_scattering_white_furnace_energy_conservation_holds`).
+#[test]
+fn dispersive_scattering_nee_on_and_off_converge_to_the_same_mean() {
+    const SAMPLES: u32 = 20_000;
+    const TOLERANCE: f32 = 0.02;
+    const MAX_BOUNCES: u32 = 64;
+    let planes = StandardGemCuts::standard_round_brilliant();
+    let plane_soa = build_plane_soa(&planes);
+    let material = GemMaterial::diamond().with_scattering(1.5, 0.3);
+    let env_map = crate::renderer::env_map::EnvironmentMap::uniform(4, 2, [2.0, 2.0, 2.0]);
+    let environment = EnvironmentSource::HdrMap(&env_map);
+    let ray = Ray {
+        origin: Vec3::new(0.0, 2.5, 0.0),
+        dir: Vec3::new(0.12, -1.0, 0.06).normalize(),
+    };
+
+    let mut sum_on = Vec3::ZERO;
+    let mut sum_off = Vec3::ZERO;
+    for i in 0..SAMPLES {
+        let seed = 77_000 + i;
+        let hero_rand = (hash_u32(seed) as f32) / 4_294_967_295.0;
+        sum_on += trace_spectral_ray_inner(
+            ray,
+            &planes,
+            &plane_soa,
+            &[],
+            &material,
+            MAX_BOUNCES,
+            environment,
+            seed,
+            hero_rand,
+            None,
+            true,
+            true,
+            true,
+            None,
+        );
+        sum_off += trace_spectral_ray_inner(
+            ray,
+            &planes,
+            &plane_soa,
+            &[],
+            &material,
+            MAX_BOUNCES,
+            environment,
+            seed,
+            hero_rand,
+            None,
+            true,
+            true,
+            false,
+            None,
+        );
+    }
+    let mean_on = sum_on / SAMPLES as f32;
+    let mean_off = sum_off / SAMPLES as f32;
+    let rel_err = |v: f32, t: f32| (v - t).abs() / t.abs().max(1e-6);
+    let (ex, ey, ez) = (
+        rel_err(mean_on.x, mean_off.x),
+        rel_err(mean_on.y, mean_off.y),
+        rel_err(mean_on.z, mean_off.z),
+    );
+    println!(
+        "[dispersive scattering NEE] mean_on={mean_on:?} mean_off={mean_off:?} \
+         rel_err=({ex:.4}, {ey:.4}, {ez:.4})"
+    );
+    assert!(
+        ex <= TOLERANCE && ey <= TOLERANCE && ez <= TOLERANCE,
+        "a dispersive scattering material's NEE-on and NEE-off means should converge \
+         (mean_on={mean_on:?}, mean_off={mean_off:?}, rel_err=({ex}, {ey}, {ez}), \
+         tolerance={TOLERANCE})"
+    );
+}
+
+/// F-09b regression, absorbing-medium companion to the dispersive test above: an
+/// ABSORBING scattering material (`GemMaterial::ruby()`, chromatic per-channel
+/// absorption) makes the NEE deposit's mis-weighting visible even without dispersion,
+/// since absorption alone already makes each channel's own `path_pdf` diverge over the
+/// path -- measured at ~+0.4-0.9% before this fix (0.6006 -> 0.6062), within
+/// ~0.1% after (-> 0.6008). Tolerance kept at 0.5% (10x the measured residual)
+/// for CPU-only sample-budget headroom.
+#[test]
+fn ruby_scattering_nee_on_and_off_agree_within_half_a_percent() {
+    const SAMPLES: u32 = 20_000;
+    const TOLERANCE: f32 = 0.005;
+    const MAX_BOUNCES: u32 = 64;
+    let planes = StandardGemCuts::standard_round_brilliant();
+    let plane_soa = build_plane_soa(&planes);
+    let material = GemMaterial::ruby().with_scattering(1.2, 0.4);
+    let env_map = crate::renderer::env_map::EnvironmentMap::uniform(4, 2, [2.0, 2.0, 2.0]);
+    let environment = EnvironmentSource::HdrMap(&env_map);
+    let ray = Ray {
+        origin: Vec3::new(0.0, 2.5, 0.0),
+        dir: Vec3::new(0.1, -1.0, 0.05).normalize(),
+    };
+
+    let mut sum_on = Vec3::ZERO;
+    let mut sum_off = Vec3::ZERO;
+    for i in 0..SAMPLES {
+        let seed = 91_000 + i;
+        let hero_rand = (hash_u32(seed) as f32) / 4_294_967_295.0;
+        sum_on += trace_spectral_ray_inner(
+            ray,
+            &planes,
+            &plane_soa,
+            &[],
+            &material,
+            MAX_BOUNCES,
+            environment,
+            seed,
+            hero_rand,
+            None,
+            true,
+            true,
+            true,
+            None,
+        );
+        sum_off += trace_spectral_ray_inner(
+            ray,
+            &planes,
+            &plane_soa,
+            &[],
+            &material,
+            MAX_BOUNCES,
+            environment,
+            seed,
+            hero_rand,
+            None,
+            true,
+            true,
+            false,
+            None,
+        );
+    }
+    let mean_on = sum_on / SAMPLES as f32;
+    let mean_off = sum_off / SAMPLES as f32;
+    let rel_err = |v: f32, t: f32| (v - t).abs() / t.abs().max(1e-6);
+    let (ex, ey, ez) = (
+        rel_err(mean_on.x, mean_off.x),
+        rel_err(mean_on.y, mean_off.y),
+        rel_err(mean_on.z, mean_off.z),
+    );
+    println!(
+        "[ruby scattering NEE] mean_on={mean_on:?} mean_off={mean_off:?} \
+         rel_err=({ex:.4}, {ey:.4}, {ez:.4})"
+    );
+    assert!(
+        ex <= TOLERANCE && ey <= TOLERANCE && ez <= TOLERANCE,
+        "ruby's absorbing scattering medium NEE-on and NEE-off means should agree \
+         within {TOLERANCE} (mean_on={mean_on:?}, mean_off={mean_off:?}, \
+         rel_err=({ex}, {ey}, {ez}))"
+    );
+}

@@ -1,8 +1,13 @@
 //! [`Epoch`]: the state one [`super::LanePool`] run shares between its lane threads,
 //! and the claim / settle / pause steps that keep the in-flight bookkeeping consistent.
+//!
+//! A claimed chunk is a [`Claim`] guard: dropping it without settling (a panic unwinding
+//! out of the lane's loop) returns the whole range to the cursor and decrements the
+//! in-flight count, so a panicking lane can never leave the others waiting for a chunk
+//! that no longer has an owner.
 
-use super::{PoolConfig, PoolEvent};
-use crate::{CancelToken, Merger, SampleCursor, SampleRange};
+use super::{LaneSlot, PoolConfig, PoolEvent};
+use crate::{CancelToken, Merger, RateModel, SampleCursor, SampleRange};
 use indicatrix_net::SceneState;
 use std::{
     sync::{Condvar, Mutex, MutexGuard, PoisonError},
@@ -43,6 +48,34 @@ impl Sched {
     }
 }
 
+/// A chunk claimed from the cursor and not yet settled; see the module doc.
+pub(super) struct Claim<'e> {
+    epoch: &'e Epoch<'e>,
+    range: SampleRange,
+    settled: bool,
+}
+
+impl Claim<'_> {
+    /// The claimed sample range.
+    pub(super) const fn range(&self) -> SampleRange {
+        self.range
+    }
+
+    /// Settles the chunk: the prefix `done` was merged, the tail goes back to the cursor.
+    pub(super) fn settle(mut self, done: u32) {
+        self.settled = true;
+        self.epoch.release(self.range, done);
+    }
+}
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        if !self.settled {
+            self.epoch.release(self.range, 0);
+        }
+    }
+}
+
 /// Everything one run's lanes share. Built by `LanePool::run_unchecked`.
 pub(super) struct Epoch<'a> {
     pub(super) scene: &'a SceneState,
@@ -56,6 +89,9 @@ pub(super) struct Epoch<'a> {
     /// `width * height`.
     pub(super) pixels: usize,
     pub(super) sched: Sched,
+    /// Every registered lane's rate model (this one included), for [`Self::want`]'s
+    /// share-of-what-is-left computation.
+    pub(super) lanes: &'a [LaneSlot],
 }
 
 impl Epoch<'_> {
@@ -64,10 +100,42 @@ impl Epoch<'_> {
         (self.events)(event);
     }
 
+    /// The next chunk size for a lane whose own rate model is `rate`: the policy's
+    /// calibration chunk while uncalibrated, otherwise a tail-aware, share-aware size
+    /// (see [`crate::ChunkPolicy::tail_aware_samples`]) from this lane's current rate,
+    /// the run's outstanding sample count, and every lane's summed rate.
+    pub(super) fn want(&self, rate: &Mutex<RateModel>) -> u32 {
+        let current = {
+            let model = rate.lock().unwrap_or_else(PoisonError::into_inner);
+            if !model.is_calibrated() {
+                return self.config.policy.first_chunk_samples();
+            }
+            model.rate()
+        };
+        let remaining = self.target.saturating_sub(self.merger.total());
+        self.config
+            .policy
+            .tail_aware_samples(current, remaining, self.sum_rates())
+    }
+
+    /// Sum of every lane's current rate (guess or calibrated estimate) -- cheap for the
+    /// handful of lanes one job has.
+    fn sum_rates(&self) -> f64 {
+        self.lanes
+            .iter()
+            .map(|slot| {
+                slot.rate
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .rate()
+            })
+            .sum()
+    }
+
     /// Claims up to `want` samples, waiting while nothing is claimable but another
     /// lane still has a chunk in flight (it may fail and return a remainder). `None`
     /// when cancelled or when nothing is left and nothing can come back.
-    pub(super) fn claim(&self, want: u32) -> Option<SampleRange> {
+    pub(super) fn claim(&self, want: u32) -> Option<Claim<'_>> {
         let mut in_flight = self.sched.lock();
         loop {
             if self.cancel.is_cancelled() {
@@ -75,7 +143,11 @@ impl Epoch<'_> {
             }
             if let Some((first, count)) = self.cursor.claim_any(want) {
                 *in_flight += 1;
-                return Some(SampleRange::new(first, count));
+                return Some(Claim {
+                    epoch: self,
+                    range: SampleRange::new(first, count),
+                    settled: false,
+                });
             }
             if *in_flight == 0 {
                 return None;
@@ -86,13 +158,30 @@ impl Epoch<'_> {
 
     /// Ends a claimed chunk of which the prefix `done` was merged: returns the tail to
     /// the cursor for any lane and wakes every waiting lane.
-    pub(super) fn settle(&self, range: SampleRange, done: u32) {
+    fn release(&self, range: SampleRange, done: u32) {
         let tail = range.after_prefix(done);
         let mut in_flight = self.sched.lock();
         self.cursor.requeue(tail.first_sample, tail.samples);
-        *in_flight -= 1;
+        *in_flight = in_flight.saturating_sub(1);
         drop(in_flight);
         self.sched.wake.notify_all();
+    }
+
+    /// Waits until the merge frontier moves past `seen`, the run is cancelled, or no
+    /// other lane has a chunk in flight (nothing left that could advance it). Always
+    /// waits at least one poll interval, so a lane whose merge was refused can never spin.
+    pub(super) fn wait_for_frontier(&self, seen: u32) {
+        let earliest_exit = Instant::now() + POLL;
+        let mut in_flight = self.sched.lock();
+        loop {
+            if self.cancel.is_cancelled() || self.merger.frontier() != seen {
+                return;
+            }
+            if *in_flight == 0 && Instant::now() >= earliest_exit {
+                return;
+            }
+            in_flight = self.sched.wait(in_flight, POLL);
+        }
     }
 
     /// A failed lane's pause. `true` when the full pause elapsed and work may still

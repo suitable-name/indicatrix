@@ -41,11 +41,14 @@ mod spectral;
 mod tests;
 
 // rig.rs
+pub use rig::sample_studio_environment_with_rig;
 pub(super) use rig::{
-    environment_nee_pdf, fill_backdrop, sample_environment_channel, sample_environment_for_nee,
+    environment_nee_pdf, fill_backdrop, sample_environment_channel, sample_environment_channels,
+    sample_environment_for_nee,
 };
 
 // spectral.rs
+use spectral::{BlackbodyNorm, IlluminantSpectrum};
 pub use spectral::{blackbody_spectrum, d65_relative_spectral_power};
 
 /// Colour temperature and rig-intensity parameters for one named studio lighting preset.
@@ -109,7 +112,7 @@ impl LightingModel {
 
 impl LightingPreset {
     /// All seven presets, in the same order as their UI index / the `lighting_options`
-    /// combo box list (`app.slint`).
+    /// combo box list (`apps/indicatrix-cut/ui/models/viewport.slint`).
     pub const ALL: [Self; 7] = [
         Self::Daylight,
         Self::Incandescent,
@@ -241,10 +244,17 @@ impl LightingPreset {
     /// preset's colour temperature.
     #[must_use]
     pub fn spectral_power(self, lambda_nm: f32) -> f32 {
+        self.illuminant_spectrum().power(lambda_nm)
+    }
+
+    /// This preset's illuminant curve with the temperature-only Planck constants
+    /// resolved once, for callers that evaluate several wavelengths. Calling `.power(l)` on
+    /// the result is bit-identical to `Self::spectral_power` at `l` for every `l`.
+    fn illuminant_spectrum(self) -> IlluminantSpectrum {
         if self.uses_d65() {
-            d65_relative_spectral_power(lambda_nm)
+            IlluminantSpectrum::D65
         } else {
-            blackbody_spectrum(lambda_nm, self.params().temp_k)
+            IlluminantSpectrum::Blackbody(BlackbodyNorm::new(self.params().temp_k))
         }
     }
 
@@ -347,12 +357,15 @@ pub(crate) fn environment_white_balance(environment: EnvironmentSource<'_>) -> V
 ///
 /// The lit models' head shadow is off here; see
 /// [`sample_studio_environment_observed`].
+///
 /// Builds a fresh [`StudioRig`](crate::optics::studio_rig::StudioRig) every call, right
-/// for a single ad-hoc lookup (this function's public callers, and
-/// `color::metrics::evaluate_gem_optical_metrics`). `trace_spectral_ray`'s per-bounce
-/// environment lookups instead use [`sample_studio_environment_with_rig`](rig::sample_studio_environment_with_rig)
-/// via `accumulate_miss_radiance`, which builds the rig once per ray and reuses it across
-/// all `NUM_CHANNELS` channels.
+/// for a single ad-hoc lookup. Callers that look up many directions under one light pose
+/// (`color::metrics`' illumination test) build the rig once and call
+/// [`sample_studio_environment_with_rig`]; `trace_spectral_ray`'s per-bounce
+/// environment lookups likewise borrow the rig that `trace_spectral_ray_inner` builds
+/// once per trace, so no per-sample
+/// `StudioRig::new` runs; `accumulate_miss_radiance` then evaluates all `NUM_CHANNELS`
+/// channels in one pass over the wavelength-independent geometry.
 #[must_use]
 pub fn sample_studio_environment(
     dir: Vec3,
@@ -391,16 +404,8 @@ pub fn sample_studio_environment_observed(
     observer: Vec3,
 ) -> f32 {
     // Key/fill/ring directions come from the shared `StudioRig` (see its module doc
-    // for why this is not recomputed inline here) -- the SAME construction
-    // `color::metrics::evaluate_gem_optical_metrics` uses to score the image this
-    // function lights, so the two can never silently drift apart.
+    // for why this is not recomputed inline here) -- the same construction the GPU
+    // environment check and every per-ray trace use, so they cannot silently drift apart.
     let rig = crate::optics::studio_rig::StudioRig::new(light_yaw, light_pitch);
-    rig::sample_studio_environment_with_rig(
-        dir,
-        lambda_nm,
-        lighting_preset,
-        exposure,
-        &rig,
-        observer,
-    )
+    sample_studio_environment_with_rig(dir, lambda_nm, lighting_preset, exposure, &rig, observer)
 }

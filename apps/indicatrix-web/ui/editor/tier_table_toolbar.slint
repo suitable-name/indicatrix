@@ -1,0 +1,212 @@
+import { LineEdit } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { AppModel } from "../models/app_model.slint";
+import { GuideModel } from "../models/guide_model.slint";
+import { MiniField, TableStyle, ToolButton } from "tier_table_style.slint";
+import { TierTableModel } from "tier_table_model.slint";
+
+// The tier table's toolbar (the desktop's `tier_table_toolbar.slint`): the name / index /
+// block / strategy filter box, "Adopt all" and the "Select" (multi-select checkbox
+// column) toggle, the "Steps / Mirror" panel (a step-cut ladder generator and "mirror the
+// selected tier to the other block"), and -- only while more than one row is
+// multi-selected -- the batch bar (count, Clear, Delete, Adopt sel., angle Offset).
+export component TierTableToolbar inherits VerticalLayout {
+    spacing: 4px;
+
+    // The filter box: dims the non-matching rows (they stay in the list so the arrow
+    // keys keep working on the whole list).
+    // A std `LineEdit` is taller than 24px; left to stretch it spilled out of this row
+    // and was drawn over the button row below (Adopt all / Select). It is pinned to the
+    // row's height here (the `MiniField` recipe) and centred.
+    Rectangle {
+        height: 28px;
+        background: Theme.bg-input;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: filter-edit.has-focus ? Theme.accent-cyan : Theme.border-subtle;
+        HorizontalLayout {
+            padding-left: 6px;
+            padding-right: 6px;
+            spacing: 4px;
+            Text {
+                text: "\u{1F50D}";
+                font-size: 10px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                filter-edit := LineEdit {
+                    height: 22px;
+                    text <=> TierTableModel.filter-text;
+                    placeholder-text: "Filter tiers by name, index, block or strategy...";
+                    font-size: 10px;
+                    changed has-focus => { AppModel.text-focus = self.has-focus; }
+                }
+            }
+            if TierTableModel.filter-text != "": Rectangle {
+                width: 16px;
+                accessible-role: button;
+                accessible-label: "Clear the filter";
+                Tooltip { text: @markdown("Clear the filter."); }
+                Text {
+                    text: "\u{00D7}";
+                    font-size: 14px;
+                    color: clear-touch.has-hover ? TableStyle.ruby : Theme.text-muted;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                clear-touch := TouchArea {
+                    clicked => { TierTableModel.filter-text = ""; }
+                }
+            }
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 2px;
+        padding-right: 2px;
+        spacing: 6px;
+        ToolButton {
+            text: "Adopt all";
+            locked: !GuideModel.allows-tier-table();
+            hint: "Adopt every tier's imported meet at once, as one Undo step.";
+            clicked => { TierTableModel.adopt-all(); }
+        }
+        ToolButton {
+            text: "Select";
+            locked: !GuideModel.allows-tier-table();
+            active: TierTableModel.select-mode;
+            hint: "Show a checkbox column for multi-select -- the same group Ctrl+click / Shift+click build, with a click target that does not need the modifier key.";
+            clicked => { TierTableModel.select-mode = !TierTableModel.select-mode; }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        ToolButton {
+            text: "Steps / Mirror";
+            locked: !GuideModel.allows-tier-table();
+            active: TierTableModel.steps-open;
+            hint: "Generate a step-cut ladder, or mirror the selected tier to the opposite block.";
+            clicked => { TierTableModel.steps-open = !TierTableModel.steps-open; }
+        }
+    }
+
+    // The step-ladder generator and the "mirror to other block" action.
+    if TierTableModel.steps-open: VerticalLayout {
+        padding-left: 2px;
+        padding-right: 2px;
+        padding-top: 2px;
+        padding-bottom: 2px;
+        spacing: 4px;
+        Rectangle { height: 1px; background: Theme.border-subtle; }
+        Text {
+            text: "Generate a ladder of N tiers: named Step1, Step2, ... stepping the angle from a start angle, all sharing the indices. An anchor pins the first tier to an exact scale value; blank meets an anchor elsewhere.";
+            font-size: 9px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            step-name := MiniField { horizontal-stretch: 1; placeholder-text: "Name"; }
+            step-start := MiniField { width: 48px; placeholder-text: "start\u{b0}"; }
+            step-delta := MiniField { width: 48px; placeholder-text: "step\u{b0}"; }
+            step-count := MiniField { width: 34px; placeholder-text: "N"; }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            step-indices := MiniField { horizontal-stretch: 1; placeholder-text: "indices"; }
+            step-anchor := MiniField { width: 56px; placeholder-text: "anchor"; }
+            ToolButton {
+                text: "Generate";
+                locked: !GuideModel.allows-tier-table();
+                clicked => {
+                    if step-name.text != "" && step-count.text != "" {
+                        TierTableModel.generate-steps(
+                            step-name.text,
+                            step-start.text == "" ? "0" : step-start.text,
+                            step-delta.text == "" ? "0" : step-delta.text,
+                            Math.round(step-count.text.to-float()),
+                            step-indices.text,
+                            step-anchor.text);
+                    }
+                }
+            }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            Text {
+                text: "Mirror the selected tier (name +";
+                font-size: 9px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            mirror-suffix := MiniField { width: 30px; text: "'"; }
+            Text {
+                text: ") to the other block:";
+                font-size: 9px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            ToolButton {
+                text: "Mirror";
+                enabled: TierTableModel.selected-index >= 0;
+                locked: !GuideModel.allows-tier-table();
+                hint: "Duplicates the selected tier to the opposite block (angle negated), suffixing its name.";
+                clicked => { TierTableModel.mirror-to-other-block(TierTableModel.selected-index, mirror-suffix.text); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+
+    // The batch bar: only while a group of more than one row is multi-selected.
+    if TierTableModel.multi-count > 1: HorizontalLayout {
+        padding-left: 2px;
+        padding-right: 2px;
+        spacing: 6px;
+        Rectangle {
+            width: count-text.preferred-width + 14px;
+            height: 22px;
+            background: Theme.bg-card-hover;
+            border-radius: 3px;
+            count-text := Text {
+                text: TierTableModel.multi-count + " selected";
+                font-size: 9px;
+                font-weight: 600;
+                color: Theme.accent-cyan;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        ToolButton {
+            text: "Clear";
+            accent: Theme.text-secondary;
+            clicked => { TierTableModel.clear-multi(); }
+        }
+        ToolButton {
+            text: "Delete";
+            locked: !GuideModel.allows-tier-table();
+            accent: TableStyle.ruby;
+            hint: "Delete every selected tier (one Undo step per tier).";
+            clicked => { TierTableModel.remove-multi(); }
+        }
+        ToolButton {
+            text: "Adopt sel.";
+            locked: !GuideModel.allows-tier-table();
+            hint: "Adopt the imported meet of every selected tier, as one Undo step.";
+            clicked => { TierTableModel.adopt-selected(); }
+        }
+        offset-edit := MiniField { width: 46px; placeholder-text: "deg"; }
+        ToolButton {
+            text: "Offset";
+            locked: !GuideModel.allows-tier-table();
+            hint: "Offset every selected tier's angle by this many degrees, as one Undo step.";
+            clicked => {
+                if offset-edit.text != "" {
+                    TierTableModel.nudge(TierTableModel.selected-index, offset-edit.text.to-float());
+                    offset-edit.text = "";
+                }
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+}

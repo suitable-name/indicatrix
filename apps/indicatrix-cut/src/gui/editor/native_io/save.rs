@@ -7,7 +7,7 @@
 
 use super::{
     CURRENT_NATIVE_PATH,
-    atomic_write::write_pair_atomically,
+    atomic_write::{WriteGate, write_pair_atomically},
     autosave::setup_autosave_timer,
     catalogue::write_back_to_catalogue,
     confirm::{
@@ -20,7 +20,7 @@ use super::{
         custom_material_snapshot_for_save, degenerate_marker_header, save_paired_reusing_solve,
         snapshot_custom_materials, stamp_source_entry_footnote,
     },
-    solve::resolve_solved_then,
+    solve::{SolveFailure, resolve_solve_at},
 };
 use crate::{
     EditorModel, MainWindow,
@@ -28,14 +28,19 @@ use crate::{
     gui::{editor::state::EditorState, show_toast},
 };
 use indicatrix::geometry::{meet_solver::SolvedTier, stone_metrics::ExternalProportions};
-use indicatrix_cut_core::{Design, native::SaveExtras, native_path_for_asc};
+use indicatrix_cut_core::{
+    Design,
+    native::{PairedSave, SaveExtras},
+    native_path_for_asc,
+};
 use indicatrix_vault::db::sqlite::Database;
 use slint::ComponentHandle;
 use std::{
     cell::RefCell,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::Ordering},
+    time::Instant,
 };
 
 /// "Save Native": writes the design's `.indicatrix.toml` sidecar ALONGSIDE a
@@ -146,6 +151,17 @@ struct NativeSaveContext {
     printed_proportions: Option<ExternalProportions>,
     used_placeholder: bool,
     history_entries: Vec<String>,
+    /// `EditorState::generation`'s value at the moment `design` was cloned out of
+    /// `state` (`quick_save_native`/`save_native_via_dialog`, both well before
+    /// `resolve_solved_then`'s background solve and the write itself, which can
+    /// together take several seconds on a large design) -- carried through
+    /// [`WriteNativeOutcome`] so [`finish_save_native_success`] can mark the design
+    /// clean at the generation it ACTUALLY saved, not whatever `generation` reads
+    /// once the write finally lands. Using the live generation there instead
+    /// let edits made while the save was still resolving/writing read as clean
+    /// the moment the (already stale) save completed, so the close guard never
+    /// prompted for them and they were lost with no warning.
+    snapshot_generation: u64,
 }
 
 thread_local! {
@@ -157,41 +173,85 @@ thread_local! {
     static PENDING_NATIVE_SAVE_STATE: RefCell<std::collections::HashMap<u64, Rc<RefCell<EditorState>>>> =
         RefCell::new(std::collections::HashMap::new());
     static NEXT_NATIVE_SAVE_KEY: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The single-writer gate in front of [`start_native_write_thread`]: a Save that
+    /// reaches the disk write while an earlier one is still writing is parked here
+    /// (the newest wins) and started when the earlier one reports in, instead of
+    /// racing it on the same files.
+    static NATIVE_WRITE_GATE: RefCell<WriteGate<(NativeSaveContext, PairedSave)>> =
+        const { RefCell::new(WriteGate::new()) };
 }
 
 /// Group 1+2's shared tail for both [`quick_save_native`] and
 /// [`save_native_via_dialog`] once `ctx.dest_path`/`ctx.native_path` are known and
 /// any overwrite confirmation has already been granted: resolves `design`'s write
-/// status off the UI thread ([`resolve_solved_then`]/[`decide_write_status`]), asks
+/// status off the UI thread ([`resolve_solve_at`]/[`decide_write_status`]), asks
 /// [`ask_write_confirm`] only when it names a problem, then hands off to
 /// [`write_native_save`].
+///
+/// A solve that was displaced by a newer request ([`SolveFailure::Superseded`]) says
+/// nothing about the geometry: it neither offers the "not a closed solid" prompt nor
+/// reaches the file header. The save is abandoned with a toast and nothing is written.
 fn finish_native_save(ui: &MainWindow, design: Design, ctx: NativeSaveContext) {
-    resolve_solved_then(ui, Arc::new(design), move |ui, design, solved_result| {
-        crate::gui::editor::stall_guard::stall_guard("native_save_status_resolved", || {
-            let solved = solved_result.as_ref().ok().cloned();
-            match decide_write_status(&design, solved_result.as_deref().map_err(String::as_str)) {
-                StatusDecision::Fine => {
-                    write_native_save(ui, &design, solved.as_deref(), None, &ctx);
-                }
-                StatusDecision::NeedsConfirm(message) => {
-                    let heading_message = format!(
-                        "{message}\n\nSave anyway? The written file will note this in its own \
+    // Tagged with `ctx.snapshot_generation` -- see `native_io::solve::resolve_solve_at`'s
+    // own doc comment: a Save must never write a cached solve for an OLDER generation
+    // than the one it just cloned `design` out of.
+    let snapshot_generation = ctx.snapshot_generation;
+    resolve_solve_at(
+        ui,
+        Arc::new(design),
+        snapshot_generation,
+        move |ui, design, solved_result| {
+            crate::gui::editor::stall_guard::stall_guard("native_save_status_resolved", || {
+                let solved_result = match solved_result {
+                    Ok(solved) => Ok(solved),
+                    Err(SolveFailure::Failed(message)) => Err(message),
+                    Err(SolveFailure::Superseded) => {
+                        // This save is not landing -- an `after_save` continuation
+                        // stashed right before it must not be left dangling for some
+                        // LATER, unrelated save to stumble onto; see `AfterSave`'s
+                        // own doc comment.
+                        ctx.state.borrow_mut().after_save = None;
+                        show_toast(
+                            ui,
+                            "Save was interrupted by a newer save or export. Nothing was \
+                             written; save again.",
+                            "error",
+                        );
+                        return;
+                    }
+                };
+                let solved = solved_result.as_ref().ok().cloned();
+                match decide_write_status(&design, solved_result.as_deref().map_err(String::as_str))
+                {
+                    StatusDecision::Fine => {
+                        write_native_save(ui, &design, solved.as_deref(), None, &ctx);
+                    }
+                    StatusDecision::NeedsConfirm(message) => {
+                        let heading_message = format!(
+                            "{message}\n\nSave anyway? The written file will note this in its own \
                          header."
-                    );
-                    ask_write_confirm(
-                        ui,
-                        "This design is not a closed solid",
-                        heading_message,
-                        "Save Anyway",
-                        Some(confirm_keys::NOT_CLOSED_SOLID),
-                        move |ui| {
-                            write_native_save(ui, &design, solved.as_deref(), Some(&message), &ctx);
-                        },
-                    );
+                        );
+                        ask_write_confirm(
+                            ui,
+                            "This design is not a closed solid",
+                            heading_message,
+                            "Save Anyway",
+                            Some(confirm_keys::NOT_CLOSED_SOLID),
+                            move |ui| {
+                                write_native_save(
+                                    ui,
+                                    &design,
+                                    solved.as_deref(),
+                                    Some(&message),
+                                    &ctx,
+                                );
+                            },
+                        );
+                    }
                 }
-            }
-        });
-    });
+            });
+        },
+    );
 }
 
 /// Parks `state` in [`PENDING_NATIVE_SAVE_STATE`] under a fresh key and returns
@@ -261,14 +321,52 @@ fn write_native_save(
     ) {
         Ok(paired) => paired,
         Err(e) => {
+            // This save is not landing -- an `after_save` continuation stashed
+            // right before it must not be left dangling for some LATER,
+            // unrelated save to stumble onto; see `AfterSave`'s own doc
+            // comment.
+            ctx.state.borrow_mut().after_save = None;
             show_toast(ui, &format!("Cannot save: {e}"), "error");
             return;
         }
     };
+    spawn_native_save_write(ui, ctx, paired);
+}
 
+/// [`write_native_save`]'s background-thread tail, split out purely to keep that
+/// function itself under clippy's `too_many_lines` lint: hands `paired` to the
+/// single-writer gate ([`NATIVE_WRITE_GATE`]). When no other save is writing it starts
+/// now ([`start_native_write_thread`]); otherwise it is parked -- the newest parked
+/// save wins -- and starts when the running one reports in, so two quick saves never
+/// race on the same files.
+fn spawn_native_save_write(ui: &MainWindow, ctx: &NativeSaveContext, paired: PairedSave) {
+    let admitted = NATIVE_WRITE_GATE.with(|gate| {
+        gate.borrow_mut()
+            .admit((ctx.clone(), paired), Instant::now())
+    });
+    if let Some((ctx, paired)) = admitted {
+        start_native_write_thread(ui, &ctx, paired);
+    }
+}
+
+/// Runs on the UI thread when a save's writer reports in: frees the gate and starts
+/// the save parked behind it, if any.
+fn release_native_write_gate(ui: &MainWindow) {
+    let next = NATIVE_WRITE_GATE.with(|gate| gate.borrow_mut().release(Instant::now()));
+    if let Some((ctx, paired)) = next {
+        start_native_write_thread(ui, &ctx, paired);
+    }
+}
+
+/// Spawns the thread that does the actual disk write ([`write_pair_atomically`]) and
+/// catalogue write-back ([`write_back_to_catalogue`]), then reports the outcome back on
+/// the UI thread via [`finish_save_native_success`] or an error toast, and finally
+/// frees the writer gate.
+fn start_native_write_thread(ui: &MainWindow, ctx: &NativeSaveContext, paired: PairedSave) {
     let dest_path = ctx.dest_path.clone();
     let native_path = ctx.native_path.clone();
     let asc_filename = ctx.asc_filename.clone();
+    let snapshot_generation = ctx.snapshot_generation;
     let db = Arc::clone(&ctx.db);
     let db_for_finish = Arc::clone(&ctx.db);
     let source_for_finish = Arc::clone(&ctx.source);
@@ -308,33 +406,46 @@ fn write_native_save(
                 asc_filename: asc_filename.clone(),
                 paired,
                 catalogue,
+                // See `NativeSaveContext::snapshot_generation`'s own doc
+                // comment -- carried straight through, unread by anything on
+                // this background thread.
+                snapshot_generation,
             }
         });
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            let Some(state) =
-                PENDING_NATIVE_SAVE_STATE.with(|cell| cell.borrow_mut().remove(&state_key))
-            else {
-                return;
-            };
-            match outcome {
-                Ok(outcome) => {
-                    crate::gui::editor::stall_guard::stall_guard(
-                        "native_save_write_complete",
-                        || {
-                            finish_save_native_success(
-                                &ui,
-                                &state,
-                                outcome,
-                                &db_for_finish,
-                                &source_for_finish,
-                            );
-                        },
-                    );
-                }
-                Err(message) => show_toast(&ui, &message, "error"),
-            }
+            report_native_save_outcome(&ui, state_key, outcome, &db_for_finish, &source_for_finish);
+            release_native_write_gate(&ui);
         });
     });
+}
+
+/// [`start_native_write_thread`]'s UI-thread tail: hands a landed write to
+/// [`finish_save_native_success`], or toasts the failure.
+fn report_native_save_outcome(
+    ui: &MainWindow,
+    state_key: u64,
+    outcome: Result<WriteNativeOutcome, String>,
+    db: &Arc<Mutex<Database>>,
+    source: &Arc<Mutex<LibrarySource>>,
+) {
+    let Some(state) = PENDING_NATIVE_SAVE_STATE.with(|cell| cell.borrow_mut().remove(&state_key))
+    else {
+        return;
+    };
+    match outcome {
+        Ok(outcome) => {
+            crate::gui::editor::stall_guard::stall_guard("native_save_write_complete", || {
+                finish_save_native_success(ui, &state, outcome, db, source);
+            });
+        }
+        Err(message) => {
+            // This save did not land -- an `after_save` continuation stashed right
+            // before it must not be left dangling for some LATER, unrelated save to
+            // stumble onto; see `AfterSave`'s own doc comment.
+            state.borrow_mut().after_save = None;
+            show_toast(ui, &message, "error");
+        }
+    }
 }
 
 /// Quick save: writes straight to `ctx.dest_path`/`ctx.native_path`
@@ -361,6 +472,7 @@ fn quick_save_native(
         source_entry_id,
         used_placeholder,
         history_entries,
+        snapshot_generation,
     ) = {
         let st = state.borrow();
         (
@@ -374,6 +486,11 @@ fn quick_save_native(
             // Carried on every native save -- see `SaveExtras::history_entries`'s
             // own doc comment.
             st.history.description_log().to_vec(),
+            // `generation` at THIS exact moment -- the same instant `design` is
+            // cloned out of `st`, well before `finish_native_save`'s own
+            // background solve/write -- see `NativeSaveContext::
+            // snapshot_generation`'s own doc comment.
+            st.generation.load(Ordering::Relaxed),
         )
     };
     // See `stamp_source_entry_footnote`'s own doc comment.
@@ -393,6 +510,7 @@ fn quick_save_native(
             printed_proportions,
             used_placeholder,
             history_entries,
+            snapshot_generation,
         },
     );
 }
@@ -418,6 +536,7 @@ fn save_native_via_dialog(
         source_entry_id,
         used_placeholder,
         history_entries,
+        snapshot_generation,
     ) = {
         let st = state.borrow();
         (
@@ -430,6 +549,10 @@ fn save_native_via_dialog(
             // Carried on every native save -- see `SaveExtras::history_entries`'s
             // own doc comment.
             st.history.description_log().to_vec(),
+            // See `save_native_via_dialog`'s sibling `quick_save_native`'s
+            // matching comment -- captured here too, before the
+            // Save-As picker even opens.
+            st.generation.load(Ordering::Relaxed),
         )
     };
     // See `stamp_source_entry_footnote`'s own doc comment.
@@ -450,6 +573,11 @@ fn save_native_via_dialog(
             // See the matching comment on `setup_export_asc_callback`'s own
             // save-picker cancel -- a dismissed dialog needs no toast.
             let Some(dest_path) = dest_path else {
+                // No save is landing after all -- an `after_save` continuation
+                // stashed by a close/replace guard right before this Save-As
+                // must not be left dangling for some LATER, unrelated save to
+                // stumble onto; see `AfterSave`'s own doc comment.
+                state_for_pick.borrow_mut().after_save = None;
                 return;
             };
             let asc_filename = dest_path.file_name().map_or_else(
@@ -480,6 +608,7 @@ fn save_native_via_dialog(
                         printed_proportions,
                         used_placeholder,
                         history_entries,
+                        snapshot_generation,
                     },
                 );
             });
@@ -497,11 +626,16 @@ pub(in crate::gui::editor) fn setup_save_native_callback(
     source: &Arc<Mutex<LibrarySource>>,
     render_ctx: &Arc<Mutex<RenderContext>>,
 ) {
+    // Stashes `state` for `request_save_then_close` (`gui::window_close`'s
+    // close-confirm guard) to reach later -- see that function's own doc
+    // comment. There is only ever one `EditorState` for the app's lifetime, so
+    // one call here covers every later close.
+    super::remember_editor_state(state);
     setup_dirty_tracking(ui, state);
     setup_autosave_timer(ui, state, db, render_ctx);
     // Group 2: the write-confirm dialog's own two callbacks -- bundled in here for
     // the same reason `setup_dirty_tracking`/`setup_autosave_timer` are.
-    setup_write_confirm_dialog_callbacks(ui);
+    setup_write_confirm_dialog_callbacks(ui, state);
     let state_save = Rc::clone(state);
     let db_save = Arc::clone(db);
     let source_save = Arc::clone(source);
@@ -585,11 +719,11 @@ fn setup_dirty_tracking(ui: &MainWindow, state: &Rc<RefCell<EditorState>>) {
         let Some(ui) = ui_weak.upgrade() else {
             return;
         };
-        // `try_borrow`, never `borrow`: Slint runs `changed tiers` synchronously
-        // from inside `set_tiers`, and the paths that push the tier list are
-        // normally holding `state.borrow_mut()` while they do it (`do_new_design_
-        // create`, `apply_loaded_design`, and every ordinary edit callback). A plain
-        // `borrow()` panicked there with "already mutably borrowed".
+        // `try_borrow`, never `borrow`: Slint queues `changed tiers` handlers to the
+        // next event-loop pass rather than running them inside `set_tiers`, but a
+        // caller that pushed the tier list while holding `state.borrow_mut()` and then
+        // pumps the event loop still lets one run under that borrow. A plain
+        // `borrow()` would panic there with "already mutably borrowed".
         //
         // Skipping is safe rather than merely non-fatal: `view::
         // push_tier_list_and_undo_redo` -- the only thing that calls `set_tiers` --

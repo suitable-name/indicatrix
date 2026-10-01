@@ -237,8 +237,11 @@ fn setup_shortcuts_copy_markdown(ui: &crate::MainWindow) {
             markdown.push_str(&render_markdown_section(Context::Global));
             let _ = write!(markdown, "\n\n## {}\n\n", Context::TierList.heading());
             markdown.push_str(&render_markdown_section(Context::TierList));
-            crate::gui::library::clipboard::copy_to_clipboard(&markdown);
-            crate::gui::show_toast(&ui, "Shortcut table copied to clipboard!", "success");
+            crate::gui::library::clipboard::copy_to_clipboard_with_toast(
+                &ui,
+                markdown,
+                "Shortcut table copied to clipboard!".to_owned(),
+            );
         });
 }
 

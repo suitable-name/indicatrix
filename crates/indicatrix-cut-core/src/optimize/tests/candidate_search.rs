@@ -3,10 +3,14 @@
 //! `build_free_angle_candidate`.
 
 use super::{
-    super::{ObjectiveWeights, candidate, free_tier_indices},
+    super::{
+        CANONICAL_LIGHTING_PRESET, ObjectiveFidelity, ObjectiveWeights, OptimizeConfig, candidate,
+        evaluate_objective, evaluate_objective_under, free_tier_indices, objective,
+    },
     fixtures::rbc_445,
 };
-use indicatrix::optics::materials::GemMaterial;
+use crate::manufacturability::{DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, check_manufacturability};
+use indicatrix::optics::{materials::GemMaterial, raytracer::LightingPreset};
 
 // --- select_candidate_directions / evaluate_survivors ---
 
@@ -59,6 +63,7 @@ fn evaluate_survivors_with_no_survivors_needs_no_thread_scope_and_matches_the_ol
         material: &material,
         weights: &weights,
         baseline_warnings: &baseline,
+        lighting: CANONICAL_LIGHTING_PRESET,
     };
     let (best, evaluations) = candidate::evaluate_survivors(Vec::new(), &ctx, f32::MAX);
     assert_eq!(best, None);
@@ -89,6 +94,7 @@ fn evaluate_survivors_with_one_survivor_evaluates_it_inline() {
         material: &material,
         weights: &weights,
         baseline_warnings: &baseline,
+        lighting: CANONICAL_LIGHTING_PRESET,
     };
     let (_, evaluations) = candidate::evaluate_survivors(survivors, &ctx, f32::MAX);
     assert_eq!(evaluations, 1);
@@ -119,9 +125,59 @@ fn evaluate_survivors_with_two_survivors_evaluates_both() {
         material: &material,
         weights: &weights,
         baseline_warnings: &baseline,
+        lighting: CANONICAL_LIGHTING_PRESET,
     };
     let (_, evaluations) = candidate::evaluate_survivors(survivors, &ctx, f32::MAX);
     assert_eq!(evaluations, 2);
+}
+
+/// The lighting preset the search is configured with must reach the objective call:
+/// the default config scores under the canonical preset, `evaluate_objective` is that
+/// preset's convenience form, and a candidate scores differently under a preset whose
+/// illumination differs (an ISO hemisphere lights every upward direction, the ring rig
+/// only its sources).
+#[test]
+fn the_configured_lighting_preset_reaches_the_candidate_score() {
+    assert_eq!(
+        OptimizeConfig::default().lighting,
+        CANONICAL_LIGHTING_PRESET
+    );
+
+    let design = rbc_445();
+    let material = GemMaterial::diamond();
+    let weights = ObjectiveWeights::default();
+    let solved = design.solve().expect("RBC-445 must solve");
+    let planes = design.planes_from_solved(&solved);
+    let baseline = candidate::BaselineWarningCounts::count(&check_manufacturability(
+        &design,
+        &solved,
+        DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
+    ));
+
+    let gpu_planes = objective::to_gpu_planes(&planes);
+    let canonical = evaluate_objective(&gpu_planes, &material, ObjectiveFidelity::Fast);
+    let explicit = evaluate_objective_under(
+        &gpu_planes,
+        &material,
+        ObjectiveFidelity::Fast,
+        CANONICAL_LIGHTING_PRESET,
+    );
+    assert_eq!(canonical, explicit);
+
+    let score_under = |lighting: LightingPreset| match candidate::evaluate_candidate(
+        &design, &material, &weights, &baseline, lighting,
+    ) {
+        candidate::CandidateOutcome::Accepted { score } => score,
+        candidate::CandidateOutcome::Rejected => {
+            panic!("the unmodified RBC-445 must be accepted under {lighting:?}")
+        }
+    };
+    let ring = score_under(LightingPreset::RingLights);
+    let iso = score_under(LightingPreset::IsoHemisphere);
+    assert!(
+        (ring - iso).abs() > 1e-3,
+        "the preset must change the score: ring {ring}, iso {iso}"
+    );
 }
 
 /// [`candidate::build_free_angle_candidate`] -- the real, `Design`-backed bridge

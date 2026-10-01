@@ -32,7 +32,7 @@
         height: 100%;
       }
     </style>
-  <link rel="modulepreload" href="/indicatrix-web-51056f23f38325a5.js" crossorigin="anonymous"><link rel="preload" href="/indicatrix-web-51056f23f38325a5_bg.wasm" crossorigin="anonymous" as="fetch" type="application/wasm"></head>
+  <link rel="modulepreload" href="/indicatrix-web-3205c62e0c4c0218.js" crossorigin="anonymous"><link rel="preload" href="/indicatrix-web-3205c62e0c4c0218_bg.wasm" crossorigin="anonymous" as="fetch" type="application/wasm"></head>
   <body>
     <!--
       `id="canvas"` is REQUIRED and is not a convention of this page's own: Slint's winit
@@ -46,10 +46,27 @@
       flow" notice (which is expected on every Slint web app -- see README).
     -->
     <canvas id="canvas"></canvas>
+    <!--
+      Profiles. `data-cargo-profile-dev="indicatrix-web-compute"`: the page uses the SAME
+      optimised dev profile as the Worker below (no debug info), not plain `dev`. The Solid
+      and Diagram views rasterise on the main thread and the solver runs there for small
+      designs, and unoptimised wasm made a solid frame take about 1.8 s and stalled the page.
+      One profile for both crates also means the shared dependencies (the meet solver, the
+      rasteriser, `glam`) compile once, not once per profile; the workspace `Cargo.toml` drops
+      only the page crate itself to opt-level 1 there, to keep dev rebuilds short.
+      `data-cargo-profile-release="indicatrix-web-release"` is the same idea for
+      `trunk build --release` (see the workspace `Cargo.toml`); it is on both `<link>`s.
+
+      wasm-opt (release builds only): level `s` on the page, `3` on the Worker, with the wasm
+      features rustc emits enabled explicitly (bulk memory, non-trapping float-to-int, sign
+      extension, mutable globals, reference types, multivalue). If a release build ever fails
+      inside wasm-opt, set `data-wasm-opt="0"` on the failing `<link>` to ship rustc's output
+      as it is, and report the message.
+    -->
     
 <script type="module">
-import init, * as bindings from '/indicatrix-web-51056f23f38325a5.js';
-const wasm = await init({ module_or_path: '/indicatrix-web-51056f23f38325a5_bg.wasm' });
+import init, * as bindings from '/indicatrix-web-3205c62e0c4c0218.js';
+const wasm = await init({ module_or_path: '/indicatrix-web-3205c62e0c4c0218_bg.wasm' });
 
 
 window.wasmBindings = bindings;
@@ -58,5 +75,24 @@ window.wasmBindings = bindings;
 dispatchEvent(new CustomEvent("TrunkApplicationStarted", {detail: {wasm}}));
 
 </script>
+    <!--
+      The Web Worker (render and solve workers both run this one script). Trunk builds
+      `apps/indicatrix-web-compute` with wasm-bindgen's `no-modules` target, adds no
+      script tag for it, and writes three files to `dist/` named after the package,
+      never content-hashed: `indicatrix-web-compute.js`, `indicatrix-web-compute_bg.wasm`
+      and, from `data-loader-shim`, `indicatrix-web-compute_loader.js`, which imports the
+      first and instantiates the second. The page starts workers from that loader --
+      `indicatrix_web_core::WORKER_LOADER_URL` must match its name. Trunk builds it once
+      and every Worker (render, solve, analysis) loads the same file; the browser fetches the
+      `.wasm` once and serves it from its cache to the rest.
+
+      `data-cargo-profile-dev="indicatrix-web-compute"`: a dev build (`trunk serve`, `trunk build`)
+      compiles the worker with the workspace's `[profile.indicatrix-web-compute]` (opt-level 3,
+      no debug info), because debug wasm traces far too slowly to render with. Trunk 0.21
+      passes it as `cargo build --profile indicatrix-web-compute`. A `--release` build uses
+      `[profile.indicatrix-web-release]` instead, and wasm-opt level `3`: the Worker is the
+      compute-bound module, so speed wins over the last few percent of size.
+    -->
+    
   </body>
 </html>

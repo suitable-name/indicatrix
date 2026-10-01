@@ -5,6 +5,8 @@
 use glam::Vec3;
 
 use super::{
+    fan::FanGeometry,
+    lighting::ExitLighting,
     ray_trace::{RayFate, trace_wavelength},
     visibility::ray_is_visibly_returned,
 };
@@ -24,9 +26,10 @@ pub(super) struct ApertureSampleContext<'a> {
     pub(super) cam_forward: Vec3,
     pub(super) cam_right: Vec3,
     pub(super) cam_up: Vec3,
-    pub(super) key_dir: Vec3,
-    pub(super) fill_dir: Vec3,
-    pub(super) sin_lp: f32,
+    /// Where the fan's rays start, scaled to the stone.
+    pub(super) fan: FanGeometry,
+    /// The illumination an exit direction is judged against.
+    pub(super) lighting: ExitLighting<'a>,
 }
 
 /// How one grid-cell aperture-sample ray was classified. `Returned` carries the
@@ -65,7 +68,9 @@ pub(super) fn classify_aperture_sample(
     dz_sub: f32,
 ) -> Option<RayClassification> {
     let ray_dir = (ctx.cam_forward + dx_sub * ctx.cam_right + dz_sub * ctx.cam_up).normalize();
-    let ray_origin = -ctx.cam_forward * 2.5 + (u * 0.95) * ctx.cam_right + (v * 0.95) * ctx.cam_up;
+    let ray_origin = ctx
+        .fan
+        .origin(ctx.cam_forward, ctx.cam_right, ctx.cam_up, u, v);
     let ray = Ray {
         origin: ray_origin,
         dir: ray_dir,
@@ -97,15 +102,9 @@ pub(super) fn classify_aperture_sample(
         RayFate::ExitedUpward(exit_d) => {
             let exit_dir = exit_d.dir;
             let transmittance = exit_d.transmittance;
-            // Directional Extinction Analysis: head-shadow cone vs. Key/Fill/
-            // Overhead-ring illumination collection (see `ray_is_visibly_returned`).
-            if !ray_is_visibly_returned(
-                exit_dir,
-                ctx.cam_forward,
-                ctx.key_dir,
-                ctx.fill_dir,
-                ctx.sin_lp,
-            ) {
+            // Directional Extinction Analysis: head-shadow cone vs. the environment's
+            // light sources (see `ray_is_visibly_returned`).
+            if !ray_is_visibly_returned(exit_dir, ctx.cam_forward, &ctx.lighting) {
                 return Some(RayClassification::Extinct);
             }
 

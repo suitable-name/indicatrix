@@ -1,11 +1,12 @@
 //! [`HeldAsset`]: the HDR map a coordinator holds for one job, so it can
 //! answer a joined worker's `NEED_ASSET` without asking the viewer again.
 //!
-//! The bytes normally live in the coordinator's on-disk [`AssetCache`] and are read
-//! from it lazily, the first time a worker asks, then kept in memory until the job
-//! ends (every further worker of the job gets the same copy; nothing is read at all
-//! when no worker asks). Bytes the cache could not keep (larger than its cap, a write
-//! failure) are held in memory from the start.
+//! The bytes are pinned in memory for the job's whole lifetime from the moment the job
+//! resolves them (`crate::assets::fetch::hold`), regardless of what the coordinator's
+//! on-disk [`AssetCache`] does meanwhile -- an LRU eviction (another job's larger map,
+//! a write failure) must never turn "the coordinator holds this job's map" into "the
+//! coordinator lost it" partway through: that would fail a joined worker's
+//! `NEED_ASSET` and discard an otherwise healthy connection for no reason of its own.
 
 use super::AssetCache;
 use indicatrix::renderer::env_map::EnvironmentMap;
@@ -57,9 +58,10 @@ impl HeldAsset {
         self.map.as_ref()
     }
 
-    /// The verified bytes, loaded from the cache on first use and kept for the job.
-    /// `None` when the cache lost them since the job started (evicted by another job's
-    /// asset, or the file went bad) -- the worker that asked then fails its chunk.
+    /// The verified bytes, pinned in memory since the job resolved them (see the
+    /// module doc comment) -- always `Some` in practice. The lazy re-read from the
+    /// cache below is a defensive fallback only, in case a future caller ever
+    /// constructs a [`Self`] without them up front.
     #[must_use]
     pub fn bytes(&self) -> Option<Arc<Vec<u8>>> {
         let mut held = self.bytes.lock().unwrap_or_else(PoisonError::into_inner);

@@ -6,13 +6,13 @@
 use super::{super::*, fixtures::temp_db_path};
 
 /// The five new fields must survive a `save_diagram_detail` round trip into their
-/// typed columns -- `shape_category` is `Option<String>` on `FacetDiagramDetail`
+/// typed columns -- `shape_category` is `Option<String>` on `FacetingDiagramDetail`
 /// bound into an INTEGER column, so this pins down it lands as a number, not text.
 #[test]
 fn save_diagram_detail_persists_the_designer_split_and_competition_fields() {
     let path = temp_db_path("designer_split_roundtrip");
     let db = Database::new(Some(path.to_str().unwrap())).expect("create migrated db");
-    let entry = FacetDiagramEntry {
+    let entry = FacetingDiagramEntry {
         title: "Utopia".to_string(),
         url: "https://facetdiagrams.org/diagramus/utopia/".to_string(),
         design_id: String::new(),
@@ -20,7 +20,7 @@ fn save_diagram_detail_persists_the_designer_split_and_competition_fields() {
     let entry_id = db
         .save_diagram_entry(&entry, LEGACY_SOURCE_ID)
         .expect("save entry");
-    let detail = FacetDiagramDetail {
+    let detail = FacetingDiagramDetail {
         designer_info: Some("Capps, Jerry; Lapidary Journal, May 1994, p95".to_string()),
         designer: Some("Capps, Jerry".to_string()),
         source_citation: Some("Lapidary Journal, May 1994, p95".to_string()),
@@ -70,7 +70,7 @@ fn get_derived_from_title_resolves_the_source_rows_id_and_title() {
     let path = temp_db_path("derived_from_title");
     let db = Database::new(Some(path.to_str().unwrap())).expect("create migrated db");
 
-    let source = FacetDiagramEntry {
+    let source = FacetingDiagramEntry {
         title: "Original Round Brilliant".to_string(),
         url: "local://original.asc".to_string(),
         design_id: String::new(),
@@ -79,7 +79,7 @@ fn get_derived_from_title_resolves_the_source_rows_id_and_title() {
         .save_diagram_entry(&source, LEGACY_SOURCE_ID)
         .expect("save source entry");
 
-    let derived = FacetDiagramEntry {
+    let derived = FacetingDiagramEntry {
         title: "Original Round Brilliant (edited)".to_string(),
         url: "local://original-edited.asc".to_string(),
         design_id: String::new(),
@@ -179,7 +179,7 @@ fn read_untouched_detail_columns(db: &Database, entry_id: i64) -> UntouchedDetai
 fn update_diagram_metadata_touches_only_its_own_fields_and_nothing_else() {
     let path = temp_db_path("metadata_update_narrow");
     let db = Database::new(Some(path.to_str().unwrap())).expect("create migrated db");
-    let entry = FacetDiagramEntry {
+    let entry = FacetingDiagramEntry {
         title: "Utopia".to_string(),
         url: "https://facetdiagrams.org/diagramus/utopia-narrow/".to_string(),
         design_id: String::new(),
@@ -188,7 +188,7 @@ fn update_diagram_metadata_touches_only_its_own_fields_and_nothing_else() {
         .save_diagram_entry(&entry, LEGACY_SOURCE_ID)
         .expect("save entry");
 
-    let original = FacetDiagramDetail {
+    let original = FacetingDiagramDetail {
         page_url: "https://facetdiagrams.org/diagramus/utopia-narrow/".to_string(),
         diagram_image_name: Some("utopia.svg".to_string()),
         diagram_image_data: Some(vec![1, 2, 3, 4]),
@@ -335,5 +335,96 @@ fn update_diagram_metadata_rejects_unknown_entry_id() {
     let db = Database::new(Some(path.to_str().unwrap())).expect("create migrated db");
     let result = db.update_diagram_metadata(999_999, &MetadataUpdate::default());
     assert!(result.is_err());
+    let _ = std::fs::remove_file(&path);
+}
+
+/// a hand-typed European-style decimal (comma, not dot) used to silently persist
+/// as TEXT in the REAL `refractive_index` column instead of being rejected. It must now
+/// be a hard error naming the field, and nothing must be written.
+#[test]
+fn update_diagram_metadata_rejects_unparsable_numeric_text_naming_the_field() {
+    let path = temp_db_path("metadata_update_bad_numeric");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create migrated db");
+    let entry_id = db
+        .save_diagram_entry(
+            &FacetingDiagramEntry {
+                title: "Bad RI".to_string(),
+                url: "local://bad-ri.asc".to_string(),
+                design_id: String::new(),
+            },
+            LEGACY_SOURCE_ID,
+        )
+        .expect("save entry");
+    db.save_diagram_detail(&FacetingDiagramDetail::default(), entry_id)
+        .expect("save detail");
+
+    let update = MetadataUpdate {
+        refractive_index: Some("1,76".to_string()),
+        ..MetadataUpdate::default()
+    };
+    let err = db
+        .update_diagram_metadata(entry_id, &update)
+        .expect_err("a comma-decimal RI must be rejected, never silently stored as TEXT");
+    assert!(
+        format!("{err:#}").contains("refractive_index"),
+        "error must name the offending field: {err:#}"
+    );
+
+    let stored: Option<f64> = db
+        .conn
+        .query_row(
+            "SELECT refractive_index FROM diagram_details WHERE entry_id = ?1",
+            params![entry_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        stored, None,
+        "the rejected edit must write nothing, not the raw text"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A blank hand-typed numeric field is a valid edit (clears the value) -- must not be
+/// confused with unparsable garbage.
+#[test]
+fn update_diagram_metadata_treats_blank_numeric_text_as_clearing_the_value() {
+    let path = temp_db_path("metadata_update_blank_numeric");
+    let db = Database::new(Some(path.to_str().unwrap())).expect("create migrated db");
+    let entry_id = db
+        .save_diagram_entry(
+            &FacetingDiagramEntry {
+                title: "Blank RI".to_string(),
+                url: "local://blank-ri.asc".to_string(),
+                design_id: String::new(),
+            },
+            LEGACY_SOURCE_ID,
+        )
+        .expect("save entry");
+    db.save_diagram_detail(
+        &FacetingDiagramDetail {
+            refractive_index: Some("1.62".to_string()),
+            ..Default::default()
+        },
+        entry_id,
+    )
+    .expect("save detail");
+
+    let update = MetadataUpdate {
+        refractive_index: Some(String::new()),
+        ..MetadataUpdate::default()
+    };
+    db.update_diagram_metadata(entry_id, &update)
+        .expect("a blank field must clear the value, not error");
+
+    let stored: Option<f64> = db
+        .conn
+        .query_row(
+            "SELECT refractive_index FROM diagram_details WHERE entry_id = ?1",
+            params![entry_id],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored, None);
     let _ = std::fs::remove_file(&path);
 }

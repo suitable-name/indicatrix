@@ -11,7 +11,7 @@ use std::{
 };
 
 /// Filename-only pre-scan of what `super::pipeline::import_path` would find at
-/// `path` -- how many of its candidate `.asc` files already share a name with a row
+/// `path` -- how many of its candidate design files already share a name with a row
 /// already in `db` (returned first), out of how many candidates total (returned
 /// second). Uses the same `local://<file_name>` collision test the pipeline's own
 /// save step applies later, since that url is derivable from the
@@ -26,8 +26,7 @@ pub(super) fn count_pending_collisions(
     path: &Path,
     recurse: bool,
 ) -> (usize, usize) {
-    let (candidates, _gem_gcs_skipped) =
-        collect_import_candidates(path, recurse).unwrap_or_default();
+    let candidates = collect_import_candidates(path, recurse).unwrap_or_default();
     let db = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let collisions = candidates
         .iter()
@@ -36,8 +35,12 @@ pub(super) fn count_pending_collisions(
                 || "unknown.asc".to_string(),
                 |n| n.to_string_lossy().into_owned(),
             );
+            // A failed lookup counts as a collision: the safe side is to ask.
             db.has_detail_for_entry_url(&format!("local://{file_name}"))
-                .unwrap_or(false)
+                .unwrap_or_else(|e| {
+                    tracing::warn!("Import: collision check for '{file_name}' failed: {e}");
+                    true
+                })
         })
         .count();
     (collisions, candidates.len())

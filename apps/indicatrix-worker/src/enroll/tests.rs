@@ -13,6 +13,16 @@ use std::{
     time::Duration,
 };
 use subtle::ConstantTimeEq;
+use zeroize::Zeroizing;
+
+/// The operator secret every registry built by [`authorised_registry`] accepts.
+const OPERATOR_SECRET: [u8; 32] = [7u8; 32];
+
+/// A viewer registry that authorises `IssueAuthorized` requests carrying
+/// [`OPERATOR_SECRET`].
+fn authorised_registry() -> EnrollRegistry {
+    EnrollRegistry::new().with_operator_secret(Zeroizing::new(OPERATOR_SECRET))
+}
 
 fn unique_temp_dir(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
@@ -306,13 +316,14 @@ fn handle_enroll_connection_rejects_an_oversized_length_prefix_without_allocatin
 fn issue_is_refused_from_a_non_loopback_peer() {
     let dir = unique_temp_dir("issue-remote-refused");
     pki::init(&dir).unwrap();
-    let registry = EnrollRegistry::new();
+    let registry = authorised_registry();
 
     let mut input = Vec::new();
     indicatrix_net::messages::write_message(
         &mut input,
-        &EnrollRequest::Issue {
+        &EnrollRequest::IssueAuthorized {
             name: "intruder".to_string(),
+            operator_secret: OPERATOR_SECRET,
         },
     )
     .unwrap();
@@ -334,13 +345,14 @@ fn issue_is_refused_from_a_non_loopback_peer() {
 fn issue_succeeds_from_a_loopback_peer() {
     let dir = unique_temp_dir("issue-loopback-ok");
     pki::init(&dir).unwrap();
-    let registry = EnrollRegistry::new();
+    let registry = authorised_registry();
 
     let mut input = Vec::new();
     indicatrix_net::messages::write_message(
         &mut input,
-        &EnrollRequest::Issue {
+        &EnrollRequest::IssueAuthorized {
             name: "laptop".to_string(),
+            operator_secret: OPERATOR_SECRET,
         },
     )
     .unwrap();
@@ -362,7 +374,8 @@ fn issue_succeeds_from_a_loopback_peer() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
-/// Sends one `Issue { name }` from loopback through `registry`'s connection handler.
+/// Sends one `IssueAuthorized { name }` carrying [`OPERATOR_SECRET`] from loopback
+/// through `registry`'s connection handler.
 fn issue_via_handler(
     registry: &EnrollRegistry,
     dir: &std::path::Path,
@@ -371,8 +384,9 @@ fn issue_via_handler(
     let mut input = Vec::new();
     indicatrix_net::messages::write_message(
         &mut input,
-        &EnrollRequest::Issue {
+        &EnrollRequest::IssueAuthorized {
             name: name.to_string(),
+            operator_secret: OPERATOR_SECRET,
         },
     )
     .unwrap();
@@ -388,8 +402,9 @@ fn a_worker_listener_mints_worker_certificates_and_refuses_viewer_issues() {
     use indicatrix_net::messages::PeerRole;
     let dir = unique_temp_dir("worker-role");
     pki::init(&dir).unwrap();
-    let workers = EnrollRegistry::for_role(PeerRole::Worker);
-    let viewers = EnrollRegistry::new();
+    let workers = EnrollRegistry::for_role(PeerRole::Worker)
+        .with_operator_secret(Zeroizing::new(OPERATOR_SECRET));
+    let viewers = authorised_registry();
 
     assert!(matches!(
         issue_via_handler(&workers, &dir, "laptop"),

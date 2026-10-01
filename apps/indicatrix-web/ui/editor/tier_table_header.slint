@@ -1,0 +1,72 @@
+import { Theme } from "../components/theme.slint";
+import { TierTableModel } from "tier_table_model.slint";
+import { Columns } from "tier_table_row.slint";
+
+// A column title with an optional tooltip.
+component HeaderText inherits Rectangle {
+    in property <string> text;
+    in property <string> hint;
+    height: 100%;
+    Text {
+        text: root.text;
+        font-size: 10px;
+        font-weight: 700;
+        color: Theme.text-muted;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+}
+
+// The tier table's column header row (the desktop's `tier_table_header.slint`). Same
+// `Columns` widths as `TierTableRow`, so the two cannot drift apart; `TierTable` moves it
+// sideways with the body's horizontal scroll.
+export component TierTableHeader inherits Rectangle {
+    height: 22px;
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        HeaderText { width: Columns.hash-width; text: TierTableModel.select-mode ? "\u{2713}" : "#"; }
+        Rectangle { width: Columns.warn-width; }
+        Rectangle { width: Columns.block-width; }
+        HeaderText { width: Columns.angle-width; text: "ANGLE"; }
+        HeaderText { horizontal-stretch: 1; min-width: Columns.name-min; text: "NAME"; }
+        HeaderText { horizontal-stretch: 1; min-width: Columns.indices-min; text: "INDICES"; }
+        HeaderText {
+            width: Columns.meets-width;
+            text: "MEETS";
+            hint: "What the tier's constraint is: a pinned scale value, named facets, an unspecified meet, or an authored target.";
+        }
+        HeaderText {
+            width: Columns.mast-width;
+            text: "MAST";
+            hint: "Solved mast depth, in the design's own model units (girdle half-width = 1), not millimetres.";
+        }
+        HeaderText {
+            width: Columns.solve-width;
+            text: "SOLVE";
+            hint: "How the MAST was derived: a real vertex-derived solve, or an estimate / stale value (amber).";
+        }
+        HeaderText {
+            width: Columns.margin-width;
+            text: "MARGIN";
+            hint: "Margin over the design's effective critical angle (pavilion tiers only), and the risk band it falls into.";
+        }
+        HeaderText {
+            width: Columns.orbit-width;
+            text: "ORBIT";
+            hint: "Whether the row is one orbit, several folded together, or partial. Click an amber badge to complete it.";
+        }
+        HeaderText {
+            width: Columns.adopt-width;
+            text: "FILE";
+            hint: "What the source file claims this facet meets, when import pinned the tier instead of deriving it. Click Adopt to switch to it.";
+        }
+        Rectangle { width: Columns.pin-width; }
+        Rectangle { width: Columns.detach-width; }
+        Rectangle { width: Columns.anchor-width; }
+        Rectangle { width: Columns.move-width; }
+        Rectangle { width: Columns.dup-width; }
+        Rectangle { width: Columns.remove-width; }
+    }
+}

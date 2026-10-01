@@ -18,11 +18,12 @@ use crate::{
 use indicatrix::{
     geometry::{
         GpuFacetPlane,
-        meet_solver::{SolveControl, SolveError, SolveStrategy, SolvedTier, solve_meet_points},
+        meet_solver::{SolveError, SolvedTier},
     },
     optics::materials::GemMaterial,
 };
 use indicatrix_cut_core::{Design, DesignSolveError};
+use indicatrix_editor::solve_policy::SOLVING_TICK_INTERVAL as TICK_INTERVAL;
 use slint::{ComponentHandle, Weak};
 use std::{
     collections::BTreeSet,
@@ -34,114 +35,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-/// How often a running background solve's ticker updates the "Solving... (N tiers)"
-/// banner with fresh elapsed time -- matches `deep_solve::TICK_INTERVAL`/
-/// `optimize_solve::TICK_INTERVAL`'s own value and rationale.
-const TICK_INTERVAL: Duration = Duration::from_millis(250);
-
-/// [`Design::solve`]'s own cancellable counterpart for `dispatch_background_solve`'s
-/// worker specifically -- same legacy [`SolveError::TooManyPlanes`] fallback
-/// [`Design::solve`] documents on itself (reproduced here rather than reused,
-/// since that method's own `SolveControl::default()` can never observe a real
-/// cancel, so it cannot route a caller-supplied `cancel` flag through).
-///
-/// [`SolveError::Cancelled`] is returned as a real `Err`, not silently swallowed:
-/// the caller treats it exactly like any other solve error (`panel_inputs` shows
-/// the design as unsolved), and in practice never reaches the screen at all --
-/// `cancel_in_flight_solve` ("Abandon Solve") bumps `Runtime::current_seq` on the
-/// very same click that sets this flag, so `apply::apply_background_solve_result`'s
-/// existing `is_current(seq)` check discards the whole result before any of this
-/// would be shown. See `cancel_in_flight_solve`'s own doc comment.
-///
-/// `pub(super)` (not just private): `solve_service`'s own worker reuses this
-/// exact fallback for a Deep Solve run's baseline plain solve
-/// (`solve_service::run_solve`'s `SolveKind::Verified` arm), so that baseline never
-/// runs on the UI thread either -- see that call site's own comment.
-pub(in crate::gui::editor) fn solve_cancellably(
-    design: &Design,
-    cancel: &AtomicBool,
-) -> Result<Vec<SolvedTier>, DesignSolveError> {
-    match design.solve_with(&SolveControl::with_cancel(cancel)) {
-        Err(DesignSolveError::Solve(SolveError::TooManyPlanes { .. })) => Ok(solve_meet_points(
-            design.meta.gear_teeth_abs(),
-            &design.meet_tier_inputs(),
-        )),
-        other => other,
-    }
-}
-
-/// `MAX_PLANES` (400,
-/// `indicatrix::geometry::meet_solver::MAX_PLANES`) means an over-cap design
-/// silently renders as an ordinary (misleading) "Degenerate"/"Unbounded" status --
-/// `Design::solve()`/[`solve_cancellably`] both reproduce the solver's own
-/// all-`SolveStrategy::Failed` fallback for that case rather than an error, exactly
-/// so the rest of this module's background-solve/panel machinery keeps working
-/// unchanged for it (see [`solve_cancellably`]'s own doc comment) -- but that also
-/// means nothing ever tells the cutter the REAL problem is plane count. Runs
-/// `Design::solve_with` (which surfaces the real
-/// [`SolveError::TooManyPlanes`] instead of swallowing it) purely to check for this
-/// one condition; `Some` with a cutter-actionable sentence a faceter understands
-/// ("reduce symmetry or split the design") iff it applies, `None` otherwise
-/// (including every ordinary solve error, which the caller's own existing message
-/// already covers).
-///
-/// A CHEAP (no solve) pre-filter for [`too_many_planes_message`]: `true` iff
-/// `solved` carries the exact tell [`indicatrix::geometry::meet_solver::solve::
-/// SolveContext::failed_solved`] stamps into every non-anchor tier's own
-/// [`SolvedTier::detail`] for its all-`SolveStrategy::Failed` over-`MAX_PLANES`
-/// fallback ("... above the N-plane cap for candidate-vertex enumeration").
-/// [`too_many_planes_message`]'s own `solve_with` re-check is the only
-/// AUTHORITATIVE source of `planes`/`max` (this never parses those numbers back
-/// out of the detail string -- a private wording this crate does not own, from
-/// `crates/indicatrix`, off limits to this module -- so a caller still calls that
-/// function for the real numbers), but calling `solve_with` on every ordinary
-/// `Degenerate`/`Unbounded` result -- the overwhelming majority of which have
-/// nothing to do with the plane cap at all -- would silently double an
-/// already-real solve cost for no reason. This lets both `state::
-/// status_text_and_is_problem`/`_from_solved` skip that re-check entirely unless
-/// `solved` (which either already has, from its own preceding `Design::solve()`)
-/// actually shows the tell. A false negative here only means an ordinary
-/// (unhelpful but not wrong) "Degenerate"/"Unbounded" message shows instead of
-/// the plane-cap one -- never a false plane-cap message shown for an unrelated
-/// failure, since [`too_many_planes_message`] itself is still the one that
-/// decides.
-#[must_use]
-pub(in crate::gui::editor) fn likely_hit_plane_cap(solved: &[SolvedTier]) -> bool {
-    solved
-        .iter()
-        .any(|t| matches!(t.strategy, SolveStrategy::Failed) && t.detail.contains("plane cap"))
-}
-
-/// `pub(super)`: called from `state::status_text_and_is_problem`/
-/// `_from_solved`'s own `Degenerate`/`Unbounded` arms (`state/mod.rs`, not this
-/// module -- neither this module nor `state/mod.rs` is the place to relocate this
-/// function outside its own file, so the check itself lives here instead and is
-/// called across the module boundary),
-/// each of which was ALREADY paying for a second, redundant `design.solve()` call
-/// there (to build the suspects/escaping-tier text) -- swapping that call for this
-/// one adds no new solve cost for a design under the cap; only a design actually
-/// over it (for which neither `degenerate_suspects_note` nor `escaping_tier_text`
-/// is meaningful against a fabricated mast list anyway) takes a different path.
-#[must_use]
-pub(in crate::gui::editor) fn too_many_planes_message(design: &Design) -> Option<String> {
-    match design.solve_with(&SolveControl::default()) {
-        Err(DesignSolveError::Solve(SolveError::TooManyPlanes { planes, max })) => Some(format!(
-            "This design has {planes} facet planes; the solver supports up to {max} -- reduce \
-             symmetry or split the design."
-        )),
-        _ => None,
-    }
-}
-
-/// The "Solving..." banner text a running background solve shows, ticked forward by
-/// [`dispatch_background_solve`]'s ticker thread.
-pub(super) fn solving_banner(tier_count: usize, elapsed: Duration) -> String {
-    format!(
-        "Solving... ({tier_count} tier{}) -- {:.1}s elapsed",
-        if tier_count == 1 { "" } else { "s" },
-        elapsed.as_secs_f32()
-    )
-}
+// The cancellable solve, the plane-cap diagnosis and the "Solving..." banner text
+// live in `indicatrix_editor::solve_policy`, shared with the web app; re-exported
+// here at their old paths. `TICK_INTERVAL` (the banner's refresh period) matches
+// `deep_solve::TICK_INTERVAL`/`optimize_solve::TICK_INTERVAL`'s own value.
+pub(super) use indicatrix_editor::solve_policy::solving_banner;
+pub(in crate::gui::editor) use indicatrix_editor::solve_policy::{
+    likely_hit_plane_cap, solve_cancellably, too_many_planes_message,
+};
 
 /// Invalidates whatever background solve is currently in flight or queued behind
 /// it, and stops the worker -- see `super::runtime::Runtime::current_cancel`'s own
@@ -178,7 +79,7 @@ pub(super) fn solving_banner(tier_count: usize, elapsed: Duration) -> String {
 ///
 /// The UI-visible half of "Abandon Solve" -- clearing `EditorModel.solve_running`/
 /// setting `solve_state`/`status_text` back to an "abandoned" message on the SAME
-/// click -- is `gui::editor::mod::setup_solve_cancel_callback`, which calls this
+/// click -- is `gui::editor::setup::setup_solve_cancel_callback`, which calls this
 /// function first.
 pub(in crate::gui::editor) fn cancel_in_flight_solve() {
     RUNTIME.with(|cell| {
@@ -194,7 +95,7 @@ pub(in crate::gui::editor) fn cancel_in_flight_solve() {
 }
 
 /// [`cancel_in_flight_solve`] plus the SAME `EditorModel` reset
-/// `mod.rs::setup_solve_cancel_callback` applies on the command bar's own "Abandon
+/// `gui::editor::setup::setup_solve_cancel_callback` applies on the command bar's own "Abandon
 /// Solve" button -- used as the background-solve activity's own
 /// `ActivityRegistry` cancel closure (see [`dispatch_background_solve`]), so
 /// cancelling from the status strip's activity list is indistinguishable from
@@ -355,9 +256,22 @@ fn spawn_solving_ticker(ui: &MainWindow, seq: u64, tier_count: usize) -> Arc<Ato
 /// Otherwise claims the in-flight slot for `cancel` and returns `false`. Split
 /// out purely to keep [`dispatch_background_solve`] under clippy's
 /// function-length lint.
-fn queue_or_claim_solve_slot(
+///
+/// stamps the queued [`PendingDispatch`] with the CALLER's own
+/// `started_generation` -- the value `generation` held at the moment `design`
+/// was snapshotted, threaded through as a parameter rather than reloaded from
+/// the live `Arc` here. `generation` is the SAME shared counter `EditorState`
+/// keeps bumping, so reloading it at queue time would silently pick up every
+/// edit that landed between the ORIGINAL dispatch (or an earlier replay of a
+/// still-queued one) and this call, and replay a stale `design` snapshot AS IF
+/// it were current -- exactly the bug a nested replay-of-a-replay could hit if
+/// this read `generation.load(..)` itself instead of trusting the value its own
+/// caller already captured. See [`PendingDispatch::started_generation`]'s own
+/// doc comment for the completion-side half this pairs with.
+pub(super) fn queue_or_claim_solve_slot(
     design: &Design,
     generation: &Arc<AtomicU64>,
+    started_generation: u64,
     multi_selected: &BTreeSet<usize>,
     cancel: &Arc<AtomicBool>,
 ) -> bool {
@@ -366,6 +280,7 @@ fn queue_or_claim_solve_slot(
         if rt.solve_in_flight {
             rt.pending_dispatch = Some(PendingDispatch {
                 design: design.clone(),
+                started_generation,
                 generation: Arc::clone(generation),
                 multi_selected: multi_selected.clone(),
             });
@@ -435,6 +350,28 @@ fn solve_and_build_result(
     // pipeline run, rather than only discarding whatever this eventually returns.
     let solved_result = solve_cancellably(&design, cancel);
     let multi_selected_count = multi_selected.len();
+    // the SAME effective RI `panel_inputs` below computes for the tier
+    // table's critical-angle margin column, kept on the result so
+    // `apply::push_solve_dependent_background_fields` can judge the
+    // proportion-verdict chips against the design's real effective RI instead
+    // of a built-in-only fallback.
+    let n_d = design.effective_refractive_index_with(custom_materials);
+    // a cancelled solve must not go on to pay for `panel_inputs`'s five
+    // (or more) further `Design::solve()`/`status()`/`measure()` calls, each as
+    // expensive as the solve that was just cancelled -- that is the real reason
+    // "Abandon Solve" used to take 25-30s to actually free `solve_in_flight` on a
+    // large design, not the (already near-instant, per `solve_cancellably`'s own
+    // 100ms-latency test) cancel itself. `cancel.load` is also checked directly
+    // (not just the `Err` variant) so a cancel observed between
+    // `solve_cancellably` returning and this check still short-circuits, rather
+    // than only when `solve_cancellably` itself happened to observe it first.
+    if matches!(
+        solved_result,
+        Err(DesignSolveError::Solve(SolveError::Cancelled))
+    ) || cancel.load(Ordering::Relaxed)
+    {
+        return BackgroundSolveResult::cancelled(design, start.elapsed(), multi_selected_count);
+    }
     let PanelInputs {
         mut tiers,
         status_text,
@@ -467,6 +404,8 @@ fn solve_and_build_result(
         too_many_planes,
         gear,
         multi_selected_count,
+        n_d,
+        panicked: false,
         // The same snapshot solved above, moved in last (after
         // every borrow of it -- `panel_inputs`/`gear` -- is done with it).
         design,
@@ -492,12 +431,21 @@ fn solve_and_build_result(
 /// reflected in that particular frame -- no worse than the existing generation-based
 /// staleness this module already accepts elsewhere, and the next refresh (of any
 /// kind) reads the current selection fresh.
+/// `started_generation` is the value `generation` held at the moment `design` was
+/// SNAPSHOTTED (not necessarily "right now" -- see [`PendingDispatch::
+/// started_generation`]'s own doc comment for why a replayed pending dispatch
+/// must pass its OWN captured value here rather than let this function reload the
+/// live counter, which may have moved on since). An ordinary fresh dispatch
+/// (`scheduling::on_edit`/`view::refresh_all`) simply reads `generation` right
+/// before calling this, which is the same moment `design` itself was snapshotted
+/// on those paths, so the two callers share no special-casing beyond that.
 pub(in crate::gui::editor) fn dispatch_background_solve(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
     design: Design,
     generation: &Arc<AtomicU64>,
     multi_selected: BTreeSet<usize>,
+    started_generation: u64,
 ) {
     // A solve already in flight keeps this request queued
     // (overwriting any earlier one still waiting) rather than spawning a second
@@ -511,12 +459,17 @@ pub(in crate::gui::editor) fn dispatch_background_solve(
     // queues as a `PendingDispatch` leaves this `Arc` unused and it is simply
     // dropped, harmlessly.
     let cancel = Arc::new(AtomicBool::new(false));
-    if queue_or_claim_solve_slot(&design, generation, &multi_selected, &cancel) {
+    if queue_or_claim_solve_slot(
+        &design,
+        generation,
+        started_generation,
+        &multi_selected,
+        &cancel,
+    ) {
         return;
     }
 
     let tier_count = design.tiers.len();
-    let started_generation = generation.load(Ordering::Relaxed);
     let seq = RUNTIME.with(|cell| {
         let mut rt = cell.borrow_mut();
         rt.current_seq += 1;
@@ -551,16 +504,36 @@ pub(in crate::gui::editor) fn dispatch_background_solve(
     let ui_weak = ui.as_weak();
     let render_ctx_for_apply = Arc::clone(render_ctx);
     let generation = Arc::clone(generation);
+    let multi_selected_count = multi_selected.len();
     thread::spawn(move || {
         let start = Instant::now();
-        let result = solve_and_build_result(
-            design,
-            &cancel,
-            &multi_selected,
-            &custom_materials,
-            &custom_sg,
-            start,
-        );
+        // a panic anywhere inside `solve_and_build_result` (a real meet-
+        // solver bug, most plausibly) must not leave `Runtime::solve_in_flight`
+        // stuck `true` for the rest of the session -- every dispatch after that
+        // would then queue forever behind a slot nothing will ever free.
+        // `design` is cloned BEFORE the `catch_unwind` boundary purely so a panic
+        // still leaves something to build a minimal, toasted result from: the
+        // ordinary (non-panicking) path never touches `design_for_panic` again,
+        // so this costs nothing beyond the one clone on the rare panic path
+        // itself mattering.
+        let design_for_panic = design.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            solve_and_build_result(
+                design,
+                &cancel,
+                &multi_selected,
+                &custom_materials,
+                &custom_sg,
+                start,
+            )
+        }))
+        .unwrap_or_else(|_| {
+            BackgroundSolveResult::panicked(design_for_panic, start.elapsed(), multi_selected_count)
+        });
+        // Always set, and always followed by a posted completion -- a solve that
+        // panicked must free `Runtime::solve_in_flight`/`current_cancel` exactly
+        // like an ordinary or a cancelled one does, via
+        // `apply_background_solve_result`'s own `free_in_flight_slot` preamble.
         done_flag.store(true, Ordering::Relaxed);
         let _ = ui_weak.upgrade_in_event_loop(move |ui| {
             apply_background_solve_result(

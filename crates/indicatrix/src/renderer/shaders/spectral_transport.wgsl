@@ -115,6 +115,9 @@ fn transport_main(
         compat[k] = 0xFFu;
     }
     var path_escaped = false;
+    // The running NEE XYZ total -- see `transport_bounce_step`'s own doc comment on its
+    // matching parameter.
+    var nee_xyz = vec3<f32>(0.0, 0.0, 0.0);
     var pending_light_mis: f32 = 0.0;
     // The interior direction `pending_light_mis`'s phase pdf was evaluated
     // at -- see `transport_bounce_step`'s own doc comment on its matching parameter.
@@ -131,7 +134,7 @@ fn transport_main(
             rc.studio_key_dir, rc.studio_fill_dir, rc.studio_sin_lp, observer,
             &stokes, &radiance, &path_pdf, &current_origin, &current_dir, &current_k,
             &inside_gem, &is_extraordinary, &prev_plane_normal, &have_prev_plane_normal,
-            &split_radiance, &compat, &path_escaped, &pending_light_mis, &pending_light_mis_dir,
+            &split_radiance, &compat, &nee_xyz, &path_escaped, &pending_light_mis, &pending_light_mis_dir,
         );
         if (status == BOUNCE_STATUS_TERMINATE) {
             break;
@@ -144,5 +147,5 @@ fn transport_main(
     // (`shaders/transport_bounce.wgsl`), shared with `wavefront_bounce`'s /
     // `wavefront_finalize_survivors`'s own per-ray termination paths -- see that
     // function's own doc comment.
-    transport_finalize_ray(idx, lambdas, &radiance, split_radiance, path_pdf, compat, path_escaped);
+    transport_finalize_ray(idx, lambdas, &radiance, split_radiance, path_pdf, compat, path_escaped, nee_xyz);
 }

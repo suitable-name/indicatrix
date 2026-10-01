@@ -21,7 +21,18 @@ fn tf_dist1d_find_bucket(cdf_start: u32, count: u32, u: f32) -> u32 {
             len = half;
         }
     }
-    return clamp(first - 1u, 0u, count - 1u);
+    // `first` saturates at 0 here (NOT `clamp(first - 1u, 0u, count - 1u)`,
+    // which wraps to `u32::MAX` then clamps to `count - 1u` -- the WORST bucket,
+    // exactly backwards -- whenever `first == 0u`), matching
+    // `renderer::env_map_distribution::Distribution1D::find_bucket`'s own
+    // `first.saturating_sub(1).min(self.n() - 1)` and the megakernel's own
+    // `dist1d_find_bucket` (`transport_bounce/06_nee_sampling.wgsl`), which already
+    // guards this with `if (first > 0u) { offset = first - 1u; }` before its `min`.
+    var offset: u32 = 0u;
+    if (first > 0u) {
+        offset = first - 1u;
+    }
+    return min(offset, count - 1u);
 }
 
 fn tf_dist1d_bucket_pdf(func_start: u32, func_int: f32, offset: u32) -> f32 {

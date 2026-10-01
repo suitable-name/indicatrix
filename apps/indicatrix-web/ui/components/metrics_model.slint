@@ -1,0 +1,67 @@
+// The optical metrics' globals (`src/metrics`): the Render tab's HUD and the Tilt
+// Performance dialog. Named in `app.slint`'s export block, which is what makes them Rust
+// types.
+
+// The five metrics of the frame being rendered (the desktop's ViewportModel
+// `brilliance_pct` .. `extinction_pct`), computed in the analysis Worker.
+export global MetricsModel {
+    // Numbers below are valid.
+    in property <bool> has-metrics: false;
+    // The pose or light moved since they were computed: shown dimmed until the new ones
+    // land.
+    in property <bool> pending: false;
+    // Why there are none ("" when there are, or when nothing is being measured).
+    in property <string> status-text: "";
+    // What the numbers were scored under when that is not the preset the viewport shows:
+    // "Scored under the HDR map", or the fallback naming the preset when the analysis
+    // Worker holds no map ("" otherwise).
+    in property <string> scored-under-text: "";
+    in property <float> brilliance-pct: 0;
+    in property <float> fire-index: 0;
+    in property <float> scintillation-pct: 0;
+    in property <float> windowing-pct: 0;
+    in property <float> extinction-pct: 0;
+}
+
+// The Tilt Performance dialog (the desktop's TiltModel): four camera azimuths
+// (0/45/90/135 degrees) of 181 points each, -90..+90 degrees of tilt from table-up.
+export global TiltModel {
+    in-out property <bool> open: false;
+    // The traced material, named in the subtitle.
+    in property <string> material-name: "";
+    // What the sweep is scored under: the lighting preset's rig (never the HDR map, as on
+    // the desktop), with a reminder when a map lights the viewport. "" until known.
+    in property <string> lighting-note: "";
+    // A sweep is running in the analysis Worker.
+    in property <bool> running: false;
+    // Cancel was asked; the sweep is stopping.
+    in property <bool> cancelling: false;
+    // Completion fraction of the running sweep, -1 when unknown.
+    in property <float> progress: -1;
+    // The stage line while running, else the last outcome or why nothing can run.
+    in property <string> status-text: "";
+    // The curves on screen were swept for other inputs than the current ones.
+    in property <bool> curves-stale: false;
+    // One row per azimuth, 181 points each (`TILT_ANGLES_DEG`-indexed); empty until a
+    // sweep has finished.
+    in property <[[float]]> brilliance-axes: [];
+    in property <[[float]]> extinction-axes: [];
+    in property <[[float]]> windowing-axes: [];
+    // SVG path data of the same rows in a 0..100 x 0..100 viewbox.
+    in property <[string]> brilliance-paths: [];
+    in property <[string]> extinction-paths: [];
+    in property <[string]> windowing-paths: [];
+
+    // The dialog was opened: Rust starts a sweep if there are no current curves.
+    callback opened();
+    callback run();
+    callback cancel();
+
+    // The Tilt Curve pills' shared open/close.
+    public function toggle-dialog() {
+        open = !open;
+        if open {
+            opened();
+        }
+    }
+}

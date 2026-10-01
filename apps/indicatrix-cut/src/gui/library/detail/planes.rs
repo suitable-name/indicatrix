@@ -21,16 +21,12 @@ use slint::ComponentHandle;
 use std::sync::{Arc, Mutex};
 use tracing::info;
 
-/// [`crate::gui::editor::resolve_catalogue_planes`], `None`-ified
-/// on any failure -- a resolution failure (no attached `.asc` and no angle-settings
-/// row at all) and "the design has no valid anchor" (`Ok(None)`) both mean the same
-/// thing to this route: fall back to [`reconstruct_planes`].
+/// Everything [`apply_reconstructed_planes`] needs for one design.
 ///
-/// `real_design` is the SAME `Design`'s already-converted
-/// planes/gear-teeth/reference-angle the editor's own "Load Selected" would show for
-/// `entry_id` (`resolve_catalogue_planes_for_entry`, `None` on the remote route --
-/// see that function's own call site), preferred over this module's placeholder-only
-/// `reconstruct_planes` guess whenever it resolved to something. See
+/// `real_design` is [`crate::gui::editor::resolve_catalogue_planes`]'
+/// planes/gear-teeth/reference-angle for `entry_id` (`resolve_catalogue_planes_for_entry`,
+/// `None` on the remote route -- see that function's own call site): the design
+/// file's geometry when the record has a usable one, the angle table's otherwise. See
 /// [`planes_gear_and_reference_angle`] for exactly when each path is taken.
 ///
 /// Bundled into [`ReconstructedPlanesInput`] purely to keep this function's argument
@@ -59,12 +55,11 @@ pub(super) struct ReconstructedPlanesInput<'a> {
 
 /// Falls back to [`reconstruct_planes`] (gear reference angle `0.0`, matching this
 /// route's long-standing "library records carry no reference angle" note) whenever
-/// `real_design` is `None` -- [`crate::gui::editor::resolve_catalogue_planes`] itself
-/// returned `None`/`Err`: no attached `.asc`/angle-settings row to resolve a `Design`
-/// from at all, a resolved design with no valid `ScaleReference` anchor for
-/// `Design::planes()` to place its tiers against, or (`apply_design_record_to_ui`'s
-/// own call site) the remote route, which has no attached `.asc` bytes to parse yet
-/// and so never even calls it.
+/// `real_design` is `None` -- only the remote route (`apply_design_record_to_ui`'s own
+/// call site), which has no attached design-file bytes to parse yet and so never
+/// calls [`crate::gui::editor::resolve_catalogue_planes`]. The local route always
+/// passes that function's result, which applies the same angle-table fallback itself
+/// when the record has no usable design file.
 pub(super) fn planes_gear_and_reference_angle(
     real_design: Option<(Vec<GpuFacetPlane>, u32, f32)>,
     shape: Option<&str>,
@@ -221,17 +216,43 @@ fn apply_catalogue_material(
     refractive_index: Option<&str>,
     preview_material: Option<&str>,
 ) -> Option<String> {
-    if let Some(name) = preview_material.map(str::trim).filter(|s| !s.is_empty())
-        && let Some(gem) = lookup_named_material(ctx, name)
-    {
-        ctx.material_unresolved = None;
-        ctx.material_name = name.to_string();
-        ctx.material_override = Some(gem);
-        return Some(name.to_string());
+    if let Some(name) = preview_material.map(str::trim).filter(|s| !s.is_empty()) {
+        return if let Some(gem) = lookup_named_material(ctx, name) {
+            ctx.material_unresolved = None;
+            ctx.material_name = name.to_string();
+            ctx.material_override = Some(gem);
+            Some(name.to_string())
+        } else {
+            // The row names a SPECIFIC material that resolves to neither a
+            // built-in preset nor a saved custom material -- refuse outright
+            // (matching `gui::editor::view::inspector::traced_material_for`'s own
+            // rule for the same situation) rather than falling through to the
+            // RI-based guess below, which would silently trace/tilt-sweep/HUD-score
+            // a DIFFERENT stone than the one this row actually names, with no hint
+            // why. Clears `material_name`/`material_override` rather than leaving
+            // them at whatever the PREVIOUSLY loaded catalogue row set them to --
+            // without this, switching from a resolving row to this one kept
+            // showing the previous row's material as if it were this row's own
+            // honest resolution.
+            ctx.material_name.clear();
+            ctx.material_override = None;
+            ctx.material_unresolved = Some(format!(
+                "This design's material '{name}' is not a built-in preset or a saved \
+                 custom material, so there is nothing to trace -- pick a material in \
+                 the Render Material dropdown above, or re-save the missing custom \
+                 material."
+            ));
+            None
+        };
     }
 
     let n_d = refractive_index.and_then(|text| text.trim().parse::<f64>().ok());
     let Some(n_d) = n_d.filter(|v| v.is_finite() && *v > 1.0) else {
+        // See the comment above for why every refusal in this function clears
+        // `material_name`/`material_override` rather than leaving the previous
+        // row's.
+        ctx.material_name.clear();
+        ctx.material_override = None;
         ctx.material_unresolved = Some(
             "This design records no usable refractive index, so there is no honest \
              material to render it in. Pick one in the Render Material dropdown above."
@@ -240,6 +261,8 @@ fn apply_catalogue_material(
         return None;
     };
     let Some((name, gem)) = material_for_refractive_index(n_d) else {
+        ctx.material_name.clear();
+        ctx.material_override = None;
         ctx.material_unresolved = Some(format!(
             "This design's refractive index ({n_d:.4}) matches no built-in preset within \
              {MATERIAL_MATCH_TOLERANCE:.2}. Pick a material in the Render Material dropdown \

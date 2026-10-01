@@ -44,6 +44,47 @@ impl Database {
         Ok(map)
     }
 
+    /// [`Self::tags_by_entry`] restricted to `entry_ids`: the same shape and ordering
+    /// (`entry_id` ascending, tag names case-insensitively ascending), but only the
+    /// links of the requested entries are read, so a page of search results does not
+    /// load the whole catalogue's tag links. An entry with no tags has no key; ids that
+    /// match no entry are ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if preparing or running the underlying `SELECT` fails.
+    pub fn tags_for_entries(&self, entry_ids: &[i64]) -> Result<HashMap<i64, Vec<String>>> {
+        let ids_json = format!(
+            "[{}]",
+            entry_ids
+                .iter()
+                .map(i64::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT l.entry_id, t.name
+                 FROM diagram_tag_links l
+                 JOIN tags t ON t.id = l.tag_id
+                 WHERE l.entry_id IN (SELECT value FROM json_each(?1))
+                 ORDER BY l.entry_id ASC, t.name COLLATE NOCASE ASC",
+            )
+            .context("Failed to prepare tags-for-entries query")?;
+        let rows = stmt
+            .query_map(params![ids_json], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .context("Failed to run tags-for-entries query")?;
+
+        let mut map: HashMap<i64, Vec<String>> = HashMap::new();
+        for (entry_id, name) in rows.flatten() {
+            map.entry(entry_id).or_default().push(name);
+        }
+        Ok(map)
+    }
+
     /// Every tag in the catalogue, alphabetical (case-insensitive) -- the chip
     /// filter row's own option list.
     ///
@@ -202,7 +243,7 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::entry::FacetDiagramEntry;
+    use crate::model::entry::FacetingDiagramEntry;
 
     fn temp_db_with_one_entry(label: &str) -> (Database, i64, std::path::PathBuf) {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -214,7 +255,7 @@ mod tests {
         let db = Database::new(Some(path.to_str().unwrap())).unwrap();
         let entry_id = db
             .save_diagram_entry(
-                &FacetDiagramEntry {
+                &FacetingDiagramEntry {
                     title: "Tag Test".to_string(),
                     url: format!("local://tag-test-{label}-{n}.asc"),
                     design_id: String::new(),
@@ -223,6 +264,31 @@ mod tests {
             )
             .unwrap();
         (db, entry_id, path)
+    }
+
+    #[test]
+    fn tags_for_entries_returns_only_the_requested_entries() {
+        let (db, first, path) = temp_db_with_one_entry("subset");
+        let second = db
+            .save_diagram_entry(
+                &FacetingDiagramEntry {
+                    title: "Other".to_string(),
+                    url: "local://tag-test-subset-other.asc".to_string(),
+                    design_id: String::new(),
+                },
+                "local-import",
+            )
+            .unwrap();
+        db.add_tag_to_entry(first, "Zebra").unwrap();
+        db.add_tag_to_entry(first, "alpha").unwrap();
+        db.add_tag_to_entry(second, "Competition").unwrap();
+
+        let map = db.tags_for_entries(&[first]).unwrap();
+        assert_eq!(map.len(), 1);
+        assert_eq!(map[&first], vec!["alpha".to_string(), "Zebra".to_string()]);
+        assert!(db.tags_for_entries(&[]).unwrap().is_empty());
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

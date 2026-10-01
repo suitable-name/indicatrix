@@ -4,9 +4,10 @@ version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 authors = { workspace = true }
-description = "Sample-range scheduling for indicatrix render lanes: a shared disjoint sample cursor, per-lane rate models, a lane pool that merges chunk sums deterministically, and a whole-item batch queue. No networking and no GUI types."
+description = "Sample-range scheduling for indicatrix render lanes: a shared disjoint sample cursor, per-lane rate models, a lane pool that merges chunk sums deterministically. No networking and no GUI types."
 license = { workspace = true }
 repository = { workspace = true }
+homepage = { workspace = true }
 documentation = "https://docs.rs/indicatrix-dispatch"
 keywords = ["gemstone", "raytracer", "scheduling", "rendering"]
 categories = ["rendering", "concurrency"]

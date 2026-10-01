@@ -62,12 +62,90 @@ pub use wiring::{offer_batch_confirmation, setup_tilt_batch_callbacks};
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indicatrix::{geometry::cuts::StandardGemCuts, optics::materials::GemMaterial};
+    use crate::gui::batch::test_records::{
+        ASC_MAST, ASC_TEXT, ENTRY_ID, angle_table_planes, angle_table_record, assert_gem_geometry,
+        gem_record, has_plane_at, record_with,
+    };
+    use indicatrix::{
+        geometry::{GpuFacetPlane, cuts::StandardGemCuts},
+        optics::materials::GemMaterial,
+    };
     use indicatrix_vault::{
         db::sqlite::Database,
-        model::tilt_curves::{AxisTiltCurves, TILT_CURVE_AXIS_COUNT, TiltPerformanceCurves},
+        model::{
+            entry::FullDiagramRecord,
+            tilt_curves::{AxisTiltCurves, TILT_CURVE_AXIS_COUNT, TiltPerformanceCurves},
+        },
     };
-    use std::sync::atomic::AtomicBool;
+    use std::{
+        collections::BTreeSet,
+        sync::{Mutex, atomic::AtomicBool},
+    };
+
+    /// The tilt engine's own geometry step for `full`, plus the ids its batch
+    /// context counted as angle-table fallbacks.
+    fn tilt_planes(full: &FullDiagramRecord) -> (Option<Vec<GpuFacetPlane>>, BTreeSet<i64>) {
+        let db = Mutex::new(Database::new(Some(":memory:")).expect("in-memory database opens"));
+        let angle_table_entries = Mutex::new(BTreeSet::new());
+        let ctx = engine::BatchContext {
+            db: &db,
+            material_candidates: &[],
+            angle_table_entries: &angle_table_entries,
+        };
+        let planes = engine::record_planes(&ctx, full);
+        let fallbacks = angle_table_entries
+            .into_inner()
+            .expect("the fallback set is never poisoned in a test");
+        (planes, fallbacks)
+    }
+
+    /// A record whose only design file is a `.gem` is swept with the `.gem`'s
+    /// real masts, not the angle table's, and is not counted as a fallback.
+    #[test]
+    fn tilt_batch_sweeps_a_gem_only_record_from_its_design_file() {
+        let full = gem_record();
+        let (planes, fallbacks) = tilt_planes(&full);
+        let planes = planes.expect("the .gem yields planes");
+        assert_gem_geometry(&planes);
+        assert_ne!(planes, angle_table_planes(&full));
+        assert!(fallbacks.is_empty());
+        // The detail view resolves the same record to the same stone.
+        assert_eq!(
+            planes,
+            crate::gui::editor::resolve_catalogue_planes(&full).planes
+        );
+    }
+
+    /// A record whose `.asc` masts differ from its angle table is swept from the
+    /// `.asc`.
+    #[test]
+    fn tilt_batch_prefers_the_asc_over_a_differing_angle_table() {
+        let full = record_with("design.asc", ASC_TEXT.as_bytes().to_vec());
+        let (planes, fallbacks) = tilt_planes(&full);
+        let planes = planes.expect("the .asc yields planes");
+        assert!(has_plane_at(&planes, ASC_MAST));
+        assert_ne!(planes, angle_table_planes(&full));
+        assert!(fallbacks.is_empty());
+    }
+
+    /// A record with no design file keeps the angle-table geometry the batch
+    /// always swept, and is counted as a fallback.
+    #[test]
+    fn tilt_batch_sweeps_a_record_without_a_design_file_from_its_angle_table() {
+        let full = angle_table_record();
+        let (planes, fallbacks) = tilt_planes(&full);
+        assert_eq!(planes, Some(angle_table_planes(&full)));
+        assert_eq!(fallbacks, BTreeSet::from([ENTRY_ID]));
+    }
+
+    /// A corrupt `.gem` falls back to the angle table without panicking.
+    #[test]
+    fn tilt_batch_falls_back_to_the_angle_table_for_a_corrupt_gem() {
+        let full = record_with("broken.gem", vec![1, 2, 3]);
+        let (planes, fallbacks) = tilt_planes(&full);
+        assert_eq!(planes, Some(angle_table_planes(&full)));
+        assert_eq!(fallbacks, BTreeSet::from([ENTRY_ID]));
+    }
 
     /// The single-design entry point, exercised through THIS module's own re-export
     /// (not `engine`'s private path) -- there is no other call site in this crate;
@@ -80,7 +158,7 @@ mod tests {
         let planes = StandardGemCuts::standard_round_brilliant();
         let material = GemMaterial::diamond();
         let cancel = AtomicBool::new(true);
-        assert!(tilt_curves_for_planes(&planes, &material, None, &cancel).is_none());
+        assert!(tilt_curves_for_planes(&planes, &material, None, &cancel, &mut |_| {}).is_none());
     }
 
     /// The same single-design entry point run to REAL completion (not the
@@ -95,8 +173,12 @@ mod tests {
         let planes = StandardGemCuts::standard_round_brilliant();
         let material = GemMaterial::diamond();
         let cancel = AtomicBool::new(false);
-        let curves = tilt_curves_for_planes(&planes, &material, None, &cancel)
-            .expect("a standard round brilliant must sweep successfully");
+        let mut steps = 0usize;
+        let curves = tilt_curves_for_planes(&planes, &material, None, &cancel, &mut |_| {
+            steps += 1;
+        })
+        .expect("a standard round brilliant must sweep successfully");
+        assert_eq!(steps, 724, "one progress report per raytrace evaluation");
         assert!(
             curves
                 .axes

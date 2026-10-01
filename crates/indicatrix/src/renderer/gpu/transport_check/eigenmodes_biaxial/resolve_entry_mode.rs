@@ -12,6 +12,7 @@ use crate::{
 
 use super::biaxial_test_indicatrices;
 
+/// One input case for the biaxial resolve entry mode check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BiaxialResolveEntryModeCase {
@@ -86,6 +87,7 @@ fn build_biaxial_resolve_entry_mode_cases() -> Vec<BiaxialResolveEntryModeCase> 
     cases
 }
 
+/// Runs the biaxial resolve entry mode check against the CPU reference.
 #[must_use]
 pub fn run_biaxial_resolve_entry_mode(
     ctx: &crate::renderer::gpu::GpuContext,

@@ -51,7 +51,10 @@ mod tests {
     /// test's pinned bytes: the move changed no pixel of the GUI's live view.
     #[test]
     fn gui_path_matches_the_pinned_indicatrix_hash() {
-        const PINNED: u64 = 0xca39_c692_af52_3c71;
+        // The same value as the twin in `indicatrix::renderer::frame_denoise`: pinned with
+        // background pixels passing through the denoiser unfiltered and the sRGB encode's
+        // round-to-nearest quantisation.
+        const PINNED: u64 = 0x4b0e_fd3c_897e_809c;
         let (width, height, samples) = (24_u32, 16_u32, 3_u32);
         let planes = indicatrix::geometry::cuts::StandardGemCuts::standard_round_brilliant();
         let accum: Vec<Vec3> = (0..(width * height) as usize)

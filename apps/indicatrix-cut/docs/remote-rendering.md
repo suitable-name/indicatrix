@@ -31,12 +31,22 @@ other remote failure below.
   The remote renders the whole sample budget, tone-maps it with the SAME
   `indicatrix::renderer::tonemap::tonemap_accumulation` the viewer uses, and returns a
   lossless PNG; the viewer decodes it to RGBA8 and writes it through its own PNG writer,
-  so ICC embedding is identical to a local export of that RGBA. Local lanes do not take
-  part; progress comes from the remote's `PROGRESS` heartbeats; cancel sends `CANCEL`.
-  Every current coordinator implements it (with or without joined workers).
-  `UNSUPPORTED_REQUEST` (a remote that does not) falls back to full data with one note and is
-  remembered for that remote until it is re-saved; any other failure falls back to full
-  data under Local + Remote and fails the image under Remote only.
+  so ICC embedding is identical to a local export of that RGBA. Local lanes do not
+  normally take part; progress comes from the remote's `PROGRESS` heartbeats; cancel
+  sends `CANCEL`. **v16 exception:** when `AppSettings::contribute_to_final_picture` is
+  on (the default) and the export's `ComputeTarget` is `Both`, `worker::final_picture::contribution_allowed`
+  lets `final_picture` fork instead: `FinalImageRequest.viewer_samples` reserves a tail
+  of the sample budget for the viewer, whose local lanes trace that tail on a scoped
+  thread while the remote traces the rest, uploading the sum as `-> CONTRIBUTION`
+  for the coordinator to fold in before tone-mapping. If the contribution doesn't
+  arrive within the coordinator's wait (or is invalid), the coordinator silently
+  renders that tail itself and reports how many samples it had to take back in
+  `Stats.reclaimed_samples` — a slow or interrupted local machine never stalls or
+  corrupts the export. Every current coordinator implements Final picture only (with
+  or without joined workers). `UNSUPPORTED_REQUEST` (a remote that does not) falls back
+  to full data with one note and is remembered for that remote until it is re-saved;
+  any other failure falls back to full data under Local + Remote and fails the image
+  under Remote only.
 - **Final picture**, live view ("Live Transfer" in the settings dialog): the settled
   epoch sends one `RenderRequest` with `TransferMode::DisplayOnly` over the whole
   budget; the remote streams finished, denoised 8-bit `DISPLAY_FRAME`s, which the viewer

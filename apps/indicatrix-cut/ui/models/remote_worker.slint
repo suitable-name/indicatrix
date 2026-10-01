@@ -20,8 +20,6 @@ export global RemoteWorkerModel {
     in property <string> library_source_label: "Local library";
     in property <bool> library_is_remote: false;
 
-    // 0 while a mirror of the remote library is (or last was) running, -1 before.
-    in property <int> mirror_worker_index: -1;
     in property <bool> mirror_in_progress: false;
     in property <float> mirror_progress_fraction: 0.0;
     in property <string> mirror_status_text: "";

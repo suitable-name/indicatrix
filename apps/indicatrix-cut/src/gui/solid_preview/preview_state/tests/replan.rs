@@ -394,6 +394,58 @@ fn render_request_carries_solved_and_freshness_through_to_the_worker_frame() {
     );
 }
 
+/// A camera-follow `Reproject` after a `Planned` frame carries that frame's
+/// generation forward but is NOT itself a planned frame -- `gui::solid_sink`'s
+/// out-of-order guard must only ever apply to planned frames, or every orbit after a
+/// redraw-only cache write (New/Load/Solve, a background solve) is dropped and the
+/// solid raster freezes while the path tracer keeps turning.
+#[test]
+fn a_reproject_after_a_planned_frame_is_not_planned_but_keeps_its_generation() {
+    let mut mesh_cache = MeshCache::default();
+    let mut rasterizer = SolidRasterizer::new(16, 16);
+    let mut edges_rasterizer = SolidRasterizer::new(16, 16);
+    let mut memory = WorkerMemory::default();
+
+    let planned = render_request(
+        &mut mesh_cache,
+        &mut rasterizer,
+        &mut edges_rasterizer,
+        &mut memory,
+        planned_request(closed_design(), 0, (16, 16), 7),
+    )
+    .expect("a Planned request always resolves");
+    assert!(
+        planned.planned,
+        "a Planned request must produce a planned frame"
+    );
+    let planes = planned.planes;
+
+    let orbit = render_request(
+        &mut mesh_cache,
+        &mut rasterizer,
+        &mut edges_rasterizer,
+        &mut memory,
+        RedrawRequest::Reproject {
+            planes,
+            camera: CameraPose {
+                yaw: 1.0,
+                pitch: 0.3,
+                ..CAMERA
+            },
+            size: (16, 16),
+            view_mode: 0,
+            gear: None,
+        },
+    )
+    .expect("a Reproject request always resolves");
+    assert!(!orbit.planned, "an orbit frame must not count as planned");
+    assert_eq!(
+        orbit.generation, 7,
+        "an orbit frame carries the last planned generation forward"
+    );
+    assert!(orbit.has_solid);
+}
+
 #[test]
 fn view_mode_both_also_produces_an_edges_image() {
     let design = closed_design();
@@ -417,7 +469,7 @@ fn view_mode_both_also_produces_an_edges_image() {
     );
 }
 
-/// View mode 3: the worker must build the 2D facet diagram, its own pick
+/// View mode 3: the worker must build the 2D faceting diagram, its own pick
 /// buffer, and the facet-id-indexed hover-text/tier tables a diagram click
 /// needs -- see `PreviewFrame::diagram_hover_text`'s doc comment for why
 /// those travel with the frame instead of being recomputed on the UI thread.
@@ -486,6 +538,74 @@ fn replan_frame_carries_a_positive_mesh_bounding_radius() {
     .expect("a Planned request always resolves");
     assert!(frame.has_solid);
     assert!(frame.mesh_bounding_radius > 0.0);
+}
+
+/// A replan frame carries the mesh geometry the manipulation handles project
+/// with: at the request's own size and camera pose, one centroid slot per plane.
+#[test]
+fn replan_frame_carries_geometry_at_the_request_size_and_pose() {
+    let design = closed_design();
+    let mut mesh_cache = MeshCache::default();
+    let mut rasterizer = SolidRasterizer::new(16, 16);
+    let mut edges_rasterizer = SolidRasterizer::new(16, 16);
+    let mut memory = WorkerMemory::default();
+
+    let frame = render_request(
+        &mut mesh_cache,
+        &mut rasterizer,
+        &mut edges_rasterizer,
+        &mut memory,
+        planned_request(design, 0, (24, 20), 0),
+    )
+    .expect("a Planned request always resolves");
+    let geometry = frame
+        .geometry
+        .expect("a closed design always carries geometry");
+    assert_eq!(geometry.size, (24, 20));
+    assert_eq!(geometry.camera, CAMERA);
+    assert!(!geometry.corner_points.is_empty());
+    assert_eq!(geometry.facet_centroids.len(), frame.planes.len());
+    assert!((geometry.bounding_radius - frame.mesh_bounding_radius).abs() < 1e-12);
+}
+
+/// A `Reproject` frame carries geometry too, at the NEW pose and size.
+#[test]
+fn reproject_frame_carries_geometry_at_the_new_pose_and_size() {
+    let design = closed_design();
+    let mut mesh_cache = MeshCache::default();
+    let mut rasterizer = SolidRasterizer::new(16, 16);
+    let mut edges_rasterizer = SolidRasterizer::new(16, 16);
+    let mut memory = WorkerMemory::default();
+
+    let replan_frame = render_request(
+        &mut mesh_cache,
+        &mut rasterizer,
+        &mut edges_rasterizer,
+        &mut memory,
+        planned_request(design, 0, (16, 16), 1),
+    )
+    .expect("a Planned request always resolves");
+    let turned = CameraPose { yaw: 0.7, ..CAMERA };
+    let reproject_frame = render_request(
+        &mut mesh_cache,
+        &mut rasterizer,
+        &mut edges_rasterizer,
+        &mut memory,
+        RedrawRequest::Reproject {
+            planes: replan_frame.planes,
+            camera: turned,
+            size: (32, 24),
+            view_mode: 0,
+            gear: None,
+        },
+    )
+    .expect("a Reproject request always resolves");
+    let geometry = reproject_frame
+        .geometry
+        .expect("a Reproject frame carries geometry too");
+    assert_eq!(geometry.size, (32, 24));
+    assert_eq!(geometry.camera, turned);
+    assert!(!geometry.corner_points.is_empty());
 }
 
 /// A `Reproject`/`UpdateFacetOverlay` frame carries no generation of its

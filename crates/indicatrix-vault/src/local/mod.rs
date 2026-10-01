@@ -6,9 +6,17 @@
 //! boundary is deliberate.
 
 use crate::model::{
-    angle::AngleSetting, detail::FacetDiagramDetail, entry::FacetDiagramEntry, file::AttachedFile,
+    angle::AngleSetting, detail::FacetingDiagramDetail, entry::FacetingDiagramEntry,
+    file::AttachedFile,
 };
 use indicatrix_formats::asc::{self, AscSchedule, AscTier};
+
+mod design_file;
+
+pub use design_file::{
+    DesignFileKind, DesignFileText, converted_asc_file_name, design_attachment_position,
+    design_file_to_asc_text,
+};
 
 /// `diagram_entries.source_id` every locally-imported `.asc` design is attributed to.
 ///
@@ -21,8 +29,10 @@ pub const LOCAL_SOURCE_ID: &str = "local-import";
 /// One `.asc` file, parsed and packaged for `db::sqlite::Database::save_diagram_entry`
 /// / `save_diagram_detail`.
 pub struct ImportedAsc {
-    pub entry: FacetDiagramEntry,
-    pub detail: FacetDiagramDetail,
+    /// Library entry metadata.
+    pub entry: FacetingDiagramEntry,
+    /// Full design detail.
+    pub detail: FacetingDiagramDetail,
     /// The catalogue row this file's own text says it was derived from -- recovered
     /// from a [`SOURCE_ENTRY_FOOTNOTE_PREFIX`] footnote line, when the `.asc` was
     /// written by `gui::editor::native_io`'s Save Native/Export .asc: an
@@ -75,9 +85,14 @@ pub fn parse_source_entry_footnote(footnotes: &[String]) -> Option<i64> {
         .and_then(|rest| rest.trim().parse().ok())
 }
 
-/// Parses one `.asc` file's `content` (already read from disk by the caller -- this
-/// function does no file I/O of its own) into an [`ImportedAsc`] ready to save into
-/// the local library.
+/// Parses one `.asc` file's `content` (text the caller already holds -- this function
+/// does no file I/O of its own) into an [`ImportedAsc`] ready to save into the local
+/// library.
+///
+/// The stored `.asc` attachment is the UTF-8 encoding of `content`. A caller that read
+/// the file from disk should call [`import_asc_bytes`] instead, which attaches the
+/// file's original bytes: a text-only caller (for example, the editor saving a design
+/// it just wrote itself) has no other bytes to keep.
 ///
 /// `file_name` is used only for the title fallback and the synthetic URL/attachment
 /// name.
@@ -105,6 +120,42 @@ pub fn import_asc(
     content: &str,
     native_sidecar: Option<(&str, &[u8])>,
 ) -> Result<ImportedAsc, String> {
+    build_import(file_name, content, content.as_bytes(), native_sidecar)
+}
+
+/// [`import_asc`] for a file's raw `bytes`: parses the text [`asc::decode_asc_bytes`]
+/// reads out of them, but attaches the ORIGINAL `bytes` unchanged.
+///
+/// The decoding strips a UTF-8 byte-order mark, accepts Windows-1252, and reads a lone
+/// carriage return as a line break.
+///
+/// Keeping the file as it came off disk is what makes a later export byte-for-byte: a
+/// Windows-1252 file (about one real `.asc` in ten, a legacy `0xB0` degree sign in a
+/// header or footnote) would otherwise come back as a different UTF-8 file that
+/// `GemCad` renders with mojibake. Every reader of the attachment decodes it with
+/// [`asc::decode_asc_bytes`], which accepts both the original bytes and the UTF-8 text an
+/// earlier version of this crate stored.
+///
+/// # Errors
+///
+/// Exactly [`import_asc`]'s: the decoded text must parse as `.asc`.
+pub fn import_asc_bytes(
+    file_name: &str,
+    bytes: &[u8],
+    native_sidecar: Option<(&str, &[u8])>,
+) -> Result<ImportedAsc, String> {
+    let content = asc::decode_asc_bytes(bytes);
+    build_import(file_name, &content, bytes, native_sidecar)
+}
+
+/// The shared body of [`import_asc`]/[`import_asc_bytes`]: parses `content` and stores
+/// `attachment` (the bytes the `.asc` attachment row keeps) beside the parsed metadata.
+fn build_import(
+    file_name: &str,
+    content: &str,
+    attachment: &[u8],
+    native_sidecar: Option<(&str, &[u8])>,
+) -> Result<ImportedAsc, String> {
     let schedule = asc::parse_asc(content).map_err(|e| e.to_string())?;
 
     let title = schedule
@@ -114,7 +165,7 @@ pub fn import_asc(
         .filter(|h| !h.is_empty())
         .unwrap_or_else(|| strip_asc_extension(file_name).to_string());
 
-    let entry = FacetDiagramEntry {
+    let entry = FacetingDiagramEntry {
         title,
         url: format!("local://{file_name}"),
         design_id: String::new(),
@@ -123,7 +174,7 @@ pub fn import_asc(
     let mut attached_files = vec![AttachedFile {
         name: file_name.to_string(),
         url: String::new(),
-        content: content.as_bytes().to_vec(),
+        content: attachment.to_vec(),
     }];
     if let Some((sidecar_name, sidecar_content)) = native_sidecar {
         attached_files.push(AttachedFile {
@@ -133,7 +184,7 @@ pub fn import_asc(
         });
     }
 
-    let detail = FacetDiagramDetail {
+    let detail = FacetingDiagramDetail {
         angle_settings_table: angle_settings_from_tiers(&schedule.tiers),
         attached_files,
         refractive_index: Some(schedule.refractive_index.to_string()),
@@ -141,7 +192,7 @@ pub fn import_asc(
         facets_count: Some(schedule.facet_plane_count().to_string()),
         symmetry_order: Some(schedule.symmetry_order.to_string()),
         mirror_symmetry: Some(schedule.mirror),
-        ..FacetDiagramDetail::default()
+        ..FacetingDiagramDetail::default()
     };
     let derived_from_entry_id = parse_source_entry_footnote(&schedule.footnotes);
 
@@ -191,43 +242,106 @@ fn angle_settings_from_tiers(tiers: &[AscTier]) -> Vec<AngleSetting> {
 /// is always marked via [`asc::mark_reconstructed`] so it can never be mistaken for a
 /// verified, hand-authored one.
 ///
-/// Returns `None` if `angle_settings` is empty (nothing to export).
-#[must_use]
+/// Returns `Ok(None)` if `angle_settings` is empty (nothing to export) -- unchanged
+/// from before this function returned a plain `Option`.
+///
+/// # A tier's angle, and the refractive index, must parse or this errors out
+///
+/// This used to fall back to a silent `0.0` for an unparsable tier angle or refractive
+/// index (`.unwrap_or(0.0)`), and only split a tier's `index` text on `,`/` `/`;` --
+/// missing the real catalogue's actual separator for scraped index-wheel data, a
+/// hyphen (`"96-08-16-24-32-40-48-56-64-72-80-88"`). Measured on the real catalogue:
+/// 48,559 of 50,817 `angle_settings.index_val` rows had no parsable index under the
+/// old separator set, and every tier of the 140 designs that reach this
+/// reconstruction path (no `.asc` attachment, so this is their ONLY export path) came
+/// out with a fabricated `0.0` angle -- a schedule that looks real but silently
+/// isn't. Now: `-` is a recognized index separator alongside `,`/` `/`;`, and an
+/// unparsable tier angle or refractive index is a hard [`Err`] naming the offending
+/// tier/facet (or the raw refractive-index text), never a fabricated `0.0`.
+///
+/// The gear-tooth count fallback (`unwrap_or(96)`, `GemCad`'s near-universal default
+/// index wheel) is intentionally NOT promoted to an error: unlike a tier's angle or the
+/// design's refractive index, a wrong gear-tooth count only affects the (already
+/// explicitly placeholder, per [`asc::mark_reconstructed`]'s message below)
+/// index-wheel metadata this reconstruction can never fully recover anyway -- never
+/// the tier geometry itself, which is this function's actual job to get right.
+///
+/// A missing (`None`) refractive index -- as opposed to text present but unparsable --
+/// still falls back to `0.0`: an absent RI is a genuinely unknown value on some
+/// designs, the same "a blank/absent field is not an error, only unparsable text is"
+/// contract `crate::model::metadata_update::parse_optional_numeric` uses elsewhere in
+/// this crate.
+///
+/// # Errors
+///
+/// Returns `Err` naming the offending tier (facet name and order index) if that tier's
+/// `angle` text fails to parse, or naming the offending text if `refractive_index` is
+/// present but fails to parse. Never fails for a missing/unparsable `index_gear`, or
+/// for an individual index within a tier's index-wheel text that fails to parse (each
+/// such index is simply dropped, same as before).
 pub fn reconstruct_asc_schedule(
     title: &str,
     refractive_index: Option<&str>,
     index_gear: Option<&str>,
     angle_settings: &[AngleSetting],
-) -> Option<AscSchedule> {
+) -> Result<Option<AscSchedule>, String> {
     if angle_settings.is_empty() {
-        return None;
+        return Ok(None);
     }
 
-    let tiers = angle_settings
-        .iter()
-        .map(|a| AscTier {
-            angle_deg: parse_angle_deg(&a.angle).unwrap_or(0.0),
+    let mut tiers = Vec::with_capacity(angle_settings.len());
+    for a in angle_settings {
+        let angle_deg = parse_angle_deg(&a.angle).ok_or_else(|| {
+            format!(
+                "tier '{}' (order index {}): angle '{}' is not a valid number",
+                a.facet, a.order_index, a.angle
+            )
+        })?;
+        // A zero angle is the table unless its sign says culet (see
+        // `AscTier::angle_deg`); the scraped table marks a culet by its index or
+        // facet text instead, so carry that onto the sign.
+        let is_culet_row = a.index.trim().eq_ignore_ascii_case("culet")
+            || a.facet.to_ascii_lowercase().contains("culet");
+        let angle_deg = if angle_deg == 0.0 && is_culet_row {
+            -0.0
+        } else {
+            angle_deg
+        };
+        tiers.push(AscTier {
+            angle_deg,
             mast: 0.0,
             name: a.facet.clone(),
             indices: a
                 .index
-                .split([',', ' ', ';'])
+                .split([',', ' ', ';', '-'])
                 .filter_map(|s| s.trim().parse::<f64>().ok())
                 .collect(),
+            index_names: Vec::new(),
             notes: a.notes.clone(),
-        })
-        .collect();
+        });
+    }
+
+    let refractive_index = match refractive_index {
+        None => 0.0,
+        Some(r) => r
+            .parse::<f64>()
+            .map_err(|_| format!("refractive index '{r}' is not a valid number"))?,
+    };
 
     let mut schedule = AscSchedule {
         gemcad_version: "5.0".to_string(),
+        // A missing/unparsable gear-tooth count is deliberately NOT an error here --
+        // see this function's own doc comment.
         gear_teeth: index_gear.and_then(|g| g.parse().ok()).unwrap_or(96),
         gear_reference_angle: 0.0,
         symmetry_order: 1,
         mirror: false,
-        refractive_index: refractive_index.and_then(|r| r.parse().ok()).unwrap_or(0.0),
+        refractive_index,
         headers: vec![title.to_string()],
         footnotes: Vec::new(),
         tiers,
+        warnings: Vec::new(),
+        line_ending: asc::AscLineEnding::default(),
     };
     asc::mark_reconstructed(
         &mut schedule,
@@ -235,7 +349,7 @@ pub fn reconstruct_asc_schedule(
          distances and index-wheel/symmetry metadata beyond the gear-tooth count were \
          not part of that table and are placeholders",
     );
-    Some(schedule)
+    Ok(Some(schedule))
 }
 
 fn parse_angle_deg(angle: &str) -> Option<f64> {
@@ -271,6 +385,55 @@ a 41.000000 0.5 92 n T\n";
     #[test]
     fn import_asc_rejects_invalid_content() {
         assert!(import_asc("bad.asc", "not an asc file", None).is_err());
+    }
+
+    /// A `.asc` as `GemCad` for Windows writes it: a Windows-1252 `e`-acute and degree
+    /// sign (bytes `0xE9`, `0xB0`) in the header, which are not valid UTF-8.
+    fn windows_1252_asc_bytes() -> Vec<u8> {
+        b"GemCad 5.0\ng 96 0.0\ny 6 y\nI 1.72\nH Caf\xE9 \xB0 Round\n\
+a -41.000000 0.64991234 92 n 1 84 76 68 60\n\
+a 41.000000 0.5 92 n T\n"
+            .to_vec()
+    }
+
+    #[test]
+    fn import_asc_bytes_attaches_the_original_bytes_and_parses_the_decoded_text() {
+        let raw = windows_1252_asc_bytes();
+        assert!(
+            std::str::from_utf8(&raw).is_err(),
+            "the fixture must not be valid UTF-8"
+        );
+        let imported = import_asc_bytes("cafe.asc", &raw, None).expect("valid .asc");
+        assert_eq!(imported.entry.title, "Caf\u{e9} \u{b0} Round");
+        assert_eq!(imported.detail.attached_files.len(), 1);
+        assert_eq!(
+            imported.detail.attached_files[0].content, raw,
+            "the attachment must be the file's bytes, not a UTF-8 re-encoding"
+        );
+        assert_eq!(
+            asc::decode_asc_bytes(&imported.detail.attached_files[0].content),
+            "GemCad 5.0\ng 96 0.0\ny 6 y\nI 1.72\nH Caf\u{e9} \u{b0} Round\n\
+a -41.000000 0.64991234 92 n 1 84 76 68 60\n\
+a 41.000000 0.5 92 n T\n"
+        );
+    }
+
+    #[test]
+    fn import_asc_bytes_keeps_a_byte_order_mark_and_classic_mac_line_endings_in_the_attachment() {
+        let mut raw = vec![0xEF, 0xBB, 0xBF];
+        raw.extend_from_slice(SAMPLE_ASC.replace('\n', "\r").as_bytes());
+        let imported = import_asc_bytes("mac.asc", &raw, None).expect("valid .asc");
+        assert_eq!(imported.entry.title, "Round Trichecker-12");
+        assert_eq!(imported.detail.attached_files[0].content, raw);
+    }
+
+    #[test]
+    fn import_asc_attaches_the_utf8_encoding_of_the_text() {
+        let imported = import_asc("trichecker.asc", SAMPLE_ASC, None).expect("valid .asc");
+        assert_eq!(
+            imported.detail.attached_files[0].content,
+            SAMPLE_ASC.as_bytes()
+        );
     }
 
     #[test]
@@ -330,18 +493,103 @@ a 41.000000 0.5 92 n T\n";
             notes: String::new(),
         }];
         let schedule = reconstruct_asc_schedule("Test Design", Some("1.76"), Some("96"), &settings)
+            .expect("must not error")
             .expect("non-empty angle settings must produce a schedule");
         assert!(schedule.headers[0].starts_with("RECONSTRUCTED"));
         assert_eq!(schedule.tiers.len(), 1);
         assert_eq!(schedule.tiers[0].indices, vec![0.0, 24.0, 48.0, 72.0]);
 
-        let text = asc::to_asc_string(&schedule);
+        let text = asc::to_asc_string(&schedule).expect("facet name \"T\" has no whitespace");
         let reparsed = asc::parse_asc(&text).expect("reconstructed schedule must re-parse");
         assert_eq!(reparsed.tiers.len(), 1);
     }
 
     #[test]
     fn reconstruct_asc_schedule_returns_none_for_no_angle_settings() {
-        assert!(reconstruct_asc_schedule("Empty", None, None, &[]).is_none());
+        assert!(
+            reconstruct_asc_schedule("Empty", None, None, &[])
+                .expect("must not error")
+                .is_none()
+        );
+    }
+
+    /// The real catalogue's scraped index-wheel text uses `-` as a separator
+    /// (`"96-08-16-24-32-40-48-56-64-72-80-88"`), which the old `[',', ' ', ';']`
+    /// separator set didn't recognize at all -- 48,559 of 50,817 real rows had no
+    /// parsable index under it.
+    #[test]
+    fn reconstruct_asc_schedule_splits_hyphen_separated_indices() {
+        let settings = vec![AngleSetting {
+            order_index: 0,
+            facet: "C1".to_string(),
+            angle: "41\u{b0}".to_string(),
+            index: "96-08-16-24-32-40-48-56-64-72-80-88".to_string(),
+            notes: String::new(),
+        }];
+        let schedule = reconstruct_asc_schedule("Hyphen Test", Some("1.76"), Some("96"), &settings)
+            .expect("must not error")
+            .expect("non-empty angle settings must produce a schedule");
+        assert_eq!(
+            schedule.tiers[0].indices,
+            vec![
+                96.0, 8.0, 16.0, 24.0, 32.0, 40.0, 48.0, 56.0, 64.0, 72.0, 80.0, 88.0
+            ]
+        );
+    }
+
+    /// An unparsable tier angle used to silently become `0.0`; it must now be a
+    /// hard error naming the offending tier instead.
+    #[test]
+    fn reconstruct_asc_schedule_errors_on_an_unparsable_angle_naming_the_tier() {
+        let settings = vec![AngleSetting {
+            order_index: 3,
+            facet: "P2".to_string(),
+            angle: "not-a-number".to_string(),
+            index: "0".to_string(),
+            notes: String::new(),
+        }];
+        let err = reconstruct_asc_schedule("Bad Angle", Some("1.76"), Some("96"), &settings)
+            .expect_err("an unparsable angle must be a hard error, never a silent 0.0");
+        assert!(
+            err.contains("P2"),
+            "error must name the offending tier: {err}"
+        );
+    }
+
+    /// An unparsable refractive index used to silently become `0.0`; it must now
+    /// be a hard error naming the offending text.
+    #[test]
+    fn reconstruct_asc_schedule_errors_on_an_unparsable_refractive_index() {
+        let settings = vec![AngleSetting {
+            order_index: 0,
+            facet: "T".to_string(),
+            angle: "0\u{b0}".to_string(),
+            index: "0".to_string(),
+            notes: String::new(),
+        }];
+        let err = reconstruct_asc_schedule("Bad RI", Some("garbage"), Some("96"), &settings)
+            .expect_err("an unparsable refractive index must be a hard error, never a silent 0.0");
+        assert!(
+            err.contains("garbage"),
+            "error should mention the offending text: {err}"
+        );
+    }
+
+    /// A missing (not merely unparsable) refractive index is a genuinely unknown
+    /// value, not an error -- same "blank/absent is not an error" contract as
+    /// `parse_optional_numeric`.
+    #[test]
+    fn reconstruct_asc_schedule_defaults_a_missing_refractive_index_to_zero() {
+        let settings = vec![AngleSetting {
+            order_index: 0,
+            facet: "T".to_string(),
+            angle: "0\u{b0}".to_string(),
+            index: "0".to_string(),
+            notes: String::new(),
+        }];
+        let schedule = reconstruct_asc_schedule("No RI", None, Some("96"), &settings)
+            .expect("a missing refractive index must not error")
+            .expect("non-empty angle settings must produce a schedule");
+        assert!((schedule.refractive_index - 0.0).abs() < f64::EPSILON);
     }
 }

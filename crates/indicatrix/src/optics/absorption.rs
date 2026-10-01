@@ -305,6 +305,7 @@ pub struct AbsorptionTensor {
     /// biaxial (trichroic) material; `None` for uniaxial/isotropic materials and for
     /// biaxial materials still using the two-set approximation. See [`Self::biaxial`].
     pub beta_ray: Option<Vec<AbsorptionBand>>,
+    /// Whether the two eigenmodes use different band sets.
     pub is_pleochroic: bool,
 }
 
@@ -324,6 +325,8 @@ impl AbsorptionTensor {
         }
     }
 
+    /// A dichroic uniaxial material: separate ordinary-ray and extraordinary-ray band
+    /// sets, no independent `beta_ray` (see [`Self`]'s doc comment).
     #[must_use]
     pub const fn uniaxial(o: Vec<AbsorptionBand>, e: Vec<AbsorptionBand>) -> Self {
         Self {

@@ -60,7 +60,7 @@ mod tests {
         geometry::cuts::StandardGemCuts,
         optics::{
             materials::GemMaterial,
-            raytracer::{Camera, LightingPreset},
+            raytracer::{Camera, DEFAULT_FOV_DEG, DEFAULT_POSE, LightingPreset},
         },
     };
     use indicatrix_net::{
@@ -81,14 +81,19 @@ mod tests {
     fn trace(start: u32, count: u32, accum: &mut [Vec3]) {
         let planes = StandardGemCuts::standard_round_brilliant();
         let material = GemMaterial::diamond();
-        let camera = Camera::new(0.6, 0.45, 2.4, 42.0);
+        let camera = Camera::new(
+            DEFAULT_POSE.yaw,
+            DEFAULT_POSE.pitch,
+            DEFAULT_POSE.distance,
+            DEFAULT_FOV_DEG,
+        );
         let environment = LightingPreset::RingLights.studio(1.0, 0.85, 0.95);
         let frame = BackendFrame {
             width: W,
             height: H,
-            yaw: 0.6,
-            pitch: 0.45,
-            distance: 2.4,
+            yaw: DEFAULT_POSE.yaw,
+            pitch: DEFAULT_POSE.pitch,
+            distance: DEFAULT_POSE.distance,
             camera: &camera,
             planes: &planes,
             facet_finishes: &[],

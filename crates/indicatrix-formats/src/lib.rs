@@ -6,7 +6,7 @@
 //! reading (or writing) a design never requires pulling in a particular renderer,
 //! database, or GUI toolkit:
 //!
-//! - [`asc`]: `GemCAD`'s `.asc` cutting-schedule text format. Read and write support,
+//! - [`asc`]: `GemCAD`'s `.asc` cutting-instructions text format. Read and write support,
 //!   verified against a real-world corpus of 5,759 files.
 //! - [`native`]: `apps/indicatrix-cut`'s own `.indicatrix.toml` sidecar (legacy
 //!   `.gemcut.toml` files still load) -- the on-disk schema, TOML encode/decode,
@@ -14,23 +14,37 @@
 //!   design state `.asc` itself has no field for. Converting to and from the actual
 //!   in-memory editor design is `indicatrix-cut-core`'s job, not this module's -- see
 //!   its own module doc comment for the split.
-//! - [`gcs`]: Gem Cut Studio's `.gcs` XML design format. Read-only, verified against
-//!   44 of 56 real `.gcs` files with a sibling `.asc` (see the module's own doc
-//!   comment for what the other 12 disagree on and why).
-//! - [`gem`]: `GemCAD`'s native `.gem` binary save format. Partial and explicitly
-//!   bounded: recovers the format's embedded cutting/meet-instruction text and
-//!   facet-name labels (confirmed against real data), but the numeric encoding of
-//!   facet angle, index, and depth could not be reverse-engineered from the
-//!   available corpus -- see the module's own doc comment for exactly what was and
-//!   was not established, and why.
+//! - [`gcs`]: Gem Cut Studio's `.gcs` XML design format, per the format published in
+//!   the Gem Cut Studio User's Manual v1.1.0 (pp. 58-61). Read support (all 59 corpus
+//!   files), conversion to `.asc` cutting instructions, and an experimental writer.
+//! - [`gem`]: `GemCAD`'s native `.gem` binary save format. A structural decoder
+//!   (facet planes, tiers, labels, polygons, trailer, preform section) that frames
+//!   all 254 corpus files byte-exactly, plus conversion to `.asc` cutting
+//!   instructions that reproduces exact `.asc` exports to 6 decimals.
 //!
 //! Each format module pulls in only what it needs: [`asc`], [`gcs`], and [`gem`] have
 //! zero runtime dependencies, while [`native`] depends on `serde`/`toml` (its on-disk
 //! encoding) and `sha2` (its fingerprint) -- see that module's own doc comment.
 //! Anything shared across more than one format's module belongs at this crate root
-//! rather than inside a single format module; nothing has met that bar yet.
+//! rather than inside a single format module: the Windows-1252 text decoding the
+//! `.gem` and `.gcs` readers share lives in a private `encoding` module.
 
+/// `GemCAD`'s `.asc` cutting-instructions text format -- read and write.
+///
+/// See the module's own doc comment for the corpus this was verified against.
 pub mod asc;
+mod encoding;
+/// Gem Cut Studio's `.gcs` XML design format -- read, convert, experimental write.
+///
+/// See the module's own doc comment for the published format and the measured
+/// conventions.
 pub mod gcs;
+/// `GemCAD`'s native `.gem` binary save format -- structural decoder.
+///
+/// See the module's own doc comment for the layout and what is still open.
 pub mod gem;
+/// `apps/indicatrix-cut`'s own `.indicatrix.toml` sidecar format.
+///
+/// Schema, TOML encode/decode, sidecar path rules, and paired-`.asc` fingerprint --
+/// see the module's own doc comment for the format choice and its conventions.
 pub mod native;

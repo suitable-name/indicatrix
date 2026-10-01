@@ -30,7 +30,8 @@
 
 use indicatrix::geometry::meet_solver::MeetConstraint;
 use indicatrix_cut_core::{
-    ConstraintTier, Design, Edit, MaterialSelection, PreformSpec, RemapRounding, TierTarget,
+    ConstraintTier, Design, Edit, History, MaterialSelection, PreformSpec, RemapRounding,
+    TierTarget,
 };
 
 /// A tiny, dependency-free seeded PRNG (xorshift64*) -- enough to drive this
@@ -105,25 +106,35 @@ fn round_brilliant_fixture() -> Design {
         name: Some("Diamond".to_string()),
         specific_gravity_override: None,
         refractive_index_override: Some(1.54),
+        body_colour_override: None,
     };
     design
 }
 
 /// Applies `edit`, then applies the [`Edit`] it returns (its own computed
 /// inverse) -- asserting `design` ends up exactly equal (`PartialEq`) to how
-/// it started. `label` is folded into every panic message so a failing seed
-/// names which variant/seed combination broke, not just "assertion failed."
+/// it started, tier identities included ([`Design::tier_ids_eq`]). `label` is folded
+/// into every panic message so a failing seed names which variant/seed
+/// combination broke, not just "assertion failed."
 fn assert_round_trips(mut design: Design, edit: &Edit, label: &str) {
     let before = design.clone();
     let inverse = design
         .apply_edit(edit.clone())
         .unwrap_or_else(|e| panic!("{label}: apply failed for {edit:?}: {e}"));
+    // Every case this file drives is generated specifically to change
+    // something -- a passing round trip on a no-op edit would never have
+    // caught a broken apply (e.g. an inverse computed from the wrong field).
+    assert_ne!(design, before, "{label}: edit was a no-op");
     design
         .apply_edit(inverse.clone())
         .unwrap_or_else(|e| panic!("{label}: undo failed for {inverse:?} (from {edit:?}): {e}"));
     assert_eq!(
         design, before,
         "{label}: {edit:?} then its own inverse {inverse:?} did not reproduce the original design"
+    );
+    assert!(
+        design.tier_ids_eq(&before),
+        "{label}: {edit:?} then its own inverse {inverse:?} changed which TierId sits in a slot"
     );
 }
 
@@ -188,6 +199,132 @@ fn remove_tier_with_cheater_offset_and_note_round_trips() {
             "RemoveTier (with offset+note)",
         );
     }
+}
+
+/// Undoing a removal brings back the removed tier's EXACT `TierId` (a plain
+/// `AddTier` inverse would allocate a fresh one), with the target keyed by that
+/// id attached to it again and every other tier's id untouched.
+#[test]
+fn undoing_a_tier_removal_restores_the_exact_tier_id() {
+    for &seed in &SEEDS {
+        let mut rng = Lcg::new(seed);
+        let mut design = round_brilliant_fixture();
+        let index = rng.index(design.tiers.len());
+        let removed_id = design
+            .tier_id_at(index)
+            .expect("a design imported from .asc gives every tier an id");
+        let target = TierTarget::DepthMm(1.25);
+        design
+            .apply_edit(Edit::SetTierTarget {
+                index,
+                target: Some(target),
+            })
+            .expect("the fixture has a tier at this index");
+        let before = design.clone();
+
+        let inverse = design
+            .apply_edit(Edit::RemoveTier { index })
+            .expect("the index is in range");
+        assert_eq!(
+            design.index_of_tier_id(removed_id),
+            None,
+            "seed {seed}: the removed id must leave the design"
+        );
+        design.apply_edit(inverse).expect("undo of a removal");
+
+        assert_eq!(
+            design.tier_id_at(index),
+            Some(removed_id),
+            "seed {seed}: undo must put the same TierId back in the same slot"
+        );
+        assert!(
+            design.tier_ids_eq(&before),
+            "seed {seed}: every other tier keeps its id"
+        );
+        assert_eq!(
+            design.tier_target(index),
+            Some(target),
+            "seed {seed}: the target keyed by the id is attached again"
+        );
+    }
+}
+
+/// A tier pushed straight onto `tiers` has no `TierId` (so a target, which is keyed by
+/// id, cannot be set on it); `ensure_tier_ids` gives it one without disturbing the
+/// ids already there, and a second call changes nothing.
+#[test]
+fn ensure_tier_ids_seeds_missing_ids_and_keeps_existing_ones() {
+    let mut design = round_brilliant_fixture();
+    let existing: Vec<_> = (0..design.tiers.len())
+        .map(|index| design.tier_id_at(index))
+        .collect();
+    let seeded = generated_tier(&mut Lcg::new(3));
+    design.tiers.push(seeded);
+    let new_index = design.tiers.len() - 1;
+    assert_eq!(design.tier_id_at(new_index), None, "pushed without an id");
+    assert!(
+        design
+            .apply_edit(Edit::SetTierTarget {
+                index: new_index,
+                target: Some(TierTarget::DepthMm(1.0)),
+            })
+            .is_err(),
+        "a target needs the tier's id"
+    );
+
+    design.ensure_tier_ids();
+    for (index, id) in existing.iter().enumerate() {
+        assert_eq!(design.tier_id_at(index), *id, "tier {index} keeps its id");
+    }
+    let new_id = design
+        .tier_id_at(new_index)
+        .expect("the new tier has an id");
+    assert!(
+        existing.iter().all(|id| *id != Some(new_id)),
+        "and it is not one already in use"
+    );
+    design
+        .apply_edit(Edit::SetTierTarget {
+            index: new_index,
+            target: Some(TierTarget::DepthMm(1.0)),
+        })
+        .expect("the seeded tier can now carry a target");
+
+    let ids_after: Vec<_> = (0..design.tiers.len())
+        .map(|index| design.tier_id_at(index))
+        .collect();
+    design.ensure_tier_ids();
+    let ids_again: Vec<_> = (0..design.tiers.len())
+        .map(|index| design.tier_id_at(index))
+        .collect();
+    assert_eq!(ids_after, ids_again, "a second call is a no-op");
+}
+
+/// The same identity guarantee through `History`: undo, redo and a second undo of
+/// a removal each leave the exact ids the matching point in time had.
+#[test]
+fn history_undo_and_redo_of_a_removal_keep_the_tier_ids() {
+    let mut design = round_brilliant_fixture();
+    let mut history = History::new();
+    let before = design.clone();
+
+    history
+        .apply(&mut design, Edit::RemoveTier { index: 1 })
+        .expect("the index is in range");
+    let after_removal = design.clone();
+
+    assert!(history.undo(&mut design).expect("undo replays"));
+    assert!(design.tier_ids_eq(&before), "undo restores the ids");
+    assert!(history.redo(&mut design).expect("redo replays"));
+    assert!(
+        design.tier_ids_eq(&after_removal),
+        "redo removes the same tier again"
+    );
+    assert!(history.undo(&mut design).expect("second undo replays"));
+    assert!(
+        design.tier_ids_eq(&before),
+        "a second undo still restores the original ids"
+    );
 }
 
 #[test]
@@ -327,6 +464,7 @@ fn set_material_round_trips() {
             name: Some(if rng.bool() { "Sapphire" } else { "Ruby" }.to_string()),
             specific_gravity_override: None,
             refractive_index_override: Some(rng.range_f64(1.5, 1.9)),
+            body_colour_override: None,
         };
         assert_round_trips(design, &Edit::SetMaterial { material }, "SetMaterial");
     }
@@ -546,6 +684,7 @@ fn batch_retarget_and_material_round_trips() {
                     name: Some("Sapphire".to_string()),
                     specific_gravity_override: None,
                     refractive_index_override: None,
+                    body_colour_override: None,
                 },
             },
         ]);

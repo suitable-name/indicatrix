@@ -1,6 +1,7 @@
 import { ScrollView, Button } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
+import { CompareModel } from "../models/compare.slint";
 import { GuideModel } from "../models/guide.slint";
 import { GuideLockTip } from "guide_lock.slint";
 // Optical metrics read-only from ViewportModel (brilliance, windowing,
@@ -90,6 +91,20 @@ export component EditorInspector inherits Rectangle {
     // see `EditorView`'s own doc comment) and the user's in-progress edit, via a
     // two-way `<=>` alias, the same idiom `remote_worker_dialog.slint`'s `form_*`
     // fields use. Nothing commits until "Save Tier"/"Add Tier" below.
+    //
+    // The form is a SNAPSHOT of the tier, not a binding to it, so it must be told
+    // when the design moves underneath it. The rule:
+    //   * selection change -> `load_tier_into_form` (a dirty draft is guarded by
+    //     the dirty-warning banner);
+    //   * New/Load/Open/Remove that clears the selection -> `clear_form`;
+    //   * any edit that leaves the selected tier selected (a handle drag, nudge,
+    //     pin, adopt, facet edit, gear remap, retarget/optimize apply, symmetry
+    //     change, Undo/Redo) -> `EditorModel.form_reseed_pulse`, which the Rust
+    //     refresh bumps once per design generation -> `reseed_after_external_change`:
+    //     a CLEAN form follows the design; a DIRTY form keeps the draft and, when
+    //     the loaded tier's own values moved, raises `external_change_pending` so
+    //     the form says so and offers a reload instead of silently saving stale
+    //     values over the edit.
     property <string> tier_angle: "0.0";
     property <int> tier_constraint_kind: 0;
     property <string> tier_constraint_text: "";
@@ -100,18 +115,38 @@ export component EditorInspector inherits Rectangle {
     property <string> new_facet_position: "";
     property <string> rotate_by_text: "1";
 
-    // In-progress "Add Tier" draft or tier edit. `form_dirty` tracks whether the
-    // five fields above hold typed changes not yet reflected in the design.
-    // `loaded_tier_index` tracks which tier (or `-1` for "Add") those FIVE fields
-    // actually represent, which can now disagree with `EditorModel.
-    // selected_tier_index` for as long as `show_dirty_warning` is up (see below) --
-    // `save_form`/the header/the "Solved" section all read `loaded_tier_index`,
-    // never the global selection, specifically so a guarded, not-yet-confirmed
-    // selection change can never make Save Tier write to the wrong row. `loading`
-    // suppresses the five `changed` handlers below while `apply_load`/`clear_form`
-    // themselves assign the scratch properties, so seeding the form never marks
-    // itself dirty.
-    property <bool> form_dirty: false;
+    // In-progress "Add Tier" draft or tier edit. `loaded_tier_index` tracks which
+    // tier (or `-1` for "Add") the five fields above actually represent, which can
+    // now disagree with `EditorModel.selected_tier_index` for as long as
+    // `show_dirty_warning` is up (see below) -- `save_form`/the header/the
+    // "Solved" section all read `loaded_tier_index`, never the global selection,
+    // specifically so a guarded, not-yet-confirmed selection change can never
+    // make Save Tier write to the wrong row.
+    property <int> loaded_tier_index: -1;
+    // Snapshot of the five fields above as `apply_load`/`clear_form`/`save_form`
+    // last set them. `form_dirty` below is a pure comparison against this
+    // snapshot, not a flag toggled by per-field `changed` handlers guarded by a
+    // `loading` flag (the previous design): those handlers are QUEUED (Slint runs them
+    // later) and only run on the next
+    // event-loop turn or tree flush, strictly AFTER `apply_load`'s own
+    // assignments already completed and `loading` was already back to `false` --
+    // so the guard could never actually suppress anything, and every load
+    // (including a same-tier reload, e.g. the tier table's "Add Anchor" action)
+    // marked the form dirty against itself. A plain property-binding compare has
+    // no such ordering to get wrong: both sides are ordinary properties,
+    // re-evaluated together whenever either changes, and both are written by the
+    // exact same call (`apply_load`/`clear_form`/`save_form`), so they can never
+    // observe each other mid-update.
+    property <string> loaded_angle_snapshot: "0.0";
+    property <int> loaded_constraint_kind_snapshot: 0;
+    property <string> loaded_constraint_text_snapshot: "";
+    property <string> loaded_name_snapshot: "";
+    property <string> loaded_indices_snapshot: "";
+    property <bool> form_dirty: root.tier_angle != root.loaded_angle_snapshot
+        || root.tier_constraint_kind != root.loaded_constraint_kind_snapshot
+        || root.tier_constraint_text != root.loaded_constraint_text_snapshot
+        || root.tier_name != root.loaded_name_snapshot
+        || root.tier_indices != root.loaded_indices_snapshot;
     // Angle field invalid if > 90 degrees (locally checkable) or if Rust
     // reported an angle-field error.
     property <bool> angle_field_invalid: Math.abs(root.tier_angle.to-float()) > 90
@@ -121,61 +156,33 @@ export component EditorInspector inherits Rectangle {
     property <bool> name_field_invalid: EditorModel.tier_form_error_field == "name";
     property <bool> indices_field_invalid: EditorModel.tier_form_error_field == "indices";
     property <bool> constraint_field_invalid: EditorModel.tier_form_error_field == "constraint";
-    property <int> loaded_tier_index: -1;
-    property <bool> loading: false;
     // The selection `load_tier_into_form`/`request_new` deferred because the form
     // was dirty -- `-1` means "Add Tier" was requested, matching `loaded_tier_index`'s
     // own convention. Only meaningful while `show_dirty_warning` is true.
     property <int> pending_load_index: -1;
     property <bool> show_dirty_warning: false;
+    // A dirty draft's tier changed in the design after the form loaded it (a drag,
+    // nudge or pin landed while the cutter was typing). The draft is kept; the form
+    // shows a notice with "Reload From Design"/"Keep Draft". Cleared by every
+    // `snapshot_form` (load, clear, save), so it never outlives the baseline it
+    // describes.
+    property <bool> external_change_pending: false;
+    // What `TierFormTab` actually shows: only while the draft still differs from its
+    // baseline (a draft typed back to the original needs no notice) and still names a
+    // real tier.
+    property <bool> show_external_change: root.external_change_pending && root.form_dirty && root.loaded_tier_index >= 0;
 
-    // Each handler clears error markers when that field is retyped. This is
-    // an implicit "let me try again" (since a disabled Save button prevents
-    // retrying). Rust re-validates on the next save attempt.
-    changed tier_angle => {
-        if !root.loading {
-            root.form_dirty = true;
-            if EditorModel.tier_form_error_field == "angle" {
-                EditorModel.tier_form_error_field = "";
-                EditorModel.tier_form_error = "";
-            }
-        }
-    }
-    changed tier_constraint_kind => {
-        if !root.loading {
-            root.form_dirty = true;
-            if EditorModel.tier_form_error_field == "constraint" {
-                EditorModel.tier_form_error_field = "";
-                EditorModel.tier_form_error = "";
-            }
-        }
-    }
-    changed tier_constraint_text => {
-        if !root.loading {
-            root.form_dirty = true;
-            if EditorModel.tier_form_error_field == "constraint" {
-                EditorModel.tier_form_error_field = "";
-                EditorModel.tier_form_error = "";
-            }
-        }
-    }
-    changed tier_name => {
-        if !root.loading {
-            root.form_dirty = true;
-            if EditorModel.tier_form_error_field == "name" {
-                EditorModel.tier_form_error_field = "";
-                EditorModel.tier_form_error = "";
-            }
-        }
-    }
-    changed tier_indices => {
-        if !root.loading {
-            root.form_dirty = true;
-            if EditorModel.tier_form_error_field == "indices" {
-                EditorModel.tier_form_error_field = "";
-                EditorModel.tier_form_error = "";
-            }
-        }
+    // Snapshots the five fields' CURRENT values as the new "clean" baseline --
+    // shared tail of `apply_load`/`clear_form`/`save_form`, all of which just
+    // assigned (or left unchanged) exactly these fields and want `form_dirty` to
+    // read `false` again immediately afterward.
+    function snapshot_form() {
+        root.loaded_angle_snapshot = root.tier_angle;
+        root.loaded_constraint_kind_snapshot = root.tier_constraint_kind;
+        root.loaded_constraint_text_snapshot = root.tier_constraint_text;
+        root.loaded_name_snapshot = root.tier_name;
+        root.loaded_indices_snapshot = root.tier_indices;
+        root.external_change_pending = false;
     }
 
     // The guarded entry point every selection change reaches (`EditorView`'s
@@ -199,13 +206,16 @@ export component EditorInspector inherits Rectangle {
     }
 
     function apply_load(idx: int) {
-        root.loading = true;
         // Clear validation errors when loading a different tier, so error markers
         // don't point at fields that now describe something else.
         EditorModel.tier_form_error = "";
         EditorModel.tier_form_error_field = "";
         EditorModel.selected_tier_index = idx;
-        root.tier_angle = EditorModel.tiers[idx].angle_deg;
+        // Seeded from the FULL-precision string, not the 2-decimal display
+        // `angle_deg` -- see `EditorTierItem.angle_full`'s own doc comment: a
+        // Save with nothing retyped must round-trip bit-exact, which a rounded
+        // seed cannot do for an angle like 41.2367.
+        root.tier_angle = EditorModel.tiers[idx].angle_full;
         // `suggested_constraint_kind >= 0` is the tier table's "Add Anchor" action
         // (see that property's own doc comment on `EditorModel`) asking this
         // specific load to open on "Exact scale value" rather than the tier's own
@@ -217,10 +227,11 @@ export component EditorInspector inherits Rectangle {
         EditorModel.suggested_constraint_kind = -1;
         root.tier_constraint_text = EditorModel.tiers[idx].constraint_text;
         root.tier_name = EditorModel.tiers[idx].name;
-        root.tier_indices = EditorModel.tiers[idx].indices;
-        root.loading = false;
+        // Same full-precision reasoning as `tier_angle` above, for a fractional
+        // gear-index shorthand (e.g. "13.71" rounds a real "x7" position).
+        root.tier_indices = EditorModel.tiers[idx].indices_full;
         root.loaded_tier_index = idx;
-        root.form_dirty = false;
+        root.snapshot_form();
     }
 
     // The "New" button's guarded entry point -- mirrors `load_tier_into_form`, but
@@ -242,9 +253,11 @@ export component EditorInspector inherits Rectangle {
         // that assignment is what fires `tracked_selection_for_new`'s own
         // `changed` handler further down, which re-enters THIS function if
         // it still sees a real (non -1) `loaded_tier_index`. Clearing first
-        // makes that guard see the post-clear state no matter whether
-        // Slint's own change notification for the line below fires
-        // synchronously or not.
+        // makes that guard see the post-clear state -- `changed` handlers are
+        // QUEUED, so that
+        // handler cannot possibly re-enter before this function itself
+        // returns; ordering the two assignments this way is what guarantees
+        // it sees `loaded_tier_index == -1` once it does run.
         root.clear_form();
         EditorModel.selected_tier_index = -1;
     }
@@ -257,6 +270,14 @@ export component EditorInspector inherits Rectangle {
     // Local backing state for the optimize preview checkbox. EditorModel.
     // optimize_preview_toggled is a callback-only, not a two-way property.
     property <bool> optimize_preview_checked: false;
+    // The compare window's Optimize "Discard" bumps this serial (on
+    // `MainWindow`'s own `CompareModel`) to untick the checkbox above -- Rust
+    // cannot reach this local property directly. Mirrored locally because a
+    // global's own property cannot take a `changed` handler outside its file.
+    property <int> tracked_compare_discard: CompareModel.optimize_preview_reset_serial;
+    changed tracked_compare_discard => {
+        root.optimize_preview_checked = false;
+    }
     // Bumps on New/Load Selected/Open Native. The alias-plus-changed idiom
     // ensures the flag is relevant for the current design, not stale.
     property <int> tracked_form_reset_pulse: EditorModel.form_reset_pulse;
@@ -300,7 +321,6 @@ export component EditorInspector inherits Rectangle {
     // `request_new` above) -- every one of those callers is already a deliberate,
     // confirmed, design-changing action of its own, not an incidental row click.
     public function clear_form() {
-        root.loading = true;
         // Clear validation errors so stale errors don't survive into "Add Tier" draft.
         EditorModel.tier_form_error = "";
         EditorModel.tier_form_error_field = "";
@@ -309,11 +329,80 @@ export component EditorInspector inherits Rectangle {
         root.tier_constraint_text = "";
         root.tier_name = "";
         root.tier_indices = "";
-        root.loading = false;
         root.loaded_tier_index = -1;
-        root.form_dirty = false;
+        root.snapshot_form();
         root.show_dirty_warning = false;
         root.pending_load_index = -1;
+    }
+
+    // Re-seeds the form from the (possibly just-changed) Design after an
+    // any edit that left the currently selected tier selected -- a handle drag,
+    // nudge, pin, adopt, facet edit, gear remap, retarget/optimize apply, symmetry
+    // change, or an in-range Undo/Redo (an out-of-range one instead clears the
+    // selection and reaches `clear_form` through `form_reset_pulse`, same as
+    // New/Load Selected/Open Native). `EditorView`'s `tracked_form_reseed_pulse`
+    // watcher calls this -- see `EditorModel.form_reseed_pulse`'s own doc comment
+    // (`ui/models/editor.slint`) for the Rust side.
+    //
+    // Never shows the dirty-warning banner the way `load_tier_into_form` does --
+    // the SELECTION did not move here, so there is no "which draft do you want"
+    // choice to offer. A clean form is simply refreshed (e.g. a drag retargeted
+    // THIS very tier's angle, and a stale form would otherwise keep showing the
+    // pre-edit value for Save Tier to write back). A DIRTY form keeps the draft:
+    //   * `tier_count_changed` (a structural `AddTier`/`RemoveTier`, which can
+    //     shift every later index): the draft may now describe an entirely
+    //     different row, so this forgets which tier it belonged to rather than
+    //     risking a save landing on the wrong one; the next save/dirty-warning
+    //     path recomputes cleanly from there instead of guessing;
+    //   * otherwise, when the loaded tier's values in the design no longer match
+    //     the baseline the draft was typed on top of, `external_change_pending`
+    //     raises the notice.
+    //
+    // A pulse that arrives after the selection already moved on (a Remove that
+    // shifted it, a multi-delete that cleared it) does nothing: the selection's own
+    // watcher loads the right row, and re-seeding the OLD index here would drag the
+    // selection back to it.
+    public function reseed_after_external_change(tier_count_changed: bool) {
+        if root.form_dirty {
+            if tier_count_changed {
+                root.loaded_tier_index = -1;
+            } else if root.loaded_tier_changed_in_design() {
+                root.external_change_pending = true;
+            }
+            return;
+        }
+        if root.loaded_tier_index >= 0
+            && root.loaded_tier_index < EditorModel.tiers.length
+            && root.loaded_tier_index == EditorModel.selected_tier_index {
+            root.apply_load(root.loaded_tier_index);
+        }
+    }
+
+    // Whether the loaded tier's values in the design differ from the baseline the
+    // form was last seeded with -- the five fields `form_dirty` compares, read from
+    // the same full-precision strings `apply_load` seeds from.
+    function loaded_tier_changed_in_design() -> bool {
+        if root.loaded_tier_index < 0 || root.loaded_tier_index >= EditorModel.tiers.length {
+            return false;
+        }
+        return EditorModel.tiers[root.loaded_tier_index].angle_full != root.loaded_angle_snapshot
+            || EditorModel.tiers[root.loaded_tier_index].constraint_kind != root.loaded_constraint_kind_snapshot
+            || EditorModel.tiers[root.loaded_tier_index].constraint_text != root.loaded_constraint_text_snapshot
+            || EditorModel.tiers[root.loaded_tier_index].name != root.loaded_name_snapshot
+            || EditorModel.tiers[root.loaded_tier_index].indices_full != root.loaded_indices_snapshot;
+    }
+
+    // The external-change notice's two answers: take the design's values (dropping
+    // the draft) or keep the draft and stop showing the notice.
+    function reload_from_design() {
+        if root.loaded_tier_index >= 0 && root.loaded_tier_index < EditorModel.tiers.length {
+            root.apply_load(root.loaded_tier_index);
+        }
+        root.external_change_pending = false;
+    }
+
+    function dismiss_external_change() {
+        root.external_change_pending = false;
     }
 
     // Commits whichever tier `loaded_tier_index` says the form represents,
@@ -328,8 +417,10 @@ export component EditorInspector inherits Rectangle {
         }
         EditorModel.save_tier(root.loaded_tier_index, root.tier_angle, root.tier_constraint_kind, root.tier_constraint_text, root.tier_name, root.tier_indices);
         // Optimistic: the cutter just committed these values, so the form is
-        // clean. On validation failure, the text is still here to fix and resubmit.
-        root.form_dirty = false;
+        // clean against them regardless of whether Rust's own validation
+        // actually accepted the save. On validation failure, the text is still
+        // here to fix and resubmit.
+        root.snapshot_form();
     }
 
     // `stepped_angle_text` (Up/Down/Shift/Ctrl stepping for the angle field)
@@ -426,6 +517,7 @@ export component EditorInspector inherits Rectangle {
                     rotate_by_text <=> root.rotate_by_text;
                     loaded_tier_index: root.loaded_tier_index;
                     show_dirty_warning: root.show_dirty_warning;
+                    show_external_change: root.show_external_change;
                     pending_load_index: root.pending_load_index;
                     angle_field_invalid: root.angle_field_invalid;
                     name_field_invalid: root.name_field_invalid;
@@ -433,6 +525,8 @@ export component EditorInspector inherits Rectangle {
                     constraint_field_invalid: root.constraint_field_invalid;
                     keep_draft => { root.keep_draft(); }
                     confirm_discard_and_load => { root.confirm_discard_and_load(); }
+                    reload_from_design => { root.reload_from_design(); }
+                    dismiss_external_change => { root.dismiss_external_change(); }
                     save_form => { root.save_form(); }
                 }
 

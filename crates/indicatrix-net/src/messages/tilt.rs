@@ -42,8 +42,11 @@ pub const TILT_CURVE_AXIS_COUNT: usize = 4;
 /// points per curve -- [`Self::from_arrays`] converts from the fixed-size array form.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AxisTiltCurves {
+    /// Brilliance percentage per tilt sample.
     pub brilliance_pct: Vec<f32>,
+    /// Extinction percentage per tilt sample.
     pub extinction_pct: Vec<f32>,
+    /// Windowing percentage per tilt sample.
     pub windowing_pct: Vec<f32>,
 }
 
@@ -78,7 +81,9 @@ impl AxisTiltCurves {
 /// with `RenderRequest`'s.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TiltCurvesRequest {
+    /// Client-chosen identifier echoed in the reply.
     pub request_id: u32,
+    /// Scene to evaluate.
     pub scene: SceneState,
 }
 
@@ -89,7 +94,9 @@ pub struct TiltCurvesRequest {
 /// points, 8,688 bytes total).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TiltCurvesResult {
+    /// Client-chosen identifier echoed in the reply.
     pub request_id: u32,
+    /// Tilt curves for each tilt axis.
     pub axes: [AxisTiltCurves; TILT_CURVE_AXIS_COUNT],
 }
 
@@ -195,6 +202,7 @@ mod tests {
         let response = TiltCurvesResponse::Error(ErrorMsg {
             code: 2,
             message: "scene.planes must not be empty".to_string(),
+            request_id: None,
         });
         let mut buf = Vec::new();
         write_message(&mut buf, &response).unwrap();

@@ -22,9 +22,12 @@ impl GemMaterial {
     /// `new_custom` picks the same convention so a caller mixing a custom material into
     /// a scene with built-ins gets a consistent, comparable dispersion figure -- a
     /// caller with a genuine B-G figure in hand should convert it first (multiply by
-    /// the `k_bg` ratio derived below, or just use the physics: F-C and B-G differ by
-    /// roughly a factor of 1.71 for typical gemstone Cauchy curves, per the worked
-    /// conversions throughout `all_materials`' sourcing comments).
+    /// 0.579, the B-G -> F-C ratio every built-in's sourcing comments use, range
+    /// 0.569-0.587; equivalently B-G is roughly 1.73 times F-C for typical gemstone
+    /// Cauchy curves). The desktop
+    /// material editor's preset templates carry F-C values measured from the matching
+    /// built-in entries (Diamond 0.0256, Sapphire 0.0106, ...), so picking one
+    /// reproduces that built-in's dispersion.
     ///
     /// Solved in closed form from the single-term Cauchy fit this constructor always
     /// builds (`n(lambda) = a + b / lambda_um^2`, `c = 0`): the F-C delta this produces
@@ -267,6 +270,26 @@ impl GemMaterial {
     pub fn with_recommended_scattering(self) -> Self {
         let (sigma_s, g) = self.recommended_scattering();
         self.with_scattering(sigma_s, g)
+    }
+
+    /// Body-colour variant: replaces this material's absorption with the isotropic
+    /// band set `absorption_rgb` expands to (the same `[R, G, B]` triple
+    /// [`Self::new_custom`] takes -- see [`super::body_colour::BODY_COLOUR_PRESETS`]
+    /// for the fixed presets), leaving every other field -- dispersion,
+    /// birefringence, c-axis, biaxial data, scattering, edge rounding, path scale --
+    /// untouched. `GemMaterial::sapphire().with_body_colour(yellow)` is a yellow
+    /// sapphire with sapphire's own optics.
+    ///
+    /// A colour variant is deliberately ISOTROPIC: whatever pleochroism the base
+    /// material's own absorption tensor models is dropped. This is a quick what-if
+    /// ("this design in a yellow instead of a blue sapphire"), not a mineralogical
+    /// record of a real yellow specimen. `name` is left unchanged on purpose, so
+    /// every lookup keyed by name (specific gravity, the RI presets, the render
+    /// material dropdown) keeps resolving to the same species.
+    #[must_use]
+    pub fn with_body_colour(mut self, absorption_rgb: [f32; 3]) -> Self {
+        self.absorption = AbsorptionTensor::isotropic(legacy_rgb_bands(absorption_rgb));
+        self
     }
 
     /// Facet edge rounding: opts a material into a nonzero

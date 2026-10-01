@@ -25,20 +25,27 @@ impl SolveContext<'_> {
         } else {
             "sweep cap"
         };
+        // `result.mast` is in `run_pipeline`'s normalised (order-1)
+        // units (see `SolveContext::scale_norm`'s doc comment); this is the
+        // one place that scales every solved mast back to the design's real
+        // absolute units before it reaches a caller. A bit-exact no-op when
+        // `scale_norm == 1.0`.
+        let scale_norm = self.scale_norm;
         (0..self.tiers.len())
             .map(|i| {
+                let mast = result.mast[i] * scale_norm;
                 let pick_str = result.last_pick[i].map_or_else(
                     || "no vertex pick".to_string(),
                     |(li, nl)| format!("level {li} of {nl}"),
                 );
                 match result.origin[i] {
                     Origin::Anchor => SolvedTier {
-                        mast: result.mast[i],
+                        mast,
                         strategy: SolveStrategy::ScaleReference,
                         detail: "given (scale reference)".to_string(),
                     },
                     Origin::ConstructiveNamed => SolvedTier {
-                        mast: result.mast[i],
+                        mast,
                         strategy: SolveStrategy::DependencyOrder,
                         detail: format!(
                             "constructive vertex incidence ({variant} pipeline) with {} resolved \
@@ -48,7 +55,7 @@ impl SolveContext<'_> {
                         ),
                     },
                     Origin::ConstructiveRank1 => SolvedTier {
-                        mast: result.mast[i],
+                        mast,
                         strategy: SolveStrategy::DependencyOrder,
                         detail: {
                             let cause = result.named_cause[i]
@@ -61,7 +68,7 @@ impl SolveContext<'_> {
                         },
                     },
                     Origin::Refined => SolvedTier {
-                        mast: result.mast[i],
+                        mast,
                         strategy: SolveStrategy::JointGroup,
                         detail: format!(
                             "mutually-dependent remainder settled by nearest-level refinement \
@@ -69,14 +76,14 @@ impl SolveContext<'_> {
                         ),
                     },
                     Origin::Estimated => SolvedTier {
-                        mast: result.mast[i],
+                        mast,
                         strategy: SolveStrategy::LeastSquaresFallback,
                         detail: "no usable candidate vertex; mast is the per-block \
                                  a*cos(theta)+b*sin(theta) estimate"
                             .to_string(),
                     },
                     Origin::Unset => SolvedTier {
-                        mast: result.mast[i],
+                        mast,
                         strategy: SolveStrategy::Failed,
                         detail: "no vertex and no estimate; mast is the scale prior".to_string(),
                     },

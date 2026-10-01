@@ -148,6 +148,13 @@ pub fn ensure_held<S: Read + Write + TimeoutRead + TimeoutWrite>(
 }
 
 /// [`ensure_held`] with the stream's timeouts armed.
+///
+/// Always resolves and pins the bytes in memory for the job's lifetime (see
+/// [`HeldAsset`]), rather than trusting the on-disk cache to still have them whenever a
+/// joined worker later asks for them: an LRU eviction (another job's larger map, a
+/// write failure) between now and then must never turn "the coordinator holds this
+/// job's map" into "the coordinator lost it," discarding an otherwise healthy worker
+/// connection.
 fn hold<S: Read + Write + TimeoutRead>(
     stream: &mut S,
     cache: &Arc<AssetCache>,
@@ -155,29 +162,25 @@ fn hold<S: Read + Write + TimeoutRead>(
     decode: bool,
 ) -> Result<Fetched<Arc<HeldAsset>>, NetError> {
     let hash = pending.hdr.content_hash;
-    let received = if cache.contains(&hash) {
-        None
-    } else {
-        match request_from_client(stream, cache, pending)?.into_ready() {
-            Ok(bytes) => Some(Arc::new(bytes)),
+    let received: Arc<Vec<u8>> = match cache.get(&hash) {
+        Some(bytes) => Arc::new(bytes),
+        None => match request_from_client(stream, cache, pending)?.into_ready() {
+            Ok(bytes) => Arc::new(bytes),
             Err(other) => return Ok(other),
-        }
+        },
     };
     let map = if decode {
-        match decode_held(stream, cache, pending, received.as_ref())?.into_ready() {
+        match decode_held(stream, cache, pending, Some(&received))?.into_ready() {
             Ok(map) => Some(map),
             Err(other) => return Ok(other),
         }
     } else {
         None
     };
-    // Bytes the cache kept are re-read from it only if a worker asks; bytes it could not
-    // keep stay in memory for the job.
-    let in_memory = received.filter(|_| !cache.contains(&hash));
     Ok(Fetched::Ready(Arc::new(HeldAsset::new(
         *pending.hdr,
         Arc::clone(cache),
-        in_memory,
+        Some(received),
         map,
     ))))
 }
@@ -196,10 +199,13 @@ fn decode_held<S: Write>(
     }
     let bytes = received.cloned().or_else(|| cache.get(&hash).map(Arc::new));
     let Some(bytes) = bytes else {
-        return Ok(Fetched::Failed(asset_failed(format!(
-            "HDR map {}: the coordinator's asset cache lost it; send the request again",
-            hash_hex(&hash)
-        ))));
+        return Ok(Fetched::Failed(asset_failed(
+            format!(
+                "HDR map {}: the coordinator's asset cache lost it; send the request again",
+                hash_hex(&hash)
+            ),
+            pending.request_id,
+        )));
     };
     decode_with_heartbeats(stream, pending, bytes)
 }
@@ -230,11 +236,14 @@ fn request_from_client<S: Read + Write + TimeoutRead>(
             RawPoll::Closed => return Ok(Fetched::Closed),
             RawPoll::Pending => {
                 if started.elapsed() > ASSET_WAIT {
-                    return Ok(Fetched::Failed(asset_failed(format!(
-                        "the client did not send HDR map {} within {} s",
-                        hash_hex(&hash),
-                        ASSET_WAIT.as_secs()
-                    ))));
+                    return Ok(Fetched::Failed(asset_failed(
+                        format!(
+                            "the client did not send HDR map {} within {} s",
+                            hash_hex(&hash),
+                            ASSET_WAIT.as_secs()
+                        ),
+                        pending.request_id,
+                    )));
                 }
                 if last_heartbeat.elapsed() >= stream_emit::HEARTBEAT_INTERVAL {
                     write_heartbeat(stream, pending.request_id)?;
@@ -250,10 +259,10 @@ fn request_from_client<S: Read + Write + TimeoutRead>(
                 let bytes = match read_asset_payload(stream, &header) {
                     Ok(bytes) => bytes,
                     Err(e @ (AssetError::HashMismatch | AssetError::LengthMismatch { .. })) => {
-                        return Ok(Fetched::Failed(asset_failed(format!(
-                            "HDR map {}: {e}",
-                            hash_hex(&hash)
-                        ))));
+                        return Ok(Fetched::Failed(asset_failed(
+                            format!("HDR map {}: {e}", hash_hex(&hash)),
+                            pending.request_id,
+                        )));
                     }
                     Err(AssetError::TooLarge { len }) => {
                         return Err(NetError::Framing(FramingError::FrameTooLarge {
@@ -285,6 +294,12 @@ fn request_from_client<S: Read + Write + TimeoutRead>(
                 write_cancelled_done(stream, pending)?;
                 return Ok(Fetched::Superseded(Some(next)));
             }
+            // A stray v16 contribution while this request waits for its HDR map:
+            // consume its payload frame to keep the stream in sync (the `other` arm
+            // below never reads payloads, so it must never see this variant).
+            ClientMessage::Contribution(header) => {
+                indicatrix_net::messages::discard_contribution_payload(stream, &header)?;
+            }
             other => tracing::debug!(
                 "request {}: ignoring {other:?} while waiting for its HDR map",
                 pending.request_id
@@ -293,8 +308,9 @@ fn request_from_client<S: Read + Write + TimeoutRead>(
     }
 }
 
-/// Reads and drops the payload of an `ASSET` nobody asked for (keeping the stream in
-/// sync); a mismatching hash or length is harmless here.
+/// Consumes and drops the payload of an `ASSET` nobody asked for (keeping the stream in
+/// sync), streaming it to a sink without buffering or hashing it; a mismatching length is
+/// harmless here.
 ///
 /// # Errors
 ///
@@ -308,8 +324,8 @@ pub fn discard_asset<S: Read>(
         hash_hex(&header.content_hash),
         header.len
     );
-    match read_asset_payload(stream, header) {
-        Ok(_) | Err(AssetError::HashMismatch | AssetError::LengthMismatch { .. }) => Ok(()),
+    match indicatrix_net::messages::discard_asset_payload(stream, header) {
+        Ok(()) | Err(AssetError::HashMismatch | AssetError::LengthMismatch { .. }) => Ok(()),
         Err(AssetError::TooLarge { len }) => Err(NetError::Framing(FramingError::FrameTooLarge {
             len,
             max: indicatrix_net::messages::MAX_ASSET_LEN,
@@ -335,15 +351,19 @@ fn decode_with_heartbeats<S: Write>(
         match rx.recv_timeout(stream_emit::HEARTBEAT_INTERVAL) {
             Ok(Ok(map)) => return Ok(Fetched::Ready(map)),
             Ok(Err(reason)) => {
-                return Ok(Fetched::Failed(asset_failed(format!(
-                    "HDR map {} does not decode: {reason}",
-                    hash_hex(&hdr.content_hash)
-                ))));
+                return Ok(Fetched::Failed(asset_failed(
+                    format!(
+                        "HDR map {} does not decode: {reason}",
+                        hash_hex(&hdr.content_hash)
+                    ),
+                    pending.request_id,
+                )));
             }
             Err(mpsc::RecvTimeoutError::Timeout) => write_heartbeat(stream, pending.request_id)?,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Ok(Fetched::Failed(asset_failed(
                     "decoding the HDR map panicked".to_string(),
+                    pending.request_id,
                 )));
             }
         }
@@ -373,17 +393,20 @@ fn write_cancelled_done<S: Write>(stream: &mut S, pending: Pending<'_>) -> Resul
                 samples_done: 0,
                 requested_cadence_ms: pending.cadence_ms,
                 effective_cadence_ms: 0,
+                reclaimed_samples: 0,
             },
         }),
         None,
     )
 }
 
-/// An `ASSET_FAILED` error carrying `message` (logged).
-fn asset_failed(message: String) -> ErrorMsg {
+/// An `ASSET_FAILED` error carrying `message` (logged), naming the request it concerns
+/// (v15) so a late failure can't fail whatever request the client has since moved on to.
+fn asset_failed(message: String, request_id: u32) -> ErrorMsg {
     tracing::info!("{message}");
     ErrorMsg {
         code: error_codes::ASSET_FAILED,
         message,
+        request_id: Some(request_id),
     }
 }

@@ -3,13 +3,123 @@
 //! per-connection read-only library database, and the payload-encoding preference.
 
 use std::{
+    io::{Read, Write},
     net::{SocketAddr, TcpStream},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use indicatrix_vault::db::sqlite::Database;
 
 use crate::cli::ServeArgs;
+
+/// A TOTAL deadline across however many logical reads a caller performs through this
+/// wrapper -- unlike the per-read idle timeout [`apply_handshake_timeout`] alone
+/// applies, which resets its own allowance on every call and so never fires against a
+/// peer that keeps a connection alive by trickling data, always inside that idle window
+/// (see [`HANDSHAKE_TIMEOUT`]'s doc comment and F-06a). Checked once per underlying
+/// `read` call -- BEFORE attempting it -- so such a peer is cut off the moment the
+/// whole budget has elapsed, without waiting for any single read to time out on its own.
+///
+/// Generic over any `Read`/`Write` (a `HELLO` read over a connection's own stream type,
+/// generic in turn; an `EnrollRequest` read over an in-memory duplex in this crate's own
+/// tests) rather than requiring the concrete ability to re-arm an OS-level socket
+/// timeout -- see [`DeadlineSocket`] for the complement that DOES re-arm a raw socket,
+/// used where the concrete type is already in hand (a TLS handshake). A single
+/// underlying read that blocks past the deadline (the peer goes fully silent rather than
+/// trickling) is still bounded only by whatever timeout `inner` already carries -- one
+/// more wait shaped like [`HANDSHAKE_TIMEOUT`], worst case, not unbounded.
+pub struct DeadlineIo<'a, S> {
+    inner: &'a mut S,
+    deadline: Instant,
+}
+
+impl<'a, S> DeadlineIo<'a, S> {
+    pub(crate) const fn new(inner: &'a mut S, deadline: Instant) -> Self {
+        Self { inner, deadline }
+    }
+
+    /// `Err(TimedOut)` once `deadline` has passed, without touching `inner` at all.
+    fn check_deadline(&self) -> std::io::Result<()> {
+        if Instant::now() >= self.deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "pre-HELLO handshake deadline exceeded",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl<S: Read> Read for DeadlineIo<'_, S> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.check_deadline()?;
+        self.inner.read(buf)
+    }
+}
+
+impl<S: Write> Write for DeadlineIo<'_, S> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.inner.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+/// The complement to [`DeadlineIo`] for the one phase where the concrete socket is
+/// already in hand and re-arming its real OS-level read timeout is possible: re-arms
+/// `sock`'s read timeout to the time remaining before `deadline` before every read,
+/// tightening [`DeadlineIo`]'s bound for a peer that goes fully silent (rather than
+/// trickling) right up against the deadline -- cut off within roughly one read's worth
+/// of slack instead of another whole idle timeout. Used only for
+/// [`super::tls::accept_tls`]'s and `crate::enroll::connection::accept_enroll_tls`'s TLS
+/// handshake, the one call in this crate that owns a concrete [`TcpStream`] across a
+/// `Read`/`Write` call it doesn't otherwise control the internals of
+/// (`rustls::ServerConnection::complete_io`'s own internal read/write loop).
+pub struct DeadlineSocket<'a> {
+    sock: &'a TcpStream,
+    deadline: Instant,
+}
+
+impl<'a> DeadlineSocket<'a> {
+    pub(crate) const fn new(sock: &'a TcpStream, deadline: Instant) -> Self {
+        Self { sock, deadline }
+    }
+
+    /// Re-arms `sock`'s read timeout to the time remaining, or fails outright without
+    /// touching `sock` at all once `deadline` has already passed.
+    fn rearm(&self) -> std::io::Result<()> {
+        let remaining = self.deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "pre-HELLO handshake deadline exceeded",
+            ));
+        }
+        self.sock.set_read_timeout(Some(remaining))
+    }
+}
+
+impl Read for DeadlineSocket<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.rearm()?;
+        let mut sock = self.sock;
+        sock.read(buf)
+    }
+}
+
+impl Write for DeadlineSocket<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut sock = self.sock;
+        sock.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        let mut sock = self.sock;
+        sock.flush()
+    }
+}
 
 /// Opens the design-library database this `serve` instance serves: `args.db` if given,
 /// else the default `facet_diagrams.sqlite` relative to the process's working directory.
@@ -82,20 +192,38 @@ pub fn tune_accepted_socket(stream: &TcpStream, peer: Option<SocketAddr>) {
     }
 }
 
-/// How long a just-accepted connection may take to get through its pre-protocol
-/// handshake -- the TLS handshake (see [`super::tls::accept_tls`]) plus the first `HELLO`
-/// frame, or (under `--insecure-no-tls`) just the first `HELLO` frame -- before this
-/// worker gives up on it. Mitigates a slowloris-style client that connects (and, for
-/// TLS, maybe completes the handshake) and then never speaks: without this, such a
-/// client holds a connection thread open for as long as the OS's own TCP defaults
-/// allow.
+/// The TOTAL budget for a just-accepted connection's pre-protocol handshake -- the TLS
+/// handshake (see [`super::tls::accept_tls`]) and, separately, the first `HELLO` frame
+/// (or, under `--insecure-no-tls`, just the `HELLO` frame) -- before this worker gives up
+/// on it. Mitigates a slowloris-style client that connects (and, for TLS, maybe
+/// completes the handshake) and then never speaks, OR that never goes idle long enough
+/// to trip a per-read timeout by trickling a byte at a time forever (F-06a): without a
+/// real deadline enforcing this budget, such a client holds a connection thread open for
+/// as long as the OS's own TCP defaults allow -- observed as long as ~86 hours for a
+/// 16 KiB TLS record trickled one byte per 19s.
 ///
-/// Applied once, in [`super::run`]'s accept loop, to the raw accepted `TcpStream` -- before
-/// either transport branch, so it covers a TLS listener's handshake (run inside
-/// [`super::tls::accept_tls`]) and, either way, the `HELLO` read that follows. Cleared the
-/// moment `HELLO` arrives (see the connection handlers' doc comments), so it never bounds
-/// anything the connection loop itself does afterward -- that loop has its own,
-/// different timeout story (see `stream_emit::TimeoutCache`).
+/// Two DIFFERENT mechanisms apply this bound, and it's spent independently by each:
+/// - [`apply_handshake_timeout`] sets a fixed, per-read IDLE timeout on the raw
+///   `TcpStream` once, at accept time -- catches a peer that goes silent for the whole
+///   window, but not one that keeps sending SOMETHING, just slowly.
+/// - [`accept_tls`](super::tls::accept_tls)'s TLS handshake and
+///   [`super::handshake::read_and_check_hello`]'s `HELLO` read EACH additionally wrap
+///   their own reads in [`DeadlineSocket`]/[`DeadlineIo`] with a deadline computed as
+///   `Instant::now() + HANDSHAKE_TIMEOUT` at the START of that phase -- a REAL deadline,
+///   re-checked (and, where the concrete socket is in hand, re-armed) before every read,
+///   so a trickling peer is cut off once its own phase's budget elapses regardless of how
+///   many small reads it takes. Because each phase computes its own fresh deadline (nothing
+///   here changes either function's signature to thread one shared instant through both --
+///   see those functions' doc comments), the two phases are bounded independently rather
+///   than sharing one end-to-end budget: a connection that spends up to
+///   `HANDSHAKE_TIMEOUT` in the TLS handshake and then up to another `HANDSHAKE_TIMEOUT`
+///   reading `HELLO` is still finite (worst case ~2x this constant), a large improvement
+///   over the previous unbounded behaviour, if not a single tight `HANDSHAKE_TIMEOUT`-wide
+///   window.
+///
+/// Cleared the moment `HELLO` arrives (see the connection handlers' doc comments), so it
+/// never bounds anything the connection loop itself does afterward -- that loop has its
+/// own, different timeout story (see `stream_emit::TimeoutCache`).
 ///
 /// `pub(crate)` so `crate::enroll`'s connection handling can apply the same bound to its
 /// own TLS-handshake-then-one-message exchange -- that listener has no
@@ -145,5 +273,79 @@ pub(super) fn open_connection_database(
             tracing::warn!("connection {peer:?}: {e}");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DeadlineIo;
+    use std::{
+        io::Read,
+        time::{Duration, Instant},
+    };
+
+    /// A `Read` that hands back exactly one byte per call, sleeping `gap` first every
+    /// time -- simulates a peer that keeps a connection alive by trickling data, always
+    /// well inside any single idle read timeout, forever.
+    struct Trickle {
+        gap: Duration,
+    }
+
+    impl Read for Trickle {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            std::thread::sleep(self.gap);
+            buf[0] = 0;
+            Ok(1)
+        }
+    }
+
+    /// F-06a: a peer sending one byte every 100 ms is still cut off once a 300 ms TOTAL
+    /// budget elapses -- `DeadlineIo` checks the deadline before every read, so this
+    /// takes effect on roughly the 3rd/4th read rather than needing any single read to
+    /// go idle.
+    #[test]
+    fn deadline_io_drops_a_trickling_peer_once_the_total_budget_elapses() {
+        let mut trickle = Trickle {
+            gap: Duration::from_millis(100),
+        };
+        let deadline = Instant::now() + Duration::from_millis(300);
+        let mut guarded = DeadlineIo::new(&mut trickle, deadline);
+
+        let start = Instant::now();
+        let mut buf = [0u8; 16];
+        let err = guarded.read_exact(&mut buf).expect_err(
+            "a 16-byte read at one byte/100ms must never complete inside a 300ms budget",
+        );
+        let elapsed = start.elapsed();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut, "{err}");
+        assert!(
+            elapsed >= Duration::from_millis(250) && elapsed < Duration::from_millis(700),
+            "expected to be dropped at ~300ms, was dropped at {elapsed:?}"
+        );
+    }
+
+    /// The complement: a deadline that has already passed refuses the very first read,
+    /// with no attempt to read anything at all (proven by a `Trickle`-shaped reader that
+    /// would otherwise sleep -- if `DeadlineIo` called it, this test would take 100ms
+    /// instead of returning immediately).
+    #[test]
+    fn deadline_io_refuses_immediately_once_the_deadline_has_already_passed() {
+        let mut trickle = Trickle {
+            gap: Duration::from_millis(100),
+        };
+        let deadline = Instant::now()
+            .checked_sub(Duration::from_millis(1))
+            .expect("the process has been running for at least 1ms");
+        let mut guarded = DeadlineIo::new(&mut trickle, deadline);
+
+        let start = Instant::now();
+        let mut buf = [0u8; 1];
+        let err = guarded.read_exact(&mut buf).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut, "{err}");
+        assert!(
+            start.elapsed() < Duration::from_millis(50),
+            "must fail without ever calling the inner reader"
+        );
     }
 }

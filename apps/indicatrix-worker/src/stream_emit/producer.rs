@@ -39,6 +39,11 @@ pub enum ProducerOutcome {
     Complete {
         /// The whole request's summed radiance, `width * height` long.
         final_total: Option<Vec<Vec3>>,
+        /// v16: samples of a `FinalImageRequest`'s viewer-reserved range this producer
+        /// rendered itself because the viewer's contribution didn't arrive in time or
+        /// was invalid. `0` for every `RENDER` and for a `FinalImageRequest` with no
+        /// reserved share.
+        reclaimed_samples: u32,
     },
     /// Stopped because the cancel flag was raised (the emitter then answers
     /// `DONE { cancelled: true }`). Reported as an internal failure if the flag was NOT
@@ -104,14 +109,22 @@ impl ProducerSink {
         let cancelled = self.is_cancelled();
         let mut guard = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         match outcome {
-            ProducerOutcome::Complete { final_total } => {
+            ProducerOutcome::Complete {
+                final_total,
+                reclaimed_samples,
+            } => {
                 guard.final_total = final_total.filter(|t| t.len() == self.pixels);
+                guard.reclaimed_samples = reclaimed_samples;
             }
             ProducerOutcome::Cancelled if cancelled => {}
             ProducerOutcome::Cancelled => {
                 guard.failed = Some(ErrorMsg {
                     code: error_codes::TRACE_PANIC,
                     message: "internal error: the request stopped before it completed".to_string(),
+                    // Overwritten with the real request_id by
+                    // `stream_emit::emitter::run_stream_loop` on its way out (the one
+                    // place that knows it) -- see that function's own `StreamOutcome::Failed`.
+                    request_id: None,
                 });
             }
             ProducerOutcome::Failed(error) => guard.failed = Some(error),

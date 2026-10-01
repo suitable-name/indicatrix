@@ -87,7 +87,7 @@ fn analytic_target(l0: f32) -> Vec3 {
         let lambda = 380.0f32 + step as f32;
         sum += Vec3::from_array(cie_1931_cmf(lambda));
     }
-    sum * (l0 / 106.856)
+    sum * (l0 / crate::color::cie1931::CIE_1931_Y_INTEGRAL_5NM)
 }
 
 /// The exact CPU reference for one `(pixel, sample)` tuple's furnace XYZ estimate.
@@ -115,16 +115,22 @@ fn cpu_furnace_xyz(pixel: u32, sample: u32, l0: f32) -> Vec3 {
 /// determinism check.
 #[derive(Debug, Clone)]
 pub struct FurnaceCheckResult {
+    /// Total tuples.
     pub total_tuples: usize,
+    /// Analytic target.
     pub analytic_target: Vec3,
 
     /// Per-tuple CPU-vs-GPU ULP agreement (the `furnace_samples_main` dispatch). Uses
     /// the same hybrid ULP-OR-absolute-floor rule as `environment_check` (see
     /// [`crate::renderer::gpu::ulp::within_tolerance`]).
     pub per_tuple_ulp_budget: u32,
+    /// Per tuple abs floor.
     pub per_tuple_abs_floor: f32,
+    /// Per tuple max ulp.
     pub per_tuple_max_ulp: u32,
+    /// Per tuple over budget count.
     pub per_tuple_over_budget_count: usize,
+    /// Per tuple argmax.
     pub per_tuple_argmax: Option<FurnaceUlpArgmax>,
 
     /// Mean over every tuple of the CPU reference estimator, vs [`analytic_target`].
@@ -135,21 +141,30 @@ pub struct FurnaceCheckResult {
     /// Relative error (`|mean - target| / |target|`, componentwise max) each side's
     /// mean has from the analytic target.
     pub cpu_relative_error: f32,
+    /// Gpu relative error.
     pub gpu_relative_error: f32,
 
     /// Two independent dispatches of `furnace_accumulate_main` against identical
     /// input, compared byte-for-byte.
     pub determinism_mismatches: usize,
+    /// Determinism sample count.
     pub determinism_sample_count: usize,
 }
 
+/// The comparison with the largest error in the furnace ulp check.
 #[derive(Debug, Clone, Copy)]
 pub struct FurnaceUlpArgmax {
+    /// Index of the pixel.
     pub pixel: u32,
+    /// Index of the sample within the pixel.
     pub sample: u32,
+    /// Name of the compared output component.
     pub component: &'static str,
+    /// Value produced by the CPU reference.
     pub cpu: f32,
+    /// Value produced by the GPU shader.
     pub gpu: f32,
+    /// Distance between the CPU and GPU values in units in the last place.
     pub ulp: u32,
 }
 
@@ -442,6 +457,7 @@ fn componentwise_relative_error(value: Vec3, target: Vec3) -> f32 {
 }
 
 impl FurnaceCheckResult {
+    /// Whether every compared value stayed within its budget.
     #[must_use]
     pub fn passed(&self) -> bool {
         self.per_tuple_over_budget_count == 0

@@ -8,7 +8,9 @@ use super::{
     super::{
         NUM_CHANNELS,
         environment::sample_environment_for_nee,
-        refraction::{BounceRefractionGeometry, RayMaterialContext},
+        refraction::{
+            BounceRefractionGeometry, R_UNPOL_PDF_MAX, R_UNPOL_PDF_MIN, RayMaterialContext,
+        },
         sampling::{
             BIREFRINGENT_SPLIT_STREAM, FRESNEL_BRANCH_STREAM, FROSTED_DIR_U_STREAM,
             FROSTED_DIR_V_STREAM, FROSTED_NEE_ENV_DIR_U_STREAM, FROSTED_NEE_ENV_DIR_V_STREAM,
@@ -136,9 +138,12 @@ pub(crate) fn nee_contribution_frosted_exterior(
 ///
 /// Direction is drawn from the cosine-weighted hemisphere about the correct macroscopic
 /// normal (`normal` reflect, `-normal` transmit) -- standard importance sampling for a
-/// Lambertian BRDF/BTDF, so `f * cos(theta) / pdf` is the constant albedo (`1.0`,
-/// already spent on `r_unpol`/`1 - r_unpol`) -- folded into the `1.0 / r_unpol` (or
-/// `t_unpol`) throughput scale below, with no separate pdf division needed.
+/// Lambertian BRDF/BTDF, so `f * cos(theta) / pdf` is the constant albedo (`1.0`). The
+/// branch itself is drawn from `FRESNEL_BRANCH_STREAM` with probability `r_unpol` (or
+/// `t_unpol`), and `path_pdf[k] *= r_unpol` (or `t_unpol`) below divides by exactly that
+/// selection probability -- the intensity itself is left unscaled (weight `1`, not
+/// `1 / r_unpol`): the branch's own energy fraction and its own selection probability
+/// are the same number, so they cancel and no throughput division belongs here.
 ///
 /// Depolarizes every channel (`StokesVector::unpolarized`): multiple internal
 /// micro-scattering events scramble the coherent phase relationship polarization
@@ -205,6 +210,29 @@ pub(crate) fn nee_contribution_frosted_exterior(
 /// divided by its own 0.5 (same reasoning as `apply_refract_bounce`). Mode
 /// re-coupling is applied by the caller.
 ///
+/// # Why the exterior NEE deposit needs no separate `nee_xyz` accumulator (F-09b)
+///
+/// `nee_contribution_frosted_exterior` deposits straight into the caller's shared
+/// `radiance` array (weighted, like every other channel's contribution, by the FINAL
+/// post-loop `path_pdf` at `trace_spectral_ray_inner`'s integration step) rather than
+/// into a separate `nee_xyz` accumulator integrated with THIS moment's `path_pdf`, the
+/// fix `try_scatter_step`'s identical deposit needed (see that function's own "NEE
+/// spectral weighting" doc section). That asymmetry is safe, not an oversight: both
+/// NEE-eligible outcomes here are, by construction, cases where `new_dir` lies in the
+/// open half-space strictly outward of this bounce point's TRUE outward normal (a
+/// cosine-weighted hemisphere about `normal` for the `!inside_gem` reflect branch,
+/// about `-normal` for the `inside_gem` transmit branch -- see "Sign convention for NEE
+/// eligibility" above). A convex polyhedron's own surface point moving into that exact
+/// half-space can never re-intersect the solid at any positive distance (the same
+/// convexity property `nee_contribution_hg_scatter`'s and `try_split_exit_channel`'s own
+/// doc comments already lean on) -- so the VERY NEXT bounce-loop iteration is guaranteed
+/// to find no facet hit and escape directly, meaning no further `path_pdf[k] *=` update
+/// can happen between this deposit and the trace's final integration. The FINAL
+/// `path_pdf` this deposit is (eventually) weighted by is therefore always identical to
+/// the `path_pdf` live at the moment of the deposit itself, so riding the shared
+/// `radiance` array is exact here, unlike the HG scattering-point case (an interior
+/// point with an unbounded number of further bounces still ahead of it).
+///
 /// # Return value
 ///
 /// The fourth tuple element is the `pending_light_mis` carry, mirroring
@@ -260,14 +288,14 @@ pub(crate) fn apply_frosted_bounce(
         / f32::mul_add(geo.n2, cos_t, geo.n1 * geo.cos_i);
     let r_p = f32::mul_add(geo.n1, -cos_t, geo.n2 * geo.cos_i)
         / f32::mul_add(geo.n1, cos_t, geo.n2 * geo.cos_i);
-    let r_unpol = (0.5 * r_p.mul_add(r_p, r_s * r_s)).clamp(1e-4, 1.0 - 1e-4);
+    let r_unpol = (0.5 * r_p.mul_add(r_p, r_s * r_s)).clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX);
     let rng_bounce =
         (hash_u32(rng_seed ^ hash_u32(bounce ^ FRESNEL_BRANCH_STREAM)) as f32) / 4_294_967_295.0;
 
     if rng_bounce < r_unpol {
         let new_dir = cosine_weighted_hemisphere(u1, u2, normal);
         for k in 0..NUM_CHANNELS {
-            stokes[k] = StokesVector::unpolarized(stokes[k].intensity() / r_unpol);
+            stokes[k] = StokesVector::unpolarized(stokes[k].intensity());
             path_pdf[k] *= r_unpol;
         }
         // Exterior-side NEE only when this reflect happened while already
@@ -300,7 +328,7 @@ pub(crate) fn apply_frosted_bounce(
             // No `/ split_pdf` here (see `apply_refract_channel` in `refraction.rs`):
             // the selected mode already carries only its ~0.5 energy share, so dividing
             // by the 0.5 selection probability on top would double-count it.
-            stokes[k] = StokesVector::unpolarized(stokes[k].intensity() / t_unpol);
+            stokes[k] = StokesVector::unpolarized(stokes[k].intensity());
             // No `* split_pdf` either -- `spectral_mis_weight` is scale-invariant under
             // multiplying every channel's `path_pdf` by the same uniform factor, so this
             // was a no-op on the actual MIS weight, just one risking underflow.

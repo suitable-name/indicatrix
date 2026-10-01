@@ -2,7 +2,7 @@
 
 use crate::{
     optics::raytracer::{
-        LightingPreset, compute_illuminant_white_balance, illuminant_temperature_k,
+        LightingPreset, environment::environment_white_balance, illuminant_temperature_k,
     },
     renderer::buffers::{GpuGemMaterial, GpuTransportParams, transport_env_mode},
 };
@@ -12,13 +12,17 @@ use super::{
     test_camera, tier3_material,
 };
 
+/// Outcome of the determinism check.
 #[derive(Debug, Clone)]
 pub struct DeterminismResult {
+    /// Total values.
     pub total_values: usize,
+    /// Mismatches found.
     pub mismatches: usize,
 }
 
 impl DeterminismResult {
+    /// Whether every compared value stayed within its budget.
     #[must_use]
     pub const fn passed(&self) -> bool {
         self.mismatches == 0
@@ -40,7 +44,9 @@ pub fn run_determinism(ctx: &crate::renderer::gpu::GpuContext) -> DeterminismRes
     let gpu_material = GpuGemMaterial::encode(&material);
     let camera_params = camera_params_for(&camera, width, height, samples);
     let temp_k = illuminant_temperature_k(LightingPreset::Daylight);
-    let wb = compute_illuminant_white_balance(temp_k);
+    // The production scale (identity for the D65 Daylight rig), exactly as the frame
+    // path derives it from the studio environment.
+    let wb = environment_white_balance(LightingPreset::Daylight.studio(1.0, 0.0, 0.0));
     let params = GpuTransportParams::new(
         width * height,
         10,

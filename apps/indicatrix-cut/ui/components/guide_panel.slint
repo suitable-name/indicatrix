@@ -169,9 +169,14 @@ export component GuidePanel inherits Rectangle {
 
                 VerticalLayout {
                     spacing: 5px;
-                    for action[i] in GuideModel.current.actions: HorizontalLayout {
-                        spacing: 6px;
+                    // A wrapped Text inside a HorizontalLayout reports a one-line
+                    // height, so a multi-line action overlapped the next row: each
+                    // row is a Rectangle sized by its Text's own wrapped height.
+                    for action[i] in GuideModel.current.actions: Rectangle {
+                        height: action_text.preferred-height;
                         Text {
+                            x: 0px;
+                            y: 0px;
                             width: 16px;
                             text: "" + (i + 1);
                             font-size: 11px;
@@ -179,8 +184,10 @@ export component GuidePanel inherits Rectangle {
                             color: Theme.accent-cyan;
                             horizontal-alignment: right;
                         }
-                        Text {
-                            horizontal-stretch: 1;
+                        action_text := Text {
+                            x: 22px;
+                            y: 0px;
+                            width: max(20px, parent.width - 22px);
                             text: action;
                             font-size: 11px;
                             color: Theme.text-primary;

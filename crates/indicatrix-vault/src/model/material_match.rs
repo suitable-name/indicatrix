@@ -20,12 +20,14 @@
 
 /// One candidate preset [`pick_ri_preset`] can match against.
 ///
-/// A display name (persisted into `diagram_details.preview_material`) and its
+/// A display name (persisted into `diagram_previews.preview_material`) and its
 /// refractive index, evaluated at the sodium D line by the caller -- see this module's
 /// doc for why that convention matters.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RiPresetCandidate {
+    /// Display name.
     pub name: String,
+    /// Refractive index.
     pub refractive_index: f64,
 }
 

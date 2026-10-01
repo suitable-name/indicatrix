@@ -4,9 +4,10 @@ version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 authors = { workspace = true }
-description = "A physically-based spectral gemstone renderer that turns GemCAD-style cutting schedules into rendered output."
+description = "A physically-based spectral gemstone renderer that turns GemCAD-style cutting instructions into rendered output."
 license = { workspace = true }
 repository = { workspace = true }
+homepage = { workspace = true }
 documentation = "https://docs.rs/indicatrix"
 keywords = ["gemstone", "raytracer", "spectral", "rendering", "faceting"]
 categories = ["rendering", "graphics", "science"]
@@ -14,15 +15,18 @@ publish = { workspace = true }
 
 [dependencies]
 bytemuck = { workspace = true }
-chull = { workspace = true }
 glam = { workspace = true }
 # Only pulled in behind the `hdr` feature (Radiance .hdr decoding for
-# `renderer::env_map`). `default-features = false` plus the single `hdr`
-# format feature keeps this lean -- the default `image` feature set drags in
-# png/gif/webp/avif/exr/etc. decoders indicatrix has no use for.
-image = { workspace = true, optional = true, features = ["hdr"] }
+# `renderer::env_map`, PNG encoding for `render_setup::png_encode`).
+# `default-features = false` plus these two format features keeps this lean -- the
+# default `image` feature set also drags in gif/webp/avif/exr/etc. decoders indicatrix
+# has no use for. `png` rides along with `hdr` rather than getting its own feature
+# flag: every consumer of `render_setup::encode_png_with_icc` already needs `image`
+# for `hdr` too (the desktop viewer, the browser app), so a second opt-in flag would
+# add a distinction with no real user.
+image = { workspace = true, optional = true, features = ["hdr", "png"] }
 # For `geometry::cuts::StandardGemCuts::from_asc_schedule`, which turns a parsed
-# GemCAD `.asc` cutting schedule (indicatrix_formats::asc::AscSchedule) into real,
+# GemCAD `.asc` cutting instructions (indicatrix_formats::asc::AscSchedule) into real,
 # non-fabricated facet planes. Zero-dependency format crate -- adds nothing to
 # indicatrix's own dependency tree beyond itself.
 indicatrix-formats = { workspace = true }
@@ -92,10 +96,12 @@ tracing-subscriber = { workspace = true }
 default = []
 gpu = ["dep:wgpu", "dep:pollster"]
 # Loads Radiance `.hdr` equirectangular environment maps for
-# `renderer::env_map::EnvironmentMap`. Off by default so the base `indicatrix`
-# dependency count (the four listed above) stays publishable; the CPU-side
-# importance-sampling machinery in `env_map` itself needs no extra
-# dependency and is always available.
+# `renderer::env_map::EnvironmentMap`, and turns on `render_setup::png_encode`
+# (in-memory PNG+ICC encoding for wide-gamut export). Off by default so the base
+# `indicatrix` dependency count (the four listed above) stays publishable; the
+# CPU-side importance-sampling machinery in `env_map` itself needs no extra
+# dependency and is always available, as is `render_setup::icc_profile`'s pure
+# profile-byte builder (only the PNG container writer needs `image`).
 hdr = ["dep:image"]
 # Derives `Serialize`/`Deserialize` for the scene-description types `indicatrix-net` sends
 # over the wire to a remote render worker: `GemMaterial` and its nested types

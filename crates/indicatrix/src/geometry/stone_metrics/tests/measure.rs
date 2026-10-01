@@ -4,7 +4,11 @@
 
 use glam::DVec3;
 
-use crate::geometry::stone_metrics::measure_solid;
+use crate::geometry::{
+    cuts::StandardGemCuts,
+    plane::GpuFacetPlane,
+    stone_metrics::{caliper_frame, measure_solid, measure_solid_with_vertices},
+};
 
 /// Axis-aligned box `[-1,1] x [-0.6,0.6] x [-1,1]`: volume 4.8, width 2,
 /// length 2, height 1.2. The four vertical walls are girdle planes cut by
@@ -141,4 +145,275 @@ fn measurement_is_deterministic() {
     assert_eq!(a.volume.to_bits(), b.volume.to_bits());
     assert_eq!(a.width_caliper.to_bits(), b.width_caliper.to_bits());
     assert_eq!(a.total_height.to_bits(), b.total_height.to_bits());
+}
+
+/// Every figure `measure_solid` reports must scale exactly with the
+/// arrangement's own absolute scale -- `volume` as `k^3`, every length as
+/// `k` -- across many orders of magnitude, not just near `k = 1`. Before
+/// `measure_solid`'s internal normalisation, this real RBC arrangement's
+/// `volume / k^3` drifted (+81% at k=1e-3) and `measure_solid` returned
+/// `None` above k=~65 (a real vertex escaping to the absolute-`64`-unit
+/// blank box, `BLANK_HALF_EXTENT`, once the design's own masts approached
+/// it) -- because every internal epsilon here is an absolute constant tuned
+/// for masts of order 1. Regression coverage for that measured divergence.
+#[test]
+fn measure_solid_scales_every_figure_with_the_arrangements_own_scale() {
+    let base: Vec<(DVec3, f64)> = StandardGemCuts::standard_round_brilliant()
+        .into_iter()
+        .map(GpuFacetPlane::to_halfspace_f64)
+        .collect();
+    let baseline = measure_solid(&base).expect("k=1 must measure");
+    for &k in &[1e-4, 1e-3, 0.01, 0.1, 10.0, 30.0, 60.0, 100.0] {
+        let scaled: Vec<(DVec3, f64)> = base.iter().map(|&(n, m)| (n, m * k)).collect();
+        let m = measure_solid(&scaled).unwrap_or_else(|| panic!("k={k} must still measure"));
+        assert_eq!(
+            m.vertex_count, baseline.vertex_count,
+            "k={k}: vertex count changed"
+        );
+        let rel =
+            |actual: f64, expected: f64| (actual - expected).abs() / expected.abs().max(1e-12);
+        assert!(
+            rel(m.volume, baseline.volume * k.powi(3)) < 1e-6,
+            "k={k}: volume/k^3 = {} vs baseline {}",
+            m.volume / k.powi(3),
+            baseline.volume
+        );
+        assert!(
+            rel(m.width_axis, baseline.width_axis * k) < 1e-6,
+            "k={k}: width_axis/k = {} vs baseline {}",
+            m.width_axis / k,
+            baseline.width_axis
+        );
+        assert!(
+            rel(m.total_height, baseline.total_height * k) < 1e-6,
+            "k={k}: total_height/k = {} vs baseline {}",
+            m.total_height / k,
+            baseline.total_height
+        );
+    }
+}
+
+/// The fixtures whose figures are pinned bit-for-bit by
+/// [`measure_solid_figures_are_pinned_bit_for_bit`].
+fn golden_fixtures() -> Vec<(&'static str, Vec<(DVec3, f64)>)> {
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    let brilliant = StandardGemCuts::standard_round_brilliant()
+        .into_iter()
+        .map(GpuFacetPlane::to_halfspace_f64)
+        .collect();
+    let box_planes = vec![
+        (DVec3::X, 1.0),
+        (DVec3::NEG_X, 1.0),
+        (DVec3::Y, 0.6),
+        (DVec3::NEG_Y, 0.6),
+        (DVec3::Z, 1.0),
+        (DVec3::NEG_Z, 1.0),
+    ];
+    let roof_planes = vec![
+        (DVec3::X, 1.0),
+        (DVec3::NEG_X, 1.0),
+        (DVec3::Z, 1.0),
+        (DVec3::NEG_Z, 1.0),
+        (DVec3::NEG_Y, 0.5),
+        (DVec3::new(s, s, 0.0), s),
+        (DVec3::new(-s, s, 0.0), s),
+        (DVec3::new(0.0, s, s), s),
+        (DVec3::new(0.0, s, -s), s),
+    ];
+    let rotated_box = vec![
+        (DVec3::new(s, 0.0, s), 1.0),
+        (DVec3::new(-s, 0.0, s), 1.0),
+        (DVec3::new(s, 0.0, -s), 1.0),
+        (DVec3::new(-s, 0.0, -s), 1.0),
+        (DVec3::Y, 0.5),
+        (DVec3::NEG_Y, 0.5),
+    ];
+    vec![
+        ("brilliant", brilliant),
+        ("box", box_planes),
+        ("roof", roof_planes),
+        ("rotated", rotated_box),
+    ]
+}
+
+/// Pins `volume`, `width_caliper` and `total_height` of the round brilliant and
+/// the three hand-built fixtures to literal bit patterns. Unlike a comparison
+/// between two calls of the same code path, this fails when the measuring rule
+/// (and with it the cached `SOLID_EXTENTS_VERSION` contract) changes.
+// Must be re-pinned after the caliper hypot/tie-break and pow2_scale_norm
+// exponent-extraction change (last-bit movement of width_caliper and volume).
+#[test]
+fn measure_solid_figures_are_pinned_bit_for_bit() {
+    let golden: [(&str, u64, u64, u64); 4] = [
+        (
+            "brilliant",
+            0x3ffb_0a48_00da_e155,
+            0x3fff_ffff_e989_4f9e,
+            0x3ff3_3333_3000_0000,
+        ),
+        (
+            "box",
+            0x4013_3333_3333_3333,
+            0x4000_0000_0000_0000,
+            0x3ff3_3333_3333_3333,
+        ),
+        (
+            "roof",
+            0x400a_aaaa_aaaa_aaac,
+            0x4000_0000_0000_0000,
+            0x3ff8_0000_0000_0000,
+        ),
+        (
+            "rotated",
+            0x400f_ffff_ffff_ffff,
+            0x4000_0000_0000_0000,
+            0x3ff0_0000_0000_0000,
+        ),
+    ];
+    for ((label, planes), (golden_label, volume, width, height)) in
+        golden_fixtures().into_iter().zip(golden)
+    {
+        assert_eq!(label, golden_label, "fixture order changed");
+        let m = measure_solid(&planes).expect("fixture must measure");
+        assert_eq!(m.volume.to_bits(), volume, "{label}: volume {}", m.volume);
+        assert_eq!(
+            m.width_caliper.to_bits(),
+            width,
+            "{label}: width_caliper {}",
+            m.width_caliper
+        );
+        assert_eq!(
+            m.total_height.to_bits(),
+            height,
+            "{label}: total_height {}",
+            m.total_height
+        );
+    }
+}
+
+/// Extents of a vertex set along each axis.
+fn bbox_extents(verts: &[DVec3]) -> DVec3 {
+    let lo = verts
+        .iter()
+        .fold(DVec3::splat(f64::INFINITY), |a, v| a.min(*v));
+    let hi = verts
+        .iter()
+        .fold(DVec3::splat(f64::NEG_INFINITY), |a, v| a.max(*v));
+    hi - lo
+}
+
+/// The vertices come back in `planes`' own units even when the internal
+/// power-of-two normalisation scale is not 1: the bounding box of the returned
+/// vertices must equal the reported extents, for a box at 100x and 0.01x and
+/// for the round brilliant scaled by 0.3.
+#[test]
+fn returned_vertices_are_scaled_back_by_the_normalisation_scale() {
+    let base_box = [
+        (DVec3::X, 1.0),
+        (DVec3::NEG_X, 1.0),
+        (DVec3::Y, 0.6),
+        (DVec3::NEG_Y, 0.6),
+        (DVec3::Z, 1.0),
+        (DVec3::NEG_Z, 1.0),
+    ];
+    for k in [100.0_f64, 0.01] {
+        let planes: Vec<(DVec3, f64)> = base_box.iter().map(|&(n, m)| (n, m * k)).collect();
+        let (m, verts) = measure_solid_with_vertices(&planes).expect("scaled box must measure");
+        let ext = bbox_extents(&verts);
+        assert!(
+            2.0_f64.mul_add(-k, ext.x).abs() < 1e-9 * k,
+            "k={k}: x {}",
+            ext.x
+        );
+        assert!(
+            1.2_f64.mul_add(-k, ext.y).abs() < 1e-9 * k,
+            "k={k}: y {}",
+            ext.y
+        );
+        assert!(
+            2.0_f64.mul_add(-k, ext.z).abs() < 1e-9 * k,
+            "k={k}: z {}",
+            ext.z
+        );
+        assert!((ext.y - m.total_height).abs() < 1e-9 * k);
+        for v in &verts {
+            assert!(v.x.abs() <= k * (1.0 + 1e-9) && v.z.abs() <= k * (1.0 + 1e-9));
+        }
+    }
+
+    let k = 30.0 / 100.0;
+    let planes: Vec<(DVec3, f64)> = StandardGemCuts::standard_round_brilliant()
+        .into_iter()
+        .map(GpuFacetPlane::to_halfspace_f64)
+        .map(|(n, m)| (n, m * k))
+        .collect();
+    let (m, verts) = measure_solid_with_vertices(&planes).expect("scaled RBC must measure");
+    let ext = bbox_extents(&verts);
+    let (lo, hi) = if ext.x <= ext.z {
+        (ext.x, ext.z)
+    } else {
+        (ext.z, ext.x)
+    };
+    assert!((ext.y - m.total_height).abs() < 1e-9 * k, "y {}", ext.y);
+    assert!((lo - m.width_axis).abs() < 1e-9 * k, "width {lo}");
+    assert!((hi - m.length_axis).abs() < 1e-9 * k, "length {hi}");
+}
+
+/// `measure_solid_with_vertices` returns figures bit-identical to `measure_solid`,
+/// and returns the exact number of vertices reported in `vertex_count`.
+#[test]
+fn measure_solid_with_vertices_matches_measure_solid_on_fixtures() {
+    for (label, planes) in golden_fixtures() {
+        let expected = measure_solid(&planes).expect("fixture must measure");
+        let (actual, verts) =
+            measure_solid_with_vertices(&planes).expect("fixture with vertices must measure");
+        assert_eq!(
+            expected, actual,
+            "{label}: measure_solid and measure_solid_with_vertices metrics must be bit-identical"
+        );
+        assert_eq!(
+            verts.len(),
+            actual.vertex_count,
+            "{label}: vertex count must equal vertex_count metric"
+        );
+    }
+
+    // Also verify unbounded returns None
+    let unbounded = vec![
+        (DVec3::X, 1.0),
+        (DVec3::NEG_X, 1.0),
+        (DVec3::Y, 0.6),
+        (DVec3::Z, 1.0),
+        (DVec3::NEG_Z, 1.0),
+    ];
+    assert!(measure_solid_with_vertices(&unbounded).is_none());
+}
+
+/// Caliper frame extents match `caliper_extents` on the rotated outline fixture,
+/// and `width_dir` is a unit vector.
+#[test]
+fn caliper_frame_matches_caliper_extents_on_rotated_box() {
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    let planes = vec![
+        (DVec3::new(s, 0.0, s), 1.0),
+        (DVec3::new(-s, 0.0, s), 1.0),
+        (DVec3::new(s, 0.0, -s), 1.0),
+        (DVec3::new(-s, 0.0, -s), 1.0),
+        (DVec3::Y, 0.5),
+        (DVec3::NEG_Y, 0.5),
+    ];
+    let (_, verts) = measure_solid_with_vertices(&planes).expect("must measure");
+    let outline: Vec<(f64, f64)> = verts.iter().map(|v| (v.x, v.z)).collect();
+    let frame = caliper_frame(&outline).expect("frame must measure");
+    assert!((frame.width - 2.0).abs() < 1e-12, "width {}", frame.width);
+    assert!(
+        (frame.length - 2.0).abs() < 1e-12,
+        "length {}",
+        frame.length
+    );
+    let dir_len = frame.width_dir[0].hypot(frame.width_dir[1]);
+    assert!(
+        (dir_len - 1.0).abs() < 1e-12,
+        "width_dir must be unit vector"
+    );
 }

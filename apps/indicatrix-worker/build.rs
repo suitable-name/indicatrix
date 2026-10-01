@@ -15,13 +15,27 @@
 //! Embedding needs a resource compiler (`rc.exe`/`windres`), not guaranteed present when
 //! cross-compiling (see `scripts/pgo-bolt-build.sh`). A missing icon must never fail the
 //! build, so this reports and continues.
+//!
+//! # Gated on the target OS, not the host
+//!
+//! A build script is compiled for and runs on the HOST, so a `#[cfg(windows)]` here was
+//! false whenever the Windows binary was cross-compiled from Linux, and those binaries
+//! silently shipped without an icon. `CARGO_CFG_TARGET_OS` is what Cargo hands a build
+//! script about the TARGET; `winresource` runs on any host and picks the target's
+//! resource compiler (`x86_64-w64-mingw32-windres` for the `gnu` triple) itself.
 
 fn main() {
-    #[cfg(windows)]
-    embed_icon();
+    println!("cargo:rerun-if-env-changed=CARGO_CFG_TARGET_OS");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        embed_icon();
+    }
 }
 
-#[cfg(windows)]
+/// Embeds `assets/icon.ico` as the executable's Windows icon resource.
+///
+/// A verbatim twin of `apps/indicatrix-cut/build.rs`'s `embed_icon`: a build script
+/// cannot share code across packages without a helper crate both would build first, so
+/// an edit to one must be mirrored in the other.
 fn embed_icon() {
     println!("cargo:rerun-if-changed=assets/icon.ico");
     let mut res = winresource::WindowsResource::new();

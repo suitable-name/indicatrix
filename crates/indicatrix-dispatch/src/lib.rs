@@ -25,11 +25,9 @@
 //! - [`LanePool`]: N lanes against one cursor for one image epoch, with failure
 //!   reclaim, backoff, retirement, cancellation and events.
 //! - [`Merger`]: the deterministic, chunk-start-ordered merge of chunk sums.
-//! - [`ItemQueue`]: whole-item distribution (batches) over N lanes.
 //! - [`CancelToken`]: a cloneable cancellation flag.
 
 mod cancel;
-mod item_queue;
 mod lane;
 mod merge;
 mod pool;
@@ -37,9 +35,8 @@ mod rate;
 mod sample_cursor;
 
 pub use cancel::CancelToken;
-pub use item_queue::{FailOutcome, ItemQueue, ItemTicket, QueueCounts};
 pub use lane::{ChunkResult, SampleRange, WorkerLane};
-pub use merge::{MergeError, Merger};
+pub use merge::{MergeError, Merger, ParkedBudget};
 pub use pool::{LanePool, MergerMismatch, PoolConfig, PoolEvent, PoolOutcome, PoolStatus};
 pub use rate::{ChunkPolicy, DEFAULT_MAX_CHUNK_SAMPLES, RateModel, marginal_rate};
 pub use sample_cursor::SampleCursor;

@@ -1,0 +1,264 @@
+import { Theme } from "../components/theme.slint";
+import { AppModel } from "../models/app_model.slint";
+import { SolidModel } from "../components/solid_model.slint";
+import { ManipulateModel } from "../components/manipulate_model.slint";
+import { SolidToolbar } from "../components/solid_toolbar.slint";
+import { SolidTooltip } from "../components/solid_tooltip.slint";
+import { ManipulateOverlay, SliceLineOverlay } from "../components/manipulate_overlay.slint";
+import { ManipulateHintBar } from "../components/manipulate_hint.slint";
+
+// The Solid tab: the desktop's `solid_viewport.slint` in its Solid view mode.
+// `src/views/` rasterizes the design with `indicatrix_solid` into
+// `SolidModel.frame` at this view's size; this component only forwards pointer,
+// wheel and key input:
+// - a left drag orbits the shared camera (`SolidModel.orbit`, the desktop's
+//   `camera_orbit` signs and factor), the wheel zooms (`SolidModel.zoom`);
+// - moving without a button pressed hovers (`SolidModel.hover`), a click that
+//   barely moved (under 3 px) picks (`SolidModel.click`) -- an orbit drag that
+//   ends over a facet never re-selects it;
+// - Escape clears the tier selection, Up/Down/PageUp/PageDown step through it;
+// - the direct-manipulation tools (`ManipulateModel`, the desktop's pointer wiring):
+//   a left press on a drag handle's tip grabs the handle instead of orbiting and
+//   drives it until release (Shift for fine snapping, Escape cancels); with the
+//   Slice tool on (pill or S) a left drag draws a line instead of orbiting; Enter
+//   keeps and F flips a provisional slice tier.
+export component SolidView inherits Rectangle {
+    // Kept for `main_area.slint`, which mounts this view with no bindings.
+    in property <image> frame: SolidModel.frame;
+
+    property <bool> dragging: false;
+    property <length> last-x;
+    property <length> last-y;
+    // |dx| + |dy| since the last press, in logical pixels.
+    property <float> drag-distance: 0;
+    // True from a left press that grabbed a drag handle (`ManipulateModel.drag-begin`
+    // granted it) until the button is released or Escape cancels it. While set,
+    // pointer moves drive the handle drag instead of the orbit.
+    property <bool> handle-dragging: false;
+    // True from a left press that started a Slice-mode line until the button is
+    // released or Escape drops the line. While set, pointer moves stretch the line:
+    // no orbit, no hover pick, no facet click.
+    property <bool> slice-dragging: false;
+    // Set by a handle or slice press and left set until the next press elsewhere:
+    // the release after such a gesture ends in a `clicked` that must not also pick
+    // whatever facet ends up under the pointer.
+    property <bool> swallow-click: false;
+    // Whether the hint strip under the toolbar is showing.
+    property <bool> hint-visible: ManipulateModel.hint-text != "" || ManipulateModel.provisional-active;
+
+    background: #080a0f;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    clip: true;
+
+    init => { SolidModel.view-size-changed(self.width, self.height); }
+    changed width => { SolidModel.view-size-changed(self.width, self.height); }
+    changed height => { SolidModel.view-size-changed(self.width, self.height); }
+
+    if SolidModel.has-solid: Image {
+        width: 100%;
+        height: 100%;
+        source: root.frame;
+        image-fit: contain;
+    }
+
+    if !SolidModel.has-solid: Text {
+        x: root.width * 0.1;
+        width: root.width * 0.8;
+        height: root.height;
+        text: AppModel.tier-count == 0
+            ? "Nothing to show yet -- start with File > New Design or open a design."
+            : "Solve to preview";
+        font-size: 13px;
+        color: Theme.text-muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                // Innermost first: a handle drag in progress is cancelled (the design
+                // goes back to how it was at the press); then a slice line being
+                // drawn is dropped; then a provisional tier is discarded; then Slice
+                // mode itself is left; only a plain Escape clears the selection.
+                if ManipulateModel.dragging {
+                    root.handle-dragging = false;
+                    ManipulateModel.drag-cancel();
+                    return accept;
+                }
+                if root.slice-dragging {
+                    root.slice-dragging = false;
+                    ManipulateModel.slice-cancel();
+                    return accept;
+                }
+                if ManipulateModel.provisional-active {
+                    ManipulateModel.slice-discard();
+                    return accept;
+                }
+                if ManipulateModel.slice-mode {
+                    ManipulateModel.slice-mode = false;
+                    ManipulateModel.slice-toggled();
+                    return accept;
+                }
+                SolidModel.clear-selection();
+                return accept;
+            } else if event.text == Key.Return && ManipulateModel.provisional-active {
+                // Enter keeps the provisional slice tier (one undo step).
+                ManipulateModel.slice-keep();
+                return accept;
+            } else if (event.text == "f" || event.text == "F") && ManipulateModel.provisional-active && !event.modifiers.control && !event.modifiers.meta {
+                ManipulateModel.slice-flip();
+                return accept;
+            } else if (event.text == "s" || event.text == "S") && !ManipulateModel.dragging && !root.handle-dragging && !root.slice-dragging && !event.modifiers.control && !event.modifiers.meta {
+                ManipulateModel.slice-mode = !ManipulateModel.slice-mode;
+                ManipulateModel.slice-toggled();
+                return accept;
+            } else if event.text == Key.DownArrow {
+                SolidModel.step-selection(1);
+                return accept;
+            } else if event.text == Key.UpArrow {
+                SolidModel.step-selection(-1);
+                return accept;
+            } else if event.text == Key.PageDown {
+                SolidModel.step-selection(10);
+                return accept;
+            } else if event.text == Key.PageUp {
+                SolidModel.step-selection(-10);
+                return accept;
+            }
+            reject
+        }
+
+        touch := TouchArea {
+            changed has-hover => {
+                if !self.has-hover {
+                    SolidModel.pointer-left();
+                    // Lights no handle once the pointer has left the view.
+                    if !root.handle-dragging {
+                        ManipulateModel.handle-hover(-1px, -1px);
+                    }
+                }
+            }
+            pointer-event(event) => {
+                // Direct manipulation: a left press on a drag handle's tip grabs the
+                // handle instead of starting an orbit, and while it is held the
+                // pointer moves (with `event.modifiers.shift` for fine snapping) drive
+                // the handle. `PointerEventKind.move`, not the `moved` callback below,
+                // carries the modifiers; `moved` keeps the orbit and hover paths.
+                if event.kind == PointerEventKind.move {
+                    if root.handle-dragging {
+                        ManipulateModel.drag-move(self.mouse-x, self.mouse-y, event.modifiers.shift);
+                    } else if root.slice-dragging {
+                        ManipulateModel.slice-move(self.mouse-x, self.mouse-y);
+                    } else if !root.dragging && ManipulateModel.handles-visible {
+                        ManipulateModel.handle-hover(self.mouse-x, self.mouse-y);
+                    }
+                } else if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    root.swallow-click = false;
+                    if ManipulateModel.handles-visible {
+                        let hit = ManipulateModel.handle-hit-test(self.mouse-x, self.mouse-y);
+                        if hit >= 0 {
+                            ManipulateModel.drag-begin(hit, self.mouse-x, self.mouse-y);
+                            // Rust sets `dragging` only when it grants the drag; a
+                            // refused press falls through to the orbit below.
+                            root.handle-dragging = ManipulateModel.dragging;
+                        }
+                    }
+                    // Slice mode: a press that did not grab a handle (the provisional
+                    // tier's handles stay grabbable) draws a line instead of orbiting.
+                    if !root.handle-dragging && ManipulateModel.slice-mode {
+                        ManipulateModel.slice-begin(self.mouse-x, self.mouse-y);
+                        root.slice-dragging = true;
+                    }
+                    if root.handle-dragging || root.slice-dragging {
+                        root.swallow-click = true;
+                    } else {
+                        root.last-x = self.mouse-x;
+                        root.last-y = self.mouse-y;
+                        root.drag-distance = 0;
+                        root.dragging = true;
+                    }
+                    focus.focus();
+                } else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                    if root.handle-dragging {
+                        root.handle-dragging = false;
+                        if event.kind == PointerEventKind.up {
+                            ManipulateModel.drag-end();
+                        } else {
+                            ManipulateModel.drag-cancel();
+                        }
+                    }
+                    if root.slice-dragging {
+                        root.slice-dragging = false;
+                        if event.kind == PointerEventKind.up {
+                            ManipulateModel.slice-end(self.mouse-x, self.mouse-y);
+                        } else {
+                            ManipulateModel.slice-cancel();
+                        }
+                    }
+                    root.dragging = false;
+                }
+            }
+            moved => {
+                if root.handle-dragging || root.slice-dragging {
+                    // The handle drag / slice line owns the pointer: no orbit, no hover pick.
+                    return;
+                }
+                if root.dragging {
+                    let dx = (self.mouse-x - root.last-x) / 1px;
+                    let dy = (self.mouse-y - root.last-y) / 1px;
+                    root.last-x = self.mouse-x;
+                    root.last-y = self.mouse-y;
+                    root.drag-distance += Math.abs(dx) + Math.abs(dy);
+                    SolidModel.orbit(dx, dy);
+                } else {
+                    SolidModel.hover(self.mouse-x, self.mouse-y);
+                }
+            }
+            clicked => {
+                if root.drag-distance < 3 && !root.swallow-click {
+                    SolidModel.click(self.mouse-x, self.mouse-y);
+                }
+            }
+            scroll-event(event) => {
+                SolidModel.zoom(event.delta-y / 1px);
+                accept
+            }
+        }
+    }
+
+    // The angle/depth/index drag handles of the selected facet, above the image
+    // (`ManipulateModel`, pushed by `src/views/manip/`). Pointer input is never
+    // handled here: the touch area above stays the only pointer target.
+    if ManipulateModel.handles-visible: ManipulateOverlay { }
+
+    // The Slice tool's rubber band while a line is being drawn.
+    if ManipulateModel.slice-line-visible: SliceLineOverlay { }
+
+    // The one-line hint under the toolbar row (with the Slice tool's buttons at its
+    // right end); hidden while it has nothing to say.
+    if root.hint-visible: ManipulateHintBar {
+        toolbar-height: toolbar.top-height;
+    }
+
+    // Hidden while dragging or once the pointer leaves (desktop #116).
+    if SolidModel.hover-text != "" && touch.has-hover && !root.dragging && !root.handle-dragging && !root.slice-dragging: SolidTooltip {
+        x: 10px;
+        y: root.height - self.height - 46px;
+        text: SolidModel.hover-text;
+    }
+
+    toolbar := SolidToolbar {}
+
+    // Below the hint strip when it is showing.
+    if SolidModel.timing-text != "": Text {
+        x: root.width - self.width - 12px;
+        y: toolbar.top-height + (root.hint-visible ? 42px : 16px);
+        text: SolidModel.timing-text;
+        font-size: 10px;
+        color: Theme.text-muted;
+    }
+}

@@ -16,10 +16,11 @@ use indicatrix_vault::db::sqlite::Database;
 use slint::{ComponentHandle, Model, Weak};
 use std::{
     cell::RefCell,
+    collections::BTreeSet,
     rc::Rc,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
 };
@@ -31,6 +32,7 @@ pub struct TiltBatchHandle {
 }
 
 impl TiltBatchHandle {
+    /// Asks the running batch to stop before it claims another design.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
@@ -41,17 +43,39 @@ impl TiltBatchHandle {
 pub struct TiltBatchOutcome {
     pub computed: u32,
     pub failed: u32,
+    /// Designs whose geometry came from the angle table (no usable design file).
+    pub angle_table: usize,
     pub cancelled: bool,
 }
 
+/// [`spawn_tilt_batch`]'s remote/compute-target settings, bundled into one struct
+/// purely to keep that function under clippy's argument-count lint -- the same
+/// reasoning `gui::batch::preview::wiring::PreviewBatchSettings` uses for its own
+/// spawn function.
+pub struct TiltBatchSettings {
+    /// The remote endpoint's connection (`AppSettings::remote`), if one is configured.
+    pub worker: Option<WorkerSettings>,
+    pub live_compute_target: LiveComputeTarget,
+}
+
+/// Starts a tilt-profile batch over the requested library designs on a background thread and returns a handle that can cancel it.
 pub fn spawn_tilt_batch(
     ui_weak: Weak<MainWindow>,
     db: Arc<Mutex<Database>>,
     render_ctx: Arc<Mutex<RenderContext>>,
-    remote_worker: Option<WorkerSettings>,
-    live_compute_target: LiveComputeTarget,
+    settings: TiltBatchSettings,
     entry_ids: Vec<i64>,
+    // This batch's own id, plus the shared "most recently started batch" counter --
+    // see `start_batch`'s own doc comment for why the final summary/done push below
+    // compares them before writing anything, rather than trusting this is still the
+    // only batch anyone cares about by the time it finishes.
+    batch_id: u64,
+    current_batch_id: Arc<AtomicU64>,
 ) -> TiltBatchHandle {
+    let TiltBatchSettings {
+        worker: remote_worker,
+        live_compute_target,
+    } = settings;
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_thread = Arc::clone(&cancel);
 
@@ -85,9 +109,11 @@ pub fn spawn_tilt_batch(
 
         let design_total = entry_ids.len() as u32;
         let material_candidates = preview_render::ri_candidates();
+        let angle_table_entries = Mutex::new(BTreeSet::new());
         let ctx = BatchContext {
             db: &db,
             material_candidates: &material_candidates,
+            angle_table_entries: &angle_table_entries,
         };
 
         let queue = WorkQueue::new(entry_ids);
@@ -140,28 +166,37 @@ pub fn spawn_tilt_batch(
         let outcome = TiltBatchOutcome {
             computed: tally.computed.load(Ordering::Relaxed),
             failed: tally.failed.load(Ordering::Relaxed),
+            angle_table: super::super::angle_table_count(&angle_table_entries),
             cancelled: cancel_thread.load(Ordering::Relaxed),
         };
-        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            ui.global::<BatchModel>().set_tilt_summary(
-                format!(
-                    "Computed tilt curves for {} design(s){}{}.",
-                    outcome.computed,
-                    if outcome.failed > 0 {
-                        format!(", {} failed", outcome.failed)
-                    } else {
-                        String::new()
-                    },
-                    if outcome.cancelled {
-                        " (cancelled)"
-                    } else {
-                        ""
-                    }
-                )
-                .into(),
-            );
-            ui.global::<BatchModel>().set_tilt_done(true);
-        });
+        // Dropped, not pushed, when a NEWER batch has already started -- `start_batch`
+        // refuses a second batch while `tilt_batch_running` is true, but a batch that
+        // finishes in the same tick a fresh one starts (Close then immediately
+        // re-trigger) could otherwise still land its summary/done on top of the new
+        // batch's own freshly reset dialog state. See `start_batch`'s own doc comment.
+        if current_batch_id.load(Ordering::SeqCst) == batch_id {
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.global::<BatchModel>().set_tilt_summary(
+                    format!(
+                        "Computed tilt curves for {} design(s){}{}{}.",
+                        outcome.computed,
+                        if outcome.failed > 0 {
+                            format!(", {} failed", outcome.failed)
+                        } else {
+                            String::new()
+                        },
+                        super::super::angle_table_summary(outcome.angle_table),
+                        if outcome.cancelled {
+                            " (cancelled)"
+                        } else {
+                            ""
+                        }
+                    )
+                    .into(),
+                );
+                ui.global::<BatchModel>().set_tilt_done(true);
+            });
+        }
         // `_busy_guard` drops here, clearing `export_active` and `tilt_batch_running`
         // unconditionally -- see this group's `mod.rs` doc comment.
     });
@@ -175,18 +210,40 @@ pub fn spawn_tilt_batch(
 /// pill, `AppSettings::live_compute_target`), not a separate picker of this batch's own.
 /// Mirrors `gui::batch::preview::wiring::start_batch`'s own shape, minus the
 /// preview-size/spp settings this batch has no use for.
+///
+/// Refuses (toasts) rather than starting a SECOND batch while one is already
+/// running: every caller (the confirm step, the single-design context-menu
+/// trigger, and the missing-curves scan's own confirm offer) funnels through
+/// here, but nothing previously stopped two of them firing close together --
+/// `handle_slot`'s previous `Some(handle)` would simply be overwritten, orphaning
+/// the FIRST batch's thread with no `TiltBatchHandle` left to cancel it, and
+/// resetting the dialog's progress fields out from under it mid-run.
+/// `current_batch_id` is bumped on every ACCEPTED start and threaded into
+/// [`spawn_tilt_batch`], which compares it before writing its own final
+/// summary/done -- see that function's own comment on the completion push.
 fn start_batch(
     ui: &MainWindow,
     db: &Arc<Mutex<Database>>,
     render_ctx: &Arc<Mutex<RenderContext>>,
     settings_store: &Arc<SettingsPersister>,
     handle_slot: &Rc<RefCell<Option<TiltBatchHandle>>>,
+    current_batch_id: &Arc<AtomicU64>,
     entry_ids: Vec<i64>,
 ) {
     if entry_ids.is_empty() {
         return;
     }
+    if ui.global::<BatchModel>().get_tilt_batch_running() {
+        crate::gui::show_toast(
+            ui,
+            "A tilt-curve batch is already running -- wait for it to finish or cancel \
+             it first.",
+            "info",
+        );
+        return;
+    }
     let snapshot = settings_store.snapshot();
+    ui.global::<BatchModel>().set_tilt_single(false);
     ui.global::<BatchModel>().set_tilt_visible(true);
     ui.global::<BatchModel>().set_tilt_confirming(false);
     ui.global::<BatchModel>().set_tilt_done(false);
@@ -205,13 +262,18 @@ fn start_batch(
     ui.global::<BatchModel>()
         .set_tilt_summary(String::new().into());
 
+    let batch_id = current_batch_id.fetch_add(1, Ordering::SeqCst) + 1;
     let handle = spawn_tilt_batch(
         ui.as_weak(),
         Arc::clone(db),
         Arc::clone(render_ctx),
-        snapshot.settings.remote_worker(),
-        snapshot.settings.live_compute_target,
+        TiltBatchSettings {
+            worker: snapshot.settings.remote_worker(),
+            live_compute_target: snapshot.settings.live_compute_target,
+        },
         entry_ids,
+        batch_id,
+        Arc::clone(current_batch_id),
     );
     *handle_slot.borrow_mut() = Some(handle);
 }
@@ -239,6 +301,8 @@ pub fn offer_batch_confirmation(ui: &MainWindow, ids: &[i64]) {
         .set_tilt_offer_ids(slint::ModelRc::new(slint::VecModel::from(ids_i32)));
     ui.global::<BatchModel>()
         .set_tilt_offer_count(ids.len() as i32);
+    ui.global::<BatchModel>().set_tilt_offer_regenerate(false);
+    ui.global::<BatchModel>().set_tilt_single(false);
     ui.global::<BatchModel>().set_tilt_confirming(true);
     ui.global::<BatchModel>().set_tilt_visible(true);
 }
@@ -246,6 +310,7 @@ pub fn offer_batch_confirmation(ui: &MainWindow, ids: &[i64]) {
 /// Wires up every tilt-curve-batch-related callback on `ui`:
 ///
 /// - `tilt_batch_cancel`/`tilt_batch_close` -- the progress dialog's Cancel/Close.
+///   Close also leaves single-design mode (`tilt_single`).
 /// - `tilt_batch_dismiss_offer`/`tilt_batch_generate_confirmed` -- the confirm step's
 ///   two buttons.
 /// - `compute_tilt_curves_for_entry` -- the diagram-list context menu's single-design
@@ -271,6 +336,9 @@ pub fn setup_tilt_batch_callbacks(
     settings_store: &Arc<SettingsPersister>,
 ) {
     let handle: Rc<RefCell<Option<TiltBatchHandle>>> = Rc::new(RefCell::new(None));
+    // Shared by every `start_batch` call site below -- see that function's own doc
+    // comment for why the completion push in `spawn_tilt_batch` compares against it.
+    let current_batch_id: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
 
     let handle_cancel = Rc::clone(&handle);
     ui.global::<BatchModel>().on_tilt_cancel(move || {
@@ -284,6 +352,7 @@ pub fn setup_tilt_batch_callbacks(
         if let Some(ui) = ui_weak_close.upgrade() {
             ui.global::<BatchModel>().set_tilt_visible(false);
             ui.global::<BatchModel>().set_tilt_done(false);
+            ui.global::<BatchModel>().set_tilt_single(false);
         }
     });
 
@@ -299,6 +368,7 @@ pub fn setup_tilt_batch_callbacks(
     let render_ctx_confirm = Arc::clone(render_ctx);
     let settings_store_confirm = Arc::clone(settings_store);
     let handle_confirm = Rc::clone(&handle);
+    let current_batch_id_confirm = Arc::clone(&current_batch_id);
     let ui_weak_confirm = ui.as_weak();
     ui.global::<BatchModel>()
         .on_tilt_generate_confirmed(move || {
@@ -315,6 +385,7 @@ pub fn setup_tilt_batch_callbacks(
                     &render_ctx_confirm,
                     &settings_store_confirm,
                     &handle_confirm,
+                    &current_batch_id_confirm,
                     ids,
                 );
             }
@@ -324,6 +395,7 @@ pub fn setup_tilt_batch_callbacks(
     let render_ctx_entry = Arc::clone(render_ctx);
     let settings_store_entry = Arc::clone(settings_store);
     let handle_entry = Rc::clone(&handle);
+    let current_batch_id_entry = Arc::clone(&current_batch_id);
     let ui_weak_entry = ui.as_weak();
     ui.global::<LibraryModel>()
         .on_compute_tilt_curves_for_entry(move |id: i32| {
@@ -334,6 +406,7 @@ pub fn setup_tilt_batch_callbacks(
                     &render_ctx_entry,
                     &settings_store_entry,
                     &handle_entry,
+                    &current_batch_id_entry,
                     vec![i64::from(id)],
                 );
             }

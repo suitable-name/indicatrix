@@ -1,0 +1,58 @@
+import { Theme } from "theme.slint";
+import { GuideModel } from "../models/guide_model.slint";
+
+// The amber "Stale: design changed" chip for an analysis panel whose last result was
+// computed for an older design than the one on screen (the desktop's `stale_badge.slint`;
+// the Optimize tab uses it). It badges the EXISTING result rather than clearing it: a
+// result from two edits ago is still useful context, it just needs an honest "this may not
+// describe the design you are holding" marker beside it.
+export component StaleBadge inherits Rectangle {
+    // Hides the "Recompute" action for a panel with no single re-run entry point.
+    in property <bool> show-recompute: true;
+    // False while the guided walkthrough locks whatever "Recompute" would run (the caller
+    // binds the matching `GuideModel.allows-*()`): the action dims, ignores clicks and its
+    // tooltip explains the lock. The "Stale" text itself stays at full strength.
+    in property <bool> enabled: true;
+    callback recompute();
+
+    width: layout.preferred-width;
+    height: layout.preferred-height;
+    border-radius: Theme.radius-sm;
+    background: #f59e0b26;
+    border-width: 1px;
+    border-color: Theme.accent-amber;
+
+    layout := HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        padding-top: 2px;
+        padding-bottom: 2px;
+        spacing: 6px;
+
+        Text {
+            text: "Stale: design changed";
+            font-size: 10px;
+            font-weight: 700;
+            color: Theme.accent-amber;
+            vertical-alignment: center;
+        }
+
+        if root.show-recompute: Rectangle {
+            width: recompute-label.preferred-width;
+            opacity: root.enabled ? 1.0 : 0.4;
+            recompute-touch := TouchArea {
+                enabled: root.enabled;
+                mouse-cursor: root.enabled ? pointer : default;
+                clicked => { root.recompute(); }
+            }
+            if !root.enabled: Tooltip { text: @markdown("\{GuideModel.locked-hint}"); }
+            recompute-label := Text {
+                text: "Recompute";
+                font-size: 10px;
+                font-weight: 700;
+                color: recompute-touch.has-hover ? #7dd3fc : Theme.accent-cyan;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

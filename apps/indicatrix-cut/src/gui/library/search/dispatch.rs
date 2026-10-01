@@ -32,6 +32,11 @@ use tracing::error;
 /// magnitude as `gui::editor::auto_solve::AUTO_SOLVE_DEBOUNCE`.
 const SEARCH_DEBOUNCE_DELAY: Duration = Duration::from_millis(120);
 
+/// How long the search box waits after the last keystroke before the query runs (see
+/// [`debounce_text_refresh`]) -- a burst of typing runs the query once, for the text
+/// the cutter stopped on, instead of once per character.
+const TEXT_FILTER_DEBOUNCE: Duration = Duration::from_millis(120);
+
 thread_local! {
     /// Bumped by every [`refresh_diagram_list`] call, sync or async alike -- an async
     /// dispatch captures its own value at dispatch time (BEFORE the debounce delay,
@@ -47,6 +52,31 @@ thread_local! {
     /// call -- replacing it cancels whatever the previous one had pending, same as
     /// `gui::editor::auto_solve::Runtime::debounce`.
     static SEARCH_DEBOUNCE: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
+    /// The timer [`debounce_text_refresh`] restarts on every keystroke. Any refresh that
+    /// runs sooner takes it, since that refresh already reads the latest text.
+    static TEXT_DEBOUNCE: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
+}
+
+/// Runs `refresh` once, [`TEXT_FILTER_DEBOUNCE`] after the LAST call to this function;
+/// a call made before that replaces the pending `refresh` with its own. The search box
+/// goes through this so typing does not run a query per character.
+///
+/// UI thread only (it starts a `slint::Timer`).
+pub(super) fn debounce_text_refresh(refresh: impl FnOnce() + 'static) {
+    // `slint::Timer` wants an `FnMut`; the `Option` lets the one-shot `refresh` move out.
+    let mut refresh = Some(refresh);
+    let timer = slint::Timer::default();
+    timer.start(
+        slint::TimerMode::SingleShot,
+        TEXT_FILTER_DEBOUNCE,
+        move || {
+            if let Some(refresh) = refresh.take() {
+                refresh();
+            }
+        },
+    );
+    // Replacing the previous timer drops it, which cancels whatever it had pending.
+    TEXT_DEBOUNCE.with(|cell| *cell.borrow_mut() = Some(timer));
 }
 
 /// `pub(in crate::gui)`, not private: [`crate::gui::library::remote`] (both
@@ -214,6 +244,12 @@ pub fn refresh_diagram_list(
     // the real catalogue, for a result nobody will ever see -- wasted work every time
     // a performance filter is added and then cleared inside one debounce window.
     SEARCH_DEBOUNCE.with(|cell| {
+        cell.borrow_mut().take();
+    });
+    // A keystroke still waiting out its debounce is superseded: this call already runs
+    // with the latest text. (When the debounce itself fires into here, this drops the
+    // timer that is running -- Slint allows a timer callback to drop its own timer.)
+    TEXT_DEBOUNCE.with(|cell| {
         cell.borrow_mut().take();
     });
 

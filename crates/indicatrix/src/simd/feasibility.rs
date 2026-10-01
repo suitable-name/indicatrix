@@ -33,6 +33,7 @@ pub struct PlanesSoA64 {
 }
 
 impl PlanesSoA64 {
+    /// Creates an empty set with room for `cap` planes.
     #[must_use]
     pub fn with_capacity(cap: usize) -> Self {
         Self {
@@ -44,6 +45,7 @@ impl PlanesSoA64 {
         }
     }
 
+    /// Appends a plane with normal `n` and offset `m`, tagged with its `owner` id.
     pub fn push(&mut self, n: DVec3, m: f64, owner: u32) {
         self.nx.push(n.x);
         self.ny.push(n.y);
@@ -52,11 +54,13 @@ impl PlanesSoA64 {
         self.owner.push(owner);
     }
 
+    /// Number of planes stored.
     #[must_use]
     pub const fn len(&self) -> usize {
         self.nx.len()
     }
 
+    /// Whether no planes are stored.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.nx.is_empty()

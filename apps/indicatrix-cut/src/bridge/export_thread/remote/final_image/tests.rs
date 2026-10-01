@@ -3,7 +3,12 @@
 use super::*;
 use crate::bridge::export_thread::tonemap_png::{save_png, tonemap_accumulation};
 use glam::Vec3;
-use indicatrix_net::messages::{DisplayEncoding, FinalImageHeader, StreamEvent};
+use indicatrix_net::{
+    messages::{
+        DisplayEncoding, Done, FinalImageHeader, PayloadEncoding, PreviewHeader, Stats, StreamEvent,
+    },
+    radiance::{self, PayloadEncoder},
+};
 
 // ---- plan_export_transfer --------------------------------------------------------
 
@@ -90,7 +95,10 @@ fn a_failure_falls_back_under_both_but_fails_under_remote_only() {
 fn a_picture_is_used_and_a_cancel_stays_a_cancel() {
     assert_eq!(
         final_picture_follow_up(
-            FinalPictureOutcome::Completed(vec![1, 2, 3, 4]),
+            FinalPictureOutcome::Completed {
+                rgba: vec![1, 2, 3, 4],
+                reclaimed_samples: 0,
+            },
             ComputeTarget::Both
         ),
         FinalPictureFollowUp::Use(vec![1, 2, 3, 4])
@@ -183,6 +191,163 @@ fn a_decoded_final_picture_writes_the_same_png_as_a_local_export() {
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- on_update: RemoteUpdate::Preview -> a progress preview ----------------------
+
+/// A `RemoteUpdate::Preview` -- the coordinator's forced periodic look at
+/// a `FinalImageRequest` job (`coordinator::job::serve_final_image`) -- must reach
+/// `on_progress` as a tone-mapped thumbnail instead of being silently ignored, which
+/// left the export dialog showing no live preview at all for this transfer.
+#[test]
+fn a_preview_update_becomes_a_progress_preview() {
+    let (width, height) = (4_u32, 3_u32);
+    let accumulator = Mutex::new(Accumulator::new(width, height));
+    accumulator.lock().unwrap().begin_request(1);
+
+    let radiance_buf = accumulation(width, height);
+    let mut encoder = PayloadEncoder::new(PayloadEncoding::Raw);
+    let encoded = encoder.encode(radiance::as_bytes(&radiance_buf));
+    let header = PreviewHeader::for_encoded(1, width, height, 7, &encoded);
+    accumulator
+        .lock()
+        .unwrap()
+        .apply(&StreamEvent::Preview(header), Some(encoded.bytes))
+        .expect("a well-formed PREVIEW applies");
+
+    let mut seen: Option<(u32, u32, Option<SharedPixelBuffer<Rgba8Pixel>>)> = None;
+    let outcome = on_update(
+        RemoteUpdate::Preview { request_id: 1 },
+        &accumulator,
+        width,
+        height,
+        0,
+        &mut |samples_done, local_done, preview| seen = Some((samples_done, local_done, preview)),
+    );
+
+    assert!(outcome.is_none(), "a PREVIEW never ends the request");
+    let (samples_done, local_done, preview) =
+        seen.expect("on_progress must fire for a PREVIEW update");
+    assert_eq!(
+        samples_done, 7,
+        "must report the snapshot's own samples_done"
+    );
+    assert_eq!(
+        local_done, 0,
+        "must pass the caller's own local_done through"
+    );
+    let preview = preview.expect("a PREVIEW update must carry a tone-mapped image");
+    assert_eq!(preview.width(), width);
+    assert_eq!(preview.height(), height);
+}
+
+// ---- v16: viewer contribution -- share sizing, the rate book, and reclaim reporting --
+
+#[test]
+fn viewer_share_is_proportional_to_rates_and_capped_at_half() {
+    // A slower local machine gets a proportionally smaller share.
+    assert_eq!(viewer_share(100, Some(100.0), Some(300.0)), 25);
+    // A faster local machine would be proportionally larger, but never past the half
+    // the server accepts (`FinalImageRequest::viewer_share_valid`).
+    assert_eq!(viewer_share(100, Some(300.0), Some(100.0)), 50);
+    assert_eq!(viewer_share(100, Some(1_000.0), Some(1.0)), 50);
+}
+
+#[test]
+fn viewer_share_falls_back_to_ten_percent_without_rates() {
+    assert_eq!(viewer_share(100, None, None), 10);
+    assert_eq!(viewer_share(100, Some(5.0), None), 10);
+    assert_eq!(viewer_share(100, None, Some(5.0)), 10);
+    // Non-positive or non-finite rates are exactly as unusable as a missing one.
+    assert_eq!(viewer_share(100, Some(0.0), Some(5.0)), 10);
+    assert_eq!(viewer_share(100, Some(-1.0), Some(5.0)), 10);
+    assert_eq!(viewer_share(100, Some(f64::NAN), Some(5.0)), 10);
+}
+
+#[test]
+fn viewer_share_is_zero_for_a_one_sample_budget() {
+    // `half = samples / 2 == 0` caps every share to zero, however lopsided the rates.
+    assert_eq!(viewer_share(1, Some(1_000.0), Some(1.0)), 0);
+    assert_eq!(viewer_share(0, None, None), 0);
+}
+
+#[test]
+fn split_rates_are_pixel_normalised_and_forgotten_with_refusals() {
+    let worker = WorkerSettings {
+        address: "split-rate-test.invalid:7878".to_string(),
+        ..WorkerSettings::default()
+    };
+    assert_eq!(
+        split_rates(&worker, 100),
+        (None, None),
+        "nothing measured yet"
+    );
+
+    record_split_rates(&worker, 100, Some(50.0), Some(200.0));
+    let (local, remote) = split_rates(&worker, 100);
+    assert!((local.unwrap() - 50.0).abs() < 1e-9);
+    assert!((remote.unwrap() - 200.0).abs() < 1e-9);
+
+    // The SAME underlying device throughput reads back scaled at a different
+    // resolution -- the whole point of pixel-normalising before storing.
+    let (local_at_200, remote_at_200) = split_rates(&worker, 200);
+    assert!((local_at_200.unwrap() - 25.0).abs() < 1e-9);
+    assert!((remote_at_200.unwrap() - 100.0).abs() < 1e-9);
+
+    forget_final_picture_refusals();
+    assert_eq!(
+        split_rates(&worker, 100),
+        (None, None),
+        "forgetting refusals also forgets the measured split"
+    );
+}
+
+/// `on_update`'s `DONE` arm must unpack `Accumulator::done_stats().reclaimed_samples`
+/// into `FinalPictureOutcome::Completed`, not just decode the picture -- this is the
+/// data `worker::final_picture::final_picture` turns into a "the coordinator rendered N
+/// of your samples itself" note.
+#[test]
+fn a_reclaim_in_done_stats_becomes_a_note() {
+    let (width, height) = (2_u32, 2_u32);
+    let rgba = vec![5_u8; (width * height * 4) as usize];
+    let png =
+        indicatrix_net::display::encode_rgba8(DisplayEncoding::Png, width, height, &rgba).unwrap();
+    let acc = Mutex::new(accumulator_with_final_image(width, height, &png));
+    acc.lock()
+        .unwrap()
+        .apply(
+            &StreamEvent::Done(Done {
+                request_id: 1,
+                cancelled: false,
+                stats: Stats {
+                    samples_done: 16,
+                    requested_cadence_ms: 0,
+                    effective_cadence_ms: 0,
+                    reclaimed_samples: 3,
+                },
+            }),
+            None,
+        )
+        .expect("a well-formed DONE applies");
+
+    let outcome = on_update(
+        RemoteUpdate::Done {
+            request_id: 1,
+            cancelled: false,
+        },
+        &acc,
+        width,
+        height,
+        0,
+        &mut |_, _, _| {},
+    );
+    let Some(FinalPictureOutcome::Completed {
+        reclaimed_samples, ..
+    }) = outcome
+    else {
+        panic!("expected a completed picture carrying reclaimed_samples, got {outcome:?}");
+    };
+    assert_eq!(reclaimed_samples, 3);
 }
 
 #[test]

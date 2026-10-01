@@ -8,7 +8,7 @@
 //!
 //! This is a fresh translation of `Camera::new`/`Camera::generate_ray` as they exist in
 //! `raytracer.rs` today -- see that module's own doc comment on why any port is a fresh
-//! translation, never a repair of the quarantined old shader.
+//! translation, never a repair of the retired first-draft shader.
 
 use crate::{
     optics::raytracer::Camera,
@@ -27,15 +27,25 @@ const SHADER_SRC: &str = include_str!("../shaders/camera_ray.wgsl");
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraRayCase {
+    /// Camera yaw in radians.
     pub yaw: f32,
+    /// Camera pitch in radians.
     pub pitch: f32,
+    /// Camera distance from the target.
     pub distance: f32,
+    /// Vertical field of view in degrees.
     pub fov_deg: f32,
+    /// Screen x.
     pub screen_x: f32,
+    /// Screen y.
     pub screen_y: f32,
+    /// Width.
     pub width: f32,
+    /// Height.
     pub height: f32,
+    /// Jitter x.
     pub jitter_x: f32,
+    /// Jitter y.
     pub jitter_y: f32,
     _pad0: f32,
     _pad1: f32,
@@ -259,30 +269,44 @@ fn adversarial_cases() -> Vec<CameraRayCase> {
 /// One case's worst-component ULP disagreement, kept only when it's the running argmax.
 #[derive(Debug, Clone, Copy)]
 pub struct CameraRayUlpArgmax {
+    /// Index of the case in the generated list.
     pub case_index: usize,
+    /// Input case that produced this result.
     pub case: CameraRayCase,
+    /// Name of the compared output component.
     pub component: &'static str,
+    /// Value produced by the CPU reference.
     pub cpu: f32,
+    /// Value produced by the GPU shader.
     pub gpu: f32,
+    /// Distance between the CPU and GPU values in units in the last place.
     pub ulp: u32,
 }
 
+/// Outcome of the camera ray check check.
 #[derive(Debug, Clone, Copy)]
 pub struct CameraRayCheckResult {
+    /// Total number of cases run.
     pub total_cases: usize,
+    /// Maximum tolerated ULP distance.
     pub budget: u32,
+    /// Absolute magnitude below which differences are exempt from the ULP budget.
     pub abs_floor: f32,
     /// Max ULP among GENUINE disagreements (excluding absolute-floor-exempted ones --
     /// see [`CAMERA_RAY_ABS_FLOOR`]'s doc comment).
     pub max_ulp: u32,
     /// Max ULP across EVERY comparison, exempted or not -- purely informational.
     pub max_raw_ulp: u32,
+    /// Comparison with the largest ULP distance.
     pub argmax: Option<CameraRayUlpArgmax>,
+    /// Number of comparisons that exceeded the budget.
     pub over_budget_count: usize,
+    /// Number of comparisons exempted by the absolute floor.
     pub exempted_count: usize,
 }
 
 impl CameraRayCheckResult {
+    /// Whether every compared value stayed within its budget.
     #[must_use]
     pub const fn passed(&self) -> bool {
         self.over_budget_count == 0

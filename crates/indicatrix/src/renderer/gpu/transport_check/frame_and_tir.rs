@@ -22,6 +22,7 @@ use super::{
 // frame_rotation
 // ---------------------------------------------------------------------------------
 
+/// One input case for the frame rotation check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct FrameRotationCase {
@@ -91,6 +92,7 @@ fn cpu_frame_rotation(c: &FrameRotationCase) -> [f32; 4] {
     s.apply_matrix(&m).to_vec4().to_array()
 }
 
+/// Runs the frame rotation check against the CPU reference.
 #[must_use]
 pub fn run_frame_rotation(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -110,6 +112,7 @@ pub fn run_frame_rotation(
 // tir_retardation
 // ---------------------------------------------------------------------------------
 
+/// One input case for the tir retardation check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct TirRetardationCase {
@@ -153,6 +156,7 @@ fn cpu_tir_retardation(c: &TirRetardationCase) -> [f32; 4] {
     s.apply_matrix(&m).to_vec4().to_array()
 }
 
+/// Runs the tir retardation check against the CPU reference.
 #[must_use]
 pub fn run_tir_retardation(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -172,6 +176,7 @@ pub fn run_tir_retardation(
 // signed_frame_rotation_psi
 // ---------------------------------------------------------------------------------
 
+/// One input case for the signed psi check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SignedPsiCase {
@@ -241,6 +246,7 @@ fn cpu_signed_psi(c: &SignedPsiCase) -> f32 {
     )
 }
 
+/// Runs the signed psi check against the CPU reference.
 #[must_use]
 pub fn run_signed_psi(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<SignedPsiCase> {
     let cases = build_signed_psi_cases();
@@ -294,6 +300,7 @@ pub fn run_signed_psi(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
 // tir_phase_delta
 // ---------------------------------------------------------------------------------
 
+/// One input case for the tir phase delta check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct TirPhaseDeltaCase {
@@ -359,6 +366,7 @@ fn cpu_tir_phase_delta(c: &TirPhaseDeltaCase) -> f32 {
     tir_phase_delta(c.n1k, c.cos_i, c.sin_i)
 }
 
+/// Runs the tir phase delta check against the CPU reference.
 #[must_use]
 pub fn run_tir_phase_delta(
     ctx: &crate::renderer::gpu::GpuContext,

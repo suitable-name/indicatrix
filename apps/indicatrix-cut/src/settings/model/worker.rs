@@ -136,10 +136,12 @@ pub struct WorkerSettings {
     /// A plain `String`, not `PathBuf` -- matches every other user-facing text field
     /// in this file and keeps this struct trivially TOML-serializable.
     pub cert_dir: String,
+    /// How images are transferred from the worker.
     pub transfer_mode: TransferMode,
     /// This worker's requested cadence, in milliseconds, before clamping to its own
     /// advertised floor -- see [`WorkerSettings::effective_cadence_ms`].
     pub cadence_ms: u32,
+    /// Scale factor applied to preview renders.
     pub preview_scale: PreviewScale,
 }
 
@@ -158,16 +160,19 @@ impl Default for WorkerSettings {
 }
 
 impl WorkerSettings {
+    /// Path of the CA certificate file.
     #[must_use]
     pub fn ca_path(&self) -> PathBuf {
         Path::new(&self.cert_dir).join("ca.pem")
     }
 
+    /// Path of the client certificate file.
     #[must_use]
     pub fn client_cert_path(&self) -> PathBuf {
         Path::new(&self.cert_dir).join("client.pem")
     }
 
+    /// Path of the client private key file.
     #[must_use]
     pub fn client_key_path(&self) -> PathBuf {
         Path::new(&self.cert_dir).join("client.key")

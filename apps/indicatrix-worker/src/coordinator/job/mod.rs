@@ -35,8 +35,14 @@
 //!
 //! # Limits
 //!
-//! Jobs charge [`limits::job_bytes`] against the coordinator's memory budget
-//! (`--max-job-memory-mib`, default 2 GiB) and are refused past it. Throughput jobs
+//! Jobs charge [`limits::job_estimate_bytes`] against the coordinator's memory budget
+//! (`--max-job-memory-mib`, default 2 GiB) and are refused past it: the job's own
+//! frame buffers ([`limits::FRAME_BUFFERS_PER_JOB`]), the viewer contribution's and the
+//! HDR map's bytes when it has them, and [`limits::FRAME_BUFFERS_PER_LANE`] frame
+//! buffers for every lane. The lane part is charged once the lanes are checked out; a
+//! job whose lanes do not all fit runs on as many as do and is refused only when not
+//! even one fits (a maximum-size 8K job needs about 2.6 GiB with one lane, so it needs
+//! a raised `--max-job-memory-mib`). Throughput jobs
 //! (`Batch` + `FinalOnly`, and every `FinalImageRequest`) wait in their viewer's FIFO:
 //! one active job per viewer certificate. Interactive requests are exempt (they are
 //! superseded by the next one within a second, and take no workers by default); so are
@@ -49,17 +55,37 @@
 //! the viewer). The job then takes only joined workers that advertise `hdr`
 //! ([`super::LaneNeed`]), and each of them that lacks the map asks the coordinator,
 //! which answers from the held copy (see `super::lanes`).
+//!
+//! # Load balancing across lanes of very different speed
+//!
+//! [`RateBook`] is now coordinator-PROCESS-wide ([`Coordinator::rates`]), not rebuilt
+//! per viewer connection: a GUI export's successive one-shot connections (a fresh
+//! `ViewerSession` per chunk, see `crate::serve::connection::worker`) share one book, so
+//! a joined worker's calibrated rate survives across them instead of restarting from an
+//! 8-sample calibration probe on every single chunk. Keyed by [`WorkerIdentity`] (a
+//! worker's certificate label when it has one, else its ephemeral registration id), so
+//! the rate also survives that worker's own reconnects.
+//!
+//! `indicatrix_dispatch::pool::epoch::Epoch::want` sizes each lane's next chunk with
+//! `indicatrix_dispatch::ChunkPolicy::tail_aware_samples`: the smaller of the plain
+//! target-duration chunk and that lane's proportional share of the run's remaining
+//! samples (by rate, summed over every lane of the job). Ordinary chunk sizing is
+//! unaffected while samples are plentiful; only a run's genuine tail shrinks, so a
+//! slow lane (the coordinator's own GPU, say) can no longer claim an oversized slice of
+//! what is left and leave a fast joined worker (an A100 dialed in over `join`) idling in
+//! `Epoch::claim` for the whole of that one chunk.
 
 mod limits;
 mod plan;
 mod producer;
+mod served;
 
 pub use limits::job_bytes;
 use limits::{MemoryBudget, ViewerQueues};
 pub use plan::InteractivePin;
-use plan::{Ask, Route};
+use plan::{Ask, JobPlan, Route, WorkerPick};
 
-use super::{LaneTimeouts, Registry};
+use super::{LaneTimeouts, Registry, WorkerInfo};
 use crate::{
     assets::{AssetCache, HeldAsset},
     cli::ComputeMode,
@@ -69,14 +95,14 @@ use crate::{
 use indicatrix::renderer::gpu_backend::GpuBackend;
 use indicatrix_dispatch::{ChunkPolicy, PoolConfig, SampleRange};
 use indicatrix_net::messages::{
-    ErrorMsg, FinalImageRequest, NetError, PayloadEncoding, RenderCapability, RenderRequest,
-    RequestIntent, StreamConfig, StreamEvent, TransferMode, error_codes,
+    ErrorMsg, FinalImageRequest, NetError, PayloadEncoding, PreviewConfig, RenderCapability,
+    RenderRequest, RequestIntent, StreamConfig, StreamEvent, TransferMode, error_codes,
 };
 use std::{
-    collections::HashMap,
+    collections::BTreeMap,
     io::{Read, Write},
     sync::{Arc, Mutex, PoisonError},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// The coordinator's own render lane (`serve --render`).
@@ -101,6 +127,13 @@ pub struct JobConfig {
     pub lane_wait: Duration,
     /// Joined lanes' liveness deadlines.
     pub lane: LaneTimeouts,
+    /// v16: how long a `FinalImageRequest`'s reserved viewer range waits for its
+    /// `CONTRIBUTION` once the server's own lanes finish, before the coordinator
+    /// renders that range itself (see `stream_emit::ContributionSlot::await_until`).
+    /// The wait only starts once the server side is done, and is extended for as long
+    /// as an upload is actually in flight, so this only needs to absorb the viewer's
+    /// own rate-estimate error, not the whole render.
+    pub contribution_wait: Duration,
 }
 
 impl Default for JobConfig {
@@ -121,42 +154,86 @@ impl Default for JobConfig {
             interactive: PoolConfig::INTERACTIVE,
             lane_wait: Duration::from_secs(30),
             lane: LaneTimeouts::default(),
+            contribution_wait: stream_emit::DEFAULT_CONTRIBUTION_WAIT,
         }
     }
 }
 
 /// Which lane a rate belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LaneKey {
     /// The own lane.
     Own,
-    /// A joined worker connection, by `worker_id`.
-    Worker(u32),
+    /// A joined worker, by [`WorkerIdentity`].
+    Worker(WorkerIdentity),
 }
 
-/// Measured lane rates (samples per second), kept per viewer connection across its
-/// requests so a live view's chunk sizing converges.
+impl LaneKey {
+    /// The lane key for a joined worker: its certificate label when it has one --
+    /// [`WorkerInfo::label`]'s own doc comment calls that "the one identity that
+    /// survives reconnects", exactly what a rate carried coordinator-wide (see
+    /// [`RateBook`]) needs -- else its ephemeral per-registration id (no TLS label),
+    /// which still lets one connection's own rate converge but starts over on reconnect.
+    #[must_use]
+    pub fn for_worker(info: &WorkerInfo) -> Self {
+        Self::Worker(
+            info.label
+                .clone()
+                .map_or_else(|| WorkerIdentity::Id(info.worker_id), WorkerIdentity::Label),
+        )
+    }
+}
+
+/// A joined worker's identity for [`LaneKey::Worker`]. See [`LaneKey::for_worker`].
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum WorkerIdentity {
+    /// The worker certificate's label: stable across `join --slots K` and reconnects.
+    Label(String),
+    /// The coordinator-assigned per-registration id: the fallback without a label.
+    Id(u32),
+}
+
+/// Measured lane rates, shared coordinator-wide across every viewer connection.
+///
+/// Kept in [`Coordinator::rates`] so a live view's chunk sizing converges and a GUI
+/// export's successive one-shot connections (one per ~22 s chunk) reuse calibration
+/// instead of re-probing from scratch on every single one.
+///
+/// A `BTreeMap`, not a hash map, purely to keep iteration/debug output deterministic;
+/// lookups are by exact key equality either way.
+///
+/// Stored in PIXEL-samples per second (`rate * pixels`), not plain samples per second
+/// -- a lane's throughput is roughly proportional to the image's pixel count (more
+/// pixels, more rays per sample), so a rate measured on one request's resolution (a
+/// live-view preview, say) read back as-is for a very differently sized later request
+/// (a full batch export) would size that request's chunks from a wildly wrong figure.
+/// Normalising by pixel count at the edges ([`Self::get`]/[`Self::set`]) keeps
+/// the estimate comparable across resolutions.
 #[derive(Debug, Default)]
 pub struct RateBook {
-    rates: HashMap<LaneKey, f64>,
+    rates: BTreeMap<LaneKey, f64>,
 }
 
 impl RateBook {
-    /// The measured rate of `key`, if any.
+    /// The measured rate of `key` for an image of `pixels` pixels, if any: the stored
+    /// pixel-samples/sec figure divided back down to plain samples/sec at this size.
     #[must_use]
-    pub fn get(&self, key: LaneKey) -> Option<f64> {
-        self.rates.get(&key).copied()
+    pub fn get(&self, key: &LaneKey, pixels: u32) -> Option<f64> {
+        self.rates
+            .get(key)
+            .map(|&pixel_rate| pixel_rate / f64::from(pixels.max(1)))
     }
 
-    /// The measured rate of joined worker `worker_id`, if any.
+    /// The measured rate of joined worker `info` for an image of `pixels` pixels, if
+    /// any.
     #[must_use]
-    pub fn worker(&self, worker_id: u32) -> Option<f64> {
-        self.get(LaneKey::Worker(worker_id))
+    pub fn worker(&self, info: &WorkerInfo, pixels: u32) -> Option<f64> {
+        self.get(&LaneKey::for_worker(info), pixels)
     }
 
-    /// Records `rate` for `key`.
-    pub fn set(&mut self, key: LaneKey, rate: f64) {
-        self.rates.insert(key, rate);
+    /// Records `rate` samples/sec measured on an image of `pixels` pixels for `key`.
+    pub fn set(&mut self, key: LaneKey, pixels: u32, rate: f64) {
+        self.rates.insert(key, rate * f64::from(pixels.max(1)));
     }
 }
 
@@ -172,6 +249,9 @@ pub struct Coordinator {
     config: Mutex<JobConfig>,
     /// The HDR asset cache every job's map is held through.
     assets: Option<Arc<AssetCache>>,
+    /// Every joined worker's (and the own lane's) measured rate, shared by every
+    /// viewer connection this process serves -- see [`Self::rates`].
+    rates: Arc<Mutex<RateBook>>,
 }
 
 impl Coordinator {
@@ -194,6 +274,7 @@ impl Coordinator {
             queues: ViewerQueues::default(),
             config: Mutex::new(JobConfig::default()),
             assets: None,
+            rates: Arc::new(Mutex::new(RateBook::default())),
         }
     }
 
@@ -255,6 +336,17 @@ impl Coordinator {
     pub const fn budget(&self) -> &MemoryBudget {
         &self.budget
     }
+
+    /// The process-wide lane rate book, shared by every viewer connection this
+    /// coordinator serves -- so a live view's chunk sizing converges across requests,
+    /// and a GUI export's successive one-shot connections (a fresh `ViewerSession` per
+    /// ~22 s chunk) reuse calibration instead of re-probing every single one from an
+    /// 8-sample calibration chunk. Callers clone the `Arc` into their own
+    /// `ViewerSession`/`Job`; nothing here is persisted to disk.
+    #[must_use]
+    pub const fn rates(&self) -> &Arc<Mutex<RateBook>> {
+        &self.rates
+    }
 }
 
 /// One viewer connection's view of the coordinator.
@@ -270,7 +362,10 @@ pub struct ViewerSession {
     pub advertised: Option<RenderCapability>,
     /// The own lane's capability, if any (for re-advertising).
     pub own_capability: Option<RenderCapability>,
-    /// Lane rates carried across this connection's requests.
+    /// The coordinator's process-wide lane rate book (see [`Coordinator::rates`]),
+    /// cloned in for this connection -- NOT a fresh book per connection, so a live
+    /// view's chunk sizing converges across requests and a GUI export's successive
+    /// one-shot connections reuse calibration instead of restarting it every chunk.
     pub rates: Arc<Mutex<RateBook>>,
 }
 
@@ -289,6 +384,10 @@ fn report<S: Write>(stream: &mut S, outcome: StreamOutcome) -> Result<(), NetErr
             ErrorMsg {
                 code: error_codes::TRACE_PANIC,
                 message: "internal error while tracing this request".to_string(),
+                // `report`'s own callers don't currently thread a request_id through to
+                // here; `StreamOutcome::Failed`
+                // below already carries whatever its own producer stamped.
+                request_id: None,
             },
         ),
         StreamOutcome::Failed(error) => write_error(stream, error),
@@ -319,6 +418,7 @@ pub fn serve_render<S: Read + Write + TimeoutRead + TimeoutWrite>(
             ErrorMsg {
                 code: error_codes::VALIDATION_FAILED,
                 message,
+                request_id: Some(request.request_id),
             },
         )?;
         return Ok(None);
@@ -329,7 +429,15 @@ pub fn serve_render<S: Read + Write + TimeoutRead + TimeoutWrite>(
         pixels: request.scene.width * request.scene.height,
         hdr: request.scene.hdr().is_some(),
     };
-    stream_request(stream, &request, Output::Radiance, ask, session, asset)
+    stream_request(
+        stream,
+        &request,
+        Output::Radiance,
+        ask,
+        session,
+        asset,
+        None,
+    )
 }
 
 /// Serves one `FinalImageRequest`.
@@ -356,18 +464,46 @@ pub fn serve_final_image<S: Read + Write + TimeoutRead + TimeoutWrite>(
             request.width, request.height, request.scene.width, request.scene.height
         ))
     };
+    let checked = checked.and_then(|()| {
+        if request.viewer_share_valid() {
+            Ok(())
+        } else {
+            Err(format!(
+                "FinalImageRequest viewer_samples ({}) must be at most half of samples ({})",
+                request.viewer_samples, request.samples
+            ))
+        }
+    });
     if let Err(message) = checked {
         write_error(
             stream,
             ErrorMsg {
                 code: error_codes::VALIDATION_FAILED,
                 message,
+                request_id: Some(request.request_id),
             },
         )?;
         return Ok(None);
     }
+    // v16: the viewer's own reserved tail, if any -- the server only plans
+    // `request.server_samples()` of the range, and the job's producer thread waits for
+    // this slot to fill once its own lanes finish (see `stream_request`/`producer::run`).
+    let slot = request.reserved_range().map(|(first, samples)| {
+        Arc::new(stream_emit::ContributionSlot::new(
+            SampleRange::new(first, samples),
+            request.width,
+            request.height,
+        ))
+    });
     // Carried through the emitter as the equivalent FinalOnly request: PROGRESS on a 1 s
-    // cadence, no FRAME, no PREVIEW; `Output::FinalImage` replaces the final FRAME.
+    // cadence, no FRAME; `Output::FinalImage` replaces the final FRAME. A downsampled
+    // PREVIEW IS forced on, unlike a plain viewer's `RenderRequest` (whose `preview` is
+    // whatever it asked for): a `FinalImageRequest` caller has no `StreamConfig` of its
+    // own to set one on, and without this a "final picture only" export would otherwise
+    // show nothing at all until the whole job completes (the owner's report this fixes).
+    // See `final_image_preview_config` for the size and the emitter's own 1%-of-budget
+    // gating (`stream_emit::emitter::emit::emit_tick`) for why this doesn't spam the
+    // wire every cadence tick between a coordinator job's chunk merges.
     let as_render = RenderRequest {
         request_id: request.request_id,
         scene: request.scene.clone(),
@@ -376,7 +512,7 @@ pub fn serve_final_image<S: Read + Write + TimeoutRead + TimeoutWrite>(
         stream: StreamConfig {
             transfer_mode: TransferMode::FinalOnly,
             cadence_ms: 1000,
-            preview: None,
+            preview: Some(final_image_preview_config(request.width, request.height)),
         },
         intent: RequestIntent::Batch,
     };
@@ -387,10 +523,45 @@ pub fn serve_final_image<S: Read + Write + TimeoutRead + TimeoutWrite>(
         hdr: request.scene.hdr().is_some(),
     };
     let output = Output::FinalImage(request.color_space.into());
-    stream_request(stream, &as_render, output, ask, session, asset)
+    stream_request(
+        stream,
+        &as_render,
+        output,
+        ask,
+        session,
+        asset,
+        slot.as_ref(),
+    )
+}
+
+/// Long-edge cap for a `FinalImageRequest` job's forced `PREVIEW`, matching the GUI's
+/// own export-progress thumbnail size (`bridge::export_thread::preview::
+/// PREVIEW_MAX_LONG_EDGE` in `indicatrix-cut`) so a server-forced preview never carries
+/// more resolution than the client would ever draw.
+const FINAL_IMAGE_PREVIEW_MAX_LONG_EDGE: u32 = 360;
+
+/// The downsampled `PREVIEW` size for a `FinalImageRequest` job of `width x height`: the
+/// largest size whose long edge is at most [`FINAL_IMAGE_PREVIEW_MAX_LONG_EDGE`], never
+/// upsampling a request already smaller than the cap. Mirrors
+/// `bridge::export_thread::preview::downsample_preview`'s own scale computation
+/// (`indicatrix-cut`), so the two crates agree on what "the GUI's thumbnail size" means
+/// without sharing code across the client/server boundary.
+#[must_use]
+fn final_image_preview_config(width: u32, height: u32) -> PreviewConfig {
+    let long_edge = width.max(height).max(1);
+    let scale = (f64::from(FINAL_IMAGE_PREVIEW_MAX_LONG_EDGE) / f64::from(long_edge)).min(1.0);
+    PreviewConfig {
+        width: ((f64::from(width) * scale).round() as u32).max(1),
+        height: ((f64::from(height) * scale).round() as u32).max(1),
+    }
 }
 
 /// Plans and streams one validated request (direct or as a job).
+///
+/// `slot`, when `Some` (a `FinalImageRequest` that reserved a viewer share), always
+/// forces a job route (see the "own-lane-only" fix below) and is passed both to the
+/// emitter (which routes an incoming `CONTRIBUTION` into it) and the job's producer
+/// (which waits for it once its own lanes finish).
 fn stream_request<S: Read + Write + TimeoutRead + TimeoutWrite>(
     stream: &mut S,
     request: &RenderRequest,
@@ -398,7 +569,9 @@ fn stream_request<S: Read + Write + TimeoutRead + TimeoutWrite>(
     ask: Ask,
     session: &ViewerSession,
     asset: Option<Arc<HeldAsset>>,
+    slot: Option<&Arc<stream_emit::ContributionSlot>>,
 ) -> Result<Option<RenderRequest>, NetError> {
+    let started = Instant::now();
     let coordinator = &session.coordinator;
     if ask.hdr && asset.is_none() {
         // The request loop holds every HDR scene's map before a request gets here.
@@ -408,21 +581,40 @@ fn stream_request<S: Read + Write + TimeoutRead + TimeoutWrite>(
                 code: error_codes::ASSET_FAILED,
                 message: "internal error: the coordinator does not hold this scene's HDR map"
                     .to_string(),
+                request_id: Some(request.request_id),
             },
         )?;
         return Ok(None);
     }
-    let route = match plan::plan(coordinator, ask) {
+    let mut route = match plan::plan(coordinator, ask) {
         Ok(route) => route,
         Err(refusal) => {
             write_error(stream, refusal)?;
             return Ok(None);
         }
     };
+    // A reserved viewer share needs a Merger to fold into, even when the own lane
+    // would otherwise have served this request directly (no chunking, no pool) -- see
+    // `stream_emit::ContributionSlot`'s and `coordinator::job::producer`'s doc
+    // comments for how the fold happens.
+    if slot.is_some() && matches!(route, Route::Direct) {
+        route = Route::Job(JobPlan {
+            own: true,
+            workers: WorkerPick::None,
+            fifo: true,
+            pool: coordinator.job_config().batch,
+        });
+    }
+    // Only the direct route is a plain tracer whose silence means "wedged": a job
+    // legitimately waits in its viewer's FIFO or for a joined worker with no sample
+    // landing, and its lanes carry their own liveness deadlines.
+    let direct = matches!(route, Route::Direct);
     let spec = StreamSpec {
         request,
         payload_encoding: session.payload_encoding,
         output,
+        contribution: slot.map(Arc::as_ref),
+        stall_timeout: direct.then_some(stream_emit::PRODUCER_STALL_TIMEOUT),
     };
     let (outcome, next) = match (route, coordinator.own.as_ref()) {
         (Route::Direct, Some(own)) => stream_emit::run_stream_with(
@@ -431,25 +623,46 @@ fn stream_request<S: Read + Write + TimeoutRead + TimeoutWrite>(
             stream_emit::local_tracer(request, own.threads, &own.gpu, own.compute_mode),
         )?,
         (Route::Job(plan), _) => {
-            let bytes = job_bytes(request.scene.width, request.scene.height);
-            let Ok(_reservation) = coordinator.budget.try_reserve(bytes) else {
-                write_error(stream, over_budget(coordinator, bytes))?;
-                return Ok(None);
-            };
+            // The memory-budget reservation itself happens inside `producer::run`,
+            // AFTER it waits its turn in the viewer's FIFO -- a job queued behind
+            // another one of the same viewer must not hold budget while it hasn't
+            // even started.
+            //
+            // `range` is the SERVER's own share: `request.samples` (the whole range,
+            // used unchanged as the emitter's tone-map/progress divisor) minus however
+            // many samples `slot` reserved for the viewer.
+            let viewer_samples = slot.map_or(0, |s| s.reserved().samples);
             let job = producer::Job {
                 coordinator: Arc::clone(coordinator),
                 viewer: Arc::clone(&session.viewer),
                 rates: Arc::clone(&session.rates),
                 scene: request.scene.clone(),
-                range: SampleRange::new(request.first_sample, request.samples),
+                range: SampleRange::new(request.first_sample, request.samples - viewer_samples),
                 plan,
                 asset,
+                // `spec.contribution` (built above) borrows through `slot` for the
+                // emitter's whole run; the job gets its own clone of the same `Arc`.
+                contribution: slot.cloned(),
             };
             stream_emit::run_stream_with(stream, &spec, move |sink| producer::run(&job, sink))?
         }
-        // `plan` only routes Direct with an own lane.
-        (Route::Direct, None) => return Ok(None),
+        // `plan` only routes Direct with an own lane; every other combination is a
+        // planning bug, not a silent no-op.
+        (Route::Direct, None) => {
+            write_error(
+                stream,
+                ErrorMsg {
+                    code: error_codes::NO_RENDER_CAPACITY,
+                    message: "internal error: the coordinator planned a direct route with no own \
+                              render lane"
+                        .to_string(),
+                    request_id: Some(request.request_id),
+                },
+            )?;
+            return Ok(None);
+        }
     };
+    served::log(request, ask, direct, started.elapsed(), &outcome);
     report(stream, outcome)?;
     Ok(next)
 }
@@ -457,10 +670,13 @@ fn stream_request<S: Read + Write + TimeoutRead + TimeoutWrite>(
 /// The refusal past the memory budget. There is no dedicated v14 code for "busy";
 /// `CONNECTION_LIMIT_REACHED` ("this server is at capacity") is the closest, and a
 /// viewer treats it as a failed remote request and falls back to local rendering.
-fn over_budget(coordinator: &Coordinator, bytes: u64) -> ErrorMsg {
+pub(super) fn over_budget(coordinator: &Coordinator, bytes: u64) -> ErrorMsg {
     const MIB: u64 = 1024 * 1024;
     ErrorMsg {
         code: error_codes::CONNECTION_LIMIT_REACHED,
+        // This helper has no
+        // request in scope; its one caller (`producer::run`) could thread one through.
+        request_id: None,
         message: format!(
             "coordinator busy: this job needs {} MiB of in-flight buffers but {} of {} MiB are already in \
              use (--max-job-memory-mib); try again later",
@@ -470,3 +686,6 @@ fn over_budget(coordinator: &Coordinator, bytes: u64) -> ErrorMsg {
         ),
     }
 }
+
+#[cfg(test)]
+mod tests;

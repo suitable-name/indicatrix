@@ -23,10 +23,11 @@ pub(in crate::gui) fn setup_lighting_preset_callbacks(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
     settings_store: &Arc<SettingsPersister>,
+    mesh_bounding_radius: &Arc<Mutex<f64>>,
 ) {
     setup_save_lighting_preset_callback(ui, render_ctx, settings_store);
     setup_save_view_preset_callback(ui, render_ctx, settings_store);
-    setup_apply_lighting_preset_callback(ui, render_ctx, settings_store);
+    setup_apply_lighting_preset_callback(ui, render_ctx, settings_store, mesh_bounding_radius);
     setup_rename_lighting_preset_callback(ui, settings_store);
     setup_delete_lighting_preset_callback(ui, settings_store);
     setup_toggle_preset_export_usable_callback(ui, settings_store);
@@ -200,9 +201,11 @@ fn setup_apply_lighting_preset_callback(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
     settings_store: &Arc<SettingsPersister>,
+    mesh_bounding_radius: &Arc<Mutex<f64>>,
 ) {
     let render_ctx_apply = render_ctx.clone();
     let settings_store_apply = settings_store.clone();
+    let mesh_bounding_radius_apply = mesh_bounding_radius.clone();
     let ui_weak_apply = ui.as_weak();
     ui.global::<ViewportModel>()
         .on_apply_lighting_preset(move |idx: i32| {
@@ -229,13 +232,19 @@ fn setup_apply_lighting_preset_callback(
                 ctx.exposure = preset.exposure.clamp(0.2, 5.0);
                 ctx.lighting_preset = lighting_preset;
                 // The same dynamic zoom clamp the live orbit camera uses, sized to the
-                // current mesh's own bounding radius rather than a fixed `[1.2, 8.0]`
-                // range, so a preset saved while viewing a design larger/smaller than
-                // `DEFAULT_MESH_BOUNDING_RADIUS` reapplies at a distance that actually
-                // frames it.
-                let (min_distance, max_distance) = super::camera_lighting::orbit_distance_bounds(
-                    crate::gui::solid_preview::preview_state::DEFAULT_MESH_BOUNDING_RADIUS,
-                );
+                // CURRENT mesh's own bounding radius (the same live
+                // `Arc<Mutex<f64>>` `gui::camera_lighting`'s own orbit/zoom handlers
+                // read -- see `main_window::mesh_bounding_radius`'s doc comment)
+                // rather than a fixed `[1.2, 8.0]` range or the
+                // `DEFAULT_MESH_BOUNDING_RADIUS` placeholder, so a preset saved while
+                // viewing a design larger/smaller than the default reapplies at a
+                // distance that actually frames THIS design, not whatever design was
+                // loaded when the preset was saved.
+                let radius = *mesh_bounding_radius_apply
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (min_distance, max_distance) =
+                    super::camera_lighting::orbit_distance_bounds(radius);
                 ctx.distance = preset.camera_distance.clamp(min_distance, max_distance);
                 // Camera pose: only when the preset actually carries one -- see this
                 // function's own doc comment. The same yaw/pitch clamps

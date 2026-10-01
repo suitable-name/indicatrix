@@ -118,7 +118,12 @@ silently missing samples.
 
 All of the above is the dialog's default **Transfer: Full data** path. **Final
 picture only** instead sends one `FinalImageRequest` for the whole image and writes
-the finished PNG the remote returns (local lanes idle); see
+the finished PNG the remote returns. Local lanes are not idle by default, though:
+with `Compute: Both`, the `contribute_to_final_picture` setting (default on,
+Settings dialog: "Final-picture exports: this machine renders a share too") traces
+a share of the samples locally and uploads it as one `CONTRIBUTION`, which the
+coordinator folds in before tone-mapping; turn the setting off to leave this
+machine idle during the export instead. See
 [remote-rendering.md](remote-rendering.md)'s "Transfer" section for its fallbacks. A
 scene lit by an HDR map is only sent to a remote that advertises HDR support; any
 other remote leaves that export local-only, with a note, so the whole image is lit by

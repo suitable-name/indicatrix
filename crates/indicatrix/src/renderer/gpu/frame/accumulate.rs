@@ -42,8 +42,8 @@ impl GpuFrameRenderer {
     /// doc comment; HDR maps render on the GPU).
     /// [`GpuFrameError::DeviceLost`] if the device stops making forward progress
     /// mid-frame -- see that variant's own doc comment; `renderer::gpu_backend::GpuBackend`
-    /// is the caller expected to react to it by permanently disabling the GPU for the rest
-    /// of the process.
+    /// is the caller expected to react to it by suspending GPU rendering, then replacing
+    /// this renderer once its recovery cool-down has passed.
     ///
     /// # Panics
     ///
@@ -69,8 +69,9 @@ impl GpuFrameRenderer {
     /// Like [`Self::accumulate`], but checked for cancellation between chunks.
     ///
     /// `cancel` is polled once per loop iteration, between one chunk's dispatch and the
-    /// next's (never mid-chunk) -- see [`AccumulateOutcome::Cancelled`]'s doc comment for
-    /// the drain-then-discard guarantee this makes about `accum` once it fires. Intended
+    /// next's (never mid-chunk) -- once it fires, `accum` keeps the chunks already summed
+    /// and the chunk then in flight is waited on but not summed; see
+    /// [`AccumulateOutcome::Cancelled`]'s doc comment. Intended
     /// caller: `renderer::gpu_backend::GpuBackend::try_accumulate_cancellable`, for a long
     /// dispatch whose caller no longer needs the result (e.g. a disconnected client) and
     /// would rather reclaim the GPU/CPU than wait it out.
@@ -586,8 +587,8 @@ impl GpuFrameRenderer {
         // the caller. This is the invariant `ChunkTurnOutcome::MoreWork`'s doc comment
         // promises: a turn never returns with GPU work still outstanding, which is what
         // lets a completely different request safely take the next turn on this same
-        // renderer. `cancelled` still discards the drained chunk's samples
-        // (drain-then-discard, see `AccumulateOutcome::Cancelled`'s doc comment);
+        // renderer. `cancelled` still waits for the in-flight chunk but does not sum its
+        // samples (see `AccumulateOutcome::Cancelled`'s doc comment);
         // reaching the pixel budget or this turn's chunk budget both keep them --
         // neither is a cancellation, so nothing traced this turn is thrown away.
         if let Some(chunk) = pending.take() {

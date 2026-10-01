@@ -81,7 +81,7 @@ below are a README convenience, not what any single `--help` invocation prints.
 
 ```
 indicatrix-worker render --scene <scene.json> --out <render.png> --width <px> --height <px> --samples <n> [--threads <n>] [--only-gpu | --only-cpu]
-indicatrix-worker serve  [--bind <host:port>] [--allow-remote] [--db <path>] [--max-connections <n>]
+indicatrix-worker serve  [--bind <host:port>] [--allow-remote] [--db <path>] [--max-connections <n>] [--max-preauth-per-ip <n>]
                      [--render] [--threads <n>] [--only-gpu | --only-cpu]
                      --ca <ca.pem> --cert <server.pem> --key <server.key> [--allowlist <path>] [--trust-any-client-cert]
                      [--enroll-bind <host:port>] [--no-enroll]
@@ -222,7 +222,8 @@ one regardless of what was advertised.
 | `--worker-allowlist <path>` | `allowlist-workers.txt` next to `--ca` | SHA-256 fingerprints of trusted **worker** certificates. May not exist yet — every worker is then refused until one is enrolled. Re-read on every connection. |
 | `--no-workers` | off | Don't open the worker port or its enrollment listener. |
 | `--max-connections <n>` | 64 | Authenticated connections handled at once, counted separately for viewers and joined workers. A connection past the cap gets a definitive error reply rather than hanging. At least 1. |
-| `--max-job-memory-mib <n>` | 2048 | Cap on the buffers of all in-flight multi-lane jobs (jobs spread over joined workers). Each job is charged `width × height × 48` bytes (a 4K job is about 380 MiB). A job past the cap is refused, not queued; the viewer treats that like any other failed remote request. `worker` builds only. |
+| `--max-preauth-per-ip <n>` | 8 | Most viewer-port connections one source IP address may have open that have not finished authenticating. A connection counts only until its TLS handshake and allowlist check succeed, and from then on only against `--max-connections`; an over-cap connection is closed at once and logged (`refusing -- this address already has … connection(s) that have not finished authenticating`). A wider global cap of 4 × `--max-connections` on such connections also applies. Raise it for many viewers behind one NAT address. At least 1. |
+| `--max-job-memory-mib <n>` | 2048 | Cap on the buffers of all in-flight multi-lane jobs (jobs spread over joined workers). Each job is charged `width × height × 48` bytes (a 4K job is about 380 MiB), plus `width × height × 36` bytes for every lane (each joined worker and the coordinator's own lane hold three more frame buffers while a chunk runs), plus its HDR map and any viewer contribution. A job whose lanes do not all fit runs on as many as do; one past the cap even with a single lane is refused, not queued, and the viewer treats that like any other failed remote request. A maximum-size 8K job needs about 2700 MiB with one lane, so raise the cap for 8K exports. `worker` builds only. |
 | `--interactive-workers <n>` | 0 | **Advanced.** Let each live-view request also take up to `n` of the fastest idle joined workers. The default keeps the live view on the own lane alone (or, without `--render`, on the single fastest idle worker) — the lowest-latency path. `worker` builds only. |
 | `--pin-interactive-worker <label>` | none | **Advanced.** When a live-view request takes joined workers (no `--render`, or `--interactive-workers` above 0), use the worker whose certificate label is `<label>` first — the `--name` its worker certificate was issued with; `worker:<label>` also works — while it is connected, idle and accepts the image size. Otherwise the fastest-idle-worker rule applies, and the log says so once per change. `worker` builds only. |
 | `--allow-remote` | off | Required to bind any non-loopback address, TLS or not — exposing this worker beyond localhost must be an explicit, visible choice. |
@@ -274,7 +275,7 @@ with jittered backoff (1 s doubling to 60 s); the coordinator drops a connection
 | `--cert-dir <dir>` | `worker-cert` | `ca.pem`, `client.pem`, `client.key` of a worker certificate (`cert issue-client --role worker`). A viewer certificate is refused before dialling. |
 | `--token <GW1-...>` | — | Claim a worker enrollment token (`cert issue-token --role worker`, issued on the coordinator host) into `--cert-dir` first. |
 | `--enroll-addr <host:port>` | coordinator host, worker port + 1 (7881) | The worker enrollment listener. |
-| `--slots <k>` | 1 | Parallel connections, one request stream each (at most 64). With one GPU, k > 1 mainly helps CPU-only machines. |
+| `--slots <k>` | 2 | Parallel connections, one request stream each (at most 64). A second slot keeps a chunk in flight while the first one's transfer/decode gap would otherwise leave this worker idle between chunks — measured as an underused fast remote worker (e.g. an A100) behind a much slower coordinator lane, so it helps a GPU worker too, not only a CPU-only machine. Bump further only for a CPU-only machine juggling many small chunks. |
 | `--threads <n>` / `--only-gpu` / `--only-cpu` | all cores / hybrid | As for `render`. |
 
 **Setting up a coordinator with joined workers, end to end:**
@@ -341,7 +342,7 @@ transits the wire.
 | `cert init` | `--dir <pki-dir>` | Generates a new CA keypair + self-signed certificate (10-year lifetime) in `--dir`. **Refuses to run if `--dir` already has one** (regenerating it would invalidate every certificate already issued from it) — there is no `--force`. |
 | `cert issue-server` | `--dir <pki-dir>`, at least one of `--host <name>` / `--ip <addr>` (both repeatable) | Issues the server's own certificate — the one `serve` presents on its viewer and worker ports (5-year lifetime), signed by the CA in `--dir`. `--host`/`--ip` become Subject Alternative Names — TLS ignores Common Name entirely, so a viewer connecting by IP address specifically needs an `--ip` SAN, not just a `--host` DNS name. |
 | `cert issue-client` | `--dir <pki-dir>`, `--name <label>`, `--out <bundle-dir>`, optional `--role viewer\|worker` | Issues one client certificate (5-year lifetime), signed by the CA in `--dir`, and writes a self-contained bundle (`ca.pem`, `client.pem`, `client.key`) to `--out` for copying to that machine. Also computes the certificate's SHA-256 fingerprint and appends it to the role's allowlist: `<pki-dir>/allowlist-viewers.txt` (default role; or a pre-role `allowlist.txt` while only that exists) or `<pki-dir>/allowlist-workers.txt` (`--role worker`, Common Name `worker:<label>`). A viewer `--name` may not start with `worker:`. |
-| `cert issue-token` | `--ca <ca.pem>`, `--admin-addr <host:port>`, `--name <label>`, optional `--role viewer\|worker` | Asks a **running** `serve` for a one-time, **180-second** enrollment token and prints it. `--admin-addr` is the viewer enrollment listener (7879) for viewers and the worker one (7881) for `--role worker`; each listener refuses a token for the other role. The certificate is minted immediately but held in that process's memory — nothing on disk, nothing in the allowlist, until it is claimed. Honoured only from a loopback peer. |
+| `cert issue-token` | `--ca <ca.pem>`, `--admin-addr <host:port>`, `--name <label>`, optional `--role viewer\|worker` | Asks a **running** `serve` for a one-time, **180-second** enrollment token and prints it. `--admin-addr` is the viewer enrollment listener (7879) for viewers and the worker one (7881) for `--role worker`; each listener refuses a token for the other role. The certificate is minted immediately but held in that process's memory — nothing on disk, nothing in the allowlist, until it is claimed. Honoured only from a loopback peer that also presents the operator secret in `<pki-dir>/issue.secret` (created by `serve` on first start, owner-only); the command reads it from the directory holding `--ca`, so run it as a user who can read that directory. |
 | `cert claim` | `--token <token>`, `--addr <host:port>`, `--out <bundle-dir>` | Redeems a token on the machine being enrolled, writing the same three-file bundle `issue-client` would. Verifies the enrollment listener against the CA fingerprint carried in the token **before** sending the secret. Single use. (A render worker normally claims through `join --token` instead, which does the same and then joins.) |
 
 **Directory layout** (`--dir`):
@@ -355,6 +356,7 @@ transits the wire.
   allowlist-viewers.txt  trusted viewer-certificate fingerprints, one per line, "# label" comments allowed
                          (a pre-role allowlist.txt keeps serving as this list until this file exists)
   allowlist-workers.txt  trusted worker-certificate fingerprints (Common Name "worker:<label>")
+  issue.secret    operator secret `cert issue-token` presents (sensitive — created by `serve`, owner-only)
 ```
 
 ```mermaid
@@ -450,6 +452,14 @@ expired token leaves no trace and grants nothing. `serve` needs read access to `
 for this (signing a certificate requires it), which it did not before; `--no-enroll`
 opts out entirely and keeps Workflow A.
 
+Issuing is authorised by two things together: the connection must come from loopback,
+and the request must carry the operator secret stored in `pki\issue.secret`. `serve`
+creates that file (32 random bytes as hex, readable only by its owner) the first time its
+enrollment listener starts, and `cert issue-token` reads it from the directory holding
+`--ca`. Anything else on the machine that can merely reach the loopback port, such as
+another local user or a forwarded port, cannot mint a certificate without read access to
+the PKI directory.
+
 #### Workflow C — joining a render worker to a coordinator
 
 ```
@@ -487,7 +497,8 @@ neither should hand attacker- or fat-finger-controlled numbers straight through.
 | Max pixels (`width * height`) | 7680×4320 (8K UHD) | both |
 | Max samples per `render` invocation | 1,000,000 | `render` (fat-finger guard) |
 | Max samples per `serve` request | 65,536 | `serve` (one batch out of a larger accumulation — a real DoS bound, much smaller than `render`'s) |
-| In-flight multi-lane job buffers | `--max-job-memory-mib` (default 2048 MiB) | `serve` with joined workers |
+| In-flight multi-lane job buffers | `--max-job-memory-mib` (default 2048 MiB); charged per job and per lane | `serve` with joined workers |
+| Unauthenticated connections per source IP | `--max-preauth-per-ip` (default 8) | `serve` viewer port |
 | HDR map file size | 256 MiB (the protocol's asset limit), and at most the asset cache cap | `serve`, `join` |
 | Max bounces | 128 | both |
 | Plausible refractive index | 1.0 – 6.0, checked at 380nm/589.3nm/780nm | both |

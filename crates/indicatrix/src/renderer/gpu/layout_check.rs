@@ -30,8 +30,11 @@ const PHASE2_SHADER_SRC: &str = include_str!("../shaders/phase2_layout_echo.wgsl
 /// One byte-level disagreement between the input and echoed-output buffers.
 #[derive(Debug, Clone, Copy)]
 pub struct ByteMismatch {
+    /// Offset.
     pub offset: usize,
+    /// Expected.
     pub expected: u8,
+    /// Actual.
     pub actual: u8,
 }
 
@@ -39,12 +42,16 @@ pub struct ByteMismatch {
 /// (capped so a total layout mismatch doesn't dump 320 individual diagnostics).
 #[derive(Debug, Clone)]
 pub struct LayoutCheckResult {
+    /// Input bytes.
     pub input_bytes: Vec<u8>,
+    /// Output bytes.
     pub output_bytes: Vec<u8>,
+    /// Mismatches found.
     pub mismatches: Vec<ByteMismatch>,
 }
 
 impl LayoutCheckResult {
+    /// Whether every compared value stayed within its budget.
     #[must_use]
     pub const fn passed(&self) -> bool {
         self.mismatches.is_empty()

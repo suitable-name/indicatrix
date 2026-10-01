@@ -1,0 +1,514 @@
+// The before/after comparison pane: layout and renderer switches, the image area
+// (side by side, split slider or difference overlay), the overlay legend and the
+// status line. Used by the pop-out `CompareWindow` and by the Retarget dialog.
+//
+// It has no required properties: it reads the `CompareModel` global of whichever
+// window it is placed in (Slint instantiates every global once per top-level
+// window -- see `models/compare.slint`), so the same component serves both.
+// It does NOT contain Keep/Discard/Close; the host draws those itself.
+//
+// Sizing: the whole content hangs off an x/y-positioned layout, so no constraint
+// inside it reaches the host, and every child of `image_area` is positioned with
+// explicit x/y: the slot sizes below are derived FROM `image_area`'s size and must
+// never feed back into it.
+import { Theme } from "../theme.slint";
+import { CompareModel } from "../models/compare.slint";
+
+// A small toggle pill for the layout/renderer switches.
+component ChoicePill inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked();
+
+    height: 24px;
+    width: pill_text.preferred-width + 20px;
+    border-radius: Theme.radius-sm;
+    background: root.active ? Theme.accent-cyan : (pill_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control);
+
+    pill_touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+
+    pill_text := Text {
+        text: root.label;
+        font-size: 11px;
+        font-weight: 600;
+        color: root.active ? Theme.text-on-accent : Theme.text-secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// A caption chip floated over the split and overlay views' corners.
+component SideChip inherits Rectangle {
+    in property <string> label;
+    in property <bool> after: false;
+
+    height: 22px;
+    width: min(chip_text.preferred-width + 16px, 320px);
+    border-radius: Theme.radius-sm;
+    background: Theme.bg-card;
+    border-width: 1px;
+    border-color: root.after ? Theme.accent-cyan : Theme.border-medium;
+
+    chip_text := Text {
+        text: root.label;
+        font-size: 11px;
+        font-weight: 600;
+        color: root.after ? Theme.accent-cyan : Theme.text-primary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+}
+
+// One colour swatch and its one-line label, for the overlay legend.
+component LegendItem inherits Rectangle {
+    in property <string> label;
+    in property <brush> swatch;
+
+    height: 18px;
+    width: 14px + 6px + legend_text.preferred-width;
+
+    Rectangle {
+        x: 0px;
+        y: 3px;
+        width: 14px;
+        height: 12px;
+        border-radius: 2px;
+        background: root.swatch;
+    }
+
+    legend_text := Text {
+        x: 20px;
+        y: 0px;
+        width: self.preferred-width;
+        height: 18px;
+        text: root.label;
+        font-size: 11px;
+        color: Theme.text-secondary;
+        vertical-alignment: center;
+    }
+}
+
+export component CompareView inherits Rectangle {
+    // Whether the "Split slider" layout is offered (the pop-out window; the
+    // Retarget dialog's pane has no room for a divider).
+    in property <bool> show_split: true;
+
+    // Side by side: the gap between the two slots and the caption row under them.
+    property <length> gap: 8px;
+    property <length> caption_height: 20px;
+    // One image slot, derived from `image_area`'s laid-out size -- the size Rust
+    // renders both sides at. Side by side halves the width; the split and overlay
+    // layouts use the whole area.
+    property <length> slot_width: CompareModel.mode_index == 0
+        ? max(1px, (image_area.width - root.gap) / 2)
+        : max(1px, image_area.width);
+    property <length> slot_height: CompareModel.mode_index == 0
+        ? max(1px, image_area.height - root.caption_height)
+        : max(1px, image_area.height);
+    // Debounced size push: `resize_pulse` bumps on every slot change and the timer
+    // below fires `size_changed` once it has stopped moving for a tick, so a
+    // drag-resize re-renders once rather than once per layout pass.
+    property <int> resize_pulse: 0;
+    property <int> resize_pulse_seen: 0;
+    changed slot_width => {
+        CompareModel.image_width = self.slot_width;
+        root.resize_pulse += 1;
+    }
+    changed slot_height => {
+        CompareModel.image_height = self.slot_height;
+        root.resize_pulse += 1;
+    }
+    init => {
+        CompareModel.image_width = root.slot_width;
+        CompareModel.image_height = root.slot_height;
+    }
+
+    // Orbit drag bookkeeping. `dragging` mirrors the last `drag_begin`/`drag_end`
+    // sent, so the press callbacks and the `changed pressed` hook never double up.
+    property <length> last_mouse_x: 0px;
+    property <length> last_mouse_y: 0px;
+    property <bool> dragging: false;
+
+    function begin_drag() {
+        if (!root.dragging) {
+            root.dragging = true;
+            CompareModel.drag_begin();
+        }
+    }
+
+    function end_drag() {
+        if (root.dragging) {
+            root.dragging = false;
+            CompareModel.drag_end();
+        }
+    }
+
+    Timer {
+        interval: 100ms;
+        running: CompareModel.is_open;
+        triggered => {
+            if (root.resize_pulse != root.resize_pulse_seen) {
+                root.resize_pulse_seen = root.resize_pulse;
+                CompareModel.size_changed(root.slot_width, root.slot_height);
+            }
+        }
+    }
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+
+        VerticalLayout {
+        spacing: 6px;
+
+        // Layout and renderer switches.
+        HorizontalLayout {
+            height: 24px;
+            spacing: 6px;
+            alignment: start;
+
+            ChoicePill {
+                label: "Side by side";
+                active: CompareModel.mode_index == 0;
+                clicked => {
+                    CompareModel.mode_index = 0;
+                    CompareModel.mode_changed(0);
+                }
+            }
+
+            ChoicePill {
+                label: "Overlay";
+                active: CompareModel.mode_index == 2;
+                clicked => {
+                    CompareModel.mode_index = 2;
+                    CompareModel.mode_changed(2);
+                }
+            }
+
+            if root.show_split: ChoicePill {
+                label: "Split slider";
+                active: CompareModel.mode_index == 1;
+                clicked => {
+                    CompareModel.mode_index = 1;
+                    CompareModel.mode_changed(1);
+                }
+            }
+
+            Rectangle { width: 16px; }
+
+            ChoicePill {
+                label: "Solid";
+                active: CompareModel.renderer_index == 0;
+                clicked => {
+                    CompareModel.renderer_index = 0;
+                    CompareModel.renderer_changed(0);
+                }
+            }
+
+            ChoicePill {
+                label: "Path traced";
+                active: CompareModel.renderer_index == 1;
+                clicked => {
+                    CompareModel.renderer_index = 1;
+                    CompareModel.renderer_changed(1);
+                }
+            }
+
+            if root.width > 760px: Rectangle { width: 16px; }
+
+            if root.width > 760px: Text {
+                text: "Drag to turn · wheel to zoom · double-click to reset";
+                font-size: 10px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        image_area := Rectangle {
+            vertical-stretch: 1;
+            clip: true;
+
+            // --- Side by side --------------------------------------------------
+            if CompareModel.mode_index == 0: Rectangle {
+                x: 0px;
+                y: 0px;
+                width: image_area.width;
+                height: image_area.height;
+
+                Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: root.slot_width;
+                    height: root.slot_height;
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                }
+
+                Image {
+                    x: 0px;
+                    y: 0px;
+                    width: root.slot_width;
+                    height: root.slot_height;
+                    source: CompareModel.before_image;
+                    image-fit: contain;
+                }
+
+                Text {
+                    x: 0px;
+                    y: root.slot_height;
+                    width: root.slot_width;
+                    height: root.caption_height;
+                    text: "Before — " + CompareModel.before_label;
+                    font-size: 11px;
+                    color: Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                Rectangle {
+                    x: root.slot_width + root.gap;
+                    y: 0px;
+                    width: root.slot_width;
+                    height: root.slot_height;
+                    background: Theme.bg-input;
+                    border-radius: Theme.radius-sm;
+                }
+
+                Image {
+                    x: root.slot_width + root.gap;
+                    y: 0px;
+                    width: root.slot_width;
+                    height: root.slot_height;
+                    source: CompareModel.after_image;
+                    image-fit: contain;
+                }
+
+                Text {
+                    x: root.slot_width + root.gap;
+                    y: root.slot_height;
+                    width: root.slot_width;
+                    height: root.caption_height;
+                    text: "After — " + CompareModel.after_label;
+                    font-size: 11px;
+                    color: Theme.accent-cyan;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            // --- Split slider: "after" underneath, "before" clipped on top up
+            // to the divider -- both rendered at the same pose and size.
+            if CompareModel.mode_index == 1: Rectangle {
+                x: 0px;
+                y: 0px;
+                width: image_area.width;
+                height: image_area.height;
+                background: Theme.bg-input;
+
+                Image {
+                    x: 0px;
+                    y: 0px;
+                    width: image_area.width;
+                    height: image_area.height;
+                    source: CompareModel.after_image;
+                    image-fit: contain;
+                }
+
+                Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: image_area.width * CompareModel.split_fraction;
+                    height: image_area.height;
+                    clip: true;
+
+                    Image {
+                        x: 0px;
+                        y: 0px;
+                        width: image_area.width;
+                        height: image_area.height;
+                        source: CompareModel.before_image;
+                        image-fit: contain;
+                    }
+                }
+
+                SideChip {
+                    x: 8px;
+                    y: 8px;
+                    label: "Before — " + CompareModel.before_label;
+                }
+
+                SideChip {
+                    x: image_area.width - self.width - 8px;
+                    y: 8px;
+                    label: "After — " + CompareModel.after_label;
+                    after: true;
+                }
+            }
+
+            // --- Overlay: the "after" side underneath, the transparent
+            // difference layer (removed = red, added = green, outlines) on top --
+            // both at the same size and fit, so they line up pixel for pixel.
+            if CompareModel.mode_index == 2: Rectangle {
+                x: 0px;
+                y: 0px;
+                width: image_area.width;
+                height: image_area.height;
+                background: Theme.bg-input;
+                border-radius: Theme.radius-sm;
+
+                Image {
+                    x: 0px;
+                    y: 0px;
+                    width: image_area.width;
+                    height: image_area.height;
+                    source: CompareModel.after_image;
+                    image-fit: contain;
+                }
+
+                Image {
+                    x: 0px;
+                    y: 0px;
+                    width: image_area.width;
+                    height: image_area.height;
+                    source: CompareModel.overlay_image;
+                    image-fit: contain;
+                }
+
+                SideChip {
+                    x: 8px;
+                    y: 8px;
+                    label: "Before — " + CompareModel.before_label;
+                }
+
+                SideChip {
+                    x: image_area.width - self.width - 8px;
+                    y: 8px;
+                    label: "After — " + CompareModel.after_label;
+                    after: true;
+                }
+            }
+
+            // Orbit/zoom/reset over the whole image area, in every layout: any
+            // image (or the split area) turns the ONE shared camera. The traced
+            // render waits for `drag_end`, so a held button never starts one.
+            orbit_touch := TouchArea {
+                x: 0px;
+                y: 0px;
+                width: image_area.width;
+                height: image_area.height;
+
+                pointer-event(event) => {
+                    if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                        root.last_mouse_x = self.mouse-x;
+                        root.last_mouse_y = self.mouse-y;
+                        root.begin_drag();
+                    } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                        root.end_drag();
+                    }
+                }
+                changed pressed => {
+                    if (!self.pressed) {
+                        root.end_drag();
+                    }
+                }
+                moved => {
+                    if (root.dragging) {
+                        let dx = (self.mouse-x - root.last_mouse_x) / 1px;
+                        let dy = (self.mouse-y - root.last_mouse_y) / 1px;
+                        root.last_mouse_x = self.mouse-x;
+                        root.last_mouse_y = self.mouse-y;
+                        CompareModel.orbit(dx, dy);
+                    }
+                }
+                double-clicked => { CompareModel.reset_pose(); }
+                scroll-event(event) => {
+                    CompareModel.zoom(event.delta-y / 1px);
+                    accept
+                }
+            }
+
+            // The split divider -- declared after `orbit_touch`, so a drag that
+            // starts on it moves the divider instead of the camera.
+            if CompareModel.mode_index == 1: Rectangle {
+                x: image_area.width * CompareModel.split_fraction - 7px;
+                y: 0px;
+                width: 14px;
+                height: image_area.height;
+
+                Rectangle {
+                    x: 5px;
+                    y: 0px;
+                    width: 4px;
+                    height: parent.height;
+                    background: Theme.accent-cyan;
+                }
+
+                Rectangle {
+                    x: 0px;
+                    y: (parent.height - self.height) / 2;
+                    width: 14px;
+                    height: 32px;
+                    border-radius: Theme.radius-sm;
+                    background: divider_touch.pressed || divider_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
+                }
+
+                divider_touch := TouchArea {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: parent.height;
+                    mouse-cursor: ew-resize;
+                    moved => {
+                        if (self.pressed && image_area.width > 0px) {
+                            CompareModel.split_fraction = max(0.0, min(1.0, (parent.x + self.mouse-x) / image_area.width));
+                        }
+                    }
+                }
+            }
+        }
+
+        // The overlay legend: BESIDE the image (below it), never over it.
+        if CompareModel.mode_index == 2: HorizontalLayout {
+            height: 18px;
+            spacing: 14px;
+            alignment: start;
+
+            LegendItem {
+                swatch: #ef4444;
+                label: "red = removed";
+            }
+
+            LegendItem {
+                swatch: #22c55e;
+                label: "green = added";
+            }
+
+            Text {
+                text: "outlines: red before, green after";
+                font-size: 11px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+        }
+
+        // The dimmed status line.
+        Text {
+            height: 18px;
+            text: CompareModel.status;
+            font-size: 11px;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        }
+    }
+}

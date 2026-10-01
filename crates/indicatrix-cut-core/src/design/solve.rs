@@ -46,7 +46,13 @@ impl Design {
             Err(DesignSolveError::Mismatch(_)) => {
                 unreachable!("solve_with takes no previous/solved list, so never mismatches")
             }
-            Err(e @ (DesignSolveError::MissingAnchor(_) | DesignSolveError::Target(_))) => Err(e),
+            // A non-finite angle/index/mast anywhere in the design -- surfaced
+            // as a real error here too, never silently solved through.
+            Err(
+                e @ (DesignSolveError::MissingAnchor(_)
+                | DesignSolveError::Target(_)
+                | DesignSolveError::Solve(SolveError::NonFiniteInput { .. })),
+            ) => Err(e),
         }
     }
 
@@ -155,7 +161,12 @@ impl Design {
             Err(DesignSolveError::Solve(SolveError::Cancelled)) => {
                 unreachable!("SolveControl::default() never sets cancel")
             }
-            Err(e @ (DesignSolveError::MissingAnchor(_) | DesignSolveError::Target(_))) => Err(e),
+            // See the matching arm on `Self::solve`.
+            Err(
+                e @ (DesignSolveError::MissingAnchor(_)
+                | DesignSolveError::Target(_)
+                | DesignSolveError::Solve(SolveError::NonFiniteInput { .. })),
+            ) => Err(e),
         }
     }
 
@@ -201,7 +212,7 @@ impl Design {
             }));
         }
 
-        let substituted = Self::substitute_inputs(inputs, previous, dirty);
+        let substituted = self.substitute_inputs(inputs, previous, dirty);
         Ok(solve_meet_points_with(
             self.meta.gear_teeth_abs(),
             &substituted,
@@ -218,7 +229,7 @@ impl Design {
         previous: &[SolvedTier],
         dirty: &std::collections::BTreeSet<usize>,
     ) -> Vec<MeetTierInput> {
-        Self::substitute_inputs(self.meet_tier_inputs(), previous, dirty)
+        self.substitute_inputs(self.meet_tier_inputs(), previous, dirty)
     }
 
     /// Shared by [`Self::resolve_dirty_with`] and [`Self::substituted_inputs`]:
@@ -229,12 +240,26 @@ impl Design {
     /// itself) so [`Self::resolve_dirty_with`] can pass its own
     /// [`Self::resolved_meet_tier_inputs`] result through without resolving
     /// targets twice.
+    ///
+    /// Every tier index carrying a [`crate::design::TierTarget`] is
+    /// unioned into `dirty` before calling [`crate::resolve::affected_tiers`],
+    /// unconditionally: `inputs` (built from [`Self::resolved_meet_tier_inputs`])
+    /// has already turned such a tier's target into a real, freshly-resolved
+    /// [`MeetConstraint::ScaleReference`] -- indistinguishable, to
+    /// `affected_tiers`, from an ordinary authored anchor -- so without this, a
+    /// target tier `affected_tiers` marks "unaffected" would get its
+    /// just-resolved constraint silently overwritten below with `previous`'s
+    /// STALE mast, instead of the one this call just derived for the design's
+    /// CURRENT state.
     fn substitute_inputs(
+        &self,
         inputs: Vec<MeetTierInput>,
         previous: &[SolvedTier],
         dirty: &std::collections::BTreeSet<usize>,
     ) -> Vec<MeetTierInput> {
-        let affected = crate::resolve::affected_tiers(&inputs, dirty);
+        let mut dirty_with_targets = dirty.clone();
+        dirty_with_targets.extend((0..inputs.len()).filter(|&i| self.tier_target(i).is_some()));
+        let affected = crate::resolve::affected_tiers(&inputs, &dirty_with_targets);
         inputs
             .into_iter()
             .enumerate()

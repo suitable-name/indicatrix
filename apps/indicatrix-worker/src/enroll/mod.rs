@@ -71,27 +71,38 @@
 //! (`crate::enroll_client::run_issue_token`) is a small TLS client that connects to this
 //! listener using the operator's own `ca.pem` for normal server verification.
 //!
-//! Issuing is further restricted to loopback peers only, checked against the actual
+//! Issuing is restricted twice. The peer must be on loopback, checked against the actual
 //! accepted `TcpStream::peer_addr()` (the same listener also accepts non-loopback claim
-//! connections under `--allow-remote`). This mirrors `serve`'s own loopback-bind trust:
-//! local access already lets an operator read `ca.key` and mint certificates directly,
-//! so no further in-band credential is layered on top of a loopback source the OS
-//! itself guarantees.
+//! connections under `--allow-remote`). And the request must carry the operator secret,
+//! `<pki_dir>/issue.secret`: 32 random bytes, hex, created with owner-only permissions the
+//! first time `serve` starts an enrollment listener and compared in constant time. A
+//! loopback source alone is not authority -- any local user, and any port forward onto the
+//! loopback listener, appears as loopback -- whereas reading `issue.secret` needs the same
+//! access as reading `ca.key`, which already lets an operator mint certificates directly.
+//! A registry built without a secret refuses every `Issue`.
 
 use crate::pki;
-use indicatrix_net::messages::PeerRole;
+use indicatrix_net::{
+    enroll::{
+        OPERATOR_SECRET_LEN, operator_secret_path, read_operator_secret, write_operator_secret,
+    },
+    messages::PeerRole,
+};
 use std::{
     net::{SocketAddr, TcpListener},
     path::{Path, PathBuf},
     sync::Arc,
     thread,
 };
+use zeroize::Zeroizing;
 
 mod connection;
 mod registry;
 #[cfg(test)]
 mod tests;
 
+/// The per-listener pending-enrollment table ([`EnrollRegistry`]) and why issuing one
+/// failed ([`EnrollIssueError`]) -- see [`registry`]'s own module doc comment.
 pub use registry::{EnrollIssueError, EnrollRegistry};
 
 /// How long an issued token remains claimable. Fixed, not operator-configurable -- the
@@ -99,9 +110,30 @@ pub use registry::{EnrollIssueError, EnrollRegistry};
 pub const TOKEN_TTL_SECS: u64 = 180;
 
 /// Caps how many enrollments can be pending at once, purely to bound memory against a
-/// runaway or misbehaving admin caller -- the `Issue` path is already loopback-only, so
-/// this is a sanity bound, not a defense against a remote attacker.
+/// runaway or misbehaving admin caller -- the `Issue` path needs loopback and the operator
+/// secret, so this is a sanity bound, not a defense against a remote attacker.
 const MAX_PENDING: usize = 64;
+
+/// This listener's own cap on concurrent AUTHENTICATED-phase (post-TLS-handshake)
+/// connections (F-06b).
+///
+/// Deliberately small, and NEVER a clone of the matching viewer/worker listener's real
+/// `--max-connections` limiter. Before this fix, `EnrollConfig` was built with that
+/// shared limiter (see `crate::serve::start_inner`'s old call sites): 64 anonymous
+/// connections to the enrollment port (no client certificate required at all -- see the
+/// module doc comment) could exhaust every real viewer/worker slot on the OTHER port,
+/// since both listeners drew from the same counter. A claim/issue exchange is brief and
+/// one-shot, so this cap is unrelated to how many real viewers/workers
+/// `--max-connections` allows.
+pub const ENROLL_MAX_CONNECTIONS: usize = 8;
+
+/// How many bare, not-yet-TLS-handshaked enrollment connections are allowed in flight at
+/// once, as a multiple of [`ENROLL_MAX_CONNECTIONS`] -- this listener's own counterpart
+/// to `crate::serve::limiter::PRE_AUTH_HANDSHAKE_MULTIPLIER` (not reused directly: that
+/// constant lives behind `#[cfg(feature = "worker")]` re-exports, but this module runs
+/// in every build). Checked in the accept loop BEFORE a thread is even spawned,
+/// mirroring `serve::accept::run_accept_loop`'s own order (F-06b).
+const ENROLL_HANDSHAKE_MULTIPLIER: usize = 4;
 
 /// Builds the enrollment listener's TLS server config: TLS 1.3 only, presenting
 /// `[server_cert, ca_cert]` as the chain -- deliberately including the CA certificate
@@ -110,8 +142,9 @@ const MAX_PENDING: usize = 64;
 /// `crate::enroll_client::PinnedCaVerifier`.
 ///
 /// Requires no client certificate: an enrolling client has none yet, and `cert
-/// issue-token` authenticates by connecting from loopback instead -- a weaker TLS
-/// posture than the render listener's, hence a separate config on a separate port.
+/// issue-token` authenticates by connecting from loopback with the operator secret
+/// instead -- a weaker TLS posture than the render listener's, hence a separate config on
+/// a separate port.
 ///
 /// # Errors
 ///
@@ -150,42 +183,77 @@ pub struct EnrollConfig {
     pub allowlist_path: Option<PathBuf>,
     /// TLS with the server certificate and CA chain, no client auth.
     pub tls_config: Arc<rustls::ServerConfig>,
-    /// The matching listener's own connection cap, shared here so this listener's
-    /// unauthenticated connections are bounded too -- see
-    /// [`crate::serve::ConnectionLimiter`]'s doc comment.
+    /// This listener's OWN authenticated-connection cap (F-06b) -- see
+    /// [`ENROLL_MAX_CONNECTIONS`]'s doc comment for why it is never shared with the
+    /// matching viewer/worker listener's real limiter.
     pub limiter: crate::serve::ConnectionLimiter,
+    /// The pre-TLS cap on bare, not-yet-handshaked connections, checked in the accept
+    /// loop before a thread is even spawned (F-06b).
+    pub handshake_limiter: crate::serve::ConnectionLimiter,
     /// Which client role this listener enrolls (see the module doc comment).
     pub role: PeerRole,
+    /// The operator secret an `Issue` request must present, loaded from (or created in)
+    /// `<pki_dir>/issue.secret` by [`Self::build`].
+    pub operator_secret: Zeroizing<[u8; OPERATOR_SECRET_LEN]>,
 }
 
 impl EnrollConfig {
     /// Builds an [`EnrollConfig`] for `role` from the same `serve --ca/--cert/--key`
-    /// paths, the role's resolved allowlist path and the matching listener's
-    /// [`crate::serve::ConnectionLimiter`] to share.
+    /// paths and the role's resolved allowlist path. Builds its OWN pair of limiters
+    /// (F-06b) rather than taking one from the caller -- see [`ENROLL_MAX_CONNECTIONS`].
     ///
     /// # Errors
     ///
     /// A human-readable message if the TLS config can't be built (see
-    /// [`build_enroll_server_config`]).
+    /// [`build_enroll_server_config`]) or the operator secret can't be loaded or created
+    /// (see [`load_or_create_operator_secret`]).
     pub fn build(
         bind_addr: SocketAddr,
         ca_path: &Path,
         cert_path: &Path,
         key_path: &Path,
         allowlist_path: Option<PathBuf>,
-        limiter: crate::serve::ConnectionLimiter,
         role: PeerRole,
     ) -> Result<Self, String> {
         let tls_config = build_enroll_server_config(ca_path, cert_path, key_path)?;
+        let pki_dir = pki::role::pki_dir_of(ca_path);
+        let operator_secret = load_or_create_operator_secret(&pki_dir)?;
         Ok(Self {
             bind_addr,
-            pki_dir: pki::role::pki_dir_of(ca_path),
+            pki_dir,
             allowlist_path,
             tls_config,
-            limiter,
+            limiter: crate::serve::ConnectionLimiter::new(ENROLL_MAX_CONNECTIONS),
+            handshake_limiter: crate::serve::ConnectionLimiter::new(
+                ENROLL_MAX_CONNECTIONS.saturating_mul(ENROLL_HANDSHAKE_MULTIPLIER),
+            ),
             role,
+            operator_secret,
         })
     }
+}
+
+/// Loads `<pki_dir>/issue.secret`, creating it (32 fresh CSPRNG bytes, owner-only
+/// permissions) when it does not exist yet.
+///
+/// # Errors
+///
+/// A human-readable message if an existing file is unreadable or malformed (never
+/// silently replaced), or a new one can't be created.
+fn load_or_create_operator_secret(
+    pki_dir: &Path,
+) -> Result<Zeroizing<[u8; OPERATOR_SECRET_LEN]>, String> {
+    if operator_secret_path(pki_dir).exists() {
+        return read_operator_secret(pki_dir);
+    }
+    let mut secret = Zeroizing::new([0u8; OPERATOR_SECRET_LEN]);
+    registry::random_bytes(secret.as_mut_slice()).map_err(|e| e.to_string())?;
+    write_operator_secret(pki_dir, &secret)?;
+    tracing::info!(
+        "indicatrix-worker serve: created the enrollment operator secret {} (`cert issue-token` reads it)",
+        operator_secret_path(pki_dir).display()
+    );
+    Ok(secret)
 }
 
 /// Binds `config.bind_addr` and spawns a background thread accepting enrollment
@@ -221,23 +289,37 @@ pub fn spawn_enroll_listener(config: EnrollConfig) -> Result<SocketAddr, String>
         pki::role::role_name(config.role)
     );
 
-    let registry = Arc::new(EnrollRegistry::for_role(config.role));
+    let registry = Arc::new(
+        EnrollRegistry::for_role(config.role).with_operator_secret(config.operator_secret),
+    );
     let tls_config = config.tls_config;
     let pki_dir = config.pki_dir;
     let allowlist_path = config.allowlist_path;
     let limiter = config.limiter;
+    let handshake_limiter = config.handshake_limiter;
 
     thread::spawn(move || {
         for incoming in listener.incoming() {
             match incoming {
                 Ok(stream) => {
                     let peer = stream.peer_addr().ok();
+                    // Bounds bare, not-yet-TLS-handshaked connections regardless of what
+                    // follows -- checked before spawning a thread at all, mirroring
+                    // `serve::accept::run_accept_loop`'s own order (F-06b).
+                    let Ok(handshake_slot) = handshake_limiter.try_acquire() else {
+                        tracing::warn!(
+                            "enrollment connection {peer:?}: refusing -- too many not-yet-handshaked enrollment \
+                             connections in flight"
+                        );
+                        continue;
+                    };
                     let tls_config = Arc::clone(&tls_config);
                     let registry = Arc::clone(&registry);
                     let pki_dir = pki_dir.clone();
                     let allowlist_path = allowlist_path.clone();
                     let limiter = limiter.clone();
                     thread::spawn(move || {
+                        let _handshake_slot = handshake_slot; // held for this thread's whole lifetime
                         let Some(tls_stream) =
                             connection::accept_enroll_tls(stream, &tls_config, peer)
                         else {
@@ -248,10 +330,12 @@ pub fn spawn_enroll_listener(config: EnrollConfig) -> Result<SocketAddr, String>
                         // order), so a bare connect that never completes TLS never holds
                         // a slot; this listener's own `HANDSHAKE_TIMEOUT` (applied inside
                         // `accept_enroll_tls`) already bounds how long that can take.
+                        // This is this listener's OWN limiter (F-06b), never shared with
+                        // the matching viewer/worker listener's real one.
                         let Ok(_slot) = limiter.try_acquire() else {
                             tracing::warn!(
-                                "enrollment connection {peer:?}: refusing -- already at --max-connections capacity \
-                                 (shared with the matching viewer/worker listener)"
+                                "enrollment connection {peer:?}: refusing -- already at this listener's own \
+                                 enrollment connection cap"
                             );
                             return;
                         };

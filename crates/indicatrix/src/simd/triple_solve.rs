@@ -20,18 +20,31 @@ pub const TRIPLE_LANES: usize = 8;
 /// offsets.
 #[derive(Default, Clone)]
 pub struct TripleBatch {
+    /// X component of the first plane's normal, per lane.
     pub ax: [f64; TRIPLE_LANES],
+    /// Y component of the first plane's normal, per lane.
     pub ay: [f64; TRIPLE_LANES],
+    /// Z component of the first plane's normal, per lane.
     pub az: [f64; TRIPLE_LANES],
+    /// X component of the second plane's normal, per lane.
     pub bx: [f64; TRIPLE_LANES],
+    /// Y component of the second plane's normal, per lane.
     pub by: [f64; TRIPLE_LANES],
+    /// Z component of the second plane's normal, per lane.
     pub bz: [f64; TRIPLE_LANES],
+    /// X component of the third plane's normal, per lane.
     pub cx: [f64; TRIPLE_LANES],
+    /// Y component of the third plane's normal, per lane.
     pub cy: [f64; TRIPLE_LANES],
+    /// Z component of the third plane's normal, per lane.
     pub cz: [f64; TRIPLE_LANES],
+    /// Offset of the first plane, per lane.
     pub ma: [f64; TRIPLE_LANES],
+    /// Offset of the second plane, per lane.
     pub mb: [f64; TRIPLE_LANES],
+    /// Offset of the third plane, per lane.
     pub mc: [f64; TRIPLE_LANES],
+    /// Number of occupied lanes.
     pub len: usize,
 }
 
@@ -59,9 +72,13 @@ impl TripleBatch {
 /// Per-lane determinant and intersection point of a solved [`TripleBatch`].
 /// Lanes past `len`, and lanes whose `|det|` the caller rejects, hold garbage.
 pub struct TripleSolution {
+    /// Determinant of the three normals, per lane.
     pub det: [f64; TRIPLE_LANES],
+    /// X coordinate of the intersection point, per lane.
     pub vx: [f64; TRIPLE_LANES],
+    /// Y coordinate of the intersection point, per lane.
     pub vy: [f64; TRIPLE_LANES],
+    /// Z coordinate of the intersection point, per lane.
     pub vz: [f64; TRIPLE_LANES],
 }
 

@@ -31,6 +31,12 @@ pub mod uniaxial_fresnel;
 /// function can also reference it.
 const NUM_CHANNELS: usize = 8;
 
+/// The bounce cap every front end starts a fresh session with.
+///
+/// The desktop's settings and live viewport, its batch and compare engines and the web
+/// app all seed their `max_bounces` from it.
+pub const DEFAULT_MAX_BOUNCES: u32 = 12;
+
 // Re-exports below preserve paths reachable directly off `raytracer` before the module
 // split, at their original visibility. `pub(crate)` ones carry #[allow(unused_imports)]:
 // sibling submodules reach each other directly, never through this hub, but the path
@@ -38,7 +44,7 @@ const NUM_CHANNELS: usize = 8;
 // feature="gpu"-gated Tier 2 harnesses, crates/indicatrix/tests/).
 
 // camera.rs
-pub use camera::{Camera, FacetFinish, HitRecord, Ray};
+pub use camera::{Camera, DEFAULT_FOV_DEG, DEFAULT_POSE, FacetFinish, HitRecord, OrbitPose, Ray};
 
 // intersect.rs
 pub use intersect::intersect_polyhedron;
@@ -75,7 +81,7 @@ pub use sampling::{
 pub use environment::{
     BACKDROP_GREY, BACKDROP_WHITE, EnvironmentSource, LightingModel, LightingPreset,
     LightingRigParams, blackbody_spectrum, sample_studio_environment,
-    sample_studio_environment_observed,
+    sample_studio_environment_observed, sample_studio_environment_with_rig,
 };
 
 // color.rs
@@ -113,14 +119,15 @@ pub(crate) use absorption::{channel_absorption_alphas_assigned, signed_frame_rot
 pub(crate) use absorption::channel_absorption_alphas;
 
 // refraction.rs
+#[cfg(feature = "gpu")]
+pub(crate) use refraction::per_channel_uniaxial_indices;
 #[allow(
     unused_imports,
     reason = "preserves the pre-split raytracer::X path for same-crate callers outside this \
               module tree"
 )]
 pub(crate) use refraction::{
-    BounceRefractionGeometry, RayMaterialContext, per_channel_uniaxial_indices, theta_c_for_bounce,
-    tir_phase_delta,
+    BounceRefractionGeometry, RayMaterialContext, theta_c_for_bounce, tir_phase_delta,
 };
 
 // scattering.rs

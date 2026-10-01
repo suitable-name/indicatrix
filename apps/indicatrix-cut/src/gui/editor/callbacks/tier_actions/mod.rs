@@ -67,10 +67,17 @@ pub(in crate::gui::editor) use nudge::{
     setup_inline_set_angle_callback, setup_nudge_angle_callback,
 };
 pub(in crate::gui::editor) use selection::setup_toggle_multi_select_callback;
+// The facet overlay's merge-then-resubmit primitive, shared with the manipulation
+// module (`gui::editor::manipulate`), which outlines the tiers a handle drag moves.
+pub(in crate::gui::editor) use facet_overlay::resubmit_facet_overlay;
 pub(in crate::gui::editor) use solid_picking::{
+    map_to_pick_coordinates, pick_margin, pick_pixels_to_logical, selected_facet_id,
     setup_solid_facet_click_callback, setup_solid_facet_hover_callback,
     setup_solid_selected_tier_changed_callback,
 };
+// The pick-frame arithmetic the manipulation module's tests round-trip.
+#[cfg(test)]
+pub(in crate::gui::editor) use solid_picking::{letterbox_margin, logical_to_pick_pixels};
 pub(in crate::gui::editor) use tier_crud::{
     setup_duplicate_tier_callback, setup_remove_tier_callback, setup_toggle_detach_callback,
 };

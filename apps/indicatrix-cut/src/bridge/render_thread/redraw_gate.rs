@@ -29,6 +29,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
+/// Coalesces redraw requests so at most one is pending.
 pub struct RedrawGate<T> {
     slot: Mutex<Option<T>>,
     pending: AtomicBool,
@@ -36,6 +37,7 @@ pub struct RedrawGate<T> {
 }
 
 impl<T> RedrawGate<T> {
+    /// Creates an empty instance.
     pub const fn new() -> Self {
         Self {
             slot: Mutex::new(None),
@@ -76,6 +78,7 @@ impl<T> RedrawGate<T> {
         self.generation.load(Ordering::Acquire)
     }
 
+    /// Whether a redraw is currently pending.
     #[cfg(test)]
     pub fn is_pending(&self) -> bool {
         self.pending.load(Ordering::Acquire)

@@ -3,11 +3,14 @@
 
 use super::{
     planes::{ReconstructedPlanesInput, apply_reconstructed_planes},
-    shared::{catalogue_material_guess, format_optional_proportion, sides_from_angle_sequence},
+    shared::{catalogue_material_guess, format_optional_proportion, sides_from_rows},
 };
 use crate::{
     AngleItem, DiagramDetailData, FileItem, LibraryModel, MainWindow, TiltModel, ViewportModel,
-    bridge::{library::source as library_source, render_thread::RenderContext},
+    bridge::{
+        library::source::{self as library_source, LibrarySource},
+        render_thread::RenderContext,
+    },
     gui::{
         render::camera_lighting::resubmit_live_solid,
         solid_preview::preview_state::SolidPreviewState,
@@ -36,38 +39,87 @@ use tracing::error;
 /// `preview_state` is forwarded to [`apply_design_record_to_ui`], not used here
 /// directly -- it's only needed once the design's record (and its planes) actually
 /// arrive, inside the completion closure below.
+///
+/// # Staleness guard
+///
+/// `source`/`seq` guard against exactly this bug: a slow
+/// `FetchDesign` reply landing after the cutter has already selected a different row,
+/// or switched away from this remote worker entirely (back to Local, or to another
+/// remote), must never re-bind `LibraryModel.selected_entry_id`/`current_detail` to
+/// stale remote data -- `local::organize`'s ignore/delete callbacks guard only on
+/// `source.is_remote()`, so a stale reply that slipped through here would hand them a
+/// REMOTE entry id while `source` (correctly) still reads Local, and they would act on
+/// the local database with it. `seq` is captured by the caller
+/// (`load_diagram_detail_via_source`) BEFORE this request is even built, and `source`
+/// is re-read fresh at reply time -- see [`reply_is_current`] for the actual
+/// (pure, unit-tested) predicate.
 pub(super) fn load_diagram_detail_remote(
     ui: &MainWindow,
     worker: WorkerSettings,
     render_ctx: &Arc<Mutex<RenderContext>>,
     entry_id: i64,
     preview_state: &Arc<SolidPreviewState>,
+    source: Arc<Mutex<LibrarySource>>,
+    seq: u64,
 ) {
     let render_ctx = render_ctx.clone();
     let preview_state = Arc::clone(preview_state);
+    let request_source = LibrarySource::Remote(worker.clone());
     library_source::spawn_library_request(
         ui.as_weak(),
         worker,
         LibraryRequest::FetchDesign { entry_id },
-        move |ui, result| match result {
-            Ok(LibraryResponse::Design(record)) => {
-                apply_design_record_to_ui(ui, &render_ctx, &record, &preview_state);
+        move |ui, result| {
+            let current_source = source
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            if !reply_is_current(
+                crate::gui::library::search::is_current_search(seq),
+                &request_source,
+                &current_source,
+            ) {
+                return;
             }
-            Ok(LibraryResponse::NotFound) => {
-                ui.global::<LibraryModel>()
-                    .set_status_message("Diagram detail not found on the remote library.".into());
-            }
-            Ok(_) => {
-                ui.global::<LibraryModel>()
-                    .set_status_message("Unexpected reply fetching remote diagram detail.".into());
-            }
-            Err(e) => {
-                error!("Remote FetchDesign failed: {e}");
-                ui.global::<LibraryModel>()
-                    .set_status_message(format!("Error loading remote detail: {e}").into());
+            match result {
+                Ok(LibraryResponse::Design(record)) => {
+                    apply_design_record_to_ui(ui, &render_ctx, &record, &preview_state);
+                }
+                Ok(LibraryResponse::NotFound) => {
+                    ui.global::<LibraryModel>().set_status_message(
+                        "Diagram detail not found on the remote library.".into(),
+                    );
+                }
+                Ok(_) => {
+                    ui.global::<LibraryModel>().set_status_message(
+                        "Unexpected reply fetching remote diagram detail.".into(),
+                    );
+                }
+                Err(e) => {
+                    error!("Remote FetchDesign failed: {e}");
+                    ui.global::<LibraryModel>()
+                        .set_status_message(format!("Error loading remote detail: {e}").into());
+                }
             }
         },
     );
+}
+
+/// Whether a remote-detail reply is still safe to apply to the UI: `false` once a
+/// newer request has superseded this one (`seq_is_current` false), or the active
+/// library source has since moved away from `request_source` (switched to local, or to
+/// a different remote worker) even if `seq` itself is still current -- e.g. a switch
+/// implemented as a straight assignment rather than through the same `SEARCH_SEQ`
+/// counter. Pulled out as a pure function (no thread-local, no `Arc<Mutex<_>>`) so both
+/// ways a reply can go stale are unit-tested directly, without a live network round
+/// trip or Slint event loop -- see the tests below.
+#[must_use]
+fn reply_is_current(
+    seq_is_current: bool,
+    request_source: &LibrarySource,
+    current_source: &LibrarySource,
+) -> bool {
+    seq_is_current && request_source == current_source
 }
 
 fn apply_design_record_to_ui(
@@ -124,9 +176,14 @@ fn apply_design_record_to_ui(
     // local route) sets.
 
     // See `apply_reconstructed_planes`'s call site in `load_diagram_detail`
-    // for the local path's identical treatment -- `sides_from_angle_sequence` is
-    // shared by both so the two can never disagree about a design's own sides.
-    let sides = sides_from_angle_sequence(record.angle_settings.iter().map(|a| a.angle.as_str()));
+    // for the local path's identical treatment -- `sides_from_rows` is shared by
+    // both so the two can never disagree about a design's own sides.
+    let sides = sides_from_rows(
+        record
+            .angle_settings
+            .iter()
+            .map(|a| (a.facet.as_str(), a.angle.as_str(), a.index.as_str())),
+    );
     let angle_items: Vec<AngleItem> = record
         .angle_settings
         .iter()
@@ -198,5 +255,57 @@ fn apply_design_record_to_ui(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         resubmit_live_solid(ui, &ctx, preview_state);
+    }
+}
+
+#[cfg(test)]
+mod reply_is_current_tests {
+    use super::{LibrarySource, reply_is_current};
+    use crate::settings::WorkerSettings;
+
+    fn worker(address: &str) -> WorkerSettings {
+        WorkerSettings {
+            address: address.to_string(),
+            ..WorkerSettings::default()
+        }
+    }
+
+    #[test]
+    fn current_seq_and_matching_remote_source_is_current() {
+        let source = LibrarySource::Remote(worker("10.0.0.5:9443"));
+        assert!(reply_is_current(true, &source, &source));
+    }
+
+    #[test]
+    fn a_superseded_seq_is_never_current_even_with_a_matching_source() {
+        let source = LibrarySource::Remote(worker("10.0.0.5:9443"));
+        assert!(!reply_is_current(false, &source, &source));
+    }
+
+    #[test]
+    fn switching_to_local_before_the_reply_lands_is_never_current() {
+        let request_source = LibrarySource::Remote(worker("10.0.0.5:9443"));
+        assert!(!reply_is_current(
+            true,
+            &request_source,
+            &LibrarySource::Local
+        ));
+    }
+
+    #[test]
+    fn switching_to_a_different_remote_worker_before_the_reply_lands_is_never_current() {
+        let request_source = LibrarySource::Remote(worker("10.0.0.5:9443"));
+        let current_source = LibrarySource::Remote(worker("10.0.0.6:9443"));
+        assert!(!reply_is_current(true, &request_source, &current_source));
+    }
+
+    #[test]
+    fn a_stale_seq_and_a_moved_source_together_are_still_never_current() {
+        let request_source = LibrarySource::Remote(worker("10.0.0.5:9443"));
+        assert!(!reply_is_current(
+            false,
+            &request_source,
+            &LibrarySource::Local
+        ));
     }
 }

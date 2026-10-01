@@ -84,12 +84,22 @@
 //! the family-normalization problem in point 3; each choice only relocates the bias.
 //!
 //! **Verification.** `transport::exit_splitting_tests` compares splitting on vs. off
-//! (independent seeds, two-sample z-scores) across several materials and a
-//! bounce-budget sweep, and asserts the means agree while variance drops. A
-//! single-wavelength ground truth (every companion terminated before the first
-//! bounce, degenerating to a plain per-wavelength Monte Carlo) puts both the legacy
-//! and this estimator within `|z| < 2.1` of reference for Diamond and Synthetic
-//! Moissanite at 4, 6 and 12 bounces. The GPU mirror in
+//! on paired draws (the same seed and hero for both arms, so the shared path noise
+//! cancels) across several materials and a bounce-budget sweep, and asserts the means
+//! stay within one percent plus noise and the Y variance does not rise beyond its own
+//! estimate's noise: it drops by 30-80% for Zircon and Synthetic Moissanite, while
+//! Rutile's heavy-tailed radiance under the ring lights leaves its 10% drop within one
+//! standard error. The one percent is the shared-geometry approximation both arms rest
+//! on: a companion rides the hero's path while its own refracted direction is within
+//! `DIRECTION_MATCH_COS_TOL` of the hero's, and splitting leans on that harder, so the
+//! arms differ by a small amount that scales with the tolerance (Rutile +0.4% / -0.9%
+//! in X / Z at the current tolerance, +0.1% at 1e-7, +2.4% / -2.3% at 1e-5; Diamond
+//! none). That establishes the split estimator agrees with the unsplit one to that
+//! level, and that the two stay in step as the bounce budget shrinks. Both arms are the
+//! same tracer,
+//! so a bias they share would not show up: no independent ground truth (for example a
+//! plain per-wavelength Monte Carlo with every companion terminated before the first
+//! bounce) is compared against. The GPU mirror in
 //! `renderer/shaders/spectral_transport.wgsl` implements the same three points.
 //!
 //! # Module layout
@@ -116,16 +126,42 @@ mod uniaxial_entry;
 mod uniaxial_internal;
 mod wavelength_cache;
 
+/// Smallest cosine between two channels' refracted directions for them to count as the
+/// same geometric path (`1 - 1e-6`).
+///
+/// A channel whose own direction at a dispersive event falls below it against the
+/// hero's has diverged from the shared hero-driven path. The GPU megakernel carries the
+/// identical constant in `shaders/transport_bounce/01_header_and_constants.wgsl`.
+pub const DIRECTION_MATCH_COS_TOL: f32 = 1.0 - 1e-6;
+
+/// Lower clamp on the per-channel unpolarised reflectance or transmittance.
+///
+/// It scales `path_pdf` (never divides `stokes` directly), keeping the density strictly
+/// positive for every live technique.
+pub const R_UNPOL_PDF_MIN: f32 = 1e-4;
+
+/// Upper clamp paired with [`R_UNPOL_PDF_MIN`]: `1 - 1e-4`.
+pub const R_UNPOL_PDF_MAX: f32 = 1.0 - 1e-4;
+
+/// Lower clamp on the reflect-vs-transmit selection probability.
+///
+/// `[0.02, 0.98]` caps the `1/p` and `1/(1-p)` weights at 50x where the unclamped
+/// reflectance approaches 0 or 1 at grazing incidence, without biasing the estimator
+/// (the contribution is weighted by the true `R`/`T` over this same `p`).
+pub const R_UNPOL_SELECT_MIN: f32 = 0.02;
+
+/// Upper clamp paired with [`R_UNPOL_SELECT_MIN`].
+pub const R_UNPOL_SELECT_MAX: f32 = 0.98;
+
 pub(in crate::optics::raytracer) use context::{
     BounceContext, BounceRay, BounceState, ExitEvent, ExitSplitCtx, PathModeState, RngDraw,
 };
 pub(crate) use context::{RayMaterialContext, RayWavelengthCache};
 pub(in crate::optics::raytracer) use dispatch::apply_partial_fresnel_bounce;
 pub(in crate::optics::raytracer) use geometry::compute_bounce_refraction_geometry;
-pub(crate) use geometry::{
-    BounceRefractionGeometry, per_channel_uniaxial_indices, poynting_dir_for_mode,
-    theta_c_for_bounce,
-};
+#[cfg(feature = "gpu")]
+pub(crate) use geometry::per_channel_uniaxial_indices;
+pub(crate) use geometry::{BounceRefractionGeometry, poynting_dir_for_mode, theta_c_for_bounce};
 pub(in crate::optics::raytracer) use tir::apply_tir_bounce;
 pub(crate) use tir::tir_phase_delta;
 pub(in crate::optics::raytracer) use uniaxial_entry::entry_eigenmode_selection;

@@ -59,9 +59,14 @@ reasons mean and how to fix them).
 Shown once the remote is available and Compute includes it: **Full data**
 (the remote's raw samples are merged with your own) or **Final picture
 only** (the remote renders and tone-maps the whole image and sends one
-finished PNG — much less data, but your own CPU/GPU do not help). The
-starting choice is the remote's own default ("Export transfer (default)" in
-the Remote Coordinator form); see Chapter 10, "Transfer: full data or final
+finished PNG — much less data than Full data). With **Compute: Local +
+Remote**, your own CPU/GPU is not left idle even on Final picture: a
+Settings toggle, "Final-picture exports: this machine renders a share too"
+(on by default), traces a share of the samples locally and uploads it for
+the coordinator to fold in before tone-mapping — turn it off if you'd
+rather this machine sit out the export. The starting choice for Transfer
+itself is the remote's own default ("Export transfer (default)" in the
+Remote Coordinator form); see Chapter 10, "Transfer: full data or final
 picture". The tilt video's export section has the same row.
 
 ### Max Ray Bounces

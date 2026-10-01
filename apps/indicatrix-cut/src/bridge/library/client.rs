@@ -245,6 +245,7 @@ pub struct LibrarySession {
 }
 
 impl LibrarySession {
+    /// Creates an empty instance.
     #[must_use]
     pub const fn new(worker: WorkerSettings) -> Self {
         Self {
@@ -378,6 +379,7 @@ mod tests {
         let error_reply = encoded_response(&LibraryResponse::Error(messages::ErrorMsg {
             code: 1,
             message: "bad filter".to_string(),
+            request_id: None,
         }));
         let mut held = Some(FakeStream::new(error_reply));
         let connect_calls = std::cell::Cell::new(0);

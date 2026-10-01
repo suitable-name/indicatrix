@@ -337,6 +337,7 @@ impl LanePool {
             target: range.samples,
             pixels: merger.pixel_count(),
             sched: epoch::Sched::new(),
+            lanes: &self.lanes,
         };
         if !range.is_empty() {
             thread::scope(|scope| {

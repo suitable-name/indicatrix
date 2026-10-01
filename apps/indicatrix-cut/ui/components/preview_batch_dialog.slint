@@ -43,6 +43,7 @@ export component PreviewBatchDialog inherits Rectangle {
     in property <bool> remote_active: BatchModel.preview_remote_active;
     in property <bool> done: BatchModel.preview_done;
     in property <string> summary: BatchModel.preview_summary;
+    in property <bool> offer_regenerate: BatchModel.preview_offer_regenerate;
 
     callback generate_confirmed();
     generate_confirmed => { BatchModel.preview_generate_confirmed(); }
@@ -61,7 +62,7 @@ export component PreviewBatchDialog inherits Rectangle {
         ? (root.local_active * 1.0) / root.local_lane_total
         : 0.0;
 
-    background: #00000088;
+    background: Theme.overlay-backdrop;
 
     // The card is wrapped in centering layouts rather than being a bare child with an
     // explicit `height`. That is load-bearing, not cosmetic:
@@ -97,12 +98,12 @@ export component PreviewBatchDialog inherits Rectangle {
                 height: root.confirming
                     ? Math.min(root.height - 96px, 360px)
                     : Math.min(root.height - 96px, 340px);
-                background: #11151f;
+                background: Theme.surface-dialog;
                 border-radius: Theme.radius-md;
                 border-width: 1px;
-                border-color: #334155;
+                border-color: Theme.border-dialog;
                 drop-shadow-blur: 24px;
-                drop-shadow-color: #000000bb;
+                drop-shadow-color: Theme.modal-shadow;
                 clip: true;
 
                 // Swallows clicks so they never reach anything behind this dialog -- same
@@ -130,9 +131,13 @@ export component PreviewBatchDialog inherits Rectangle {
                             VerticalLayout {
                                 spacing: 10px;
                                 Text {
-                                    text: root.offer_count == 1
-                                        ? "1 design has no rendered preview yet. Generate a front and top view for it now?"
-                                        : root.offer_count + " designs have no rendered preview yet. Generate front and top views for them now?";
+                                    text: root.offer_regenerate
+                                        ? (root.offer_count == 1
+                                            ? "Render a fresh front and top view for 1 design? Previews it already has are replaced."
+                                            : "Render fresh front and top views for " + root.offer_count + " designs? Previews they already have are replaced.")
+                                        : (root.offer_count == 1
+                                            ? "1 design has no rendered preview yet. Generate a front and top view for it now?"
+                                            : root.offer_count + " designs have no rendered preview yet. Generate front and top views for them now?");
                                     font-size: 12px;
                                     color: Theme.text-secondary;
                                     wrap: word-wrap;
@@ -223,9 +228,9 @@ export component PreviewBatchDialog inherits Rectangle {
                                 Rectangle {
                                     height: 8px;
                                     border-radius: 4px;
-                                    background: #0f172a;
+                                    background: Theme.surface-sunken;
                                     border-width: 1px;
-                                    border-color: #334155;
+                                    border-color: Theme.border-dialog;
                                     clip: true;
                                     Rectangle {
                                         x: 0;
@@ -256,9 +261,9 @@ export component PreviewBatchDialog inherits Rectangle {
                                 Rectangle {
                                     height: 6px;
                                     border-radius: 3px;
-                                    background: #0f172a;
+                                    background: Theme.surface-sunken;
                                     border-width: 1px;
-                                    border-color: #334155;
+                                    border-color: Theme.border-dialog;
                                     clip: true;
                                     Rectangle {
                                         x: 0;

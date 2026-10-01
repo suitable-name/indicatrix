@@ -31,7 +31,7 @@ use crate::cli::ComputeMode;
 use emit::{emit_final, emit_progress_heartbeat, emit_tick_or_heartbeat};
 use indicatrix::renderer::gpu_backend::GpuBackend;
 use indicatrix_net::messages::{
-    Done, NetError, PayloadEncoding, RenderRequest, Stats, StreamEvent,
+    Done, ErrorMsg, NetError, PayloadEncoding, RenderRequest, Stats, StreamEvent, error_codes,
 };
 use std::{
     io::{Read, Write},
@@ -117,6 +117,9 @@ fn write_cancelled_done<S: Write>(
             samples_done: guard.samples_done,
             requested_cadence_ms: request.stream.cadence_ms,
             effective_cadence_ms: effective_cadence_ms(streaming_start.elapsed(), emission_count),
+            // A cancelled request never reaches the contribution wait/reclaim -- see
+            // `run_stream_loop`'s doc comment.
+            reclaimed_samples: 0,
         }
     };
     indicatrix_net::messages::write_stream_event(
@@ -139,8 +142,89 @@ fn answer_ping<S: Write>(stream: &mut S, polled: ClientPoll) -> Result<ClientPol
     Ok(polled)
 }
 
+/// Routes one `CONTRIBUTION` (v16, its header already read): into `spec.contribution`
+/// when it's this request's own reserved slot, else discarded (a stale/mismatched
+/// `request_id`, or a request with no reserved share at all) -- either way the payload
+/// frame that follows is always consumed, keeping the stream in sync.
+///
+/// # Errors
+///
+/// [`NetError`] only for a transport-level failure -- the connection is out of sync and
+/// [`run_stream_loop`] ends the loop on it, exactly like any other read error.
+fn route_contribution<S: Read + Write + TimeoutRead>(
+    stream: &mut S,
+    spec: &StreamSpec<'_>,
+    request: &RenderRequest,
+    header: &indicatrix_net::messages::ContributionHeader,
+    timeouts: &mut TimeoutCache,
+) -> Result<(), NetError> {
+    match spec.contribution {
+        Some(slot) if header.request_id == request.request_id => {
+            slot.receive(stream, header, request.request_id, timeouts)
+        }
+        _ => indicatrix_net::messages::discard_contribution_payload(stream, header),
+    }
+}
+
+/// The mutable loop-control state [`poll_once`] updates for [`run_stream_loop`] --
+/// bundled so passing them through stays under clippy's argument-count limit.
+struct LoopFlags<'a> {
+    cancelled: &'a mut bool,
+    peer_closed: &'a mut bool,
+    pipelined_next: &'a mut Option<RenderRequest>,
+}
+
+/// One [`run_stream_loop`] iteration's poll-and-dispatch step: reads whatever's pending
+/// on `stream` (`poll_for_client_message`), answers a `PING` inline, and applies the
+/// result to `flags`/`cancel`. Returns `Some(outcome)` when the loop must break right
+/// away (a transport-level failure only -- cancel/close/pipelining instead set `flags`
+/// for the caller's own end-of-iteration checks).
+fn poll_once<S: Read + Write + TimeoutRead>(
+    stream: &mut S,
+    spec: &StreamSpec<'_>,
+    request: &RenderRequest,
+    cancel: &Arc<AtomicBool>,
+    timeouts: &mut TimeoutCache,
+    flags: &mut LoopFlags<'_>,
+) -> Option<Result<StreamOutcome, NetError>> {
+    match poll_for_client_message(stream, request.request_id, EMITTER_POLL, timeouts)
+        .and_then(|polled| answer_ping(stream, polled))
+    {
+        Ok(ClientPoll::Cancelled) => {
+            cancel.store(true, Ordering::Relaxed);
+            *flags.cancelled = true;
+        }
+        Ok(ClientPoll::NextRequest(next)) => {
+            // Implicit cancel-then-queue: discard the unsent buffer like an explicit
+            // CANCEL, and remember `next` for the caller.
+            cancel.store(true, Ordering::Relaxed);
+            *flags.cancelled = true;
+            *flags.pipelined_next = Some(*next);
+        }
+        Ok(ClientPoll::Closed) => {
+            cancel.store(true, Ordering::Relaxed);
+            *flags.peer_closed = true;
+        }
+        // v16: routed into this request's reserved slot, or discarded -- see
+        // `route_contribution`.
+        Ok(ClientPoll::Contribution(header)) => {
+            if let Err(e) = route_contribution(stream, spec, request, &header, timeouts) {
+                cancel.store(true, Ordering::Relaxed);
+                return Some(Err(e));
+            }
+        }
+        // A PING was already answered by `answer_ping` above.
+        Ok(ClientPoll::Pending | ClientPoll::Stale | ClientPoll::Ping(_)) => {}
+        Err(e) => {
+            cancel.store(true, Ordering::Relaxed);
+            return Some(Err(e));
+        }
+    }
+    None
+}
+
 /// The bundle [`run_stream_loop`] hands back to [`run_stream`] once its cadence-paced
-/// main loop ends -- the loop's own `Result`, plus the three flags/values `run_stream`
+/// main loop ends -- the loop's own `Result`, plus the flags/values `run_stream`
 /// needs afterward to decide between a normal finish, a peer-closed early return, and
 /// a cancelled `DONE` write.
 struct StreamLoopOutcome {
@@ -149,6 +233,131 @@ struct StreamLoopOutcome {
     cancelled: bool,
     pipelined_next: Option<RenderRequest>,
     emission_count: u32,
+    /// The stall watchdog failed the request: the producer thread may still be wedged, so
+    /// [`run_stream_with`] must not join it (the `ERROR` would never be written).
+    stalled: bool,
+}
+
+/// Watches the producer's `samples_done` against [`StreamSpec::stall_timeout`].
+///
+/// The emitter's own `PROGRESS` heartbeat says nothing about the producer, so without
+/// this a wedged tracer keeps every client's silence-based liveness deadline satisfied
+/// for as long as the connection lives.
+struct StallWatch {
+    timeout: Option<Duration>,
+    samples_done: u32,
+    since: Instant,
+}
+
+impl StallWatch {
+    /// A watch that starts its window now; `None` never reports a stall.
+    fn new(timeout: Option<Duration>) -> Self {
+        Self {
+            timeout,
+            samples_done: 0,
+            since: Instant::now(),
+        }
+    }
+
+    /// Records the latest `samples_done` (any change restarts the window) and returns
+    /// the window once the producer has gone longer than it without a new sample.
+    fn observe(&mut self, samples_done: u32) -> Option<Duration> {
+        if samples_done != self.samples_done {
+            self.samples_done = samples_done;
+            self.since = Instant::now();
+        }
+        self.timeout.filter(|window| self.since.elapsed() > *window)
+    }
+}
+
+/// The heartbeat pacing state [`wait_for_tracer_until`] shares with its caller -- bundled
+/// so the wait stays under clippy's argument-count limit.
+struct HeartbeatPace<'a> {
+    /// The longest gap between two heartbeats while waiting.
+    bound: Duration,
+    last_emit: &'a mut Instant,
+    emission_count: &'a mut u32,
+}
+
+/// Fails a stalled request: raises `cancel`, gives the producer a short, bounded
+/// (`window / 4`) chance to stop while still heartbeating, and builds the
+/// `PRODUCER_STALLED` error the caller returns as [`StreamOutcome::Failed`].
+///
+/// Deliberately does NOT mark the request cancelled, so no `DONE { cancelled: true }` is
+/// written: the request did not end because the client asked, it ended because the
+/// server gave up on it.
+fn fail_stalled<S: Write>(
+    stream: &mut S,
+    request: &RenderRequest,
+    state: &Arc<Mutex<SharedState>>,
+    cancel: &AtomicBool,
+    progress_rx: &mpsc::Receiver<()>,
+    window: Duration,
+    pace: &mut HeartbeatPace<'_>,
+) -> ErrorMsg {
+    let samples_done = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .samples_done;
+    tracing::warn!(
+        request_id = request.request_id,
+        samples_done,
+        ?window,
+        "render lane made no progress; failing the request"
+    );
+    cancel.store(true, Ordering::Relaxed);
+    let give_up = Instant::now() + window / 4;
+    wait_for_tracer_until(stream, request, state, progress_rx, pace, Some(give_up));
+    ErrorMsg {
+        code: error_codes::PRODUCER_STALLED,
+        message: format!(
+            "the render lane made no progress for {window:.1?} (after {samples_done} samples); \
+             the request was abandoned"
+        ),
+        request_id: Some(request.request_id),
+    }
+}
+
+/// The outcome once the producer has `finished`: a trace panic, its own failure (stamped
+/// with this request's id), or the final payload.
+fn finished_outcome<S: Write>(
+    stream: &mut S,
+    spec: &StreamSpec<'_>,
+    state: &Arc<Mutex<SharedState>>,
+    emitter_accum: &mut EmitterAccum,
+    streaming_start: Instant,
+    emission_count: &mut u32,
+) -> Result<StreamOutcome, NetError> {
+    let (panicked, failed) = {
+        let mut guard = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (guard.panicked, guard.failed.take())
+    };
+    if panicked {
+        return Ok(StreamOutcome::TracePanicked);
+    }
+    if let Some(error) = failed {
+        // Whatever set `guard.failed` (the tracer thread, via
+        // `SharedState::failed`) may not have known this request's own id --
+        // stamp it here, at the one place every such error passes through on
+        // its way to the wire, so a late `ERROR` for a request the client has
+        // already moved on from is epoch-gated exactly like a stale `FRAME`
+        // (see `crate::client::accumulate::Accumulator::apply`) instead of
+        // failing whatever request happens to be current.
+        return Ok(StreamOutcome::Failed(ErrorMsg {
+            request_id: Some(spec.request.request_id),
+            ..error
+        }));
+    }
+    emit_final(
+        stream,
+        spec,
+        state,
+        emitter_accum,
+        streaming_start,
+        emission_count,
+    )
 }
 
 /// `run_stream`'s own cadence-paced main loop: polls for a client message, then either
@@ -172,43 +381,27 @@ fn run_stream_loop<S: Read + Write + TimeoutRead + TimeoutWrite>(
         .unwrap_or_else(Instant::now);
     let mut emission_count: u32 = 0;
     // A connection-closed/transport-error poll, a CANCEL, or a pipelined RenderRequest
-    // all set `cancel` and stop the loop; `tracer_handle` is joined once, by the caller,
-    // after this returns.
+    // (queued, not rejected -- see `run_stream`'s doc comment) all set `cancel` and stop
+    // the loop; `tracer_handle` is joined once, by the caller, after this returns.
     let mut cancelled = false;
     let mut peer_closed = false;
-    // The client's next RenderRequest, if pipelined ahead of DONE (queued, not
-    // rejected -- see `run_stream`'s doc comment). Handed back once this call returns.
     let mut pipelined_next: Option<RenderRequest> = None;
+    // Set only by the stall watchdog below: the producer is presumed wedged.
+    let mut stalled = false;
+    let mut stall_watch = StallWatch::new(spec.stall_timeout);
     // Fresh per request, never reused -- see `poll_for_client_message`'s doc comment.
     let mut timeouts = TimeoutCache::new();
 
     let result = loop {
         let _ = progress_rx.recv_timeout(EMITTER_POLL);
 
-        match poll_for_client_message(stream, request.request_id, EMITTER_POLL, &mut timeouts)
-            .and_then(|polled| answer_ping(stream, polled))
-        {
-            Ok(ClientPoll::Cancelled) => {
-                cancel.store(true, Ordering::Relaxed);
-                cancelled = true;
-            }
-            Ok(ClientPoll::NextRequest(next)) => {
-                // Implicit cancel-then-queue: discard the unsent buffer like an
-                // explicit CANCEL, and remember `next` for the caller.
-                cancel.store(true, Ordering::Relaxed);
-                cancelled = true;
-                pipelined_next = Some(*next);
-            }
-            Ok(ClientPoll::Closed) => {
-                cancel.store(true, Ordering::Relaxed);
-                peer_closed = true;
-            }
-            // A PING was already answered by `answer_ping` below.
-            Ok(ClientPoll::Pending | ClientPoll::Stale | ClientPoll::Ping(_)) => {}
-            Err(e) => {
-                cancel.store(true, Ordering::Relaxed);
-                break Err(e);
-            }
+        let mut flags = LoopFlags {
+            cancelled: &mut cancelled,
+            peer_closed: &mut peer_closed,
+            pipelined_next: &mut pipelined_next,
+        };
+        if let Some(outcome) = poll_once(stream, spec, request, cancel, &mut timeouts, &mut flags) {
+            break outcome;
         }
 
         if cancelled || peer_closed {
@@ -228,10 +421,33 @@ fn run_stream_loop<S: Read + Write + TimeoutRead + TimeoutWrite>(
             break Ok(StreamOutcome::Completed);
         }
 
-        let finished = state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .finished;
+        let (finished, samples_done) = {
+            let guard = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            (guard.finished, guard.samples_done)
+        };
+
+        // The producer stopped adding samples: fail the request with an ERROR instead of
+        // heartbeating a wedged lane forever (see `fail_stalled`).
+        if !finished && let Some(window) = stall_watch.observe(samples_done) {
+            stalled = true;
+            let mut pace = HeartbeatPace {
+                bound: cadence.min(super::HEARTBEAT_INTERVAL),
+                last_emit: &mut last_emit,
+                emission_count: &mut emission_count,
+            };
+            let error = fail_stalled(
+                stream,
+                request,
+                state,
+                cancel,
+                progress_rx,
+                window,
+                &mut pace,
+            );
+            break Ok(StreamOutcome::Failed(error));
+        }
 
         if !finished
             && let Err(e) = emit_tick_or_heartbeat(
@@ -249,19 +465,7 @@ fn run_stream_loop<S: Read + Write + TimeoutRead + TimeoutWrite>(
         }
 
         if finished {
-            let (panicked, failed) = {
-                let mut guard = state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                (guard.panicked, guard.failed.take())
-            };
-            if panicked {
-                break Ok(StreamOutcome::TracePanicked);
-            }
-            if let Some(error) = failed {
-                break Ok(StreamOutcome::Failed(error));
-            }
-            break emit_final(
+            break finished_outcome(
                 stream,
                 spec,
                 state,
@@ -278,6 +482,7 @@ fn run_stream_loop<S: Read + Write + TimeoutRead + TimeoutWrite>(
         cancelled,
         pipelined_next,
         emission_count,
+        stalled,
     }
 }
 
@@ -362,6 +567,12 @@ pub fn run_stream<S: Read + Write + TimeoutRead + TimeoutWrite>(
             request,
             payload_encoding,
             output: Output::Radiance,
+            // A plain `RENDER` never reserves a viewer contribution -- only a
+            // coordinator's `FinalImageRequest` job does (see `coordinator::job::mod`).
+            contribution: None,
+            // A plain worker's tracer is its only producer, so no progress for the
+            // whole window means it is wedged (see `StreamSpec::stall_timeout`).
+            stall_timeout: Some(super::PRODUCER_STALL_TIMEOUT),
         },
         super::local_tracer(request, threads, gpu, compute_mode),
     )
@@ -402,6 +613,7 @@ pub fn run_stream_with<S: Read + Write + TimeoutRead + TimeoutWrite>(
         cancelled,
         pipelined_next,
         emission_count,
+        stalled,
     } = run_stream_loop(
         stream,
         spec,
@@ -412,7 +624,15 @@ pub fn run_stream_with<S: Read + Write + TimeoutRead + TimeoutWrite>(
         streaming_start,
     );
 
-    let _ = tracer_handle.join();
+    if stalled {
+        // A wedged producer may never return, and joining it would keep the stall
+        // `ERROR` from being written. Detach: it exits on its own once its dispatch
+        // returns (`cancel` is raised), and every permit/turnstile guard it holds is
+        // released by RAII then.
+        drop(tracer_handle);
+    } else {
+        let _ = tracer_handle.join();
+    }
 
     // Restore the read timeout to blocking now -- nothing more is read on `stream`
     // regardless of outcome. The write timeout deliberately stays live a little
@@ -469,17 +689,39 @@ pub(in crate::stream_emit) fn wait_for_tracer_to_stop<S: Write>(
     last_emit: &mut Instant,
     emission_count: &mut u32,
 ) {
+    let mut pace = HeartbeatPace {
+        bound: heartbeat_bound,
+        last_emit,
+        emission_count,
+    };
+    wait_for_tracer_until(stream, request, state, progress_rx, &mut pace, None);
+}
+
+/// [`wait_for_tracer_to_stop`] with an optional deadline: with `give_up` set it stops
+/// waiting (tracer or not) once that instant passes, so the stall watchdog can fail a
+/// request whose tracer never notices `cancel` instead of waiting on it forever.
+fn wait_for_tracer_until<S: Write>(
+    stream: &mut S,
+    request: &RenderRequest,
+    state: &Arc<Mutex<SharedState>>,
+    progress_rx: &mpsc::Receiver<()>,
+    pace: &mut HeartbeatPace<'_>,
+    give_up: Option<Instant>,
+) {
     while !state
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .finished
     {
+        if give_up.is_some_and(|deadline| Instant::now() >= deadline) {
+            break;
+        }
         let _ = progress_rx.recv_timeout(EMITTER_POLL);
-        if last_emit.elapsed() >= heartbeat_bound {
-            if emit_progress_heartbeat(stream, request, state, emission_count).is_err() {
+        if pace.last_emit.elapsed() >= pace.bound {
+            if emit_progress_heartbeat(stream, request, state, pace.emission_count).is_err() {
                 break;
             }
-            *last_emit = Instant::now();
+            *pace.last_emit = Instant::now();
         }
     }
 }

@@ -4,6 +4,7 @@
 //! [`apply_refract_channel`]'s per-channel exit-splitting-aware chromatic termination.
 
 use super::{
+    DIRECTION_MATCH_COS_TOL, R_UNPOL_PDF_MAX, R_UNPOL_PDF_MIN,
     context::{BounceContext, BounceRay, BounceState, ExitEvent, narrow_compat},
     exit_split::{ChannelTransmissionInputs, compute_channel_transmission, try_split_exit_channel},
     geometry::BounceRefractionGeometry,
@@ -55,7 +56,8 @@ pub(super) fn apply_partial_reflect_bounce(
             // unpolarized reflectance (not the hero's r_unpol). Reflection direction
             // never depends on wavelength, so no chromatic-termination check applies
             // at a reflect event.
-            let r_unpol_k = (0.5 * r_p_k.mul_add(r_p_k, r_s_k * r_s_k)).clamp(1e-4, 1.0 - 1e-4);
+            let r_unpol_k =
+                (0.5 * r_p_k.mul_add(r_p_k, r_s_k * r_s_k)).clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX);
             path_pdf[k] *= r_unpol_k;
             MuellerMatrix::fresnel_reflection(r_s_k, r_p_k)
         };
@@ -402,7 +404,8 @@ fn apply_channel_transmission_match(
     // probability for the mode actually selected.
     let r_s_k = f32::mul_add(n2k, -cos_t_k, n1k * cos_i) / f32::mul_add(n2k, cos_t_k, n1k * cos_i);
     let r_p_k = f32::mul_add(n1k, -cos_t_k, n2k * cos_i) / f32::mul_add(n1k, cos_t_k, n2k * cos_i);
-    let r_unpol_k = (0.5 * r_p_k.mul_add(r_p_k, r_s_k * r_s_k)).clamp(1e-4, 1.0 - 1e-4);
+    let r_unpol_k =
+        (0.5 * r_p_k.mul_add(r_p_k, r_s_k * r_s_k)).clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX);
     // `path_pdf`'s role is `spectral_mis_weight`'s per-channel weight,
     // `N * path_pdf[hero] / sum(path_pdf)`, which is scale-invariant under
     // multiplying every channel's `path_pdf` by the same uniform factor -- so no
@@ -512,8 +515,6 @@ fn apply_refract_channel(
     state: &mut BounceState<'_>,
     exit_event: &mut ExitEvent<'_, '_>,
 ) -> (Option<Vec3>, bool) {
-    const DIRECTION_MATCH_COS_TOL: f32 = 1.0 - 1e-6;
-
     let ctx = bctx.ctx;
     let &RefractDecision {
         entering_anisotropic,

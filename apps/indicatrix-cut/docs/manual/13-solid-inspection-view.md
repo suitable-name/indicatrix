@@ -32,7 +32,7 @@ Four buttons sit above the Solid viewport:
 - **Both** — the path-traced image with the solid's own facet edges drawn
   on top of it, so you can see exactly which facet boundaries line up with
   which highlights in the rendered image.
-- **Diagram** — a GemCAD-style flat 2D facet diagram (crown, pavilion, and
+- **Diagram** — a GemCAD-style flat 2D faceting diagram (crown, pavilion, and
   profile panels with the index wheel), covered in its own section below.
 
 Your chosen mode is remembered across restarts (Chapter 1 covers where
@@ -84,7 +84,7 @@ outlined in the pending colour.
 
 Hovering and clicking work exactly like the Solid view (see above), just
 resolved against the diagram's own layout — click a facet in any of the
-three panels and its tier is selected in the Cutting Schedule list below,
+three panels and its tier is selected in the Cutting Instructions list below,
 the same as clicking the Solid render. This click-to-select mapping is
 built the moment the diagram is (re)drawn in Diagram mode, so if you switch
 into Diagram mode and click immediately, before the panels have redrawn
@@ -104,7 +104,7 @@ mode and a small tooltip panel appears in the lower-left corner, naming:
   index (positive means safely below critical angle; see Chapter 6 for
   what that number means for windowing).
 
-**Click** a facet to select its whole tier in the Cutting Schedule list
+**Click** a facet to select its whole tier in the Cutting Instructions list
 below — the row highlights, and every facet belonging to that tier (its
 whole symmetric orbit, not just the one you clicked) is tinted in the
 viewport. This also works in Path-traced mode, even though the tint itself
@@ -113,6 +113,114 @@ switch to Both if you want to see exactly which facet you picked. This
 works in reverse too: click a row in the tier list, and its facets tint in
 the Solid viewport, so you can always see exactly what a row in the list
 corresponds to on the actual stone.
+
+## Dragging a facet: the angle, depth and index handles
+
+Once a tier is selected (by clicking one of its facets, or by clicking its
+row in the tier list) and the design is solved, three handles grow out of
+that facet's centre in **Solid**, **Path-traced**, and **Both** mode. Each
+is a coloured line ending in a marker with a letter beside it, and each
+drags the **whole tier** — every facet of its symmetric orbit — not just
+the facet you grabbed:
+
+- **A, the angle handle** (a cyan circle) tilts the tier. Drag it along its
+  line to make the facet steeper or shallower; the angle stays on its own
+  side of zero, so a crown tier stops at 0° rather than turning into a
+  pavilion tier.
+- **D, the depth handle** (a blue square) moves the tier in or out along
+  its own normal, which changes its **mast**. This *pins* the tier to that
+  mast, replacing whatever it met before (a meet against other facets, or
+  "meet at any vertex"). When the drag ends, the toast says what the tier
+  used to meet, and Undo restores it.
+- **I, the index handle** (an amber diamond) turns the tier around the
+  index wheel, a whole number of teeth at a time. A tier with no index
+  positions has no index handle.
+
+Move the pointer onto a handle and it grows and brightens; the line under
+the toolbar says what dragging it does, and how many other tiers meet this
+one by name (and so will follow it). Press and drag to change the value. You
+see the result live: the solid re-solves as you move, and the line under the
+toolbar reads, for example, "P1 -> 41.3 deg, 3 other tiers follow". Every
+tier whose mast moves because of your drag is outlined in **orange** while
+you drag, so you can see, before letting go, what else the change is
+pushing around. If the re-solve falls behind the pointer, the last solved
+solid stays on screen with the dragged tier outlined in the same
+"catching up" colour as after any edit; nothing is lost.
+
+**Snapping.** By default an angle snaps to 0.1° and a mast to 0.01. Hold
+**Shift** while dragging for fine steps (0.01° and 0.001). The **Snap**
+pill in the toolbar turns angle and depth snapping off entirely. The index
+handle always moves in whole teeth, whatever the pill says.
+
+**One drag, one undo step.** However long you drag, and however many times
+you pause, the whole gesture is a single step in the undo history: press
+**Undo** once and the tier is back where it started. When you let go, a
+toast names the result and reminds you that Undo restores it.
+
+**Escape cancels.** Press **Escape** while dragging (before you let go of
+the mouse button) and the design goes back exactly as it was when you
+pressed. Escape with nothing being dragged clears the selection, as before.
+
+A drag never starts on a design that is not solved yet, and a depth drag
+needs the tier's solved mast, so the hint asks you to Solve first. The
+handles are hidden in Diagram mode, while the Cut slider shows only part of
+the design, and whenever the solid on screen is behind the design you are
+editing; they come back when the preview catches up.
+
+## Slicing a new facet with the mouse
+
+The **Slice** pill in the toolbar (or the **S** key, once you have clicked into
+the viewport) lets you start a new tier by drawing on the stone instead of
+typing an angle and an index. It works in **Solid**, **Path-traced**, and
+**Both** mode. While Slice is on, the pill is lit, the line under the toolbar
+explains what to do, and a left drag draws a line instead of orbiting the
+stone.
+
+1. **Draw the line.** Press on one side of the stone, drag across it, and
+   release. A green line with an arrow head follows the pointer, with three
+   faint ticks on the side that will be cut away: **the part to the right of
+   your drag direction is removed** (drag left to right and everything below
+   the line goes). Nothing is cut yet, and nothing enters the undo history.
+2. **The provisional facet.** On release, the plane through your line and the
+   eye is snapped to the index wheel (the nearest whole index, and an angle
+   rounded to 0.1°) and placed so it only just touches the stone. The new
+   tier appears in the viewport with a **green outline**, named with the next
+   free crown or pavilion name (for example C3), and the line under the
+   toolbar says how many facets it has, its angle and its index. If the side
+   is the wrong way round, press **Flip** (or **F**): the same line is used, the
+   other side is cut away. (In **Path-traced** mode the picture is the render
+   of the committed design, which does not include the new tier until you keep
+   it, so there the provisional facet shows only as its handles; use **Solid**
+   or **Both** to see the cut.)
+3. **Cut it in.** The provisional tier has the same three handles as any
+   other tier. Drag its **depth handle inward** to make the cut deeper; the
+   angle and index handles work as described above. These drags edit only
+   the provisional tier: there is no toast and no undo step yet, and Escape
+   while dragging puts the tier back the way it was when you pressed. A new
+   facet starts exactly touching the stone, so it cuts nothing at first: the
+   line under the toolbar says "Drag the depth handle inward first", and
+   **Keep** refuses (with the same message) until the facet actually touches
+   the stone. You can orbit, zoom, or switch between Solid, Path-traced and Both
+   while you work; the provisional facet stays on screen. If the Cut slider
+   is set short of the new tier, the line under the toolbar asks you to move
+   it to the end.
+4. **Symmetric or single.** The **Symmetric** pill (on by default) gives the
+   new tier the whole symmetric set of its index under the design's symmetry
+   and mirror, like any other orbit. Turn it off to cut a single index; the
+   tier keeps its angle and depth when you switch.
+5. **Keep or discard.** **Keep** (or **Enter**) adds the tier to the design as
+   **one undo step**: the toast names it and says Undo removes it, its row is
+   selected in the tier list, and Slice mode ends. **Discard** (or **Escape**)
+   drops it; the design is exactly as it was. Escape with no provisional tier
+   leaves Slice mode. You can also draw a second line to replace the
+   provisional tier.
+
+While a provisional tier exists, the design underneath must not change. If
+anything else edits it (a nudge, an undo, opening another design), or you
+select a different tier in the tier list, the provisional tier is discarded
+on its own with a short message saying so, rather than being kept against a
+design it was not cut from. Clicking a facet in the viewport selects nothing
+until you Keep or Discard.
 
 ## The two overlays
 

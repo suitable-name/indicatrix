@@ -63,23 +63,11 @@ pub(super) fn setup_adopt_all_callback(
                 return;
             };
             let mut st = state.borrow_mut();
-            let edits: Vec<Edit> = st
-                .design
-                .tiers
-                .iter()
-                .enumerate()
-                .filter_map(|(index, tier)| {
-                    tier.imported_meet
-                        .clone()
-                        .map(|constraint| Edit::SetConstraint { index, constraint })
-                })
-                .collect();
-            if edits.is_empty() {
-                return;
-            }
-            let count = edits.len();
-            match st.apply(Edit::Batch(edits)) {
-                Ok(()) => {
+            // One `Edit::Batch` of `Edit::SetConstraint`s, or nothing when no tier
+            // has an imported meet left -- `EditorSession::adopt_all_imported_meets`.
+            match st.adopt_all_imported_meets() {
+                Ok(0) => {}
+                Ok(count) => {
                     drop(st);
                     refresh_all_now(
                         &ui,
@@ -132,24 +120,11 @@ pub(super) fn setup_adopt_selected_callback(
                 return;
             };
             let mut st = state.borrow_mut();
-            let edits: Vec<Edit> = st
-                .design
-                .tiers
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| st.multi_selected.contains(index))
-                .filter_map(|(index, tier)| {
-                    tier.imported_meet
-                        .clone()
-                        .map(|constraint| Edit::SetConstraint { index, constraint })
-                })
-                .collect();
-            if edits.is_empty() {
-                return;
-            }
-            let count = edits.len();
-            match st.apply(Edit::Batch(edits)) {
-                Ok(()) => {
+            // The same batch restricted to the multi-selection --
+            // `EditorSession::adopt_selected_imported_meets`.
+            match st.adopt_selected_imported_meets() {
+                Ok(0) => {}
+                Ok(count) => {
                     drop(st);
                     refresh_all_now(
                         &ui,
@@ -217,7 +192,9 @@ pub(super) fn setup_pin_to_mast_callback(
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .as_ref()
-                    .and_then(|solved| solved.get(index))
+                    // the shared cache is now generation-tagged -- only
+                    // the masts themselves matter here.
+                    .and_then(|(_, solved)| solved.get(index))
                     .map(|tier| tier.mast)
                 else {
                     return;

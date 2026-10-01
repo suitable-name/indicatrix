@@ -5,6 +5,7 @@ use super::camera::{HitRecord, Ray};
 use crate::geometry::plane::GpuFacetPlane;
 use glam::Vec3;
 
+/// Intersects a ray with the convex solid bounded by `planes`, returning the entry hit.
 #[must_use]
 pub fn intersect_polyhedron(ray: Ray, planes: &[GpuFacetPlane]) -> Option<HitRecord> {
     let mut t_near = -1e30f32;
@@ -555,7 +556,10 @@ mod edge_rounding_tests {
         const L0: f32 = 2.5;
         const SAMPLES_PER_PIXEL: u32 = 96;
         const GRID: usize = 12;
-        const TOLERANCE: f32 = 0.06;
+        // Measured on 2026-10-01 by the integration test `furnace_noise_floor` at this
+        // sample budget: 0.6 percent truncation loss at cap 16 (nothing at cap 256) plus
+        // under 0.1 percent noise; five standard deviations of headroom.
+        const TOLERANCE: f32 = 0.01;
 
         let planes = StandardGemCuts::standard_round_brilliant();
         let material = GemMaterial::new_custom(
@@ -600,7 +604,7 @@ mod edge_rounding_tests {
             let spec = crate::renderer::env_map::rgb_to_spectral_radiance([L0, L0, L0], lambda);
             target += cie_1931_cmf(lambda) * spec;
         }
-        target /= 106.856;
+        target /= crate::color::cie1931::CIE_1931_Y_INTEGRAL_5NM;
 
         let rel_err = |v: f32, t: f32| (v - t).abs() / t.abs().max(1e-6);
         let (ex, ey, ez) = (

@@ -58,12 +58,19 @@ pub fn load_diagram_detail_via_source(
     match current {
         LibrarySource::Local => local_load::load_diagram_detail(ui, db_mutex, render_ctx, entry_id),
         LibrarySource::Remote(worker) => {
+            // Bumped here, before the request is even built, so a second selection
+            // (of the same or a different row, remote or local) made before this
+            // fetch's reply lands is what invalidates it -- see
+            // `remote_load::load_diagram_detail_remote`'s own doc comment.
+            let seq = crate::gui::library::search::bump_search_seq();
             remote_load::load_diagram_detail_remote(
                 ui,
                 worker,
                 render_ctx,
                 entry_id,
                 preview_state,
+                Arc::clone(source),
+                seq,
             );
         }
     }

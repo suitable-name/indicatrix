@@ -78,7 +78,10 @@ impl TemplateSpec {
     #[must_use]
     pub fn schedule_meta(&self) -> ScheduleMeta {
         ScheduleMeta {
-            gemcad_version: "GemCad 5.0".to_string(),
+            // Just the version number -- see `ConstraintTier::standard_round_brilliant`'s
+            // matching field for why the `"GemCad "` prefix does not belong here
+            // too (`indicatrix_formats::asc::to_asc_string` already writes it).
+            gemcad_version: "5.0".to_string(),
             gear_teeth: self.gear_teeth,
             gear_reference_angle: 0.0,
             symmetry_order: self.symmetry_order,
@@ -95,15 +98,19 @@ impl TemplateSpec {
 /// reproduced here (rather than exported from that function, which keeps its
 /// own copies private) since every template below needs at least one of them.
 mod indices {
+    /// The 16 girdle-band facet positions on a 96-tooth wheel.
     pub const GIRDLE: [f64; 16] = [
         0.0, 6.0, 12.0, 18.0, 24.0, 30.0, 36.0, 42.0, 48.0, 54.0, 60.0, 66.0, 72.0, 78.0, 84.0,
         90.0,
     ];
+    /// The 16 upper-/lower-girdle ("break") facet positions on a 96-tooth wheel.
     pub const BREAK: [f64; 16] = [
         95.0, 1.0, 11.0, 13.0, 23.0, 25.0, 35.0, 37.0, 47.0, 49.0, 59.0, 61.0, 71.0, 73.0, 83.0,
         85.0,
     ];
+    /// The 8 crown-/pavilion-main facet positions on a 96-tooth wheel.
     pub const MAIN: [f64; 8] = [0.0, 12.0, 24.0, 36.0, 48.0, 60.0, 72.0, 84.0];
+    /// The 8 star facet positions on a 96-tooth wheel.
     pub const STAR: [f64; 8] = [6.0, 18.0, 30.0, 42.0, 54.0, 66.0, 78.0, 90.0];
 }
 

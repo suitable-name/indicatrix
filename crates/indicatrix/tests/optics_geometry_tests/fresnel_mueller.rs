@@ -1,11 +1,11 @@
-//! FIX A: `fresnel_transmission` Mueller-matrix regression -- at normal incidence
+//! `fresnel_transmission` Mueller-matrix regression -- at normal incidence
 //! there is no polarization effect, so element (1,1) and element (3,3)/(4,4) of the
 //! transmission Mueller matrix must be equal (no spurious `sqrt()`).
 
 use indicatrix::optics::polarization::MuellerMatrix;
 
 // ---------------------------------------------------------------------------
-// FIX A: fresnel_transmission must not apply a spurious sqrt() to the (3,3)/(4,4)
+// fresnel_transmission must not apply a spurious sqrt() to the (3,3)/(4,4)
 // element. At normal incidence there is no polarization effect, so element
 // (1,1) [top-left, "m11"] and element (3,3) ["m33"] of the Mueller matrix must
 // be equal.

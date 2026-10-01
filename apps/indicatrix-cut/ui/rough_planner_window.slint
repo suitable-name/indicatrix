@@ -1,0 +1,592 @@
+import { Theme } from "theme.slint";
+import { ScrollView } from "std-widgets.slint";
+import { RoughPlanModel, RoughPlanResult } from "models/rough_plan.slint";
+import { RoughForm } from "components/rough_planner/rough_form.slint";
+import { CutList } from "components/rough_planner/cut_list.slint";
+import { PlanForm } from "components/rough_planner/plan_form.slint";
+import { FitView } from "components/rough_planner/fit_view.slint";
+import { ResultCard } from "components/rough_planner/result_card.slint";
+import { SavedList } from "components/rough_planner/saved_list.slint";
+import { SaveNameRow } from "components/rough_planner/save_name_row.slint";
+import { RoughPill } from "components/rough_planner/fields.slint";
+
+// The question shown when a new plan or a new model would discard layouts that were
+// never saved. The answer goes to Rust, which closes the row.
+component ConfirmReplaceRow inherits Rectangle {
+    background: Theme.surface-warning;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.accent-amber;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+
+        Text {
+            text: RoughPlanModel.confirm_replace_count == 1 ? "Replace 1 unsaved layout?"
+                : "Replace " + RoughPlanModel.confirm_replace_count + " unsaved layouts?";
+            font-size: 11px;
+            font-weight: 700;
+            color: Theme.text-primary;
+            wrap: word-wrap;
+        }
+
+        Text {
+            text: "They have not been saved anywhere. Keep them to save them first.";
+            font-size: 10px;
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: end;
+
+            RoughPill {
+                text: "Keep";
+                clicked => {
+                    RoughPlanModel.confirm_replace(false);
+                    RoughPlanModel.confirm_replace_open = false;
+                }
+            }
+
+            RoughPill {
+                text: "Replace";
+                active: true;
+                clicked => {
+                    RoughPlanModel.confirm_replace(true);
+                    RoughPlanModel.confirm_replace_open = false;
+                }
+            }
+        }
+    }
+}
+
+// The results side of the right column: the loaded-plan banner, the summary, the
+// result cards and the pinned footer. It stays alive while the saved list is shown,
+// so the scroll position of the cards survives the switch.
+component ResultsColumn inherits VerticalLayout {
+    in property <bool> show_thumbnails: true;
+
+    spacing: 8px;
+
+    // Loaded saved plan banner
+    if RoughPlanModel.loaded_banner != "": Rectangle {
+        border-radius: Theme.radius-sm;
+        background: Theme.surface-info;
+        border-width: 1px;
+        border-color: Theme.border-accent;
+
+        HorizontalLayout {
+            padding: 6px;
+            spacing: 8px;
+
+            Text {
+                horizontal-stretch: 1;
+                text: RoughPlanModel.loaded_banner;
+                font-size: 11px;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            VerticalLayout {
+                alignment: center;
+                RoughPill {
+                    text: "Re-plan";
+                    active: true;
+                    enabled: !RoughPlanModel.running;
+                    clicked => { RoughPlanModel.replan_loaded(); }
+                }
+            }
+        }
+    }
+
+    // Results header
+    HorizontalLayout {
+        spacing: 8px;
+
+        Text {
+            text: "RESULTS";
+            font-size: 11px;
+            font-weight: 700;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+        }
+
+        if RoughPlanModel.results_unsaved && RoughPlanModel.results.length > 0: Text {
+            text: "unsaved";
+            font-size: 10px;
+            color: Theme.accent-amber;
+            vertical-alignment: center;
+        }
+    }
+
+    if RoughPlanModel.status_text != "": Text {
+        text: RoughPlanModel.status_text;
+        font-size: 11px;
+        color: RoughPlanModel.status_level == 1 ? Theme.accent-amber : Theme.text-secondary;
+        wrap: word-wrap;
+    }
+
+    if RoughPlanModel.summary != "" && RoughPlanModel.results.length > 0: Text {
+        text: RoughPlanModel.summary;
+        font-size: 10px;
+        color: Theme.text-secondary;
+        wrap: word-wrap;
+    }
+
+    if !RoughPlanModel.links_enabled && RoughPlanModel.results.length > 0: Text {
+        text: "Switch to the local library to open designs from these results.";
+        font-size: 10px;
+        color: Theme.accent-amber;
+        wrap: word-wrap;
+    }
+
+    // Empty state: the prompt, or why nothing came back
+    if RoughPlanModel.results.length == 0: Rectangle {
+        vertical-stretch: 1;
+
+        VerticalLayout {
+            alignment: center;
+            spacing: 8px;
+
+            Text {
+                text: RoughPlanModel.summary != "" ? RoughPlanModel.summary
+                    : "Model your rough on the left, then press Plan.";
+                font-size: 12px;
+                color: Theme.text-muted;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    // Scrollable results card list
+    if RoughPlanModel.results.length > 0: ScrollView {
+        vertical-stretch: 1;
+
+        VerticalLayout {
+            alignment: start;
+            spacing: 8px;
+
+            for result[index] in RoughPlanModel.results: ResultCard {
+                result: result;
+                rank_index: index;
+                show_thumbnails: root.show_thumbnails;
+            }
+        }
+    }
+
+    // Pinned results footer
+    if RoughPlanModel.results.length > 0: Rectangle {
+        height: 1px;
+        background: Theme.border-subtle;
+    }
+
+    if RoughPlanModel.results.length > 0: HorizontalLayout {
+        spacing: 6px;
+        alignment: end;
+
+        RoughPill {
+            text: "Show all in library";
+            enabled: RoughPlanModel.links_enabled;
+            clicked => { RoughPlanModel.show_all_in_library(); }
+        }
+    }
+
+    // Saving reads the results a plan is producing, so it waits for the plan.
+    if RoughPlanModel.results.length > 0: HorizontalLayout {
+        spacing: 6px;
+        alignment: end;
+
+        RoughPill {
+            text: "Save selected (" + RoughPlanModel.keep_count + ")";
+            active: RoughPlanModel.keep_count > 0 && !RoughPlanModel.running;
+            enabled: RoughPlanModel.keep_count > 0 && !RoughPlanModel.running;
+            clicked => {
+                RoughPlanModel.save_selected_only = true;
+                RoughPlanModel.begin_save(true);
+            }
+        }
+
+        RoughPill {
+            text: "Save all";
+            enabled: !RoughPlanModel.running;
+            clicked => {
+                RoughPlanModel.save_selected_only = false;
+                RoughPlanModel.begin_save(false);
+            }
+        }
+    }
+
+    // Designs the planner could not use, and what the numbers mean
+    if RoughPlanModel.skipped_count > 0: Text {
+        text: "" + RoughPlanModel.skipped_count
+            + (RoughPlanModel.skipped_count == 1 ? " design" : " designs")
+            + " skipped: no usable design file";
+        font-size: 10px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+
+    if RoughPlanModel.results.length > 0: Text {
+        text: "Estimate for clean, inclusion-free rough after your kerf and allowance; real yield also depends on inclusions and on how closely you follow the plan.";
+        font-size: 10px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+}
+
+export component RoughPlannerWindow inherits Window {
+    title: "Rough Planner \u{2014} Indicatrix Cut";
+    // See `MainWindow`'s `icon` (app.slint) for why every window sets it.
+    icon: @image-url("../assets/icon.png");
+    preferred-width: 1280px;
+    preferred-height: 820px;
+    min-width: 1040px;
+    min-height: 560px;
+    background: Theme.bg-darkest;
+    default-font-family: "Segoe UI";
+
+    // The size of the 3D view's image area, read by Rust when the window is shown: the
+    // area's own change notifications miss the size it has the first time it is laid out.
+    out property <length> view_area_width: fit_view.area_width;
+    out property <length> view_area_height: fit_view.area_height;
+
+    // Window-wide shortcuts. Ctrl+S, Ctrl+O and Ctrl+Enter are taken before any child
+    // sees them; Escape, Ctrl+Z and Ctrl+Y are only handled when the focused child
+    // (a text field, which keeps its own undo) leaves them unhandled, so typing is
+    // never interrupted.
+    FocusScope {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+
+        init => { self.focus(); }
+
+        capture-key-pressed(event) => {
+            if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "s" {
+                if !RoughPlanModel.running {
+                    RoughPlanModel.save_selected_only = RoughPlanModel.keep_count > 0;
+                    RoughPlanModel.begin_save(RoughPlanModel.keep_count > 0);
+                }
+                return accept;
+            }
+            if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "o" {
+                RoughPlanModel.saved_open = true;
+                return accept;
+            }
+            if (event.modifiers.control || event.modifiers.meta) && event.text == Key.Return {
+                if !RoughPlanModel.running && RoughPlanModel.materials.length > 0 && RoughPlanModel.model_error == "" {
+                    RoughPlanModel.plan();
+                }
+                return accept;
+            }
+            return reject;
+        }
+
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                if RoughPlanModel.confirm_replace_open {
+                    RoughPlanModel.confirm_replace(false);
+                    RoughPlanModel.confirm_replace_open = false;
+                    return accept;
+                }
+                if RoughPlanModel.save_name_open {
+                    RoughPlanModel.save_name_open = false;
+                    return accept;
+                }
+                if RoughPlanModel.face_from_view_armed {
+                    RoughPlanModel.face_from_view_armed = false;
+                    return accept;
+                }
+                if RoughPlanModel.running {
+                    RoughPlanModel.cancel();
+                    return accept;
+                }
+            }
+            if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "z" {
+                if RoughPlanModel.can_undo && !RoughPlanModel.running {
+                    RoughPlanModel.undo_shape();
+                }
+                return accept;
+            }
+            if (event.modifiers.control || event.modifiers.meta)
+                && (event.text == "y" || (event.modifiers.shift && event.text == "Z")) {
+                if RoughPlanModel.can_redo && !RoughPlanModel.running {
+                    RoughPlanModel.redo_shape();
+                }
+                return accept;
+            }
+            return reject;
+        }
+
+        Rectangle {
+            x: 0px;
+            y: 0px;
+            width: root.width;
+            height: root.height;
+
+            VerticalLayout {
+                padding: 8px;
+                spacing: 8px;
+
+                // Top bar
+                Rectangle {
+                    height: 36px;
+                    background: Theme.bg-card;
+                    border-radius: Theme.radius-md;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 12px;
+                        padding-top: 8px;
+                        padding-bottom: 8px;
+                        spacing: 8px;
+
+                        // App / Window mark
+                        Rectangle {
+                            width: 20px;
+                            height: 20px;
+                            border-radius: 4px;
+                            background: Theme.surface-selected;
+                            border-width: 1px;
+                            border-color: Theme.accent-cyan;
+
+                            Image {
+                                source: @image-url("icons/gem.svg");
+                                colorize: Theme.accent-cyan;
+                                width: 12px;
+                                height: 12px;
+                                horizontal-alignment: center;
+                            }
+                        }
+
+                        Text {
+                            text: "Rough Planner";
+                            font-size: 13px;
+                            font-weight: 700;
+                            color: Theme.text-primary;
+                            vertical-alignment: center;
+                        }
+
+                        if RoughPlanModel.view_busy: Text {
+                            text: "Drawing the view...";
+                            font-size: 10px;
+                            color: Theme.text-muted;
+                            vertical-alignment: center;
+                        }
+
+                        Rectangle { horizontal-stretch: 1; }
+
+                        RoughPill {
+                            text: "New";
+                            enabled: !RoughPlanModel.running;
+                            clicked => { RoughPlanModel.new_model(); }
+                        }
+
+                        RoughPill {
+                            text: RoughPlanModel.saved_open ? "Close Saved" : "Saved plans";
+                            active: RoughPlanModel.saved_open;
+                            clicked => { RoughPlanModel.saved_open = !RoughPlanModel.saved_open; }
+                        }
+
+                        RoughPill {
+                            text: "Save selected (" + RoughPlanModel.keep_count + ")";
+                            active: RoughPlanModel.keep_count > 0 && !RoughPlanModel.running;
+                            enabled: RoughPlanModel.keep_count > 0 && !RoughPlanModel.running;
+                            clicked => {
+                                RoughPlanModel.save_selected_only = true;
+                                RoughPlanModel.begin_save(true);
+                            }
+                        }
+
+                        // Help button
+                        Rectangle {
+                            width: 20px;
+                            height: 20px;
+                            border-radius: 10px;
+                            background: help_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
+                            border-width: help_focus.has-focus ? 2px : 1px;
+                            border-color: help_focus.has-focus ? Theme.accent-cyan : Theme.border-control;
+
+                            accessible-role: button;
+                            accessible-label: "Help";
+                            accessible-action-default => { RoughPlanModel.open_help(); }
+
+                            help_focus := FocusScope {
+                                key-pressed(event) => {
+                                    if event.text == Key.Space || event.text == Key.Return {
+                                        RoughPlanModel.open_help();
+                                        return accept;
+                                    }
+                                    return reject;
+                                }
+                            }
+
+                            Text {
+                                text: "?";
+                                font-size: 11px;
+                                font-weight: 700;
+                                color: Theme.text-secondary;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+
+                            help_touch := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { RoughPlanModel.open_help(); }
+                            }
+                        }
+                    }
+                }
+
+                // 3-column body
+                HorizontalLayout {
+                    vertical-stretch: 1;
+                    spacing: 8px;
+
+                    // Left column: 320px scrollable rough & shape, pinned plan form
+                    Rectangle {
+                        width: 320px;
+                        background: Theme.bg-dark;
+                        border-radius: Theme.radius-md;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 8px;
+
+                            // Scrollable section for RoughForm and CutList
+                            left_scroll := ScrollView {
+                                vertical-stretch: 1;
+
+                                VerticalLayout {
+                                    alignment: start;
+                                    spacing: 10px;
+
+                                    RoughForm {}
+
+                                    Rectangle {
+                                        height: 1px;
+                                        background: Theme.border-subtle;
+                                    }
+
+                                    CutList {
+                                        // Scrolls a newly added cut row into view: `row_y` is the
+                                        // row's window position, so its place in the visible part
+                                        // is its distance from the scroll view's own top.
+                                        reveal_row(row_y, row_height) => {
+                                            let row_top = row_y - left_scroll.absolute-position.y;
+                                            let area_height = left_scroll.visible-height;
+                                            let shift = row_top < 0px ? row_top
+                                                : (row_top + row_height > area_height
+                                                    ? min(row_top + row_height - area_height, row_top) : 0px);
+                                            left_scroll.content-y = left_scroll.content-y - shift;
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                height: 1px;
+                                background: Theme.border-subtle;
+                            }
+
+                            // Pinned PlanForm at the bottom
+                            PlanForm {}
+                        }
+                    }
+
+                    // Center column: stretches (min 360px), 3D FitView
+                    Rectangle {
+                        min-width: 360px;
+                        horizontal-stretch: 1;
+                        background: Theme.bg-dark;
+                        border-radius: Theme.radius-md;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        clip: true;
+
+                        // `narrow` moves the view toggles to a second toolbar row. The
+                        // one-row toolbar (fit_view.slint) needs about 466 px: 8 + 8
+                        // padding; the six pills, 7 + 7 padding around 138 px of 10 px
+                        // text (rough, result, front, top, side, reset), 222 px; the
+                        // 6 px gap after "Result" and the 8 gaps of 6 px between the 9
+                        // row items, 54 px; and the widest toggle group (Rough, Saw and
+                        // Stones: 3 x 26 px of box and padding around 84 px of 11 px
+                        // text, plus 2 gaps of 6 px), 174 px. The centre column is the
+                        // window minus 16 px outer padding, the 320 px left column, 16
+                        // px of gaps and the right column (300 px below 1180 px, else
+                        // 360 px): width - 652 px below 1180 px, width - 712 px from
+                        // there. At 1240 px that is 528 px, about 13 % more than the
+                        // toolbar needs, which leaves room for a wider fallback font.
+                        // Below 1240 px the pills take the first row alone (about 286
+                        // px, in a centre column of at least 388 px at the 1040 px
+                        // minimum) and the toggles the second (about 190 px).
+                        fit_view := FitView {
+                            narrow: root.width < 1240px;
+                        }
+                    }
+
+                    // Right column: 360px (or 300px on narrow window). The replace
+                    // question and the save name row sit above both the results and the
+                    // saved list; the two lists below stay alive and only switch
+                    // visibility, so neither loses its scroll position.
+                    Rectangle {
+                        width: root.width < 1180px ? 300px : 360px;
+                        background: Theme.bg-dark;
+                        border-radius: Theme.radius-md;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 8px;
+
+                            if RoughPlanModel.confirm_replace_open: ConfirmReplaceRow {}
+
+                            if RoughPlanModel.save_name_open: SaveNameRow {}
+
+                            Rectangle {
+                                vertical-stretch: 1;
+
+                                Rectangle {
+                                    visible: !RoughPlanModel.saved_open;
+                                    x: 0px;
+                                    y: 0px;
+                                    width: parent.width;
+                                    height: parent.height;
+
+                                    ResultsColumn {
+                                        width: parent.width;
+                                        height: parent.height;
+                                        show_thumbnails: root.width >= 1180px;
+                                    }
+                                }
+
+                                Rectangle {
+                                    visible: RoughPlanModel.saved_open;
+                                    x: 0px;
+                                    y: 0px;
+                                    width: parent.width;
+                                    height: parent.height;
+
+                                    SavedList {
+                                        width: parent.width;
+                                        height: parent.height;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

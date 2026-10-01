@@ -25,6 +25,7 @@ one place.
 | Optimize will not move a particular tier | That tier is either pinned as an Exact scale value (including the girdle, which Optimize never moves), or its SOLVE strategy is still uncertain (Least-squares est. / FAILED / not solved / blocked / no anchor yet). | Adopt the tier if it is pinned and you want it free; otherwise fix the uncertain solve first -- see "Trusting the SOLVE column" (Chapter 8). |
 | Clicking Solve shows an **Abandon** button instead of Cancel, and the wait does not stop right away | The solver has no mid-run checkpoint yet, so Abandon only discards the result on the app's side -- the background worker keeps computing to completion regardless (Chapter 5). | This is expected; the editor is usable again immediately even though the CPU work finishes unseen. |
 | A dialog titled "This design is not a closed solid" appears when saving or exporting | The design does not currently solve to a closed solid, and you are about to write a file anyway. | Click **No** to cancel and fix the design first, or **Yes** to write it with a `NOT A CLOSED SOLID` header stamp so the file itself carries the warning (Chapter 11). |
+| Save Native saves a **draft** even though every block has an anchor tier | The design has more facet planes than the solver can verify (currently more than 400 total planes) -- the masts it would otherwise produce are untrustworthy placeholders, so the app saves a draft instead, the same as a design with no anchor tiers yet (Chapter 11). | Reduce the design's total plane count (fewer indices per tier, or split the design) and save again once it solves within the limit. |
 
 ## Rendering and remote-worker problems
 
@@ -134,7 +135,7 @@ a full backtrace; attach that too if it exists.
   back to full data once, with a note (Chapter 10).
 - **Loading a remote design into the editor needs a real attached `.asc`
   file on the worker's side.** "Load Selected" fetches a remote design's
-  original cutting-schedule file over the network and loads it exactly
+  original cutting-instructions file over the network and loads it exactly
   like a local one (Chapter 10). A design with no `.asc` ever attached on
   the worker has nothing genuine to fetch, so this fails with a clear
   error message; a *local* design in the same situation instead loads a

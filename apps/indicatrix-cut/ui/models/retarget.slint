@@ -68,14 +68,11 @@ export global RetargetModel {
     in property <int> optimize_evaluations: 0;
     in property <int> optimize_max_evaluations: 0;
 
-    // While on, the shared solid viewport shows the CURRENT proposal's candidate
-    // geometry (`gui::editor::view::submit_design_ghost_preview`)
-    // instead of the live design, so a cutter can see whether the retargeted
-    // pavilion still closes before ever clicking Apply. Read (not just set) by
-    // `callbacks::retarget_actions::setup_retarget_proposal_changed_callback` every
-    // time the proposal rebuilds, so toggling it off immediately reverts to the
-    // real design on the very next rebuild -- including the one this checkbox's own
-    // `clicked` handler should trigger by also calling `proposal_changed()`.
+    // Legacy viewport ghost preview switch. The dialog no longer offers a toggle
+    // (the main viewport is paused behind it and the embedded comparison pane shows
+    // the proposal instead), and `open()` forces it off, so no ghost preview is
+    // applied while the dialog is open. Still read by
+    // `callbacks::retarget_actions::apply_ghost_preview_or_revert`.
     in-out property <bool> preview_enabled: false;
 
     // "Snapshot" / "Compare to Snapshot" -- a design + its solved masts captured

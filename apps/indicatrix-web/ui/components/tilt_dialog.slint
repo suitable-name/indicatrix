@@ -1,0 +1,411 @@
+import { Button, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { TiltModel } from "metrics_model.slint";
+import { StaleBadge } from "stale_badge.slint";
+import { TiltChart } from "tilt_chart.slint";
+
+// A channel toggle pill.
+component ChannelToggle inherits Rectangle {
+    in property <string> text;
+    in property <color> tint;
+    in property <color> surface;
+    in property <bool> on;
+    // Drops the colour dot (the text carries the tint) so the three chips fit a phone-width row.
+    in property <bool> compact: false;
+    callback toggled();
+
+    height: 24px;
+    width: row.preferred-width;
+    border-radius: Theme.radius-sm;
+    background: root.on ? root.surface : Theme.bg-input;
+    border-width: 1px;
+    border-color: root.on ? root.tint : Theme.border-medium;
+    TouchArea {
+        clicked => { root.toggled(); }
+    }
+    row := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 5px;
+        alignment: center;
+        if !root.compact: VerticalLayout {
+            alignment: center;
+            Rectangle { width: 7px; height: 7px; border-radius: 3px; background: root.tint; }
+        }
+        Text {
+            text: root.text;
+            font-size: 10px;
+            font-weight: 600;
+            color: root.on ? root.tint : Theme.text-muted;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// An axis pill (the sweep direction, or "All").
+component AxisPill inherits Rectangle {
+    in property <string> text;
+    in property <bool> on;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    height: 24px;
+    width: label.preferred-width + 16px;
+    border-radius: Theme.radius-sm;
+    background: root.on ? #a855f733 : Theme.bg-input;
+    border-width: 1px;
+    border-color: root.on ? Theme.accent-purple : Theme.border-medium;
+    opacity: root.enabled ? 1.0 : 0.4;
+    TouchArea {
+        clicked => {
+            if root.enabled {
+                root.clicked();
+            }
+        }
+    }
+    label := Text {
+        x: 8px;
+        text: root.text;
+        font-size: 10px;
+        font-weight: 600;
+        color: root.on ? Theme.accent-purple : Theme.text-muted;
+        vertical-alignment: center;
+    }
+}
+
+// A summary badge: the face-up (tilt 0) value of one channel on the selected axis.
+component Badge inherits Rectangle {
+    in property <string> caption;
+    in property <string> value;
+    in property <color> tint;
+
+    horizontal-stretch: 1;
+    min-width: 0px;
+    height: 52px;
+    background: #131b2e;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: #1e293b;
+    VerticalLayout {
+        padding: 8px;
+        alignment: center;
+        spacing: 2px;
+        Text { text: root.caption; font-size: 10px; font-weight: 600; color: Theme.text-muted; overflow: elide; }
+        Text { text: root.value; font-size: 16px; font-weight: 700; color: root.tint; }
+    }
+}
+
+// The Tilt Performance dialog (the desktop's `performance_graph_dialog.slint`): brilliance,
+// windowing and extinction against tilt from table-up, for the four camera azimuths, swept
+// in the analysis Worker. Run / Cancel with progress; the hover readout is the chart's.
+// Mounted by `app.slint` while `TiltModel.open`; `src/metrics/tilt.rs` drives it.
+export component TiltDialog inherits Rectangle {
+    background: Theme.overlay-backdrop;
+
+    in-out property <bool> show-brilliance: true;
+    in-out property <bool> show-windowing: true;
+    in-out property <bool> show-extinction: true;
+    // Which of the four azimuths is plotted (an index into the `TiltModel` rows).
+    in-out property <int> selected-axis-index: 0;
+    // "All": every azimuth of every visible channel at once, the others faded.
+    in-out property <bool> show-all-axes: false;
+
+    property <bool> narrow: root.width < 640px;
+    property <[string]> axis-labels: ["0° (length)", "45°", "90° (width)", "135°"];
+    property <[string]> axis-short-labels: ["0°", "45°", "90°", "135°"];
+    property <string> selected-axis-label: root.axis-labels[root.selected-axis-index];
+    // All four sweeps have landed.
+    property <bool> ready: TiltModel.brilliance-axes.length >= 4
+        && TiltModel.extinction-axes.length >= 4
+        && TiltModel.windowing-axes.length >= 4;
+    property <[float]> active-brilliance-values: TiltModel.brilliance-axes[root.selected-axis-index];
+    property <[float]> active-extinction-values: TiltModel.extinction-axes[root.selected-axis-index];
+    property <[float]> active-windowing-values: TiltModel.windowing-axes[root.selected-axis-index];
+
+    TouchArea {
+        clicked => { TiltModel.open = false; }
+    }
+
+    // Escape closes; every other key is swallowed so it cannot reach the global shortcuts.
+    FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                TiltModel.open = false;
+            } else if event.text == Key.Tab || event.text == Key.Backtab {
+                // Tab reaches the dialog's buttons.
+                return reject;
+            }
+            accept
+        }
+    }
+
+    Rectangle {
+        width: min(920px, root.width - 32px);
+        height: min(680px, root.height - 32px);
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        background: Theme.bg-card;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-medium;
+        drop-shadow-blur: 20px;
+        drop-shadow-color: Theme.toast-shadow;
+        clip: true;
+
+        // Clicks inside the card do not close it.
+        TouchArea {}
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                    text: "Tilt Performance Curve Analysis";
+                    // Wraps on a phone-width dialog: on one line it pushed the close
+                    // button out of the card.
+                    wrap: word-wrap;
+                    font-size: 15px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    width: 26px;
+                    height: 26px;
+                    border-radius: 13px;
+                    background: close-touch.has-hover ? Theme.bg-elevated : transparent;
+                    accessible-role: button;
+                    accessible-label: "Close the Tilt Performance dialog";
+                    close-touch := TouchArea {
+                        clicked => { TiltModel.open = false; }
+                    }
+                    Tooltip { text: @markdown("Close (Esc)."); }
+                    Text {
+                        text: "\u{00d7}";
+                        font-size: 18px;
+                        color: Theme.text-muted;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            body := ScrollView {
+                vertical-stretch: 1;
+                // The content is laid out at the visible width, so the captions wrap.
+                content-width: self.visible-width;
+                VerticalLayout {
+                    spacing: 10px;
+
+                    Text {
+                        text: "Analytical raytracing across -90° to +90° tilt away from table-up (1° step resolution) for " + TiltModel.material-name;
+                        font-size: 11px;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+                    // The 181 markers are the only MEASURED points; the curve and the
+                    // hover readout between them are linearly interpolated.
+                    Text {
+                        text: "Between the 181 measured 1°-step points, the curve and hover readout are linearly interpolated, not additional raytracing.";
+                        font-size: 11px;
+                        font-italic: true;
+                        color: Theme.text-disabled;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "Optimize scores brilliance under a fixed light pose; this curve uses your current light -- if you've moved it, the two figures may disagree.";
+                        font-size: 11px;
+                        font-italic: true;
+                        color: Theme.text-disabled;
+                        wrap: word-wrap;
+                    }
+                    Text {
+                        text: "Excludes display overrides: inclusions, c-axis orientation, edge rounding, physical size and frosted girdle are not applied -- this shows " + TiltModel.material-name + " as an all-polished stone.";
+                        font-size: 11px;
+                        font-italic: true;
+                        color: Theme.text-disabled;
+                        wrap: word-wrap;
+                    }
+                    // What the sweep is scored under: the preset's rig, never the HDR map.
+                    if TiltModel.lighting-note != "": Text {
+                        text: TiltModel.lighting-note;
+                        font-size: 11px;
+                        font-italic: true;
+                        color: Theme.text-disabled;
+                        wrap: word-wrap;
+                    }
+
+                    // Run / Cancel, the sweep's progress and the stale marker.
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Button {
+                            text: root.ready ? "Re-run" : "Run";
+                            enabled: !TiltModel.running;
+                            primary: true;
+                            clicked => { TiltModel.run(); }
+                        }
+                        if TiltModel.running: Button {
+                            text: TiltModel.cancelling ? "Cancelling..." : "Cancel";
+                            enabled: !TiltModel.cancelling;
+                            clicked => { TiltModel.cancel(); }
+                        }
+                        if root.ready && TiltModel.curves-stale && !TiltModel.running: StaleBadge {
+                            show-recompute: false;
+                        }
+                        Text {
+                            horizontal-stretch: 1;
+                            min-width: 0px;
+                            text: TiltModel.status-text;
+                            font-size: 10px;
+                            color: Theme.accent-amber;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                    }
+                    if TiltModel.running && TiltModel.progress >= 0: Rectangle {
+                        height: 6px;
+                        background: Theme.bg-input;
+                        border-radius: 3px;
+                        clip: true;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * Math.max(0, Math.min(1, TiltModel.progress));
+                            background: Theme.accent-amber;
+                        }
+                    }
+
+                    // Face-up (tilt 0) values on the selected axis.
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Badge {
+                            caption: "Face-Up Brilliance (0°, " + root.selected-axis-label + ")";
+                            value: root.ready ? Math.round(root.active-brilliance-values[90]) + "%" : "…";
+                            tint: Theme.accent-cyan;
+                        }
+                        Badge {
+                            caption: "Face-Up Windowing (0°, " + root.selected-axis-label + ")";
+                            value: root.ready ? Math.round(root.active-windowing-values[90]) + "%" : "…";
+                            tint: Theme.accent-amber;
+                        }
+                        Badge {
+                            caption: "Extinction Shadow (0°, " + root.selected-axis-label + ")";
+                            value: root.ready ? Math.round(root.active-extinction-values[90]) + "%" : "…";
+                            tint: #ef4444;
+                        }
+                    }
+
+                    // Optical channels. On a phone-width dialog the caption sits on its own
+                    // line: beside it the three chips ran past the dialog's right edge.
+                    if root.narrow: Text {
+                        text: "Optical Channels:";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: Theme.text-secondary;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        if !root.narrow: Text {
+                            text: "Optical Channels:";
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: Theme.text-secondary;
+                            vertical-alignment: center;
+                        }
+                        ChannelToggle {
+                            text: root.narrow ? "Brilliance" : "Brilliance % (Light Return)";
+                            compact: root.narrow;
+                            tint: Theme.accent-cyan;
+                            surface: #0284c733;
+                            on: root.show-brilliance;
+                            toggled => { root.show-brilliance = !root.show-brilliance; }
+                        }
+                        ChannelToggle {
+                            text: root.narrow ? "Windowing" : "Windowing % (TIR Leakage)";
+                            compact: root.narrow;
+                            tint: Theme.accent-amber;
+                            surface: #d9770633;
+                            on: root.show-windowing;
+                            toggled => { root.show-windowing = !root.show-windowing; }
+                        }
+                        ChannelToggle {
+                            text: root.narrow ? "Extinction" : "Extinction % (Shadows)";
+                            compact: root.narrow;
+                            tint: #ef4444;
+                            surface: #b91c1c33;
+                            on: root.show-extinction;
+                            toggled => { root.show-extinction = !root.show-extinction; }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+
+                    // Tilt axis (sweep direction) switcher; the caption moves above the pills
+                    // on a phone-width dialog for the same reason.
+                    if root.narrow: Text {
+                        text: "Tilt Axis:";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: Theme.text-secondary;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        if !root.narrow: Text {
+                            text: "Tilt Axis:";
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: Theme.text-secondary;
+                            vertical-alignment: center;
+                        }
+                        for label[idx] in root.axis-labels : AxisPill {
+                            // The length / width hints drop on a phone-width dialog: five
+                            // full pills ran past the right edge and hid 135° and All (the
+                            // face-up badges still name the selected axis in full).
+                            text: root.narrow ? root.axis-short-labels[idx] : label;
+                            on: root.selected-axis-index == idx;
+                            enabled: root.ready;
+                            clicked => { root.selected-axis-index = idx; }
+                        }
+                        AxisPill {
+                            text: "All";
+                            on: root.show-all-axes;
+                            enabled: root.ready;
+                            clicked => { root.show-all-axes = !root.show-all-axes; }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+
+                    TiltChart {
+                        ready: root.ready;
+                        loading: TiltModel.running;
+                        show-all-axes: root.show-all-axes;
+                        selected-axis-index: root.selected-axis-index;
+                        show-extinction: root.show-extinction;
+                        show-windowing: root.show-windowing;
+                        show-brilliance: root.show-brilliance;
+                        extinction-paths: TiltModel.extinction-paths;
+                        windowing-paths: TiltModel.windowing-paths;
+                        brilliance-paths: TiltModel.brilliance-paths;
+                        active-extinction-path: TiltModel.extinction-paths[root.selected-axis-index];
+                        active-windowing-path: TiltModel.windowing-paths[root.selected-axis-index];
+                        active-brilliance-path: TiltModel.brilliance-paths[root.selected-axis-index];
+                        active-brilliance-values: root.active-brilliance-values;
+                        active-extinction-values: root.active-extinction-values;
+                        active-windowing-values: root.active-windowing-values;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                Button {
+                    text: "Close";
+                    clicked => { TiltModel.open = false; }
+                }
+            }
+        }
+    }
+}

@@ -5,6 +5,7 @@ use crate::{optics::raytracer::blackbody_spectrum, renderer::gpu::compute};
 
 use super::{SHADER_SRC, UlpAccumulator, UlpCheckResult};
 
+/// One input case for the blackbody check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BlackbodyCase {
@@ -32,6 +33,7 @@ pub const BLACKBODY_ULP_BUDGET: u32 = 48;
 /// and GPU.
 pub const BLACKBODY_ABS_FLOOR: f32 = 1e-5;
 
+/// Builds the blackbody cases for the check.
 #[must_use]
 pub fn build_blackbody_cases() -> Vec<BlackbodyCase> {
     let mut cases = Vec::new();

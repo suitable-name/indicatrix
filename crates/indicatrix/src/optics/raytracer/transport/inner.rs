@@ -204,6 +204,14 @@ pub(super) fn trace_spectral_ray_inner(
 
     let mut stokes = [StokesVector::unpolarized(1.0); NUM_CHANNELS];
     let mut radiance = [0.0f32; NUM_CHANNELS];
+    // A Henyey-Greenstein scattering-point NEE deposit is integrated to XYZ
+    // immediately, using THAT moment's own `path_pdf`/`compat` -- see
+    // `try_scatter_step`'s "NEE spectral weighting" doc comment for why this
+    // must not ride the shared `radiance` array (which is later weighted by the
+    // FINAL, post-loop `path_pdf`/`compat` instead). Summed unconditionally into the
+    // final result below, regardless of how the path eventually terminates -- the same
+    // unconditional inclusion the old shared-`radiance` deposit always had.
+    let mut nee_xyz = Vec3::ZERO;
 
     // `hero_idx` names which slot of `lambdas` (and every other per-channel array
     // below) holds the wavelength driving the shared geometric path. Provably 0 for
@@ -246,7 +254,10 @@ pub(super) fn trace_spectral_ray_inner(
     let (mat_ctx, wavelength_cache) =
         build_ray_context(material, lambdas, hero_idx, enable_internal_mode_coupling);
 
-    // Precomputed once per trace, like `accumulate_miss_radiance`'s own `studio_rig`.
+    // Built once per trace and shared: the exit-split probes read it through
+    // `exit_split_ctx.studio_rig`, and the escape lookup in `accumulate_miss_radiance`
+    // borrows that same instance. It depends only on `(light_yaw, light_pitch)`, so the
+    // single build is value-identical to rebuilding it at each use.
     let exit_split_studio_rig = match environment {
         EnvironmentSource::Studio {
             light_yaw,
@@ -273,6 +284,7 @@ pub(super) fn trace_spectral_ray_inner(
         split_radiance: &mut split_radiance,
         enabled: enable_exit_splitting,
         compat: [u8::MAX; NUM_CHANNELS],
+        split_mis_weight: 1.0,
     };
     // Set alongside `record_termination(.., PathTermination::Escaped)` below -- the
     // only point `radiance` is ever populated from a real environment sample. See
@@ -334,9 +346,8 @@ pub(super) fn trace_spectral_ray_inner(
                     balance_heuristic(phase_pdf, light_pdf)
                 });
             accumulate_miss_radiance(
-                environment,
+                &exit_split_ctx,
                 current_ray.dir,
-                observer,
                 &lambdas,
                 &stokes,
                 mis_weight,
@@ -364,7 +375,9 @@ pub(super) fn trace_spectral_ray_inner(
                 exit_split_ctx.split_radiance,
                 nee_ctx,
                 &lambdas,
-                &mut radiance,
+                &mut nee_xyz,
+                enable_exit_splitting,
+                exit_split_ctx.compat,
                 facet_finishes,
             ) {
                 ScatterStepOutcome::NotApplicable | ScatterStepOutcome::ReachedBoundary => {}
@@ -497,6 +510,12 @@ pub(super) fn trace_spectral_ray_inner(
     } else {
         integrate_channels_to_xyz(&radiance, &lambdas, &path_pdf, hero_idx)
     };
+    // `nee_xyz` (see its own doc comment above) is already fully integrated to XYZ --
+    // added in directly, not run back through `integrate_channels_to_xyz[_families]`
+    // a second time. `HdrMap`-only in practice (`nee.enabled` is `false` for `Studio`
+    // at every public entry point), so this is a no-op for the white-balanced branch
+    // below.
+    let xyz = xyz + nee_xyz;
 
     // Von Kries white-balance (diagonalised in Bradford LMS, not raw XYZ -- see
     // `compute_illuminant_white_balance`'s doc comment) so the chosen illuminant

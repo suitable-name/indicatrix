@@ -123,6 +123,20 @@ Render tab in its Solid/Path-traced/Both modes; its Diagram mode instead
 drags to pan and scrolls to zoom its own image, with a Reset View button
 to snap both back.
 
+On a selected facet in the Solid viewport's Solid, Path-traced and Both
+modes, the angle, depth and index handles are dragged with the left mouse
+button (Chapter 13). While a handle is being dragged, **Shift** switches the
+angle and depth snapping to its fine step, and **Escape** cancels the drag
+and restores the design; with nothing being dragged, Escape clears the
+selection as usual.
+
+The Solid viewport's Slice tool (Chapter 13) has its own keys, active once you
+have clicked into the viewport: **S** turns Slice mode on or off; with a
+provisional (not yet kept) tier on screen, **Enter** keeps it as one undo step,
+**Escape** discards it (Escape with none leaves Slice mode instead), and **F**
+flips which side of your line is cut away. They are not in the tables above,
+which list only the app's window-wide and tier-list shortcuts.
+
 ## Next steps
 
 Appendix C tables every built-in render material's optical properties.

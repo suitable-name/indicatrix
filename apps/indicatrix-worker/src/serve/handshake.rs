@@ -40,13 +40,24 @@ pub fn read_and_check_hello<S: Read>(
     port: PeerRole,
     cert_role: Option<PeerRole>,
 ) -> Result<HelloCheck, NetError> {
-    let hello = match handshake::read_hello(stream) {
+    // A TOTAL deadline for this read (not the per-read idle timeout the accept loop
+    // already applied to the raw socket) -- see `DeadlineIo`'s doc comment and F-06a: a
+    // peer that keeps the connection alive by trickling a byte at a time, always inside
+    // whatever idle window is configured, must still be cut off once this whole budget
+    // elapses. `DeadlineIo` only needs `S: Read`, so this wraps generically regardless
+    // of whether `stream` is a plain `TcpStream`, a `TlsStream`, or (in this module's own
+    // tests) an in-memory `Cursor`.
+    let deadline = std::time::Instant::now() + crate::serve::HANDSHAKE_TIMEOUT;
+    let mut guarded = crate::serve::socket::DeadlineIo::new(stream, deadline);
+    let hello = match handshake::read_hello(&mut guarded) {
         Ok(hello) => hello,
         Err(HelloReadError::Net(e)) => return Err(e),
         Err(HelloReadError::Incompatible(incompatible)) => {
             return Ok(HelloCheck::Refused(ErrorMsg {
                 code: error_codes::BUILD_MISMATCH,
                 message: format!("refusing to pair: {incompatible}"),
+                // No request exists yet at the HELLO phase.
+                request_id: None,
             }));
         }
     };
@@ -60,6 +71,7 @@ pub fn check_role(hello: Hello, port: PeerRole, cert_role: Option<PeerRole>) -> 
         HelloCheck::Refused(ErrorMsg {
             code: error_codes::ROLE_REFUSED,
             message,
+            request_id: None,
         })
     };
     if !hello.role_is_consistent() {
@@ -159,8 +171,9 @@ mod tests {
             panic!("a v13 HELLO must be refused");
         };
         assert_eq!(refusal.code, error_codes::BUILD_MISMATCH);
+        let local = format!("v{PROTOCOL_VERSION}");
         assert!(
-            refusal.message.contains("v13") && refusal.message.contains("v14"),
+            refusal.message.contains("v13") && refusal.message.contains(&local),
             "{}",
             refusal.message
         );

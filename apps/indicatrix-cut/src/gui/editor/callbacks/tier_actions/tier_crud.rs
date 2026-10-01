@@ -9,7 +9,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use indicatrix_cut_core::Edit;
+use indicatrix_editor::session::RemoveTierError;
 use slint::{ComponentHandle, Model};
 
 use super::{
@@ -21,10 +21,8 @@ use super::{
     },
     facet_overlay::resubmit_facet_overlay,
     misc::{adjust_selection_after_remove, bump_form_reset_pulse},
-    nudge::tier_nudge_label,
     tier_generation::{
         setup_generate_step_series_callback, setup_mirror_tier_to_other_block_callback,
-        unique_duplicate_name,
     },
 };
 use crate::{
@@ -33,6 +31,7 @@ use crate::{
     gui::{
         editor::{
             auto_solve,
+            native_io::ask_write_confirm,
             state::{EditorState, apply_multi_selection, push_multi_selected_count, push_tiers},
             view::{SolidLastSolved, refresh_editor_panel_stale, submit_preview_replan},
         },
@@ -43,7 +42,7 @@ use crate::{
 
 /// The tier-list row's own "x" button (and the tier list's Delete/Backspace, both of
 /// which call straight through `EditorModel.remove_tier`): applies
-/// [`Edit::RemoveTier`] through `EditorState::apply`, then
+/// `Edit::RemoveTier` through `EditorState::apply`, then
 /// [`adjust_selection_after_remove`] to keep `EditorModel.selected_tier_index`
 /// pointing at the right row (or nothing) once the removal has shifted everything
 /// after it down by one.
@@ -64,55 +63,97 @@ pub(in crate::gui::editor) fn setup_remove_tier_callback(
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            if index < 0 {
+            let Ok(index) = usize::try_from(index) else {
                 return;
-            }
-            let mut st = state.borrow_mut();
-            // Captured before the removal for the confirmation toast below --
-            // `None` (an already out-of-range index) just skips that toast, the
-            // same as today's silent behavior.
-            let removed_summary = st.design.tiers.get(index as usize).map(|tier| {
-                let name = if tier.name.is_empty() {
-                    "(unnamed)".to_string()
-                } else {
-                    tier.name.clone()
-                };
-                (name, tier.indices.len())
-            });
-            match st.apply(Edit::RemoveTier {
-                index: index as usize,
-            }) {
-                Ok(()) => {
-                    // Tier count changed -- the alignment check falls back to a full solve.
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::new());
-                    adjust_selection_after_remove(&ui, index);
-                    submit_preview_replan(
-                        &ui,
+            };
+            remove_tier_now(
+                &ui,
+                &state,
+                &render_ctx,
+                &preview_state,
+                &solid_last_solved,
+                index,
+                false,
+            );
+        });
+}
+
+/// Removes tier `index` (clearing other tiers' meet references to it when `cascade`)
+/// and refreshes the panel, the preview and the selection. A removal refused because
+/// other tiers still meet the tier by name asks "Remove anyway?" and, once accepted,
+/// repeats itself with `cascade` set.
+fn remove_tier_now(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
+    solid_last_solved: &SolidLastSolved,
+    index: usize,
+    cascade: bool,
+) {
+    let mut st = state.borrow_mut();
+    // The removed tier's name and facet count for the confirmation toast come back
+    // with the edit; an already out-of-range index errors and toasts that error.
+    match st.remove_tier_with(index, cascade) {
+        Ok(removed) => {
+            // Tier count changed -- the alignment check falls back to a full solve.
+            refresh_editor_panel_stale(ui, render_ctx, &st, &BTreeSet::new());
+            adjust_selection_after_remove(ui, index as i32);
+            submit_preview_replan(
+                ui,
+                render_ctx,
+                preview_state,
+                solid_last_solved,
+                &st,
+                BTreeSet::new(),
+                false,
+            );
+            drop(st);
+            let plural = if removed.facet_count == 1 { "" } else { "s" };
+            show_toast(
+                ui,
+                &format!(
+                    "Removed {} ({} facet{plural}), Undo",
+                    removed.name, removed.facet_count
+                ),
+                "info",
+            );
+        }
+        Err(error @ RemoveTierError::HasDependants { .. }) if !cascade => {
+            drop(st);
+            let state = Rc::clone(state);
+            let render_ctx = Arc::clone(render_ctx);
+            let preview_state = Arc::clone(preview_state);
+            let solid_last_solved = Arc::clone(solid_last_solved);
+            ask_write_confirm(
+                ui,
+                "Remove anyway?",
+                error.to_string(),
+                "Remove anyway",
+                None,
+                move |ui| {
+                    remove_tier_now(
+                        ui,
+                        &state,
                         &render_ctx,
                         &preview_state,
                         &solid_last_solved,
-                        &st,
-                        BTreeSet::new(),
-                        false,
+                        index,
+                        true,
                     );
-                    drop(st);
-                    if let Some((name, facet_count)) = removed_summary {
-                        let plural = if facet_count == 1 { "" } else { "s" };
-                        show_toast(
-                            &ui,
-                            &format!("Removed {name} ({facet_count} facet{plural}), Undo"),
-                            "info",
-                        );
-                    }
-                }
-                Err(e) => show_toast(&ui, &e.to_string(), "error"),
-            }
-        });
+                },
+            );
+        }
+        Err(error) => {
+            drop(st);
+            show_toast(ui, &error.to_string(), "error");
+        }
+    }
 }
 
 /// A row's "Duplicate" button and the tier list's Ctrl+D: inserts a copy of the
 /// named tier (name suffixed `'`, same indices/angle/constraint/detached set)
-/// immediately AFTER the source row as a new [`Edit::AddTier`] through
+/// immediately AFTER the source row as a new `Edit::AddTier` through
 /// `EditorState::apply` -- not appended at the end, since cut order is meaningful
 /// (`Edit::AddTier` already supports an arbitrary insertion index, so this passes
 /// the source row's own position plus one rather than appending at the end) --
@@ -141,31 +182,13 @@ pub(in crate::gui::editor) fn setup_duplicate_tier_callback(
                 return;
             };
             let mut st = state.borrow_mut();
-            let Some(source) = st.design.tiers.get(index) else {
-                return;
-            };
-            let mut duplicate = source.clone();
-            let source_label = if source.name.is_empty() {
-                "(unnamed)".to_string()
-            } else {
-                source.name.clone()
-            };
-            // Uses a counted `" (N)"` suffix instead of appending an apostrophe --
-            // see `unique_duplicate_name`'s own doc comment for why an apostrophe
-            // scheme piles up unreadable "P1''''" names AND silently creates a
-            // duplicate name that a meet resolver secretly binds to the FIRST tier
-            // holding it.
-            let existing_names: Vec<String> =
-                st.design.tiers.iter().map(|t| t.name.clone()).collect();
-            duplicate.name = unique_duplicate_name(&source.name, &existing_names);
-            let duplicate_label = duplicate.name.clone();
-            duplicate.imported_meet = None;
-            let new_index = index + 1;
-            match st.apply(Edit::AddTier {
-                index: new_index,
-                tier: duplicate,
-            }) {
-                Ok(()) => {
+            // The copy's counted `" (N)"` name, cleared `imported_meet` and insertion
+            // right after the source all live in `EditorSession::duplicate_tier`
+            // (shared with the web app's tier table).
+            match st.duplicate_tier(index) {
+                Ok(None) => {}
+                Ok(Some(duplicated)) => {
+                    let new_index = duplicated.new_index;
                     // `AddTier` changes the tier count -- same full-solve fallback
                     // `setup_save_tier_callback`'s own `AddTier` path uses.
                     refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::from([new_index]));
@@ -185,7 +208,10 @@ pub(in crate::gui::editor) fn setup_duplicate_tier_callback(
                     // mis-clicked Duplicate indistinguishable from a no-op.
                     show_toast(
                         &ui,
-                        &format!("Duplicated {source_label} as {duplicate_label}"),
+                        &format!(
+                            "Duplicated {} as {}",
+                            duplicated.source_label, duplicated.duplicate_label
+                        ),
                         "info",
                     );
                 }
@@ -245,16 +271,9 @@ pub(in crate::gui::editor) fn setup_toggle_detach_callback(
             }
             let mut st = state_toggle.borrow_mut();
             let index = index as usize;
-            let Some(tier) = st.design.tiers.get(index) else {
-                return;
-            };
-            let edit_result = if tier.detached.is_empty() {
-                st.design.detach_all_in_tier(index)
-            } else {
-                st.design.reattach_all_in_tier(index)
-            };
-            match edit_result.and_then(|edit| st.apply(edit)) {
-                Ok(()) => {
+            match st.toggle_detach(index) {
+                Ok(None) => {}
+                Ok(Some(toggled)) => {
                     refresh_editor_panel_stale(
                         &ui,
                         &render_ctx_toggle,
@@ -270,28 +289,17 @@ pub(in crate::gui::editor) fn setup_toggle_detach_callback(
                         BTreeSet::from([index]),
                         false,
                     );
-                    // Names the change and which way it went
-                    // -- `tier.detached` is now whatever this apply just left it
-                    // as, so a non-empty set here means "just detached," empty
-                    // means "just reattached."
-                    let now_detached = st
-                        .design
-                        .tiers
-                        .get(index)
-                        .is_some_and(|tier| !tier.detached.is_empty());
-                    let label = st
-                        .design
-                        .tiers
-                        .get(index)
-                        .map(|tier| tier_nudge_label(tier, index));
+                    // Names the change and which way it went -- `toggled.detached` is
+                    // whatever the apply just left the tier as, so `true` means "just
+                    // detached," `false` means "just reattached."
                     drop(st);
-                    if let Some(label) = label {
-                        let verb = if now_detached {
+                    if !toggled.label.is_empty() {
+                        let verb = if toggled.detached {
                             "Detached"
                         } else {
                             "Reattached"
                         };
-                        show_toast(&ui, &format!("{verb} {label}"), "info");
+                        show_toast(&ui, &format!("{verb} {}", toggled.label), "info");
                     }
                 }
                 Err(e) => show_toast(&ui, &e.to_string(), "error"),
@@ -329,9 +337,9 @@ pub(in crate::gui::editor) fn setup_toggle_detach_callback(
 
 /// Row reorder (`Alt+Up`/`Alt+Down` and the tier list's own move buttons,
 /// `editor_tier_table.slint`): moves the tier at `index` to `index + direction` as
-/// one [`Edit::MoveTier`] -- a single `History` step (one undo press restores the
+/// one `Edit::MoveTier` -- a single `History` step (one undo press restores the
 /// original order) with its own honest "Move tier P1 up/down" label, rather than
-/// the two independently-undoable [`Edit::ModifyTier`] content swaps this used
+/// the two independently-undoable `Edit::ModifyTier` content swaps this used
 /// before `Edit::MoveTier` existed. `MoveTier` renumbers every tier strictly
 /// between `from` and `to` (see its own doc comment), so this always forces a full
 /// re-solve rather than passing a `dirty` set of just the two endpoints.
@@ -356,20 +364,12 @@ fn setup_move_tier_callback(
                 return;
             };
             let mut st = state.borrow_mut();
-            let tier_count = st.design.tiers.len();
-            let target = if direction < 0 {
-                index.checked_sub(1)
-            } else {
-                index.checked_add(1).filter(|&t| t < tier_count)
-            };
-            let Some(target) = target else {
-                return;
-            };
-            match st.apply(Edit::MoveTier {
-                from: index,
-                to: target,
-            }) {
-                Ok(()) => {
+            // The end-of-list guard and the single `Edit::MoveTier` live in
+            // `EditorSession::move_tier` (shared with the web app's tier table).
+            match st.move_tier(index, direction) {
+                Ok(None) => {}
+                Ok(Some(moved)) => {
+                    let target = moved.target;
                     // A move can shift index-wheel alignment for every tier between
                     // the old and new position, not tracked precisely here -- same
                     // "blast radius unknown" treatment as Undo/Redo.
@@ -426,29 +426,11 @@ fn setup_complete_orbit_callback(
                 return;
             };
             let mut st = state.borrow_mut();
-            let Ok(units) = st.design.orbit_units(index) else {
-                return;
-            };
-            let anchors: Vec<f64> = units
-                .iter()
-                .filter(|unit| !unit.is_complete())
-                .filter_map(|unit| unit.members.first().copied())
-                .collect();
-            if anchors.is_empty() {
-                return;
-            }
-            let mut last_err = None;
-            for position in anchors {
-                let outcome = st
-                    .design
-                    .add_orbit_member(index, position)
-                    .and_then(|edit| st.apply(edit));
-                if let Err(e) = outcome {
-                    last_err = Some(e);
-                }
-            }
-            match last_err {
-                None => {
+            // One `add_orbit_member` edit per incomplete unit, through the shared
+            // session -- see `indicatrix_editor::EditorSession::complete_orbit`.
+            match st.complete_orbit(index) {
+                Ok(false) => {}
+                Ok(true) => {
                     refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::from([index]));
                     submit_preview_replan(
                         &ui,
@@ -460,7 +442,7 @@ fn setup_complete_orbit_callback(
                         false,
                     );
                 }
-                Some(e) => show_toast(&ui, &e.to_string(), "error"),
+                Err(e) => show_toast(&ui, &e.to_string(), "error"),
             }
         });
 }
@@ -493,7 +475,7 @@ fn setup_clear_multi_select_callback(ui: &MainWindow, state: &Rc<RefCell<EditorS
 /// The tier table header's "Delete" action on its "N selected" indicator: removes
 /// every multi-selected tier, highest index first (so removing one never shifts
 /// an index still waiting to be removed out from under this loop) -- as several
-/// separately-undoable [`Edit::RemoveTier`]s, matching [`setup_complete_orbit_
+/// separately-undoable `Edit::RemoveTier`s, matching [`setup_complete_orbit_
 /// callback`]'s "several `History` steps, no new batch primitive" trade-off.
 fn setup_remove_multi_selected_callback(
     ui: &MainWindow,
@@ -512,38 +494,79 @@ fn setup_remove_multi_selected_callback(
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
-            let mut st = state.borrow_mut();
-            let targets: Vec<usize> = st.multi_selected.iter().rev().copied().collect();
-            if targets.is_empty() {
-                return;
-            }
-            let removed_count = targets.len();
-            let mut last_err = None;
-            for index in targets {
-                if let Err(e) = st.apply(Edit::RemoveTier { index }) {
-                    last_err = Some(e);
-                }
-            }
-            match last_err {
-                None => {
-                    // Tier count changed -- the length check falls back to a full
-                    // solve regardless of `dirty`.
-                    refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::new());
-                    submit_preview_replan(
-                        &ui,
+            remove_multi_selected_now(
+                &ui,
+                &state,
+                &render_ctx,
+                &preview_state,
+                &solid_last_solved,
+                false,
+            );
+        });
+}
+
+/// Removes every multi-selected tier (clearing the references of tiers outside the
+/// selection when `cascade`) and refreshes the panel and the preview. A removal refused
+/// because unselected tiers still meet a selected one by name asks "Remove anyway?" and,
+/// once accepted, repeats itself with `cascade` set.
+fn remove_multi_selected_now(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
+    solid_last_solved: &SolidLastSolved,
+    cascade: bool,
+) {
+    let mut st = state.borrow_mut();
+    // Highest index first, one `Edit::RemoveTier` each, the last failure reported --
+    // see `EditorSession::remove_multi_selected_with`.
+    match st.remove_multi_selected_with(cascade) {
+        Ok(0) => {}
+        Ok(removed_count) => {
+            // Tier count changed -- the length check falls back to a full solve
+            // regardless of `dirty`.
+            refresh_editor_panel_stale(ui, render_ctx, &st, &BTreeSet::new());
+            submit_preview_replan(
+                ui,
+                render_ctx,
+                preview_state,
+                solid_last_solved,
+                &st,
+                BTreeSet::new(),
+                false,
+            );
+            drop(st);
+            ui.global::<EditorModel>().set_selected_tier_index(-1);
+            bump_form_reset_pulse(ui);
+            show_toast(ui, &format!("Removed {removed_count} tier(s)."), "info");
+        }
+        Err(error @ RemoveTierError::HasDependants { .. }) if !cascade => {
+            drop(st);
+            let state = Rc::clone(state);
+            let render_ctx = Arc::clone(render_ctx);
+            let preview_state = Arc::clone(preview_state);
+            let solid_last_solved = Arc::clone(solid_last_solved);
+            ask_write_confirm(
+                ui,
+                "Remove anyway?",
+                error.to_string(),
+                "Remove anyway",
+                None,
+                move |ui| {
+                    remove_multi_selected_now(
+                        ui,
+                        &state,
                         &render_ctx,
                         &preview_state,
                         &solid_last_solved,
-                        &st,
-                        BTreeSet::new(),
-                        false,
+                        true,
                     );
-                    drop(st);
-                    ui.global::<EditorModel>().set_selected_tier_index(-1);
-                    bump_form_reset_pulse(&ui);
-                    show_toast(&ui, &format!("Removed {removed_count} tier(s)."), "info");
-                }
-                Some(e) => show_toast(&ui, &e.to_string(), "error"),
-            }
-        });
+                },
+            );
+        }
+        Err(error) => {
+            drop(st);
+            show_toast(ui, &error.to_string(), "error");
+        }
+    }
 }

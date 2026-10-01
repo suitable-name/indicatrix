@@ -13,6 +13,9 @@ use std::{
     time::Duration,
 };
 
+/// The viewer's own share of a `FinalImageRequest` (v16): [`ContributionSlot`] and its
+/// `await_until`/`receive` rendezvous -- see this module's own doc comment.
+mod contribution;
 mod downsample;
 mod emitter;
 mod producer;
@@ -21,13 +24,15 @@ mod sizing;
 mod tests;
 mod tracer;
 
+pub use contribution::{Awaited, ContributionSlot, DEFAULT_CONTRIBUTION_WAIT};
 pub use emitter::{RawPoll, poll_raw_client_message, run_stream, run_stream_with};
 pub use producer::{Output, ProducerOutcome, ProducerSink, local_tracer};
 pub use tracer::trace_range;
 
 /// What [`run_stream_with`] streams: the request (its id, scene, range and
-/// `StreamConfig`), the connection's negotiated payload encoding, and what the request
-/// turns into at the end ([`Output`]).
+/// `StreamConfig`), the connection's negotiated payload encoding, what the request
+/// turns into at the end ([`Output`]), and (v16) the viewer's own reserved share of a
+/// final picture, if any.
 #[derive(Debug, Clone, Copy)]
 pub struct StreamSpec<'a> {
     /// The request being streamed (a `FinalImageRequest` is carried as an equivalent
@@ -38,7 +43,31 @@ pub struct StreamSpec<'a> {
     pub payload_encoding: indicatrix_net::messages::PayloadEncoding,
     /// Radiance or a final picture.
     pub output: Output,
+    /// v16: the viewer's reserved tail of a `FinalImageRequest`, if it asked to
+    /// contribute one -- `None` for every `RENDER` and for a `FinalImageRequest` with
+    /// `viewer_samples == 0`. The emitter loop routes an incoming `CONTRIBUTION` here
+    /// (see `emitter::run_stream_loop`); the coordinator job's producer thread waits on
+    /// it once its own lanes finish (see `crate::coordinator::job::producer`).
+    pub contribution: Option<&'a ContributionSlot>,
+    /// How long the producer may go without adding a sample before the emitter fails the
+    /// request with `error_codes::PRODUCER_STALLED` (see `emitter::run_stream_loop`).
+    ///
+    /// `None` for a coordinator job, which legitimately waits in its viewer's FIFO or for
+    /// a joined worker with no sample landing; `Some` for a request served directly by
+    /// the local tracer (a plain worker, or a coordinator's own lane), where a producer
+    /// that stops advancing is wedged -- and the emitter's own `PROGRESS` heartbeat would
+    /// otherwise keep the client's silence-based liveness deadline satisfied forever.
+    pub stall_timeout: Option<Duration>,
 }
+
+/// The stall window a directly served request gets: `StreamSpec::stall_timeout` for a
+/// plain worker and a coordinator's own-lane route.
+///
+/// Generous on purpose. The first sample lands only after the tracer's calibration probe
+/// and, on a cold GPU, a pipeline compile; a huge export sub-batch is sized to about a
+/// second of work. Two minutes is far past either, yet short enough that a wedged lane
+/// stops holding a batch client's slot for good.
+pub const PRODUCER_STALL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// This worker's cadence FLOOR, advertised in `WELCOME::min_cadence_ms` -- see that
 /// field's doc comment. Matches [`TARGET_SUBBATCH`], the sub-batch duration
@@ -173,6 +202,7 @@ enum LastTimeout {
     Applied(Option<Duration>),
 }
 
+/// Remembers the last socket timeout applied so repeat settings skip the syscall.
 #[derive(Debug, Default)]
 pub struct TimeoutCache {
     last: LastTimeout,
@@ -263,7 +293,21 @@ pub enum StreamOutcome {
     /// report. The caller is expected to send `StreamEvent::Error` itself.
     TracePanicked,
     /// The producer could not complete the request (a coordinator that lost every lane:
-    /// `error_codes::ALL_WORKERS_LOST`), or its final picture could not be encoded. No
+    /// `error_codes::ALL_WORKERS_LOST`; a producer that made no progress for
+    /// [`StreamSpec::stall_timeout`]: `error_codes::PRODUCER_STALLED`), or its final
+    /// picture could not be encoded. No
     /// `DONE` was written; the caller sends this `ErrorMsg` as `StreamEvent::Error`.
     Failed(indicatrix_net::messages::ErrorMsg),
+}
+
+/// The short label the per-request `info!` lines use: `completed`, `trace panicked` or
+/// `failed code N`.
+impl std::fmt::Display for StreamOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Completed => f.write_str("completed"),
+            Self::TracePanicked => f.write_str("trace panicked"),
+            Self::Failed(error) => write!(f, "failed code {}", error.code),
+        }
+    }
 }

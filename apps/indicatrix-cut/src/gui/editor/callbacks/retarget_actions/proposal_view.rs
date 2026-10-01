@@ -1,125 +1,19 @@
-//! The Slint-free retarget proposal view model, and the `push_*` renderers that
-//! turn it into `MainWindow`'s `editor_retarget_*`/`RetargetModel` properties -- see
-//! this group's own `mod.rs` doc comment ("Slint-free view-model split").
+//! The `push_*` renderers that turn the Slint-free retarget proposal view model
+//! (`indicatrix_editor::retarget::view`, shared with the web app and re-exported
+//! here at its old paths) into `MainWindow`'s `editor_retarget_*`/`RetargetModel`
+//! properties -- see this group's own `mod.rs` doc comment ("Slint-free view-model
+//! split").
 
-use crate::{
-    MainWindow, RetargetModel, RetargetRowItem,
-    gui::editor::retarget::{
-        self, CrownShift, RetargetError, RetargetMode, RetargetProposal, RetargetRow,
-    },
-};
-use indicatrix::{geometry::meet_solver::Block, optics::materials::GemMaterial};
-use indicatrix_cut_core::{Design, MaterialSelection, ResolvedMaterial, Risk};
+use crate::{MainWindow, RetargetModel, RetargetRowItem};
+use indicatrix_cut_core::{MaterialSelection, ResolvedMaterial};
 use slint::{Color, ComponentHandle, ModelRc, SharedString, VecModel};
 
-/// Pure, Slint-free view of one [`RetargetRow`] -- see this module's doc comment
-/// ("Slint-free view-model split").
-pub(super) struct RetargetRowView {
-    tier_index: usize,
-    block: &'static str,
-    name: String,
-    old_angle: String,
-    new_angle: String,
-    margin: String,
-    risk_label: &'static str,
-    risk_rgb: (u8, u8, u8),
-}
-
-/// [`Risk`]'s label plus its RGB badge color -- chosen HERE, once, so the two can
-/// never drift apart, matching `Theme.accent-emerald`/`accent-amber`/`accent-ruby`
-/// exactly.
-const fn risk_label_and_rgb(risk: Risk) -> (&'static str, (u8, u8, u8)) {
-    match risk {
-        Risk::Safe => ("Safe", (0x10, 0xb9, 0x81)),
-        Risk::Marginal => ("Marginal", (0xf5, 0x9e, 0x0b)),
-        Risk::Windows => ("Windows", (0xf4, 0x3f, 0x5e)),
-    }
-}
-
-pub(super) fn row_view(row: &RetargetRow) -> RetargetRowView {
-    let block = match row.block {
-        Block::Crown => "Crown",
-        Block::Pavilion => "Pavilion",
-        // Never actually produced by `retarget::build_proposal` (girdle tiers are
-        // never listed), but this stays total rather than panicking on a future change.
-        Block::Girdle => "Girdle",
-    };
-    let (risk_label, risk_rgb) = risk_label_and_rgb(row.risk);
-    RetargetRowView {
-        tier_index: row.tier_index,
-        block,
-        name: row.name.clone(),
-        old_angle: format!("{:.2}\u{b0}", row.old_angle),
-        new_angle: format!("{:.2}\u{b0}", row.new_angle),
-        margin: format!("{:+.2}\u{b0}", row.margin_deg),
-        risk_label,
-        risk_rgb,
-    }
-}
-
-/// Pure, Slint-free view of one [`retarget::build_proposal`] call -- exactly what
-/// [`push_retarget_view`] pushes into `MainWindow`'s `editor_retarget_*` properties,
-/// computed here so the routing decision (which of `rows`/`notes`/`anchored_errors`/
-/// `solve_error` gets populated) is unit-tested directly. The second element of the
-/// returned pair is the real [`RetargetProposal`] to stash in
-/// `EditorState::pending_retarget`, `None` for either [`RetargetError`] variant.
-pub(super) fn retarget_view(
-    design: &Design,
-    target: &ResolvedMaterial,
-    crown: CrownShift,
-    mode: RetargetMode,
-    // The catalogue's custom materials, so the design's CURRENT refractive index
-    // resolves through the same lookup the rest of the editor uses (
-    // 53). Without it a design whose material is a custom catalogue entry had its
-    // source RI read from the built-in table alone, which silently fell back to a
-    // different number -- and every proposed angle is a shift from that number.
-    custom_materials: &[GemMaterial],
-) -> (RetargetView, Option<RetargetProposal>) {
-    match retarget::build_proposal(design, target, crown, mode, custom_materials) {
-        Ok(proposal) => {
-            let rows = proposal.rows.iter().map(row_view).collect();
-            let view = RetargetView {
-                rows,
-                notes: proposal.notes.clone(),
-                anchored_errors: Vec::new(),
-                solve_error: String::new(),
-            };
-            (view, Some(proposal))
-        }
-        Err(RetargetError::AnchoredTiers(tiers)) => {
-            let anchored_errors = tiers
-                .iter()
-                .map(|(index, name)| format!("#{index} \"{name}\""))
-                .collect();
-            let view = RetargetView {
-                rows: Vec::new(),
-                notes: Vec::new(),
-                anchored_errors,
-                solve_error: String::new(),
-            };
-            (view, None)
-        }
-        Err(RetargetError::Solve(err)) => {
-            let view = RetargetView {
-                rows: Vec::new(),
-                notes: Vec::new(),
-                anchored_errors: Vec::new(),
-                solve_error: err.to_string(),
-            };
-            (view, None)
-        }
-    }
-}
-
-pub(super) struct RetargetView {
-    pub(super) rows: Vec<RetargetRowView>,
-    pub(super) notes: Vec<String>,
-    pub(super) anchored_errors: Vec<String>,
-    pub(super) solve_error: String,
-}
+pub(super) use indicatrix_editor::retarget::view::{
+    RetargetRowView, RetargetView, retarget_view, row_view,
+};
 
 /// Pushes [`RetargetView`] into `MainWindow`'s `editor_retarget_rows`/`_notes`/
-/// `_anchored_errors`/`_solve_error` -- the only place a [`RetargetRowView`] becomes
+/// `_anchored_errors`/`_solve_error` -- the only place a `RetargetRowView` becomes
 /// a real `RetargetRowItem`.
 pub(super) fn push_retarget_view(ui: &MainWindow, view: RetargetView) {
     let rows: Vec<RetargetRowItem> = view

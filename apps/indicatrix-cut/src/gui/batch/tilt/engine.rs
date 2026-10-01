@@ -8,19 +8,22 @@ use crate::{
         preview_render::{PREVIEW_LIGHT_PITCH, PREVIEW_LIGHT_YAW},
         remote::remote_render,
     },
-    gui::{
-        batch::{
-            batch_queue::WorkQueue,
-            preview::{RI_MATCH_TOLERANCE, seeded_random_unit, target_ri_for_design},
-        },
-        library::detail::reconstruct_planes,
+    gui::batch::{
+        batch_queue::WorkQueue,
+        preview::{RI_MATCH_TOLERANCE, seeded_random_unit, target_ri_for_design},
     },
     settings::WorkerSettings,
 };
 use indicatrix::{
-    color::metrics::{PROFILE_AZIMUTHS_DEG, evaluate_full_axis_profile_at_azimuth},
+    color::metrics::{
+        PROFILE_AZIMUTHS_DEG, SweepProgress, evaluate_all_axes_profiles_stepped,
+        evaluate_full_axis_profile_at_azimuth,
+    },
     geometry::plane::GpuFacetPlane,
-    optics::{materials::GemMaterial, raytracer::LightingPreset},
+    optics::{
+        materials::GemMaterial,
+        raytracer::{DEFAULT_MAX_BOUNCES, EnvironmentSource, LightingPreset},
+    },
 };
 use indicatrix_net::{
     SceneState,
@@ -33,24 +36,40 @@ use indicatrix_vault::model::tilt_curves::{
 use slint::{ComponentHandle, Weak};
 use std::{
     any::Any,
+    collections::BTreeSet,
     sync::{
         Mutex, PoisonError,
         atomic::{AtomicBool, AtomicU32, Ordering},
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 use tracing::warn;
+
+mod save;
+
+use save::save_curves;
+pub use save::save_tilt_curves_for_entry;
 
 /// `max_bounces` on the [`SceneState`] a remote tilt-curve request carries -- IGNORED
 /// by the worker's `TILT_CURVES` handler entirely (see `indicatrix_net::messages::tilt`'s
 /// module doc comment: only `planes`/`material`/`light_yaw`/`light_pitch` actually feed
 /// the computation), but still validated, so this must be a plausible value
-/// (`1..=128`, see `apps/indicatrix-worker::validate::MAX_BOUNCES`). `12` matches
-/// `gui::batch::preview::engine::PREVIEW_MAX_BOUNCES` purely for familiarity -- no
-/// render this batch performs ever actually bounces a ray, so the specific value is
-/// otherwise arbitrary.
-const REMOTE_SCENE_MAX_BOUNCES: u32 = 12;
+/// (`1..=128`, see `apps/indicatrix-worker::validate::MAX_BOUNCES`). It is the
+/// raytracer's [`DEFAULT_MAX_BOUNCES`] purely for familiarity -- no render this batch
+/// performs ever actually bounces a ray, so the specific value is otherwise arbitrary.
+const REMOTE_SCENE_MAX_BOUNCES: u32 = DEFAULT_MAX_BOUNCES;
+
+/// The lighting preset every stored tilt-curve set is scored under, locally and (in the
+/// [`SceneState`] a remote worker receives) remotely, so both lanes describe the same
+/// lighting. The editor's default rig, at the preview light pose.
+const BATCH_TILT_LIGHTING_PRESET: LightingPreset = LightingPreset::RingLights;
+
+/// The environment the batch's tilt curves are scored under: [`BATCH_TILT_LIGHTING_PRESET`]
+/// at the preview light pose.
+const fn batch_environment() -> EnvironmentSource<'static> {
+    BATCH_TILT_LIGHTING_PRESET.studio(1.0, PREVIEW_LIGHT_YAW, PREVIEW_LIGHT_PITCH)
+}
 
 /// A single fixed request id for every tilt-curve remote dispatch -- safe for the same
 /// reason `bridge::preview_render::PREVIEW_REQUEST_ID` gives: each dispatch opens its
@@ -77,6 +96,10 @@ pub(super) struct BatchContext<'a> {
     pub(super) db: &'a Mutex<indicatrix_vault::db::sqlite::Database>,
     pub(super) material_candidates:
         &'a [indicatrix_vault::model::material_match::RiPresetCandidate],
+    /// The designs whose geometry came from the angle table rather than a design
+    /// file -- see `gui::batch::record_planes_for_batch`. Read once at the end for
+    /// the batch's summary line.
+    pub(super) angle_table_entries: &'a Mutex<BTreeSet<i64>>,
 }
 
 /// One design's resolved geometry/material -- the shared prelude both
@@ -89,6 +112,25 @@ struct ResolvedDesign {
     title: String,
     planes: Vec<GpuFacetPlane>,
     material: GemMaterial,
+    /// The persisted preview material's name `material` was looked up by -- part of the
+    /// fingerprint the curves are stored with.
+    material_name: String,
+    /// The catalogue row's `updated_at`, read together with the record `planes` come
+    /// from: the compare-and-swap token `Database::save_tilt_curves` checks, so curves
+    /// swept from a superseded record are refused instead of stored.
+    updated_at: Option<i64>,
+}
+
+/// `full`'s facet planes for a tilt-curve sweep -- the design file first, the angle
+/// table only as the fallback (`gui::batch::record_planes_for_batch`, shared with the
+/// preview batch and the library detail view). Both the local and the remote lane get
+/// their planes here, through [`resolve_design`]; a remote `TILT_CURVES` request
+/// ships these planes in its scene, so the worker never resolves a record itself.
+pub(super) fn record_planes(
+    ctx: &BatchContext<'_>,
+    full: &indicatrix_vault::model::entry::FullDiagramRecord,
+) -> Option<Vec<GpuFacetPlane>> {
+    super::super::record_planes_for_batch(full, ctx.angle_table_entries)
 }
 
 /// Resolves `entry_id`'s geometry and preview material, or `None` if either step comes
@@ -98,32 +140,22 @@ struct ResolvedDesign {
 /// by remote and a design claimed by local each resolve their own copy; nothing about a
 /// design's resolved geometry is shared or cached across lanes).
 fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<ResolvedDesign> {
-    let full = {
+    // The record and its revision stamp are read under one lock hold, so the stamp
+    // describes exactly this record.
+    let (full, updated_at) = {
         let guard = ctx.db.lock().unwrap_or_else(PoisonError::into_inner);
-        guard.get_diagram_full(entry_id)
+        (
+            guard.get_diagram_full(entry_id),
+            guard.entry_updated_at(entry_id),
+        )
     };
     let Ok(Some(full)) = full else {
         return None;
     };
-
-    let facet_specs: Vec<indicatrix::geometry::cuts::FacetSpec> = full
-        .angle_settings
-        .iter()
-        .map(|a| indicatrix::geometry::cuts::FacetSpec {
-            facet: a.facet.clone(),
-            angle: a.angle.clone(),
-            index: a.index.clone(),
-            notes: a.notes.clone(),
-        })
-        .collect();
-    let planes = reconstruct_planes(
-        full.shape.as_deref(),
-        full.index_gear.as_deref(),
-        &facet_specs,
-    );
-    if planes.is_empty() {
+    let Ok(updated_at) = updated_at else {
         return None;
-    }
+    };
+    let planes = record_planes(ctx, &full)?;
 
     let target_ri = target_ri_for_design(&full);
     let material_name = {
@@ -146,6 +178,8 @@ fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<ResolvedDesig
         title: full.title,
         planes,
         material,
+        material_name,
+        updated_at,
     })
 }
 
@@ -213,7 +247,7 @@ fn fetch_tilt_curves_remote(
         light_pitch: PREVIEW_LIGHT_PITCH,
         exposure: 1.0,
         max_bounces: REMOTE_SCENE_MAX_BOUNCES,
-        lighting_preset: LightingPreset::RingLights,
+        lighting_preset: BATCH_TILT_LIGHTING_PRESET,
         material: material.clone(),
         planes: planes.to_vec(),
         girdle_frosted: false,
@@ -273,8 +307,7 @@ fn compute_tilt_curves_locally(
             planes,
             material,
             azimuth_deg,
-            PREVIEW_LIGHT_YAW,
-            PREVIEW_LIGHT_PITCH,
+            batch_environment(),
         );
         axes.push(StorageAxisTiltCurves {
             brilliance_pct,
@@ -286,38 +319,36 @@ fn compute_tilt_curves_locally(
     Some(TiltPerformanceCurves { axes })
 }
 
-/// Persists `curves` for `entry_id`. Shared by both [`process_local_entry`] and
-/// [`process_remote_entry`] -- whichever lane actually produced the curves, the save
-/// itself is identical.
-fn save_curves(
-    db: &Mutex<indicatrix_vault::db::sqlite::Database>,
-    entry_id: i64,
-    curves: &TiltPerformanceCurves,
-) -> bool {
-    // Unix seconds fits in i64 until well past the year 292 billion; the column this
-    // feeds (`diagram_tilt_curves.generated_at`) is already declared INTEGER (i64) to
-    // match (`cast_possible_wrap` is workspace-`allow`ed, `Cargo.toml`).
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64);
-    let guard = db.lock().unwrap_or_else(PoisonError::into_inner);
-    // `curve_image_png: None` -- rendered tilt-curve images are explicitly out of
-    // scope for this batch; nothing in this module ever produces one.
-    guard.save_tilt_curves(entry_id, curves, None, now).is_ok()
-}
-
-/// [`save_curves`], exposed for a caller outside this module -- the single-design
-/// counterpart the Edit tab needs (its own "save tilt curves for this design" action,
-/// once a design has been saved into the catalogue and so has a real `entry_id` to
-/// save against). Kept as a thin wrapper rather than making `save_curves` itself
-/// `pub` so every existing in-module call site stays untouched.
-#[must_use]
-pub fn save_tilt_curves_for_entry(
-    db: &Mutex<indicatrix_vault::db::sqlite::Database>,
-    entry_id: i64,
-    curves: &TiltPerformanceCurves,
-) -> bool {
-    save_curves(db, entry_id, curves)
+/// [`compute_tilt_curves_locally`] with `on_step` called before every one of the
+/// sweep's raytrace evaluations, for the single-design run's progress bar. Uses the
+/// shared stepped sweep (`indicatrix::color::metrics::evaluate_all_axes_profiles_stepped`),
+/// whose curves are bit-identical to the plain per-axis calls, and honours `cancel`
+/// between evaluations instead of between axes.
+fn compute_tilt_curves_locally_stepped(
+    planes: &[GpuFacetPlane],
+    material: &GemMaterial,
+    cancel: &AtomicBool,
+    on_step: &mut dyn FnMut(SweepProgress),
+) -> Option<TiltPerformanceCurves> {
+    let profiles = evaluate_all_axes_profiles_stepped(
+        planes,
+        material,
+        batch_environment(),
+        &mut |progress| {
+            on_step(progress);
+            !cancel.load(Ordering::Relaxed)
+        },
+    )?;
+    let axes: Vec<StorageAxisTiltCurves> = profiles
+        .into_iter()
+        .map(|profile| StorageAxisTiltCurves {
+            brilliance_pct: profile.brilliance,
+            extinction_pct: profile.extinction,
+            windowing_pct: profile.windowing,
+        })
+        .collect();
+    let axes: [StorageAxisTiltCurves; TILT_CURVE_AXIS_COUNT] = axes.try_into().ok()?;
+    Some(TiltPerformanceCurves { axes })
 }
 
 /// Resolves and computes `entry_id`'s tilt curves on the LOCAL engine. Returns `true`
@@ -336,7 +367,13 @@ fn process_local_entry(ctx: &BatchContext<'_>, entry_id: i64, cancel: &AtomicBoo
     else {
         return false;
     };
-    save_curves(ctx.db, entry_id, &curves)
+    save_curves(
+        ctx.db,
+        entry_id,
+        &curves,
+        Some(&resolved.material_name),
+        resolved.updated_at,
+    )
 }
 
 /// Resolves `entry_id` and dispatches its tilt curves to `worker` (if any), reporting
@@ -364,7 +401,13 @@ fn process_remote_entry(
     else {
         return false;
     };
-    save_curves(ctx.db, entry_id, &curves)
+    save_curves(
+        ctx.db,
+        entry_id,
+        &curves,
+        Some(&resolved.material_name),
+        resolved.updated_at,
+    )
 }
 
 fn panic_message(payload: &(dyn Any + Send)) -> String {
@@ -658,6 +701,11 @@ pub(super) fn run_remote_lane(
 /// `thread::spawn` + `upgrade_in_event_loop` shape every other worker call in this
 /// crate already uses (e.g. `gui::tilt::tilt_profile::spawn_tilt_profile_sweep`).
 ///
+///
+/// `on_step` reports the LOCAL sweep's progress, before each raytrace evaluation (see
+/// [`compute_tilt_curves_locally_stepped`]); a remote sweep is one blocking request
+/// and reports nothing.
+///
 /// [`LiveComputeTarget::Both`]: crate::settings::LiveComputeTarget::Both
 /// [`LiveComputeTarget::LocalOnly`]: crate::settings::LiveComputeTarget::LocalOnly
 #[must_use]
@@ -666,13 +714,14 @@ pub fn tilt_curves_for_planes(
     material: &GemMaterial,
     worker: Option<&WorkerSettings>,
     cancel: &AtomicBool,
+    on_step: &mut dyn FnMut(SweepProgress),
 ) -> Option<TiltPerformanceCurves> {
     if let Some(worker) = worker
         && let Some(curves) = fetch_tilt_curves_remote(worker, planes, material, cancel)
     {
         return Some(curves);
     }
-    compute_tilt_curves_locally(planes, material, cancel)
+    compute_tilt_curves_locally_stepped(planes, material, cancel, on_step)
 }
 
 /// Runs every lane for one batch attempt inside a `std::thread::scope`, blocking until

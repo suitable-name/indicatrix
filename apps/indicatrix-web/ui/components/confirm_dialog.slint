@@ -1,0 +1,110 @@
+import { Button } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// The state behind the unsaved-changes dialog (`src/editor/unsaved.rs`): Rust opens it
+// with a heading, a message and the two action labels, and hears which button was
+// pressed. Named in `app.slint`'s export block, which is what makes it a Rust type.
+export global ConfirmModel {
+    in-out property <bool> open: false;
+    in property <string> heading: "Unsaved changes";
+    in property <string> message: "";
+    // Empty hides the button.
+    in property <string> primary-label: "Save";
+    in property <string> secondary-label: "Discard";
+    callback primary();
+    callback secondary();
+    callback cancel();
+}
+
+// A modal Save / Discard / Cancel confirmation, modelled on the desktop's
+// `confirm_action_dialog.slint`: a full-window backdrop and a centred card. Clicking the
+// backdrop counts as Cancel (a stray click must never pick the destructive option),
+// Escape cancels, Return picks the primary action, and every other key is swallowed so
+// the global shortcuts (Ctrl+Z/S/O) cannot act on the design underneath while the
+// dialog is up. Tab is let through so the buttons stay reachable from the keyboard.
+//
+// Bound to nothing but its own properties, so any call site can drive it.
+export component ConfirmDialog inherits Rectangle {
+    in property <string> heading: "Unsaved changes";
+    in property <string> message: "";
+    in property <string> primary-label: "Save";
+    in property <string> secondary-label: "Discard";
+
+    callback primary();
+    callback secondary();
+    callback cancel();
+
+    background: Theme.overlay-backdrop;
+
+    scope := FocusScope {
+        width: 100%;
+        height: 100%;
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancel();
+            } else if event.text == Key.Return && root.primary-label != "" {
+                root.primary();
+            } else if event.text == Key.Tab {
+                return reject;
+            }
+            return accept;
+        }
+
+        // The backdrop: a click outside the card cancels.
+        TouchArea {
+            clicked => { root.cancel(); }
+        }
+
+        card := Rectangle {
+            width: min(420px, root.width - 32px);
+            height: content.preferred-height;
+            x: (root.width - self.width) / 2;
+            y: (root.height - self.height) / 2;
+            background: Theme.bg-card;
+            border-radius: Theme.radius-md;
+            border-width: 1px;
+            border-color: Theme.border-medium;
+            drop-shadow-blur: 24px;
+            drop-shadow-color: Theme.toast-shadow;
+
+            // Swallows clicks so they never fall through to the backdrop.
+            TouchArea {}
+
+            content := VerticalLayout {
+                padding: 16px;
+                spacing: 12px;
+
+                Text {
+                    text: root.heading;
+                    font-size: 14px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                }
+                Text {
+                    text: root.message;
+                    font-size: 12px;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    Button {
+                        text: "Cancel";
+                        clicked => { root.cancel(); }
+                    }
+                    if root.secondary-label != "": Button {
+                        text: root.secondary-label;
+                        clicked => { root.secondary(); }
+                    }
+                    if root.primary-label != "": Button {
+                        text: root.primary-label;
+                        primary: true;
+                        clicked => { root.primary(); }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -294,8 +294,8 @@ pub(in crate::gui::editor) fn setup_optimize_apply_callback(
                 // `submit_preview_replan` would leave the panel reading "Not solved" with
                 // "-" masts right after a successful Apply, as if the commit were
                 // still pending -- `refresh_all` is the same call `New`/`Load
-                // Selected`/`Solve` use, a REAL solve (synchronous under
-                // `auto_solve::should_solve_synchronously`, backgrounded above it),
+                // Selected`/`Solve` use, a REAL solve (inline only for a cheap
+                // design per `view::refresh_all`'s policy, backgrounded otherwise),
                 // so the table and viewport read solved immediately instead of
                 // waiting on the next unrelated edit's auto-solve to catch up.
                 // routed through
@@ -347,7 +347,9 @@ pub(in crate::gui::editor) fn setup_optimize_apply_callback(
 /// would otherwise silently preview against the wrong baseline) and shows it via
 /// [`submit_design_ghost_preview`], which never touches `solid_last_solved`/the
 /// generation stash (see that function's own doc comment) -- so leaving this
-/// toggle on can never corrupt the next real edit's incremental resolve.
+/// toggle on can never corrupt the next real edit's incremental resolve. The
+/// candidate is solved on a background worker, so the toggle never blocks; the
+/// ghost appears when that solve lands.
 ///
 /// `false` (or nothing pending any more): resubmits the REAL, live design through
 /// the ordinary [`submit_preview_replan`] path, exactly undoing the ghost.
@@ -395,9 +397,8 @@ pub(in crate::gui::editor) fn setup_optimize_preview_callback(
                 if submit_design_ghost_preview(&ui, &render_ctx, &preview_state, &candidate) {
                     return;
                 }
-                // The candidate itself does not close/solve any more (an edit
-                // moved the design since the search ran) -- fall through and show
-                // the real design instead of leaving whatever the viewport had.
+                // The ghost could not be queued -- fall through and show the real
+                // design instead of leaving whatever the viewport had.
             }
             submit_preview_replan(
                 &ui,

@@ -13,7 +13,6 @@ use crate::{
         solid_preview::preview_state::SolidPreviewState,
     },
 };
-use indicatrix_cut_core::Edit;
 use slint::ComponentHandle;
 use std::{
     cell::RefCell,
@@ -24,7 +23,7 @@ use std::{
 
 /// The tier list's "Adopt" action: switches a pinned tier over to the meet
 /// instruction the source file actually stated for it
-/// (`ConstraintTier::imported_meet`), through [`Edit::SetConstraint`] like any other
+/// (`ConstraintTier::imported_meet`), through `Edit::SetConstraint` like any other
 /// edit. A silent no-op if the tier has nothing to adopt or the index is stale:
 /// `EditorView` only shows the button when `imported_meet_text` is non-empty, so this
 /// only guards a race with a concurrent edit.
@@ -65,16 +64,11 @@ pub(in crate::gui::editor) fn setup_adopt_meet_callback(
             }
             let index = index as usize;
             let mut st = state.borrow_mut();
-            let Some(constraint) = st
-                .design
-                .tiers
-                .get(index)
-                .and_then(|t| t.imported_meet.clone())
-            else {
-                return;
-            };
-            match st.apply(Edit::SetConstraint { index, constraint }) {
-                Ok(()) => {
+            // The lookup of the imported meet and the one `Edit::SetConstraint` live in
+            // `EditorSession::adopt_imported_meet` (shared with the web app).
+            match st.adopt_imported_meet(index) {
+                Ok(false) => {}
+                Ok(true) => {
                     let dirty: BTreeSet<usize> = std::iter::once(index).collect();
                     refresh_editor_panel_stale(&ui, &render_ctx, &st, &dirty);
                     submit_preview_replan(

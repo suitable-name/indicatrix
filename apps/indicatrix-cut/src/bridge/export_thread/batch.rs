@@ -358,6 +358,7 @@ pub(super) fn run_local_batches(
 // `pub`, not `pub(super)`: `bridge::preview_render` reuses this exact tracer for its
 // own CPU fallback rather than re-deriving the same per-pixel jitter/hero-wavelength
 // sampling -- one implementation, not two that could drift apart.
+/// Renders one batch of samples into the accumulator.
 pub fn render_batch(
     width: u32,
     height: u32,

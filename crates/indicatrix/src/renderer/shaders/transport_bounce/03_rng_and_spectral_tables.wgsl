@@ -20,8 +20,9 @@ fn low_discrepancy_base2(n: u32) -> f32 {
 }
 
 // optics::raytracer::radical_inverse_base -- general prime-base radical inverse (base 2
-// uses the faster bit-reversal path above instead). Uses plain `+`/`*`/`/` (no `fma()`),
-// matching the CPU side's non-fused `+=`/`/=` exactly.
+// uses the faster bit-reversal path above instead). This uses `fma()`
+// (`val = fma(f32(digit), inv_base, val)` below), matching the CPU side's own
+// `(digit as f32).mul_add(inv_base, val)` exactly.
 fn radical_inverse_base(n_in: u32, base: u32) -> f32 {
     var n = n_in;
     var val: f32 = 0.0;
@@ -43,129 +44,17 @@ fn cranley_patterson_rotate(x: f32, offset: f32) -> f32 {
     return sum - floor(sum);
 }
 
-// cie_1931_cmf -- color::cie1931::cie_1931_cmf: CIE 1931 2-degree observer, tabulated at
-// 5nm (380-780nm, CIE_15_2004_CMF_TABLE) and linearly interpolated -- ported identically
-// to shaders/environment.wgsl / shaders/furnace.wgsl. See that Rust function's own doc
-// comment for why a WGSL port must stay bit-identical: plain f32 arithmetic in a fixed
-// order (floor, fraction, `lo + (hi - lo) * t`), no mul_add/fma, no f64 intermediate
-// anywhere. This uses the real tabulated observer rather than a Wyman/Sloan/Shirley
-// Gaussian-lobe fit, which carries 1-3% XYZ error against it (worst in the x_bar trough
-// around 495-510nm) -- see `color::cie1931`'s module doc comment.
-
-const CIE_15_2004_CMF_START_NM: f32 = 380.0;
-const CIE_15_2004_CMF_STEP_NM: f32 = 5.0;
-const CIE_15_2004_CMF_LAST_INDEX: u32 = 80u;
-// CIE_15_2004_CMF_START_NM + 80.0 * CIE_15_2004_CMF_STEP_NM, precomputed since WGSL
-// `const` initializers can't call CIE_15_2004_CMF_TABLE.length() the way Rust's
-// `CIE_1931_TABLE.len()` can.
-const CIE_15_2004_CMF_END_NM: f32 = 780.0;
-
-// CIE 15:2004 Table T.4 / CIE 1931 2-degree observer, 5nm, 380-780nm (81 entries) --
-// SAME values as `color::cie1931::CIE_1931_TABLE`, transcribed by hand from that array
-// (not generated), so a future edit to one must be mirrored into the other by hand too.
-const CIE_15_2004_CMF_TABLE: array<vec3<f32>, 81> = array<vec3<f32>, 81>(
-    vec3<f32>(0.0014, 0.0000, 0.0065), // 380nm
-    vec3<f32>(0.0022, 0.0001, 0.0105), // 385nm
-    vec3<f32>(0.0042, 0.0001, 0.0201), // 390nm
-    vec3<f32>(0.0076, 0.0002, 0.0362), // 395nm
-    vec3<f32>(0.0143, 0.0004, 0.0679), // 400nm
-    vec3<f32>(0.0232, 0.0006, 0.1102), // 405nm
-    vec3<f32>(0.0435, 0.0012, 0.2074), // 410nm
-    vec3<f32>(0.0776, 0.0022, 0.3713), // 415nm
-    vec3<f32>(0.1344, 0.0040, 0.6456), // 420nm
-    vec3<f32>(0.2148, 0.0073, 1.0391), // 425nm
-    vec3<f32>(0.2839, 0.0116, 1.3856), // 430nm
-    vec3<f32>(0.3285, 0.0168, 1.6230), // 435nm
-    vec3<f32>(0.3483, 0.0230, 1.7471), // 440nm
-    vec3<f32>(0.3481, 0.0298, 1.7826), // 445nm
-    vec3<f32>(0.3362, 0.0380, 1.7721), // 450nm
-    vec3<f32>(0.3187, 0.0480, 1.7441), // 455nm
-    vec3<f32>(0.2908, 0.0600, 1.6692), // 460nm
-    vec3<f32>(0.2511, 0.0739, 1.5281), // 465nm
-    vec3<f32>(0.1954, 0.0910, 1.2876), // 470nm
-    vec3<f32>(0.1421, 0.1126, 1.0419), // 475nm
-    vec3<f32>(0.0956, 0.1390, 0.8130), // 480nm
-    vec3<f32>(0.0580, 0.1693, 0.6162), // 485nm
-    vec3<f32>(0.0320, 0.2080, 0.4652), // 490nm
-    vec3<f32>(0.0147, 0.2586, 0.3533), // 495nm
-    vec3<f32>(0.0049, 0.3230, 0.2720), // 500nm
-    vec3<f32>(0.0024, 0.4073, 0.2123), // 505nm
-    vec3<f32>(0.0093, 0.5030, 0.1582), // 510nm
-    vec3<f32>(0.0291, 0.6082, 0.1117), // 515nm
-    vec3<f32>(0.0633, 0.7100, 0.0782), // 520nm
-    vec3<f32>(0.1096, 0.7932, 0.0573), // 525nm
-    vec3<f32>(0.1655, 0.8620, 0.0422), // 530nm
-    vec3<f32>(0.2257, 0.9149, 0.0298), // 535nm
-    vec3<f32>(0.2904, 0.9540, 0.0203), // 540nm
-    vec3<f32>(0.3597, 0.9803, 0.0134), // 545nm
-    vec3<f32>(0.4334, 0.9950, 0.0087), // 550nm
-    vec3<f32>(0.5121, 1.0000, 0.0057), // 555nm
-    vec3<f32>(0.5945, 0.9950, 0.0039), // 560nm
-    vec3<f32>(0.6784, 0.9786, 0.0027), // 565nm
-    vec3<f32>(0.7621, 0.9520, 0.0021), // 570nm
-    vec3<f32>(0.8425, 0.9154, 0.0018), // 575nm
-    vec3<f32>(0.9163, 0.8700, 0.0017), // 580nm
-    vec3<f32>(0.9786, 0.8163, 0.0014), // 585nm
-    vec3<f32>(1.0263, 0.7570, 0.0011), // 590nm
-    vec3<f32>(1.0567, 0.6949, 0.0010), // 595nm
-    vec3<f32>(1.0622, 0.6310, 0.0008), // 600nm
-    vec3<f32>(1.0456, 0.5668, 0.0006), // 605nm
-    vec3<f32>(1.0026, 0.5030, 0.0003), // 610nm
-    vec3<f32>(0.9384, 0.4412, 0.0002), // 615nm
-    vec3<f32>(0.8544, 0.3810, 0.0002), // 620nm
-    vec3<f32>(0.7514, 0.3210, 0.0001), // 625nm
-    vec3<f32>(0.6424, 0.2650, 0.0000), // 630nm
-    vec3<f32>(0.5419, 0.2170, 0.0000), // 635nm
-    vec3<f32>(0.4479, 0.1750, 0.0000), // 640nm
-    vec3<f32>(0.3608, 0.1382, 0.0000), // 645nm
-    vec3<f32>(0.2835, 0.1070, 0.0000), // 650nm
-    vec3<f32>(0.2187, 0.0816, 0.0000), // 655nm
-    vec3<f32>(0.1649, 0.0610, 0.0000), // 660nm
-    vec3<f32>(0.1212, 0.0446, 0.0000), // 665nm
-    vec3<f32>(0.0874, 0.0320, 0.0000), // 670nm
-    vec3<f32>(0.0636, 0.0232, 0.0000), // 675nm
-    vec3<f32>(0.0468, 0.0170, 0.0000), // 680nm
-    vec3<f32>(0.0329, 0.0119, 0.0000), // 685nm
-    vec3<f32>(0.0227, 0.0082, 0.0000), // 690nm
-    vec3<f32>(0.0158, 0.0057, 0.0000), // 695nm
-    vec3<f32>(0.0114, 0.0041, 0.0000), // 700nm
-    vec3<f32>(0.0081, 0.0029, 0.0000), // 705nm
-    vec3<f32>(0.0058, 0.0021, 0.0000), // 710nm
-    vec3<f32>(0.0041, 0.0015, 0.0000), // 715nm
-    vec3<f32>(0.0029, 0.0010, 0.0000), // 720nm
-    vec3<f32>(0.0020, 0.0007, 0.0000), // 725nm
-    vec3<f32>(0.0014, 0.0005, 0.0000), // 730nm
-    vec3<f32>(0.0010, 0.0004, 0.0000), // 735nm
-    vec3<f32>(0.0007, 0.0002, 0.0000), // 740nm
-    vec3<f32>(0.0005, 0.0002, 0.0000), // 745nm
-    vec3<f32>(0.0003, 0.0001, 0.0000), // 750nm
-    vec3<f32>(0.0002, 0.0001, 0.0000), // 755nm
-    vec3<f32>(0.0002, 0.0001, 0.0000), // 760nm
-    vec3<f32>(0.0001, 0.0000, 0.0000), // 765nm
-    vec3<f32>(0.0001, 0.0000, 0.0000), // 770nm
-    vec3<f32>(0.0001, 0.0000, 0.0000), // 775nm
-    vec3<f32>(0.0000, 0.0000, 0.0000), // 780nm
-);
-
-fn cie_1931_cmf(l: f32) -> vec3<f32> {
-    if (!(CIE_15_2004_CMF_START_NM <= l && l <= CIE_15_2004_CMF_END_NM)) {
-        return vec3<f32>(0.0, 0.0, 0.0);
-    }
-    let position = (l - CIE_15_2004_CMF_START_NM) / CIE_15_2004_CMF_STEP_NM;
-    let index0 = min(u32(floor(position)), CIE_15_2004_CMF_LAST_INDEX - 1u);
-    let index1 = index0 + 1u;
-    let t = position - f32(index0);
-    let lo = CIE_15_2004_CMF_TABLE[index0];
-    let hi = CIE_15_2004_CMF_TABLE[index1];
-    return lo + (hi - lo) * t;
-}
+// The CIE 1931 colour matching table, `cie_1931_cmf`, and
+// `integrate_channels_to_xyz_family` live in `transport_physics/05_nee_env_sampling.wgsl` so the
+// standalone transport-function kernels share them with the megakernel.
 
 // optics::renderer::env_map_spectrum::rgb_to_spectral_radiance -- used for the
 // direction-independent "uniform furnace" environment (env_mode == 0u): a grey
 // `EnvironmentMap::uniform(w, h, [l0, l0, l0])` that is still wavelength-dependent, so
 // this is deliberately not flattened to a bare `l0` return.
 
-// asymmetric_gaussian and rgb_to_spectral_radiance are defined in transport_physics.wgsl.
+// asymmetric_gaussian and rgb_to_spectral_radiance (neutral part on the wide bumps, chroma
+// remainder on the narrow bumps) are defined in transport_physics.wgsl.
 
 // optics::raytracer::sample_studio_environment (+ optics::studio_rig::StudioRig) --
 // ported identically to shaders/environment.wgsl.

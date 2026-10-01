@@ -115,6 +115,7 @@ fn route_event_clears_current_on_done() {
                 samples_done: 10,
                 requested_cadence_ms: 0,
                 effective_cadence_ms: 0,
+                reclaimed_samples: 0,
             },
         }),
         None,
@@ -147,6 +148,7 @@ fn route_event_drops_a_stale_done_without_clearing_the_real_current_request() {
                 samples_done: 1,
                 requested_cadence_ms: 0,
                 effective_cadence_ms: 0,
+                reclaimed_samples: 0,
             },
         }),
         None,
@@ -169,6 +171,7 @@ fn route_event_worker_error_clears_current_regardless_of_epoch() {
         &StreamEvent::Error(ErrorMsg {
             code: 9,
             message: "boom".to_string(),
+            request_id: None,
         }),
         None,
     );
@@ -193,6 +196,7 @@ fn route_event_turns_unsupported_request_into_an_unsupported_update() {
         &StreamEvent::Error(ErrorMsg {
             code: indicatrix_net::messages::error_codes::UNSUPPORTED_REQUEST,
             message: "DisplayOnly is not supported by this worker".to_string(),
+            request_id: None,
         }),
         None,
     );
@@ -214,6 +218,7 @@ fn route_event_reports_all_workers_lost_as_a_failure_with_a_clear_note() {
         &StreamEvent::Error(ErrorMsg {
             code: indicatrix_net::messages::error_codes::ALL_WORKERS_LOST,
             message: String::new(),
+            request_id: None,
         }),
         None,
     );
@@ -414,6 +419,74 @@ fn first_event_timeout_is_strictly_longer_than_liveness_timeout() {
 // consumer can never make either deadline fire early" doc section for why this holds
 // by construction (the deadline is only ever checked right after a just-attempted,
 // empty read), pinned here as an explicit regression test rather than left implicit.
+
+// ---- `cancel_ack_overdue`: the pure decision that bounds a one-shot connection after
+// CANCEL, so a coordinator that keeps heartbeating without honouring it cannot park the
+// thread forever. Instants are constructed, never slept for.
+
+#[test]
+fn cancel_ack_overdue_is_false_when_no_cancel_was_sent() {
+    let now = Instant::now();
+    assert!(!cancel_ack_overdue(None, now, Duration::from_secs(10)));
+}
+
+#[test]
+fn cancel_ack_overdue_is_false_inside_the_window() {
+    let sent = Instant::now();
+    let now = sent + Duration::from_secs(9);
+    assert!(!cancel_ack_overdue(
+        Some(sent),
+        now,
+        Duration::from_secs(10)
+    ));
+    // Exactly at the bound is still inside it: the comparison is strict.
+    let at_bound = sent + Duration::from_secs(10);
+    assert!(!cancel_ack_overdue(
+        Some(sent),
+        at_bound,
+        Duration::from_secs(10)
+    ));
+}
+
+#[test]
+fn cancel_ack_overdue_is_true_past_the_window() {
+    let sent = Instant::now();
+    let now = sent + Duration::from_secs(11);
+    assert!(cancel_ack_overdue(Some(sent), now, Duration::from_secs(10)));
+}
+
+#[test]
+fn cancel_ack_timeout_is_ten_seconds() {
+    assert_eq!(CANCEL_ACK_TIMEOUT, Duration::from_secs(10));
+}
+
+#[test]
+fn cancel_unacknowledged_names_the_wait_in_its_message() {
+    let message = RemoteError::CancelUnacknowledged(Duration::from_secs(10)).to_string();
+    assert!(
+        message.contains("CANCEL") && message.contains("10s"),
+        "{message}"
+    );
+}
+
+// ---- v16: `RemoteRenderHandle::contribute` -- one-shot only ------------------------
+
+/// A persistent connection (`RemoteConnectionHandle`) never dispatches a
+/// `FinalImageRequest` with `viewer_samples > 0` -- the live viewport's own transfer is
+/// a different one entirely. `contribute` on a `HandleKind::Connection` handle must
+/// therefore be a harmless refusal, not a silent no-op that LOOKS like it queued an
+/// upload: the caller (`run_final_image_request`'s polling loop) uses the `bool` to
+/// decide whether to keep the local sum around and retry, or treat it as sent.
+#[test]
+fn contribute_is_refused_on_a_persistent_handle() {
+    use super::super::types::{ConnectionCommand, HandleKind, RemoteRenderHandle};
+    let (commands, _rx) = std::sync::mpsc::channel::<ConnectionCommand>();
+    let handle = RemoteRenderHandle(HandleKind::Connection {
+        request_id: 1,
+        commands,
+    });
+    assert!(!handle.contribute(vec![Vec3::ZERO; 4]));
+}
 
 #[test]
 fn check_liveness_ignores_a_long_busy_phase_that_ends_with_a_fresh_event() {

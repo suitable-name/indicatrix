@@ -2,8 +2,8 @@
 //
 // Fresh translation of `optics::raytracer::intersect_polyhedron` as it exists in
 // `raytracer.rs` today. The exit branch (an origin-inside-the-solid ray reports the FAR
-// facet, not a miss) is the critical part this port must get right -- the quarantined
-// old shader had only an entry test, so an interior ray (e.g. after a refraction, in a
+// facet, not a miss) is the critical part this port must get right -- the retired
+// first-draft shader had only an entry test, so an interior ray (e.g. after a refraction, in a
 // future phase) would report a miss and escape to the environment. Both branches are
 // ported here, in the same order, with the same `1e-4`/`1e-7` epsilons as the CPU.
 

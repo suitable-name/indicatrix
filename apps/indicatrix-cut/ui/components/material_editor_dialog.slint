@@ -1,5 +1,5 @@
 import { Theme } from "../theme.slint";
-import { ComboBox, Slider, LineEdit } from "std-widgets.slint";
+import { ComboBox, Slider, LineEdit, ScrollView } from "std-widgets.slint";
 import { ViewportModel } from "../models/viewport.slint";
 import { ConfirmActionDialog } from "confirm_action_dialog.slint";
 // Split-out sections of this dialog -- see each component's own doc comment.
@@ -93,7 +93,7 @@ export component MaterialEditorDialog inherits Rectangle {
     // immediately cancelling never misreports it as dirty.
     property <string> baseline_mat_name: "Custom Diamond";
     property <float> baseline_ri_val: 2.417;
-    property <float> baseline_disp_val: 0.044;
+    property <float> baseline_disp_val: 0.0256;
     property <float> baseline_sg_val: 0.0;
     property <float> baseline_biref_val: 0.000;
     property <int> baseline_color_preset: 0;
@@ -139,6 +139,14 @@ export component MaterialEditorDialog inherits Rectangle {
             root.selected_crystal_system_idx = ViewportModel.selected_custom_material_crystal_system_idx;
             root.selected_optical_character_idx = ViewportModel.selected_custom_material_optical_character_idx;
             root.biaxial_delta_beta_alpha_val = ViewportModel.selected_custom_material_biaxial_delta_beta_alpha;
+            // Pre-fills the swatch row from the row's own saved colour (0-8 for one
+            // of the nine fixed presets, 9 = "Custom (keep)" when it matches none --
+            // see `ViewportModel.selected_custom_material_color_idx`'s own doc
+            // comment). Without this, `selected_color_preset`'s literal default (0,
+            // "Clear") stayed selected on every reopen regardless of the material's
+            // real saved colour, so a plain re-save silently flattened it to
+            // colourless -- the bug this whole property exists to fix.
+            root.selected_color_preset = ViewportModel.selected_custom_material_color_idx;
             root.baseline_mat_name = root.mat_name;
             root.baseline_ri_val = root.ri_val;
             root.baseline_disp_val = root.disp_val;
@@ -147,6 +155,7 @@ export component MaterialEditorDialog inherits Rectangle {
             root.baseline_crystal_system_idx = root.selected_crystal_system_idx;
             root.baseline_optical_character_idx = root.selected_optical_character_idx;
             root.baseline_biaxial_delta_beta_alpha_val = root.biaxial_delta_beta_alpha_val;
+            root.baseline_color_preset = root.selected_color_preset;
         }
     }
 
@@ -170,7 +179,7 @@ export component MaterialEditorDialog inherits Rectangle {
     in-out property <string> mat_name: "Custom Diamond";
     changed mat_name => { ViewportModel.material_name_edited(self.mat_name); }
     in-out property <float> ri_val: 2.417;        // Refractive Index (1.30 - 3.20)
-    in-out property <float> disp_val: 0.044;      // Dispersion (0.000 - 0.120)
+    in-out property <float> disp_val: 0.0256;     // Dispersion, F-C (0.000 - 0.210)
     // Specific gravity, needed for Est. Carat Weight -- `0.0`
     // means "not recorded" (this dialog has no preset SG data to seed the "Load
     // Preset Template" combo above with, so every preset still leaves this blank
@@ -180,7 +189,7 @@ export component MaterialEditorDialog inherits Rectangle {
     // estimate via `crates/indicatrix-cut-core`'s `MaterialLookup::specific_gravity`.
     in-out property <float> sg_val: 0.0;          // Specific Gravity (0 = not recorded)
     in-out property <float> biref_val: 0.000;     // Birefringence (-0.050 - +0.100)
-    in-out property <int> selected_color_preset: 0; // 0=Clear, 1=Blue, 2=Red, 3=Green, 4=Violet, 5=Yellow, 6=Pink, 7=Teal, 8=Amber
+    in-out property <int> selected_color_preset: 0; // 0=Clear, 1=Blue, 2=Red, 3=Green, 4=Violet, 5=Yellow, 6=Pink, 7=Teal, 8=Amber, 9=Custom (keep)
     in-out property <int> selected_template_idx: 0;
 
     // Crystal-optically complete custom materials: these three mirror
@@ -298,8 +307,10 @@ export component MaterialEditorDialog inherits Rectangle {
         // fill the parent" when width/height aren't both set explicitly) makes this card
         // inherit the full-viewport backdrop's height -- i.e. it stretches to the bottom
         // of the window instead of sizing to its content. Same idiom, and same reason, as
-        // `settings_dialog.slint` and `import_dialog.slint`.
-        height: content.preferred-height;
+        // `settings_dialog.slint` and `import_dialog.slint`. Capped at the backdrop's
+        // height less a 20px margin top and bottom; the body ScrollView takes the
+        // overflow so the header and the action buttons stay reachable.
+        height: min(content.preferred-height, root.height - 40px);
         background: Theme.surface-dialog;
         border-radius: Theme.radius-md;
         border-width: 1px;
@@ -354,6 +365,20 @@ export component MaterialEditorDialog inherits Rectangle {
 
             Rectangle { height: 1px; background: Theme.surface-raised; }
 
+            // Scrollable body between the fixed header and the fixed action
+            // buttons: the card's `height` is capped at the backdrop's, and whatever
+            // does not fit scrolls here so Save / Cancel / Delete stay reachable on
+            // a short viewport. `preferred-height` is stated from the inner layout so
+            // the card still sizes to its content when there is room.
+            body := ScrollView {
+                vertical-stretch: 1;
+                content-width: self.visible-width;
+                preferred-height: body_col.preferred-height;
+
+                body_col := VerticalLayout {
+                    spacing: 14px;
+                    padding-right: 12px;
+
             // 2. Base Template Selector & Name Input -- see
             // `MaterialTemplateSelector`'s own doc comment
             // (`material_editor/template_selector.slint`) for why this is split
@@ -405,6 +430,8 @@ export component MaterialEditorDialog inherits Rectangle {
             MaterialColorPresets {
                 selected_color_preset <=> root.selected_color_preset;
             }
+                } // end body_col
+            } // end body := ScrollView
 
             Rectangle { height: 1px; background: Theme.surface-raised; }
 

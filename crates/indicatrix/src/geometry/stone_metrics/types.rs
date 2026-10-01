@@ -11,7 +11,12 @@ use glam::DVec3;
 /// All figures are in the arrangement's own mast units; callers compare
 /// dimensionless ratios (`volume / width^3`, `length / width`, ...) so the
 /// unit never matters.
-#[derive(Debug, Clone, Copy)]
+///
+/// The Rough Planner caches the volume, height and caliper/axis extents in the
+/// catalogue database; if the rule that measures them changes, bump
+/// `indicatrix_vault::model::solid_extents::SOLID_EXTENTS_VERSION` (see
+/// [`measure_solid`](super::measure_solid)).
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SolidMetrics {
     /// Volume of the solid.
     pub volume: f64,

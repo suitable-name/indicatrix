@@ -32,17 +32,27 @@ use std::sync::{Arc, Mutex};
 /// geometry, and bounce cap, which only holds if they all descend from ONE capture.
 #[derive(Clone)]
 pub struct SceneSnapshot {
+    /// Camera yaw.
     pub yaw: f32,
+    /// Camera pitch.
     pub pitch: f32,
+    /// Camera distance from the stone.
     pub distance: f32,
+    /// Light yaw.
     pub light_yaw: f32,
+    /// Light pitch.
     pub light_pitch: f32,
+    /// Gem material the stone is rendered with.
     pub material: GemMaterial,
+    /// Lighting preset the render uses.
     pub lighting_preset: LightingPreset,
+    /// Maximum number of ray bounces per path.
     pub max_bounces: u32,
+    /// Exposure multiplier applied when tone-mapping.
     pub exposure: f32,
     /// Backdrop radiance -- `RenderContext::backdrop` resolved through `Backdrop::level`.
     pub backdrop: f32,
+    /// Facet planes of the active design.
     pub active_planes: Vec<GpuFacetPlane>,
     /// Frosted girdle: `girdle_facet_finishes(&active_planes)` when
     /// `RenderContext::girdle_frosted` was on at capture time, empty otherwise --
@@ -65,22 +75,38 @@ pub struct SceneSnapshot {
 }
 
 impl SceneSnapshot {
-    #[must_use]
-    pub fn capture(ctx: &Mutex<RenderContext>) -> Self {
+    /// # Errors
+    ///
+    /// Refuses (returning the cutter-facing reason) rather than capturing a scene
+    /// that would trace as the wrong stone: when `RenderContext::material_unresolved`
+    /// is already set, or when -- despite that check -- neither `material_override`
+    /// nor `material_name` resolves to a real material. Every caller must handle
+    /// this by aborting the export/dispatch/tilt-video render, not by substituting
+    /// a default material (see `resolve_material`'s own doc comment for why).
+    pub fn capture(ctx: &Mutex<RenderContext>) -> Result<Self, String> {
         let guard = ctx
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(reason) = &guard.material_unresolved {
+            return Err(reason.clone());
+        }
         let materials = GemMaterial::all_materials();
         // A high-resolution export must honour the same RI/custom
         // material override the live viewport, tilt sweep and hover preview already
         // resolve through -- otherwise the export silently reverts to the by-name
         // lookup for the one surface that matters most (the delivered image).
-        let material = resolve_material_with_override(
+        let Some(material) = resolve_material_with_override(
             &materials,
             &guard.custom_materials,
             guard.material_override.as_ref(),
             &guard.material_name,
-        );
+        ) else {
+            return Err(format!(
+                "'{}' is not a built-in preset or a saved custom material -- nothing to \
+                 export.",
+                guard.material_name
+            ));
+        };
         // Every one of these sliders/toggles is a property of what the user is looking
         // at, so an export has to carry it or the file silently differs from the
         // viewport. Applied here (not inside `resolve_material`, which `render_thread`
@@ -107,7 +133,7 @@ impl SceneSnapshot {
         } else {
             Vec::new()
         };
-        Self {
+        Ok(Self {
             yaw: guard.yaw,
             pitch: guard.pitch,
             distance: guard.distance,
@@ -126,7 +152,7 @@ impl SceneSnapshot {
             facet_finishes,
             // `Arc::clone`, not a deep copy of the decoded panorama.
             env_map: guard.env_map.clone(),
-        }
+        })
     }
 }
 
@@ -155,7 +181,8 @@ mod tests {
             material_name: "Diamond".to_string(),
             material_override: Some(overridden),
             ..Default::default()
-        }));
+        }))
+        .expect("Diamond resolves");
         assert_eq!(
             with_override.material.dispersion, override_dispersion,
             "the override's flattened dispersion (its RI) must reach the exported \
@@ -166,7 +193,8 @@ mod tests {
             material_name: "Diamond".to_string(),
             material_override: None,
             ..Default::default()
-        }));
+        }))
+        .expect("Diamond resolves");
         assert_eq!(
             without_override.material.dispersion,
             GemMaterial::diamond().dispersion,
@@ -182,7 +210,8 @@ mod tests {
         let off = SceneSnapshot::capture(&Mutex::new(RenderContext {
             inclusion_sigma_s: 0.0,
             ..Default::default()
-        }));
+        }))
+        .expect("default resolves");
         assert_eq!(
             off.material.scattering_sigma_s, 0.0,
             "the off position must leave the material untouched"
@@ -191,7 +220,8 @@ mod tests {
         let on = SceneSnapshot::capture(&Mutex::new(RenderContext {
             inclusion_sigma_s: 1.25,
             ..Default::default()
-        }));
+        }))
+        .expect("default resolves");
         assert_eq!(
             on.material.scattering_sigma_s, 1.25,
             "a dialled-in inclusion amount must reach the exported scene"
@@ -211,7 +241,8 @@ mod tests {
         let off = SceneSnapshot::capture(&Mutex::new(RenderContext {
             c_axis_override: None,
             ..Default::default()
-        }));
+        }))
+        .expect("default resolves");
         assert_eq!(
             off.material.c_axis,
             GemMaterial::diamond().c_axis,
@@ -222,7 +253,8 @@ mod tests {
             material_name: "Sapphire".to_string(),
             c_axis_override: Some(Vec3::X),
             ..Default::default()
-        }));
+        }))
+        .expect("Sapphire resolves");
         assert_eq!(
             on.material.c_axis,
             Vec3::X,
@@ -233,7 +265,8 @@ mod tests {
             material_name: "Diamond".to_string(),
             c_axis_override: Some(Vec3::X),
             ..Default::default()
-        }));
+        }))
+        .expect("Diamond resolves");
         assert_eq!(
             isotropic_guarded.material.c_axis,
             GemMaterial::diamond().c_axis,
@@ -248,7 +281,8 @@ mod tests {
         let off = SceneSnapshot::capture(&Mutex::new(RenderContext {
             edge_rounding_radius: 0.0,
             ..Default::default()
-        }));
+        }))
+        .expect("default resolves");
         assert_eq!(
             off.material.edge_rounding_radius, 0.0,
             "the off position must leave the material untouched"
@@ -257,7 +291,8 @@ mod tests {
         let on = SceneSnapshot::capture(&Mutex::new(RenderContext {
             edge_rounding_radius: 0.02,
             ..Default::default()
-        }));
+        }))
+        .expect("default resolves");
         assert_eq!(
             on.material.edge_rounding_radius, 0.02,
             "a dialled-in edge-rounding radius must reach the exported scene"
@@ -273,7 +308,8 @@ mod tests {
         let off = SceneSnapshot::capture(&Mutex::new(RenderContext {
             stone_width_mm: 0.0,
             ..Default::default()
-        }));
+        }))
+        .expect("default resolves");
         assert_eq!(
             off.material.absorption_path_scale, 1.0,
             "the off position must leave the material's absorption_path_scale untouched"
@@ -302,7 +338,8 @@ mod tests {
         let on = SceneSnapshot::capture(&Mutex::new(RenderContext {
             stone_width_mm: 6.5,
             ..Default::default()
-        }));
+        }))
+        .expect("default resolves");
         let expected_scale = (6.5 / model_width) as f32;
         assert!(
             (on.material.absorption_path_scale - expected_scale).abs() < 1e-4,
@@ -319,7 +356,8 @@ mod tests {
         let off = SceneSnapshot::capture(&Mutex::new(RenderContext {
             girdle_frosted: false,
             ..Default::default()
-        }));
+        }))
+        .expect("default resolves");
         assert!(
             off.facet_finishes.is_empty(),
             "the off position must carry no per-facet finish data"
@@ -328,7 +366,8 @@ mod tests {
         let on = SceneSnapshot::capture(&Mutex::new(RenderContext {
             girdle_frosted: true,
             ..Default::default()
-        }));
+        }))
+        .expect("default resolves");
         assert_eq!(
             on.facet_finishes,
             girdle_facet_finishes(&RenderContext::default().active_planes),

@@ -14,6 +14,7 @@ use crate::{
 };
 use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_cut_core::{Design, TierDelta, diff_tiers};
+use indicatrix_editor::snapshot::DesignSnapshot;
 use slint::{Color, ComponentHandle, ModelRc, VecModel};
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
@@ -27,77 +28,23 @@ thread_local! {
     static DESIGN_SNAPSHOT: RefCell<Option<DesignSnapshot>> = const { RefCell::new(None) };
 }
 
-/// [`DESIGN_SNAPSHOT`]'s payload.
-#[derive(Clone)]
-struct DesignSnapshot {
-    design: Design,
-    /// The design's own solve at snapshot time, when it had one -- `None` for a
-    /// design that does not currently solve (a `MissingAnchor`), in which case
-    /// [`diff_tiers`] simply reports no mast figures for that side, same as it
-    /// would for any other caller with nothing to compare.
-    solved: Option<Vec<SolvedTier>>,
-    /// The design's own label at snapshot time (`state::design_label_text`), shown
-    /// in the compare header so two different snapshots across one session are
-    /// never mistaken for each other.
-    label: String,
+/// The held snapshot's design and label, for the visual compare window's
+/// "Compare visually…" entry (`gui::editor::compare`) -- `None` before the first
+/// "Snapshot Design" of this session. A clone: the compare window only ever reads
+/// it, and the snapshot itself stays exactly as taken.
+#[must_use]
+pub(in crate::gui::editor) fn snapshot_for_compare() -> Option<(Design, String)> {
+    DESIGN_SNAPSHOT.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .map(|snapshot| (snapshot.design.clone(), snapshot.label.clone()))
+    })
 }
 
-/// One [`TierDelta`] as a pure, Slint-free view -- see [`diff_rows_from_deltas`]'s
-/// own doc comment for exactly how each field maps onto [`RetargetRowItem`].
-pub(super) struct DiffRowView {
-    pub(super) tier_index: usize,
-    pub(super) name: String,
-    pub(super) old_angle: String,
-    pub(super) new_angle: String,
-    pub(super) mast_delta: String,
-    pub(super) status_label: &'static str,
-    pub(super) status_rgb: (u8, u8, u8),
-}
-
-/// A tier position where NEITHER the angle, the indices, nor the mast (beyond
-/// [`MAST_DIFF_TOLERANCE`]) moved -- shown as "Same" rather than "Changed" so a
-/// long, mostly-untouched schedule reads at a glance.
-const MAST_DIFF_TOLERANCE: f64 = 1e-4;
-
-/// One [`TierDelta`]'s badge label and RGB color -- chosen HERE, once, matching
-/// `proposal_view::risk_label_and_rgb`'s own "choose it in exactly one place"
-/// reasoning, so the label and the color can never drift apart. The RGB values
-/// match `Theme.accent-sky`/`accent-ruby`/`accent-amber`/`accent-emerald` (this
-/// module has no access to the `Theme` global from plain Rust, so the numbers are
-/// restated here, same as `risk_label_and_rgb` already does for `Risk`).
-fn diff_status_label_and_rgb(delta: &TierDelta) -> (&'static str, (u8, u8, u8)) {
-    if delta.added() {
-        ("Added", (0x38, 0xbd, 0xf8))
-    } else if delta.removed() {
-        ("Removed", (0xf4, 0x3f, 0x5e))
-    } else if delta.angle_changed()
-        || delta.indices_changed()
-        || delta.mast_changed(MAST_DIFF_TOLERANCE)
-    {
-        ("Changed", (0xf5, 0x9e, 0x0b))
-    } else {
-        ("Same", (0x10, 0xb9, 0x81))
-    }
-}
-
-pub(super) fn diff_row_view(delta: &TierDelta) -> DiffRowView {
-    let angle_text =
-        |a: Option<f64>| a.map_or_else(|| "-".to_string(), |v| format!("{v:.2}\u{b0}"));
-    let mast_delta = match (delta.mast_before, delta.mast_after) {
-        (Some(before), Some(after)) => format!("{:+.4}", after - before),
-        _ => "-".to_string(),
-    };
-    let (status_label, status_rgb) = diff_status_label_and_rgb(delta);
-    DiffRowView {
-        tier_index: delta.index,
-        name: delta.name.clone(),
-        old_angle: angle_text(delta.angle_before),
-        new_angle: angle_text(delta.angle_after),
-        mast_delta,
-        status_label,
-        status_rgb,
-    }
-}
+// The pure diff-row view (the status badge, the signed mast delta, the angle texts) moved
+// to `indicatrix_editor::snapshot` (shared with the web snapshot dialog); re-exported at
+// its old path, which `super::tests` exercises.
+pub(super) use indicatrix_editor::snapshot::diff_row_view;
 
 /// `deltas` (`indicatrix_cut_core::diff_tiers`'s own output)
 /// rendered into [`RetargetModel::compare_rows`], reusing this dialog's existing
@@ -181,10 +128,9 @@ fn show_compare_to_snapshot(
 }
 
 /// "Snapshot Design"/"Compare to Snapshot": registers both
-/// halves of the design-comparison feature. Neither callback is wired to a visible
-/// button anywhere in this app yet -- the command bar/menu trigger for
-/// `EditorModel.snapshot_design()`/`compare_to_snapshot()`, and the one-line
-/// `gui::editor::mod` registration this function itself needs, are still to add.
+/// halves of the design-comparison feature. The command bar
+/// (`editor_command_bar.slint`) triggers `EditorModel.snapshot_design()` and
+/// `compare_to_snapshot()`, and `gui::editor` registers this function at startup.
 ///
 /// `snapshot_design` captures `state.design` plus its current solved masts (from
 /// `solid_last_solved`'s cache when it is aligned with the design, else a
@@ -210,11 +156,14 @@ pub(in crate::gui::editor) fn setup_snapshot_callbacks(
             };
             let (design, label, cached) = {
                 let st = state.borrow();
+                // the shared cache is now generation-tagged -- only the
+                // masts themselves matter here.
                 let cached = solid_last_solved
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone()
-                    .filter(|s| s.len() == st.design.tiers.len());
+                    .filter(|(_, s)| s.len() == st.design.tiers.len())
+                    .map(|(_, s)| s);
                 (
                     Arc::new(st.design.clone()),
                     design_label_text(st.asc_filename.as_deref()),
@@ -254,11 +203,14 @@ pub(in crate::gui::editor) fn setup_snapshot_callbacks(
             };
             let (design, current_label, cached) = {
                 let st = state.borrow();
+                // the shared cache is now generation-tagged -- only the
+                // masts themselves matter here.
                 let cached = solid_last_solved
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .clone()
-                    .filter(|s| s.len() == st.design.tiers.len());
+                    .filter(|(_, s)| s.len() == st.design.tiers.len())
+                    .map(|(_, s)| s);
                 (
                     Arc::new(st.design.clone()),
                     design_label_text(st.asc_filename.as_deref()),

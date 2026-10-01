@@ -1,0 +1,216 @@
+import { Slider } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { AppModel } from "../models/app_model.slint";
+import { SolidModel } from "solid_model.slint";
+import { SolidPill } from "solid_pill.slint";
+import { ManipulateModel } from "manipulate_model.slint";
+import { TiltModel } from "metrics_model.slint";
+
+// The "Cut" tier-cutoff slider (only with more than one tier).
+component CutSlider inherits Rectangle {
+    height: 28px;
+    width: cut-layout.preferred-width;
+    background: Theme.bg-input;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: SolidModel.tier-cutoff >= 0 ? Theme.accent-amber : Theme.border-subtle;
+
+    cut-layout := HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 6px;
+        Text {
+            text: SolidModel.tier-cutoff < 0
+                ? "Cut: all"
+                : "Cut: " + SolidModel.tier-cutoff + "/" + AppModel.tier-count;
+            font-size: 10px;
+            font-weight: 600;
+            color: SolidModel.tier-cutoff >= 0 ? Theme.accent-amber : Theme.text-secondary;
+            vertical-alignment: center;
+        }
+        Slider {
+            width: 90px;
+            minimum: 1;
+            // One past the last tier is the "all" position (desktop rule).
+            maximum: AppModel.tier-count;
+            value: SolidModel.tier-cutoff < 0 ? AppModel.tier-count : SolidModel.tier-cutoff;
+            // The Slider's own interaction callback, not a `changed value`
+            // handler: a tier-count change must not fire a replan.
+            changed(value) => {
+                SolidModel.tier-cutoff = value >= AppModel.tier-count ? -1 : Math.round(value);
+                SolidModel.options-changed();
+            }
+        }
+    }
+}
+
+// The standard-view pills.
+component ViewPills inherits HorizontalLayout {
+    // `tight`: a phone-width toolbar, where the five pills at their full padding ran past
+    // the right edge and cut "Right" off.
+    in property <bool> tight: false;
+    spacing: root.tight ? 4px : 8px;
+    SolidPill { text: "Front"; pad: root.tight ? 12px : 20px; clicked => { SolidModel.set-view(0); } }
+    SolidPill { text: "Top"; pad: root.tight ? 12px : 20px; clicked => { SolidModel.set-view(1); } }
+    SolidPill { text: "Bottom"; pad: root.tight ? 12px : 20px; clicked => { SolidModel.set-view(2); } }
+    SolidPill { text: "Left"; pad: root.tight ? 12px : 20px; clicked => { SolidModel.set-view(3); } }
+    SolidPill { text: "Right"; pad: root.tight ? 12px : 20px; clicked => { SolidModel.set-view(4); } }
+}
+
+// The Fit and Reset camera pills.
+component FitPills inherits HorizontalLayout {
+    spacing: 8px;
+    SolidPill { text: "Fit"; hint: "Frame the whole stone."; clicked => { SolidModel.set-view(5); } }
+    SolidPill { text: "Reset"; hint: "Back to the default camera pose."; clicked => { SolidModel.reset-camera(); } }
+}
+
+// The Preform toggle, the Tilt Curve dialog and the direct-manipulation tools' pills.
+component ToolRow inherits HorizontalLayout {
+    // `tight`: see `ViewPills`.
+    in property <bool> tight: false;
+    spacing: root.tight ? 4px : 8px;
+    // The tilt-performance chart: brilliance, windowing and extinction versus tilt.
+    SolidPill {
+        pad: root.tight ? 12px : 20px;
+        text: "Tilt Curve";
+        hint: "Plot brilliance, windowing and extinction against tilt from table-up.";
+        active: TiltModel.open;
+        clicked => { TiltModel.toggle-dialog(); }
+    }
+    SolidPill {
+        pad: root.tight ? 12px : 20px;
+        text: "Preform";
+        hint: "Show the starting rough as an outline around the stone.";
+        active: SolidModel.show-preform;
+        clicked => {
+            SolidModel.show-preform = !SolidModel.show-preform;
+            SolidModel.options-changed();
+        }
+    }
+    // Snapping for the angle and depth drag handles on the selected facet: coarse
+    // by default (0.1 degree, 0.01 mast), fine while Shift is held, none when off.
+    // The index handle always moves in whole teeth.
+    SolidPill {
+        pad: root.tight ? 12px : 20px;
+        text: "Snap";
+        hint: "Snap the angle and depth handles (hold Shift for finer steps). Off moves them freely.";
+        active: !ManipulateModel.snap-off;
+        clicked => {
+            ManipulateModel.snap-off = !ManipulateModel.snap-off;
+            ManipulateModel.snap-toggled();
+        }
+    }
+    // Slice (shortcut S): drag a line across the stone; the part to the right of
+    // the drag is cut away. Nothing is kept until Keep.
+    SolidPill {
+        pad: root.tight ? 12px : 20px;
+        text: "Slice";
+        hint: "Cut a new facet along a line you draw across the stone (S). Enter keeps it, Esc drops it.";
+        active: ManipulateModel.slice-mode;
+        clicked => {
+            ManipulateModel.slice-mode = !ManipulateModel.slice-mode;
+            ManipulateModel.slice-toggled();
+        }
+    }
+}
+
+// The Solid tab's overlay toolbar, modelled on the desktop's
+// `solid_viewport/toolbar.slint` (Solid view mode): the "Cut" tier-cutoff slider,
+// the camera pose pills (Front/Top/Bottom/Left/Right/Fit/Reset), the Preform
+// toggle, the Snap and Slice pills of the direct-manipulation tools
+// (`ManipulateModel`), and the status line along the bottom. The desktop's
+// Solid/Path-traced/Both/Diagram mode pills are the header's Render/Solid/Diagram
+// tabs here.
+//
+// The pills take about 870px in one row, so below `wide` (920px of view width) they wrap
+// into two rows (the Cut slider and the tools, the camera pills under them), and below
+// 520px into three or four (Cut; the standard views; Fit and Reset; the tools). The hint strip and
+// timing readout sit under the pill rows, at `top-height` from the top.
+export component SolidToolbar inherits VerticalLayout {
+    // Explicit geometry: an overlay must not become the view's size constraint.
+    x: 0px;
+    y: 0px;
+    width: 100%;
+    height: 100%;
+    padding: 10px;
+    alignment: space-between;
+
+    // The pill rows' height, for the strip and the readout that go under them.
+    out property <length> top-height: root.wide ? 28px : (root.narrow ? (root.has-cut ? 130px : 96px) : 62px);
+
+    property <bool> wide: root.width >= 920px;
+    property <bool> narrow: root.width < 520px;
+    property <bool> has-cut: SolidModel.has-solid && AppModel.tier-count > 1;
+
+    // The desktop's status rule: stale beats the mesh status.
+    property <string> status-text: SolidModel.stale
+        ? (SolidModel.has-solid ? "Preview one edit behind -- updating." : "Not solved -- click Solve to refresh.")
+        : SolidModel.status;
+
+    if root.wide: HorizontalLayout {
+        spacing: 8px;
+        if root.has-cut: CutSlider {}
+        ViewPills {}
+        FitPills {}
+        ToolRow {}
+        // Filler: keeps the pills at their own width.
+        Rectangle { horizontal-stretch: 1; }
+    }
+
+    if !root.wide && !root.narrow: VerticalLayout {
+        spacing: 6px;
+        HorizontalLayout {
+            spacing: 8px;
+            if root.has-cut: CutSlider {}
+            ToolRow {}
+            Rectangle { horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            ViewPills {}
+            FitPills {}
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+
+    if root.narrow: VerticalLayout {
+        spacing: 6px;
+        if root.has-cut: HorizontalLayout {
+            spacing: 8px;
+            CutSlider {}
+            Rectangle { horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            ViewPills { tight: true; }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            FitPills {}
+            Rectangle { horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            ToolRow { tight: true; }
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+
+    if root.status-text != "": Rectangle {
+        height: 22px;
+        background: Theme.bg-input;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.border-subtle;
+        Text {
+            x: 8px;
+            width: parent.width - 16px;
+            text: root.status-text;
+            font-size: 11px;
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}

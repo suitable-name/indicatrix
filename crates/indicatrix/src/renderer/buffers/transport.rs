@@ -36,15 +36,25 @@ use core::mem::offset_of;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuTransportParams {
+    /// Number of pixels in the dispatch.
     pub num_pixels: u32,
+    /// Maximum number of internal bounces per path.
     pub max_bounces: u32,
+    /// Sample offset.
     pub sample_offset: u32,
+    /// Env mode.
     pub env_mode: u32,
+    /// L0.
     pub l0: f32,
+    /// Studio temp k.
     pub studio_temp_k: f32,
+    /// Studio spot mult.
     pub studio_spot_mult: f32,
+    /// Studio exposure.
     pub studio_exposure: f32,
+    /// Studio light yaw.
     pub studio_light_yaw: f32,
+    /// Studio light pitch.
     pub studio_light_pitch: f32,
     /// Index of the first pixel this dispatch covers, added to the shader's own
     /// `idx / num_samples` to recover a GLOBAL pixel index for camera-ray generation
@@ -59,6 +69,7 @@ pub struct GpuTransportParams {
     /// written -- so a production dispatch does 9x less write traffic and its chunk
     /// budget holds 9x more samples per dispatch.
     pub write_debug_buffers: u32,
+    /// White balance.
     pub white_balance: [f32; 3],
     /// Whether `sample_studio_environment_with_rig` should sample the tabulated CIE D65
     /// measured spectrum (nonzero) instead of `blackbody_spectrum` at `studio_temp_k`
@@ -82,16 +93,22 @@ pub struct GpuTransportParams {
 /// - 2: `LightTent` (light tent + black cards)
 /// - 3: `DaylightDome` (daylight sky + sun)
 pub mod studio_model {
+    /// Identifier for studio.
     pub const STUDIO: u32 = 0;
+    /// Identifier for iso hemisphere.
     pub const ISO_HEMISPHERE: u32 = 1;
+    /// Identifier for light tent.
     pub const LIGHT_TENT: u32 = 2;
+    /// Identifier for daylight dome.
     pub const DAYLIGHT_DOME: u32 = 3;
 }
 
 /// `env_mode` discriminants for [`GpuTransportParams`]. Must match
 /// `shaders/spectral_transport.wgsl`'s own `params.env_mode` branch.
 pub mod transport_env_mode {
+    /// Identifier for uniform furnace.
     pub const UNIFORM_FURNACE: u32 = 0;
+    /// Identifier for studio rig.
     pub const STUDIO_RIG: u32 = 1;
     /// `EnvironmentSource::HdrMap`.
     ///
@@ -110,6 +127,7 @@ impl GpuTransportParams {
                   uniform buffer binds against; bundling them into a context struct here \
                   would just re-introduce this exact struct one level removed"
     )]
+    /// Creates a new value from its components.
     pub const fn new(
         num_pixels: u32,
         max_bounces: u32,

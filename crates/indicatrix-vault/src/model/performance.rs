@@ -42,8 +42,11 @@ use std::fmt;
 /// extremes for -- one column pair per variant (see [`global_extreme_column_name`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PerformanceMetric {
+    /// Light returned to the viewer's eye.
     Brilliance,
+    /// Dark/blacked-out facets.
     Extinction,
+    /// "Fish-eye"/see-through windowing.
     Windowing,
 }
 
@@ -83,13 +86,19 @@ impl PerformanceMetric {
 /// `Min`/`Max` only (there is no "mean" column any more; see this module's doc).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Extreme {
+    /// The metric's global minimum sampled value.
     Min,
+    /// The metric's global maximum sampled value.
     Max,
 }
 
 impl Extreme {
+    /// Every variant, in a fixed order -- see [`PerformanceMetric::ALL`]'s own doc
+    /// comment for why a plain array, not a `HashSet`.
     pub const ALL: [Self; 2] = [Self::Min, Self::Max];
 
+    /// The lowercase column-name fragment for this extreme (`"min"`/`"max"`), used by
+    /// [`global_extreme_column_name`].
     #[must_use]
     pub const fn column_key(self) -> &'static str {
         match self {
@@ -130,7 +139,9 @@ pub fn all_global_extreme_columns() -> impl Iterator<Item = (PerformanceMetric, 
 /// percentage fields, not 0..1 fractions.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PerformanceBound {
+    /// Stays at most this percentage.
     AtMost(f32),
+    /// Stays at least this percentage.
     AtLeast(f32),
 }
 
@@ -141,13 +152,18 @@ pub enum PerformanceBound {
 /// MIN for `AtLeast`); `Mean` is the flat average.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PerformanceAggregate {
+    /// The value making the bound hardest to satisfy (window MAX for `AtMost`, MIN for
+    /// `AtLeast`).
     Worst,
+    /// The flat average across the window.
     Mean,
 }
 
-/// The lowest and highest sampled radius the tilt sweep stores (see
-/// [`crate::model::tilt_curves`]'s module doc) -- [`PerformanceFilter::new`]'s valid range.
+/// The lowest sampled radius the tilt sweep stores -- [`PerformanceFilter::new`]'s
+/// valid range lower bound (see [`crate::model::tilt_curves`]'s module doc).
 pub const MIN_TILT_RADIUS_DEG: f32 = 0.0;
+/// The highest sampled radius the tilt sweep stores -- [`PerformanceFilter::new`]'s
+/// valid range upper bound (see [`crate::model::tilt_curves`]'s module doc).
 pub const MAX_TILT_RADIUS_DEG: f32 = 90.0;
 
 /// One tilt-performance predicate.
@@ -170,9 +186,15 @@ pub const MAX_TILT_RADIUS_DEG: f32 = 90.0;
 /// only `new`'s path guarantees the `0.0..=90.0` contract.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PerformanceFilter {
+    /// Which metric this predicate constrains.
     pub metric: PerformanceMetric,
+    /// The threshold and direction the metric must stay within.
     pub bound: PerformanceBound,
+    /// How far from table-up (in degrees, `0.0..=90.0`) the window this predicate
+    /// checks extends.
     pub tilt_radius_deg: f32,
+    /// How every sampled point within the window collapses into the one value
+    /// `bound` compares against.
     pub aggregate: PerformanceAggregate,
 }
 
@@ -238,6 +260,7 @@ impl PerformanceFilter {
 /// The error [`PerformanceFilter::new`] returns for an out-of-range `tilt_radius_deg`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct InvalidTiltRadius {
+    /// The rejected value.
     pub degrees: f32,
 }
 
@@ -259,7 +282,9 @@ impl std::error::Error for InvalidTiltRadius {}
 /// store.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct GlobalExtremes {
+    /// The global minimum sampled value.
     pub min: f32,
+    /// The global maximum sampled value.
     pub max: f32,
 }
 
@@ -267,8 +292,11 @@ pub struct GlobalExtremes {
 /// `crate::db::sqlite::Database::save_tilt_curves` writes into the 6 derived columns.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PerformanceGlobalExtremes {
+    /// [`PerformanceMetric::Brilliance`]'s global extremes.
     pub brilliance: GlobalExtremes,
+    /// [`PerformanceMetric::Extinction`]'s global extremes.
     pub extinction: GlobalExtremes,
+    /// [`PerformanceMetric::Windowing`]'s global extremes.
     pub windowing: GlobalExtremes,
 }
 

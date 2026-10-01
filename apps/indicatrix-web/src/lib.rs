@@ -1,29 +1,51 @@
-//! Browser build of `indicatrix`: upload a `GemCAD` `.asc` cutting schedule, get back an
-//! interactive rendered stone. No design library, no remote worker, no database -- see
-//! `README.md` for the full "what this deliberately omits and why" list.
+//! Browser build of `indicatrix`: open a faceting design (`.asc`, a native
+//! `.asc` + `.indicatrix.toml` pair, a native-only `.indicatrix.toml`, `.gem`,
+//! `.gcs`), keep it in the shared `indicatrix_editor::EditorSession`, and save it
+//! back as a browser download. See `README.md` for what works today and what the
+//! later phases add.
 //!
-//! # Why almost everything here is `#[cfg(target_arch = "wasm32")]`
+//! # Modules
 //!
-//! This crate exists for exactly one target triple: acquiring a WebGPU device without
-//! blocking the browser's thread, driving a Slint UI through `wasm-bindgen`, reading an
-//! uploaded file through the DOM's File API. Rather than make every module decide
-//! whether it's meaningful on a native host, everything real lives under [`mod@app`],
-//! gated on `wasm32`, so a non-wasm32 build compiles to nothing.
+//! - `app`: the one `app::state::WebApp` (in an `Rc<RefCell<..>>`), the entry
+//!   point, callback wiring, the `push_*` UI refresh, persistence to
+//!   `sessionStorage`, the solve (tiny designs on the page, the rest in the solve
+//!   Worker), diagnostics.
+//! - `io`: file input (picker + drag-and-drop), per-kind loaders, the HDR cap, and
+//!   file output (`Blob` downloads).
+//! - `render`: the CPU-worker live render loop, its settings panel, the PNG export
+//!   and the viewport-size tracking.
+//! - `workers`: the one lazily created Worker pool (render Workers + solve Worker, and
+//!   the analysis Worker on first use).
+//! - `metrics`: the Render tab's gemological-metrics HUD and the Tilt Performance dialog,
+//!   both computed in the analysis Worker.
 //!
-//! That matters because `cargo check --workspace` from a native host builds this crate
-//! too, alongside the real desktop/server products `apps/indicatrix-cut` and
-//! `apps/indicatrix-worker`; an empty native build keeps a browser demo from costing
-//! either of them a slower build or a compile error.
+//! - `views`: the Solid and Diagram tabs.
+//! - `editor`: the CAD panels of the Design dock -- the tier table, its command bar and
+//!   editing actions, and the unsaved-changes dialog.
+//!
+//! # Why everything is `#[cfg(target_arch = "wasm32")]`
+//!
+//! This crate exists for one target: it drives a Slint UI through `wasm-bindgen`
+//! and reads files through the DOM. A native build compiles to nothing, so
+//! `cargo check --workspace` on a native host costs the desktop apps nothing.
+//! Pure logic that deserves native tests lives in the shared crates instead
+//! (`indicatrix-editor`'s `files` module, for one).
 
 #[cfg(target_arch = "wasm32")]
 mod app;
 #[cfg(target_arch = "wasm32")]
+mod editor;
+#[cfg(target_arch = "wasm32")]
+mod io;
+#[cfg(target_arch = "wasm32")]
+mod metrics;
+#[cfg(target_arch = "wasm32")]
 mod render;
 #[cfg(target_arch = "wasm32")]
-mod scene;
+mod views;
+#[cfg(target_arch = "wasm32")]
+mod workers;
 
-// `slint::include_modules!()` must run in a crate root (it expands to an `include!` of
-// build.rs's generated file, which uses `super`-relative paths). Kept here rather than
-// in `app.rs` so that file stays the one that actually drives the UI.
+// Must run in the crate root: it `include!`s build.rs's generated module.
 #[cfg(target_arch = "wasm32")]
 slint::include_modules!();

@@ -17,6 +17,8 @@
 //! <- CAPABILITY_CHANGED { render: Option<RenderCapability> }                     (v14)
 //! <- NEED_ASSET { content_hash }                                                  (v14, E)
 //! -> ASSET    { content_hash, len } + payload                                     (v14, E)
+//! -> CONTRIBUTION { request_id, first_sample, samples, width, height, encoding,
+//!                   payload_len, raw_len } + payload    (v16, see crate::messages::contribution)
 //! ```
 //!
 //! `FRAME`/`PREVIEW` payloads are encoded per their header's `encoding` (v14,

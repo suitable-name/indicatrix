@@ -23,13 +23,21 @@ use crate::model::{entry::DiagramListItem, performance::PerformanceFilter};
 /// fields -- `apps/indicatrix-cut/src/gui/search.rs`'s `read_range_filter` is one such.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RangeFilter {
+    /// Lower bound on refractive index.
     pub ri_min: Option<f64>,
+    /// Upper bound on refractive index.
     pub ri_max: Option<f64>,
+    /// Lower bound on the length-to-width ratio.
     pub lw_min: Option<f64>,
+    /// Upper bound on the length-to-width ratio.
     pub lw_max: Option<f64>,
+    /// Lower bound on volume.
     pub volume_min: Option<f64>,
+    /// Upper bound on volume.
     pub volume_max: Option<f64>,
+    /// Lower bound on facet count.
     pub facets_min: Option<i64>,
+    /// Upper bound on facet count.
     pub facets_max: Option<i64>,
     /// `(center, tolerance)`: an additional refractive-index band, `[center -
     /// tolerance, center + tolerance]`, for the GUI's "match the currently loaded
@@ -75,6 +83,7 @@ impl RangeFilter {
 /// behaving identically.
 #[derive(Debug, Clone)]
 pub struct PerformanceSearchResult {
+    /// Rows of the current page.
     pub items: Vec<DiagramListItem>,
     /// How many designs matched every active filter *except* the performance ones, but
     /// were excluded for having no stored tilt curves -- `0` whenever
@@ -93,8 +102,12 @@ pub struct PerformanceSearchResult {
 /// slider's travel. Rows beyond this bound are not excluded from search.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AttributeRanges {
+    /// Observed (min, max) refractive index.
     pub ri: (f64, f64),
+    /// Observed (min, max) length-to-width ratio.
     pub lw_ratio: (f64, f64),
+    /// Observed (min, max) volume.
     pub volume: (f64, f64),
+    /// Observed (min, max) facet count.
     pub facets: (i64, i64),
 }

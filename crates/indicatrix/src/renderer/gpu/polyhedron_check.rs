@@ -6,8 +6,8 @@
 //! Round Brilliant plane set (`geometry::cuts::StandardGemCuts::standard_round_brilliant`,
 //! called directly -- not a hand-copied plane list) with a directional sweep of rays
 //! from OUTSIDE the stone and, separately, from INSIDE it (the critical exit-branch
-//! case: see `optics::raytracer::intersect_polyhedron`'s own doc comment on why the old
-//! quarantined shader got this wrong), plus adversarial cases (rays exactly on a facet
+//! case: see `optics::raytracer::intersect_polyhedron`'s own doc comment on why the
+//! retired first-draft shader got this wrong), plus adversarial cases (rays exactly on a facet
 //! plane, rays perpendicular to the girdle facets' normals, near-silhouette grazing
 //! rays).
 //!
@@ -63,8 +63,11 @@ pub const HIT_ULP_BUDGET: u32 = 512;
 /// One ray case: origin + direction, plus a human-readable label for diagnostics.
 #[derive(Clone, Copy, Debug)]
 pub struct PolyhedronCase {
+    /// Short name of the check.
     pub label: &'static str,
+    /// Ray origin.
     pub origin: Vec3,
+    /// Ray direction.
     pub dir: Vec3,
 }
 
@@ -199,25 +202,36 @@ pub enum CaseOutcome {
 /// failure is diagnosable without re-running anything.
 #[derive(Debug, Clone)]
 pub struct PolyhedronMismatch {
+    /// Index of the case in the generated list.
     pub case_index: usize,
+    /// Input case that produced this result.
     pub case: PolyhedronCase,
+    /// Outcome.
     pub outcome: CaseOutcome,
+    /// Cpu hit.
     pub cpu_hit: HitSummary,
+    /// Gpu hit.
     pub gpu_hit: HitSummary,
+    /// Detail.
     pub detail: String,
 }
 
+/// Outcome of the polyhedron check check.
 #[derive(Debug, Clone)]
 pub struct PolyhedronCheckResult {
+    /// Total number of cases run.
     pub total_cases: usize,
+    /// Whitelisted ties.
     pub whitelisted_ties: usize,
     /// True count of mismatching cases -- NOT capped, unlike `mismatches` below (which
     /// holds only the first 64 for diagnostics).
     pub total_mismatches: usize,
+    /// Mismatches found.
     pub mismatches: Vec<PolyhedronMismatch>,
 }
 
 impl PolyhedronCheckResult {
+    /// Whether every compared value stayed within its budget.
     #[must_use]
     pub const fn passed(&self) -> bool {
         self.mismatches.is_empty()

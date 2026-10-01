@@ -48,6 +48,8 @@ use super::z_stats::{Welford, z_score};
 
 mod determinism;
 mod furnace;
+#[cfg(test)]
+mod furnace_measurement;
 mod image_comparison;
 mod spectral_debug;
 
@@ -129,6 +131,7 @@ pub fn tier3_material() -> GemMaterial {
         .expect("\"Spinel\" is a built-in cubic material in GemMaterial::all_materials()")
 }
 
+/// Fixed camera shared by the estimator checks.
 #[must_use]
 pub fn test_camera() -> Camera {
     // distance=5.0 against the ~1-unit SRB (girdle radius ~1.0, table at y=0.32);
@@ -150,9 +153,9 @@ fn all_polished_finishes(num_planes: usize) -> Vec<u32> {
 /// `FacetFinish::Polished` everywhere except the girdle band
 /// (`STANDARD_ROUND_BRILLIANT_GIRDLE_FACETS`), which is `Frosted` -- the source of truth
 /// this module's frosted GPU self-tests build both their CPU reference and
-/// GPU-encoded buffer from.
+/// GPU-encoded buffer from, and that the pin tests in `renderer::gpu` reuse.
 #[must_use]
-fn bruted_girdle_finishes(num_planes: usize) -> Vec<FacetFinish> {
+pub(crate) fn bruted_girdle_finishes(num_planes: usize) -> Vec<FacetFinish> {
     let mut finishes = vec![FacetFinish::Polished; num_planes];
     for i in STANDARD_ROUND_BRILLIANT_GIRDLE_FACETS {
         finishes[i] = FacetFinish::Frosted;
@@ -179,12 +182,13 @@ pub fn zircon_material() -> GemMaterial {
         .expect("\"Zircon\" is a built-in uniaxial material in GemMaterial::all_materials()")
 }
 
-/// Quartz: the only built-in with a genuine, independent extraordinary-ray dispersion
-/// curve (`uniaxial_extraordinary_dispersion.is_some()`, Ghosh 1999 -- see that
-/// field's doc).
+/// Quartz, a built-in with a genuine independent extraordinary-ray dispersion curve.
 ///
-/// Exercises `extraordinary_index_at`'s genuine-curve branch end to end, unlike every
-/// other uniaxial built-in which only hits the constant-offset fallback.
+/// That curve is `uniaxial_extraordinary_dispersion.is_some()`, Ghosh 1999 -- see that
+/// field's doc; Amethyst, Citrine and Rutile set it too.
+///
+/// Exercises `extraordinary_index_at`'s genuine-curve branch end to end, unlike the
+/// other uniaxial built-ins that only hit the constant-offset fallback.
 ///
 /// # Panics
 ///
@@ -217,7 +221,7 @@ pub fn tourmaline_material() -> GemMaterial {
 }
 
 /// Rutile (full uniaxial Fresnel, Lekner 1991): this crate's most extreme
-/// birefringence built-in (`birefringence_delta = +0.287`).
+/// birefringence built-in (`birefringence_delta = +0.2957`).
 ///
 /// Its closed-form Fresnel reflectance diverges from the interim single-effective-index
 /// approximation by ~15% (see

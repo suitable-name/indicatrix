@@ -23,12 +23,18 @@
 //!
 //! 1. **Superseded by a later `submit`.** Every `submit` call bumps a shared
 //!    `latest_seq` counter and stamps its own request with the value it bumped to.
-//!    Before the worker reports ANY result (even one it fully computed), it
-//!    compares its request's stamped seq against the current `latest_seq` -- a
-//!    mismatch means a newer request has since been submitted, so this result is
-//!    thrown away unread rather than delivered (see [`worker_loop`]). This is the
-//!    "dropped if stale" -- generation-tagging -- promise: the compute itself is
-//!    not free, but nothing here ever delivers a superseded result anywhere.
+//!    Before the worker reports a result, it compares its request's stamped seq
+//!    against the current `latest_seq` -- a mismatch means a newer request has
+//!    since been submitted. The result is STILL delivered, tagged
+//!    [`SolveResult::superseded`] `true`, rather than silently dropped: an earlier
+//!    version of this module discarded it outright (`continue`, no delivery at
+//!    all), which left any per-request bookkeeping keyed by
+//!    [`SolveResult::generation`] permanently stranded whenever two requests
+//!    landed close together on the SAME `SolveService` (`native_io::solve`'s
+//!    shared one, the case that actually hits this: a Save Native immediately
+//!    followed by an Export) -- no file, no toast, no error, forever. See
+//!    [`SolveResult::superseded`]'s own doc comment for what a caller must do
+//!    with one.
 //! 2. **The design changed for a reason that is NOT a new solve request** (an edit
 //!    landed while auto-solve is disabled, say). [`SolveResult::generation`] is the
 //!    caller's OWN domain generation counter, stamped at submit time -- this
@@ -72,7 +78,6 @@ use indicatrix_cut_core::{Design, DesignSolveError};
 use slint::{ComponentHandle, Weak};
 use std::{
     cell::Cell,
-    collections::BTreeSet,
     sync::{
         Arc, Condvar, Mutex, PoisonError,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -100,23 +105,6 @@ pub enum SolveKind {
     /// `Weak::upgrade_in_event_loop`, i.e. on the UI thread itself, so moving that
     /// formatting there would be a regression, not a fix.
     Full,
-    /// A subgraph [`Design::resolve_dirty_with`] against `previous`'s masts, for the
-    /// tiers named in `dirty` -- see that method's own doc comment for what
-    /// `previous` must be (a prior solve for a design identical to this request's
-    /// `design` except at the positions `dirty` names).
-    ///
-    /// The one place this crate currently resolves a dirty subgraph during an edit
-    /// is `gui::solid_preview`'s own worker (`apps/indicatrix-cut/src/gui/solid_preview/**`),
-    /// which is outside this module's ownership. This variant is public for API completeness.
-    #[expect(
-        dead_code,
-        reason = "SolveService's public API is specified with this variant even though \
-                   no caller in this module submits it yet -- see the variant's own doc comment"
-    )]
-    Dirty {
-        previous: Vec<SolvedTier>,
-        dirty: BTreeSet<usize>,
-    },
     /// `indicatrix::geometry::meet_solver::solve_meet_points_verified_with`'s
     /// externally verified repair search ("Deep Solve"). Always passes no
     /// adjustable anchors -- see `deep_solve.rs`'s own doc comment, "`adjustable_anchors` is always empty",
@@ -135,6 +123,15 @@ pub enum SolveKind {
         /// mailbox is last-wins).
         compute_baseline: bool,
     },
+    /// A candidate design solved for display in the viewport in place of the real
+    /// one (Retarget's live overlay, Optimize's Preview toggle): the cancellable
+    /// counterpart of [`Design::solve`], so it keeps that method's over-plane-cap
+    /// fallback instead of surfacing it as an error the way [`Self::Full`] does.
+    /// The request's own `generation` is the ghost's sequence number.
+    ///
+    /// Submit it on a service of its own: the mailbox is last-wins, so sharing one
+    /// with a save or export would supersede that request's solve.
+    GhostPreview,
 }
 
 /// [`SolveOutcome::Verified`]'s `Ok` payload: the verified repair search's own
@@ -169,20 +166,37 @@ pub struct SolveRequest {
 
 /// What a finished (non-superseded) solve produced.
 pub enum SolveOutcome {
-    /// [`SolveKind::Full`]/[`SolveKind::Dirty`]'s result. Read by `native_io`'s
-    /// save/export continuations (`native_io::resolve_solved_then`).
+    /// [`SolveKind::Full`]/[`SolveKind::GhostPreview`]'s result.
+    /// Read by `native_io`'s save/export continuations
+    /// (`native_io::resolve_solved_then`) and by the ghost preview's landing handler.
     Solved(Result<Vec<SolvedTier>, DesignSolveError>),
     /// [`SolveKind::Verified`]'s result.
     Verified(Result<VerifiedSolve, SolveError>),
 }
 
-/// A delivered, non-superseded [`SolveService`] result.
+/// A delivered [`SolveService`] result -- ALWAYS delivered, even for a request a
+/// later `submit` superseded while this one was still computing: see
+/// [`Self::superseded`]'s own doc comment for why this module stopped silently
+/// discarding those instead.
 pub struct SolveResult {
     /// Echoed from the [`SolveRequest`] this answers -- see
     /// [`SolveRequest::generation`]'s own doc comment.
     pub generation: u64,
     pub elapsed: Duration,
     pub outcome: SolveOutcome,
+    /// `true` when a later `submit` bumped [`SolveService`]'s own `latest_seq`
+    /// counter past this request's stamped value before the worker got around to
+    /// reporting it -- i.e. this design/kind is no longer the one anybody asked
+    /// about last. `outcome` is still the REAL computed result (the compute
+    /// itself was not wasted), but a caller must not apply or display it as
+    /// current; it is delivered at all ONLY so per-request bookkeeping keyed by
+    /// [`Self::generation`] (`native_io::solve::PENDING_SOLVES`, the motivating
+    /// case) gets a chance to clean itself up and tell its own caller what
+    /// happened, instead of leaking that entry and leaving whoever was waiting
+    /// on it (a Save Native, say) with no file and no toast forever. Previously
+    /// this case was silently `continue`d past with no delivery at all -- exactly
+    /// the "never leave a continuation stranded" bug the superseded-result delivery guards against.
+    pub superseded: bool,
 }
 
 /// A delivered, throttled progress tick -- generation-tagged the same way
@@ -219,9 +233,16 @@ struct Queued {
 /// coalescing" mailbox the module doc comment describes. Deliberately not a
 /// channel: a channel would still need draining logic to discard everything but the
 /// newest entry, which is exactly what `put` does inline instead.
+///
+/// Also carries [`SolveService`]'s own shutdown signal: `shutdown` is
+/// checked by [`Self::take_blocking`] every time it wakes, and
+/// [`Self::request_shutdown`] sets it and wakes the worker immediately, the
+/// same `Condvar` [`Self::put`] already uses -- there is no separate channel or
+/// second wait to coordinate.
 struct Mailbox {
     slot: Mutex<Option<Queued>>,
     ready: Condvar,
+    shutdown: AtomicBool,
 }
 
 impl Mailbox {
@@ -229,6 +250,7 @@ impl Mailbox {
         Self {
             slot: Mutex::new(None),
             ready: Condvar::new(),
+            shutdown: AtomicBool::new(false),
         }
     }
 
@@ -241,12 +263,29 @@ impl Mailbox {
         self.ready.notify_one();
     }
 
-    /// Blocks until a request is available, then takes it.
-    fn take_blocking(&self) -> Queued {
+    /// Requests the worker's own exit -- see [`SolveService`]'s `Drop`
+    /// impl, the one caller. Idempotent: a second call is a harmless repeat of
+    /// the same store/wake.
+    fn request_shutdown(&self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        self.ready.notify_one();
+    }
+
+    /// Blocks until a request is available OR shutdown was requested --
+    /// `None` means the latter: the worker's own signal to return from
+    /// [`worker_loop`] instead of looping again. A request already sitting in
+    /// the mailbox at shutdown time is still delivered (checked first, below)
+    /// rather than discarded, so a `submit` that raced a `Drop` is never
+    /// silently dropped -- though nothing in this crate submits to a
+    /// `SolveService` it no longer holds a reference to in practice.
+    fn take_blocking(&self) -> Option<Queued> {
         let mut slot = self.slot.lock().unwrap_or_else(PoisonError::into_inner);
         loop {
             if let Some(item) = slot.take() {
-                return item;
+                return Some(item);
+            }
+            if self.shutdown.load(Ordering::Relaxed) {
+                return None;
             }
             slot = self
                 .ready
@@ -315,9 +354,7 @@ fn run_solve(
     let control = SolveControl::with_cancel(cancel).reporting(on_progress);
     match &request.kind {
         SolveKind::Full => SolveOutcome::Solved(request.design.solve_with(&control)),
-        SolveKind::Dirty { previous, dirty } => {
-            SolveOutcome::Solved(request.design.resolve_dirty_with(previous, dirty, &control))
-        }
+        SolveKind::GhostPreview => SolveOutcome::Solved(solve_cancellably(&request.design, cancel)),
         SolveKind::Verified {
             targets,
             compute_baseline,
@@ -400,6 +437,25 @@ impl SolveService {
     }
 }
 
+impl Drop for SolveService {
+    /// Signals the worker thread to exit instead of leaving it parked
+    /// forever on [`Mailbox::take_blocking`]'s `Condvar` wait -- every caller
+    /// that owns a `SolveService` for less than the app's own lifetime
+    /// (`deep_solve::spawn_deep_solve` spawns one PER run, held only by its
+    /// `DeepSolveHandle`) used to leak exactly that one worker thread per run,
+    /// since dropping the `Arc<Mailbox>` clone this struct itself holds does
+    /// nothing on its own -- the worker's own clone of the SAME `Arc` keeps it
+    /// allocated, and nothing was ever asked to stop reading from it. Does not
+    /// join the thread: `Drop` runs on whichever thread drops the last
+    /// `SolveService` (the UI thread, for every caller in this crate), and
+    /// blocking it on the worker's own exit would defeat the entire point of
+    /// running solves off that thread in the first place -- the worker still
+    /// exits promptly on its own, it just is not waited for here.
+    fn drop(&mut self) {
+        self.mailbox.request_shutdown();
+    }
+}
+
 /// The worker thread's whole life -- see the module doc comment for the two
 /// staleness checks this performs (the `seq` one, inline below; the `generation`
 /// one is the caller's own job once [`SolveResult`] is delivered).
@@ -415,11 +471,18 @@ fn worker_loop<T, P, D>(
     D: Fn(&T, SolveResult) + Send + Clone + 'static,
 {
     loop {
-        let Queued {
+        let Some(Queued {
             request,
             seq,
             cancel,
-        } = mailbox.take_blocking();
+        }) = mailbox.take_blocking()
+        else {
+            // Shutdown requested (`SolveService::drop`) -- exit for
+            // real, rather than parking on this mailbox forever. Nothing to
+            // report: a `SolveService` being dropped means no caller can
+            // still be waiting on this worker's `on_result`.
+            return;
+        };
         let generation = request.generation;
         let start = Instant::now();
         let throttle = ProgressThrottle::new();
@@ -441,17 +504,17 @@ fn worker_loop<T, P, D>(
             });
         });
 
-        if latest_seq.load(Ordering::Relaxed) != seq {
-            // Superseded by a later `submit` while this one was running -- never
-            // delivered, see the module doc comment. The pending request that
-            // superseded it is already sitting in `mailbox`, ready for the next
-            // loop iteration.
-            continue;
-        }
+        // Superseded by a later `submit` while this one was running -- still
+        // delivered (see `SolveResult::superseded`'s own doc comment),
+        // just tagged so the caller knows not to trust/apply `outcome`. The
+        // pending request that superseded it is already sitting in `mailbox`,
+        // ready for the next loop iteration either way.
+        let superseded = latest_seq.load(Ordering::Relaxed) != seq;
         let result = SolveResult {
             generation,
             elapsed: start.elapsed(),
             outcome,
+            superseded,
         };
         let ui = ui_weak.clone();
         let on_result = on_result.clone();
@@ -462,266 +525,4 @@ fn worker_loop<T, P, D>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use indicatrix::geometry::meet_solver::{Block, MeetConstraint, classify_blocks};
-    use indicatrix_cut_core::PreformSpec;
-
-    // --- Mailbox: last-wins coalescing ---
-
-    fn dummy_request(generation: u64) -> SolveRequest {
-        SolveRequest {
-            design: Arc::new(Design::fresh(
-                PreformSpec::block(2.0, 1.0, 2.0),
-                96,
-                8,
-                1.54,
-            )),
-            generation,
-            kind: SolveKind::Full,
-        }
-    }
-
-    fn dummy_queued(generation: u64, seq: u64) -> Queued {
-        Queued {
-            request: dummy_request(generation),
-            seq,
-            cancel: Arc::new(AtomicBool::new(false)),
-        }
-    }
-
-    #[test]
-    fn three_requests_in_a_burst_coalesce_to_one_solve_of_the_last() {
-        // Three `put`s that land before anything ever calls `take_blocking`/`try_take`
-        // must leave only the LAST one behind -- the two earlier ones are silently
-        // discarded, never solved at all (last-wins coalescing).
-        let mailbox = Mailbox::new();
-        mailbox.put(dummy_queued(1, 1));
-        mailbox.put(dummy_queued(2, 2));
-        mailbox.put(dummy_queued(3, 3));
-
-        let got = mailbox.try_take().expect("one request must be queued");
-        assert_eq!(got.request.generation, 3, "must keep only the LAST request");
-        assert_eq!(got.seq, 3);
-        assert!(
-            mailbox.try_take().is_none(),
-            "the two earlier requests must have been discarded, not queued behind the last"
-        );
-    }
-
-    #[test]
-    fn put_after_take_queues_a_fresh_request() {
-        let mailbox = Mailbox::new();
-        mailbox.put(dummy_queued(1, 1));
-        assert!(mailbox.try_take().is_some());
-        assert!(
-            mailbox.try_take().is_none(),
-            "mailbox must be empty after a take"
-        );
-        mailbox.put(dummy_queued(2, 2));
-        let got = mailbox
-            .try_take()
-            .expect("a request put after an empty take must be queued");
-        assert_eq!(got.request.generation, 2);
-    }
-
-    // --- SolveHandle::cancel ---
-
-    #[test]
-    fn handle_cancel_sets_the_flag_a_worker_would_read() {
-        // `SolveHandle::cancel`'s entire job is flipping the shared
-        // `Arc<AtomicBool>` -- verified directly, without spinning up a worker.
-        // `deep_solve::DeepSolveHandle::cancel` is a one-line delegation to this
-        // same method, so this also covers that call site's own behavior.
-        let flag = Arc::new(AtomicBool::new(false));
-        let handle = SolveHandle {
-            generation: 0,
-            cancel: Arc::clone(&flag),
-        };
-        assert!(!flag.load(Ordering::Relaxed));
-        handle.cancel();
-        assert!(flag.load(Ordering::Relaxed));
-    }
-
-    // --- Generation/seq tagging: dropping stale results ---
-
-    #[test]
-    fn a_result_whose_seq_no_longer_matches_latest_seq_is_stale() {
-        // Mirrors `worker_loop`'s own staleness check inline, without spinning up
-        // a real worker thread: a `submit` bumps `latest_seq`, so an older
-        // in-flight (or just-finished) request's own captured `seq` no longer
-        // matches once a newer one has landed.
-        let latest_seq = AtomicU64::new(1);
-        assert_eq!(latest_seq.load(Ordering::Relaxed), 1);
-
-        latest_seq.store(2, Ordering::Relaxed);
-        assert_ne!(
-            1,
-            latest_seq.load(Ordering::Relaxed),
-            "an older seq must read as stale once a newer submit landed"
-        );
-        assert_eq!(
-            2,
-            latest_seq.load(Ordering::Relaxed),
-            "the newest seq must still read as current"
-        );
-    }
-
-    // `SolveService::new`/`submit` themselves are NOT exercised end-to-end here:
-    // both require a live `slint::ComponentHandle` (a real `MainWindow`), which
-    // needs a windowing backend this suite cannot start (no GPU/display in the
-    // test environment -- see this crate's own house rule). The `seq`-staleness
-    // check above and `Mailbox`'s coalescing tests cover the same decisions
-    // `SolveService::submit`/`worker_loop` make, without needing one.
-
-    // --- ProgressThrottle ---
-
-    fn progress(phase: indicatrix::geometry::meet_solver::SolvePhase, sweep: u32) -> SolveProgress {
-        SolveProgress {
-            phase,
-            sweep,
-            max_sweeps: 4,
-            blocks_done: 0,
-            blocks_total: 10,
-        }
-    }
-
-    #[test]
-    fn first_report_of_a_new_phase_sweep_is_always_forwarded() {
-        let throttle = ProgressThrottle::new();
-        assert!(throttle.should_forward(progress(
-            indicatrix::geometry::meet_solver::SolvePhase::Refine,
-            1
-        )));
-    }
-
-    #[test]
-    fn a_second_report_of_the_same_phase_sweep_within_the_interval_is_dropped() {
-        let throttle = ProgressThrottle::new();
-        let p = progress(indicatrix::geometry::meet_solver::SolvePhase::Refine, 1);
-        assert!(throttle.should_forward(p));
-        assert!(
-            !throttle.should_forward(p),
-            "an immediate repeat of the same (phase, sweep) inside the throttle window must be dropped"
-        );
-    }
-
-    #[test]
-    fn a_report_from_a_new_sweep_is_forwarded_even_inside_the_interval() {
-        let throttle = ProgressThrottle::new();
-        assert!(throttle.should_forward(progress(
-            indicatrix::geometry::meet_solver::SolvePhase::Refine,
-            1
-        )));
-        assert!(
-            throttle.should_forward(progress(
-                indicatrix::geometry::meet_solver::SolvePhase::Refine,
-                2
-            )),
-            "a genuinely new sweep must never be throttled away entirely"
-        );
-    }
-
-    // --- Cancellation, on the largest real fixture ---
-
-    /// "PC 05.115 CrackOtto-Step" by Ottorino Invernizzi, 103 tiers -- the same
-    /// fixture `indicatrix-cut-core`'s own
-    /// `resolve_dirty_speed_on_a_large_real_design`/`cost_probe_large_real_meet_derived_design`
-    /// tests measure a 5.9s full solve against. Read from the crate's own fixture
-    /// file rather than re-embedding it, so the two copies can never drift.
-    const CRACKOTTO_STEP_ASC: &str = include_str!(
-        "../../../../../crates/indicatrix-cut-core/src/optimize_cost_probe_crackotto_step.asc"
-    );
-
-    /// Rebuilds the SAME "mostly implicit `MeetExisting`, one `ScaleReference`
-    /// anchor per block" structure `indicatrix-cut-core`'s own (private)
-    /// `design_with_real_meet_structure` test helper builds, using only this
-    /// crate's public API: `Design::from_asc_schedule` pins every tier to
-    /// `ScaleReference` at import, but keeps each tier's real original classification
-    /// in `ConstraintTier::imported_meet` -- restoring that for every tier except
-    /// one anchor per block reproduces the real, mostly-non-anchor solve shape a
-    /// cancellation test needs (a design where every tier is already pinned solves
-    /// almost instantly, which would prove nothing about mid-solve cancellation).
-    fn crackotto_step_with_real_meet_structure() -> Design {
-        let schedule =
-            indicatrix_formats::asc::parse_asc(CRACKOTTO_STEP_ASC).expect("fixture must parse");
-        let mut design = Design::from_asc_schedule(PreformSpec::block(2.0, 1.0, 2.0), &schedule);
-        assert_eq!(
-            design.tiers.len(),
-            103,
-            "fixture must have its real tier count"
-        );
-
-        let inputs = design.meet_tier_inputs();
-        let blocks = classify_blocks(&inputs);
-        let mut anchor_kept = [false; 3];
-        let block_slot = |b: Block| match b {
-            Block::Crown => 0,
-            Block::Pavilion => 1,
-            Block::Girdle => 2,
-        };
-        for (i, tier) in design.tiers.iter_mut().enumerate() {
-            let slot = block_slot(blocks[i]);
-            if !anchor_kept[slot] {
-                // Keep this tier's import-pinned ScaleReference as the block's one
-                // anchor -- required by `Design::solve_with`'s missing-anchor check.
-                anchor_kept[slot] = true;
-                continue;
-            }
-            if let Some(original) = tier.imported_meet.clone() {
-                tier.constraint = original;
-            }
-        }
-        // Sanity: this fixture's tiers are documented as "every one... implicit
-        // MeetExisting" (see `indicatrix-cut-core`'s own doc comment on the
-        // equivalent test), so almost all 103 should now be non-anchor.
-        let non_anchor = design
-            .tiers
-            .iter()
-            .filter(|t| !matches!(t.constraint, MeetConstraint::ScaleReference(_)))
-            .count();
-        assert!(
-            non_anchor > 90,
-            "fixture must be mostly non-anchor for this to be a meaningful cancellation test, got {non_anchor}"
-        );
-        design
-    }
-
-    #[test]
-    fn cancel_returns_quickly_on_the_largest_real_fixture() {
-        let design = crackotto_step_with_real_meet_structure();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let request = SolveRequest {
-            design: Arc::new(design),
-            generation: 0,
-            kind: SolveKind::Full,
-        };
-        let cancel_for_thread = Arc::clone(&cancel);
-        let worker = thread::spawn(move || run_solve(&request, &cancel_for_thread, &|_| {}));
-
-        // Let the solve get well past the cheap missing-anchor check and into real
-        // refinement work before asking it to stop.
-        thread::sleep(Duration::from_millis(50));
-        let cancel_requested_at = Instant::now();
-        cancel.store(true, Ordering::Relaxed);
-        let outcome = worker.join().expect("worker thread must not panic");
-        let cancel_latency = cancel_requested_at.elapsed();
-
-        assert!(
-            cancel_latency < Duration::from_millis(100),
-            "cancel took {cancel_latency:?}, want < 100ms (full uncancelled solve is ~5.9s)"
-        );
-        match outcome {
-            SolveOutcome::Solved(Err(DesignSolveError::Solve(SolveError::Cancelled))) => {}
-            SolveOutcome::Solved(Ok(_)) => {
-                panic!("expected a cancelled solve, got a completed one")
-            }
-            SolveOutcome::Solved(Err(other)) => {
-                panic!("expected a cancelled solve, got a different error: {other}")
-            }
-            SolveOutcome::Verified(_) => {
-                panic!("expected SolveKind::Full to produce SolveOutcome::Solved")
-            }
-        }
-    }
-}
+mod tests;

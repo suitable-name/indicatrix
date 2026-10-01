@@ -12,6 +12,7 @@ use crate::{
 
 use super::{biaxial_test_directions_index_stable, biaxial_test_indicatrices};
 
+/// One input case for the biaxial wave indices check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BiaxialWaveIndicesCase {
@@ -55,6 +56,7 @@ fn build_biaxial_wave_indices_cases() -> Vec<BiaxialWaveIndicesCase> {
     cases
 }
 
+/// Runs the biaxial wave indices check against the CPU reference.
 #[must_use]
 pub fn run_biaxial_wave_indices(
     ctx: &crate::renderer::gpu::GpuContext,

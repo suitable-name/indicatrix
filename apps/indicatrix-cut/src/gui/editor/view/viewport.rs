@@ -19,13 +19,17 @@ use crate::{
     EditorModel, MainWindow, SolidPreviewModel, TiltModel,
     bridge::render_thread::{PlanesOwner, RenderContext},
     gui::{
-        editor::auto_solve,
+        editor::{
+            auto_solve,
+            manipulate::{frame_updates_mast_cache, note_committed_replan_submitted},
+        },
         render::camera_lighting::contained_request_size,
         solid_preview::preview_state::{CameraPose, ReplanRequest, SolidPreviewState},
     },
 };
 use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_cut_core::Design;
+use indicatrix_editor::solve_policy::{SolveCostEstimate, should_solve_synchronously_for};
 use slint::{ComponentHandle, SharedString};
 use std::{
     cell::RefCell,
@@ -102,6 +106,9 @@ fn refresh_viewport(
     state: &EditorState,
     solved: Option<&[SolvedTier]>,
 ) {
+    // The real design is about to be drawn: a ghost still being solved must not land
+    // over it.
+    super::optimize_apply::cancel_ghost_preview();
     let mut ctx = render_ctx
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -178,7 +185,10 @@ fn refresh_viewport(
     if let Some(solved) = solved {
         *solid_last_solved
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(solved.to_vec());
+            .unwrap_or_else(PoisonError::into_inner) = Some((
+            state.generation.load(AtomicOrdering::Relaxed),
+            solved.to_vec(),
+        ));
     }
     // After the guard above is dropped: the planes the tracer holds were just
     // re-stamped with this generation, so the trace-staleness marker clears here.
@@ -254,19 +264,51 @@ pub(in crate::gui::editor) fn submit_preview_replan_for(
     dirty: BTreeSet<usize>,
     force_full_solve: bool,
 ) {
-    let ReplanSource {
-        design,
-        generation,
-        multi_selected,
-    } = source;
+    let generation = source.generation;
     let last_solved = if force_full_solve {
         None
     } else {
         solid_last_solved
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+            .as_ref()
+            .and_then(|(cached_generation, masts)| {
+                // only chain the cached masts forward when they
+                // describe THIS generation or the immediately preceding one --
+                // a cache entry more than one edit stale is more likely to be
+                // misaligned with `dirty`'s own tier indices (this edit's own
+                // `resolve_dirty` subgraph) than to still match by
+                // coincidence. `live_update::plan_preview` already falls back
+                // to a full solve whenever the lengths disagree regardless.
+                (*cached_generation == generation || *cached_generation + 1 == generation)
+                    .then(|| masts.clone())
+            })
     };
+    submit_preview_replan_chained(ui, render_ctx, preview_state, source, dirty, last_solved);
+}
+
+/// [`submit_preview_replan_for`]'s body with the `last_solved` masts handed in
+/// explicitly instead of read from the shared `solid_last_solved` cache -- for a
+/// replan whose design is NOT the committed one, so the shared cache (which only ever
+/// holds the committed design's masts) is the wrong chain. The Slice tool's
+/// provisional replans pass the masts of their own previous frame with
+/// `dirty = {provisional tier}`, which `live_update::plan_preview` re-solves as a
+/// subgraph instead of a full solve. `None` means a full solve.
+pub(in crate::gui::editor) fn submit_preview_replan_chained(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
+    source: ReplanSource<'_>,
+    dirty: BTreeSet<usize>,
+    last_solved: Option<Vec<SolvedTier>>,
+) {
+    // A ghost still being solved would land over this replan's frame.
+    super::optimize_apply::cancel_ghost_preview();
+    let ReplanSource {
+        design,
+        generation,
+        multi_selected,
+    } = source;
     let (camera, render_size, n_d) = {
         let ctx = render_ctx
             .lock()
@@ -317,11 +359,20 @@ pub(in crate::gui::editor) fn submit_preview_replan_for(
     // drag, most commonly) clones the design at most once per generation, not
     // once per request.
     let design_snapshot = Arc::new(design.clone());
-    auto_solve::stash_current_design(
-        generation,
-        Arc::clone(&design_snapshot),
-        multi_selected.clone(),
-    );
+    // The Slice tool's provisional design (its reserved generation) is NOT the live
+    // design: stashing it would overwrite the committed snapshot the next real frame
+    // consumes (and arm the idle-replan check on the wrong design). The sink never
+    // asks for it either -- see `frame_updates_mast_cache`.
+    if frame_updates_mast_cache(generation) {
+        // This committed job takes the plan gate's single slot: a provisional replan
+        // still queued there is gone, so the Slice tool must not wait for its frame.
+        note_committed_replan_submitted();
+        auto_solve::stash_current_design(
+            generation,
+            Arc::clone(&design_snapshot),
+            multi_selected.clone(),
+        );
+    }
     // Read here rather than cached on `SolidPreviewState` alone, so the
     // slider and the redraw can never disagree about how much of the schedule is
     // being shown. `-1` (the default) means the whole design.
@@ -442,6 +493,12 @@ pub(in crate::gui::editor) fn push_solved_preview(
         .set_specific_gravity_used_text(sg_used_text.into());
     ui.global::<EditorModel>()
         .set_preform_fit_warning(fit_text.into());
+
+    // see `panel::push_proportion_verdicts_from_solved`'s own doc
+    // comment -- this solid-preview completion is the other path that used to
+    // leave the chips describing whatever design the last synchronous "Solve"
+    // click left, right next to the fresh numbers this frame just pushed.
+    super::panel::push_proportion_verdicts_from_solved(ui, design, Some(solved), n_d);
 }
 
 /// [`super::panel::refresh_editor_panel`] + [`refresh_viewport`] together --
@@ -455,19 +512,14 @@ pub(in crate::gui::editor) fn push_solved_preview(
 ///
 /// `Design::solve`'s refinement sweep is cubic in plane count (a real 103-tier/210-
 /// plane design: 5.9s -- see `mod.rs`'s "Never block the UI thread with a solve"
-/// section), so this only solves inline on the UI thread for a design at or under
-/// [`auto_solve::should_solve_synchronously`] -- comfortably fast in practice, and
-/// keeps the "New" dialog's promise of an immediately solved, unstale design without
-/// a visible "Solving..." flash. A larger design instead gets the SAME stale content
+/// section), so this only solves inline on the UI thread for a design that
+/// [`should_solve_synchronously_for`] admits: few planes, few meet-derived tiers, no
+/// tier targets, and no slow last measurement. That keeps the "New" dialog's promise
+/// of an immediately solved, unstale design without a visible "Solving..." flash for
+/// a small design. Every other design instead gets the SAME stale content
 /// [`super::panel_stale::refresh_editor_panel_stale`] pushes after any other edit,
 /// plus an immediately (not debounced) dispatched background solve -- see
 /// [`auto_solve::dispatch_background_solve`].
-///
-/// This treats the explicit Solve button/F5 identically to New/Load rather than
-/// special-casing it back to always-background regardless of size: a design small
-/// enough for this function's synchronous path solves fast enough that forcing it
-/// through a worker thread and a `Weak::upgrade_in_event_loop` round trip would only
-/// add latency, not remove any UI freeze worth avoiding.
 ///
 /// `wholesale`: `true` only for a caller that just
 /// replaced `EditorState` wholesale (New/Load Selected/Open Native) -- see
@@ -475,12 +527,9 @@ pub(in crate::gui::editor) fn push_solved_preview(
 /// three (and only those three) need the reset it performs. Every OTHER caller
 /// (the explicit "Solve" button, Adopt/Adopt All/Adopt Selected/Pin to
 /// Mast/Optimize Apply/Retarget Apply) passes `false`: it is still solving the
-/// SAME design the auto-solve budget has already been measuring, so wiping that
-/// measurement on every one of those actions would make
-/// [`auto_solve::should_solve_synchronously`]'s "prefer a real measurement" rule
-/// unreachable on precisely the path (an explicit re-Solve) it exists for --
-/// `auto_solve::last_solve()` is read instead, exactly like every other caller of
-/// that function already reads a real measurement when one exists.
+/// SAME design the auto-solve budget has already been measuring, so
+/// `auto_solve::last_solve()` is read instead and may veto an inline solve.
+///
 /// The [`Rc<RefCell<EditorState>>`]-based entry point every OWNED caller
 /// (`callbacks::tier_actions`/`callbacks::solve_actions`/`callbacks::
 /// retarget_actions`) uses instead of calling [`refresh_all`] directly, so the
@@ -498,14 +547,13 @@ pub(in crate::gui::editor) fn push_solved_preview(
 ///
 /// # What "paint-first" means here
 ///
-/// [`refresh_all`]'s own sync branch (at or under
-/// [`auto_solve::should_solve_synchronously`]) sets `solve_running`/
-/// `solve_state` to "solving" and then immediately runs the blocking
+/// [`refresh_all`]'s own sync branch (a design [`solves_inline`] admits) sets
+/// `solve_running`/`solve_state` to "solving" and then immediately runs the blocking
 /// `Design::solve()` in the same call, with no yield back to the event loop in
 /// between -- the toolkit only ever paints the FINAL state once the whole
 /// callback returns, so "Solving..." is never actually visible for a fast-sync
 /// design (see [`refresh_all`]'s own doc comment). This
-/// function peeks the SAME plane-estimate/last-solve decision [`refresh_all`]
+/// function peeks the SAME [`solves_inline`] decision [`refresh_all`]
 /// makes internally; when it would take the sync branch, it sets
 /// `solve_running`/`solve_state` HERE, then defers the actual (still fully
 /// synchronous) [`refresh_all`] call behind a `Timer::single_shot(Duration::ZERO,
@@ -519,21 +567,10 @@ pub(in crate::gui::editor) fn refresh_all_now(
     state: &Rc<RefCell<EditorState>>,
     wholesale: bool,
 ) {
-    let (plane_estimate, last_solve) = {
-        let st = state.borrow();
-        let plane_estimate: usize = st.design.tiers.iter().map(|t| t.indices.len()).sum();
-        // Mirrors `refresh_all`'s own `wholesale` branch exactly (see that
-        // function's doc comment) EXCEPT for the `auto_solve::reset_for_new_design`
-        // side effect itself, which must run exactly once -- left for the real
-        // `refresh_all` call below to perform, not duplicated here.
-        let last_solve = if wholesale {
-            None
-        } else {
-            auto_solve::last_solve()
-        };
-        (plane_estimate, last_solve)
-    };
-    if !auto_solve::should_solve_synchronously(plane_estimate, last_solve) {
+    // `refresh_all` makes the same decision; its `auto_solve::reset_for_new_design`
+    // side effect must run exactly once, so it is left to the real call below.
+    let inline = solves_inline(&state.borrow().design, wholesale);
+    if !inline {
         let st = state.borrow();
         refresh_all(
             ui,
@@ -580,6 +617,23 @@ pub(in crate::gui::editor) fn push_has_design(ui: &MainWindow, state: &EditorSta
     ui.global::<EditorModel>().set_has_design(state.has_design);
 }
 
+/// Whether `design` may be solved inline on the UI thread.
+///
+/// [`should_solve_synchronously_for`] over the design's solve-free cost estimate.
+/// A `wholesale` refresh (the design was just replaced) passes no measurement: the
+/// previous design's solve time says nothing about this one, and
+/// `auto_solve::reset_for_new_design` has cleared it anyway. Otherwise the design is
+/// the one the auto-solve budget has been measuring, so its last solve time may veto
+/// an inline solve.
+fn solves_inline(design: &Design, wholesale: bool) -> bool {
+    let last_solve = if wholesale {
+        None
+    } else {
+        auto_solve::last_solve()
+    };
+    should_solve_synchronously_for(SolveCostEstimate::of(design), last_solve)
+}
+
 /// Refreshes the panel and the viewport from `state` -- solving synchronously when
 /// that is cheap, otherwise pushing stale content and dispatching a background solve
 /// -- then lets the worked-example guide check whether its current step's goal was
@@ -592,40 +646,17 @@ pub(in crate::gui::editor) fn refresh_all(
     state: &EditorState,
     wholesale: bool,
 ) {
-    // Plane count, not tier count. Tier count does not drive
-    // solve cost -- a wide-orbit tier emits many planes at once, so a small schedule
-    // can still be an expensive, UI-blocking solve (the corpus's worst case is 103
-    // tiers but 210 planes). The index count per tier is the cheap estimate of that,
-    // available without solving.
-    let plane_estimate: usize = state.design.tiers.iter().map(|t| t.indices.len()).sum();
-    let last_solve = if wholesale {
+    if wholesale {
         // A fresh call replacing `EditorState` wholesale means a real solve is
-        // about to happen (either synchronously below, or via the background
-        // dispatch) against a DIFFERENT design than whatever `Runtime::last_solve`
-        // currently holds -- that previous design's measured solve time has
-        // nothing to say about this one's cost, so it is cleared unconditionally.
-        // The synchronous branch below overwrites it again immediately with a
-        // real measurement; the background branch leaves it `None` until that
-        // dispatch completes, which `auto_solve::should_schedule_auto_solve`'s
-        // doc comment already treats as "try auto-solve," a reasonable default
-        // right after a solve this function itself just triggered. `None` for
-        // THIS call's own measurement deliberately: the reset immediately above
-        // has just cleared it, and reaching back for the value it cleared would
-        // judge a freshly loaded design by the previous one's solve time --
-        // exactly the case where the two have nothing to do with each other, and
-        // the one where guessing wrong blocks the UI thread.
-        auto_solve::reset_for_new_design();
-        None
-    } else {
-        // Same design as before (an explicit Solve/Adopt/Optimize Apply/etc. on
-        // whatever is already loaded) -- its own last REAL measurement, if any,
-        // is exactly the signal `should_solve_synchronously` wants. Clearing
-        // it here unconditionally would make that rule
-        // unreachable for a re-Solve on a design just over the plane-count
-        // estimate but well under its own measured time.
-        auto_solve::last_solve()
-    };
-    if auto_solve::should_solve_synchronously(plane_estimate, last_solve) {
+        // about to happen (inline below, or via the background dispatch) against a
+        // DIFFERENT design than whatever `Runtime::last_solve` currently holds, so
+        // that measurement is cleared unconditionally. The inline branch overwrites
+        // it with a real measurement; the background branch leaves it `None` until
+        // that dispatch completes, which `auto_solve::should_schedule_auto_solve`
+        // treats as "try auto-solve".
+        auto_solve::reset_for_new_design(state.generation.load(AtomicOrdering::Relaxed));
+    }
+    if solves_inline(&state.design, wholesale) {
         // Brackets the synchronous solve with
         // the SAME `solve_running`/`solve_state` signal `dispatch_background_solve`
         // already gives its own (background) solve, so the command bar/status
@@ -703,6 +734,7 @@ pub(in crate::gui::editor) fn refresh_all(
             state.design.clone(),
             &state.generation,
             state.multi_selected.clone(),
+            state.generation.load(AtomicOrdering::Relaxed),
         );
     }
     push_has_design(ui, state);

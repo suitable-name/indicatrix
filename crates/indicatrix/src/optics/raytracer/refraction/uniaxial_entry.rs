@@ -4,14 +4,15 @@
 //! (uniaxial or biaxial scalar-Fresnel) shares.
 
 use super::{
+    DIRECTION_MATCH_COS_TOL, R_UNPOL_PDF_MAX, R_UNPOL_PDF_MIN, R_UNPOL_SELECT_MAX,
+    R_UNPOL_SELECT_MIN,
     context::{
         BounceRay, BounceState, ExitSplitCtx, RngDraw, UniaxialBounceContext, narrow_compat,
     },
-    geometry::BounceRefractionGeometry,
 };
 use crate::optics::{
     birefringence::BirefringenceParams,
-    polarization::{MuellerMatrix, StokesVector},
+    polarization::StokesVector,
     raytracer::{
         NUM_CHANNELS,
         sampling::{BIREFRINGENT_SPLIT_STREAM, FRESNEL_BRANCH_STREAM, hash_u32},
@@ -72,82 +73,6 @@ pub(in crate::optics::raytracer) fn entry_eigenmode_selection(
     Some((p_o, cos_2psi_o, sin_2psi_o))
 }
 
-/// The degenerate (`k_hat` parallel to the optic axis) fallback [`apply_uniaxial_entry_bounce`]
-/// dispatches to: plain scalar isotropic Fresnel at each channel's own `n_o_ch[k]`
-/// (`effective_extraordinary_index(n_o, n_e, theta_c=0) == n_o` exactly, so `n_o` is
-/// the correct, exact index here), applied to the incident Stokes state unprojected --
-/// the isotropic-material code path elsewhere in this file, inlined for this
-/// anisotropic-material special case. Always labels the resulting internal state
-/// ordinary (`Some(false)`): with both eigenmodes truly degenerate to `n_o` here,
-/// `n_medium_ch`'s selector reads the same value either way, so the label is bookkeeping
-/// only, not a physical claim.
-fn apply_uniaxial_entry_bounce_isotropic_fallback(
-    geo: &BounceRefractionGeometry,
-    k_hat: Vec3,
-    normal: Vec3,
-    rng_seed: u32,
-    bounce: u32,
-    stokes: &mut [StokesVector; NUM_CHANNELS],
-    path_pdf: &mut [f32; NUM_CHANNELS],
-) -> (Vec3, Vec3, bool, Option<bool>) {
-    const R_UNPOL_SELECT_MIN: f32 = 0.02;
-    const R_UNPOL_SELECT_MAX: f32 = 0.98;
-
-    let n1 = 1.0f32;
-    let n2_hero = geo.n_o_hero;
-    let cos_i = geo.cos_i;
-    let sin2_t = (n1 / n2_hero).powi(2) * sin_i_sq(cos_i);
-    let cos_t = (1.0 - sin2_t).max(0.0).sqrt();
-    let r_s_hero = n2_hero.mul_add(-cos_t, n1 * cos_i) / n2_hero.mul_add(cos_t, n1 * cos_i);
-    let r_p_hero = n1.mul_add(-cos_t, n2_hero * cos_i) / n1.mul_add(cos_t, n2_hero * cos_i);
-    let r_unpol = (0.5 * r_p_hero.mul_add(r_p_hero, r_s_hero * r_s_hero))
-        .clamp(R_UNPOL_SELECT_MIN, R_UNPOL_SELECT_MAX);
-
-    let rng_bounce =
-        (hash_u32(rng_seed ^ hash_u32(bounce ^ FRESNEL_BRANCH_STREAM)) as f32) / 4_294_967_295.0;
-
-    if rng_bounce < r_unpol {
-        for k in 0..NUM_CHANNELS {
-            let n2k = geo.n_o_ch[k];
-            let sin2_t_k = (n1 / n2k).powi(2) * sin_i_sq(cos_i);
-            let cos_t_k = (1.0 - sin2_t_k).max(0.0).sqrt();
-            let r_s_k = n2k.mul_add(-cos_t_k, n1 * cos_i) / n2k.mul_add(cos_t_k, n1 * cos_i);
-            let r_p_k = n1.mul_add(-cos_t_k, n2k * cos_i) / n1.mul_add(cos_t_k, n2k * cos_i);
-            let refl_matrix_k = MuellerMatrix::fresnel_reflection(r_s_k, r_p_k);
-            let r_unpol_k = (0.5 * r_p_k.mul_add(r_p_k, r_s_k * r_s_k)).clamp(1e-4, 1.0 - 1e-4);
-            stokes[k] = stokes[k].apply_matrix(&refl_matrix_k).scale(1.0 / r_unpol);
-            path_pdf[k] *= r_unpol_k;
-        }
-        let new_k = k_hat - 2.0 * k_hat.dot(normal) * normal;
-        (new_k, new_k, false, None)
-    } else {
-        for k in 0..NUM_CHANNELS {
-            let n2k = geo.n_o_ch[k];
-            let sin2_t_k = (n1 / n2k).powi(2) * sin_i_sq(cos_i);
-            let cos_t_k = (1.0 - sin2_t_k).max(0.0).sqrt();
-            let t_s_k = (2.0 * n1 * cos_i) / n1.mul_add(cos_i, n2k * cos_t_k);
-            let t_p_k = (2.0 * n1 * cos_i) / n2k.mul_add(cos_i, n1 * cos_t_k);
-            let trans_matrix_k =
-                MuellerMatrix::fresnel_transmission(n1, n2k, cos_i, cos_t_k, t_s_k, t_p_k);
-            stokes[k] = stokes[k]
-                .apply_matrix(&trans_matrix_k)
-                .scale(1.0 / (1.0 - r_unpol));
-            let r_s_k = n2k.mul_add(-cos_t_k, n1 * cos_i) / n2k.mul_add(cos_t_k, n1 * cos_i);
-            let r_p_k = n1.mul_add(-cos_t_k, n2k * cos_i) / n1.mul_add(cos_t_k, n2k * cos_i);
-            let r_unpol_k = (0.5 * r_p_k.mul_add(r_p_k, r_s_k * r_s_k)).clamp(1e-4, 1.0 - 1e-4);
-            path_pdf[k] *= 1.0 - r_unpol_k;
-        }
-        let eta = n1 / n2_hero;
-        let new_k = (eta * k_hat + f32::mul_add(eta, cos_i, -cos_t) * normal).normalize();
-        (new_k, new_k, true, Some(false))
-    }
-}
-
-#[inline]
-fn sin_i_sq(cos_i: f32) -> f32 {
-    cos_i.mul_add(-cos_i, 1.0)
-}
-
 /// The entire isotropic-air -> uniaxial-crystal entry bounce, via the closed-form
 /// `uniaxial_fresnel` solver -- replaces a per-mode scalar-Fresnel entry path (a
 /// Malus-law mode split plus isotropic-style `r_s`/`r_p`/`t_s`/`t_p` at a single
@@ -183,9 +108,6 @@ pub(super) fn apply_uniaxial_entry_bounce(
     state: &mut BounceState<'_>,
     exit: &mut ExitSplitCtx<'_>,
 ) -> (Vec3, Vec3, bool, Option<bool>) {
-    const R_UNPOL_SELECT_MIN: f32 = 0.02;
-    const R_UNPOL_SELECT_MAX: f32 = 0.98;
-
     let (ctx, geo, frame) = (ubctx.ctx, ubctx.geo, ubctx.frame);
     let BounceRay { k_hat, normal } = ray;
     let RngDraw { rng_seed, bounce } = rng;
@@ -197,26 +119,20 @@ pub(super) fn apply_uniaxial_entry_bounce(
         .material
         .extraordinary_index_at(ctx.lambdas[hero], n_o_hero);
 
-    // Degenerate case: wave normal parallel to the optic axis (light travelling
-    // straight down the c-axis sees no birefringence; both eigenmodes collapse to
-    // `n_o`). The closed-form ordinary D-direction `k x c_axis` vanishes exactly here,
-    // singularizing the boundary-match system -- checked via `k_hat` (the incident
-    // direction) since at this limit Snell's law leaves the transmitted direction
-    // parallel to it too. Falls back to the plain scalar isotropic-at-`n_o` path,
-    // without projecting onto either eigenmode's own axis, since there is no
-    // meaningful axis to project onto at this exact limit.
-    if k_hat.cross(c_axis).length_squared() < 1e-6 {
-        return apply_uniaxial_entry_bounce_isotropic_fallback(
-            geo,
-            k_hat,
-            normal,
-            rng_seed,
-            bounce,
-            state.stokes,
-            state.path_pdf,
-        );
-    }
-
+    // The degenerate case (wave normal parallel to the optic axis, where the
+    // closed-form ordinary D-direction `k x c_axis` vanishes and singularizes the
+    // boundary-match system below) is no longer handled here -- `k_hat` reaching this
+    // function already satisfies `k_hat.cross(c_axis).length_squared() > 1e-6`
+    // (`dispatch::try_dispatch_uniaxial_bounce`'s own entry-branch guard), exactly
+    // mirroring how that same dispatcher already routes a degenerate INTERNAL bounce
+    // around `apply_uniaxial_internal_bounce`. A degenerate entry instead falls through
+    // to `apply_partial_fresnel_bounce`'s general scalar-Fresnel/`resolve_entry_mode_selection`
+    // path -- the SAME path a degenerate entry always took on the GPU (`08_bounce_step.wgsl`'s
+    // `uniaxial_nondegenerate` gate), where it draws a plain 50/50 (or, if `entry_eigenmode_selection`
+    // still returns `Some` from a nonzero `current_plane_normal`, polarization-weighted)
+    // ordinary/extraordinary split at each channel's own (now-equal) `n_o_ch[k]`
+    // rather than this file's own separate hand-rolled isotropic-Fresnel duplicate.
+    //
     // Built once per bounce, shared by the hero's own branch-decision solve below and
     // every channel's solve in
     // `apply_uniaxial_entry_reflect_channels`/`apply_uniaxial_entry_transmit_channels`
@@ -341,7 +257,7 @@ fn apply_uniaxial_entry_reflect_channels(
         );
         let mueller_k =
             uniaxial_fresnel::jones_to_mueller(sol_s_k.r_s, sol_p_k.r_s, sol_s_k.r_p, sol_p_k.r_p);
-        let r_unpol_k = mueller_k.col(0)[0].clamp(1e-4, 1.0 - 1e-4);
+        let r_unpol_k = mueller_k.col(0)[0].clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX);
         stokes[k] = stokes[k].apply_matrix(&mueller_k).scale(1.0 / r_branch);
         path_pdf[k] *= r_unpol_k;
     }
@@ -370,8 +286,6 @@ fn apply_uniaxial_entry_transmit_channels(
     state: &mut BounceState<'_>,
     exit: &mut ExitSplitCtx<'_>,
 ) {
-    const DIRECTION_MATCH_COS_TOL: f32 = 1.0 - 1e-6;
-
     let (ctx, geo, frame) = (ubctx.ctx, ubctx.geo, ubctx.frame);
     let c_axis = ctx.c_axis;
     let BounceRay { k_hat, normal } = ray;
@@ -438,7 +352,7 @@ fn apply_uniaxial_entry_transmit_channels(
                     sol_s_k.r_p,
                     sol_p_k.r_p,
                 );
-                let t_unpol_k = (1.0 - mueller_k.col(0)[0]).clamp(1e-4, 1.0 - 1e-4);
+                let t_unpol_k = (1.0 - mueller_k.col(0)[0]).clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX);
                 path_pdf[k] *= t_unpol_k;
             } else {
                 path_pdf[k] = 0.0;
@@ -464,7 +378,7 @@ fn apply_uniaxial_entry_transmit_channels(
 
         let mueller_k =
             uniaxial_fresnel::jones_to_mueller(sol_s_k.r_s, sol_p_k.r_s, sol_s_k.r_p, sol_p_k.r_p);
-        let t_unpol_k = (1.0 - mueller_k.col(0)[0]).clamp(1e-4, 1.0 - 1e-4);
+        let t_unpol_k = (1.0 - mueller_k.col(0)[0]).clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX);
         path_pdf[k] *= t_unpol_k;
     }
     // The uniaxial entry is an interior dispersive event -- narrow every channel's MIS

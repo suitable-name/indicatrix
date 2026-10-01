@@ -23,7 +23,8 @@
 //! name or precede, affected = transitive closure from the edit -- is wrong:
 //! `meet_solver::solve`'s phase 3 rebuilds the entire plane arrangement from every
 //! non-anchor tier's *current* mast on every sweep, ignoring file order and named
-//! references, so any non-anchor tier can move any other. Measured on real fixtures
+//! references AT THAT PHASE, so any non-anchor tier can move any other regardless
+//! of where either sits in the file. Measured on real fixtures
 //! ("Six Main Hilite LB", "RBC-445", "Briolette of India Replica"): editing a
 //! design's last tier moved earlier tiers' masts by up to 3.8x10<sup>-2</sup>
 //! relative, including edits crossing crown and pavilion entirely -- cases a
@@ -31,6 +32,15 @@
 //! tier's previous `SolveStrategy` doesn't help either: every non-anchor tier in all
 //! three fixtures reported `DependencyOrder`, yet phase 3 still moved several of them
 //! regardless.
+//!
+//! This is not the same claim as "the solve is order-independent" -- it is not.
+//! Phase 1 (finding each anchor's own candidate vertex) runs in strict file order
+//! (`meet_solver`'s own pipeline), so permuting a design's tiers changes its solved
+//! masts even before phase 3 ever substitutes anything -- exactly why
+//! [`Design::resolve_dirty`](crate::design::Design::resolve_dirty) always routes
+//! [`Edit::MoveTier`](crate::edit::Edit::MoveTier) to a full
+//! [`Design::solve`](crate::design::Design::solve) below, rather than treating a
+//! plain renumbering as geometrically inert.
 //!
 //! # The one guarantee that holds
 //!
@@ -113,6 +123,32 @@ pub fn resolve_after_edit(
         // still gets them correctly, since `Design::planes_from_solved` reads
         // `gear_reference_angle` fresh on every call; this function's job is
         // masts only.
+        //
+        // EXCEPT when `design` authors any `TierTarget` at all: a resolved
+        // target's own mast can depend on the girdle diameter, the preform, the
+        // cheater offsets, or another target (a `TierTarget` only ever becomes a
+        // mast inside `Design::solve_with`/`resolve_dirty_with`'s own resolution
+        // pre-pass, never retroactively -- see `crate::design::targets`'s module
+        // docs) -- exactly what `SetPreform`/`SetPreformYOffset`/
+        // `SetGirdleDiameterMm`/`SetMeta`/`SetCheaterOffset`/`SetTierTarget`
+        // itself can change. So those six get a full re-solve here instead,
+        // whenever `tier_targets` is non-empty -- cheap enough (`tier_targets`
+        // is the rare case) not to bother teaching `resolve_dirty` about it. See
+        // Returning `previous` unchanged left a resolved target's mast
+        // stale after exactly these edits, because a resolved target tier
+        // looks like an ordinary `ScaleReference` anchor to `affected_tiers`.
+        // `SetMaterial`/`SetTierNote` are excluded from this exception -- neither
+        // one is an input any `TierTarget` conversion reads.
+        Edit::SetPreform { .. }
+        | Edit::SetPreformYOffset { .. }
+        | Edit::SetGirdleDiameterMm { .. }
+        | Edit::SetMeta { .. }
+        | Edit::SetCheaterOffset { .. }
+        | Edit::SetTierTarget { .. }
+            if !design.tier_targets.is_empty() =>
+        {
+            design.solve()
+        }
         Edit::SetPreform { .. }
         | Edit::SetPreformYOffset { .. }
         | Edit::SetGirdleDiameterMm { .. }
@@ -120,13 +156,14 @@ pub fn resolve_after_edit(
         | Edit::SetMeta { .. }
         | Edit::SetCheaterOffset { .. }
         | Edit::SetTierNote { .. }
-        // A `TierTarget` only ever becomes a mast inside `Design::solve_with`/
-        // `resolve_dirty_with`'s own resolution pre-pass (see
-        // `crate::design::targets`'s module docs), never retroactively -- so
-        // editing one alone changes no mast `resolve_after_edit` should already
-        // know about; a caller that wants the target actually applied re-solves
-        // through those entry points next, same as every edit here.
-        | Edit::SetTierTarget { .. } => Ok(previous.to_vec()),
+        | Edit::SetTierTarget { .. }
+        // Pure `TierId` bookkeeping (see that variant's own doc comment) --
+        // never constructed directly, only ever replayed as part of a
+        // `RemoveTier` undo's own `Batch` -- touches no tier's angle/indices/
+        // constraint and is not itself a `TierTarget` input, so it is mast-inert
+        // exactly like the other variants in this arm, unconditionally (no
+        // `tier_targets`-non-empty exception needed).
+        | Edit::RestoreTierId { .. } => Ok(previous.to_vec()),
         // Shifts every later tier's index against `previous`, which is keyed by
         // position -- always fully re-solve rather than reason about a moving index space.
         // `MoveTier` renumbers every tier strictly between its two positions the same way.
@@ -155,7 +192,7 @@ pub fn resolve_after_edit(
         // every sub-edit's own dirty tier set -- see `batch_needs_full_resolve`.
         Edit::Batch(edits) => {
             let mut dirty = BTreeSet::new();
-            if batch_needs_full_resolve(edits, &mut dirty) {
+            if batch_needs_full_resolve(edits, &mut dirty, !design.tier_targets.is_empty()) {
                 design.solve()
             } else {
                 design.resolve_dirty(previous, &dirty)
@@ -170,10 +207,31 @@ pub fn resolve_after_edit(
 /// (never constructed today, but handled rather than assumed away). Collects every
 /// directly-dirtied tier index into `dirty` along the way, used by the caller when the
 /// answer turns out to be `false`.
-fn batch_needs_full_resolve(edits: &[Edit], dirty: &mut BTreeSet<usize>) -> bool {
+///
+/// `has_targets` is `!design.tier_targets.is_empty()` from the enclosing
+/// [`resolve_after_edit`] call -- see that function's own doc comment on its
+/// matching six-variant exception: a sub-edit that would otherwise be a
+/// mast no-op still needs a full re-solve when the design authors any
+/// `TierTarget` at all, since a resolved target's own mast can depend on
+/// exactly what those six variants change.
+fn batch_needs_full_resolve(
+    edits: &[Edit],
+    dirty: &mut BTreeSet<usize>,
+    has_targets: bool,
+) -> bool {
     let mut needs_full = false;
     for edit in edits {
         match edit {
+            Edit::SetPreform { .. }
+            | Edit::SetPreformYOffset { .. }
+            | Edit::SetGirdleDiameterMm { .. }
+            | Edit::SetMeta { .. }
+            | Edit::SetCheaterOffset { .. }
+            | Edit::SetTierTarget { .. }
+                if has_targets =>
+            {
+                needs_full = true;
+            }
             Edit::SetPreform { .. }
             | Edit::SetPreformYOffset { .. }
             | Edit::SetGirdleDiameterMm { .. }
@@ -181,7 +239,8 @@ fn batch_needs_full_resolve(edits: &[Edit], dirty: &mut BTreeSet<usize>) -> bool
             | Edit::SetMeta { .. }
             | Edit::SetCheaterOffset { .. }
             | Edit::SetTierNote { .. }
-            | Edit::SetTierTarget { .. } => {}
+            | Edit::SetTierTarget { .. }
+            | Edit::RestoreTierId { .. } => {}
             Edit::AddTier { .. }
             | Edit::RemoveTier { .. }
             | Edit::MoveTier { .. }
@@ -196,7 +255,7 @@ fn batch_needs_full_resolve(edits: &[Edit], dirty: &mut BTreeSet<usize>) -> bool
             Edit::RetargetAngles { changes } => {
                 dirty.extend(changes.iter().map(|&(index, _, _)| index));
             }
-            Edit::Batch(inner) => needs_full |= batch_needs_full_resolve(inner, dirty),
+            Edit::Batch(inner) => needs_full |= batch_needs_full_resolve(inner, dirty, has_targets),
         }
     }
     needs_full

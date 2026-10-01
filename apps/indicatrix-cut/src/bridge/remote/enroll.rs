@@ -186,6 +186,7 @@ mod suggested_address_tests {
     }
 }
 
+/// Claims an enrollment token and writes the resulting credential bundle to disk.
 pub fn claim_and_write_bundle(
     token: &str,
     addr: &str,

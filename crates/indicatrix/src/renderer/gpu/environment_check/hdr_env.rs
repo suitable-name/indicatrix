@@ -13,6 +13,7 @@ use crate::renderer::gpu::compute;
 
 use super::{SHADER_SRC, UlpAccumulator, UlpCheckResult, fibonacci_sphere};
 
+/// One input case for the hdr env check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct HdrEnvCase {
@@ -23,8 +24,9 @@ pub struct HdrEnvCase {
 /// ULP budget for `hdr_env_radiance_at`.
 ///
 /// Chains `acos`/`atan2`/`normalize` (direction -> uv) with a bilinear interpolation (four
-/// texel fetches, three `fma`s) and `rgb_to_spectral_radiance`'s own two-`exp()`-per-channel
-/// asymmetric-Gaussian sum -- fewer transcendental evaluations than
+/// texel fetches, three `fma`s) and `rgb_to_spectral_radiance`'s neutral-plus-chroma bump
+/// sum (two 3x3 RGB-to-coefficient matrices in fused multiply-adds, then six asymmetric
+/// Gaussians with one `exp()` each, clamped at zero) -- fewer transcendental evaluations than
 /// `sample_studio_environment`'s ring-light loop, but still trig-driven, so this starts
 /// from [`super::STUDIO_ENV_ULP_BUDGET`]'s order of magnitude rather than
 /// [`super::CMF_ULP_BUDGET`]'s polynomial-only one. See [`super::CMF_ULP_BUDGET`]'s doc

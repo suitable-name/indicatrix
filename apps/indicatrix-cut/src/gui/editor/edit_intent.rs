@@ -24,7 +24,7 @@
 //! cycle.
 //!
 //! Each of the three call sites this module serves (`callbacks::tier_actions::
-//! setup_nudge_angle_callback`, `gui::editor::mod::setup_tier_cutoff_callback`,
+//! setup_nudge_angle_callback`, `gui::editor::setup::setup_tier_cutoff_callback`,
 //! `callbacks::retarget_actions::setup_retarget_proposal_changed_callback`) owns
 //! its OWN [`EditIntentQueue`] instance, built once when that callback is wired up
 //! and captured by the `on_*` closure exactly like every other long-lived
@@ -39,71 +39,14 @@ use slint::{Timer, TimerMode};
 use std::{
     cell::RefCell,
     rc::{Rc, Weak},
-    time::Duration,
 };
 
-/// How often the drain timer ticks while an intent is queued -- one frame at
-/// 60 Hz, matching `stall_guard::STALL_THRESHOLD`'s own frame budget.
-const DRAIN_INTERVAL: Duration = Duration::from_millis(16);
-
-/// One coalescable UI edit intent -- see the module doc comment.
-#[derive(Debug, Clone, PartialEq)]
-pub(super) enum EditIntent {
-    /// An angle nudge (Up/Down key or scroll wheel) on `targets` (a lone tier, or
-    /// every tier in a multi-selected group -- see `setup_nudge_angle_callback`'s
-    /// own doc comment for why a multi-select nudge is one `targets` set rather
-    /// than one intent per tier). Repeated nudges to the SAME `targets` set within
-    /// one drain window sum their `delta_deg` instead of each triggering their own
-    /// apply/refresh/replan.
-    NudgeAngle { targets: Vec<usize>, delta_deg: f64 },
-    /// The Cut slider's tier-cutoff step (`SolidPreviewModel.tier_cutoff`). The
-    /// live value is read fresh off the Slint property when the drain fires (the
-    /// slider binding itself already writes it on every tick, `changed`-handler or
-    /// not), so `count` only needs to distinguish "something changed" for
-    /// [`EditIntent::merge`] -- carried anyway so a test can assert last-wins
-    /// without a live `MainWindow`. Last-wins: only the final value posted in a
-    /// drain window is ever the one a tick observes.
-    CutOff { count: i32 },
-    /// The Retarget dialog's crown-shift slider (`RetargetModel.crown_fraction`,
-    /// read alongside `RetargetModel.scale_crown_by_ratio` at drain time -- see
-    /// `setup_retarget_proposal_changed_callback`'s own doc comment). No payload:
-    /// every post coalesces into the same single pending marker: last-wins.
-    RetargetCrown,
-}
-
-impl EditIntent {
-    /// Merges `incoming` into `self` in place when they share the same
-    /// coalescing key, returning `true` on success. `false` means the two are NOT
-    /// mergeable (e.g. two `NudgeAngle`s naming different `targets`), and
-    /// [`EditIntentQueue::post`] instead REPLACES the pending intent outright,
-    /// silently dropping whatever `self` described -- the same "newer supersedes
-    /// older, unread" tradeoff `solve_service::Mailbox::put` already makes for the
-    /// analogous solve-request case. In practice this replacement branch is
-    /// reached only when two different targets are nudged within the same 16 ms
-    /// window (a human cannot do this; only relevant to a scripted/automated
-    /// input burst), so losing the superseded intent's own delta is an accepted,
-    /// documented edge case rather than a silent correctness bug in ordinary use.
-    fn merge(&mut self, incoming: &Self) -> bool {
-        match (self, incoming) {
-            (
-                Self::NudgeAngle { targets, delta_deg },
-                Self::NudgeAngle {
-                    targets: other_targets,
-                    delta_deg: other_delta,
-                },
-            ) if targets == other_targets => {
-                *delta_deg += other_delta;
-                true
-            }
-            (Self::CutOff { count }, Self::CutOff { count: other_count }) => {
-                *count = *other_count;
-                true
-            }
-            (Self::RetargetCrown, Self::RetargetCrown) => true,
-            _ => false,
-        }
-    }
-}
+// The intent enum and its coalescing decision (`EditIntent::merge`) moved to
+// `indicatrix_editor::edit_intent`, shared with the web app; this module keeps the
+// `slint::Timer`-driven queue. `DRAIN_INTERVAL` is one frame at 60 Hz, matching
+// `stall_guard::STALL_THRESHOLD`'s own frame budget.
+use indicatrix_editor::edit_intent::DRAIN_INTERVAL;
+pub(super) use indicatrix_editor::edit_intent::EditIntent;
 
 /// A single-slot, coalesce-on-post, drain-on-a-16ms-timer queue -- see the module
 /// doc comment. `on_drain` is registered once, at [`EditIntentQueue::new`], and
@@ -179,97 +122,4 @@ impl EditIntentQueue {
                 (queue.on_drain)(intent);
             });
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Drives [`EditIntentQueue::post`]/its internal merge logic directly,
-    /// without a live `slint::Timer` tick (this crate's own house rule: no
-    /// windowing backend in the test environment) -- exercises exactly the
-    /// coalescing decision [`EditIntent::merge`]/[`EditIntentQueue::post`] make,
-    /// the same thing a real 16 ms tick would observe once it fires.
-    fn coalesce(initial: EditIntent, posts: impl IntoIterator<Item = EditIntent>) -> EditIntent {
-        let mut pending = initial;
-        for intent in posts {
-            if !pending.merge(&intent) {
-                pending = intent;
-            }
-        }
-        pending
-    }
-
-    #[test]
-    fn fifty_nudges_on_the_same_tier_coalesce_to_one_summed_delta() {
-        let first = EditIntent::NudgeAngle {
-            targets: vec![3],
-            delta_deg: 0.5,
-        };
-        let rest = (0..49).map(|_| EditIntent::NudgeAngle {
-            targets: vec![3],
-            delta_deg: 0.5,
-        });
-        let result = coalesce(first, rest);
-        assert_eq!(
-            result,
-            EditIntent::NudgeAngle {
-                targets: vec![3],
-                delta_deg: 25.0
-            },
-            "50 nudges of 0.5 deg each must coalesce to one intent summing to 25.0 deg"
-        );
-    }
-
-    #[test]
-    fn a_nudge_burst_on_a_different_tier_replaces_rather_than_merges() {
-        // Documented tradeoff (see `EditIntent::merge`'s own doc comment): a
-        // different `targets` set is NOT mergeable, so the queue drops the
-        // earlier, un-applied intent rather than losing track of the burst
-        // entirely.
-        let first = EditIntent::NudgeAngle {
-            targets: vec![1],
-            delta_deg: 1.0,
-        };
-        let result = coalesce(
-            first,
-            [EditIntent::NudgeAngle {
-                targets: vec![2],
-                delta_deg: 2.0,
-            }],
-        );
-        assert_eq!(
-            result,
-            EditIntent::NudgeAngle {
-                targets: vec![2],
-                delta_deg: 2.0
-            }
-        );
-    }
-
-    #[test]
-    fn a_cutoff_slider_burst_drains_to_the_last_value() {
-        let first = EditIntent::CutOff { count: 10 };
-        let result = coalesce(first, (11..=40).map(|count| EditIntent::CutOff { count }));
-        assert_eq!(result, EditIntent::CutOff { count: 40 });
-    }
-
-    #[test]
-    fn retarget_crown_posts_always_coalesce_to_one_marker() {
-        let result = coalesce(EditIntent::RetargetCrown, [EditIntent::RetargetCrown; 0]);
-        assert_eq!(result, EditIntent::RetargetCrown);
-        let result = coalesce(
-            EditIntent::RetargetCrown,
-            std::iter::repeat_n(EditIntent::RetargetCrown, 20),
-        );
-        assert_eq!(result, EditIntent::RetargetCrown);
-    }
-
-    // `EditIntentQueue::post` itself (as opposed to the pure `merge`/`coalesce`
-    // decision logic exercised above) is NOT driven end-to-end here: it calls
-    // `slint::Timer::start`, which needs a live windowing backend/event loop this
-    // crate's own test environment does not have (see `solve_service.rs`'s own
-    // test module doc comment for the identical constraint on `SolveService::new`/
-    // `submit`). The coalescing decision `post` makes before ever touching the
-    // timer is exactly what `coalesce`/the tests above already verify.
 }

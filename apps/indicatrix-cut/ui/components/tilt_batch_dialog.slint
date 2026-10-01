@@ -32,26 +32,36 @@ export component TiltBatchDialog inherits Rectangle {
     in property <bool> remote_active: BatchModel.tilt_remote_active;
     in property <bool> done: BatchModel.tilt_done;
     in property <string> summary: BatchModel.tilt_summary;
+    // The Edit tab's single-design sweep (see `BatchModel.tilt_single`): one bar that
+    // follows the sweep's own raytrace steps instead of a completed-designs count.
+    in property <bool> single: BatchModel.tilt_single;
+    in property <bool> offer_regenerate: BatchModel.tilt_offer_regenerate;
 
     callback generate_confirmed();
     generate_confirmed => { BatchModel.tilt_generate_confirmed(); }
     callback dismiss_offer();
     dismiss_offer => { BatchModel.tilt_dismiss_offer(); }
     callback cancel();
-    cancel => { BatchModel.tilt_cancel(); }
+    cancel => {
+        if root.single {
+            BatchModel.tilt_single_cancel();
+        } else {
+            BatchModel.tilt_cancel();
+        }
+    }
     callback close();
     close => { BatchModel.tilt_close(); }
 
-    property <float> design_fraction: root.design_total > 0
-        ? (root.design_index * 1.0) / root.design_total
-        : 0.0;
+    property <float> design_fraction: root.single
+        ? BatchModel.tilt_single_fraction
+        : (root.design_total > 0 ? (root.design_index * 1.0) / root.design_total : 0.0);
     // `* 1.0` forces float division rather than Slint's integer division truncating --
     // same idiom `preview_batch_dialog.slint` uses.
     property <float> local_fraction: root.local_lane_total > 0
         ? (root.local_active * 1.0) / root.local_lane_total
         : 0.0;
 
-    background: #00000088;
+    background: Theme.overlay-backdrop;
 
     // The card is wrapped in centering layouts rather than being a bare child with an
     // explicit `height`. That is load-bearing, not cosmetic:
@@ -95,12 +105,12 @@ export component TiltBatchDialog inherits Rectangle {
                 height: root.confirming
                     ? Math.min(root.height - 96px, 430px)
                     : Math.min(root.height - 96px, 340px);
-                background: #11151f;
+                background: Theme.surface-dialog;
                 border-radius: Theme.radius-md;
                 border-width: 1px;
-                border-color: #334155;
+                border-color: Theme.border-dialog;
                 drop-shadow-blur: 24px;
-                drop-shadow-color: #000000bb;
+                drop-shadow-color: Theme.modal-shadow;
                 clip: true;
 
                 // Swallows clicks so they never reach anything behind this dialog -- same
@@ -128,9 +138,13 @@ export component TiltBatchDialog inherits Rectangle {
                             VerticalLayout {
                                 spacing: 10px;
                                 Text {
-                                    text: root.offer_count == 1
-                                        ? "1 design has no computed tilt-performance curves yet. Compute its full ±90° sweep now?"
-                                        : root.offer_count + " designs have no computed tilt-performance curves yet. Compute their full ±90° sweeps now?";
+                                    text: root.offer_regenerate
+                                        ? (root.offer_count == 1
+                                            ? "Recompute the full ±90° tilt sweep for 1 design? Curves it already has are replaced."
+                                            : "Recompute the full ±90° tilt sweeps for " + root.offer_count + " designs? Curves they already have are replaced.")
+                                        : (root.offer_count == 1
+                                            ? "1 design has no computed tilt-performance curves yet. Compute its full ±90° sweep now?"
+                                            : root.offer_count + " designs have no computed tilt-performance curves yet. Compute their full ±90° sweeps now?");
                                     font-size: 12px;
                                     color: Theme.text-secondary;
                                     wrap: word-wrap;
@@ -164,7 +178,9 @@ export component TiltBatchDialog inherits Rectangle {
                         spacing: 12px;
 
                         Text {
-                            text: root.done ? "Tilt-curve computation finished" : "Computing tilt-performance curves...";
+                            text: root.done
+                                ? "Tilt-curve computation finished"
+                                : (root.single ? "Computing tilt curves for this design..." : "Computing tilt-performance curves...");
                             font-size: 14px;
                             font-weight: 700;
                             color: Theme.text-primary;
@@ -207,7 +223,9 @@ export component TiltBatchDialog inherits Rectangle {
                                 HorizontalLayout {
                                     alignment: space-between;
                                     Text {
-                                        text: "Completed " + root.design_index + " / " + root.design_total;
+                                        text: root.single
+                                            ? BatchModel.tilt_single_stage
+                                            : "Completed " + root.design_index + " / " + root.design_total;
                                         font-size: 10px;
                                         color: Theme.text-muted;
                                     }
@@ -221,9 +239,9 @@ export component TiltBatchDialog inherits Rectangle {
                                 Rectangle {
                                     height: 8px;
                                     border-radius: 4px;
-                                    background: #0f172a;
+                                    background: Theme.surface-sunken;
                                     border-width: 1px;
-                                    border-color: #334155;
+                                    border-color: Theme.border-dialog;
                                     clip: true;
                                     Rectangle {
                                         x: 0;
@@ -254,9 +272,9 @@ export component TiltBatchDialog inherits Rectangle {
                                 Rectangle {
                                     height: 6px;
                                     border-radius: 3px;
-                                    background: #0f172a;
+                                    background: Theme.surface-sunken;
                                     border-width: 1px;
-                                    border-color: #334155;
+                                    border-color: Theme.border-dialog;
                                     clip: true;
                                     Rectangle {
                                         x: 0;

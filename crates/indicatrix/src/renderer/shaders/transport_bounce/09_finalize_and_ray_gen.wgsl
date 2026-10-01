@@ -24,6 +24,12 @@ fn transport_finalize_ray(
     path_pdf: array<f32, 8>,
     compat: array<u32, 8>,
     path_escaped: bool,
+    // Every Henyey-Greenstein scattering-point NEE deposit accumulated so far,
+    // already fully integrated to XYZ at ITS OWN moment's `path_pdf`/`compat` (see
+    // `nee_contribution_hg_scatter`'s call site in `transport_bounce_step`) -- summed in
+    // below, unconditionally (not gated on `path_escaped`), mirroring
+    // `trace_spectral_ray_inner`'s own unconditional `nee_xyz` inclusion on the CPU.
+    nee_xyz: vec3<f32>,
 ) {
     // commit the staged exit-split contributions into the REAL `radiance` array ONLY if
     // the shared/hero path itself reached its own environment lookup -- see
@@ -42,23 +48,12 @@ fn transport_finalize_ray(
     // the techniques (hero choices) under which THAT channel would have stayed alive on
     // this same geometric path -- its own family, `compat[k]` -- rather than the
     // hero's.
-    var xyz = vec3<f32>(0.0, 0.0, 0.0);
-    for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
-        var family_pdf: f32 = 0.0;
-        for (var j: u32 = 0u; j < NUM_CHANNELS; j = j + 1u) {
-            if ((compat[k] & (1u << j)) != 0u) {
-                family_pdf = family_pdf + path_pdf[j];
-            }
-        }
-        // Same "should not happen" fallback as the shared `spectral_mis_weight`.
-        var weight_k: f32 = 1.0;
-        if (family_pdf > 1e-12) {
-            weight_k = f32(NUM_CHANNELS) * path_pdf[0] / family_pdf;
-        }
-        let cmf = cie_1931_cmf(lambdas[k]);
-        let weighted = (*radiance)[k] * weight_k;
-        xyz = xyz + cmf * (weighted * NORM_FACTOR);
-    }
+    var xyz = integrate_channels_to_xyz_family(*radiance, lambdas, path_pdf, compat);
+    // Added in directly, not run back through `integrate_channels_to_xyz_family`
+    // a second time -- `nee_xyz` is already fully integrated XYZ. `HdrMap`-only in
+    // practice (NEE is off for `Studio` at every public entry point), so this is a
+    // no-op for the white-balanced branch below, matching the CPU.
+    xyz = xyz + nee_xyz;
     if (params.env_mode == 1u) {
         // Bradford-LMS-space von Kries adaptation, not a raw XYZ scale -- see
         // `apply_von_kries_white_balance`'s doc comment above and

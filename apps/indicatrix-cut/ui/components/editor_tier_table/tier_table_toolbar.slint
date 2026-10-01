@@ -48,7 +48,7 @@ export component TierTableToolbar inherits VerticalLayout {
     // arithmetic (all of it keyed on `EditorModel.tiers.length`, not a
     // filtered count) keeps working exactly as it does with no filter set.
     Rectangle {
-        height: 24px;
+        height: 28px;
         background: Theme.bg-input;
         border-radius: Theme.radius-sm;
         border-width: 1px;
@@ -63,11 +63,17 @@ export component TierTableToolbar inherits VerticalLayout {
                 color: Theme.text-muted;
                 vertical-alignment: center;
             }
-            filter_edit := LineEdit {
-                text <=> EditorModel.tier_filter_text;
-                placeholder-text: "Filter tiers by name, index, block or strategy...";
-                font-size: 10px;
-                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            VerticalLayout {
+                alignment: center;
+                horizontal-stretch: 1;
+                filter_edit := LineEdit {
+                    height: 22px;
+                    min-width: 0px;
+                    text <=> EditorModel.tier_filter_text;
+                    placeholder-text: "Filter tiers by name, index, block or strategy...";
+                    font-size: 10px;
+                    changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                }
             }
             if EditorModel.tier_filter_text != "": Rectangle {
                 width: 16px;

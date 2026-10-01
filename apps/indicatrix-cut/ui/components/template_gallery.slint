@@ -8,11 +8,10 @@ import { TemplateGalleryModel } from "../models/templates.slint";
 //
 // No live-rendered thumbnails yet: a card shows a plain shape-glyph placeholder
 // instead. Wiring an actual background-thread render (reusing
-// `gui::batch::preview::engine`'s resolve/render pair, today private to that
-// module) is left undone -- see `gui/editor/templates.rs`'s own doc
-// comment on `thumbnail_cache_path` for the reasoning and the exact follow-up.
-// The placeholder here is permanent until that follow-up lands, rather than
-// swapped out once a background render completes.
+// `gui::batch::preview::engine`'s resolve/render pair, which is private to that
+// module) is not done: live thumbnail rendering would need that pair exposed.
+// The placeholder here stays until it is, rather than being swapped out once a
+// background render completes.
 //
 // Every card is selectable today (`TemplateCardData::ready` is always true --
 // see `gui/editor/templates.rs`'s own doc comment for the dispatch that makes
@@ -21,10 +20,11 @@ export component TemplateGallery inherits Rectangle {
     in-out property <int> selected_index: 1;
     callback selected();
 
-    height: content.preferred-height;
+    height: 184px;
 
     content := ScrollView {
-        height: min(180px, content.preferred-height);
+        width: 100%;
+        height: 100%;
         VerticalLayout {
             spacing: 4px;
             for card[idx] in TemplateGalleryModel.templates: Rectangle {

@@ -1,4 +1,4 @@
-import { SpinBox, Slider, LineEdit } from "std-widgets.slint";
+import { SpinBox, Slider, LineEdit, ScrollView } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { ExportModel } from "../models/export.slint";
 import { SettingsModel } from "../models/settings.slint";
@@ -57,8 +57,13 @@ export component ExportDialog inherits Rectangle {
     // above use for their own pill selectors.
     property <int> effective_max_bounces: root.selected_bounce_index == 0 ? 4 : (root.selected_bounce_index == 1 ? 8 : (root.selected_bounce_index == 2 ? 12 : (root.selected_bounce_index == 3 ? 24 : (root.selected_bounce_index == 4 ? 64 : 128))));
 
+    // `ExportModel` used to carry its own `close()` callback here too, invoked
+    // with no Rust `on_close` ever registered for it (dead wiring -- `is_open`
+    // below is the whole close contract; nothing else needs to run). Deleted
+    // along with that callback rather than adding a handler that would only
+    // duplicate the assignment already right here.
     callback close();
-    close => { ExportModel.is_open = false; ExportModel.close(); }
+    close => { ExportModel.is_open = false; }
     // width, height, samples-per-pixel, colour-space index (see
     // `selected_color_space_index`'s own doc comment), compute-target index (see
     // `compute_target`'s own doc comment), max-bounce count (see
@@ -71,7 +76,7 @@ export component ExportDialog inherits Rectangle {
     cancel_export => { ExportModel.cancel_export(); }
 
     // Full viewport modal backdrop
-    background: #00000088;
+    background: Theme.overlay-backdrop;
 
     TouchArea {
         clicked => { if (!ExportModel.is_exporting) { root.close(); } }
@@ -113,14 +118,16 @@ export component ExportDialog inherits Rectangle {
         // fill the parent" when width/height aren't both set explicitly) makes this card
         // inherit the full-viewport backdrop's height -- i.e. it stretches to the bottom
         // of the window instead of sizing to its content. Same idiom, and same reason, as
-        // `settings_dialog.slint` and `import_dialog.slint`.
-        height: content.preferred-height;
-        background: #11151f;
+        // `settings_dialog.slint` and `import_dialog.slint`. Capped at the backdrop's
+        // height less a 20px margin top and bottom: the body ScrollView below takes
+        // the overflow so the header and Start/Cancel footer stay reachable.
+        height: min(content.preferred-height, root.height - 40px);
+        background: Theme.surface-dialog;
         border-radius: Theme.radius-md;
         border-width: 1px;
-        border-color: #334155;
+        border-color: Theme.border-dialog;
         drop-shadow-blur: 24px;
-        drop-shadow-color: #000000bb;
+        drop-shadow-color: Theme.modal-shadow;
         clip: true;
 
         // Isolate clicks inside modal
@@ -150,7 +157,7 @@ export component ExportDialog inherits Rectangle {
                     width: 24px;
                     height: 24px;
                     border-radius: Theme.radius-sm;
-                    background: close_touch.has-hover ? #2d3748 : #1a202c;
+                    background: close_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
 
                     close_touch := TouchArea {
                         clicked => { if (!ExportModel.is_exporting) { root.close(); } }
@@ -167,14 +174,31 @@ export component ExportDialog inherits Rectangle {
                 }
             }
 
-            Rectangle { height: 1px; background: #1e293b; }
+            Rectangle { height: 1px; background: Theme.surface-raised; }
+
+            // Scrollable body: everything between the fixed header above and the
+            // fixed Start/Cancel footer below. `vertical-stretch: 1` lets it take
+            // whatever room the card's capped `height` leaves, and scrolls the rest
+            // -- the footer buttons can never be clipped, even while an export is
+            // running and the progress section makes the body much taller. Its
+            // `preferred-height` is stated from the inner layout so the card still
+            // sizes to its content when there is room (`content.preferred-height`
+            // above needs a real preferred height from this ScrollView).
+            body := ScrollView {
+                vertical-stretch: 1;
+                content-width: self.visible-width;
+                preferred-height: body_col.preferred-height;
+
+                body_col := VerticalLayout {
+                    spacing: 14px;
+                    padding-right: 12px;
 
             // 1b. Output Location: the export directory and filename template --
             // see `ExportOutputLocation`'s own doc comment
             // (`export_dialog/output_location.slint`) for why this is split out.
             ExportOutputLocation {}
 
-            Rectangle { height: 1px; background: #1e293b; }
+            Rectangle { height: 1px; background: Theme.surface-raised; }
 
             // 2. Output Size
             VerticalLayout {
@@ -192,48 +216,48 @@ export component ExportDialog inherits Rectangle {
                         horizontal-stretch: 1;
                         height: 28px;
                         border-radius: Theme.radius-sm;
-                        background: ExportModel.selected_size_preset == 0 ? Theme.accent-cyan : (sz0_touch.has-hover ? #1e293b : #0f172a);
+                        background: ExportModel.selected_size_preset == 0 ? Theme.accent-cyan : (sz0_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
                         border-width: 1px;
-                        border-color: ExportModel.selected_size_preset == 0 ? Theme.accent-cyan : #334155;
+                        border-color: ExportModel.selected_size_preset == 0 ? Theme.accent-cyan : Theme.border-dialog;
 
                         sz0_touch := TouchArea {
                             enabled: !ExportModel.is_exporting;
                             clicked => { ExportModel.selected_size_preset = 0; }
                         }
 
-                        Text { text: "1080p"; font-size: 11px; font-weight: 600; color: ExportModel.selected_size_preset == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "1080p"; font-size: 11px; font-weight: 600; color: ExportModel.selected_size_preset == 0 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     Rectangle {
                         horizontal-stretch: 1;
                         height: 28px;
                         border-radius: Theme.radius-sm;
-                        background: ExportModel.selected_size_preset == 1 ? Theme.accent-cyan : (sz1_touch.has-hover ? #1e293b : #0f172a);
+                        background: ExportModel.selected_size_preset == 1 ? Theme.accent-cyan : (sz1_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
                         border-width: 1px;
-                        border-color: ExportModel.selected_size_preset == 1 ? Theme.accent-cyan : #334155;
+                        border-color: ExportModel.selected_size_preset == 1 ? Theme.accent-cyan : Theme.border-dialog;
 
                         sz1_touch := TouchArea {
                             enabled: !ExportModel.is_exporting;
                             clicked => { ExportModel.selected_size_preset = 1; }
                         }
 
-                        Text { text: "4K"; font-size: 11px; font-weight: 600; color: ExportModel.selected_size_preset == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "4K"; font-size: 11px; font-weight: 600; color: ExportModel.selected_size_preset == 1 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     Rectangle {
                         horizontal-stretch: 1;
                         height: 28px;
                         border-radius: Theme.radius-sm;
-                        background: ExportModel.selected_size_preset == 2 ? Theme.accent-cyan : (sz2_touch.has-hover ? #1e293b : #0f172a);
+                        background: ExportModel.selected_size_preset == 2 ? Theme.accent-cyan : (sz2_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
                         border-width: 1px;
-                        border-color: ExportModel.selected_size_preset == 2 ? Theme.accent-cyan : #334155;
+                        border-color: ExportModel.selected_size_preset == 2 ? Theme.accent-cyan : Theme.border-dialog;
 
                         sz2_touch := TouchArea {
                             enabled: !ExportModel.is_exporting;
                             clicked => { ExportModel.selected_size_preset = 2; }
                         }
 
-                        Text { text: "Custom"; font-size: 11px; font-weight: 600; color: ExportModel.selected_size_preset == 2 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "Custom"; font-size: 11px; font-weight: 600; color: ExportModel.selected_size_preset == 2 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                     }
                 }
 
@@ -281,48 +305,48 @@ export component ExportDialog inherits Rectangle {
                         horizontal-stretch: 1;
                         height: 28px;
                         border-radius: Theme.radius-sm;
-                        background: ExportModel.selected_color_space_index == 0 ? Theme.accent-cyan : (cs0_touch.has-hover ? #1e293b : #0f172a);
+                        background: ExportModel.selected_color_space_index == 0 ? Theme.accent-cyan : (cs0_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
                         border-width: 1px;
-                        border-color: ExportModel.selected_color_space_index == 0 ? Theme.accent-cyan : #334155;
+                        border-color: ExportModel.selected_color_space_index == 0 ? Theme.accent-cyan : Theme.border-dialog;
 
                         cs0_touch := TouchArea {
                             enabled: !ExportModel.is_exporting;
                             clicked => { ExportModel.selected_color_space_index = 0; }
                         }
 
-                        Text { text: "sRGB"; font-size: 11px; font-weight: 600; color: ExportModel.selected_color_space_index == 0 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "sRGB"; font-size: 11px; font-weight: 600; color: ExportModel.selected_color_space_index == 0 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     Rectangle {
                         horizontal-stretch: 1;
                         height: 28px;
                         border-radius: Theme.radius-sm;
-                        background: ExportModel.selected_color_space_index == 1 ? Theme.accent-cyan : (cs1_touch.has-hover ? #1e293b : #0f172a);
+                        background: ExportModel.selected_color_space_index == 1 ? Theme.accent-cyan : (cs1_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
                         border-width: 1px;
-                        border-color: ExportModel.selected_color_space_index == 1 ? Theme.accent-cyan : #334155;
+                        border-color: ExportModel.selected_color_space_index == 1 ? Theme.accent-cyan : Theme.border-dialog;
 
                         cs1_touch := TouchArea {
                             enabled: !ExportModel.is_exporting;
                             clicked => { ExportModel.selected_color_space_index = 1; }
                         }
 
-                        Text { text: "Display P3"; font-size: 11px; font-weight: 600; color: ExportModel.selected_color_space_index == 1 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "Display P3"; font-size: 11px; font-weight: 600; color: ExportModel.selected_color_space_index == 1 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     Rectangle {
                         horizontal-stretch: 1;
                         height: 28px;
                         border-radius: Theme.radius-sm;
-                        background: ExportModel.selected_color_space_index == 2 ? Theme.accent-cyan : (cs2_touch.has-hover ? #1e293b : #0f172a);
+                        background: ExportModel.selected_color_space_index == 2 ? Theme.accent-cyan : (cs2_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
                         border-width: 1px;
-                        border-color: ExportModel.selected_color_space_index == 2 ? Theme.accent-cyan : #334155;
+                        border-color: ExportModel.selected_color_space_index == 2 ? Theme.accent-cyan : Theme.border-dialog;
 
                         cs2_touch := TouchArea {
                             enabled: !ExportModel.is_exporting;
                             clicked => { ExportModel.selected_color_space_index = 2; }
                         }
 
-                        Text { text: "Rec.2020"; font-size: 11px; font-weight: 600; color: ExportModel.selected_color_space_index == 2 ? #0f172a : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: "Rec.2020"; font-size: 11px; font-weight: 600; color: ExportModel.selected_color_space_index == 2 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                     }
                 }
 
@@ -356,7 +380,7 @@ export component ExportDialog inherits Rectangle {
                 sample_exponent: root.sample_exponent;
             }
 
-            Rectangle { height: 1px; background: #1e293b; }
+            Rectangle { height: 1px; background: Theme.surface-raised; }
 
             // 4. Progress (visible only while exporting) -- keeps the user informed
             // during what can be a multi-minute render (Task: "a frozen UI with no
@@ -372,9 +396,9 @@ export component ExportDialog inherits Rectangle {
                 Rectangle {
                     height: 200px;
                     border-radius: Theme.radius-sm;
-                    background: #0f172a;
+                    background: Theme.surface-sunken;
                     border-width: 1px;
-                    border-color: #334155;
+                    border-color: Theme.border-dialog;
                     clip: true;
 
                     if ExportModel.preview_samples_done > 0: Image {
@@ -420,12 +444,18 @@ export component ExportDialog inherits Rectangle {
                     Text { text: "Rendering..."; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
                     Text { text: Math.round(ExportModel.progress * 100) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
                 }
+                if ExportModel.eta_text != "": Text {
+                    text: ExportModel.eta_text;
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    horizontal-alignment: right;
+                }
                 Rectangle {
                     height: 8px;
                     border-radius: 4px;
-                    background: #0f172a;
+                    background: Theme.surface-sunken;
                     border-width: 1px;
-                    border-color: #334155;
+                    border-color: Theme.border-dialog;
                     clip: true;
 
                     Rectangle {
@@ -439,11 +469,15 @@ export component ExportDialog inherits Rectangle {
                 }
             }
 
-            // 5. Result / error message, shown once the export finishes
+                } // end body_col
+            } // end body := ScrollView
+
+            // 5. Result / error message, shown once the export finishes. Kept
+            // outside the scrolling body so an error is never scrolled out of view.
             if !ExportModel.is_exporting && ExportModel.status_message != "": Text {
                 text: ExportModel.status_message;
                 font-size: 10px;
-                color: ExportModel.has_error ? #f87171 : Theme.accent-emerald;
+                color: ExportModel.has_error ? Theme.danger : Theme.accent-emerald;
                 wrap: word-wrap;
             }
 
@@ -455,24 +489,24 @@ export component ExportDialog inherits Rectangle {
                     horizontal-stretch: 1;
                     height: 32px;
                     border-radius: Theme.radius-sm;
-                    background: cancel_touch.has-hover ? #450a0a : #1f1111;
+                    background: cancel_touch.has-hover ? Theme.danger-surface-hover : Theme.danger-surface;
                     border-width: 1px;
-                    border-color: #7f1d1d;
+                    border-color: Theme.danger-border;
 
                     cancel_touch := TouchArea {
                         clicked => { root.cancel_export(); }
                     }
 
-                    Text { text: "Cancel Export"; font-size: 11px; font-weight: 600; color: #f87171; horizontal-alignment: center; vertical-alignment: center; }
+                    Text { text: "Cancel Export"; font-size: 11px; font-weight: 600; color: Theme.danger; horizontal-alignment: center; vertical-alignment: center; }
                 }
 
                 if !ExportModel.is_exporting: Rectangle {
                     width: 90px;
                     height: 32px;
                     border-radius: Theme.radius-sm;
-                    background: close2_touch.has-hover ? #1e293b : #0f172a;
+                    background: close2_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken;
                     border-width: 1px;
-                    border-color: #334155;
+                    border-color: Theme.border-dialog;
 
                     close2_touch := TouchArea {
                         clicked => { root.close(); }
@@ -485,7 +519,7 @@ export component ExportDialog inherits Rectangle {
                     horizontal-stretch: 1;
                     height: 32px;
                     border-radius: Theme.radius-sm;
-                    background: start_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
+                    background: start_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
 
                     start_touch := TouchArea {
                         clicked => {
@@ -496,8 +530,8 @@ export component ExportDialog inherits Rectangle {
                     HorizontalLayout {
                         alignment: center;
                         spacing: 6px;
-                        Image { source: @image-url("../icons/save.svg"); colorize: #0f172a; width: 12px; height: 12px; vertical-alignment: center; }
-                        Text { text: "Start Export"; font-size: 12px; font-weight: 700; color: #0f172a; vertical-alignment: center; }
+                        Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-on-accent; width: 12px; height: 12px; vertical-alignment: center; }
+                        Text { text: "Start Export"; font-size: 12px; font-weight: 700; color: Theme.text-on-accent; vertical-alignment: center; }
                     }
                 }
             }

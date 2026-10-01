@@ -27,19 +27,8 @@ use std::{
 
 use super::super::LivenessConfig;
 
-/// A unique, freshly created temp directory.
-pub fn unique_temp_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "indicatrix-worker-coordinator-test-{label}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
+// A unique, freshly created temp directory, shared with `serve`'s tests.
+pub use crate::serve::tests::fixtures::unique_temp_dir;
 
 /// A CA plus a server certificate for `localhost`/`127.0.0.1`.
 pub fn pki_with_server(label: &str) -> PathBuf {
@@ -96,16 +85,21 @@ pub fn coordinator_args(pki: &Path) -> ServeArgs {
         worker_allowlist: None,
         db: Some(temp_db()),
         max_connections: 16,
+        max_preauth_per_ip: crate::cli::DEFAULT_MAX_PREAUTH_PER_IP,
         interactive_workers: 0,
         pin_interactive_worker: None,
         max_job_memory_mib: crate::cli::DEFAULT_MAX_JOB_MEMORY_MIB,
     }
 }
 
-/// Liveness fast enough for a test: ping after 100 ms idle, drop after 600 ms silent.
+/// Liveness fast enough for a test: ping after 100 ms idle, drop after 2 s silent.
+///
+/// `dead_after` was 600 ms; raised so a test run under load (a slow CI box, several
+/// tests' threads contending for CPU) has real margin before a merely-slow-to-answer
+/// PONG reads as "dead".
 pub const FAST_LIVENESS: LivenessConfig = LivenessConfig {
     ping_interval: Duration::from_millis(100),
-    dead_after: Duration::from_millis(600),
+    dead_after: Duration::from_secs(2),
     tick: Duration::from_millis(20),
 };
 

@@ -10,8 +10,11 @@ use indicatrix_vault::{
     db::sqlite::{Database, DisplayFilters, SortOrder},
     model::{entry::DiagramListItem, filter::RangeFilter},
 };
-use slint::{ComponentHandle, ModelRc, VecModel};
-use std::sync::{Arc, Mutex};
+use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
+use std::{
+    collections::{BTreeSet, HashMap},
+    sync::{Arc, Mutex},
+};
 use tracing::warn;
 
 /// The synthetic URL scheme every locally-imported design is saved under (see
@@ -40,6 +43,10 @@ pub(super) fn to_diagram_item(item: &DesignSummary) -> DiagramItem {
         ri: item.refractive_index.clone().unwrap_or_default().into(),
         ignored: item.ignored,
         is_local: is_local_url(&item.url),
+        // The planner exclusion mark lives in the local database only (see
+        // `Database::set_planner_excluded`) and the remote library protocol carries
+        // none, so a remote-browsed row is never shown as excluded.
+        planner_excluded: false,
         // Tags are a purely local-catalogue concept (see
         // `Database::migrate_tag_tables`'s doc comment) -- the remote library
         // protocol carries no tag data, so a remote-browsed row always shows none.
@@ -56,6 +63,10 @@ pub struct DiagramListRow {
     /// an ignored row can't reach this struct in that case, since it's excluded by the
     /// query itself.
     pub ignored: bool,
+    /// `true` iff the Rough Planner leaves this design out of its candidate set
+    /// (`Database::planner_excluded_among`). Independent of `ignored`: an excluded
+    /// design is listed and searchable like any other.
+    pub planner_excluded: bool,
     /// This row's tag names, alphabetical -- looked up in bulk by
     /// [`fetch_diagram_list_with_options`] via `Database::tags_by_entry` rather than
     /// one query per row.
@@ -233,10 +244,21 @@ fn fetch_diagram_list_from_db(
     });
 
     // One bulk query for every entry's tags rather than one
-    // `tags_for_entry` call per row -- see `Database::tags_by_entry`'s own doc
+    // `tags_for_entry` call per row -- see `Database::tags_for_entries`'s own doc
     // comment. A failed lookup degrades to "no tags shown" rather than failing
-    // the whole list fetch.
-    let mut tags_by_entry = db.tags_by_entry().unwrap_or_default();
+    // the whole list fetch. An empty result has no rows to label, so it skips the query.
+    let ids: Vec<i64> = result.items.iter().map(|item| item.id).collect();
+    let mut tags_by_entry = if ids.is_empty() {
+        HashMap::new()
+    } else {
+        db.tags_for_entries(&ids).unwrap_or_default()
+    };
+    // The planner-exclusion marks of the same ids, in one query. This runs on the
+    // read-only connection too; a failure degrades to "none excluded" like the tags do.
+    let planner_excluded_ids = db.planner_excluded_among(&ids).unwrap_or_else(|e| {
+        warn!("planner_excluded_among failed: {e}");
+        BTreeSet::new()
+    });
 
     // `ignored` is read straight off the row (`DiagramListItem::ignored`).
     let rows: Vec<DiagramListRow> = result
@@ -244,10 +266,12 @@ fn fetch_diagram_list_from_db(
         .into_iter()
         .map(|item| {
             let ignored = item.ignored;
+            let planner_excluded = planner_excluded_ids.contains(&item.id);
             let tags = tags_by_entry.remove(&item.id).unwrap_or_default();
             DiagramListRow {
                 item,
                 ignored,
+                planner_excluded,
                 tags,
             }
         })
@@ -313,6 +337,68 @@ pub(super) fn fetch_diagram_list_with_own_connection(
     }
 }
 
+/// The Slint-facing row for one fetched catalogue row.
+fn row_to_item(row: DiagramListRow) -> DiagramItem {
+    DiagramItem {
+        id: row.item.id as i32,
+        title: row.item.title.into(),
+        shape: row.item.shape.unwrap_or_default().into(),
+        gear: row.item.index_gear.unwrap_or_default().into(),
+        facets: row.item.facets_count.unwrap_or_default().into(),
+        designer: row.item.designer_info.unwrap_or_default().into(),
+        lw_ratio: row.item.lw_ratio.unwrap_or_default().into(),
+        ri: row.item.refractive_index.unwrap_or_default().into(),
+        ignored: row.ignored,
+        is_local: is_local_url(&row.item.url),
+        planner_excluded: row.planner_excluded,
+        // This row's tag chips.
+        tags: ModelRc::new(VecModel::from(
+            row.tags
+                .into_iter()
+                .map(Into::into)
+                .collect::<Vec<SharedString>>(),
+        )),
+    }
+}
+
+/// Whether `model` already shows exactly `rows`: the same designs in the same order,
+/// with every displayed field (not only the id) equal -- a rename or a tag change keeps
+/// the id but must still replace the list.
+fn list_unchanged(model: &ModelRc<DiagramItem>, rows: &[DiagramListRow]) -> bool {
+    model.row_count() == rows.len()
+        && model
+            .iter()
+            .zip(rows)
+            .all(|(shown, row)| row_matches_item(row, &shown))
+}
+
+/// Whether `shown` is what [`row_to_item`] would build from `row`.
+fn row_matches_item(row: &DiagramListRow, shown: &DiagramItem) -> bool {
+    let item = &row.item;
+    shown.id == item.id as i32
+        && shown.title.as_str() == item.title
+        && text_matches(&shown.shape, item.shape.as_deref())
+        && text_matches(&shown.gear, item.index_gear.as_deref())
+        && text_matches(&shown.facets, item.facets_count.as_deref())
+        && text_matches(&shown.designer, item.designer_info.as_deref())
+        && text_matches(&shown.lw_ratio, item.lw_ratio.as_deref())
+        && text_matches(&shown.ri, item.refractive_index.as_deref())
+        && shown.ignored == row.ignored
+        && shown.planner_excluded == row.planner_excluded
+        && shown.is_local == is_local_url(&item.url)
+        && shown.tags.row_count() == row.tags.len()
+        && shown
+            .tags
+            .iter()
+            .zip(&row.tags)
+            .all(|(shown_tag, tag)| shown_tag.as_str() == tag.as_str())
+}
+
+/// Whether the displayed `shown` text equals `value`, an absent value reading as empty.
+fn text_matches(shown: &SharedString, value: Option<&str>) -> bool {
+    shown.as_str() == value.unwrap_or_default()
+}
+
 /// The `ui.set_*` half of `super::dispatch::refresh_diagram_list` -- see
 /// [`fetch_diagram_list`]'s doc comment for why these are split.
 ///
@@ -323,6 +409,9 @@ pub(super) fn fetch_diagram_list_with_own_connection(
 /// [`clear_current_detail_display`] in that case; `diagram_list.slint`'s
 /// own `keyboard_focus_index` resets separately, on every `diagram_list` change (not
 /// only a length change), so the two together drop both halves of stale selection.
+///
+/// The list model itself is replaced only when `fetched` differs from what is shown
+/// (see [`list_unchanged`]); the counts and the other properties are always updated.
 pub fn apply_diagram_list_to_ui(ui: &MainWindow, fetched: FetchedDiagramList) {
     let selected_id = ui.global::<LibraryModel>().get_selected_entry_id();
     if selected_id >= 0
@@ -335,32 +424,18 @@ pub fn apply_diagram_list_to_ui(ui: &MainWindow, fetched: FetchedDiagramList) {
     }
     let count_unavailable = fetched.count_unavailable;
 
-    let slint_items: Vec<DiagramItem> = fetched
-        .rows
-        .into_iter()
-        .map(|row| DiagramItem {
-            id: row.item.id as i32,
-            title: row.item.title.into(),
-            shape: row.item.shape.unwrap_or_default().into(),
-            gear: row.item.index_gear.unwrap_or_default().into(),
-            facets: row.item.facets_count.unwrap_or_default().into(),
-            designer: row.item.designer_info.unwrap_or_default().into(),
-            lw_ratio: row.item.lw_ratio.unwrap_or_default().into(),
-            ri: row.item.refractive_index.unwrap_or_default().into(),
-            ignored: row.ignored,
-            is_local: is_local_url(&row.item.url),
-            // This row's tag chips.
-            tags: ModelRc::new(VecModel::from(
-                row.tags
-                    .into_iter()
-                    .map(Into::into)
-                    .collect::<Vec<slint::SharedString>>(),
-            )),
-        })
-        .collect();
-
-    ui.global::<LibraryModel>()
-        .set_diagram_list(ModelRc::new(VecModel::from(slint_items)));
+    // A refresh that returns the very rows already on screen (a filter tick that changed
+    // nothing, a keystroke that did not narrow the result) keeps the shown model: a new
+    // one would make the list re-create every visible card and reset the keyboard focus
+    // for no visible change.
+    if !list_unchanged(
+        &ui.global::<LibraryModel>().get_diagram_list(),
+        &fetched.rows,
+    ) {
+        let slint_items: Vec<DiagramItem> = fetched.rows.into_iter().map(row_to_item).collect();
+        ui.global::<LibraryModel>()
+            .set_diagram_list(ModelRc::new(VecModel::from(slint_items)));
+    }
     ui.global::<LibraryModel>()
         .set_total_count(fetched.total as i32);
     // Real match count for the active search/filters -- see
@@ -379,5 +454,91 @@ pub fn apply_diagram_list_to_ui(ui: &MainWindow, fetched: FetchedDiagramList) {
     if count_unavailable {
         ui.global::<LibraryModel>()
             .set_status_message("Count unavailable.".into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(id: i64, title: &str, tags: &[&str]) -> DiagramListRow {
+        DiagramListRow {
+            item: DiagramListItem {
+                id,
+                title: title.to_string(),
+                url: format!("local://{id}"),
+                design_id: None,
+                shape: Some("Round".to_string()),
+                index_gear: None,
+                facets_count: Some("57+8".to_string()),
+                designer_info: None,
+                lw_ratio: None,
+                refractive_index: None,
+                volume: None,
+                competition_diagram: None,
+                ignored: false,
+            },
+            ignored: false,
+            planner_excluded: false,
+            tags: tags.iter().map(|&tag| tag.to_string()).collect(),
+        }
+    }
+
+    fn shown(rows: Vec<DiagramListRow>) -> ModelRc<DiagramItem> {
+        let items: Vec<DiagramItem> = rows.into_iter().map(row_to_item).collect();
+        ModelRc::new(VecModel::from(items))
+    }
+
+    fn catalogue() -> Vec<DiagramListRow> {
+        vec![row(1, "Alpha", &[]), row(2, "Beta", &["keep"])]
+    }
+
+    #[test]
+    fn the_rows_a_model_was_built_from_are_unchanged() {
+        assert!(list_unchanged(&shown(catalogue()), &catalogue()));
+    }
+
+    #[test]
+    fn a_renamed_design_with_the_same_id_is_a_change() {
+        let mut rows = catalogue();
+        rows[1].item.title = "Beta II".to_string();
+        assert!(!list_unchanged(&shown(catalogue()), &rows));
+    }
+
+    #[test]
+    fn a_changed_tag_list_is_a_change() {
+        let mut rows = catalogue();
+        rows[0].tags.push("new".to_string());
+        assert!(!list_unchanged(&shown(catalogue()), &rows));
+        let mut retagged = catalogue();
+        retagged[1].tags = vec!["other".to_string()];
+        assert!(!list_unchanged(&shown(catalogue()), &retagged));
+    }
+
+    #[test]
+    fn a_flipped_ignored_flag_is_a_change() {
+        let mut rows = catalogue();
+        rows[0].ignored = true;
+        assert!(!list_unchanged(&shown(catalogue()), &rows));
+    }
+
+    #[test]
+    fn a_flipped_planner_flag_is_a_change() {
+        let mut rows = catalogue();
+        rows[0].planner_excluded = true;
+        assert!(!list_unchanged(&shown(catalogue()), &rows));
+        // Un-excluding a shown excluded row is a change as well.
+        assert!(!list_unchanged(&shown(rows), &catalogue()));
+    }
+
+    #[test]
+    fn a_different_order_or_length_is_a_change() {
+        let mut reordered = catalogue();
+        reordered.reverse();
+        assert!(!list_unchanged(&shown(catalogue()), &reordered));
+        let mut shorter = catalogue();
+        shorter.pop();
+        assert!(!list_unchanged(&shown(catalogue()), &shorter));
+        assert!(!list_unchanged(&shown(shorter), &catalogue()));
     }
 }

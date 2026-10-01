@@ -36,7 +36,10 @@ use glam::Vec3;
 use crate::{
     optics::{
         polarization::{MuellerMatrix, StokesVector},
-        raytracer::uniaxial_fresnel::Cplx,
+        raytracer::{
+            refraction::{DIRECTION_MATCH_COS_TOL, R_UNPOL_PDF_MAX, R_UNPOL_PDF_MIN},
+            uniaxial_fresnel::Cplx,
+        },
     },
     renderer::gpu::compute,
 };
@@ -48,6 +51,7 @@ use super::{SHADER_SRC, UlpAccumulator, UlpCheckResult};
 // (crates/indicatrix/src/optics/raytracer/refraction.rs:357-385)
 // ---------------------------------------------------------------------------------
 
+/// One input case for the channel transmission check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ChannelTransmissionCase {
@@ -165,7 +169,8 @@ fn cpu_compute_channel_transmission(c: &ChannelTransmissionCase) -> [f32; 5] {
         .scale(1.0 / (1.0 - r_unpol));
     let r_s_k = f32::mul_add(n2k, -cos_t_k, n1k * cos_i) / f32::mul_add(n2k, cos_t_k, n1k * cos_i);
     let r_p_k = f32::mul_add(n1k, -cos_t_k, n2k * cos_i) / f32::mul_add(n1k, cos_t_k, n2k * cos_i);
-    let r_unpol_k = (0.5 * r_p_k.mul_add(r_p_k, r_s_k * r_s_k)).clamp(1e-4, 1.0 - 1e-4);
+    let r_unpol_k =
+        (0.5 * r_p_k.mul_add(r_p_k, r_s_k * r_s_k)).clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX);
     [
         transmitted.i,
         transmitted.q,
@@ -183,6 +188,7 @@ const CHANNEL_TRANSMISSION_COMPONENT_NAMES: [&str; 5] = [
     "r_unpol_k",
 ];
 
+/// Runs the channel transmission check against the CPU reference.
 #[must_use]
 pub fn run_channel_transmission(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -247,6 +253,7 @@ pub fn run_channel_transmission(
 // (crates/indicatrix/src/optics/raytracer/refraction.rs:2243-2264)
 // ---------------------------------------------------------------------------------
 
+/// One input case for the uniaxial exit transmission check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct UniaxialExitTransmissionCase {
@@ -348,6 +355,7 @@ const UNIAXIAL_EXIT_TRANSMISSION_COMPONENT_NAMES: [&str; 5] = [
     "i_unit",
 ];
 
+/// Runs the uniaxial exit transmission check against the CPU reference.
 #[must_use]
 pub fn run_uniaxial_exit_transmission(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -413,6 +421,7 @@ pub fn run_uniaxial_exit_transmission(
 // float), so this uses its own small result type rather than `UlpCheckResult`.
 // ---------------------------------------------------------------------------------
 
+/// One input case for the narrow compat check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct NarrowCompatCase {
@@ -431,19 +440,24 @@ struct NarrowCompatMismatch {
     gpu: u32,
 }
 
+/// Outcome of the narrow compat check.
 #[derive(Debug, Clone)]
 pub struct NarrowCompatResult {
+    /// Total number of cases run.
     pub total_cases: usize,
+    /// Mismatches found.
     pub mismatches: usize,
     first_mismatch: Option<NarrowCompatMismatch>,
 }
 
 impl NarrowCompatResult {
+    /// Whether every compared value stayed within its budget.
     #[must_use]
     pub const fn passed(&self) -> bool {
         self.mismatches == 0
     }
 
+    /// Human-readable description of the first mismatch.
     #[must_use]
     pub fn describe_first_mismatch(&self) -> String {
         self.first_mismatch.map_or_else(
@@ -503,8 +517,6 @@ fn build_narrow_compat_cases() -> Vec<NarrowCompatCase> {
     cases
 }
 
-const DIRECTION_MATCH_COS_TOL: f32 = 1.0 - 1e-6;
-
 /// Verbatim transcription of `refraction::narrow_compat`, specialized to the fixed
 /// hero index 0 exactly like the WGSL mirror -- see this module's own doc comment for
 /// why this is a transcription rather than a direct call.
@@ -535,6 +547,7 @@ fn cpu_narrow_compat(case: &NarrowCompatCase) -> [u32; 8] {
     compat
 }
 
+/// Runs the narrow compat check against the CPU reference.
 #[must_use]
 pub fn run_narrow_compat(ctx: &crate::renderer::gpu::GpuContext) -> NarrowCompatResult {
     let cases = build_narrow_compat_cases();

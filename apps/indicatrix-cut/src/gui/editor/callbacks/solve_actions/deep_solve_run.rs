@@ -1,8 +1,6 @@
 //! "Deep Solve"'s dispatch and completion handler.
 
-use super::{
-    DEEP_SOLVE_ACTIVITY_ID, LAST_DEEP_SOLVE_DELTAS, RunProvenance, clear_analysis_results,
-};
+use super::{DEEP_SOLVE_ACTIVITY_ID, LAST_DEEP_SOLVE_DELTAS, RunProvenance};
 use crate::{
     EditorModel, MainWindow,
     gui::{
@@ -136,8 +134,11 @@ fn capture_deep_solve_run_prep(st: &EditorState, run_epoch: &Arc<AtomicU64>) -> 
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     });
-    let current_masts = cached.filter(|solved| {
-        !needs_background_baseline(Some(solved.as_slice()), st.design.tiers.len())
+    // the shared cache is now generation-tagged (`(u64, Vec<SolvedTier>)`)
+    // -- only the masts themselves matter here.
+    let current_masts = cached.and_then(|(_, solved)| {
+        (!needs_background_baseline(Some(solved.as_slice()), st.design.tiers.len()))
+            .then_some(solved)
     });
     let this_run = run_epoch.fetch_add(1, AtomicOrdering::Relaxed) + 1;
     DeepSolveRunPrep {
@@ -276,6 +277,22 @@ fn begin_deep_solve_run(
             if run_epoch_done.load(AtomicOrdering::Relaxed) != this_run {
                 return;
             }
+            // The design was REPLACED (New / Load Selected / Open Native)
+            // while this run was still in flight: checked here, before
+            // touching EITHER the busy flag or the result panel, because by
+            // the time this abandoned run's completion arrives the cutter may
+            // already have started (and even finished) a FRESH Deep Solve
+            // against the new design -- unconditionally resetting
+            // `deep_solve_running`/repainting the panel below would then
+            // clobber that fresh run's own live state with this stale one's,
+            // exactly the "stale completion wipes the new design's results"
+            // failure mode. `clear_analysis_results` already ran once, from
+            // `EditorState::replace_wholesale`'s own call site, at the moment
+            // of replacement -- see `apply_deep_solve_outcome`'s own doc
+            // comment for why this must NOT call it again.
+            if provenance.design_replaced() {
+                return;
+            }
             // Always cleared, on every path below: `deep_solve_status` doubles
             // as the live "Deep solving... X.Xs elapsed" readout, and
             // `deep_solve_running` gates the command bar's own Deep Solve
@@ -349,16 +366,16 @@ fn apply_deep_solve_outcome(
         design_snapshot,
         state,
     } = *ctx;
-    // The design was REPLACED (New / Load Selected / Open Native), not
-    // merely edited: this verdict describes a different stone, and
-    // `clear_analysis_results` has already blanked the panel on purpose.
-    // Repainting a report over it -- even a caveated one -- would read
-    // as a verdict on the design now on screen. A replacement does not cancel
-    // a run already in flight, so its result still arrives here regardless.
-    if provenance.design_replaced() {
-        clear_analysis_results(ui);
-        return;
-    }
+    // The design-replaced case (New / Load Selected / Open Native swapped in a
+    // different stone while this run was still in flight) is already filtered
+    // out by this function's one caller, in `setup_deep_solve_callback`'s own
+    // completion closure -- see that closure's own comment for why it
+    // must return before EITHER of this function's own effects, not merely
+    // before `clear_analysis_results` a second time.
+    debug_assert!(
+        !provenance.design_replaced(),
+        "the caller must filter out a replaced design before calling this"
+    );
     match outcome {
         deep_solve::DeepSolveOutcome::Cancelled => {
             ui.global::<EditorModel>()

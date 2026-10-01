@@ -1,0 +1,290 @@
+import { Button, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { AppModel, GalleryModel } from "../models/app_model.slint";
+import { GuideModel } from "../models/guide_model.slint";
+import { TemplateGallery } from "../components/template_gallery.slint";
+
+// The New Design dialog's fields (modelled on the desktop's `EditorModel.new_*`); the
+// dialog is open while `GalleryModel.open` is true and `GalleryModel.selected-index` is the
+// chosen "Start from" card (0 is Empty). Consumed by `src/editor/new_design`.
+export global NewDesignModel {
+    in-out property <int> preform-shape-index: 1;
+    in-out property <string> preform-half-width: "1.50";
+    in-out property <string> preform-length-over-width: "1.00";
+    in-out property <string> preform-depth: "1.50";
+    in-out property <int> gear-index: 0;
+    in-out property <string> gear-custom-text: "96";
+    in-out property <string> symmetry-order-text: "8";
+    in-out property <bool> mirror: true;
+    in property <[string]> material-options: [];
+    in-out property <int> material-index: 0;
+
+    // Creates the design from the fields; the dialog closes only when it succeeds.
+    callback create();
+}
+
+component Lbl inherits Text {
+    font-size: 9px;
+    color: Theme.text-muted;
+}
+
+component Bad inherits Text {
+    font-size: 8px;
+    color: Theme.danger;
+}
+
+component Rule inherits Rectangle {
+    height: 1px;
+    background: Theme.border-subtle;
+}
+
+// New Design: preform, gear, symmetry, mirror and starting material named up front, or a
+// template from the gallery (which locks gear, symmetry and mirror to its own tier table).
+// Mounted by `app.slint` while `GalleryModel.open`.
+export component NewDesignDialog inherits Rectangle {
+    // Every template (any index >= 1; 0 is Empty) is authored for 96 teeth, 8-fold and
+    // mirrored, so it locks those three fields rather than remapping its table onto
+    // whatever the user chose.
+    property <bool> template-locks-fields: GalleryModel.selected-index >= 1;
+
+    property <bool> half-width-valid: NewDesignModel.preform-half-width.to-float() > 0;
+    property <bool> length-over-width-valid: NewDesignModel.preform-length-over-width.to-float() > 0;
+    property <bool> depth-valid: NewDesignModel.preform-depth.to-float() > 0;
+    property <bool> custom-gear-valid: NewDesignModel.gear-index != 6 || NewDesignModel.gear-custom-text.to-float() > 0;
+    property <bool> symmetry-valid: NewDesignModel.symmetry-order-text.to-float() >= 1;
+    property <bool> form-valid: root.half-width-valid && root.length-over-width-valid && root.depth-valid && root.custom-gear-valid && root.symmetry-valid;
+
+    function apply-template-lock() {
+        if root.template-locks-fields {
+            NewDesignModel.gear-index = 0;
+            NewDesignModel.symmetry-order-text = "8";
+            NewDesignModel.mirror = true;
+        }
+    }
+    function cancel() {
+        GalleryModel.open = false;
+    }
+    function do-create() {
+        if root.form-valid {
+            NewDesignModel.create();
+        }
+    }
+
+    init => { root.apply-template-lock(); }
+
+    background: Theme.overlay-backdrop;
+
+    TouchArea {
+        clicked => { root.cancel(); }
+    }
+
+    FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancel();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    Rectangle {
+        width: min(420px, root.width - 32px);
+        height: min(640px, root.height - 32px);
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        background: Theme.bg-card;
+        border-radius: Theme.radius-md;
+        // The guided walkthrough outlines the dialog on its "Start a new design" step.
+        border-width: GuideModel.highlight-target == "new_design_dialog" ? 2px : 1px;
+        border-color: GuideModel.highlight-target == "new_design_dialog" ? Theme.accent-cyan : Theme.border-medium;
+        drop-shadow-blur: 20px;
+        drop-shadow-color: Theme.toast-shadow;
+        clip: true;
+
+        TouchArea {}
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+
+            Text {
+                text: "New Design";
+                font-size: 14px;
+                font-weight: 700;
+                color: Theme.text-primary;
+            }
+
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    // The scrolled content is as wide as the visible area (less the
+                    // scrollbar), so the wrapping texts wrap instead of running off the edge.
+                    width: parent.width - 14px;
+                    spacing: 8px;
+                    padding-right: 4px;
+
+                    Text {
+                        text: "A fresh design starts as a rough preform, cut on an index gear with the given symmetry. Preform dimensions are in mast units -- 1.0 is where the finished girdle will sit, so give it some headroom above that.";
+                        font-size: 10px;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+
+                    Lbl { text: "Start from"; }
+                    TemplateGallery {
+                        selected-index <=> GalleryModel.selected-index;
+                        selected => { root.apply-template-lock(); }
+                        chosen => { root.do-create(); }
+                    }
+                    if root.template-locks-fields: Text {
+                        text: "Locks Index gear to 96, Symmetry order to 8 and Mirror on, and seeds this template's tiers -- Create yields a design that solves immediately.";
+                        font-size: 8px;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+
+                    Rule {}
+
+                    Lbl { text: "Preform shape"; }
+                    ComboBox {
+                        model: ["Block", "Cylinder"];
+                        current-index <=> NewDesignModel.preform-shape-index;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 2px;
+                            Lbl { text: "Half-width"; }
+                            LineEdit {
+                                // (The style's LineEdit is 160px wide at minimum: two side by
+                                // side overflowed the dialog on a phone-width window.)
+                                min-width: 0px;
+                                text <=> NewDesignModel.preform-half-width;
+                                changed has-focus => { AppModel.text-focus = self.has-focus; }
+                            }
+                            Bad { text: root.half-width-valid ? "" : "must be > 0"; }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 2px;
+                            Lbl { text: "Length / width"; }
+                            LineEdit {
+                                min-width: 0px;
+                                text <=> NewDesignModel.preform-length-over-width;
+                                changed has-focus => { AppModel.text-focus = self.has-focus; }
+                            }
+                            Bad { text: root.length-over-width-valid ? "" : "must be > 0"; }
+                        }
+                    }
+                    // Depth on its own row: three fields side by side do not fit the dialog.
+                    HorizontalLayout {
+                        spacing: 6px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 2px;
+                            Lbl { text: "Depth"; }
+                            LineEdit {
+                                text <=> NewDesignModel.preform-depth;
+                                changed has-focus => { AppModel.text-focus = self.has-focus; }
+                            }
+                            Bad { text: root.depth-valid ? "" : "must be > 0"; }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+
+                    Rule {}
+
+                    HorizontalLayout {
+                        spacing: 6px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 2px;
+                            Lbl { text: "Index gear"; }
+                            ComboBox {
+                                min-width: 0px;
+                                model: ["96", "80", "77", "72", "64", "120", "Custom"];
+                                current-index <=> NewDesignModel.gear-index;
+                                enabled: !root.template-locks-fields;
+                            }
+                        }
+                        if NewDesignModel.gear-index == 6 && !root.template-locks-fields: VerticalLayout {
+                            width: 100px;
+                            spacing: 2px;
+                            Lbl { text: "Custom teeth"; }
+                            LineEdit {
+                                min-width: 0px;
+                                text <=> NewDesignModel.gear-custom-text;
+                                changed has-focus => { AppModel.text-focus = self.has-focus; }
+                            }
+                            Bad { text: root.custom-gear-valid ? "" : "must be > 0"; }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 2px;
+                            Lbl { text: "Symmetry order"; }
+                            LineEdit {
+                                text <=> NewDesignModel.symmetry-order-text;
+                                enabled: !root.template-locks-fields;
+                                changed has-focus => { AppModel.text-focus = self.has-focus; }
+                            }
+                            Bad { text: root.symmetry-valid ? "" : "must be a positive whole number"; }
+                        }
+                        VerticalLayout {
+                            spacing: 2px;
+                            Lbl { text: "Mirror"; }
+                            Rectangle {
+                                width: 36px;
+                                height: 20px;
+                                border-radius: 10px;
+                                background: NewDesignModel.mirror ? (root.template-locks-fields ? Theme.border-medium : Theme.accent-cyan) : Theme.bg-card-hover;
+                                opacity: root.template-locks-fields ? 0.6 : 1.0;
+                                TouchArea {
+                                    enabled: !root.template-locks-fields;
+                                    clicked => { NewDesignModel.mirror = !NewDesignModel.mirror; }
+                                }
+                                Rectangle {
+                                    width: 14px;
+                                    height: 14px;
+                                    border-radius: 7px;
+                                    background: white;
+                                    x: NewDesignModel.mirror ? parent.width - self.width - 3px : 3px;
+                                    y: 3px;
+                                    animate x { duration: 120ms; }
+                                }
+                            }
+                        }
+                    }
+
+                    Rule {}
+
+                    Lbl { text: "Starting material (change it any time in Design settings)"; }
+                    ComboBox {
+                        model: NewDesignModel.material-options;
+                        current-index <=> NewDesignModel.material-index;
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                Button {
+                    text: "Cancel";
+                    clicked => { root.cancel(); }
+                }
+                Button {
+                    text: "Create";
+                    primary: true;
+                    enabled: root.form-valid;
+                    clicked => { root.do-create(); }
+                }
+            }
+        }
+    }
+}

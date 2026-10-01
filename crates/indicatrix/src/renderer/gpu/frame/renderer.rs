@@ -4,6 +4,8 @@
 //! dispatch live in sibling modules ([`super::accumulate`]/[`super::dispatch`]) since
 //! both need `&mut self`/`&self` access to the fields defined here.
 
+use std::sync::OnceLock;
+
 use wgpu::BufferUsages;
 
 use crate::renderer::gpu::{
@@ -12,7 +14,7 @@ use crate::renderer::gpu::{
 };
 
 use super::{
-    CHUNK_BUDGET_BYTES, GpuFrameError, GpuPipelineKind, REDUCE_SHADER_SRC, SHADER_SRC,
+    CHUNK_BUDGET_BYTES, GpuFrameError, GpuPipelineKind, REDUCE_SHADER_SRC,
     bind_groups::WavefrontPipelines,
     readback::{GpuReduceParams, PixelXyzOutput, StagingSlot, staging_needs_growth},
     scene_buffers::{FrameSceneBuffers, TransportOutputs},
@@ -23,15 +25,21 @@ use crate::renderer::gpu::compute;
 /// frames.
 ///
 /// Construct once and keep it: [`GpuFrameRenderer::new`] acquires an adapter and
-/// compiles the megakernel, both of which take long enough to be worth doing off the
-/// frame loop.
+/// compiles the small reduction kernel; the megakernel for a material class compiles on
+/// that class's first frame. Both take long enough to be worth doing off the frame loop.
 pub struct GpuFrameRenderer {
     pub(super) ctx: GpuContext,
-    /// The GENERIC (`MATERIAL_CLASS = 0`) pipeline -- built eagerly since every self-test
-    /// in `renderer::gpu` dispatches it, and the equivalence checks need it available
-    /// without any prior `accumulate` call. See the parent module's doc comment's
-    /// "Material-class kernel specialisation" section.
-    pub(super) pipeline: wgpu::ComputePipeline,
+    /// The GENERIC (`MATERIAL_CLASS = 0`) pipeline, compiled on first request through
+    /// [`Self::pipeline_for_class`](super::specialisation): only the self-tests and the
+    /// equivalence checks ask for it, because `classify_material` never returns GENERIC
+    /// for a real material, so a production session never pays its compile. A `OnceLock`
+    /// because the dispatch paths that request it hold only `&self`. See the parent
+    /// module's doc comment's "Material-class kernel specialisation" section.
+    pub(super) pipeline_generic: OnceLock<wgpu::ComputePipeline>,
+    /// Shared compiled-kernel cache handed to every compute pipeline this renderer
+    /// builds -- see [`compute::create_pipeline_cache`] for when it exists and what it
+    /// buys. `None` on any device created without `Features::PIPELINE_CACHE`.
+    pub(super) pipeline_cache: Option<wgpu::PipelineCache>,
     /// The three per-class specialised pipelines, built LAZILY (see
     /// [`Self::ensure_specialized_pipeline`](super::specialisation)) on first use of that
     /// class -- `None` until a scene of that class is dispatched, so a session that only
@@ -40,9 +48,9 @@ pub struct GpuFrameRenderer {
     pub(super) pipeline_uniaxial: Option<wgpu::ComputePipeline>,
     pub(super) pipeline_biaxial: Option<wgpu::ComputePipeline>,
     /// `reduce_xyz_main`'s pipeline (see `reduce_xyz.wgsl`'s header comment) -- built
-    /// eagerly in [`Self::new`]/`Self::new_async` alongside the GENERIC transport
-    /// pipeline, since every production dispatch (`dispatch_chunk` and wasm32's
-    /// `accumulate_async`) uses it unconditionally.
+    /// eagerly in [`Self::new`]/`Self::new_async`, since every production dispatch
+    /// (`dispatch_chunk` and wasm32's `accumulate_async`) uses it unconditionally and it
+    /// is small.
     pub(super) reduce_pipeline: wgpu::ComputePipeline,
     pub(super) adapter_label: String,
     /// TWO chunk-output buffer sets, alternated by chunk index so one chunk's dispatch
@@ -105,8 +113,9 @@ pub struct GpuFrameRenderer {
     /// (persistent buffers, the chunk-timing EMA) is no longer trustworthy. Checked at
     /// the very top of `Self::accumulate_turn`, before touching anything else, so a
     /// poisoned renderer declines every later call instead of ever dispatching into it
-    /// again -- mirrors `GpuFrameError::DeviceLost`'s "stop using this renderer for the
-    /// rest of the process" contract, enforced one layer up by `GpuBackend::lost`.
+    /// again -- mirrors `GpuFrameError::DeviceLost`'s "stop using this renderer" contract:
+    /// `GpuBackend` suspends GPU rendering and, after its recovery cool-down, replaces the
+    /// renderer with a freshly acquired one.
     pub(super) poisoned: bool,
     /// `true` for exactly the duration of one `Self::accumulate_turn` call
     /// -- set at entry, cleared just before that call returns. Exists to catch a panic
@@ -122,7 +131,8 @@ pub struct GpuFrameRenderer {
 }
 
 impl GpuFrameRenderer {
-    /// Acquires a GPU device and compiles `transport_main`.
+    /// Acquires a GPU device and compiles `reduce_xyz_main`; `transport_main` compiles
+    /// lazily per material class (see [`Self::pipeline_generic`]'s field doc comment).
     ///
     /// # Errors
     ///
@@ -139,21 +149,19 @@ impl GpuFrameRenderer {
         }
         let info = ctx.adapter.get_info();
         let adapter_label = format!("{} ({:?})", info.name, info.backend);
-        let pipeline = compute::create_compute_pipeline(
+        let pipeline_cache = compute::create_pipeline_cache(&ctx.device);
+        let reduce_pipeline = compute::create_compute_pipeline_cached(
             &ctx.device,
-            "transport_main",
-            SHADER_SRC,
-            "transport_main",
-        );
-        let reduce_pipeline = compute::create_compute_pipeline(
-            &ctx.device,
+            pipeline_cache.as_ref(),
             "reduce_xyz_main",
             REDUCE_SHADER_SRC,
             "reduce_xyz_main",
+            &[],
         );
         Ok(Self {
             ctx,
-            pipeline,
+            pipeline_generic: OnceLock::new(),
+            pipeline_cache,
             pipeline_isotropic: None,
             pipeline_uniaxial: None,
             pipeline_biaxial: None,
@@ -247,8 +255,7 @@ impl GpuFrameRenderer {
         &self.adapter_label
     }
 
-    /// Drops both persistent staging slots and marks this renderer
-    /// permanently unusable.
+    /// Drops both persistent staging slots and marks this renderer unusable for good.
     ///
     /// A staging buffer `compute::finish_map_read_into` failed to finish reading (a
     /// poll timeout, a `recv_timeout` failure, or a `get_mapped_range` error -- see that
@@ -263,12 +270,12 @@ impl GpuFrameRenderer {
     /// pending callback is simply never delivered) and immediately releases the GPU
     /// allocation.
     ///
-    /// Never rebuilds the dropped slots: `self.poisoned = true` here is permanent (no
-    /// method ever clears it) exactly because a renderer this was called on has no
-    /// trustworthy way to know how much of a chunk's work actually completed before the
-    /// failure -- matching [`GpuFrameError::DeviceLost`]'s "stop using this renderer for
-    /// the rest of the process" contract enforced one layer up in
-    /// `renderer::gpu_backend::GpuBackend`.
+    /// Never rebuilds the dropped slots: `self.poisoned = true` here is permanent for
+    /// this renderer (no method ever clears it) exactly because a renderer this was
+    /// called on has no trustworthy way to know how much of a chunk's work actually
+    /// completed before the failure -- matching [`GpuFrameError::DeviceLost`]'s "stop
+    /// using this renderer" contract. `renderer::gpu_backend::GpuBackend` recovers by
+    /// replacing the whole renderer after a cool-down, never by reviving this one.
     ///
     /// `pub(crate)`: lets this crate's own `#[cfg(all(test, feature =
     /// "gpu"))]` hardware tests simulate "a previous chunk readback already failed"

@@ -9,6 +9,7 @@ use super::{
         NUM_CHANNELS,
         absorption::channel_absorption_alphas_assigned,
         camera::{FacetFinish, Ray},
+        color::{integrate_channels_to_xyz, integrate_channels_to_xyz_families},
         environment::{EnvironmentSource, sample_environment_for_nee},
         intersect::intersect_polyhedron_soa,
         refraction::{RayMaterialContext, RayWavelengthCache},
@@ -237,12 +238,14 @@ pub(in super::super) enum ScatterStepOutcome {
     reason = "bundles the fixed-for-the-trace contexts (mat_ctx, cache, nee), this \
               bounce's own state, the RNG stream identity, and the per-ray state a \
               scatter event can mutate -- the same shape dispatch_bounce's reason \
-              explains in transport.rs; `lambdas`/`radiance` are the HDR-map NEE \
+              explains in transport.rs; `lambdas`/`nee_xyz` are the HDR-map NEE \
               contribution's inputs/output, threaded through rather than bundled \
               into `nee` since they vary in a way `NeeContext` (fixed for the whole \
-              trace) deliberately does not; `facet_finishes` (the per-facet surface \
-              finish) is threaded the same way rather than added to `NeeContext` so \
-              the GPU Tier 2 harness's `NeeContext` literals stay independent of it"
+              trace) deliberately does not; `enable_exit_splitting`/`compat` are this \
+              moment's own family-integration inputs (see `nee_xyz`'s own doc comment); \
+              `facet_finishes` (the per-facet surface finish) is threaded the same way \
+              rather than added to `NeeContext` so the GPU Tier 2 harness's \
+              `NeeContext` literals stay independent of it"
 )]
 pub(in super::super) fn try_scatter_step(
     mat_ctx: &RayMaterialContext,
@@ -259,7 +262,17 @@ pub(in super::super) fn try_scatter_step(
     split_radiance: &mut [f32; NUM_CHANNELS],
     nee: NeeContext<'_>,
     lambdas: &[f32; NUM_CHANNELS],
-    radiance: &mut [f32; NUM_CHANNELS],
+    // The final XYZ output's own NEE accumulator (`trace_spectral_ray_inner`'s
+    // `nee_xyz`) -- see F-09b / this function's own "NEE spectral weighting" doc note
+    // below for why a scattering-point NEE deposit is integrated to XYZ HERE, using
+    // THIS moment's own `path_pdf`/`compat`, rather than folded into the shared
+    // `radiance` array the way it was before (which let it drift, wrongly, onto
+    // whatever `path_pdf` the REST of the path happened to end up with).
+    nee_xyz: &mut Vec3,
+    // `trace_spectral_ray_inner`'s own `enable_exit_splitting` parameter and this
+    // moment's `exit_split_ctx.compat` snapshot -- see `nee_xyz`'s doc comment above.
+    enable_exit_splitting: bool,
+    compat: [u8; NUM_CHANNELS],
     facet_finishes: &[FacetFinish],
 ) -> ScatterStepOutcome {
     if material.scattering_sigma_s <= 0.0 {
@@ -287,6 +300,21 @@ pub(in super::super) fn try_scatter_step(
     // Direct light sample from the scattering point, MIS-weighted against
     // the phase-sampled continuation below. A no-op (no RNG draw, no accumulator touch)
     // whenever `!nee.enabled`.
+    //
+    // # NEE spectral weighting (F-09b)
+    //
+    // This deposit is a complete, self-contained direct-lighting sample: it must be
+    // combined into XYZ using `path_pdf`/`compat` AS THEY STAND RIGHT NOW (this
+    // scattering event's own per-channel technique densities), never the FINAL
+    // `path_pdf`/`compat` the rest of the path -- unrelated further bounces this same
+    // sample has no bearing on -- happens to end up with. Depositing into a fresh local
+    // buffer and integrating it immediately, added into the caller's own running
+    // `nee_xyz` (unconditionally, exactly like the old shared-`radiance` deposit was
+    // always summed regardless of how the loop eventually terminated -- Russian
+    // roulette's `apply_russian_roulette` rescales `stokes`/`split_radiance` only,
+    // never `radiance`/`nee_xyz`), fixes this without changing that unconditional
+    // inclusion.
+    let mut nee_deposit = [0.0f32; NUM_CHANNELS];
     nee_contribution_hg_scatter(
         nee,
         lambdas,
@@ -297,12 +325,23 @@ pub(in super::super) fn try_scatter_step(
         rng_seed,
         bounce,
         stokes,
-        radiance,
+        &mut nee_deposit,
         &alphas,
         material.scattering_sigma_s,
         material.absorption_path_scale,
         facet_finishes,
     );
+    *nee_xyz += if enable_exit_splitting {
+        integrate_channels_to_xyz_families(
+            &nee_deposit,
+            lambdas,
+            path_pdf,
+            mat_ctx.hero_idx,
+            compat,
+        )
+    } else {
+        integrate_channels_to_xyz(&nee_deposit, lambdas, path_pdf, mat_ctx.hero_idx)
+    };
 
     current_ray.origin = scatter_point;
     current_ray.dir = new_dir;

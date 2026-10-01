@@ -5,16 +5,37 @@
 //! exports and tilt videos.
 //!
 //! ```text
-//! -> FinalImageRequest { request_id, scene, first_sample, samples, width, height, color_space, output }
+//! -> FinalImageRequest { request_id, scene, first_sample, samples, width, height, color_space, output,
+//!                        viewer_samples }
 //! <- PROGRESS          { request_id, samples_done }                 -- heartbeat, at least every 2 s
+//! <- PREVIEW           { .. }                                        -- optional; a coordinator sends a
+//!                                                                       <= 360 px thumbnail about every 1 %
+//! -> CONTRIBUTION (optional, v16) + payload -- the viewer's own share, see below
 //! <- FINAL_IMAGE       { request_id, width, height, samples_done, encoding, payload_len } + raw PNG bytes
 //! <- DONE              { request_id, cancelled: false, stats }      -- exactly once, after FINAL_IMAGE
 //! ```
+//!
+//! # Viewer contribution (v16)
+//!
+//! `viewer_samples` reserves the LAST `viewer_samples` of `[first_sample, first_sample +
+//! samples)` for the viewer itself: the server only plans `server_samples()` of it, and
+//! the viewer renders the rest locally and uploads the sum as one `CONTRIBUTION` (see
+//! `crate::messages::contribution`). `0` is today's behaviour (the server plans the
+//! whole range). `viewer_samples` must be at most half of `samples`
+//! ([`FinalImageRequest::viewer_share_valid`]), or the server refuses the request with
+//! `VALIDATION_FAILED`. If the contribution does not arrive within the server's wait
+//! (or arrives invalid), the server renders that tail itself and reports how many
+//! samples it reclaimed in `Stats.reclaimed_samples` -- the export still succeeds
+//! either way.
 //!
 //! # Reply semantics
 //!
 //! - `PROGRESS` heartbeats follow the same liveness rule as a `RENDER` stream (a client
 //!   drops a silent connection after 8 s), so a server sends one at least every 2 s.
+//! - `PREVIEW` frames are optional and only a coordinator job emits them (a plain worker
+//!   never does): a box-downsampled thumbnail, long edge at most 360 px, sent when
+//!   `samples_done` has advanced by about 1 % of `samples` since the previous one. A
+//!   client that does not want them may ignore them.
 //! - On success the server sends exactly one `StreamEvent::FinalImage` followed by
 //!   `DONE { cancelled: false }` with `stats.samples_done == samples`.
 //! - A `CANCEL` for `request_id` ends the job with `DONE { cancelled: true }` and no
@@ -98,6 +119,12 @@ pub struct FinalImageRequest {
     pub color_space: WireColorSpace,
     /// The output format.
     pub output: FinalOutput,
+    /// v16: the viewer renders the LAST `viewer_samples` of `[first_sample,
+    /// first_sample+samples)` itself and uploads them as one `CONTRIBUTION`; the server
+    /// plans only `samples - viewer_samples`. `0` = today's behaviour. Must be `<=
+    /// samples / 2` (else `VALIDATION_FAILED`).
+    #[serde(default)]
+    pub viewer_samples: u32,
 }
 
 impl FinalImageRequest {
@@ -105,6 +132,34 @@ impl FinalImageRequest {
     #[must_use]
     pub const fn output_matches_scene(&self) -> bool {
         self.width == self.scene.width && self.height == self.scene.height
+    }
+
+    /// The number of samples the SERVER plans -- `samples` minus the viewer's reserved
+    /// tail.
+    #[must_use]
+    pub const fn server_samples(&self) -> u32 {
+        self.samples.saturating_sub(self.viewer_samples)
+    }
+
+    /// Whether [`Self::viewer_samples`] is at most half of `samples` -- the only share
+    /// a server accepts.
+    #[must_use]
+    pub const fn viewer_share_valid(&self) -> bool {
+        self.viewer_samples <= self.samples / 2
+    }
+
+    /// `(first, count)` of the viewer-reserved tail, `None` when [`Self::viewer_samples`]
+    /// is `0`.
+    #[must_use]
+    pub const fn reserved_range(&self) -> Option<(u32, u32)> {
+        if self.viewer_samples == 0 {
+            None
+        } else {
+            Some((
+                self.first_sample + self.server_samples(),
+                self.viewer_samples,
+            ))
+        }
     }
 }
 
@@ -156,6 +211,7 @@ mod tests {
                 height: 6,
                 color_space,
                 output: FinalOutput::PngRgba8,
+                viewer_samples: 32,
             };
             assert!(request.output_matches_scene());
             let mut buf = Vec::new();
@@ -178,7 +234,39 @@ mod tests {
             height: 6,
             color_space: WireColorSpace::Srgb,
             output: FinalOutput::PngRgba8,
+            viewer_samples: 0,
         };
         assert!(!request.output_matches_scene());
+    }
+
+    #[test]
+    fn the_reserved_range_is_the_tail_and_share_over_half_is_invalid() {
+        let request = FinalImageRequest {
+            request_id: 3,
+            scene: scene(),
+            first_sample: 100,
+            samples: 10,
+            width: 8,
+            height: 6,
+            color_space: WireColorSpace::Srgb,
+            output: FinalOutput::PngRgba8,
+            viewer_samples: 4,
+        };
+        assert_eq!(request.server_samples(), 6);
+        assert!(request.viewer_share_valid());
+        assert_eq!(request.reserved_range(), Some((106, 4)));
+
+        let no_viewer = FinalImageRequest {
+            viewer_samples: 0,
+            ..request.clone()
+        };
+        assert_eq!(no_viewer.server_samples(), 10);
+        assert_eq!(no_viewer.reserved_range(), None);
+
+        let over_half = FinalImageRequest {
+            viewer_samples: 6,
+            ..request
+        };
+        assert!(!over_half.viewer_share_valid());
     }
 }

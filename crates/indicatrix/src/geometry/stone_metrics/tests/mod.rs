@@ -8,8 +8,9 @@ use super::{
     BLANK_HALF_EXTENT, EPS_FEAS, MIN_TRIPLE_DET, SolidMesh, SolidStatus, VERTEX_DEDUP,
     build_solid_mesh, measure_solid,
     mesh::face_area,
-    vertices::{SolidVertex, dedup_planes, feasible_vertices},
+    vertices::{SolidVertex, dedup_planes, feasible_vertices, for_each_feasible_triple},
 };
+use crate::geometry::{cuts::StandardGemCuts, plane::GpuFacetPlane};
 
 mod dedup;
 mod measure;
@@ -20,7 +21,7 @@ mod proportions;
 // The `VertexAccumulator` x-sorted index in `insert_if_new` must make the
 // exact same accept/reject decision, in the exact same insertion order,
 // as the O(V^2) linear scan it replaces. Proven here by running both side
-// by side over the module's own fixtures plus real cutting schedules and
+// by side over the module's own fixtures plus real cutting instructions and
 // comparing the resulting vertex lists bit-for-bit.
 // -----------------------------------------------------------------------
 
@@ -133,7 +134,7 @@ fn assert_dedup_matches_reference(planes: &[(DVec3, f64)], label: &str) {
     }
 }
 
-/// Builds a real cutting schedule's plane arrangement (tier normals via
+/// Builds real cutting instructions' plane arrangement (tier normals via
 /// `meet_solver::tier_instance_normals`, offsets from `solve_meet_points`'s
 /// solved masts) the same way `SolveContext::config_score` does when the
 /// solver scores a candidate configuration against a design's printed
@@ -266,4 +267,89 @@ fn assert_mesh_matches_measure_solid(planes: &[(DVec3, f64)], label: &str) {
         (got_volume - want_volume).abs() < 1e-6,
         "{label}: mesh divergence volume {got_volume} != measure_solid volume {want_volume}"
     );
+}
+
+// -----------------------------------------------------------------------
+// Duplicate planes and the pair prune
+// -----------------------------------------------------------------------
+
+/// Half-space form of a reference cut's planes, as `measure_solid` takes them.
+fn halfspaces(planes: Vec<GpuFacetPlane>) -> Vec<(DVec3, f64)> {
+    planes
+        .into_iter()
+        .map(GpuFacetPlane::to_halfspace_f64)
+        .collect()
+}
+
+/// Repeating any one plane of the Standard Round Brilliant must not change the
+/// measured volume: the copy is bit-identical, so whatever the `f32`
+/// normalisation did to its length, it has to be recognised and dropped rather
+/// than counted as a second face.
+#[test]
+fn a_duplicated_plane_leaves_the_round_brilliant_volume_unchanged() {
+    let base = halfspaces(StandardGemCuts::standard_round_brilliant());
+    let want = measure_solid(&base)
+        .expect("the brilliant must measure")
+        .volume;
+    for (i, &plane) in base.iter().enumerate() {
+        let mut doubled = base.clone();
+        doubled.push(plane);
+        let got = measure_solid(&doubled)
+            .unwrap_or_else(|| panic!("plane {i} duplicated: must still measure"))
+            .volume;
+        assert!(
+            (got - want).abs() <= 1e-12 * want.abs(),
+            "plane {i} duplicated: volume {got} differs from {want}"
+        );
+    }
+}
+
+/// One visited triple: plane indices, determinant bits and vertex bits.
+type TripleRecord = ([usize; 3], u64, [u64; 3]);
+
+/// Runs the arrangement walk and returns whether it completed plus every
+/// triple it visited, in visiting order, compared by bit pattern.
+fn walk_triples(
+    planes: &[(DVec3, f64)],
+    det_floor: f64,
+    prune_pairs: bool,
+) -> (bool, Vec<TripleRecord>) {
+    let mut visited = Vec::new();
+    let completed = for_each_feasible_triple(planes, det_floor, prune_pairs, |t, det, v| {
+        visited.push((
+            t,
+            det.to_bits(),
+            [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()],
+        ));
+    })
+    .is_some();
+    (completed, visited)
+}
+
+/// The pair prune only skips work: with and without it the walk must visit the
+/// same triples, with the same determinants and vertices, in the same order.
+#[test]
+fn pair_prune_visits_the_same_triples_as_the_exhaustive_walk() {
+    for (label, planes) in [
+        (
+            "round brilliant",
+            StandardGemCuts::standard_round_brilliant(),
+        ),
+        ("emerald", StandardGemCuts::emerald_cut()),
+    ] {
+        let planes = halfspaces(planes);
+        for det_floor in [MIN_TRIPLE_DET, 1e-8] {
+            let exhaustive = walk_triples(&planes, det_floor, false);
+            let pruned = walk_triples(&planes, det_floor, true);
+            assert!(exhaustive.0, "{label}: the cut must be bounded");
+            assert!(
+                !exhaustive.1.is_empty(),
+                "{label}: the walk must find vertices"
+            );
+            assert_eq!(
+                exhaustive, pruned,
+                "{label}, det floor {det_floor}: pruned walk diverged from the exhaustive one"
+            );
+        }
+    }
 }

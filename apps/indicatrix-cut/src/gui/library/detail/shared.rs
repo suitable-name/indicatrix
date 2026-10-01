@@ -8,63 +8,273 @@ use crate::{
 };
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 
-/// The angle magnitude (degrees) at or above which a catalogue schedule row is
-/// treated as describing the girdle itself rather than a crown or pavilion facet --
-/// a fallback heuristic (see [`sides_from_angle_sequence`]'s own doc
-/// comment for why a sign-based classifier cannot work on this data).
-const GIRDLE_ANGLE_THRESHOLD_DEG: f64 = 89.5;
+/// The angle (degrees) a catalogue schedule row must equal, within
+/// [`GIRDLE_ANGLE_TOLERANCE_DEG`], to be read as the girdle itself rather than a
+/// steep crown or pavilion facet. Deliberately an equality test, not a "steep
+/// enough" threshold: measured on the real catalogue, angles cluster tightly at
+/// exactly `90.00\u{b0}` (7,972 rows) with every other near-90 facet angle below
+/// `88.73\u{b0}` and nothing in between -- so an 89.6\u{b0} row is a real (if steep)
+/// facet, not a mislabelled girdle, and a "`>= 89.5`"-style threshold would wrongly
+/// have swallowed it.
+const GIRDLE_ANGLE_DEG: f64 = 90.0;
+
+/// See [`GIRDLE_ANGLE_DEG`]'s own doc comment for why this is a tight equality
+/// tolerance rather than a broad "steep angle" threshold.
+const GIRDLE_ANGLE_TOLERANCE_DEG: f64 = 0.01;
 
 /// Parses a catalogue angle-settings row's `angle` text the same way
 /// `indicatrix_vault::local::parse_angle_deg` does -- that function is private to the
-/// vault crate, so this reimplements its two-line body: strip a trailing `\u{b0}`
-/// degree sign, then a plain `f64` parse. `None` for text that still doesn't parse.
+/// vault crate, so this reimplements its body: strip a trailing degree sign, then a
+/// plain `f64` parse. Strips both the normal `\u{b0}` sign and `\u{fffd}` (the Unicode
+/// replacement character) -- measured on the real catalogue, 6 of the 50,817 stored
+/// `angle_settings.angle` values store a mangled degree sign as `\u{fffd}` instead of
+/// `\u{b0}` (detail 3282's `P`/`G`/`C` rows). `None` for text that still doesn't parse.
 pub(super) fn parse_catalogue_angle_deg(angle: &str) -> Option<f64> {
-    angle.trim().trim_end_matches('\u{b0}').trim().parse().ok()
+    angle
+        .trim()
+        .trim_end_matches(['\u{b0}', '\u{fffd}'])
+        .trim()
+        .parse()
+        .ok()
 }
 
-/// Derives every row's [`AngleItem::side`] (`-1` pavilion, `1` crown, `0` neither) from
-/// the ORDER a schedule lists `angles` in, not from the sign of the angle text.
+/// Case-insensitive, trim-insensitive equality against a lowercase `target`.
+fn eq_ignore_case_trim(text: &str, target: &str) -> bool {
+    text.trim().eq_ignore_ascii_case(target)
+}
+
+/// Matches a table facet label: `T`, `t`, `Table`, `table`, any of those with a
+/// trailing `.`, case-insensitively (also catches the all-caps `TABLE.` seen in the
+/// real catalogue, which a case-sensitive `^[Tt](able)?\.?$` would miss).
+fn is_table_facet(facet: &str) -> bool {
+    let f = facet.trim();
+    let core = f.strip_suffix('.').unwrap_or(f);
+    core.eq_ignore_ascii_case("t") || core.eq_ignore_ascii_case("table")
+}
+
+/// A row is the table row when its index column says so, or its facet label does --
+/// the two conventions seen in the real catalogue (e.g. detail 16's `T(0,'Table')` row
+/// sets both).
+fn is_table_row(facet: &str, index_val: &str) -> bool {
+    eq_ignore_case_trim(index_val, "table") || is_table_facet(facet)
+}
+
+/// Matches a pavilion-prefixed facet label: `P`/`p`, optionally `F`/`f`, then a digit
+/// (`P1`, `PF1`, `pf3`, `P2(G)` -- only the prefix has to match).
+fn is_pavilion_prefixed(facet: &str) -> bool {
+    let mut chars = facet.trim().chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !first.eq_ignore_ascii_case(&'p') {
+        return false;
+    }
+    let mut next = chars.next();
+    if next.is_some_and(|c| c.eq_ignore_ascii_case(&'f')) {
+        next = chars.next();
+    }
+    next.is_some_and(|c| c.is_ascii_digit())
+}
+
+/// Matches a crown-prefixed facet label: `C`/`c` then a digit (`C1`, `C1A`).
+fn is_crown_prefixed(facet: &str) -> bool {
+    let mut chars = facet.trim().chars();
+    chars.next().is_some_and(|c| c.eq_ignore_ascii_case(&'c'))
+        && chars.next().is_some_and(|c| c.is_ascii_digit())
+}
+
+/// Matches `1G`, `2G`, ... -- digits with a single trailing `G`/`g`, the catalogue's
+/// own way of tagging a facet as girdle-adjacent without its angle equalling
+/// [`GIRDLE_ANGLE_DEG`]. Checked before [`is_digits_with_optional_trailing_letter`]
+/// so `1G` reports girdle rather than being swallowed by that more general rule.
+fn is_digit_with_trailing_girdle_letter(facet: &str) -> bool {
+    let f = facet.trim();
+    match f.chars().next_back() {
+        Some(last) if last.eq_ignore_ascii_case(&'g') => {
+            let digits = &f[..f.len() - last.len_utf8()];
+            !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+        }
+        _ => false,
+    }
+}
+
+/// Matches a facet label starting with `G`/`g` (`G`, `G1`, `G2`, `GIRDLE`).
+fn starts_with_girdle_letter(facet: &str) -> bool {
+    facet
+        .trim()
+        .chars()
+        .next()
+        .is_some_and(|c| c.eq_ignore_ascii_case(&'g'))
+}
+
+/// Matches pure digits with an optional single trailing letter (`1`, `21`, `1A`,
+/// `6B`) -- the catalogue's numbered-pavilion-facet convention.
+fn is_digits_with_optional_trailing_letter(facet: &str) -> bool {
+    let f = facet.trim();
+    let digits = match f.chars().next_back() {
+        Some(c) if c.is_ascii_alphabetic() => &f[..f.len() - c.len_utf8()],
+        _ => f,
+    };
+    !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Matches a single lettered facet label other than `G`/`T` (`A`, `b`, `F`) -- the
+/// catalogue's lettered-crown-facet convention.
+fn is_single_crown_letter(facet: &str) -> bool {
+    let f = facet.trim();
+    let mut chars = f.chars();
+    let Some(c) = chars.next() else {
+        return false;
+    };
+    chars.next().is_none()
+        && c.is_ascii_alphabetic()
+        && !c.eq_ignore_ascii_case(&'g')
+        && !c.eq_ignore_ascii_case(&'t')
+}
+
+/// Classifies one row purely from its own label (`facet`/parsed `angle`/`index_val`),
+/// with no knowledge of any other row in the schedule. `None` means the label alone
+/// isn't enough -- [`sides_from_rows`] falls back to [`positional_fallback`] for those.
 ///
-/// Measured on the real catalogue: 50,809 of 50,817 stored `angle_settings.angle`
-/// values end in `\u{b0}` (so a bare `str::parse` fails on virtually every row unless
-/// that's stripped first, reporting `0`/neither side for everything), and every stored pavilion angle is
-/// written UNSIGNED -- so even after stripping the degree sign, a sign check
-/// (`deg < 0.0` / `deg > 0.0`) still reports every real row as `0`. The Pavilion/Crown
-/// filter pills in `cutting_table.slint` were therefore dead for every stored design.
+/// Order matters -- checked in this sequence: (a) girdle by angle or index text; (b)
+/// table by index text or facet; (c) pavilion-prefixed, then crown-prefixed, then
+/// digit+trailing-`G` (must come before the more general digit-plus-letter rule so
+/// `1G` reports girdle, not pavilion), then girdle-prefixed, then plain
+/// digit(+letter) as pavilion, then a lone crown letter.
+fn label_side(facet: &str, angle_deg: Option<f64>, index_val: &str) -> Option<i32> {
+    if angle_deg.is_some_and(|d| (d - GIRDLE_ANGLE_DEG).abs() < GIRDLE_ANGLE_TOLERANCE_DEG)
+        || eq_ignore_case_trim(index_val, "girdle")
+    {
+        return Some(0);
+    }
+    if is_table_row(facet, index_val) {
+        return Some(1);
+    }
+    if is_pavilion_prefixed(facet) {
+        return Some(-1);
+    }
+    if is_crown_prefixed(facet) {
+        return Some(1);
+    }
+    if is_digit_with_trailing_girdle_letter(facet) {
+        return Some(0);
+    }
+    if starts_with_girdle_letter(facet) {
+        return Some(0);
+    }
+    if is_digits_with_optional_trailing_letter(facet) {
+        return Some(-1);
+    }
+    if is_single_crown_letter(facet) {
+        return Some(1);
+    }
+    None
+}
+
+/// The positional fallback for a row [`label_side`] couldn't classify (an
+/// empty/unrecognised label): anchors on the schedule's own girdle row(s) --
+/// `girdle_positions`, every index [`label_side`] reported `0` for -- and, when
+/// present, `table_position` -- the FIRST row [`is_table_row`] matched.
 ///
-/// This crate's own schedule rows (`gui::editor::state::cutting_schedule_rows`) take
-/// the side from the SOLVER's per-tier block classification instead, which needs a
-/// solved [`indicatrix_cut_core::Design`] and is `pub(super)` to `gui::editor` -- not
-/// reachable from this module (which deliberately never names that feature-gated
-/// `Design` type in its own signatures, see `resolve_catalogue_planes_for_entry`'s own
-/// doc comment) without pulling in the whole editor pipeline just to classify a
-/// display-only column. This is the documented fallback in its place: a catalogue
-/// schedule reliably lists crown facets first, then the girdle row(s) (~90 degrees),
-/// then pavilion facets -- the same order `.asc`/`GemCad` schedules and this crate's own
-/// tier table use. So the FIRST row whose angle is at least
-/// [`GIRDLE_ANGLE_THRESHOLD_DEG`] marks the crown/pavilion boundary: every row at or
-/// past that magnitude (there may be more than one girdle-adjacent facet) reports `0`
-/// (the girdle itself, neither side); every row before the boundary is crown (`1`);
-/// every row strictly after it is pavilion (`-1`). A row whose angle text doesn't
-/// parse at all also reports `0`.
-pub(super) fn sides_from_angle_sequence<'a>(angles: impl Iterator<Item = &'a str>) -> Vec<i32> {
-    let degrees: Vec<Option<f64>> = angles.map(parse_catalogue_angle_deg).collect();
-    let girdle_idx = degrees
+/// A row strictly inside the girdle block (`girdle_positions.first()..=last()`)
+/// reports `0` -- it sits among the girdle rows themselves. Outside that block, the
+/// table row settles which side is crown: whichever side of the girdle block the
+/// table sits on (before or after) is crown (`1`), the other is pavilion (`-1`) --
+/// this is what fixes designs where the girdle is listed FIRST (1,403 of 3,021 real
+/// designs) and everything else, including real crown facets, would otherwise be
+/// misread as pavilion by a naive before/after-girdle rule.
+///
+/// With no table row to anchor on, this falls back to the old before/after-girdle
+/// rule (before = crown, after = pavilion) but ONLY when the girdle sits in the
+/// MIDDLE of the row list (not the first or last row overall) -- a girdle that's
+/// itself first or last gives no reliable "before" or "after" side to trust, so that
+/// case (and a schedule with no girdle row at all) reports `0` rather than guessing.
+const fn positional_fallback(
+    index: usize,
+    girdle_positions: &[usize],
+    table_position: Option<usize>,
+    row_count: usize,
+) -> i32 {
+    let (Some(&first), Some(&last)) = (girdle_positions.first(), girdle_positions.last()) else {
+        return 0;
+    };
+    if index >= first && index <= last {
+        return 0;
+    }
+    let row_after_girdle = index > last;
+    match table_position {
+        Some(table_idx) if table_idx < first || table_idx > last => {
+            let table_after_girdle = table_idx > last;
+            if row_after_girdle == table_after_girdle {
+                1
+            } else {
+                -1
+            }
+        }
+        Some(_) => 0,
+        None => {
+            let girdle_is_first_or_last = first == 0 || last == row_count - 1;
+            if girdle_is_first_or_last {
+                0
+            } else if row_after_girdle {
+                -1
+            } else {
+                1
+            }
+        }
+    }
+}
+
+/// Derives every row's [`AngleItem::side`] (`-1` pavilion, `1` crown, `0` girdle/
+/// unclassified) from each row's own `facet`/`angle`/`index_val` label text, falling
+/// back to schedule POSITION only when the label itself doesn't say (see
+/// [`label_side`] and [`positional_fallback`]).
+///
+/// A purely positional rule (crown before the girdle row, pavilion after) does not
+/// work on this data: measured on the real catalogue's 3,021 designs with angle rows,
+/// the girdle row sits FIRST in 1,403 of them and in the MIDDLE in 1,401 -- so
+/// "before the girdle" is crown for barely more than half of all designs. This reads
+/// each row's own label first (facet conventions measured across all 50,817 rows:
+/// pure digits with an optional trailing letter, or a `P`/`PF` prefix, are pavilion;
+/// a single letter, a `C` prefix, or the table row are crown; `G`-prefixed or
+/// an angle equal to [`GIRDLE_ANGLE_DEG`] is the girdle itself) and only falls back
+/// to row position for the minority of rows an empty or unrecognised label leaves
+/// undecided -- see [`positional_fallback`] for that fallback's own rule. An
+/// unclassified row (no label match, no usable positional anchor) reports `0`, the
+/// same as the girdle: shown under "All", excluded from both the Pavilion and Crown
+/// filters -- never mis-shown as the wrong side.
+pub(super) fn sides_from_rows<'a>(
+    rows: impl Iterator<Item = (&'a str, &'a str, &'a str)>,
+) -> Vec<i32> {
+    let rows: Vec<(&str, &str, &str)> = rows.collect();
+    let provisional: Vec<Option<i32>> = rows
         .iter()
-        .position(|deg| deg.is_some_and(|d| d >= GIRDLE_ANGLE_THRESHOLD_DEG));
-    degrees
+        .map(|&(facet, angle, index_val)| {
+            label_side(facet, parse_catalogue_angle_deg(angle), index_val)
+        })
+        .collect();
+
+    let girdle_positions: Vec<usize> = provisional
         .iter()
         .enumerate()
-        .map(|(i, deg)| match deg {
-            None => 0,
-            Some(d) if *d >= GIRDLE_ANGLE_THRESHOLD_DEG => 0,
-            Some(_) => {
-                if girdle_idx.is_some_and(|g| i > g) {
-                    -1
-                } else {
-                    1
-                }
-            }
+        .filter(|&(_, side)| *side == Some(0))
+        .map(|(i, _)| i)
+        .collect();
+    let table_position =
+        rows.iter()
+            .zip(provisional.iter())
+            .position(|(&(facet, _, index_val), side)| {
+                *side == Some(1) && is_table_row(facet, index_val)
+            });
+
+    let row_count = rows.len();
+    provisional
+        .iter()
+        .enumerate()
+        .map(|(i, side)| {
+            side.unwrap_or_else(|| {
+                positional_fallback(i, &girdle_positions, table_position, row_count)
+            })
         })
         .collect()
 }

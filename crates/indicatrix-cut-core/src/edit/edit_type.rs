@@ -4,7 +4,7 @@
 //! this whole crate's undo/redo rests on.
 
 use crate::{
-    design::{ConstraintTier, Design, TierTarget},
+    design::{ConstraintTier, Design, TierId, TierTarget},
     material::MaterialSelection,
     preform::PreformSpec,
 };
@@ -130,12 +130,30 @@ pub enum Edit {
         index: usize,
         target: Option<TierTarget>,
     },
+    /// Never constructed by a caller directly -- an internal bookkeeping step
+    /// [`Design::apply_edit`]'s own [`Edit::RemoveTier`] inverse uses to restore
+    /// the exact [`crate::design::TierId`] the removed tier held, since a plain
+    /// [`Edit::AddTier`] always allocates a genuinely fresh one (see
+    /// [`crate::design::TierId`]'s own "never reused" doc comment -- undoing a
+    /// removal is the one case where reproducing the SAME id, not merely a
+    /// distinct one, is the correct behaviour). Sets [`Design::tier_ids`] at
+    /// `index` to `id` and returns the same variant carrying whatever id was
+    /// there before, so applying this twice in a row (once to restore, once as
+    /// its own recorded inverse) round-trips exactly like every other
+    /// single-entry `Set*` variant.
+    RestoreTierId { index: usize, id: TierId },
     /// Replaces the design's index-gear tooth count, symmetry order and mirror
     /// flag wholesale, the schedule-wide counterpart to `SetMaterial`. Every
     /// tier's own `indices`/`detached` stay numerically unchanged -- see
     /// [`Edit::RemapIndices`] for the edit that re-derives them for a NEW gear;
     /// the editor applies both as two separate `History` steps on a gear-combo
     /// change.
+    ///
+    /// [`Design::apply_edit`] rejects `gear_teeth == 0` or `symmetry_order == 0`
+    /// with an [`EditError`] (without modifying `self`) rather than accepting
+    /// them: either makes every tier's index-wheel position meaningless and
+    /// produces a `.asc` `g`/`y` line [`indicatrix_formats::asc::parse_asc`]
+    /// refuses to read back at all.
     SetSchedule {
         gear_teeth: i32,
         symmetry_order: u32,
@@ -246,6 +264,16 @@ impl Edit {
                     |t| format!("Set target for {label} to {}", describe_tier_target(t)),
                 )
             }
+            // Internal bookkeeping only -- see this variant's own doc comment.
+            // `describe_batch` filters it out of a `RemoveTier` undo's own
+            // description before this arm is ever reached in practice; this text
+            // is a defensive fallback, not something a cutter should see.
+            Self::RestoreTierId { index, .. } => {
+                format!(
+                    "Restore tier identity for {}",
+                    tier_label_at(design, *index)
+                )
+            }
             Self::SetSchedule { gear_teeth, .. } => format!("Set gear to {gear_teeth} teeth"),
             Self::RemapIndices {
                 from_gear, to_gear, ..
@@ -303,12 +331,19 @@ fn describe_tier_target(target: TierTarget) -> String {
 }
 
 /// [`Edit::describe`]'s label for a [`MaterialSelection`] -- its name when set, else a
-/// placeholder (an RI-override-only selection has no catalogue name to show).
+/// placeholder (an RI-override-only selection has no catalogue name to show), with a
+/// body-colour override appended in brackets (`Sapphire (Yellow)`, or
+/// `Sapphire (custom colour)` for a triple that matches no preset -- see
+/// [`MaterialSelection::body_colour_label`]).
 fn material_display_name(material: &MaterialSelection) -> String {
-    material
+    let mut label = material
         .name
         .clone()
-        .unwrap_or_else(|| "(custom material)".to_string())
+        .unwrap_or_else(|| "(custom material)".to_string());
+    if let Some(colour) = material.body_colour_label() {
+        label = format!("{label} ({colour})");
+    }
+    label
 }
 
 /// [`Edit::describe`]'s [`Edit::RetargetAngles`] arm: a single-tier retarget names
@@ -339,7 +374,15 @@ fn describe_batch(edits: &[Edit], design: &Design) -> String {
     {
         return format!("Retarget for {}", material_display_name(material));
     }
-    match edits {
+    // `RestoreTierId` is `Design::apply_edit`'s own invisible bookkeeping step
+    // (see that variant's doc comment) -- a `RemoveTier` undo that otherwise
+    // collapses to one `AddTier` should still read as "Add tier X", not "2
+    // combined edits", just because it also carries this step along.
+    let visible: Vec<&Edit> = edits
+        .iter()
+        .filter(|edit| !matches!(edit, Edit::RestoreTierId { .. }))
+        .collect();
+    match visible.as_slice() {
         [] => "No-op".to_string(),
         [only] => only.describe(design),
         many => format!("{} combined edits", many.len()),
@@ -362,11 +405,19 @@ pub enum RemapRounding {
     Ceil,
 }
 
-/// Why an [`Edit`] could not be applied. Always a position out of range for
-/// the design's current tier list -- the only way one of these can fail.
+/// Why an [`Edit`] could not be applied.
+///
+/// Almost always a position out of range for the design's current tier list.
+/// The one exception: [`Design::apply_edit`]'s own [`Edit::SetSchedule`] arm
+/// also returns this (with `index: 0`) for a zero gear-tooth count or symmetry
+/// order, a schedule-wide validation failure that names no tier at all --
+/// reusing this type's only shape rather than widening this crate's one
+/// edit-error type for that single caller.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditError {
+    /// Tier position this refers to.
     pub index: usize,
+    /// Number of tiers the design had when the edit was rejected.
     pub tier_count: usize,
 }
 

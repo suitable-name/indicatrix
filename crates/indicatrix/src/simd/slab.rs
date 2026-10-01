@@ -60,11 +60,13 @@ impl PlanesSoA32 {
         &self.buf[3 * self.count..]
     }
 
+    /// Number of stored entries.
     #[must_use]
     pub const fn len(&self) -> usize {
         self.count
     }
 
+    /// Whether no entries are stored.
     #[must_use]
     pub const fn is_empty(&self) -> bool {
         self.count == 0
@@ -404,12 +406,26 @@ mod tests {
         };
         for count in [1usize, 5, 8, 9, 16, 17, 40, 100] {
             for _round in 0..20 {
+                // A random unit direction per round, not the fixed (0, -1, 0) this test
+                // used to hardcode -- that direction has zero x/z components, so a
+                // kernel that silently dropped the x/z dot-product terms from its
+                // denom/side/t lanes would still agree with the scalar replay on every
+                // round. A random `dir` exercises all three components.
+                let dir = {
+                    let d = Vec3::new(next(), next(), next());
+                    d / d.length().max(1e-3)
+                };
                 let mut raw: Vec<([f32; 3], f32)> = Vec::new();
                 for i in 0..count {
-                    // Sprinkle in exactly-parallel planes to exercise the
-                    // parallel-reject branch.
+                    // Sprinkle in planes exactly parallel to THIS round's `dir`
+                    // (dot(dir, n) == 0) to exercise the parallel-reject branch --
+                    // computed relative to `dir` itself (rather than the old fixed
+                    // (0, 1, 0), which only stayed parallel because `dir` was also
+                    // fixed) so the branch keeps firing now that `dir` is randomized.
                     let n = if i % 9 == 3 {
-                        [0.0, 1.0, 0.0]
+                        let fallback = if dir.x.abs() < 0.9 { Vec3::X } else { Vec3::Y };
+                        let perp = dir.cross(fallback).normalize();
+                        [perp.x, perp.y, perp.z]
                     } else {
                         [next(), next(), next()]
                     };
@@ -420,7 +436,6 @@ mod tests {
                 }
                 let soa = PlanesSoA32::from_planes(&raw);
                 let origin = Vec3::new(next() * 3.0, next() * 3.0, next() * 3.0);
-                let dir = Vec3::new(0.0, -1.0, 0.0);
                 let want = slab_scan_scalar(&soa, origin, dir);
                 let got = slab_scan(&soa, origin, dir);
                 assert_eq!(bits_of(got), bits_of(want));

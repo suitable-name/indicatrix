@@ -30,10 +30,10 @@ use crate::{
 
 use super::{
     CHUNK_BUDGET_BYTES, GpuFrameError, GpuFrameScene, GpuPipelineKind, REDUCE_SHADER_SRC,
-    SHADER_SRC, WORKGROUP_SIZE,
+    WORKGROUP_SIZE,
     bind_groups::{TransportDispatchArgs, build_bind_group},
     classify_material,
-    dispatch::{chunk_pixels_for, environment_params},
+    dispatch::{EnvironmentParams, chunk_pixels_for, environment_params},
     readback::GpuReduceParams,
     renderer::GpuFrameRenderer,
 };
@@ -49,7 +49,8 @@ use super::{
 )]
 impl GpuFrameRenderer {
     /// Async, wasm32-only counterpart to [`Self::new`]: acquires a GPU device and
-    /// compiles `transport_main` without blocking the browser's main thread.
+    /// compiles `reduce_xyz_main` without blocking the browser's main thread; the
+    /// `transport_main` kernels compile lazily per material class, as in [`Self::new`].
     ///
     /// Awaits [`GpuContext::acquire_async`] directly rather than going through
     /// [`GpuContext::acquire`]'s `pollster::block_on` wrapper -- see this `impl` block's
@@ -74,21 +75,19 @@ impl GpuFrameRenderer {
         }
         let info = ctx.adapter.get_info();
         let adapter_label = format!("{} ({:?})", info.name, info.backend);
-        let pipeline = compute::create_compute_pipeline(
+        let pipeline_cache = compute::create_pipeline_cache(&ctx.device);
+        let reduce_pipeline = compute::create_compute_pipeline_cached(
             &ctx.device,
-            "transport_main",
-            SHADER_SRC,
-            "transport_main",
-        );
-        let reduce_pipeline = compute::create_compute_pipeline(
-            &ctx.device,
+            pipeline_cache.as_ref(),
             "reduce_xyz_main",
             REDUCE_SHADER_SRC,
             "reduce_xyz_main",
+            &[],
         );
         Ok(Self {
             ctx,
-            pipeline,
+            pipeline_generic: std::sync::OnceLock::new(),
+            pipeline_cache,
             pipeline_isotropic: None,
             pipeline_uniaxial: None,
             pipeline_biaxial: None,
@@ -149,39 +148,7 @@ impl GpuFrameRenderer {
             ));
         }
 
-        let (
-            env_mode,
-            temp_k,
-            spot_mult,
-            exposure,
-            light_yaw,
-            light_pitch,
-            use_d65,
-            studio_model,
-            backdrop,
-        ) = environment_params(scene.environment);
-        // See `Self::prepare_turn`.
-        let white_balance = environment_white_balance(scene.environment);
-
-        let gpu_material = GpuGemMaterial::encode(scene.material);
-        let gpu_finishes = encode_facet_finishes(scene.facet_finishes, scene.planes.len());
-        // Built once for the whole call, like `gpu_material`/`gpu_finishes` above -- this
-        // path never had `FrameSceneBuffers`'s cross-call persistence (see this `impl`
-        // block's own doc comment), so there is no identity cache to consult here, only
-        // "once per call rather than once per chunk".
-        // Declines GpuFrameError::UnsupportedEnvironment for an oversized
-        // HDR map -- mirrors `build_hdr_env`'s identical check (this path never had
-        // `FrameSceneBuffers`'s cross-call persistence to share that helper through, see
-        // this `impl` block's own doc comment, so the check is repeated here directly).
-        let hdr_env = match scene.environment {
-            EnvironmentSource::HdrMap(map) => {
-                if !HdrEnvGpuData::fits_storage_binding(&self.ctx.device, map) {
-                    return Err(GpuFrameError::UnsupportedEnvironment);
-                }
-                HdrEnvGpuData::upload(&self.ctx.device, map)
-            }
-            EnvironmentSource::Studio { .. } => HdrEnvGpuData::dummy(&self.ctx.device),
-        };
+        let call = AsyncCallInputs::new(self, scene, pipeline_class, spp, sample_offset)?;
 
         self.ensure_specialized_pipeline(pipeline_class);
 
@@ -193,116 +160,8 @@ impl GpuFrameRenderer {
         let mut chunk_index = 0usize;
         while first_pixel < num_pixels {
             let pixels_this_chunk = chunk_pixels.min(num_pixels - first_pixel);
-            let tuples = pixels_this_chunk * spp as usize;
-
-            let camera_params = GpuCameraParams {
-                origin: scene.camera.origin.to_array(),
-                fov_tan: scene.camera.fov_tan,
-                forward: scene.camera.forward.to_array(),
-                width: scene.width as f32,
-                right: scene.camera.right.to_array(),
-                height: scene.height as f32,
-                up: scene.camera.up.to_array(),
-                num_samples: spp,
-            };
-            let params = GpuTransportParams::new(
-                pixels_this_chunk as u32,
-                scene.max_bounces,
-                sample_offset,
-                env_mode,
-                0.0,
-                temp_k,
-                spot_mult,
-                exposure,
-                light_yaw,
-                light_pitch,
-                white_balance.to_array(),
-            )
-            .with_pixel_offset(first_pixel as u32)
-            .with_debug_buffers_disabled()
-            .with_studio_use_d65(use_d65)
-            .with_studio_model(studio_model)
-            .with_backdrop(backdrop);
-
-            let outputs = self.outputs[chunk_index % 2]
-                .as_ref()
-                .expect("ensure_capacity just populated both slots");
-
-            let bind_args = TransportDispatchArgs {
-                ctx: &self.ctx,
-                pipeline: self.pipeline_for_class(pipeline_class),
-                camera_params: &camera_params,
-                params: &params,
-                material: &gpu_material,
-                planes: scene.planes,
-                facet_finishes: &gpu_finishes,
-                outputs,
-                hdr_env: &hdr_env,
-            };
-
-            // Non-blocking submit -- native's pipelined path builds its bind group via
-            // build_chunk_bind_group instead (see the parent module's doc comment's
-            // "Per-frame uploads, persistent staging" section), but this wasm32 loop
-            // re-uploads every buffer every chunk via build_bind_group: it never had the
-            // overlapped double-buffering the native path uses, so there is no per-frame
-            // state to hoist these uploads out of here.
-            let bind_group = build_bind_group(&bind_args);
-            let workgroups = (tuples as u32).div_ceil(WORKGROUP_SIZE as u32);
-            let _ = compute::dispatch(
-                &self.ctx.device,
-                &self.ctx.queue,
-                bind_args.pipeline,
-                &bind_group,
-                (workgroups, 1, 1),
-            );
-
-            // GPU-side sample reduction, mirroring native's `dispatch_chunk` -- see that
-            // function's "Why a second dispatch" doc comment. This wasm32
-            // loop re-creates the tiny reduce-params buffer fresh every chunk (like every
-            // other buffer here, per this function's own doc comment: it never had the
-            // overlapped double-buffering the native path uses, so there is no per-frame
-            // state to persist it in).
-            let pixel_output = self.pixel_outputs[chunk_index % 2]
-                .as_ref()
-                .expect("ensure_pixel_capacity just populated both slots");
-            let reduce_params = GpuReduceParams {
-                num_pixels: pixels_this_chunk as u32,
-                num_samples: spp,
-                _pad0: 0,
-                _pad1: 0,
-            };
-            let reduce_params_buf = compute::upload(
-                &self.ctx.device,
-                "reduce xyz params (wasm32 async)",
-                std::slice::from_ref(&reduce_params),
-                BufferUsages::UNIFORM,
-            );
-            let reduce_bind_group = compute::bind_buffers(
-                &self.ctx.device,
-                "reduce xyz bind group (wasm32 async)",
-                &self.reduce_pipeline,
-                &[
-                    (0, &reduce_params_buf),
-                    (1, outputs.xyz()),
-                    (2, &pixel_output.buffer),
-                ],
-            );
-            let reduce_workgroups = (pixels_this_chunk as u32).div_ceil(WORKGROUP_SIZE as u32);
-            let _ = compute::dispatch(
-                &self.ctx.device,
-                &self.ctx.queue,
-                &self.reduce_pipeline,
-                &reduce_bind_group,
-                (reduce_workgroups, 1, 1),
-            );
-
-            let (staging, _copy_index) = compute::copy_to_staging::<f32>(
-                &self.ctx.device,
-                &self.ctx.queue,
-                &pixel_output.buffer,
-                pixels_this_chunk * 3,
-                "transport out pixel xyz staging (wasm32 async)",
-            );
+            let staging =
+                self.submit_chunk_async(&call, chunk_index, first_pixel, pixels_this_chunk);
 
             // Awaits the browser's own resolution of map_async -- see map_read_async's
             // doc comment for why this needs no Device::poll call, unlike native's
@@ -323,6 +182,202 @@ impl GpuFrameRenderer {
         }
 
         Ok(())
+    }
+
+    /// Records one chunk of [`Self::accumulate_async`]: the transport dispatch, the
+    /// GPU-side per-pixel XYZ reduction (mirroring native's `dispatch_chunk` -- see that
+    /// function's "Why a second dispatch" doc comment), and the copy of the reduced
+    /// triples into a fresh staging buffer, which is returned for [`map_read_async`] to
+    /// await. Nothing here blocks.
+    ///
+    /// Native's pipelined path builds its bind group via `build_chunk_bind_group`
+    /// instead (see the parent module's doc comment's "Per-frame uploads, persistent
+    /// staging" section), but this wasm32 path re-uploads every buffer every chunk via
+    /// `build_bind_group`, and re-creates the tiny reduce-params buffer fresh every
+    /// chunk: it never had the overlapped double-buffering the native path uses, so
+    /// there is no per-frame state to hoist these uploads out of here.
+    fn submit_chunk_async(
+        &self,
+        call: &AsyncCallInputs<'_, '_>,
+        chunk_index: usize,
+        first_pixel: usize,
+        pixels_this_chunk: usize,
+    ) -> wgpu::Buffer {
+        let spp = call.spp;
+        let tuples = pixels_this_chunk * spp as usize;
+        let (camera_params, params) = call.chunk_params(first_pixel, pixels_this_chunk);
+
+        let outputs = self.outputs[chunk_index % 2]
+            .as_ref()
+            .expect("ensure_capacity just populated both slots");
+
+        let bind_args = TransportDispatchArgs {
+            ctx: &self.ctx,
+            pipeline: self.pipeline_for_class(call.pipeline_class),
+            camera_params: &camera_params,
+            params: &params,
+            material: &call.gpu_material,
+            planes: call.scene.planes,
+            facet_finishes: &call.gpu_finishes,
+            outputs,
+            hdr_env: &call.hdr_env,
+        };
+
+        let bind_group = build_bind_group(&bind_args);
+        let workgroups = (tuples as u32).div_ceil(WORKGROUP_SIZE as u32);
+        let _ = compute::dispatch(
+            &self.ctx.device,
+            &self.ctx.queue,
+            bind_args.pipeline,
+            &bind_group,
+            (workgroups, 1, 1),
+        );
+
+        let pixel_output = self.pixel_outputs[chunk_index % 2]
+            .as_ref()
+            .expect("ensure_pixel_capacity just populated both slots");
+        let reduce_params = GpuReduceParams {
+            num_pixels: pixels_this_chunk as u32,
+            num_samples: spp,
+            _pad0: 0,
+            _pad1: 0,
+        };
+        let reduce_params_buf = compute::upload(
+            &self.ctx.device,
+            "reduce xyz params (wasm32 async)",
+            std::slice::from_ref(&reduce_params),
+            BufferUsages::UNIFORM,
+        );
+        let reduce_bind_group = compute::bind_buffers(
+            &self.ctx.device,
+            "reduce xyz bind group (wasm32 async)",
+            &self.reduce_pipeline,
+            &[
+                (0, &reduce_params_buf),
+                (1, outputs.xyz()),
+                (2, &pixel_output.buffer),
+            ],
+        );
+        let reduce_workgroups = (pixels_this_chunk as u32).div_ceil(WORKGROUP_SIZE as u32);
+        let _ = compute::dispatch(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &self.reduce_pipeline,
+            &reduce_bind_group,
+            (reduce_workgroups, 1, 1),
+        );
+
+        let (staging, _copy_index) = compute::copy_to_staging::<f32>(
+            &self.ctx.device,
+            &self.ctx.queue,
+            &pixel_output.buffer,
+            pixels_this_chunk * 3,
+            "transport out pixel xyz staging (wasm32 async)",
+        );
+        staging
+    }
+}
+
+/// Everything one [`GpuFrameRenderer::accumulate_async`] call encodes ONCE and every
+/// chunk of that call then reads: the environment/white-balance parameters, the encoded
+/// material and facet finishes, and the HDR environment upload. Built once per call
+/// rather than once per chunk -- this path never had `FrameSceneBuffers`'s cross-call
+/// persistence (see this module's own doc comment), so there is no identity cache to
+/// consult, only "per call, not per chunk".
+struct AsyncCallInputs<'s, 'a> {
+    scene: &'a GpuFrameScene<'s>,
+    pipeline_class: u32,
+    spp: u32,
+    sample_offset: u32,
+    env: EnvironmentParams,
+    white_balance: Vec3,
+    gpu_material: GpuGemMaterial,
+    gpu_finishes: Vec<u32>,
+    hdr_env: HdrEnvGpuData,
+}
+
+impl<'s, 'a> AsyncCallInputs<'s, 'a> {
+    /// Encodes the per-call inputs. Declines
+    /// [`GpuFrameError::UnsupportedEnvironment`] for an oversized HDR map -- mirrors
+    /// `build_hdr_env`'s identical check (this path has no `FrameSceneBuffers` to share
+    /// that helper through, so the check is repeated here directly).
+    fn new(
+        renderer: &GpuFrameRenderer,
+        scene: &'a GpuFrameScene<'s>,
+        pipeline_class: u32,
+        spp: u32,
+        sample_offset: u32,
+    ) -> Result<Self, GpuFrameError> {
+        let hdr_env = match scene.environment {
+            EnvironmentSource::HdrMap(map) => {
+                if !HdrEnvGpuData::fits_storage_binding(&renderer.ctx.device, map) {
+                    return Err(GpuFrameError::UnsupportedEnvironment);
+                }
+                HdrEnvGpuData::upload(&renderer.ctx.device, map)
+            }
+            EnvironmentSource::Studio { .. } => HdrEnvGpuData::dummy(&renderer.ctx.device),
+        };
+        Ok(Self {
+            scene,
+            pipeline_class,
+            spp,
+            sample_offset,
+            env: environment_params(scene.environment),
+            // See `GpuFrameRenderer::prepare_turn`.
+            white_balance: environment_white_balance(scene.environment),
+            gpu_material: GpuGemMaterial::encode(scene.material),
+            gpu_finishes: encode_facet_finishes(scene.facet_finishes, scene.planes.len()),
+            hdr_env,
+        })
+    }
+
+    /// The camera and transport uniforms for the chunk starting at `first_pixel`.
+    const fn chunk_params(
+        &self,
+        first_pixel: usize,
+        pixels_this_chunk: usize,
+    ) -> (GpuCameraParams, GpuTransportParams) {
+        let scene = self.scene;
+        let (
+            env_mode,
+            temp_k,
+            spot_mult,
+            exposure,
+            light_yaw,
+            light_pitch,
+            use_d65,
+            studio_model,
+            backdrop,
+        ) = self.env;
+        let camera_params = GpuCameraParams {
+            origin: scene.camera.origin.to_array(),
+            fov_tan: scene.camera.fov_tan,
+            forward: scene.camera.forward.to_array(),
+            width: scene.width as f32,
+            right: scene.camera.right.to_array(),
+            height: scene.height as f32,
+            up: scene.camera.up.to_array(),
+            num_samples: self.spp,
+        };
+        let params = GpuTransportParams::new(
+            pixels_this_chunk as u32,
+            scene.max_bounces,
+            self.sample_offset,
+            env_mode,
+            0.0,
+            temp_k,
+            spot_mult,
+            exposure,
+            light_yaw,
+            light_pitch,
+            self.white_balance.to_array(),
+        )
+        .with_pixel_offset(first_pixel as u32)
+        .with_debug_buffers_disabled()
+        .with_studio_use_d65(use_d65)
+        .with_studio_model(studio_model)
+        .with_backdrop(backdrop);
+        (camera_params, params)
     }
 }
 

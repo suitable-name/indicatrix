@@ -5,6 +5,7 @@
 
 use glam::DVec3;
 
+/// Worker thread count for the parallel per-design analysis.
 pub const THREADS: usize = 16;
 /// Bounding-blank half extent (matches the solver's `BLANK_HALF_EXTENT`).
 pub const BLANK: f64 = 64.0;
@@ -23,8 +24,11 @@ pub const MAX_PLANES: usize = 400;
 /// Minimum |det| for a triple of unit normals to define a candidate vertex.
 pub const MIN_DET: f64 = 1e-6;
 
+/// One `.asc` schedule row loaded from the database.
 pub struct AscRow {
+    /// Database id of the design the file belongs to.
     pub detail_id: i64,
+    /// Raw bytes of the attached `.asc` file.
     pub content: Vec<u8>,
 }
 
@@ -32,8 +36,11 @@ pub struct AscRow {
 /// the bounding blank).
 #[derive(Clone, Copy)]
 pub struct Plane {
+    /// Unit normal.
     pub n: DVec3,
+    /// Offset (mast) along the normal.
     pub m: f64,
+    /// Index of the owning tier.
     pub owner: usize,
 }
 
@@ -41,11 +48,15 @@ pub struct Plane {
 /// violates (`None` = feasible for the full solid), and the three owning tiers of the
 /// planes that formed it.
 pub struct Cand {
+    /// Vertex position.
     pub v: DVec3,
+    /// The single tier whose planes the vertex violates, if any.
     pub violated: Option<usize>,
+    /// Owning tiers of the three planes that formed the vertex.
     pub owners: [usize; 3],
 }
 
+/// Per-tier outcome of the oracle analysis.
 #[derive(Default)]
 pub struct TierStats {
     /// E3b relative error, instance 0.
@@ -77,8 +88,11 @@ pub struct TierStats {
     /// Selection-rule experiment hits (others pinned at truth): did each rule's
     /// predicted level match the true mast within MATCH_REL?
     pub hit_rank1: bool,
+    /// Hit flag of the named-reference rank-1 rule.
     pub hit_named_rank1: bool,
+    /// Hit flag of the incidence-degree rule.
     pub hit_degree: bool,
+    /// Hit flag of the named-reference incidence-degree rule.
     pub hit_named_degree: bool,
     /// Relative error of the named->rank1 rule's prediction (not just hit/miss).
     pub named_rank1_err: Option<f64>,
@@ -86,15 +100,25 @@ pub struct TierStats {
     pub scored: bool,
 }
 
+/// Everything one design's analysis contributes to the aggregate report.
 #[derive(Default)]
 pub struct DesignResult {
+    /// The schedule parsed successfully.
     pub parsed: bool,
+    /// The design exceeded `MAX_PLANES` and was skipped.
     pub skipped_too_big: bool,
+    /// The design's arrangement was degenerate and could not be analysed.
     pub degenerate: bool,
+    /// Per-tier statistics.
     pub tiers: Vec<TierStats>,
+    /// Every scored tier was reachable in the incremental simulation.
     pub all_reachable: bool,
+    /// At least one tier was meet-derived and scored.
     pub any_scored: bool,
+    /// Median relative mast error of the production solver, if it ran.
     pub solver_median_err: Option<f64>,
+    /// Total degeneracy of the arrangement at the true masts.
     pub degeneracy_truth: Option<f64>,
+    /// Total degeneracy of the arrangement at the solved masts.
     pub degeneracy_solved: Option<f64>,
 }

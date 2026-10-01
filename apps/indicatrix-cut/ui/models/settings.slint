@@ -60,6 +60,11 @@ export global SettingsModel {
     // with local samples), 1 = Final picture (finished, denoised frames from the
     // remote; the settled image is remote-only). Persisted on the remote endpoint.
     in-out property <int> live_transfer_index: 0;
+    // v16: whether this machine's own idle CPU/GPU traces a share of a "final picture
+    // only" export/tilt-frame alongside the remote -- on by default. Only meaningful
+    // with a remote configured; the picker greys it out otherwise (see
+    // `RemoteWorkerModel.live_remote_available`).
+    in-out property <bool> contribute_to_final_picture: true;
     // Local live-rendering CPU/CPU+GPU/GPU choice. `1` (CPU+GPU) matches
     // `LocalComputeTarget`'s own `Default`. Only shown on a `gpu`-feature build
     // (`gpu_build` below).
@@ -87,7 +92,6 @@ export global SettingsModel {
     callback pick_hdr_file(string);
     callback clear_env_map();
 
-    callback close();
     // `reset_defaults`/`open_performance_graph` are not declared here:
     // `settings_dialog.slint`'s own same-named local function/callback do the
     // real work directly against this global's other callbacks instead.
@@ -102,6 +106,8 @@ export global SettingsModel {
     callback live_compute_target_changed(int);
     // Carries the pill's clicked index directly (`LiveTransfer::from_index`).
     callback live_transfer_changed(int);
+    // Carries the switch's new value directly.
+    callback contribute_to_final_picture_changed(bool);
     // Carries the pill's clicked index directly (`gui::local_compute_target_from_index`).
     callback local_compute_target_changed(int);
     callback bounces_changed(int);

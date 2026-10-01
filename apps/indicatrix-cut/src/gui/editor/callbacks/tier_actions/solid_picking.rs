@@ -5,18 +5,18 @@ use std::{
     collections::BTreeSet,
     rc::Rc,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
 use slint::{ComponentHandle, Model};
 
-use super::facet_overlay::resubmit_facet_overlay;
+use super::facet_overlay::{resubmit_facet_overlay, set_hovered_facet};
 use crate::{
     EditorModel, EditorTierItem, MainWindow, SolidPreviewModel,
     bridge::render_thread::RenderContext,
     gui::{
         editor::{
             auto_solve,
+            manipulate::{drop_provisional_for_selection, provisional_active},
             state::{EditorState, apply_multi_selection, push_multi_selected_count, push_tiers},
             view::{SolidLastSolved, push_selected_tier_chips, submit_preview_replan},
         },
@@ -35,6 +35,18 @@ thread_local! {
     /// [`setup_solid_facet_click_callback`], which writes it. UI-thread-only,
     /// same reasoning as `super::facet_overlay`'s own `thread_local!`.
     static SELECTED_FACET_LABEL: RefCell<String> = const { RefCell::new(String::new()) };
+    /// The last clicked facet's id, written and cleared exactly where
+    /// [`SELECTED_FACET_LABEL`] is: the facet the manipulation handles
+    /// (`gui::editor::manipulate`) sit on. A selection made from the tier table
+    /// leaves it stale or unset, which the handles resolve by checking it belongs to
+    /// the selected tier and falling back to the tier's first facet. UI-thread-only.
+    static SELECTED_FACET_ID: RefCell<Option<u32>> = const { RefCell::new(None) };
+}
+
+/// The last clicked facet's id, if the last click landed on a facet/// [`SELECTED_FACET_ID`].
+#[must_use]
+pub(in crate::gui::editor) fn selected_facet_id() -> Option<u32> {
+    SELECTED_FACET_ID.with(|cell| *cell.borrow())
 }
 
 /// Maps an incoming Solid-viewport pointer
@@ -57,11 +69,48 @@ thread_local! {
 /// `height` is `0` (nothing requested) -- `contained_request_size` itself
 /// already returns `viewport_size` unchanged for Solid/Diagram modes, so this
 /// is a genuine no-op there, not just an approximation.
-fn map_to_pick_coordinates(ui: &MainWindow, x: f32, y: f32) -> (f32, f32) {
+pub(in crate::gui::editor) fn map_to_pick_coordinates(
+    ui: &MainWindow,
+    x: f32,
+    y: f32,
+) -> (f32, f32) {
     let scale = ui.window().scale_factor();
-    let physical = (x * scale, y * scale);
+    logical_to_pick_pixels((x, y), scale, pick_margin(ui))
+}
+
+/// [`map_to_pick_coordinates`]'s arithmetic on plain numbers: a LOGICAL pointer
+/// position scaled to physical pixels, less the letterbox `margin`.
+#[must_use]
+pub(in crate::gui::editor) fn logical_to_pick_pixels(
+    logical: (f32, f32),
+    scale: f32,
+    margin: (f32, f32),
+) -> (f32, f32) {
+    // Scaled first, then shifted, exactly as the hover/click callbacks always did
+    // (a fused multiply-add would round differently by a hair).
+    let physical = (logical.0 * scale, logical.1 * scale);
+    (physical.0 - margin.0, physical.1 - margin.1)
+}
+
+/// The exact inverse of [`logical_to_pick_pixels`]: a pick-frame pixel back to the
+/// LOGICAL viewport position it is drawn at, `(pick + margin) / scale`. What the
+/// manipulation handles use to place themselves.
+#[must_use]
+pub(in crate::gui::editor) fn pick_pixels_to_logical(
+    pick: (f32, f32),
+    scale: f32,
+    margin: (f32, f32),
+) -> (f32, f32) {
+    ((pick.0 + margin.0) / scale, (pick.1 + margin.1) / scale)
+}
+
+/// The PHYSICAL-pixel letterbox margin [`map_to_pick_coordinates`] subtracts: `(0, 0)`
+/// in Solid/Diagram mode and before `auto_solve::render_ctx` is stashed, half the bars'
+/// width/height in Path-traced/Both mode (see [`map_to_pick_coordinates`]'s doc).
+pub(in crate::gui::editor) fn pick_margin(ui: &MainWindow) -> (f32, f32) {
+    let scale = ui.window().scale_factor();
     let Some(render_ctx) = auto_solve::render_ctx() else {
-        return physical;
+        return (0.0, 0.0);
     };
     let view_mode = ui.global::<SolidPreviewModel>().get_view_mode() as u8;
     let viewport_physical = (
@@ -79,8 +128,7 @@ fn map_to_pick_coordinates(ui: &MainWindow, x: f32, y: f32) -> (f32, f32) {
         viewport_physical,
         render_size,
     );
-    let (margin_x, margin_y) = letterbox_margin(viewport_physical, contained);
-    (physical.0 - margin_x, physical.1 - margin_y)
+    letterbox_margin(viewport_physical, contained)
 }
 
 /// The physical-pixel margin [`map_to_pick_coordinates`] subtracts before
@@ -90,8 +138,10 @@ fn map_to_pick_coordinates(ui: &MainWindow, x: f32, y: f32) -> (f32, f32) {
 /// whatever's left over; `saturating_sub` guards the (never expected, but never
 /// unsafe either) case where `contained_physical` is somehow larger.
 ///
-/// `pub(super)` since [`super::tests`] exercises this directly.
-pub(super) fn letterbox_margin(
+/// `pub(in crate::gui::editor)` since [`super::tests`] and the manipulation module's
+/// tests exercise this directly.
+#[must_use]
+pub(in crate::gui::editor) fn letterbox_margin(
     viewport_physical: (u32, u32),
     contained_physical: (u32, u32),
 ) -> (f32, f32) {
@@ -160,13 +210,12 @@ pub(in crate::gui::editor) fn setup_solid_facet_hover_callback(
             let Some(facet_id) = facet_id else {
                 // Falls back to the last CLICKED facet's own
                 // label (if any) instead of blanking the tooltip outright, so the
-                // selection stays readable once the pointer leaves it -- see
-                // `SELECTED_FACET_LABEL`'s own doc comment.
+                // selection stays readable once the pointer leaves it                // `SELECTED_FACET_LABEL`'s own doc comment.
                 let selected_label = SELECTED_FACET_LABEL.with(|cell| cell.borrow().clone());
                 ui.global::<SolidPreviewModel>()
                     .set_hover_text(selected_label.into());
                 if let Some(preview_state) = auto_solve::preview_state() {
-                    resubmit_facet_overlay(&preview_state, |overlay| overlay.hovered = None);
+                    set_hovered_facet(&preview_state, None);
                 }
                 return;
             };
@@ -178,7 +227,7 @@ pub(in crate::gui::editor) fn setup_solid_facet_hover_callback(
                 .unwrap_or_default();
             ui.global::<SolidPreviewModel>().set_hover_text(text.into());
             if let Some(preview_state) = auto_solve::preview_state() {
-                resubmit_facet_overlay(&preview_state, |overlay| overlay.hovered = Some(facet_id));
+                set_hovered_facet(&preview_state, Some(facet_id));
             }
         });
 }
@@ -209,6 +258,12 @@ pub(in crate::gui::editor) fn setup_solid_facet_click_callback(
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
+            // While the Slice tool holds a provisional tier, the frame's `facet_tier`
+            // table may name that tier -- an index `EditorState` does not have -- so a
+            // click selects nothing until Keep or Discard.
+            if provisional_active() {
+                return;
+            }
             // See `setup_solid_facet_hover_callback`'s matching comment for why the
             // incoming (logical) coordinates go through `map_to_pick_coordinates`
             // (scaled AND, in Path-traced/Both mode, letterbox-corrected) here.
@@ -233,6 +288,7 @@ pub(in crate::gui::editor) fn setup_solid_facet_click_callback(
                 // previously identified -- nothing is selected any more, so
                 // nothing should keep reading in the tooltip.
                 SELECTED_FACET_LABEL.with(|cell| cell.borrow_mut().clear());
+                SELECTED_FACET_ID.with(|cell| *cell.borrow_mut() = None);
                 ui.global::<SolidPreviewModel>().set_hover_text("".into());
                 return;
             };
@@ -259,6 +315,7 @@ pub(in crate::gui::editor) fn setup_solid_facet_click_callback(
                 .cloned()
                 .unwrap_or_default();
             SELECTED_FACET_LABEL.with(|cell| cell.borrow_mut().clone_from(&label));
+            SELECTED_FACET_ID.with(|cell| *cell.borrow_mut() = Some(facet_id));
             ui.global::<SolidPreviewModel>()
                 .set_hover_text(label.into());
             // The clicked facet stays lit regardless of whether it resolved to a
@@ -288,6 +345,21 @@ pub(in crate::gui::editor) fn setup_solid_facet_click_callback(
 /// does, rather than a full [`refresh_editor_panel_stale`] -- narrowing the
 /// multi-select highlight is not itself a `Design` edit and must not re-label the
 /// validation banner "Not solved".
+///
+/// Runs [`apply_selected_tier_change`] directly and unconditionally -- unlike an
+/// earlier version of this callback, which assumed Slint invoked it SYNCHRONOUSLY
+/// from inside `set_selected_tier_index` and deferred to a zero-duration `Timer`
+/// whenever `state.try_borrow_mut()` found the `RefCell` already held (by
+/// `apply_loaded_design`/`adjust_selection_after_remove`, both of which write the
+/// property while still holding their own guard). That assumption was wrong:
+/// `EditorModel.selected_tier_changed` is invoked from `ui/models/editor.slint`'s
+/// own `changed selected_tier_index => { ... }`, and `changed` handlers are QUEUED
+/// -- they run on the next
+/// event-loop turn or tree flush, strictly after the Rust call that set the
+/// property has already returned and dropped every borrow it held. The busy
+/// check could therefore never actually observe a held borrow from EITHER of
+/// those two callers; it was dead weight kept alive by a false assumption, not a
+/// real race it was guarding against.
 pub(in crate::gui::editor) fn setup_solid_selected_tier_changed_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -302,55 +374,22 @@ pub(in crate::gui::editor) fn setup_solid_selected_tier_changed_callback(
     let ui_weak = ui.as_weak();
     ui.global::<EditorModel>()
         .on_selected_tier_changed(move |_index: i32| {
-            // Slint runs this handler SYNCHRONOUSLY from inside
-            // `set_selected_tier_index`, and two Rust paths write that property while
-            // still holding `state.borrow_mut()`: `apply_loaded_design` (Load
-            // Selected, whose guard stays live for the window title below it) and the
-            // Remove Tier callback via `adjust_selection_after_remove`. Both used to
-            // panic here with "RefCell already mutably borrowed".
-            //
-            // Deferred rather than skipped: unlike `recompute_dirty`, the work below
-            // is not reproduced by those callers -- it clears a stale multi-select
-            // group, and `setup_solid_facet_click_callback` documents the property
-            // write as the only thing needed to re-seed the inspector. One
-            // event-loop turn is enough, because a `RefCell` guard can never outlive
-            // the call that took it.
-            let busy = state.try_borrow_mut().is_err();
-            if !busy {
-                if let Some(ui) = ui_weak.upgrade() {
-                    apply_selected_tier_change(
-                        &ui,
-                        &state,
-                        &render_ctx,
-                        &preview_state,
-                        &solid_last_solved,
-                    );
-                }
+            let Some(ui) = ui_weak.upgrade() else {
                 return;
-            }
-            let ui_weak = ui_weak.clone();
-            let state = Rc::clone(&state);
-            let render_ctx = Arc::clone(&render_ctx);
-            let preview_state = Arc::clone(&preview_state);
-            let solid_last_solved = Arc::clone(&solid_last_solved);
-            slint::Timer::single_shot(Duration::ZERO, move || {
-                let Some(ui) = ui_weak.upgrade() else {
-                    return;
-                };
-                apply_selected_tier_change(
-                    &ui,
-                    &state,
-                    &render_ctx,
-                    &preview_state,
-                    &solid_last_solved,
-                );
-            });
+            };
+            apply_selected_tier_change(
+                &ui,
+                &state,
+                &render_ctx,
+                &preview_state,
+                &solid_last_solved,
+            );
         });
 }
 
 /// The body of [`setup_solid_selected_tier_changed_callback`]'s handler, factored out
-/// so it can run either immediately or one event-loop turn later -- see that
-/// function's own comment for which paths need the deferral and why.
+/// purely to keep that function short: [`setup_solid_selected_tier_changed_callback`]
+/// calls this directly and unconditionally.
 fn apply_selected_tier_change(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -358,17 +397,23 @@ fn apply_selected_tier_change(
     preview_state: &Arc<SolidPreviewState>,
     solid_last_solved: &SolidLastSolved,
 ) {
+    // A provisional slice cannot outlive a selection change: this replan renders the
+    // committed design, so the slice ends first (before `state` is borrowed).
+    drop_provisional_for_selection(ui);
     let mut st = state.borrow_mut();
     // Ending a coalesce run needs a real
     // interaction boundary, and the ideal one (pointer release/focus loss on the
     // `TierAngleCell` doing the nudging) lives in `editor_tier_table.slint`, not
-    // here (see `History::end_coalesce_run`'s own doc comment). The
-    // selection changing IS something this function can observe: it fires only on
-    // a genuine `changed selected_tier_index` (a different row/facet clicked, or the
-    // selection cleared), never on the nudge control's own repeated ticks, so a
-    // wheel-nudge run in progress on the tier the cutter just navigated away from
-    // must not sit open for an unrelated later nudge on that same tier (after
-    // selecting elsewhere and back within the coalescing window) to merge into.
+    // here (see `History::end_coalesce_run`'s own doc comment). This runs on a
+    // genuine `changed selected_tier_index` (a different row/facet clicked, or
+    // the selection cleared) AND on a plain re-click of the row already selected
+    // (`editor_view.slint`'s `tier_table.tier_selected` handler invokes
+    // `EditorModel.selected_tier_changed` directly for that one case, since a
+    // same-value property write raises no `changed` at all) -- never on the
+    // nudge control's own repeated ticks, so a wheel-nudge run in progress on the
+    // tier the cutter just navigated away from must not sit open for an
+    // unrelated later nudge on that same tier (after selecting elsewhere and
+    // back within the coalescing window) to merge into.
     st.history.end_coalesce_run();
     if !st.multi_selected.is_empty() {
         st.multi_selected.clear();

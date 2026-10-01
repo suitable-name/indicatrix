@@ -1,0 +1,26 @@
+import { EmptyState } from "../components/empty_state.slint";
+import { AppModel } from "../models/app_model.slint";
+import { RenderView } from "render.slint";
+import { SolidView } from "solid.slint";
+import { DiagramView } from "diagram.slint";
+
+// The main area: the empty state until a design is loaded, then the view the
+// header's Render / Solid / Diagram tab selects. Every view fills it.
+export component MainArea inherits Rectangle {
+    if !AppModel.has-design: EmptyState {
+        width: 100%;
+        height: 100%;
+    }
+    if AppModel.has-design && AppModel.view-tab == 0: RenderView {
+        width: 100%;
+        height: 100%;
+    }
+    if AppModel.has-design && AppModel.view-tab == 1: SolidView {
+        width: 100%;
+        height: 100%;
+    }
+    if AppModel.has-design && AppModel.view-tab == 2: DiagramView {
+        width: 100%;
+        height: 100%;
+    }
+}

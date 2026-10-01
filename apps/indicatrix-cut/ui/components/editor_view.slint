@@ -5,6 +5,7 @@ import { EditorInspector } from "editor_inspector.slint";
 import { SplitHandle } from "split_handle.slint";
 import { Theme } from "../theme.slint";
 import { EditorModel } from "../models/editor.slint";
+import { GuideModel } from "../models/guide.slint";
 
 // The Edit sub-tab's resizable-width dock (see `app.slint`'s Edit-mode layout doc
 // comment for the split from the old single-file `EditorView`/why the dock sits
@@ -24,6 +25,12 @@ import { EditorModel } from "../models/editor.slint";
 // and `EditorTierTable`'s own internal `ScrollView` (`tier_scroll`) plus
 // `EditorInspector`'s own internal `ScrollView` are what scroll when their content
 // overflows.
+//
+// Guide-driven reveal: while the worked-example guide highlights the inspector's Tier
+// tab (`GuideModel.highlight_target == "inspector_tier"`), `reveal_tier_form` below
+// un-collapses the inspector, selects the Tier tab and grows it to at least
+// `tier_form_inspector_height` (capped by the dock), so the Angle/Meets/Name/Indices
+// rows are on screen without scrolling.
 export component EditorView inherits Rectangle {
     background: Theme.bg-card;
     border-radius: Theme.radius-md;
@@ -38,11 +45,15 @@ export component EditorView inherits Rectangle {
     // something OTHER than this file's own `tier_table`/`inspector` wiring moves the
     // selection: the Solid/Diagram viewport's click and "Duplicate" (both set
     // `EditorModel.selected_tier_index` straight from Rust), and New/Load Selected/
-    // Open Native/Remove Tier/Undo/Redo (which also bump `form_reset_pulse` -- see
-    // that property's own doc comment -- whenever the right reaction is "blank the
-    // form," not "seed it from a real row"). `tier_table.tier_selected` below feeds
-    // the very same property, so an ordinary in-list click reaches the exact same
-    // two lines instead of a separate direct call.
+    // Open Native/Remove Tier/an out-of-range Undo/Redo (which instead bump
+    // `form_reset_pulse` -- see that property's own doc comment -- whenever the
+    // right reaction is "blank the form," not "seed it from a real row"; an
+    // edit that leaves the selected tier selected bumps `form_reset_pulse`'s sibling
+    // `form_reseed_pulse` below instead, since the selection itself did not move). `tier_table.
+    // tier_selected` below feeds the very same property for an ordinary in-list
+    // click, EXCEPT when the row clicked is already selected -- see that
+    // handler's own comment for why that one case needs more than the property
+    // write.
     property <int> tracked_selected_tier_index: EditorModel.selected_tier_index;
     changed tracked_selected_tier_index => {
         inspector.load_tier_into_form(root.tracked_selected_tier_index);
@@ -52,6 +63,19 @@ export component EditorView inherits Rectangle {
     changed tracked_form_reset_pulse => {
         inspector.clear_form();
         tier_table.focus_row(-1);
+    }
+    // Any edit that left the selected tier selected but may have changed its data
+    // (a handle drag, nudge, pin, adopt, facet edit, gear remap, retarget/optimize
+    // apply, symmetry change, in-range Undo/Redo). Bumped by the Rust no-solve panel
+    // refresh (`gui::editor::view::panel_stale::sync_tier_form_with_design`) once per
+    // design generation; `EditorInspector.reseed_after_external_change` has the
+    // per-form contract (clean form follows, dirty draft is kept and flagged).
+    // `form_reseed_tier_count_changed` is read here, not passed as an argument,
+    // since a plain `int` pulse carries no payload of its own (same idiom
+    // `filter_focus_pulse`/`form_reset_pulse` already use).
+    property <int> tracked_form_reseed_pulse: EditorModel.form_reseed_pulse;
+    changed tracked_form_reseed_pulse => {
+        inspector.reseed_after_external_change(EditorModel.form_reseed_tier_count_changed);
     }
 
     // Re-clamps a persisted `EditorModel.inspector_height` against THIS dock's
@@ -68,10 +92,61 @@ export component EditorView inherits Rectangle {
         EditorModel.inspector_height = clamp(
             EditorModel.inspector_height,
             160px,
-            max(160px, root.height - cmd.height - settings.height - 120px - 6px - 56px)
+            root.inspector_height_ceiling()
         );
     }
-    init => { root.reclamp_inspector_height(); }
+    // The tallest the inspector may be: what is left of the dock after the command
+    // bar, the design settings, the table's 120px minimum, the 6px `SplitHandle`,
+    // and the dock padding plus gaps (`56px`, the same total the drag handler's
+    // `24px + 32px` spells out). Floors at the inspector's own 160px minimum.
+    function inspector_height_ceiling() -> length {
+        return max(160px, root.height - cmd.height - settings.height - 120px - 6px - 56px);
+    }
+    // Height the Tier tab needs to show its title, the four authored rows
+    // (Angle/Meets/Name/Indices), the pinned Save/Add row and the header/metrics
+    // strip, with ~40px of slack.
+    property <length> tier_form_inspector_height: 360px;
+    // Brings the Tier form fully into view for the guide: un-collapses the
+    // inspector, selects the Tier tab and grows (never shrinks) the inspector to
+    // `tier_form_inspector_height`, clamped to what the dock can afford. Writing
+    // `inspector_height` fires `EditorModel.layout_changed`, so the new height
+    // persists like a manual drag would.
+    function reveal_tier_form() {
+        EditorModel.inspector_collapsed = false;
+        EditorModel.inspector_tab = 0;
+        EditorModel.inspector_height = clamp(
+            max(EditorModel.inspector_height, root.tier_form_inspector_height),
+            160px,
+            root.inspector_height_ceiling()
+        );
+    }
+    property <string> tracked_guide_target: GuideModel.highlight_target;
+    changed tracked_guide_target => {
+        if root.tracked_guide_target == "inspector_tier" {
+            root.reveal_tier_form();
+        }
+    }
+    // A single `init` -- Slint refuses a second one on the same element
+    // ("Duplicated callback") -- covers both the pre-existing dock reclamp AND
+    // the remount re-seed below: `EditorView` itself sits inside an `if`
+    // branch elsewhere (`app.slint`'s Edit-mode row), so a tab switch away and
+    // back destroys and recreates this whole component, including
+    // `inspector`'s own scratch state. A fresh instance's `tracked_selected_
+    // tier_index` above is bound directly to `EditorModel.selected_tier_index`
+    // from construction, so it starts already equal to it -- no `changed`
+    // fires on mount purely from that binding, and the freshly (re)created
+    // `inspector` would otherwise sit on its compiled "Add Tier" defaults
+    // instead of whatever tier was actually selected before the remount.
+    init => {
+        root.reclamp_inspector_height();
+        // Re-created on every Edit-tab remount, so a guide step already sitting on
+        // the Tier tab must reveal it here too (no `changed` fires for a binding
+        // that starts at its final value).
+        if GuideModel.highlight_target == "inspector_tier" {
+            root.reveal_tier_form();
+        }
+        inspector.load_tier_into_form(EditorModel.selected_tier_index);
+    }
     changed height => { root.reclamp_inspector_height(); }
 
     VerticalLayout {
@@ -84,7 +159,24 @@ export component EditorView inherits Rectangle {
         tier_table := EditorTierTable {
             vertical-stretch: 1;
             min-height: 120px;
-            tier_selected(idx) => { EditorModel.selected_tier_index = idx; }
+            // A plain click/Enter/"Add Anchor" selecting the row ALREADY selected
+            // (`idx == EditorModel.selected_tier_index`) makes the assignment below
+            // a no-op write: Slint's queued `changed` never fires when a property
+            // lands on the value it already had, so neither `tracked_selected_tier_index` above nor
+            // Rust's own `on_selected_tier_changed` (`solid_picking.rs`, which also
+            // clears a stale multi-select group) would run. Both are poked directly
+            // here instead for exactly that one case -- invoking a callback is an
+            // ordinary synchronous call, unlike a `changed` handler, so this is safe
+            // to do unconditionally without double-firing anything.
+            tier_selected(idx) => {
+                if idx == EditorModel.selected_tier_index {
+                    EditorModel.selected_tier_changed(idx);
+                    inspector.load_tier_into_form(idx);
+                    tier_table.focus_row(idx);
+                } else {
+                    EditorModel.selected_tier_index = idx;
+                }
+            }
         }
 
         // Table|inspector split -- hidden while the inspector is collapsed
@@ -103,7 +195,7 @@ export component EditorView inherits Rectangle {
                 EditorModel.inspector_height = clamp(
                     EditorModel.inspector_height - d,
                     160px,
-                    max(160px, root.height - cmd.height - settings.height - 120px - self.height - 24px - 32px)
+                    root.inspector_height_ceiling()
                 );
                 EditorModel.layout_changed();
             }

@@ -41,7 +41,7 @@ pub const MEGAKERNEL_STORAGE_BUFFERS: u32 = 11;
 
 /// Storage buffers the wavefront `wavefront_bounce` kernel binds in one stage
 /// (`wavefront_transport.wgsl`).
-pub const WAVEFRONT_STORAGE_BUFFERS: u32 = 18;
+pub const WAVEFRONT_STORAGE_BUFFERS: u32 = 19;
 
 /// Total uniform + storage buffer bindings `wavefront_bounce`'s auto-derived pipeline
 /// layout reaches in one stage (`wavefront_transport.wgsl`).
@@ -50,19 +50,20 @@ pub const WAVEFRONT_STORAGE_BUFFERS: u32 = 18;
 /// `transport_bounce_step`/`transport_generate_ray`, see
 /// [`super::frame::wavefront_bounce_bind_group`]'s own doc comment on why `camera` is
 /// included) plus its 14 per-ray `SoA` arrays (16-29) plus `ray_pending_light_mis_dir`
-/// (34, the light-MIS interior-direction hand-off) = 31. Distinct from
+/// (34, the light-MIS interior-direction hand-off) plus `ray_nee_xyz` (35, the running
+/// Henyey-Greenstein scattering-point NEE total) = 32. Distinct from
 /// [`WAVEFRONT_STORAGE_BUFFERS`] (a
 /// storage-buffer-only count that does not include that binding or the `camera`/`params`
 /// uniform bindings this entry point also reaches):
 /// `wgpu` 30's `max_buffers_and_acceleration_structures_per_shader_stage` limit counts
 /// EVERY buffer/acceleration-structure binding (uniform and storage alike) in one stage,
-/// not storage buffers alone, and its WebGPU-baseline default (well under 31) makes
+/// not storage buffers alone, and its WebGPU-baseline default (well under 32) makes
 /// `Device::create_compute_pipeline`'s implicit-layout derivation fail outright --
 /// "Unable to derive an implicit layout ... Too many bindings" -- rather than merely
 /// declining gracefully. [`Self::acquire_async`] requests this many (clamped) from the
 /// adapter; [`super::frame::GpuFrameRenderer::set_pipeline_kind`] checks the device
 /// actually granted enough before switching to [`super::frame::GpuPipelineKind::Wavefront`].
-pub const WAVEFRONT_BOUNCE_TOTAL_BUFFERS: u32 = 31;
+pub const WAVEFRONT_BOUNCE_TOTAL_BUFFERS: u32 = 32;
 
 /// Upper bound on the per-stage storage-buffer limit requested from an adapter.
 const MAX_REQUESTED_STORAGE_BUFFERS_PER_STAGE: u32 = 32;
@@ -76,9 +77,13 @@ const MAX_REQUESTED_BUFFERS_AND_ACCEL_PER_STAGE: u32 = 40;
 
 /// A live `wgpu` adapter/device/queue, acquired once and reused by every self-test.
 pub struct GpuContext {
+    /// wgpu instance.
     pub instance: wgpu::Instance,
+    /// Selected adapter.
     pub adapter: wgpu::Adapter,
+    /// Logical device.
     pub device: wgpu::Device,
+    /// Submission queue.
     pub queue: wgpu::Queue,
     /// Set by the [`Device::on_uncaptured_error`](wgpu::Device::on_uncaptured_error)
     /// handler [`Self::acquire_async`] installs, the moment `wgpu` reports a validation
@@ -184,6 +189,10 @@ impl GpuContext {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("indicatrix gpu-feature compute device"),
+                // Requested only where the adapter offers it (an empty set elsewhere), so
+                // `compute::create_pipeline_cache` returns a cache on Vulkan and `None`
+                // on every other backend.
+                required_features: adapter.features() & wgpu::Features::PIPELINE_CACHE,
                 required_limits,
                 ..Default::default()
             })

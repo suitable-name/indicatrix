@@ -12,6 +12,7 @@ fn error_round_trips() {
     let err = ErrorMsg {
         code: 42,
         message: "scene exceeds max_pixels".to_string(),
+        request_id: Some(7),
     };
     let mut buf = Vec::new();
     write_message(&mut buf, &err).unwrap();
@@ -133,6 +134,7 @@ fn done_round_trips_both_cancelled_states() {
                 samples_done: 256,
                 requested_cadence_ms: 250,
                 effective_cadence_ms: 1400,
+                reclaimed_samples: 0,
             },
         };
         let mut buf = Vec::new();
@@ -344,11 +346,13 @@ fn stream_event_progress_done_and_error_round_trip_with_no_payload() {
                 samples_done: 64,
                 requested_cadence_ms: 250,
                 effective_cadence_ms: 300,
+                reclaimed_samples: 0,
             },
         }),
         StreamEvent::Error(ErrorMsg {
             code: 3,
             message: "internal error while tracing this request".to_string(),
+            request_id: Some(7),
         }),
     ] {
         let mut buf = Vec::new();
@@ -396,6 +400,7 @@ fn stream_event_a_sequence_reads_back_in_order() {
                 samples_done: 8,
                 requested_cadence_ms: 0,
                 effective_cadence_ms: 0,
+                reclaimed_samples: 0,
             },
         }),
         None,
@@ -532,7 +537,8 @@ fn stream_event_discriminants_are_append_only() {
     assert_eq!(
         first_byte(&StreamEvent::Error(ErrorMsg {
             code: 1,
-            message: String::new()
+            message: String::new(),
+            request_id: None,
         })),
         4
     );
@@ -625,6 +631,7 @@ fn ping_and_final_image_request_round_trip_at_discriminants_4_and_5() {
         height: 2,
         color_space: WireColorSpace::DisplayP3,
         output: FinalOutput::PngRgba8,
+        viewer_samples: 0,
     }));
     let request_bytes = postcard::to_allocvec(&request).unwrap();
     assert_eq!(
@@ -635,4 +642,52 @@ fn ping_and_final_image_request_round_trip_at_discriminants_4_and_5() {
     write_message(&mut buf, &request).unwrap();
     let decoded: ClientMessage = read_message(&mut std::io::Cursor::new(buf)).unwrap();
     assert_eq!(decoded, request);
+}
+
+/// v16: `Contribution` is appended after `Asset` (index 6), at discriminant 7, and
+/// round-trips through the tagged `ClientMessage` envelope.
+#[cfg(feature = "render")]
+#[test]
+fn contribution_is_appended_at_discriminant_7_and_round_trips() {
+    use crate::messages::ContributionHeader;
+
+    let header = ContributionHeader {
+        request_id: 4,
+        first_sample: 10,
+        samples: 2,
+        width: 2,
+        height: 2,
+        encoding: crate::messages::PayloadEncoding::Raw,
+        payload_len: 48,
+        raw_len: 48,
+    };
+    let contribution = ClientMessage::Contribution(header);
+    let bytes = postcard::to_allocvec(&contribution).unwrap();
+    assert_eq!(bytes[0], 7, "Contribution must be discriminant 7");
+
+    let mut buf = Vec::new();
+    write_message(&mut buf, &contribution).unwrap();
+    let decoded: ClientMessage = read_message(&mut std::io::Cursor::new(buf)).unwrap();
+    assert_eq!(decoded, contribution);
+}
+
+/// v16: `Stats.reclaimed_samples` round-trips through `DONE` for a nonzero value (a
+/// zero one is already covered by `done_round_trips_both_cancelled_states`).
+#[test]
+fn done_stats_round_trip_with_reclaimed_samples() {
+    let done = Done {
+        request_id: 3,
+        cancelled: false,
+        stats: Stats {
+            samples_done: 40,
+            requested_cadence_ms: 250,
+            effective_cadence_ms: 260,
+            reclaimed_samples: 6,
+        },
+    };
+    let mut buf = Vec::new();
+    write_message(&mut buf, &done).unwrap();
+    let decoded: Done = read_message(&mut std::io::Cursor::new(buf)).unwrap();
+    assert_eq!(decoded, done);
+    assert_eq!(decoded.stats.reclaimed_samples, 6);
 }

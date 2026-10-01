@@ -1,7 +1,10 @@
 //! Total Internal Reflection: the phase-retardation formula and the hero-forced TIR
 //! bounce applier.
 
-use super::{context::RayMaterialContext, geometry::BounceRefractionGeometry};
+use super::{
+    R_UNPOL_PDF_MAX, R_UNPOL_PDF_MIN, context::RayMaterialContext,
+    geometry::BounceRefractionGeometry,
+};
 use crate::optics::{
     polarization::{MuellerMatrix, StokesVector},
     raytracer::{NUM_CHANNELS, uniaxial_fresnel},
@@ -110,7 +113,7 @@ pub(in crate::optics::raytracer) fn apply_tir_bounce(
                 // Channel k is genuinely below its own critical angle here even though
                 // the hero forced a reflect -- under k's own technique, reflecting has
                 // probability r_total_k.
-                path_pdf[k] *= r_total_k.clamp(1e-4, 1.0 - 1e-4);
+                path_pdf[k] *= r_total_k.clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX);
             }
             if k == ctx.hero_idx {
                 exact_p_o = Some(ro_pow / (ro_pow + re_pow).max(1e-12));
@@ -144,7 +147,8 @@ pub(in crate::optics::raytracer) fn apply_tir_bounce(
             // reflectance. Direction still matches trivially (reflection is never
             // dispersive), so no chromatic-termination check applies at a reflect
             // event.
-            let r_unpol_k = (0.5 * r_p_k.mul_add(r_p_k, r_s_k * r_s_k)).clamp(1e-4, 1.0 - 1e-4);
+            let r_unpol_k =
+                (0.5 * r_p_k.mul_add(r_p_k, r_s_k * r_s_k)).clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX);
             path_pdf[k] *= r_unpol_k;
         }
     }

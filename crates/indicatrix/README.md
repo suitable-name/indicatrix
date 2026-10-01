@@ -42,19 +42,24 @@ finished display frames both call it).
   stone's color genuinely depends on the electric-field direction relative to the
   crystal's optical axes, not just on wavelength.
 
-13 built-in materials ship with heavily cited Sellmeier/absorption data
-(`GemMaterial::all_materials()`, `GemMaterial::by_name(...)`): Diamond, Sapphire,
-Ruby, Emerald, Zircon, Alexandrite, Topaz, Spinel, Quartz, Tourmaline, Tanzanite,
-Moissanite, Cubic Zirconia.
+32 built-in materials ship with cited dispersion and absorption data
+(`GemMaterial::all_materials()` in `src/optics/materials/mod.rs`,
+`GemMaterial::by_name(...)`): Diamond, Sapphire, Ruby, Emerald, Zircon, Alexandrite,
+Topaz, Spinel, Quartz, Tourmaline, Tanzanite, Synthetic Moissanite, Cubic Zirconia,
+Aquamarine, Morganite, Chrysoberyl (Yellow), Amethyst, Citrine, Pyrope Garnet,
+Almandine Garnet, Spessartine Garnet, Grossular Garnet (Tsavorite), Andradite Garnet
+(Demantoid), Peridot, YAG, GGG, Benitoite, Andalusite, Opal, Glass (N-BK7), Glass (F2)
+and Rutile.
 
 ## Documentation map
 
 This file is the entry point: the public API, feature flags, and dependency
 policy. Two companion documents hold the deeper material:
 
-- [`docs/physics.md`](docs/physics.md) — deliberate deviations from physical
-  truth (do not "fix" these), known simplifications, and the bit-exact golden
-  tests that guard against unintended drift.
+- [`docs/physics.md`](docs/physics.md) — what the tracer, the lighting models and
+  the metrics actually compute (each claim cites its function), the deliberate
+  deviations from physical truth (do not "fix" these), the known simplifications,
+  and the bit-exact golden tests that guard against unintended drift.
 - [`docs/gpu.md`](docs/gpu.md) — the GPU port of the spectral transport
   physics and its tiered equivalence harness against the CPU tracer.
 
@@ -120,7 +125,7 @@ This fires an analytic ray grid (5-point sub-aperture bundles, the standard GIA
 0–6° eye cone) through the real facet geometry at the d/F/C Fraunhofer lines —
 it does not require running the Monte-Carlo path tracer at all.
 
-### From a real `.asc` cutting schedule
+### From real `.asc` cutting instructions
 
 ```rust
 use indicatrix_formats::asc::parse_asc;
@@ -144,12 +149,15 @@ honest about that in its own name.
   plane type (`#[repr(C)]`, `bytemuck::Pod`), used for both CPU intersection and
   GPU buffer upload. `GpuFacetPlane::new` normalizes `normal`.
 - **`geometry::GemPolyhedron`** — a validated boundary representation (vertices,
-  facet polygons, triangle indices) built from a plane set via polar duality and a
-  3D convex hull (`chull`). Vertex welding uses a fixed tolerance
-  (`VERTEX_WELD_EPS`); designs whose crease points aren't computed exactly (as
-  opposed to rounded to a few decimal places) can end up with an intended-coincident
-  vertex silently split into two nearby ones — see `StandardGemCuts::emerald_cut`
-  for how a profile-derived cut avoids this by computing crease points exactly.
+  facet polygons, triangle indices) built from a plane set by enumerating the plane
+  arrangement's feasible triple intersections (the same deterministic walk
+  `stone_metrics` uses; no convex-hull library since 2026-09-28). Its output is
+  byte-identical for identical input. Vertex welding uses a tolerance relative to the
+  solid's size (`VERTEX_WELD_EPS_REL`, 1e-4); designs whose crease points aren't
+  computed exactly (as opposed to rounded to a few decimal places) can end up with an
+  intended-coincident vertex split into two nearby ones — see
+  `StandardGemCuts::emerald_cut` for how a profile-derived cut avoids this by
+  computing crease points exactly.
 - **`optics::materials::GemMaterial`** — crystal system, optical character,
   dispersion model, absorption tensors, birefringence delta, and (for biaxial
   materials) `biaxial_delta_beta_alpha`. `new_custom(...)` builds a material from a
@@ -158,24 +166,16 @@ honest about that in its own name.
 - **`optics::raytracer::trace_spectral_ray`** — the single entry point for one
   sample's radiance. `hero_rand` is caller-supplied, not derived internally, so
   callers can drive stratified sampling across pixels/samples themselves.
-- **`renderer::pipeline::IndicatrixtracerPipeline` and `renderer::env_map_gpu::GpuEnvironmentMap`
-  are separate, older dead scaffolding** that predates the real GPU port described
-  below, and is unrelated to its state. `IndicatrixtracerPipeline::new` *always
-  panics* — its own doc comment says so — because the WGSL shader it would load is
-  quarantined and no longer contains a valid compute entry point. Do not read this
-  as evidence about whether GPU physics exists — it doesn't govern that; see
-  [The GPU port](#the-gpu-port-and-its-equivalence-harness) below for what actually
-  does.
 
 ## Feature flags
 
 All three are **off by default** — the base dependency set (`glam`, `bytemuck`,
-`chull`, `tracing`, `indicatrix-formats`) is deliberately small so the crate stays lean and
+`tracing`, `indicatrix-formats`) is deliberately small so the crate stays lean and
 publishable standalone (see below).
 
 | Feature | Pulls in | Unlocks |
 |---|---|---|
-| `gpu` | `wgpu`, `pollster` | `renderer::gpu`: a verified GPU port of the spectral transport physics (`shaders/spectral_transport.wgsl`'s `transport_main` compute kernel) plus the equivalence harness that checks it against the CPU path — see below. Also compiles `renderer::env_map_gpu` and `renderer::pipeline`, which are unrelated, older dead scaffolding (`renderer::pipeline::IndicatrixtracerPipeline::new` panics if constructed — see [Key types](#key-types-and-invariants)). |
+| `gpu` | `wgpu`, `pollster` | `renderer::gpu`: a verified GPU port of the spectral transport physics (`shaders/spectral_transport.wgsl`'s `transport_main` compute kernel) plus the equivalence harness that checks it against the CPU path — see below. |
 | `hdr` | `image` (default-features off, `hdr` format only) | Radiance `.hdr` equirectangular environment-map *decoding* for `renderer::env_map::EnvironmentMap`. The CPU-side importance-sampling machinery itself (`Distribution2D`, `radiance_at`, `sample`/`pdf`) needs no extra dependency and is always available even without this feature — only file decoding is gated. |
 | `serde` | `serde`, `glam/serde` | `Serialize`/`Deserialize` on the scene-description types `indicatrix-net`'s wire protocol needs: `GemMaterial` and its nested types, `GpuFacetPlane`, `LightingPreset`. |
 
@@ -231,15 +231,17 @@ a complete megakernel covering camera-ray generation, polyhedron intersection,
 Sellmeier dispersion, Fresnel/TIR, full Stokes–Mueller polarized transport,
 pleochroic Beer–Lambert absorption, Russian roulette, spectral MIS, and uniaxial
 birefringence — this is not a stub or a partial port. It renders real frames
-today, checked against the CPU tracer at **max genuine ULP = 0** by a tiered
-equivalence harness (bit-exact integer checks, per-function ULP budgets, an
-analytically-computable furnace anchor, and statistical comparison of real
-rendered images). `gpu` is off by default everywhere, but the port itself is
-complete: isotropic, uniaxial and biaxial materials all render on it, so
+today, checked against the CPU tracer by a tiered equivalence harness (bit-exact
+integer checks, per-function ULP budgets, an analytically-computable furnace
+anchor, and statistical comparison of real rendered images). The harness reports the
+maximum genuine ULP per tier; see the recorded run in `docs/gpu_harness_last_run.json`
+(committed by the owner with each physics change, so absent until the first recorded
+run; see [`docs/gpu.md`](docs/gpu.md)). `gpu` is off by default everywhere, but the
+port itself is complete: isotropic, uniaxial and biaxial materials all render on it, so
 `GemMaterial::gpu_supported()` is unconditionally `true`.
 
-Full detail — what's wired in where, how to run the harness, and what each of
-its four tiers actually checks — is in [`docs/gpu.md`](docs/gpu.md).
+Full detail — what's wired in where, how to run the harness and record a run, and what
+each of its four tiers actually checks — is in [`docs/gpu.md`](docs/gpu.md).
 
 The physics's deliberate deviations from strict physical truth, its known
 simplifications, and the bit-exact golden tests that guard render output
@@ -247,8 +249,9 @@ against unintended drift are in [`docs/physics.md`](docs/physics.md).
 
 ## Dependency policy
 
-Base (no-feature) dependencies: `glam`, `bytemuck`, `chull`, `tracing`, `indicatrix-formats`
-— five crates. Adding a sixth, unconditionally, should be treated as a deliberate
+Base (no-feature) dependencies: `glam`, `bytemuck`, `tracing`, `indicatrix-formats`
+— four crates (`chull` was dropped on 2026-09-28 when `GemPolyhedron` moved onto the
+deterministic plane-arrangement walk). Adding a fifth, unconditionally, should be treated as a deliberate
 decision to be documented in `Cargo.toml`, in keeping with the near-zero-dependency
 policy above; prefer a feature gate if the functionality is not needed by every
 caller.
@@ -262,19 +265,21 @@ cargo test -p indicatrix --features gpu     # additionally compiles gpu-feature 
 
 **`cargo test -p indicatrix` alone does not exercise the `gpu` feature at all** — a
 real bug once hid in exactly that gap for a long time. If you touch anything
-under `renderer::gpu`, `renderer::env_map_gpu`, `renderer::pipeline`, or anything
-gated `#[cfg(feature = "gpu")]`, you must additionally run
-`cargo test -p indicatrix --features gpu` to know whether it still compiles and
-passes; `cargo test -p indicatrix` will report success while never having looked at
-that code. (See the workspace root README for the same warning at the
+under `renderer::gpu` or anything gated `#[cfg(feature = "gpu")]`, you must
+additionally run `cargo test -p indicatrix --features gpu` to know whether it still
+compiles and passes; `cargo test -p indicatrix` will report success while never having
+looked at that code. (See the workspace root README for the same warning at the
 workspace-verification level.)
 
-No `#[test]`-attributed function in this crate requires a live GPU adapter — the
-`--features gpu` unit tests (in `renderer/gpu/furnace_check.rs` and
-`renderer/gpu/ulp.rs`) are pure-logic tests of the comparison/tolerance helpers
-themselves. All GPU-adapter-dependent equivalence checking lives exclusively in
-`examples/gpu_equivalence_harness/` (above), which `cargo test` never runs on
-its own.
+The `--features gpu` unit tests in `renderer/gpu/furnace_check.rs` and
+`renderer/gpu/ulp.rs` are pure-logic tests of the comparison/tolerance helpers. The unit
+tests that do need an adapter (`renderer/gpu/frame/gpu_hardware_tests.rs`,
+`renderer/gpu/merge_tests.rs`, `renderer/gpu_backend/tests.rs`) print a note and pass
+when no adapter exists, so a green run on a machine without a GPU tested nothing there;
+set `INDICATRIX_REQUIRE_GPU=1` to make a missing adapter fail them instead. The
+CPU-versus-GPU equivalence checking itself lives in `examples/gpu_equivalence_harness/`
+(above), which `cargo test` never runs; its `--json` option records a run (see
+[`docs/gpu.md`](docs/gpu.md)).
 
 `examples/meet_solver_validation/` is corpus-scale validation tooling for
 `geometry::meet_solver` — the module that derives a facet's mast (depth)

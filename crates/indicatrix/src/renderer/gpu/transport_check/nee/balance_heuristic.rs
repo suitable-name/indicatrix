@@ -8,6 +8,7 @@ use crate::{
     },
 };
 
+/// One input case for the balance heuristic check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BalanceHeuristicCase {

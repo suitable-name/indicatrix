@@ -5,7 +5,10 @@
 
 use super::specific_gravity::built_in_specific_gravity;
 use crate::optics_hints::critical_angle_deg;
-use indicatrix::optics::materials::GemMaterial;
+use indicatrix::optics::{
+    dispersion::DispersionModel,
+    materials::{GemMaterial, body_colour::preset_label_for_rgb},
+};
 
 /// A design's material choice for the carat-weight estimate.
 ///
@@ -16,7 +19,7 @@ use indicatrix::optics::materials::GemMaterial;
 ///
 /// Stored on [`crate::design::Design`] like [`crate::preform::PreformSpec`] -- a
 /// design input, mutated only through [`crate::edit::History`].
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Clone, PartialEq, Default)]
 pub struct MaterialSelection {
     /// The selected preset name, exactly a `GemMaterial::name` string, or `None` for
     /// "no preset selected" (a brand-new design, or one relying entirely on
@@ -30,6 +33,30 @@ pub struct MaterialSelection {
     /// `name` resolves to, same precedence as `specific_gravity_override`. `None`
     /// means "use the resolved material's own `n_D`".
     pub refractive_index_override: Option<f64>,
+    /// A per-design body colour: the `[R, G, B]` absorption triple
+    /// `GemMaterial::with_body_colour` applies on top of whatever `name` resolves to
+    /// (see `indicatrix::optics::materials::body_colour::BODY_COLOUR_PRESETS` for the
+    /// fixed presets). `None` means "the material's own colour". Lets a cutter try a
+    /// design as, say, a yellow instead of a blue sapphire without authoring a new
+    /// custom material; the variant is isotropic (the base material's pleochroism
+    /// is not modelled while this is set).
+    pub body_colour_override: Option<[f32; 3]>,
+}
+
+/// Hand-written rather than derived so a selection WITHOUT a body-colour override
+/// prints exactly as it did before that field existed (the desktop's identity pins
+/// hash these `Debug` dumps); the field is printed only when it is set.
+impl std::fmt::Debug for MaterialSelection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut out = f.debug_struct("MaterialSelection");
+        out.field("name", &self.name)
+            .field("specific_gravity_override", &self.specific_gravity_override)
+            .field("refractive_index_override", &self.refractive_index_override);
+        if let Some(rgb) = &self.body_colour_override {
+            out.field("body_colour_override", rgb);
+        }
+        out.finish()
+    }
 }
 
 impl MaterialSelection {
@@ -44,7 +71,61 @@ impl MaterialSelection {
             name: None,
             specific_gravity_override: None,
             refractive_index_override: None,
+            body_colour_override: None,
         }
+    }
+
+    /// Returns this selection with `body_colour_override` replaced by `rgb` -- every
+    /// other field carries through unchanged. `None` restores the material's own
+    /// colour.
+    #[must_use]
+    pub const fn with_body_colour(mut self, rgb: Option<[f32; 3]>) -> Self {
+        self.body_colour_override = rgb;
+        self
+    }
+
+    /// Whether this selection recolours its material (see
+    /// [`Self::body_colour_override`]).
+    #[must_use]
+    pub const fn has_body_colour_override(&self) -> bool {
+        self.body_colour_override.is_some()
+    }
+
+    /// A short label for [`Self::body_colour_override`]: the matching preset's own
+    /// label (`"Yellow"`), `"custom colour"` for a triple that matches no preset, or
+    /// `None` when no override is set. Used to name a recoloured material
+    /// (`Sapphire (Yellow)`) in the undo history and the render readout.
+    #[must_use]
+    pub fn body_colour_label(&self) -> Option<&'static str> {
+        self.body_colour_override
+            .map(|rgb| preset_label_for_rgb(rgb).unwrap_or("custom colour"))
+    }
+
+    /// `gem` with this selection's per-design overrides applied: the
+    /// `refractive_index_override` as a flat (non-dispersive) Cauchy fit at exactly
+    /// the typed value, then the `body_colour_override` via
+    /// `GemMaterial::with_body_colour`. With neither set, `gem` comes back
+    /// unchanged.
+    ///
+    /// The ONE place a design's selection turns a looked-up material into the stone
+    /// the optimizer, tilt curve, live render and export all see -- every
+    /// "selection -> `GemMaterial`" helper routes through this, so an override can
+    /// never reach one consumer and miss another. An RI override is, by
+    /// construction, a single typed index with no accompanying dispersion data, so
+    /// "flat at the override" is the only honest curve to draw.
+    #[must_use]
+    pub fn apply_overrides(&self, mut gem: GemMaterial) -> GemMaterial {
+        if let Some(n_d) = self.refractive_index_override {
+            gem.dispersion = DispersionModel::Cauchy {
+                a: n_d as f32,
+                b: 0.0,
+                c: 0.0,
+            };
+        }
+        if let Some(rgb) = self.body_colour_override {
+            gem = gem.with_body_colour(rgb);
+        }
+        gem
     }
 
     /// Returns a copy of this selection with only `specific_gravity_override`
@@ -126,6 +207,23 @@ pub(in crate::material) fn n_d_of(gem: &GemMaterial) -> f64 {
     f64::from(gem.dispersion.evaluate(589.3))
 }
 
+/// Looks up a built-in material by name, matched EXACTLY (case-insensitively
+/// only) against `indicatrix::optics::materials::GemMaterial::all_materials`.
+///
+/// Deliberately NOT [`GemMaterial::by_name`], whose own substring fallback would
+/// resolve a query like "My Blue Sapphire" to Sapphire just because it CONTAINS
+/// that name -- wrong for anything treating a match here as "this design's
+/// material really is this built-in species" (a diagram title mentioning a gem in
+/// passing is not the same claim). See `by_name`'s own doc comment for why that
+/// fallback exists there (a looser, diagram-title-tolerant lookup a different
+/// caller wants); this crate's own material resolution needs the stricter one.
+#[must_use]
+pub fn built_in_material_by_exact_name(name: &str) -> Option<GemMaterial> {
+    GemMaterial::all_materials()
+        .into_iter()
+        .find(|m| m.name.eq_ignore_ascii_case(name))
+}
+
 /// Looks up a built-in material's own `n_D` by exactly the name
 /// `indicatrix::optics::materials::GemMaterial::name` uses for that preset.
 ///
@@ -136,7 +234,7 @@ pub(in crate::material) fn n_d_of(gem: &GemMaterial) -> f64 {
 /// absent or unrecognized.
 #[must_use]
 pub fn built_in_refractive_index(material_name: &str) -> Option<f64> {
-    GemMaterial::by_name(material_name).map(|gem| n_d_of(&gem))
+    built_in_material_by_exact_name(material_name).map(|gem| n_d_of(&gem))
 }
 
 /// Resolves a preset NAME to a real [`GemMaterial`].
@@ -187,6 +285,7 @@ impl MaterialLookup for BuiltinMaterials {
 /// has to re-derive `n_d`/the critical angle from the material by hand.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedMaterial {
+    /// Underlying gem material definition.
     pub gem: GemMaterial,
     /// Refractive index at the sodium D line: `refractive_index_override` when
     /// present, else `gem`'s own dispersion curve evaluated at 589.3nm.

@@ -16,7 +16,10 @@ use crate::{
         refresh_material_options, show_toast,
     },
 };
-use indicatrix::optics::materials::GemMaterial;
+use indicatrix::optics::materials::{
+    GemMaterial,
+    body_colour::{BODY_COLOUR_PRESETS, preset_index_for_rgb},
+};
 use indicatrix_vault::db::sqlite::Database;
 use slint::{ComponentHandle, Model, SharedString};
 use std::sync::{Arc, Mutex};
@@ -32,6 +35,42 @@ fn built_in_name_collision(name: &str) -> Option<String> {
         .into_iter()
         .map(|m| m.name)
         .find(|builtin| builtin.eq_ignore_ascii_case(name))
+}
+
+/// The material editor's "Custom (keep)" swatch index -- one past
+/// [`BODY_COLOUR_PRESETS`]' fixed table. Selected by
+/// [`color_index_for_absorption_rgb`] when a saved material's `absorption_rgb`
+/// matches none of the nine presets exactly (authored outside the dialog, e.g. by an
+/// imported `.asc`/template, or by a preset a future build adds); handled by
+/// [`apply_custom_material_save`] as "keep whatever this name's row already has",
+/// never as Clear.
+pub(super) const CUSTOM_KEEP_COLOR_INDEX: i32 = 9;
+
+/// [`BODY_COLOUR_PRESETS`]' index -> rgb direction, for [`apply_custom_material_save`].
+///
+/// `MaterialColorPresets`' (`ui/components/material_editor/color_presets.slint`) nine
+/// fixed swatches, index 0 ("Clear") through 8 ("Amber Topaz"), are exactly that table in
+/// its own order -- the single source of truth both this function (index -> rgb, at
+/// save time) and [`color_index_for_absorption_rgb`] (rgb -> index, the dialog's
+/// pre-fill) resolve against, shared with the design's own body-colour override.
+/// An out-of-range index (defensively -- the dialog's own combo can never actually
+/// produce one) falls back to Clear, matching the old bare `match`'s `_` arm.
+fn absorption_rgb_for_color_index(color_idx: i32) -> [f32; 3] {
+    usize::try_from(color_idx)
+        .ok()
+        .and_then(|i| BODY_COLOUR_PRESETS.get(i))
+        .map_or([0.0, 0.0, 0.0], |preset| preset.absorption_rgb)
+}
+
+/// [`BODY_COLOUR_PRESETS`]' rgb -> index direction (exact match, via
+/// [`preset_index_for_rgb`]), for `push_selected_custom_material_fields`'s pre-fill.
+/// `None` when `rgb` matches no preset -- the caller's cue to pre-fill
+/// [`CUSTOM_KEEP_COLOR_INDEX`] instead of defaulting to 0 ("Clear"), which is what
+/// used to silently flatten a re-saved coloured custom material to colourless (see
+/// this module's own doc comment).
+#[must_use]
+fn color_index_for_absorption_rgb(rgb: [f32; 3]) -> Option<i32> {
+    preset_index_for_rgb(rgb).and_then(|i| i32::try_from(i).ok())
 }
 
 /// The "Save Custom Material" dialog's raw field values, exactly as the
@@ -91,6 +130,32 @@ struct SavedCustomMaterial {
     specific_gravity: Option<f64>,
 }
 
+/// The absorption colour a saved material gets: the swatch preset for `color_idx`, or --
+/// for [`CUSTOM_KEEP_COLOR_INDEX`] -- whatever the same-named row already stores.
+fn resolve_absorption_rgb(db: &Arc<Mutex<Database>>, name: &str, color_idx: i32) -> [f32; 3] {
+    if color_idx == CUSTOM_KEEP_COLOR_INDEX {
+        // The swatch row was never touched (or "Custom (keep)" was picked
+        // deliberately) -- reuse whatever THIS name's previously saved
+        // `absorption_rgb` already was, rather than falling through to Clear.
+        // This is the fix for the sapphire-turns-colourless bug: the dialog's
+        // `init` (`material_editor_dialog.slint`) now pre-fills this index
+        // itself whenever a reopened custom material's colour matches no
+        // fixed preset (see `color_index_for_absorption_rgb`'s own doc
+        // comment), so a plain re-save with nothing touched must actually
+        // keep it. A name with no existing row (nothing to keep) falls back
+        // to Clear -- there is no real "keep" case for a brand-new material.
+        db.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get_custom_materials()
+            .unwrap_or_default()
+            .into_iter()
+            .find(|r| r.name.eq_ignore_ascii_case(name))
+            .map_or([0.0f32, 0.0, 0.0], |r| r.absorption_rgb)
+    } else {
+        absorption_rgb_for_color_index(color_idx)
+    }
+}
+
 /// Validates `form` (blank name, or one colliding with a built-in material),
 /// saves it to the database, and updates the shared render context's in-memory
 /// custom-material list -- everything [`setup_custom_material_callbacks`]'s save
@@ -114,17 +179,6 @@ fn apply_custom_material_save(
         specific_gravity,
         apply_to_live_render,
     } = form;
-    let abs_rgb = match color_idx {
-        1 => [2.8f32, 1.2, 0.1], // Sapphire Blue
-        2 => [0.1f32, 2.5, 2.2], // Ruby Red
-        3 => [2.2f32, 0.2, 2.0], // Emerald Green
-        4 => [1.8f32, 1.6, 0.2], // Tanzanite Violet
-        5 => [0.2f32, 0.4, 2.8], // Canary Yellow
-        6 => [0.4f32, 2.2, 1.6], // Pink Spinel
-        7 => [0.2f32, 0.6, 1.8], // Teal / Zircon
-        8 => [1.2f32, 0.4, 0.1], // Amber Topaz
-        _ => [0.0f32, 0.0, 0.0], // Clear
-    };
     // A blank/whitespace-only name, or one that collides with a built-in
     // material, is refused outright here -- the dialog's own `can_save`
     // property only catches the exact-empty case (see
@@ -142,6 +196,8 @@ fn apply_custom_material_save(
              this design's material is used. Rename it first."
         ));
     }
+
+    let abs_rgb = resolve_absorption_rgb(db, &trimmed, color_idx);
 
     let mut new_mat = GemMaterial::new_custom(&trimmed, ri, disp, biref, abs_rgb);
     // The dialog always sends a definite combo selection (its own
@@ -164,7 +220,7 @@ fn apply_custom_material_save(
         is_biaxial(new_mat.optical_character).then_some(biaxial_delta_beta_alpha);
 
     // Bound to a `let` first (rather than in the `if let` below) so the
-    // `MutexGuard` `db.lock().unwrap()` produces is released as soon as this
+    // `MutexGuard` `db.lock()` produces is released as soon as this
     // save call returns, not held for the rest of this function -- a
     // significant-`Drop` temporary in an `if let` scrutinee stays alive for
     // the whole arm, which has already caused one real panic in this codebase
@@ -173,8 +229,15 @@ fn apply_custom_material_save(
     // `material_editor_dialog.slint`'s `sg_val` doc comment) is stored as `None`
     // rather than a literal zero-density material.
     let sg = (specific_gravity > 0.0001).then_some(specific_gravity);
-    let save_result =
-        save_gem_material(&db.lock().unwrap(), &new_mat, ri, disp, biref, abs_rgb, sg);
+    let save_result = save_gem_material(
+        &db.lock().unwrap_or_else(std::sync::PoisonError::into_inner),
+        &new_mat,
+        ri,
+        disp,
+        biref,
+        abs_rgb,
+        sg,
+    );
     if let Err(e) = save_result {
         return Err(format!("Could not save '{trimmed}': {e}"));
     }
@@ -211,6 +274,10 @@ fn apply_custom_material_save(
     let overwrote_existing = materials
         .iter()
         .any(|m| m.name.eq_ignore_ascii_case(&trimmed));
+    // Cloned before the move below -- both the `apply_to_live_render` and the
+    // "refresh a matching active override" branches further down need a copy of the
+    // freshly saved material, and `new_mat` itself is moved into `materials` here.
+    let saved_mat = new_mat.clone();
     if let Some(pos) = materials
         .iter()
         .position(|m| m.name.eq_ignore_ascii_case(&trimmed))
@@ -229,6 +296,27 @@ fn apply_custom_material_save(
     let saved_specific_gravity = ctx.custom_specific_gravity(&trimmed);
     if apply_to_live_render {
         ctx.material_name.clone_from(&trimmed);
+        // Mirrors `gui::render::material_quality::setup_material_changed_callback`'s
+        // own clearing: `resolve_material_with_override` PREFERS `material_override`
+        // over the name just written above, and "linked to design" may have left one
+        // in place from the last editor refresh. Without this, "Save & Apply" moved
+        // the label and did nothing to the actual trace whenever an override was
+        // active -- exactly the bug this fix addresses. `material_unresolved` is
+        // cleared for the same reason `on_material_changed` clears it: naming a real
+        // material by hand is the way out of a refusal.
+        ctx.material_override = None;
+        ctx.material_unresolved = None;
+        ctx.dirty = true;
+    } else if ctx
+        .material_override
+        .as_ref()
+        .is_some_and(|m| m.name.eq_ignore_ascii_case(&trimmed))
+    {
+        // A plain "Save" (not "Save & Apply") must still not leave the live render
+        // tracing STALE optics when the material it is CURRENTLY overridden to is the
+        // one just edited -- refresh the override in place rather than silently
+        // requiring a second, separate "Save & Apply" to see the new numbers reflected.
+        ctx.material_override = Some(saved_mat);
         ctx.dirty = true;
     }
 
@@ -276,7 +364,10 @@ fn apply_custom_material_delete(
     // Bound to a `let` first -- see [`apply_custom_material_save`]'s matching
     // comment for why a significant-`Drop` `MutexGuard` must never sit in an
     // `if let` scrutinee.
-    let delete_result = db.lock().unwrap().delete_custom_material(name);
+    let delete_result = db
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .delete_custom_material(name);
     if let Err(e) = delete_result {
         return Err(format!("Could not delete '{name}': {e}"));
     }
@@ -325,12 +416,18 @@ fn apply_custom_material_delete(
     ctx.dirty = true;
     // Deleting the currently selected custom material falls back to
     // "Diamond" above -- re-derive availability for whatever `material_name` ends
-    // up being (unchanged if a DIFFERENT material was deleted).
-    let c_axis_available = is_c_axis_override_available(&resolve_material(
+    // up being (unchanged if a DIFFERENT material was deleted). `resolve_material`
+    // is `Option` (no `materials[0]` fallback, see its own doc comment); `ctx.
+    // material_name` should always resolve here (either unchanged from a moment
+    // ago, or just reset to the real "Diamond" above), but `None` still falls back
+    // to `false` rather than panicking on a bare `.unwrap()`.
+    let c_axis_available = resolve_material(
         &GemMaterial::all_materials(),
         &ctx.custom_materials,
         &ctx.material_name,
-    ));
+    )
+    .as_ref()
+    .is_some_and(is_c_axis_override_available);
 
     let custom_list = ctx.custom_materials.clone();
     drop(ctx);
@@ -429,6 +526,16 @@ fn push_selected_custom_material_fields(
     model.set_selected_custom_material_biaxial_delta_beta_alpha(
         material.biaxial_delta_beta_alpha.unwrap_or(0.0),
     );
+    // Reverse lookup against the SAME preset table `apply_custom_material_save`
+    // resolves an index into -- `CUSTOM_KEEP_COLOR_INDEX` when the row's colour
+    // matches none of the nine fixed presets, so `material_editor_dialog.slint`'s
+    // `init` can select "Custom (keep)" instead of silently defaulting to index 0
+    // ("Clear"), which is what used to flatten a re-saved coloured custom material
+    // to colourless the moment its RI was merely tweaked (this module's own doc
+    // comment).
+    model.set_selected_custom_material_color_idx(
+        color_index_for_absorption_rgb(row.absorption_rgb).unwrap_or(CUSTOM_KEEP_COLOR_INDEX),
+    );
 }
 
 /// Wires `ViewportModel::selected_material_changed_for_editor_prefill` (fired by that
@@ -455,6 +562,71 @@ fn setup_selected_material_prefill_callback(ui: &MainWindow, db: &Arc<Mutex<Data
                 .unwrap_or_default();
             push_selected_custom_material_fields(&ui, &db, &name);
         });
+}
+
+/// The success half of `on_save_custom_material`'s result handling: refreshing the
+/// material combo/crystal-axis availability, syncing the Render Material dropdown when
+/// the save also applied, and the resulting toast. Split out of
+/// [`setup_custom_material_callbacks`] purely to keep that function under clippy's
+/// function-length lint.
+fn handle_saved_custom_material(ui: &MainWindow, outcome: &SavedCustomMaterial) {
+    refresh_material_options(ui, &outcome.custom_list);
+    // A plain "Save" leaves the live render's material untouched, so the
+    // crystal-axis control (which tracks that selection) is only refreshed when the
+    // save also applied.
+    if let Some(c_axis_available) = outcome.c_axis_available {
+        ui.global::<SettingsModel>()
+            .set_c_axis_override_available(c_axis_available);
+    }
+    if outcome.applied_to_live_render {
+        // Same two follow-ups `on_material_changed`
+        // (`gui::render::material_quality::setup_material_changed_callback`) does for
+        // a hand-picked material: unlink "linked to design" (an "apply" IS the
+        // independent choice that property exists to suppress -- left on, the next
+        // editor refresh would put the design's own material straight back), and keep
+        // the Render Material dropdown's own displayed selection in sync with what
+        // `apply_custom_material_save` just wrote into `RenderContext::material_name`
+        // -- without this the dropdown kept showing whatever was selected before
+        // "Save & Apply", even though the trace itself had already moved on.
+        let viewport = ui.global::<ViewportModel>();
+        if viewport.get_viewport_material_linked() {
+            viewport.set_viewport_material_linked(false);
+        }
+        if let Some(index) = crate::gui::startup_settings::find_option_index(
+            &viewport.get_material_options(),
+            &outcome.trimmed_name,
+        ) {
+            viewport.set_selected_material_index(index);
+        }
+    }
+    // This toast carries no biaxial-vs-GPU caveat: `gpu_supported()` is
+    // unconditionally `true` since the `BiaxialIndicatrix` WGSL port (see its own doc
+    // comment), so a biaxial custom material renders on the GPU like any other.
+    let verb = if outcome.overwrote_existing {
+        "Overwrote"
+    } else {
+        "Saved"
+    };
+    let suffix = if outcome.applied_to_live_render {
+        " and applied"
+    } else {
+        ""
+    };
+    // Confirms the SG the cutter typed actually made it all the way through to the
+    // carat-weight estimate's own side channel -- see `outcome.specific_gravity`'s own
+    // doc comment for why this is read back rather than echoed from the form.
+    let sg_suffix = outcome
+        .specific_gravity
+        .map(|sg| format!(" (SG {sg:.2})"))
+        .unwrap_or_default();
+    show_toast(
+        ui,
+        &format!(
+            "{verb}{suffix} custom material '{}'{sg_suffix}",
+            outcome.trimmed_name
+        ),
+        "success",
+    );
 }
 
 pub(in crate::gui) fn setup_custom_material_callbacks(
@@ -502,46 +674,7 @@ pub(in crate::gui) fn setup_custom_material_callbacks(
                 return;
             };
             match result {
-                Ok(outcome) => {
-                    refresh_material_options(&ui, &outcome.custom_list);
-                    // A plain "Save" leaves the live render's material
-                    // untouched, so the crystal-axis control (which tracks that
-                    // selection) is only refreshed when the save also applied.
-                    if let Some(c_axis_available) = outcome.c_axis_available {
-                        ui.global::<SettingsModel>()
-                            .set_c_axis_override_available(c_axis_available);
-                    }
-                    // This toast carries no biaxial-vs-GPU caveat: `gpu_supported()` is
-                    // unconditionally `true` since the `BiaxialIndicatrix` WGSL port (see
-                    // its own doc comment), so a biaxial custom material renders on the GPU
-                    // like any other.
-                    let verb = if outcome.overwrote_existing {
-                        "Overwrote"
-                    } else {
-                        "Saved"
-                    };
-                    let suffix = if outcome.applied_to_live_render {
-                        " and applied"
-                    } else {
-                        ""
-                    };
-                    // Confirms the SG the cutter typed actually made
-                    // it all the way through to the carat-weight estimate's own side
-                    // channel -- see `outcome.specific_gravity`'s own doc comment for why
-                    // this is read back rather than echoed from the form.
-                    let sg_suffix = outcome
-                        .specific_gravity
-                        .map(|sg| format!(" (SG {sg:.2})"))
-                        .unwrap_or_default();
-                    show_toast(
-                        &ui,
-                        &format!(
-                            "{verb}{suffix} custom material '{}'{sg_suffix}",
-                            outcome.trimmed_name
-                        ),
-                        "success",
-                    );
-                }
+                Ok(outcome) => handle_saved_custom_material(&ui, &outcome),
                 Err(e) => show_toast(&ui, &e, "error"),
             }
         },

@@ -11,12 +11,12 @@ use crate::{
     cli::ComputeMode,
     coordinator::{Coordinator, Registry, ViewerSession, viewer_render_capability},
     render_core,
-    stream_emit::{self, TimeoutRead, TimeoutWrite},
+    stream_emit::{self, TimeoutRead, TimeoutWrite, is_stream_timeout},
     validate,
 };
 use indicatrix::renderer::gpu_backend::GpuBackend;
 use indicatrix_net::{
-    framing::FramingError,
+    framing::{FramingError, IDLE_READ_TIMEOUT},
     handshake,
     messages::{
         Backend, ClientMessage, ErrorMsg, Hello, LOOPBACK_SERVER_PREFERENCE, NetError,
@@ -152,10 +152,11 @@ pub fn handle_viewer_connection<S: Read + Write + TimeoutRead + TimeoutWrite>(
         ctx.cert_role,
     )?;
     // HELLO has arrived -- the pre-protocol deadline the accept loop applied to the raw
-    // socket (`serve::HANDSHAKE_TIMEOUT`) has done its job. Restore blocking
-    // reads/writes: everything below expects it, as does `stream_emit::run_stream`'s
-    // `TimeoutCache`. Best-effort -- a failed call just leaves the deadline in place.
-    let _ = stream.set_read_timeout(None);
+    // socket (`serve::HANDSHAKE_TIMEOUT`) has done its job. Reads now wait at most
+    // `IDLE_READ_TIMEOUT` for a peer's next message (each request loop re-arms it);
+    // writes go back to blocking. Best-effort -- a failed call just leaves the previous
+    // deadline in place.
+    let _ = stream.set_read_timeout(Some(IDLE_READ_TIMEOUT));
     let _ = stream.set_write_timeout(None);
     let remote_hello = match check {
         crate::serve::handshake::HelloCheck::Accepted(hello) => hello,
@@ -211,7 +212,9 @@ pub fn handle_viewer_connection<S: Read + Write + TimeoutRead + TimeoutWrite>(
             payload_encoding,
             advertised: render,
             own_capability: own,
-            rates: Arc::default(),
+            // Coordinator-PROCESS-wide, not a fresh book per connection -- see
+            // `Coordinator::rates`'s doc comment.
+            rates: Arc::clone(coordinator.rates()),
         });
     serve_requests(
         &mut stream,
@@ -236,8 +239,13 @@ pub fn handle_viewer_connection<S: Read + Write + TimeoutRead + TimeoutWrite>(
 ///
 /// `--only-cpu` shows up here as a disabled `gpu` (hence `Cpu`); a later per-request
 /// decline still falls back silently, as documented in `gpu_backend`.
+///
+/// Gives a lost device its chance to come back first ([`GpuBackend::try_recover`], which
+/// honours the backend's cool-down and attempt budget), so a connection made after a
+/// recovery advertises the GPU again instead of the stale CPU fallback.
 #[must_use]
 pub fn local_render_capability(gpu: &GpuBackend, threads: usize) -> RenderCapability {
+    let _ = gpu.try_recover();
     let backend = gpu.adapter_label().map_or_else(
         || Backend::Cpu {
             threads: render_core::effective_thread_count(threads) as u32,
@@ -275,6 +283,8 @@ pub fn refuse_incompatible_handshake<S: Write>(
         &ErrorMsg {
             code: BUILD_MISMATCH_CODE,
             message,
+            // Refused before WELCOME -- no request exists yet.
+            request_id: None,
         },
     );
 }
@@ -287,7 +297,7 @@ pub fn refuse_incompatible_handshake<S: Write>(
 /// inner `Result` immediately; `None` means this peer is NOT a library-only downgrade
 /// case, and the caller should continue on to the normal [`handshake::verify_compatible`]
 /// gate (whose "an unknown build is never compatible" rule would otherwise refuse it).
-fn pair_as_library_only_if_unknown_build<S: Read + Write>(
+fn pair_as_library_only_if_unknown_build<S: Read + Write + TimeoutRead>(
     stream: &mut S,
     local_hello: &Hello,
     remote_hello: &Hello,
@@ -316,12 +326,13 @@ fn pair_as_library_only_if_unknown_build<S: Read + Write>(
 }
 
 /// The library-only refusal for a request that needs render capacity.
-fn no_render_capacity(what: &str) -> ErrorMsg {
+fn no_render_capacity(what: &str, request_id: u32) -> ErrorMsg {
     ErrorMsg {
         code: NO_RENDER_CAPACITY_CODE,
         message: format!(
             "this connection was paired as library-only (HELLO reported no indicatrix build) and cannot {what}"
         ),
+        request_id: Some(request_id),
     }
 }
 
@@ -332,40 +343,55 @@ fn no_render_capacity(what: &str) -> ErrorMsg {
 ///
 /// # Errors
 ///
-/// Returns [`NetError`] for a transport-level failure. `Ok(())` (not an error) for a
-/// clean EOF.
-fn serve_library_only_connection<S: Read + Write>(
+/// Returns [`NetError`] for a transport-level failure (including a connection that ends
+/// inside a frame). `Ok(())` (not an error) for a clean EOF between messages, and for a
+/// connection that sent nothing for [`IDLE_READ_TIMEOUT`], which is closed with a logged
+/// reason.
+fn serve_library_only_connection<S: Read + Write + TimeoutRead>(
     stream: &mut S,
     db: &Database,
 ) -> Result<(), NetError> {
     loop {
-        let msg: ClientMessage = match indicatrix_net::messages::read_message(stream) {
+        let _ = stream.set_read_timeout(Some(IDLE_READ_TIMEOUT));
+        let msg: ClientMessage = match indicatrix_net::messages::read_control_message(stream) {
             Ok(m) => m,
             Err(NetError::Framing(FramingError::Io(e)))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
                 return Ok(());
             }
+            Err(NetError::Framing(FramingError::Io(e))) if is_stream_timeout(&e) => {
+                tracing::info!(
+                    "closing a library-only connection that sent nothing for {} s (idle timeout)",
+                    IDLE_READ_TIMEOUT.as_secs()
+                );
+                return Ok(());
+            }
             Err(e) => return Err(e),
         };
         match msg {
-            ClientMessage::RenderRequest(_) => indicatrix_net::messages::write_stream_event(
+            ClientMessage::RenderRequest(r) => indicatrix_net::messages::write_stream_event(
                 stream,
-                &StreamEvent::Error(no_render_capacity("render")),
+                &StreamEvent::Error(no_render_capacity("render", r.request_id)),
                 None,
             )?,
-            ClientMessage::TiltCurvesRequest(_) => indicatrix_net::messages::write_message(
+            ClientMessage::TiltCurvesRequest(r) => indicatrix_net::messages::write_message(
                 stream,
-                &TiltCurvesResponse::Error(no_render_capacity("compute tilt curves")),
+                &TiltCurvesResponse::Error(no_render_capacity("compute tilt curves", r.request_id)),
             )?,
-            ClientMessage::FinalImageRequest(_) => indicatrix_net::messages::write_stream_event(
+            ClientMessage::FinalImageRequest(r) => indicatrix_net::messages::write_stream_event(
                 stream,
-                &StreamEvent::Error(no_render_capacity("render a final image")),
+                &StreamEvent::Error(no_render_capacity("render a final image", r.request_id)),
                 None,
             )?,
             ClientMessage::Ping { nonce } => write_pong(stream, nonce)?,
             // Nothing here ever asks for an asset; consume an unrequested one's payload.
             ClientMessage::Asset(header) => crate::assets::discard_asset(stream, &header)?,
+            // Nothing here ever asks for a contribution either; consume an unrequested
+            // one's payload to stay in sync.
+            ClientMessage::Contribution(header) => {
+                indicatrix_net::messages::discard_contribution_payload(stream, &header)?;
+            }
             other @ (ClientMessage::Cancel(_) | ClientMessage::Library(_)) => {
                 handle_non_render_message(stream, &other, Some(db))?;
             }

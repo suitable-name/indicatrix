@@ -2,7 +2,7 @@
 //! see [`super`]'s "Exit-event spectral splitting" doc comment for the estimator these
 //! support.
 
-use super::context::ExitSplitCtx;
+use super::{R_UNPOL_PDF_MAX, R_UNPOL_PDF_MIN, context::ExitSplitCtx};
 use crate::optics::{
     polarization::{MuellerMatrix, StokesVector},
     raytracer::{
@@ -63,7 +63,8 @@ pub(super) fn compute_channel_transmission(
         .scale(1.0 / (1.0 - r_unpol));
     let r_s_k = f32::mul_add(n2k, -cos_t_k, n1k * cos_i) / f32::mul_add(n2k, cos_t_k, n1k * cos_i);
     let r_p_k = f32::mul_add(n1k, -cos_t_k, n2k * cos_i) / f32::mul_add(n1k, cos_t_k, n2k * cos_i);
-    let r_unpol_k = (0.5 * r_p_k.mul_add(r_p_k, r_s_k * r_s_k)).clamp(1e-4, 1.0 - 1e-4);
+    let r_unpol_k =
+        (0.5 * r_p_k.mul_add(r_p_k, r_s_k * r_s_k)).clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX);
     (transmitted, r_unpol_k)
 }
 
@@ -114,8 +115,12 @@ pub(super) fn try_split_exit_channel(
         exit.studio_rig.as_ref(),
         exit.observer,
     );
+    // `split_mis_weight` is `1.0` outside a transmit-out event with a live incoming NEE
+    // carry -- see `ExitSplitCtx::split_mis_weight`'s doc comment -- so this reproduces
+    // the unweighted addition exactly whenever no competing light-sampling technique is
+    // in play.
     exit.split_radiance[k] = f32::mul_add(
-        transmitted_intensity.max(0.0),
+        transmitted_intensity.max(0.0) * exit.split_mis_weight,
         env_spectral,
         exit.split_radiance[k],
     );

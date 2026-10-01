@@ -65,12 +65,12 @@ fn angle_dirs() -> Vec<(f32, Vec3, Vec3)> {
 }
 
 /// `(n_o, n_e)` pairs spanning this crate's built-in birefringence range: Sapphire/
-/// Ruby-scale (small, negative), Zircon-scale (large, positive), and Rutile-scale (the
-/// most extreme built-in, `+0.287`).
+/// Ruby-scale (small, negative), Zircon-scale (large, positive), and a Rutile-like pair
+/// (`+0.287`; real Rutile is `+0.2957`).
 const MATERIAL_INDICES: [(f32, f32); 4] = [
     (1.768, 1.760), // Sapphire/Ruby-scale (birefringence_delta ~ -0.008)
     (1.925, 1.984), // Zircon-scale (+0.059)
-    (2.616, 2.903), // Rutile-scale (+0.287)
+    (2.616, 2.903), // Rutile-like pair (+0.287; real Rutile is +0.2957)
     (1.544, 1.553), // Quartz-scale (+0.0091, the weakest genuinely birefringent built-in)
 ];
 
@@ -80,6 +80,7 @@ const AXES: [Vec3; 4] = [Vec3::X, Vec3::Y, Vec3::Z, Vec3::new(0.4, 0.5, 0.767_2)
 // entry_solve_pair
 // ---------------------------------------------------------------------------------
 
+/// One input case for the entry solve pair check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct EntrySolvePairCase {
@@ -200,6 +201,7 @@ const ENTRY_SOLVE_PAIR_COMPONENT_NAMES_P: [&str; 16] = [
     "p.e_hat.z",
 ];
 
+/// Runs the entry solve pair check against the CPU reference.
 #[must_use]
 pub fn run_entry_solve_pair(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -271,6 +273,7 @@ pub fn run_entry_solve_pair(
 // internal_solve
 // ---------------------------------------------------------------------------------
 
+/// One input case for the internal solve check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct InternalSolveCase {
@@ -374,6 +377,7 @@ const INTERNAL_SOLVE_COMPONENT_NAMES: [&str; 19] = [
     "e_hat.y", "e_hat.z",
 ];
 
+/// Runs the internal solve check against the CPU reference.
 #[must_use]
 pub fn run_internal_solve(
     ctx: &crate::renderer::gpu::GpuContext,

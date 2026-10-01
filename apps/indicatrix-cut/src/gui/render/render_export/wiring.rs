@@ -9,7 +9,11 @@ use super::queue::{
 };
 use crate::{
     ExportModel, LibraryModel, LightingPresetItem, MainWindow,
-    bridge::export_thread::{self, ExportParams, RemoteSelection, SceneSnapshot},
+    bridge::{
+        export_thread::{self, ExportParams, RemoteSelection, SceneSnapshot},
+        render_thread::PlanesOwner,
+    },
+    gui::progress_eta::EtaEstimator,
     settings::{ExportTransfer, LightingPreset as SavedLightingPreset, SettingsPersister},
 };
 use indicatrix::color::ColorSpace;
@@ -39,6 +43,7 @@ pub(in crate::gui) fn setup_render_export_callbacks(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<crate::bridge::render_thread::RenderContext>>,
     settings_store: &Arc<SettingsPersister>,
+    mesh_bounding_radius: &Arc<Mutex<f64>>,
 ) {
     setup_check_remote_availability_callback(ui, settings_store);
     setup_populate_export_fanout_presets_callback(ui, settings_store);
@@ -54,6 +59,7 @@ pub(in crate::gui) fn setup_render_export_callbacks(
     let render_ctx_start = render_ctx.clone();
     let settings_store_start = settings_store.clone();
     let export_queue_start = export_queue.clone();
+    let mesh_bounding_radius_start = mesh_bounding_radius.clone();
     let ui_weak_start = ui.as_weak();
     ui.global::<ExportModel>().on_start_export(
         move |width: i32,
@@ -87,6 +93,10 @@ pub(in crate::gui) fn setup_render_export_callbacks(
                 transfer: ExportTransfer::from_index(
                     ui.global::<ExportModel>().get_transfer_index(),
                 ),
+                contribute_local: settings_store_start
+                    .snapshot()
+                    .settings
+                    .contribute_to_final_picture,
             };
 
             // ---- Export directory, prompted ONCE ---------------------------------------
@@ -105,6 +115,7 @@ pub(in crate::gui) fn setup_render_export_callbacks(
                 render_ctx: render_ctx_start.clone(),
                 settings_store: settings_store_start.clone(),
                 export_queue: export_queue_start.clone(),
+                mesh_bounding_radius: mesh_bounding_radius_start.clone(),
                 params,
                 color_space,
                 remote,
@@ -162,6 +173,9 @@ struct StartExportContext {
     render_ctx: Arc<Mutex<crate::bridge::render_thread::RenderContext>>,
     settings_store: Arc<SettingsPersister>,
     export_queue: Rc<RefCell<Option<Arc<Mutex<ExportQueue>>>>>,
+    /// The live mesh bounding radius `apply_preset_to_scene` clamps each fanned-out
+    /// preset's `camera_distance` against -- see that function's own doc comment.
+    mesh_bounding_radius: Arc<Mutex<f64>>,
     params: ExportParams,
     color_space: ColorSpace,
     remote: RemoteSelection,
@@ -177,6 +191,7 @@ fn finish_start_export(ui: &MainWindow, export_dir: PathBuf, context: StartExpor
         render_ctx,
         settings_store,
         export_queue,
+        mesh_bounding_radius,
         params,
         color_space,
         remote,
@@ -186,8 +201,17 @@ fn finish_start_export(ui: &MainWindow, export_dir: PathBuf, context: StartExpor
 
     // The export's OWN (already-validated) bounce cap, not whatever the live
     // viewport is set to -- see `apply_export_bounce_cap`'s own doc comment.
-    let base_scene =
-        apply_export_bounce_cap(SceneSnapshot::capture(&render_ctx), params.max_bounces);
+    // `capture` refuses (see its own doc comment) rather than exporting the wrong
+    // stone when the design's material does not resolve -- abort the whole export
+    // before any job is queued or `export_active_count` is bumped.
+    let base_scene = match SceneSnapshot::capture(&render_ctx) {
+        Ok(scene) => apply_export_bounce_cap(scene, params.max_bounces),
+        Err(reason) => {
+            ui.global::<ExportModel>().set_has_error(true);
+            ui.global::<ExportModel>().set_status_message(reason.into());
+            return;
+        }
+    };
 
     // ---- Preset fan-out ---------------------------------------------------------
     // Only presets BOTH marked `export_usable` (the settings dialog's checkbox)
@@ -219,9 +243,12 @@ fn finish_start_export(ui: &MainWindow, export_dir: PathBuf, context: StartExpor
         scene: base_scene.clone(),
         preset_label: String::new(),
     });
+    let mesh_bounding_radius = *mesh_bounding_radius
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for preset in &selected_presets {
         jobs.push_back(ExportJob {
-            scene: apply_preset_to_scene(base_scene.clone(), preset),
+            scene: apply_preset_to_scene(base_scene.clone(), preset, mesh_bounding_radius),
             preset_label: preset.name.clone(),
         });
     }
@@ -231,16 +258,45 @@ fn finish_start_export(ui: &MainWindow, export_dir: PathBuf, context: StartExpor
 
     // Pause live-viewport tracing for the duration of the WHOLE queue -- see
     // `RenderContext::export_active`'s own doc comment. Read the local CPU/GPU
-    // choice from the SAME short lock, so every job in this queue traces with
-    // the setting in force at the instant the export started (see the
-    // pre-fan-out version of this comment for why re-reading it mid-run would
-    // be wrong).
-    let local_compute = {
+    // choice and `planes_owner` from the SAME short lock, so every job in this
+    // queue traces with the setting in force at the instant the export started
+    // (see the pre-fan-out version of this comment for why re-reading it mid-run
+    // would be wrong).
+    let (local_compute, planes_owner) = {
         // A COUNT, not a bool -- see
         // `RenderContext::export_active_count`'s doc comment.
         let mut guard = crate::bridge::render_thread::RenderContext::lock(&render_ctx);
         guard.export_active_count += 1;
-        guard.local_compute_target
+        (guard.local_compute_target, guard.planes_owner)
+    };
+
+    // The filename template's design/designer/shape/RI fields must name the
+    // DESIGN BEING EXPORTED (`base_scene`'s own `active_planes`/material,
+    // captured above), not whatever catalogue row the library panel happens to
+    // have open right now -- `LibraryModel.current_detail` is a browsing mirror
+    // only the catalogue detail-load paths ever write (grep `set_current_detail`:
+    // `library::detail::{local_load,remote_load,shared}`, never the editor), so
+    // editing design A in the Edit tab and then clicking catalogue row B in the
+    // library panel used to export A's image named after B. Trusted only when
+    // `RenderContext::planes_owner` confirms this export's planes actually came
+    // from that exact catalogue row; the editor, the built-in placeholder cut, or
+    // a stale/mismatched catalogue selection have no honest name to give beyond a
+    // generic placeholder -- see `PlanesOwner`'s own doc comment for the other
+    // owners this deliberately does not attempt to name (the editor's own design
+    // carries no title/designer/shape/RI fields of its own to read here).
+    let (design, designer, shape, ri) = match planes_owner {
+        PlanesOwner::Catalogue { entry_id } if i64::from(detail.id) == entry_id => (
+            detail.title.to_string(),
+            detail.designer.to_string(),
+            detail.shape.to_string(),
+            detail.ri.to_string(),
+        ),
+        PlanesOwner::Builtin | PlanesOwner::Catalogue { .. } | PlanesOwner::Editor { .. } => (
+            "Untitled design".to_string(),
+            String::new(),
+            String::new(),
+            String::new(),
+        ),
     };
 
     let queue = Arc::new(Mutex::new(ExportQueue {
@@ -253,10 +309,10 @@ fn finish_start_export(ui: &MainWindow, export_dir: PathBuf, context: StartExpor
         current_handle: None,
         export_dir,
         template,
-        design: detail.title.to_string(),
-        designer: detail.designer.to_string(),
-        shape: detail.shape.to_string(),
-        ri: detail.ri.to_string(),
+        design,
+        designer,
+        shape,
+        ri,
         width: params.width,
         height: params.height,
         spp: params.samples_per_pixel,
@@ -266,6 +322,7 @@ fn finish_start_export(ui: &MainWindow, export_dir: PathBuf, context: StartExpor
         color_space,
         remote,
         local_compute,
+        eta: EtaEstimator::default(),
     }));
 
     ui.global::<ExportModel>().set_is_exporting(true);

@@ -1,6 +1,7 @@
 import { Button, LineEdit, CheckBox, Slider } from "std-widgets.slint";
 import { Theme } from "../../theme.slint";
 import { EditorModel } from "../../models/editor.slint";
+import { CompareModel } from "../../models/compare.slint";
 
 // The Inspector's "Optimize" tab -- weights/budget/seed inputs and the
 // running-status/result report. Everything here reads/writes `EditorModel`
@@ -160,20 +161,34 @@ export component OptimizeTab inherits VerticalLayout {
                         checked <=> root.optimize_preview_checked;
                         toggled => { EditorModel.optimize_preview_toggled(root.optimize_preview_checked); }
                     }
+                    // The visual before/after compare window
+                    // (`gui::editor::compare`) on this pending result --
+                    // its "Keep after" runs `EditorModel.optimize_apply()`,
+                    // the Apply button's own handler.
+                    Rectangle {
+                        width: compare_optimize_btn.preferred-width;
+                        height: compare_optimize_btn.preferred-height;
+                        Tooltip { text: @markdown("Open this result in the compare window: the current design and the Optimize candidate side by side (or under a split slider), turning together."); }
+                        compare_optimize_btn := Button {
+                            enabled: root.unlocked && EditorModel.optimize_can_apply;
+                            text: "Compare…";
+                            clicked => { CompareModel.open_optimize(); }
+                        }
+                    }
                 }
                 HorizontalLayout {
                     spacing: 4px;
                     Text { width: 28px; text: "#"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
                     Text { horizontal-stretch: 1; text: "NAME"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
-                    Text { text: "FROM"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
-                    Text { text: "TO"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                    Text { width: 52px; horizontal-alignment: right; text: "FROM"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                    Text { width: 52px; horizontal-alignment: right; text: "TO"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
                 }
                 for change in EditorModel.optimize_change_rows: HorizontalLayout {
                     spacing: 4px;
                     Text { width: 28px; text: change.tier_number; font-size: 10px; color: Theme.text-secondary; }
                     Text { horizontal-stretch: 1; text: change.name == "" ? "(unnamed)" : change.name; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
-                    Text { text: change.from_angle; font-size: 10px; color: Theme.text-muted; }
-                    Text { text: change.to_angle; font-size: 10px; font-weight: 600; color: Theme.text-primary; }
+                    Text { width: 52px; horizontal-alignment: right; text: change.from_angle; font-size: 10px; color: Theme.text-muted; }
+                    Text { width: 52px; horizontal-alignment: right; text: change.to_angle; font-size: 10px; font-weight: 600; color: Theme.text-primary; }
                 }
             }
             // Only shown while there is a real, current (not stale)

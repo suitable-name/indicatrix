@@ -41,24 +41,38 @@ flowchart LR
 workers on a separate worker port (7880). A client certificate records its role in its
 Common Name: `worker:<name>` for a worker, anything else for a viewer (a viewer
 `--name` may not start with `worker:`, so the prefix only ever comes from an explicit
-`--role worker`). Each listener checks **both** the certificate's role and its own
-allowlist, and the `HELLO`'s claimed role on top: a viewer certificate on the worker
-port, a worker certificate on the viewer port, or a `HELLO` of the wrong role is
-refused with `ROLE_REFUSED` and never served. A leaked viewer certificate therefore
-cannot register as a worker (and receive scenes to render), and a worker certificate
-cannot browse the library or request renders. `--trust-any-client-cert` skips the
-allowlists, never the role check. Each role has its own enrollment listener (7879 /
-7881) with its own token registry; a token only claims on the listener that issued it.
+`--role worker`). Each listener checks the certificate against its own allowlist, but
+only for a certificate of *its* role; the role itself is enforced at `HELLO`. A
+certificate of the other role is not looked up in any allowlist at the TLS stage: it
+completes the handshake, takes a connection slot and a database handle, and is then
+refused with `ROLE_REFUSED` when its `HELLO` arrives (a `HELLO` claiming the wrong role
+is refused the same way). The hold is bounded by the handshake deadline and the small
+`HELLO` read limit, but for that time a CA-signed certificate that is on *no* allowlist
+can occupy one connection slot. A leaked viewer certificate still cannot register as a
+worker (and receive scenes to render), and a worker certificate cannot browse the
+library or request renders, because neither gets past `HELLO`. `--trust-any-client-cert`
+skips the allowlists, never the role check. Each role has its own enrollment listener
+(7879 / 7881) with its own token registry; a token only claims on the listener that
+issued it.
 
 ### What a joined worker is trusted with
 
 An allowlisted worker receives the scenes viewers render — geometry, material and, for
 an HDR-lit scene, the HDR map's bytes — and its returned samples are summed into
-viewers' images. The coordinator checks the shape of what comes back (sample ranges,
-buffer sizes, the same build as everyone else via the handshake), not whether the
-numbers are *right*: a malicious or broken worker that passed both gates can spoil the
-images it contributes to. Only enroll machines you control as workers, and revoke one
-by deleting its line from `allowlist-workers.txt`.
+viewers' images. The coordinator checks the shape of what comes back: each chunk's
+frames must lie inside the chunk and, once the chunk is complete, tile its sample range
+exactly (sorted, contiguous, non-overlapping) or the whole chunk is discarded; buffer
+sizes must match; and a pixel with a non-finite or negative value is dropped (and
+counted) rather than summed. It does not check whether the numbers are *right*: a
+malicious or broken worker that passed both gates can spoil the images it contributes
+to with plausible-looking values.
+
+The build check at pairing time compares what the worker *reports about itself* — a
+hash of its crate version and a hash of its physics source tree. A modified worker can
+report anything, so this catches mismatched installs, not a hostile peer; and an unknown
+source hash only logs a warning and pairs (a peer with no build at all is paired
+library-only). Only enroll machines you control as workers, and revoke one by deleting
+its line from `allowlist-workers.txt`.
 
 ### HDR maps on disk
 
@@ -71,6 +85,16 @@ that hash when written and re-verified when read. The cache is capped
 map is limited to 256 MiB on the wire. A viewer's maps therefore persist on the
 coordinator and on every worker that rendered them until evicted; delete the cache
 directory to remove them.
+
+### Message size and idle limits
+
+An authenticated peer is still bounded. Every control message (a request, a `CANCEL`, a
+`PING`, a stream-event header) is read with a 1 MiB cap, and a declared length never makes
+the process commit memory before the bytes arrive: payload buffers grow as data is
+received. The large payloads (radiance frames, HDR assets, viewer contributions) keep
+their own, separate bounds. A connection that sends no message for five minutes between
+requests is closed, with the reason logged; during a request the worker's heartbeat and
+liveness deadlines apply instead.
 
 ## Enrollment: how a client gets its certificate
 
@@ -95,7 +119,7 @@ sequenceDiagram
     participant Op as operator
     participant S as running serve
     participant C as enrolling client
-    Op->>S: cert issue-token --name laptop (loopback only)
+    Op->>S: cert issue-token --name laptop (loopback only, presents issue.secret)
     Note over S: mints bundle, holds it IN MEMORY<br/>stores only SHA-256(secret)<br/>180s TTL, nothing on disk
     S-->>Op: GW1-.... (secret ‖ CA fingerprint)
     Op-->>C: token, out of band
@@ -161,8 +185,17 @@ that client's key.
   requires signing. `--no-enroll` avoids this entirely.
 - **A `serve` restart drops every pending enrollment.** Fail-closed, and intended:
   pending bundles live only in memory.
-- **`cert issue-token` is honoured only from a loopback peer**, enforced against the real
-  `peer_addr()` rather than by how the listener is bound.
+- **`cert issue-token` needs loopback and the operator secret.** The peer must be on
+  loopback, enforced against the real `peer_addr()` rather than by how the listener is
+  bound. Loopback alone is not authority — any local user, and any port forward onto the
+  loopback listener, looks like a loopback peer — so the request must also present the
+  **operator secret**: `issue.secret` in the PKI directory, 32 random bytes as hex,
+  created the first time `serve` starts an enrollment listener, written with owner-only
+  permissions (the same protection as `ca.key`; on Windows an `icacls` ACL), and
+  compared in constant time. `cert issue-token` reads it from the PKI directory, so it
+  must run as a user who can read that directory. A local user who can read the PKI
+  directory is trusted: they could equally read `ca.key` and mint certificates
+  directly.
 - Key material is held in `Zeroizing` wrappers so ordinary `Drop` overwrites it. Nothing
   protects against an abrupt process kill.
 
@@ -175,7 +208,7 @@ that client's key.
 | `--insecure-no-tls` | Everything: no TLS, no authentication, no client identity. Refused on a non-loopback bind, and every accepted connection logs a warning. Local debugging only. |
 | `--no-enroll` | The token path, for viewers and workers alike. The manual `cert issue-client` workflow still works; this just opens no extra port. |
 | `--no-workers` | Nothing — it *removes* exposure: no worker port and no worker enrollment listener are opened. |
-| `--max-job-memory-mib` | Raising it lets allowlisted viewers make the coordinator hold more memory for in-flight jobs spread over workers (each job is charged `width × height × 48` bytes). |
+| `--max-job-memory-mib` | Raising it lets allowlisted viewers make the coordinator hold more memory for in-flight jobs spread over workers. Each job is charged `width × height × 48` bytes, but that is only its base cost: every joined-worker lane also holds several full-frame buffers of its own, so the real memory of a job spread over many workers is a multiple of the charge. |
 
 ## What this does *not* protect against
 
@@ -184,6 +217,12 @@ Stated plainly, because a trust model that only lists its strengths is misleadin
 - **A compromised CA private key.** Whoever holds `ca.key` can mint certificates that
   pass both gates. It is ACL-restricted at rest (on Windows, via `icacls` to the current
   user, SYSTEM and Administrators), but there is no HSM and no key ceremony.
+- **A local user who can read the PKI directory.** `issue.secret` is what authorises
+  `cert issue-token`, and it is readable by exactly the users who can read `ca.key`.
+  Anyone with that access — or who can run code as the account that runs `serve` — can
+  mint viewer and worker certificates; the enrollment listener's loopback check does
+  not separate them. Keep the PKI directory owner-only (the tools set this for the files
+  they create; a directory you created yourself is yours to secure).
 - **A malicious but allowlisted client.** Authorization is binary. An accepted client can
   submit any scene within [the validation limits](../README.md#limits-and-validation) —
   which is exactly why those limits exist and are enforced before geometry reaches the

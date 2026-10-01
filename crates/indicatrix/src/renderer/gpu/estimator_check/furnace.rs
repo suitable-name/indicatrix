@@ -22,63 +22,92 @@ use super::{
     dispatch_transport_for_class, furnace_material, round_brilliant_planes, test_camera, z_score,
 };
 
+/// Outcome of the furnace check.
 #[derive(Debug, Clone)]
 pub struct FurnaceResult {
+    /// Analytic target.
     pub analytic_target: Vec3,
+    /// Cpu mean.
     pub cpu_mean: Vec3,
+    /// Gpu mean.
     pub gpu_mean: Vec3,
+    /// Cpu relative error.
     pub cpu_relative_error: f32,
+    /// Gpu relative error.
     pub gpu_relative_error: f32,
+    /// Standard error of the CPU mean, per XYZ component.
+    pub cpu_standard_error: Vec3,
+    /// Standard error of the GPU mean, per XYZ component.
+    pub gpu_standard_error: Vec3,
     /// Aggregate (pooled over every pixel*sample tuple) CPU-vs-GPU z-score per XYZ
     /// component.
     pub cpu_gpu_z: [f64; 3],
+    /// Total cpu samples.
     pub total_cpu_samples: usize,
+    /// Total gpu samples.
     pub total_gpu_samples: usize,
 }
 
-const FURNACE_CONVERGENCE_TOLERANCE: f32 = 0.02;
+/// The relative-error-vs-analytic-target tolerance of the polished furnace anchor,
+/// [`run_furnace`].
+///
+/// Measured on 2026-10-01 by `furnace_measurement` on this adapter (four independent
+/// sample ranges, 614,400 samples per side and run): the bounce cap of 12 drops paths
+/// still inside the gem with their energy, so both sides read 1.1 percent low, and at
+/// cap 256 both agree with the target within a standard error of 0.01 percent. The
+/// budget is that truncation loss plus five standard deviations of the measured noise,
+/// rounded up to 0.005. A branch mis-weighted by a few percent fails it.
+pub(super) const FURNACE_CONVERGENCE_TOLERANCE: f32 = 0.015;
 /// Aggregate z-score gate: with tens of thousands of pooled samples per side, a
 /// genuine porting bug moves this by many standard errors; `4.0` leaves headroom above
 /// the `~3` a single unlucky draw could plausibly produce.
 const FURNACE_Z_GATE: f64 = 4.0;
 
-/// The relative-error-vs-analytic-target tolerance for [`run_furnace_frosted_girdle`] --
-/// matches `tests/raytracer_tests.rs`'s own
-/// `frosted_girdle_white_furnace_energy_conservation_still_holds` tolerance exactly,
-/// rather than inventing a new number.
+/// The relative-error-vs-analytic-target tolerance for [`run_furnace_frosted_girdle`]
+/// and [`run_furnace_nee_equality_frosted`].
 ///
-/// # Why this converges more slowly than the polished furnace
+/// Measured on 2026-10-01 by `furnace_measurement` on this adapter, like
+/// [`FURNACE_CONVERGENCE_TOLERANCE`]: the cap-12 truncation loss is 1.3 percent on both
+/// sides, with and without NEE, the noise 0.02 percent, and at cap 256 both sides meet
+/// the target within a standard error. The budget is the loss plus five standard
+/// deviations, rounded up to 0.005.
 ///
-/// A frosted facet's cosine-weighted-hemisphere scattering keeps more paths alive past
-/// `bounce > 4`, where Russian Roulette's `q.clamp(0.05, 1.0)` floor can rescale a
-/// surviving path up to 20x -- individually unbiased (`E[survive]*(1/q) = 1` for any
-/// q) but producing rare, extremely bright samples that make the running mean converge
-/// slowly rather than monotonically. This is a property of the CPU
-/// `apply_frosted_bounce`/Russian-Roulette interaction, identical on CPU and GPU (the
-/// tight [`FURNACE_Z_GATE`] cross-check below confirms agreement even while both differ
-/// from the analytic target by more than [`FURNACE_CONVERGENCE_TOLERANCE`]), not a bug.
-const FROSTED_FURNACE_CONVERGENCE_TOLERANCE: f32 = 0.06;
+/// History: before the `apply_frosted_bounce` reflect/transmit throughput fix this
+/// tolerance was `0.9` and hid a real, biased +5-6% energy gain per frosted event (the
+/// branch's intensity was divided by its own selection probability on top of
+/// `path_pdf`, double-counting the branch's energy fraction); the [`FURNACE_Z_GATE`]
+/// cross-check below only confirms CPU/GPU agreement with each other, not agreement
+/// with the analytic target, so it could not have caught that bias. At the measured
+/// budget that error would fail by a factor of four.
+pub(super) const FROSTED_FURNACE_CONVERGENCE_TOLERANCE: f32 = 0.015;
 
-/// The relative-error-vs-analytic-target tolerance for
-/// [`run_furnace_scattering`], matching `optics::raytracer::scattering_tests::
-/// lossless_scattering_white_furnace_energy_conservation_holds`'s own CPU-only tolerance
-/// rather than inventing a new number. Wider than the polished furnace's 0.02 for the
-/// same reason as [`FROSTED_FURNACE_CONVERGENCE_TOLERANCE`]: a scattering event keeps
-/// more paths alive past `bounce > 4`, producing a heavier-tailed but still-unbiased
-/// estimator -- identically on CPU and GPU, confirmed by the tight `FURNACE_Z_GATE`
-/// cross-check below.
-const SCATTERING_FURNACE_CONVERGENCE_TOLERANCE: f32 = 0.08;
+/// The relative-error-vs-analytic-target tolerance for [`run_furnace_scattering`] and
+/// [`run_furnace_nee_equality_scattering`].
+///
+/// Measured on 2026-10-01 by `furnace_measurement` on this adapter, like
+/// [`FURNACE_CONVERGENCE_TOLERANCE`]: at [`SCATTERING_FURNACE_MAX_BOUNCES`] the
+/// truncation loss is already below 0.01 percent on both sides, with and without NEE,
+/// and the noise 0.06 percent on the CPU side; the budget is five standard deviations,
+/// rounded up to 0.005. The scattering medium's heavier-tailed estimator is why the
+/// noise is larger than the polished furnace's, not a reason for a wider budget.
+pub(super) const SCATTERING_FURNACE_CONVERGENCE_TOLERANCE: f32 = 0.005;
 
-/// The relative-error-vs-analytic-target tolerance for
-/// [`run_furnace_edge_rounding`], matching `optics::raytracer::edge_rounding_tests::
-/// edge_rounding_white_furnace_energy_conservation_holds`'s own CPU-only tolerance
-/// (0.06) rather than inventing a new number.
-const EDGE_ROUNDING_FURNACE_CONVERGENCE_TOLERANCE: f32 = 0.06;
+/// The relative-error-vs-analytic-target tolerance for [`run_furnace_edge_rounding`].
+///
+/// Measured on 2026-10-01 by `furnace_measurement` on this adapter, like
+/// [`FURNACE_CONVERGENCE_TOLERANCE`]: the cap-12 truncation loss is 0.9 percent on both
+/// sides, the noise 0.02 percent, and at cap 256 both sides meet the target within a
+/// standard error. The loss plus five standard deviations rounds to 0.010; the budget
+/// takes one more step for margin on other adapters, the same value as the two anchors
+/// above.
+pub(super) const EDGE_ROUNDING_FURNACE_CONVERGENCE_TOLERANCE: f32 = 0.015;
 
 /// Every furnace anchor except the lossless-scattering ones below runs at this bounce
 /// budget -- see [`SCATTERING_FURNACE_MAX_BOUNCES`]'s doc comment for the bounce-cap
-/// measurement this budget is sized against.
-const FURNACE_DEFAULT_MAX_BOUNCES: u32 = 12;
+/// measurement this budget is sized against. A separately measured constant: it happens
+/// to equal `optics::raytracer::DEFAULT_MAX_BOUNCES` but does not track it, so the
+/// furnace anchors keep their budget if that default ever changes.
+pub(super) const FURNACE_DEFAULT_MAX_BOUNCES: u32 = 12;
 
 /// [`run_furnace_scattering`] and
 /// [`run_furnace_nee_equality_scattering`] both trace `furnace_material().with_scattering(1.2,
@@ -105,8 +134,9 @@ const FURNACE_DEFAULT_MAX_BOUNCES: u32 = 12;
 /// which is the read-back-later record of that measurement). `48` (4x the default) is
 /// itself generous, not the minimum that works -- picked to leave headroom rather than
 /// chase the exact convergence knee.
-const SCATTERING_FURNACE_MAX_BOUNCES: u32 = 48;
+pub(super) const SCATTERING_FURNACE_MAX_BOUNCES: u32 = 48;
 
+/// Runs the furnace check against the CPU reference.
 #[must_use]
 pub fn run_furnace(ctx: &crate::renderer::gpu::GpuContext) -> FurnaceResult {
     run_furnace_for(ctx, &furnace_material(), &[], FURNACE_DEFAULT_MAX_BOUNCES)
@@ -213,6 +243,20 @@ fn run_furnace_for_env(
     use_hdr_nee: bool,
     max_bounces: u32,
 ) -> FurnaceResult {
+    run_furnace_for_run(ctx, material, facet_finishes, use_hdr_nee, max_bounces, 0)
+}
+
+/// One furnace run over the independent sample range `run`: per pixel, the CPU side
+/// traces the 600 samples starting at `1200 * run` and the GPU side the 600 after them,
+/// so runs with different indices share no sample. The anchors themselves are run 0.
+pub(super) fn run_furnace_for_run(
+    ctx: &crate::renderer::gpu::GpuContext,
+    material: &GemMaterial,
+    facet_finishes: &[FacetFinish],
+    use_hdr_nee: bool,
+    max_bounces: u32,
+    run: u32,
+) -> FurnaceResult {
     let camera = test_camera();
     let (width, height) = (32u32, 32u32);
     let planes = round_brilliant_planes();
@@ -221,6 +265,8 @@ fn run_furnace_for_env(
     let l0 = 2.5f32;
     let cpu_samples_per_pixel = 600u32;
     let gpu_samples_per_pixel = 600u32;
+    let cpu_sample_offset = run * (cpu_samples_per_pixel + gpu_samples_per_pixel);
+    let gpu_sample_offset = cpu_sample_offset + cpu_samples_per_pixel;
 
     let env_map = EnvironmentMap::uniform(4, 4, [l0, l0, l0]);
     let environment = EnvironmentSource::HdrMap(&env_map);
@@ -233,9 +279,13 @@ fn run_furnace_for_env(
         material,
         max_bounces,
     };
-    let cpu_flat = cpu_samples(width, height, cpu_samples_per_pixel, 0, |pixel, sample| {
-        cpu_sample_xyz(&scene, pixel, sample, environment)
-    });
+    let cpu_flat = cpu_samples(
+        width,
+        height,
+        cpu_samples_per_pixel,
+        cpu_sample_offset,
+        |pixel, sample| cpu_sample_xyz(&scene, pixel, sample, environment),
+    );
 
     let camera_params = camera_params_for(&camera, width, height, gpu_samples_per_pixel);
     let mode = if use_hdr_nee {
@@ -246,7 +296,7 @@ fn run_furnace_for_env(
     let params = GpuTransportParams::new(
         width * height,
         max_bounces,
-        cpu_samples_per_pixel,
+        gpu_sample_offset,
         mode,
         l0,
         6500.0,
@@ -286,12 +336,19 @@ fn run_furnace_for_env(
         )
     };
 
+    summarise(&cpu_flat, &gpu_dispatch.xyz, l0)
+}
+
+/// The figures of one furnace run: means, relative errors, standard errors and the
+/// CPU-vs-GPU z-scores of `cpu_flat` (one XYZ per sample) and `gpu_xyz` (three floats
+/// per sample) against the analytic target of radiance `l0`.
+fn summarise(cpu_flat: &[Vec3], gpu_xyz: &[f32], l0: f32) -> FurnaceResult {
     let mut cpu_acc = WelfordXyz::default();
-    for v in &cpu_flat {
+    for v in cpu_flat {
         cpu_acc.update(*v);
     }
     let mut gpu_acc = WelfordXyz::default();
-    for chunk in gpu_dispatch.xyz.as_chunks::<3>().0 {
+    for chunk in gpu_xyz.as_chunks::<3>().0 {
         gpu_acc.update(Vec3::new(chunk[0], chunk[1], chunk[2]));
     }
 
@@ -305,17 +362,29 @@ fn run_furnace_for_env(
         gpu_mean,
         cpu_relative_error: componentwise_relative_error(cpu_mean, target),
         gpu_relative_error: componentwise_relative_error(gpu_mean, target),
+        cpu_standard_error: standard_error(&cpu_acc),
+        gpu_standard_error: standard_error(&gpu_acc),
         cpu_gpu_z: [
             z_score(&cpu_acc.x, &gpu_acc.x),
             z_score(&cpu_acc.y, &gpu_acc.y),
             z_score(&cpu_acc.z, &gpu_acc.z),
         ],
         total_cpu_samples: cpu_flat.len(),
-        total_gpu_samples: gpu_dispatch.xyz.len() / 3,
+        total_gpu_samples: gpu_xyz.len() / 3,
     }
 }
 
+/// Standard error of the mean of `acc`, per component.
+fn standard_error(acc: &WelfordXyz) -> Vec3 {
+    Vec3::new(
+        acc.x.standard_error_sq().sqrt() as f32,
+        acc.y.standard_error_sq().sqrt() as f32,
+        acc.z.standard_error_sq().sqrt() as f32,
+    )
+}
+
 impl FurnaceResult {
+    /// Whether every compared value stayed within its budget.
     #[must_use]
     pub fn passed(&self) -> bool {
         self.passed_with_tolerance(FURNACE_CONVERGENCE_TOLERANCE)
@@ -370,7 +439,7 @@ fn analytic_furnace_target(l0: f32) -> Vec3 {
         let spec = rgb_to_spectral_radiance([l0, l0, l0], lambda);
         sum += Vec3::from_array(cie_1931_cmf(lambda)) * spec;
     }
-    sum / 106.856
+    sum / crate::color::cie1931::CIE_1931_Y_INTEGRAL_5NM
 }
 
 fn componentwise_relative_error(value: Vec3, target: Vec3) -> f32 {

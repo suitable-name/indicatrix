@@ -22,14 +22,23 @@ use core::mem::offset_of;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
+    /// View proj inv.
     pub view_proj_inv: [f32; 16],
+    /// Camera pos.
     pub camera_pos: [f32; 3],
+    /// Index of the progressive frame.
     pub frame_index: u32,
+    /// Screen width.
     pub screen_width: u32,
+    /// Screen height.
     pub screen_height: u32,
+    /// Maximum number of internal bounces per path.
     pub max_bounces: u32,
+    /// Gem material id.
     pub gem_material_id: u32,
+    /// C axis.
     pub c_axis: [f32; 3],
+    /// Env intensity.
     pub env_intensity: f32,
 }
 
@@ -61,13 +70,21 @@ const _: () = {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuCameraParams {
+    /// Ray origin.
     pub origin: [f32; 3],
+    /// Fov tan.
     pub fov_tan: f32,
+    /// Forward.
     pub forward: [f32; 3],
+    /// Width.
     pub width: f32,
+    /// Right.
     pub right: [f32; 3],
+    /// Height.
     pub height: f32,
+    /// Up.
     pub up: [f32; 3],
+    /// Number of samples per pixel.
     pub num_samples: u32,
 }
 
@@ -93,13 +110,16 @@ const _: () = {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuRay {
+    /// Ray origin.
     pub origin: [f32; 3],
     _pad0: f32,
+    /// Ray direction.
     pub dir: [f32; 3],
     _pad1: f32,
 }
 
 impl GpuRay {
+    /// Creates a new value from its components.
     #[must_use]
     pub const fn new(origin: [f32; 3], dir: [f32; 3]) -> Self {
         Self {
@@ -131,15 +151,20 @@ const _: () = {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuHitRecord {
+    /// Ray parameter of the hit.
     pub t: f32,
+    /// Index of the facet that was hit.
     pub facet_idx: i32,
+    /// Non-zero when the ray hit the stone.
     pub hit: u32,
     _pad0: u32,
+    /// Surface normal at the hit.
     pub normal: [f32; 3],
     _pad1: f32,
 }
 
 impl GpuHitRecord {
+    /// The record for a ray that hit nothing.
     #[must_use]
     pub const fn miss() -> Self {
         Self {
@@ -152,6 +177,7 @@ impl GpuHitRecord {
         }
     }
 
+    /// The record for a ray that hit a facet.
     #[must_use]
     pub const fn hit(t: f32, facet_idx: i32, normal: [f32; 3]) -> Self {
         Self {

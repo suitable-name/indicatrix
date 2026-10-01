@@ -53,9 +53,13 @@
 //! [`snapshot`] (the separate "Snapshot Design"/"Compare to Snapshot" feature that
 //! also lives in this dialog). [`RETARGET_ASYNC`] and [`apply_ghost_preview_or_revert`]
 //! are shared by more than one of those siblings, so they stay here rather than in
-//! any one of them.
+//! any one of them. [`compare_hooks`] is the narrow read-only surface the visual
+//! before/after compare window (`gui::editor::compare`) reaches this dialog's pending
+//! proposal and snapshot through -- it never commits anything itself; its "Keep
+//! after" invokes `RetargetModel.apply()`, i.e. [`apply::setup_retarget_apply_callback`].
 
 mod apply;
+mod compare_hooks;
 mod material;
 mod optimize_run;
 mod proposal;
@@ -68,10 +72,14 @@ mod tests;
 pub(in crate::gui::editor) use apply::{
     setup_retarget_apply_callback, setup_retarget_close_callback,
 };
+pub(in crate::gui::editor) use compare_hooks::{
+    RetargetCompareInputs, RetargetKeepGuard, current_retarget_guard, discard_retarget_preview,
+    retarget_compare_inputs,
+};
 pub(in crate::gui::editor) use proposal::{
     setup_retarget_open_callback, setup_retarget_proposal_changed_callback,
 };
-pub(in crate::gui::editor) use snapshot::setup_snapshot_callbacks;
+pub(in crate::gui::editor) use snapshot::{setup_snapshot_callbacks, snapshot_for_compare};
 
 use super::super::{
     auto_solve,
@@ -80,7 +88,7 @@ use super::super::{
     view,
 };
 use crate::{
-    MainWindow, RetargetModel, bridge::render_thread::RenderContext,
+    CompareModel, MainWindow, RetargetModel, bridge::render_thread::RenderContext,
     gui::solid_preview::preview_state::SolidPreviewState,
 };
 use indicatrix_cut_core::Design;
@@ -136,12 +144,28 @@ impl RetargetAsyncRun {
     }
 }
 
+/// Points the dialog's embedded comparison pane (`MainWindow`'s own `CompareModel`
+/// instance, handled in `gui::editor::compare`) at the proposal just built:
+/// `solved` re-opens the embedded session on it, otherwise the session is dropped so
+/// the pane never keeps showing a proposal that no longer exists. The handlers read
+/// the editor state, so callers must not hold a borrow of it across this call.
+fn sync_embedded_comparison(ui: &MainWindow, solved: bool) {
+    let model = ui.global::<CompareModel>();
+    if solved {
+        model.invoke_open_retarget_embedded();
+    } else {
+        model.invoke_close_embedded();
+    }
+}
+
 /// Shows `design` retargeted by `proposal` as a ghost overlay
 /// in the shared solid viewport, iff `RetargetModel.preview_enabled` is on AND
 /// `proposal` is `Some` (a `None` proposal -- an anchored-tier refusal, a solve
-/// error -- has nothing to preview). Returns whether a ghost was actually shown;
-/// the caller resubmits the real, live design through the ordinary
-/// [`view::submit_preview_replan`] path when it wasn't (see both call sites).
+/// error -- has nothing to preview). Returns whether the candidate was queued on the
+/// background solve worker: the viewport applies the ghost when that solve lands and
+/// drops it if a newer request superseded it. The caller resubmits the real, live
+/// design through the ordinary [`view::submit_preview_replan`] path when it wasn't
+/// queued (see both call sites).
 ///
 /// Builds the candidate via [`Design::apply_edit`] on a clone -- explicitly
 /// documented as safe for exactly this ("usable standalone by a caller that wants
@@ -162,10 +186,30 @@ fn apply_ghost_preview_or_revert(
     let Some(proposal) = proposal else {
         return false;
     };
+    let Some(candidate) = build_retarget_candidate(design, proposal) else {
+        return false;
+    };
+    view::submit_design_ghost_preview(ui, render_ctx, preview_state, &candidate)
+}
+
+/// `design` with `proposal`'s angle retarget applied, on a clone -- the candidate
+/// geometry both the viewport ghost ([`apply_ghost_preview_or_revert`]) and the
+/// visual compare window's "after" side (`gui::editor::compare`, via
+/// [`compare_hooks::retarget_compare_inputs`]) show. `None` when the retarget edit
+/// no longer applies to `design` (a stale tier index).
+///
+/// [`Design::apply_edit`] on a clone, never [`super::super::state::EditorState::apply`]:
+/// see [`apply_ghost_preview_or_revert`]'s own doc comment for why a preview must
+/// never touch `History`. Only the angles move here -- the target MATERIAL is the
+/// caller's to attach when it matters (the compare window does; the solid ghost
+/// has no material to show).
+#[must_use]
+pub(in crate::gui::editor) fn build_retarget_candidate(
+    design: &Design,
+    proposal: &RetargetProposal,
+) -> Option<Design> {
     let mut candidate = design.clone();
     let edit = retarget::apply(design, proposal);
-    if candidate.apply_edit(edit).is_err() {
-        return false;
-    }
-    view::submit_design_ghost_preview(ui, render_ctx, preview_state, &candidate)
+    candidate.apply_edit(edit).ok()?;
+    Some(candidate)
 }

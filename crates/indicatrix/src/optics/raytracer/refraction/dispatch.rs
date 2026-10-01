@@ -3,6 +3,7 @@
 //! closed-form uniaxial path, or scalar-Fresnel fallback, applies.
 
 use super::{
+    R_UNPOL_SELECT_MAX, R_UNPOL_SELECT_MIN,
     context::{
         BounceContext, BounceRay, BounceState, ExitEvent, PathModeState, RayMaterialContext,
         RngDraw, UniaxialBounceContext,
@@ -18,74 +19,6 @@ use crate::optics::{
 };
 use glam::Vec3;
 
-/// Partial Fresnel Reflection & Refraction via Stokes-Mueller Polarized Wave Transport:
-/// decides reflect vs. transmit for the shared hero-driven path from the hero's own
-/// `r_unpol` (a well-mixed hash of `(rng_seed, bounce)`, replacing an earlier
-/// deterministic `(rng_seed + bounce*7919) % 1000` arithmetic progression that could
-/// correlate with the Russian-roulette draw; this hash is decorrelated from it via a
-/// distinct salt), then applies whichever event was sampled via
-/// [`apply_partial_reflect_bounce`] or [`apply_refract_bounce`]. A direct extraction of
-/// the pre-extraction inline branch dispatch: the same floating-point operations, in
-/// the same order, driven by the same random draw. Returns the new wave normal `k'`,
-/// the new Poynting direction `S'` (reflection's `k'` is re-converted to `S'` via
-/// [`poynting_dir_for_mode`] here, using the mode still in effect -- reflection alone
-/// never changes `is_extraordinary`, see `maybe_apply_internal_mode_coupling`'s own doc
-/// comment for the SEPARATE relabeling step that may reassign it for the NEXT bounce),
-/// the new `inside_gem` state, and (mirroring [`super::reflect_refract::RefractBounceOutcome`])
-/// the `is_extraordinary` update, if any.
-///
-/// At an air->crystal entry into an anisotropic material, which eigenmode
-/// (ordinary/mode-A vs extraordinary/mode-B) this path's single geometric transmission
-/// event represents is decided HERE -- before the reflect-vs-transmit draw below,
-/// rather than inside `apply_refract_bounce`'s own transmit branch.
-/// Two reasons this has to happen up here:
-///   - The SELECTION itself is weighted by the incident polarization's projection onto
-///     each eigenmode's own axis ([`entry_eigenmode_selection`]), not a blanket 50/50 --
-///     and that weighting has to happen exactly once per bounce, shared by both
-///     branches below: a beam already aligned with the ordinary axis should be MORE
-///     likely to reflect at the ordinary index too, not just more likely to transmit
-///     as ordinary conditional on transmitting.
-///   - The REFLECT branch's own Fresnel coefficients must be evaluated at the SAME
-///     mode's index the transmit branch (`apply_refract_channel`) already uses for this
-///     channel, so that `R + T == 1` for whichever mode this draw actually selects --
-///     always using mode B (extraordinary)'s index for the reflect/transmit decision
-///     regardless of which mode transmission ultimately uses would instead leave
-///     `R + T != 1` by `O(delta_n / n)` whenever the ordinary mode is selected.
-///
-/// A biaxial material has no uniaxial "ordinary" eigenmode to weight against, so both
-/// the selection and the index correction below are gated on `!geo.is_biaxial`: a
-/// biaxial entry always uses a blanket 50/50 split, with mode B's index driving the
-/// reflect/transmit decision.
-/// Dispatches [`apply_partial_fresnel_bounce`]'s two closed-form uniaxial paths --
-/// air->crystal entry and internal/exit -- split out purely to keep that function's
-/// own body under the workspace line-count lint. Returns `Some` with the full result
-/// tuple when one of the closed-form paths applies; `None` when the caller must fall
-/// through to the general (biaxial/isotropic) machinery instead.
-///
-/// A uniaxial air->crystal entry takes the closed-form `apply_uniaxial_entry_bounce`
-/// path in full, self-contained, and returns directly -- everything else here (the
-/// `entry_eigenmode_selection`/scalar-Fresnel machinery `apply_partial_fresnel_bounce`
-/// falls through to) is now reached only by a biaxial entry, an internal/exit bounce,
-/// or an isotropic material.
-///
-/// Any uniaxial internal event (o<->e coupled partial reflection or
-/// uniaxial->isotropic exit transmission) that is not already hero-forced past
-/// critical angle (that case is `apply_tir_bounce`'s own uniaxial branch, dispatched
-/// from a different call site in `transport::dispatch_bounce`) takes the closed-form
-/// `apply_uniaxial_internal_bounce` path in full, self-contained, and returns
-/// directly -- see that function's own doc comment. The remaining fallthrough case is
-/// reached only by a biaxial material, an isotropic one, or this SAME degenerate
-/// wave-normal-parallel-to-optic-axis case `apply_uniaxial_entry_bounce` also
-/// special-cases (`k_hat.cross(c_axis)` ~ 0): the closed-form ordinary D-direction `k
-/// x c_axis` vanishes exactly there, singularizing `internal_solve`'s boundary system
-/// (its own `flux_inc` floors to the `1e-12` guard instead of the true nonzero value,
-/// which very nearly zeroed EVERY uniaxial internal bounce along a c-axis-aligned ray
-/// -- caught by `test_spectral_raytrace_colored_gem`'s ruby render going black). At
-/// this exact limit BOTH eigenmodes truly collapse to a single isotropic response at
-/// `n_o` (`effective_extraordinary_index(n_o, n_e, theta_c=0) == n_o` exactly), so
-/// falling through to the plain scalar isotropic-at-`n_o` machinery is not an
-/// approximation -- it is the exact physics, identical to
-/// `apply_uniaxial_entry_bounce_isotropic_fallback`'s own rationale.
 /// [`apply_partial_fresnel_bounce`]'s own full result tuple: the new wave-normal `k`
 /// and Poynting direction `S`, the new `inside_gem` state, the `is_extraordinary`
 /// update (if any), and (mirroring [`super::reflect_refract::RefractBounceOutcome`]) a
@@ -94,6 +27,43 @@ use glam::Vec3;
 /// doesn't trip clippy's `type_complexity` lint.
 type FresnelBounceResult = (Vec3, Vec3, bool, Option<bool>, Option<f32>);
 
+/// Dispatches [`apply_partial_fresnel_bounce`]'s two closed-form uniaxial paths --
+/// air->crystal entry and internal/exit -- split out purely to keep that function's
+/// own body under the workspace line-count lint. Returns `Some` with the full result
+/// tuple when one of the closed-form paths applies; `None` when the caller must fall
+/// through to the general (biaxial/isotropic) machinery instead.
+///
+/// A uniaxial air->crystal entry whose wave normal is NOT parallel to the optic axis
+/// (`k_hat.cross(c_axis).length_squared() > 1e-6`) takes the closed-form
+/// `apply_uniaxial_entry_bounce` path in full, self-contained, and returns directly.
+///
+/// Any uniaxial internal event (o<->e coupled partial reflection or
+/// uniaxial->isotropic exit transmission) that is not already hero-forced past
+/// critical angle (that case is `apply_tir_bounce`'s own uniaxial branch, dispatched
+/// from a different call site in `transport::dispatch_bounce`) takes the closed-form
+/// `apply_uniaxial_internal_bounce` path the same way, under the SAME non-degenerate
+/// guard -- see that function's own doc comment.
+///
+/// Both closed-form paths share this one degeneracy guard (the entry branch
+/// used to special-case it internally via its own now-removed isotropic-Fresnel
+/// fallback, reached by no split draw the general path below takes, which diverged
+/// from the GPU's `uniaxial_nondegenerate`-gated 50/50 draw at this exact limit). The
+/// remaining fallthrough case (`None`, `apply_partial_fresnel_bounce`'s general
+/// `entry_eigenmode_selection`/scalar-Fresnel machinery) is reached by a biaxial
+/// material, an isotropic one, or this SAME degenerate wave-normal-parallel-to-optic-axis
+/// case for EITHER a uniaxial entry or a uniaxial internal bounce (`k_hat.cross(c_axis)`
+/// ~ 0): the closed-form ordinary D-direction `k x c_axis` vanishes exactly there,
+/// singularizing `internal_solve`'s boundary system (its own `flux_inc` floors to the
+/// `1e-12` guard instead of the true nonzero value, which very nearly zeroed EVERY
+/// uniaxial internal bounce along a c-axis-aligned ray -- caught by
+/// `test_spectral_raytrace_colored_gem`'s ruby render going black) and, for entry,
+/// `apply_uniaxial_entry_bounce`'s own boundary-match system the same way. At this
+/// exact limit BOTH eigenmodes truly collapse to a single isotropic response at `n_o`
+/// (`effective_extraordinary_index(n_o, n_e, theta_c=0) == n_o` exactly), so falling
+/// through to the plain scalar isotropic-at-`n_o` machinery is not an approximation --
+/// it is the exact physics, and (now) the SAME code path a degenerate entry and
+/// a degenerate internal bounce both take, rather than two independently-maintained
+/// isotropic special cases.
 fn try_dispatch_uniaxial_bounce(
     bctx: &BounceContext<'_, '_>,
     ray: BounceRay,
@@ -111,7 +81,20 @@ fn try_dispatch_uniaxial_bounce(
         ..
     } = mode_state;
 
-    if entering_anisotropic && let Some(frame) = geo.uniaxial_frame {
+    // Guarded by the SAME non-degenerate test (`k_hat` vs the optic axis, not
+    // parallel) the internal-bounce branch below already uses -- a degenerate entry
+    // (wave normal parallel to `c_axis`) singularizes `apply_uniaxial_entry_bounce`'s
+    // own closed-form boundary-match system, so it declines (`None`) here and falls
+    // through to `apply_partial_fresnel_bounce`'s general scalar-Fresnel path instead,
+    // matching the GPU's `uniaxial_nondegenerate` gate (`08_bounce_step.wgsl`) exactly:
+    // both sides now draw a plain (or polarization-weighted) ordinary/extraordinary
+    // split through the same code path at this exact limit, rather than the CPU alone
+    // taking a separate hand-rolled isotropic-Fresnel fallback no split draw ever
+    // reached.
+    if entering_anisotropic
+        && let Some(frame) = geo.uniaxial_frame
+        && k_hat.cross(ctx.c_axis).length_squared() > 1e-6
+    {
         let ubctx = UniaxialBounceContext {
             ctx,
             geo,
@@ -142,6 +125,20 @@ fn try_dispatch_uniaxial_bounce(
     None
 }
 
+/// The inputs [`resolve_entry_mode_selection`] reads, bundled to keep its signature
+/// short.
+struct EntryModeSelectionInputs<'m, 'b> {
+    ctx: &'b RayMaterialContext<'m>,
+    geo: &'b BounceRefractionGeometry,
+    entering_anisotropic: bool,
+    current_plane_normal: Vec3,
+    k_hat: Vec3,
+    hero_stokes: StokesVector,
+    is_extraordinary: bool,
+    rng_seed: u32,
+    bounce: u32,
+}
+
 /// The polarization-weighted eigenmode selection [`apply_partial_fresnel_bounce`]
 /// makes at an anisotropic entry -- split out purely to keep that function's own body
 /// under the workspace line-count lint. Returns `(use_extraordinary,
@@ -162,18 +159,6 @@ fn try_dispatch_uniaxial_bounce(
 /// is perpendicular to ordinary (`psi_e == psi_o + 90 deg`), so its doubled azimuth
 /// is simply the negation of the ordinary one (`cos(2*psi_o + 180deg) ==
 /// -cos(2*psi_o)`, likewise for `sin`).
-struct EntryModeSelectionInputs<'m, 'b> {
-    ctx: &'b RayMaterialContext<'m>,
-    geo: &'b BounceRefractionGeometry,
-    entering_anisotropic: bool,
-    current_plane_normal: Vec3,
-    k_hat: Vec3,
-    hero_stokes: StokesVector,
-    is_extraordinary: bool,
-    rng_seed: u32,
-    bounce: u32,
-}
-
 fn resolve_entry_mode_selection(
     inputs: &EntryModeSelectionInputs<'_, '_>,
 ) -> (bool, Option<(f32, f32)>) {
@@ -271,6 +256,54 @@ fn compute_entry_reflect_probability(
     r_unpol_raw.clamp(min, max)
 }
 
+/// Partial Fresnel Reflection & Refraction via Stokes-Mueller Polarized Wave Transport:
+/// decides reflect vs. transmit for the shared hero-driven path from the hero's own
+/// `r_unpol` (a well-mixed hash of `(rng_seed, bounce)`, replacing an earlier
+/// deterministic `(rng_seed + bounce*7919) % 1000` arithmetic progression that could
+/// correlate with the Russian-roulette draw; this hash is decorrelated from it via a
+/// distinct salt), then applies whichever event was sampled via
+/// [`apply_partial_reflect_bounce`] or [`apply_refract_bounce`]. A direct extraction of
+/// the pre-extraction inline branch dispatch: the same floating-point operations, in
+/// the same order, driven by the same random draw. Returns the new wave normal `k'`,
+/// the new Poynting direction `S'` (reflection's `k'` is re-converted to `S'` via
+/// [`poynting_dir_for_mode`] here, using the mode still in effect -- reflection alone
+/// never changes `is_extraordinary`, see `maybe_apply_internal_mode_coupling`'s own doc
+/// comment for the SEPARATE relabeling step that may reassign it for the NEXT bounce),
+/// the new `inside_gem` state, and (mirroring [`super::reflect_refract::RefractBounceOutcome`])
+/// the `is_extraordinary` update, if any.
+///
+/// At an air->crystal entry into an anisotropic material, which eigenmode
+/// (ordinary/mode-A vs extraordinary/mode-B) this path's single geometric transmission
+/// event represents is decided HERE -- before the reflect-vs-transmit draw below,
+/// rather than inside `apply_refract_bounce`'s own transmit branch.
+/// Two reasons this has to happen up here:
+///   - The SELECTION itself is weighted by the incident polarization's projection onto
+///     each eigenmode's own axis ([`entry_eigenmode_selection`]), not a blanket 50/50 --
+///     and that weighting has to happen exactly once per bounce, shared by both
+///     branches below: a beam already aligned with the ordinary axis should be MORE
+///     likely to reflect at the ordinary index too, not just more likely to transmit
+///     as ordinary conditional on transmitting.
+///   - The REFLECT branch's own Fresnel coefficients should be evaluated at the SAME
+///     mode's index the transmit branch (`apply_refract_channel`) uses for this
+///     channel. For a uniaxial material they are ([`compute_entry_reflect_probability`]
+///     substitutes `n_o_hero` when the ordinary mode is selected), so `R + T == 1`
+///     for whichever mode this draw selects; always
+///     using mode B (extraordinary)'s index for the reflect/transmit decision would
+///     instead leave `R + T != 1` by `O(delta_n / n)` whenever the ordinary mode is
+///     selected.
+///
+/// A biaxial material has no uniaxial "ordinary" eigenmode to weight against, so both
+/// the selection and the index correction are gated on `!geo.is_biaxial`: a biaxial
+/// entry always uses a blanket 50/50 split. Mode B's index (`geo.n2`) drives the
+/// reflect/transmit decision while transmission uses the index of the mode the split
+/// selects, so energy is conserved only on average there: with `R_A`/`R_B` the
+/// unpolarized Fresnel reflectances at the two modes' indices, `R + T` is
+/// `R_B + (1 - R_sel)`, whose expectation over the 50/50 selection is
+/// `1 + 0.5 * (R_B - R_A)`, not 1.
+///
+/// Non-degenerate uniaxial entries and internal events do not reach the code below
+/// whenever a closed-form path applies: [`try_dispatch_uniaxial_bounce`] takes them
+/// first.
 pub(in crate::optics::raytracer) fn apply_partial_fresnel_bounce(
     bctx: &BounceContext<'_, '_>,
     ray: BounceRay,
@@ -279,9 +312,6 @@ pub(in crate::optics::raytracer) fn apply_partial_fresnel_bounce(
     state: &mut BounceState<'_>,
     exit_event: &mut ExitEvent<'_, '_>,
 ) -> (Vec3, Vec3, bool, Option<bool>, Option<f32>) {
-    const R_UNPOL_SELECT_MIN: f32 = 0.02;
-    const R_UNPOL_SELECT_MAX: f32 = 0.98;
-
     let (ctx, geo) = (bctx.ctx, bctx.geo);
     let BounceRay { k_hat, normal } = ray;
     let PathModeState {

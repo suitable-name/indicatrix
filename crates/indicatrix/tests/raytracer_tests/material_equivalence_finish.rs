@@ -9,14 +9,14 @@ use indicatrix::{
     optics::{
         materials::GemMaterial,
         raytracer::{
-            Camera, EnvironmentSource, FacetFinish, LightingPreset, Ray, cie_1931_cmf, hash_u32,
+            Camera, EnvironmentSource, FacetFinish, LightingPreset, Ray, hash_u32,
             trace_spectral_ray, trace_spectral_ray_with_finish,
         },
     },
-    renderer::env_map::{EnvironmentMap, rgb_to_spectral_radiance},
+    renderer::env_map::EnvironmentMap,
 };
 
-use crate::fixtures::bruted_girdle_finishes;
+use crate::fixtures::{bruted_girdle_finishes, furnace_mean_xyz, uniform_furnace_target};
 
 /// Regression (pleochroism data): Sapphire's and Ruby's face-up render must stay
 /// UNAFFECTED by the newly-populated `e_ray` absorption data -- with `c_axis` = `Vec3::Y` and this exact straight-down ray (propagation
@@ -84,7 +84,8 @@ fn sapphire_and_ruby_face_up_render_is_bit_identical_to_o_ray_only_material() {
 /// same length as `planes`, every entry the default) must be bit-identical to
 /// `trace_spectral_ray` -- the "existing cuts keep polished girdles unless a finish is
 /// explicitly set" requirement, pinned as an exact `f32::to_bits()` regression, not a
-/// tolerance-based one. Covers several materials (isotropic AND uniaxial, so /// mode-coupling machinery is also exercised on this code path) and rays.
+/// tolerance-based one. Covers several materials (isotropic AND uniaxial, so
+/// mode-coupling machinery is also exercised on this code path) and rays.
 #[test]
 fn frosted_finish_all_polished_is_bit_identical_to_trace_spectral_ray() {
     let planes = StandardGemCuts::standard_round_brilliant();
@@ -154,9 +155,12 @@ fn frosted_finish_all_polished_is_bit_identical_to_trace_spectral_ray() {
 #[test]
 fn frosted_girdle_white_furnace_energy_conservation_still_holds() {
     const L0: f32 = 2.5;
-    const SAMPLES_PER_PIXEL: u32 = 64;
-    const GRID: usize = 12;
-    const TOLERANCE: f32 = 0.9; // generous: far fewer samples than the GPU harness's own furnace check
+    const SAMPLES_PER_PIXEL: u32 = 96;
+    // Measured on 2026-10-01 by `furnace_noise_floor` at this sample budget: 1.35
+    // percent truncation loss at cap 12 (paths still inside the gem at the cap are
+    // dropped; nothing is lost at cap 256) plus about 0.15 percent noise; five standard
+    // deviations of headroom. A branch mis-weighted by a few percent fails this.
+    const TOLERANCE: f32 = 0.025;
 
     let planes = StandardGemCuts::standard_round_brilliant();
     let finishes = bruted_girdle_finishes(planes.len());
@@ -166,42 +170,23 @@ fn frosted_girdle_white_furnace_energy_conservation_still_holds() {
     let material = GemMaterial::new_custom("CPU furnace probe", 1.5, 0.0, 0.0, [0.0, 0.0, 0.0]);
     let env_map = EnvironmentMap::uniform(1, 1, [L0, L0, L0]);
 
-    let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
-    let mut sum = Vec3::ZERO;
-    let mut count = 0u32;
-    for iy in 0..GRID {
-        for ix in 0..GRID {
-            let ray = camera.generate_ray(ix as f32, iy as f32, GRID as f32, GRID as f32, 0.5, 0.5);
-            for s in 0..SAMPLES_PER_PIXEL {
-                let pixel_id = (iy as u32) * (GRID as u32) + (ix as u32);
-                let seed = hash_u32(pixel_id ^ hash_u32(s ^ 0x4657_5230));
-                sum += trace_spectral_ray_with_finish(
-                    ray,
-                    &planes,
-                    &finishes,
-                    &material,
-                    12,
-                    EnvironmentSource::HdrMap(&env_map),
-                    seed,
-                    (hash_u32(seed) as f32) / 4_294_967_295.0,
-                    None,
-                );
-                count += 1;
-            }
-        }
-    }
-    let mean = sum / count as f32;
+    let (mean, count) = furnace_mean_xyz(SAMPLES_PER_PIXEL, 0x4657_5230, |ray, seed, hero| {
+        trace_spectral_ray_with_finish(
+            ray,
+            &planes,
+            &finishes,
+            &material,
+            12,
+            EnvironmentSource::HdrMap(&env_map),
+            seed,
+            hero,
+            None,
+        )
+    });
 
     // Analytic target: EnvironmentMap::uniform's spectral reconstruction of [L0,L0,L0],
-    // integrated against the real CIE 1931 CMF over the visible range -- the same
-    // quadrature `renderer::gpu::estimator_check::analytic_furnace_target` uses.
-    let mut target = Vec3::ZERO;
-    for step in 0..=(780 - 380) {
-        let lambda = 380.0f32 + step as f32;
-        let spec = rgb_to_spectral_radiance([L0, L0, L0], lambda);
-        target += cie_1931_cmf(lambda) * spec;
-    }
-    target /= 106.856;
+    // integrated against the real CIE 1931 CMF over the visible range.
+    let target = uniform_furnace_target(L0);
 
     let rel_err = |v: f32, t: f32| (v - t).abs() / t.abs().max(1e-6);
     let (ex, ey, ez) = (

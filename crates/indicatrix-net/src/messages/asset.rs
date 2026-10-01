@@ -128,6 +128,34 @@ pub fn read_asset_payload<R: std::io::Read>(
     Ok(bytes)
 }
 
+/// Consumes the raw payload frame that follows an [`AssetHeader`] nobody asked for,
+/// without buffering or hashing it.
+///
+/// The bound is [`MAX_ASSET_LEN`], checked against the header before reading; the frame
+/// must be exactly `header.len` bytes. Returns `Ok(())` for a well-formed frame whatever
+/// it contains.
+///
+/// # Errors
+///
+/// [`AssetError::TooLarge`] or [`AssetError::Framing`] leave the stream out of sync (drop
+/// the connection); [`AssetError::LengthMismatch`] means the whole frame was consumed.
+pub fn discard_asset_payload<R: std::io::Read>(
+    reader: &mut R,
+    header: &AssetHeader,
+) -> Result<(), AssetError> {
+    if header.len > MAX_ASSET_LEN {
+        return Err(AssetError::TooLarge { len: header.len });
+    }
+    let skipped = framing::skip_frame_bounded(reader, header.len).map_err(AssetError::Framing)?;
+    if skipped != header.len {
+        return Err(AssetError::LengthMismatch {
+            declared: header.len,
+            actual: skipped as usize,
+        });
+    }
+    Ok(())
+}
+
 /// Writes one `-> ASSET` message: the tagged `ClientMessage::Asset` header, then `bytes`
 /// as one raw frame. `render`-feature only, like the variant.
 ///

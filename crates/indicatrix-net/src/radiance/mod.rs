@@ -1,5 +1,7 @@
-//! Codec for the per-frame radiance buffer -- `Vec<Vec3>`, one running XYZ sum per
-//! pixel -- the other half of the wire protocol besides [`crate::scene::SceneState`].
+//! Codec for the per-frame radiance buffer.
+//!
+//! `Vec<Vec3>`, one running XYZ sum per pixel -- the other half of the wire protocol
+//! besides [`crate::scene::SceneState`].
 //!
 //! Raw POD bytes via `bytemuck::cast_slice`, not `postcard`: unlike `SceneState` (a few
 //! kilobytes, sent once per camera change, where serialisation cost doesn't matter), the
@@ -20,9 +22,13 @@
 //! `crate::client::Accumulator` does), which dispatches on the header's `encoding` and
 //! enforces the bounded-decode rules documented there.
 
+/// Bounded-decode payload codec (v14 lossless encodings) -- see this module's "v14
+/// payload encodings" doc section.
 pub mod payload;
 #[cfg(test)]
 mod payload_tests;
+/// Byte-shuffles the raw `f32` planes before compression (v14) -- see this module's
+/// "v14 payload encodings" doc section.
 pub mod shuffle;
 #[cfg(test)]
 mod test_support;
@@ -97,6 +103,20 @@ pub enum RadianceError {
         expected_bytes: usize,
         got_bytes: usize,
     },
+    /// A `FRAME` whose `[first_sample, first_sample + samples)` lies outside the sample
+    /// range `[start, end)` the request asked for -- a peer tracing indices it was never
+    /// assigned.
+    FrameOutsideRange {
+        first_sample: u32,
+        samples: u32,
+        start: u32,
+        end: u32,
+    },
+    /// A `FRAME` that would bring the epoch's cumulative sample count over the requested
+    /// range's width -- an overlapping or over-reported contribution.
+    SampleCountOverrun { cumulative: u32, range_len: u32 },
+    /// A `FRAME` that claims `samples == 0` yet carries a payload.
+    ZeroSampleFrame,
 }
 
 impl std::fmt::Display for RadianceError {
@@ -140,6 +160,23 @@ impl std::fmt::Display for RadianceError {
                 f,
                 "payload decompressed to {got_bytes} bytes, raw_len is {expected_bytes}"
             ),
+            Self::FrameOutsideRange {
+                first_sample,
+                samples,
+                start,
+                end,
+            } => write!(
+                f,
+                "FRAME [{first_sample}, +{samples}) lies outside the requested sample range [{start}, {end})"
+            ),
+            Self::SampleCountOverrun {
+                cumulative,
+                range_len,
+            } => write!(
+                f,
+                "FRAME would bring the cumulative sample count to {cumulative}, over the requested range's width {range_len}"
+            ),
+            Self::ZeroSampleFrame => write!(f, "FRAME claims zero samples but carries a payload"),
         }
     }
 }

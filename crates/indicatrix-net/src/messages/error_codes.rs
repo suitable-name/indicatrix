@@ -5,8 +5,9 @@
 //! `LibraryResponse::Error` -- a single namespace: the library path already reuses
 //! [`NO_RENDER_CAPACITY`] (a library request on a joined worker's connection), so its
 //! own codes ([`LIBRARY_FAILED`], [`LIBRARY_REQUEST_INVALID`]) live here too, with
-//! values no other code uses. `ErrorMsg` carries no `request_id`, so a code only ever
-//! describes the connection's CURRENT request (or its handshake). A coordinator never
+//! values no other code uses. Since v15 `ErrorMsg` carries an optional `request_id`: a
+//! `StreamEvent::Error` naming one is epoch-gated to that request, and one without
+//! describes the connection's handshake or its CURRENT request. A coordinator never
 //! forwards a worker's `ErrorMsg` verbatim to a viewer; it translates it (see the
 //! coordinator guide).
 //!
@@ -79,6 +80,15 @@ pub const LIBRARY_FAILED: u32 = 9;
 /// [`UNSUPPORTED_REQUEST`]).
 pub const LIBRARY_REQUEST_INVALID: u32 = 10;
 
+/// v16: the server's render lane reported no progress for the configured stall window.
+///
+/// Sent as `StreamEvent::Error` for the stalled request, with no `DONE`; the connection
+/// stays usable. A wedged tracer keeps the emitter's `PROGRESS` heartbeat going, so a
+/// client's silence-based liveness deadline never fires -- this is the server saying so
+/// itself. A client that does not know the code treats it like any other request failure
+/// and falls back (it is a plain `u32`, never decoded into an enum).
+pub const PRODUCER_STALLED: u32 = 11;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,6 +109,7 @@ mod tests {
             ("ASSET_FAILED", ASSET_FAILED),
             ("LIBRARY_FAILED", LIBRARY_FAILED),
             ("LIBRARY_REQUEST_INVALID", LIBRARY_REQUEST_INVALID),
+            ("PRODUCER_STALLED", PRODUCER_STALLED),
         ];
         for (i, (name_a, a)) in codes.iter().enumerate() {
             for (name_b, b) in &codes[i + 1..] {

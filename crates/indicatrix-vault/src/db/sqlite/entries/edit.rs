@@ -3,9 +3,12 @@
 //! deletion.
 
 use super::Database;
-use crate::model::{facets::parse_facets_count, metadata_update::MetadataUpdate};
+use crate::model::{
+    facets::parse_facets_count,
+    metadata_update::{MetadataUpdate, parse_optional_numeric},
+};
 use anyhow::{Context, Result};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use tracing::debug;
 
 impl Database {
@@ -19,14 +22,19 @@ impl Database {
     /// Returns an error if the underlying `UPDATE` fails, or if `entry_id` does not
     /// match any row (zero rows affected).
     pub fn rename_diagram_entry(&self, entry_id: i64, new_title: &str) -> Result<()> {
+        Self::rename_diagram_entry_conn(&self.conn, entry_id, new_title)
+    }
+
+    /// [`Self::rename_diagram_entry`]'s body, taking `conn: &Connection` so
+    /// [`Self::rename_and_update_metadata`] can run it inside its own transaction.
+    fn rename_diagram_entry_conn(conn: &Connection, entry_id: i64, new_title: &str) -> Result<()> {
         let trimmed = new_title.trim();
         if trimmed.is_empty() {
             return Err(anyhow::anyhow!("Title cannot be empty."));
         }
-        let changed = self
-            .conn
+        let changed = conn
             .execute(
-                "UPDATE diagram_entries SET title = ?1, updated_at = ?2 WHERE id = ?3",
+                "UPDATE diagram_entries SET title = ?1, updated_at = MAX(?2, COALESCE(updated_at, 0) + 1) WHERE id = ?3",
                 params![trimmed, super::unix_now(), entry_id],
             )
             .context(format!("Failed to rename diagram entry {entry_id}"))?;
@@ -36,6 +44,35 @@ impl Database {
         Ok(())
     }
 
+    /// Renames `entry_id` and applies `update` to its detail row in ONE transaction:
+    /// either both land or neither does. The metadata editor saves the title and the
+    /// other fields together; issuing [`Self::rename_diagram_entry`] and
+    /// [`Self::update_diagram_metadata`] separately left the new title committed when a
+    /// hand-typed numeric field was then rejected, while the dialog reported the whole
+    /// save as failed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error, with nothing committed, if the title is blank, `entry_id`
+    /// names no entry or no detail row, a numeric field of `update` does not parse (see
+    /// [`Self::update_diagram_metadata`]), or an `UPDATE` or the transaction itself
+    /// fails.
+    pub fn rename_and_update_metadata(
+        &self,
+        entry_id: i64,
+        new_title: &str,
+        update: &MetadataUpdate,
+    ) -> Result<()> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .context("Failed to start the rename-and-metadata transaction")?;
+        Self::rename_diagram_entry_conn(&tx, entry_id, new_title)?;
+        Self::update_diagram_metadata_conn(&tx, entry_id, update)?;
+        tx.commit()
+            .context("Failed to commit the rename-and-metadata transaction")
+    }
+
     /// Updates exactly the metadata fields a user might legitimately hand-correct on an
     /// already-imported design -- see [`MetadataUpdate`]'s own doc comment for which
     /// fields that is and why title isn't one of them.
@@ -43,7 +80,7 @@ impl Database {
     /// # The trap this exists to avoid
     ///
     /// [`Database::get_diagram_full`] returns a [`crate::model::entry::FullDiagramRecord`],
-    /// a STRICT SUBSET of [`crate::model::detail::FacetDiagramDetail`] (missing
+    /// a STRICT SUBSET of [`crate::model::detail::FacetingDiagramDetail`] (missing
     /// `hw_ratio`/`tw_ratio`/`uw_ratio`/`pw_ratio`/`cw_ratio`/`symmetry_order`/
     /// `mirror_symmetry`/`designer`/`source_citation`/`pdf_file`/`gem_file`/
     /// `shape_category`). Since [`Self::save_diagram_detail`] fully REPLACES the
@@ -57,15 +94,56 @@ impl Database {
     /// [`parse_facets_count`]; the search range filter reads them directly, never the
     /// text) -- re-deriving them here keeps that filter from desyncing after an edit.
     ///
+    /// # Hand-typed numeric fields are parsed, never bound as raw text
+    ///
+    /// `refractive_index`/`index_gear`/`symmetry_order`/`lw_ratio`/`hw_ratio`/
+    /// `cw_ratio`/`pw_ratio`/`volume` are `Option<String>` on [`MetadataUpdate`] (a
+    /// text field's natural type), but their columns are REAL/INTEGER. Binding that
+    /// text directly would rely on SQLite's column-affinity conversion, which only
+    /// converts a value that already looks like a plain number and otherwise silently
+    /// stores it as TEXT in the REAL/INTEGER column -- e.g. a hand-typed European
+    /// `"1,76"` persisted as the literal string `"1,76"`, which then sorts/filters
+    /// wrong against every other row's real `REAL` value. Each of those eight fields is
+    /// therefore parsed through [`parse_optional_numeric`] first: a blank/`None` field still
+    /// means "clear this value" (`Ok(None)`), but any other unparsable text is a hard
+    /// error naming the field, and NOTHING is written -- see that function's doc
+    /// comment. `facets_count` is not in this list: its column is TEXT, so it never had
+    /// this problem, and it keeps `parse_facets_count`'s own, deliberately tolerant
+    /// splitting (shared with the scrape-import path, where a partial parse like
+    /// `"45+R"` is real, legitimate data, not hand-typed garbage to reject).
+    ///
     /// # Errors
     ///
-    /// Returns an error if the underlying `UPDATE` fails, or if `entry_id` has no
+    /// Returns an error if any of the eight numeric fields above is non-blank and
+    /// fails to parse (see [`parse_optional_numeric`]; nothing is written in that
+    /// case), if the underlying `UPDATE` fails, or if `entry_id` has no
     /// `diagram_details` row (zero rows affected -- e.g. an entry whose import never
     /// got as far as writing one).
     pub fn update_diagram_metadata(&self, entry_id: i64, update: &MetadataUpdate) -> Result<()> {
+        Self::update_diagram_metadata_conn(&self.conn, entry_id, update)
+    }
+
+    /// [`Self::update_diagram_metadata`]'s body, taking `conn: &Connection` so
+    /// [`Self::rename_and_update_metadata`] can run it inside its own transaction.
+    /// Every numeric field is parsed before the first write.
+    fn update_diagram_metadata_conn(
+        conn: &Connection,
+        entry_id: i64,
+        update: &MetadataUpdate,
+    ) -> Result<()> {
         let (facets, girdle_facets) = parse_facets_count(update.facets_count.as_deref());
-        let changed = self
-            .conn
+        let refractive_index =
+            parse_optional_numeric::<f64>("refractive_index", update.refractive_index.as_deref())?;
+        let index_gear = parse_optional_numeric::<i64>("index_gear", update.index_gear.as_deref())?;
+        let symmetry_order =
+            parse_optional_numeric::<i64>("symmetry_order", update.symmetry_order.as_deref())?;
+        let lw_ratio = parse_optional_numeric::<f64>("lw_ratio", update.lw_ratio.as_deref())?;
+        let hw_ratio = parse_optional_numeric::<f64>("hw_ratio", update.hw_ratio.as_deref())?;
+        let cw_ratio = parse_optional_numeric::<f64>("cw_ratio", update.cw_ratio.as_deref())?;
+        let pw_ratio = parse_optional_numeric::<f64>("pw_ratio", update.pw_ratio.as_deref())?;
+        let volume = parse_optional_numeric::<f64>("volume", update.volume.as_deref())?;
+
+        let changed = conn
             .execute(
                 "UPDATE diagram_details SET
                     designer_info = ?1, shape = ?2, refractive_index = ?3, index_gear = ?4,
@@ -76,18 +154,18 @@ impl Database {
                 params![
                     update.designer_info,
                     update.shape,
-                    update.refractive_index,
-                    update.index_gear,
+                    refractive_index,
+                    index_gear,
                     update.facets_count,
                     facets,
                     girdle_facets,
-                    update.symmetry_order,
+                    symmetry_order,
                     update.mirror_symmetry,
-                    update.lw_ratio,
-                    update.hw_ratio,
-                    update.cw_ratio,
-                    update.pw_ratio,
-                    update.volume,
+                    lw_ratio,
+                    hw_ratio,
+                    cw_ratio,
+                    pw_ratio,
+                    volume,
                     entry_id,
                 ],
             )
@@ -105,8 +183,8 @@ impl Database {
         // above is the change that matters, so a failure here is logged rather than
         // rolled back into an error the caller would otherwise treat as "nothing was
         // saved."
-        if let Err(e) = self.conn.execute(
-            "UPDATE diagram_entries SET updated_at = ?1 WHERE id = ?2",
+        if let Err(e) = conn.execute(
+            "UPDATE diagram_entries SET updated_at = MAX(?1, COALESCE(updated_at, 0) + 1) WHERE id = ?2",
             params![super::unix_now(), entry_id],
         ) {
             debug!("Failed to bump updated_at for entry_id {entry_id}: {e}");
@@ -133,7 +211,7 @@ impl Database {
         let changed = self
             .conn
             .execute(
-                "UPDATE diagram_entries SET url = ?1, updated_at = ?2 WHERE id = ?3",
+                "UPDATE diagram_entries SET url = ?1, updated_at = MAX(?2, COALESCE(updated_at, 0) + 1) WHERE id = ?3",
                 params![url, super::unix_now(), entry_id],
             )
             .context(format!("Failed to update url for diagram entry {entry_id}"))?;
@@ -141,28 +219,6 @@ impl Database {
             return Err(anyhow::anyhow!("No diagram entry with id {entry_id}."));
         }
         Ok(())
-    }
-
-    /// The `derived_from_entry_id` of `entry_id`'s row -- the entry it was recorded as
-    /// derived from at import time, or `None` when unknown/not
-    /// applicable. `None` is also returned for a nonexistent `entry_id` rather than an
-    /// error, matching this column's own "unknown provenance" meaning.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the underlying `SELECT` fails.
-    pub fn get_derived_from_entry_id(&self, entry_id: i64) -> Result<Option<i64>> {
-        self.conn
-            .query_row(
-                "SELECT derived_from_entry_id FROM diagram_entries WHERE id = ?1",
-                params![entry_id],
-                |row| row.get::<_, Option<i64>>(0),
-            )
-            .optional()
-            .map(Option::flatten)
-            .context(format!(
-                "Failed to read derived_from_entry_id for entry_id: {entry_id}"
-            ))
     }
 
     /// `entry_id`'s recorded source row's own id and title -- the one query a
@@ -260,13 +316,43 @@ impl Database {
     /// angle settings, attached files cascade via `ON DELETE CASCADE`, see
     /// `create_tables_if_not_exist`). Works on any entry regardless of `source_id`.
     ///
+    /// # Mirror-state semantics: "local delete wins"
+    ///
+    /// `crate::model::mirror::MirrorState`/`library_mirror_state` is keyed by `url`,
+    /// not `entry_id`, and has no `FOREIGN KEY` back to `diagram_entries` -- deleting a
+    /// design synced from a remote mirror keeps its `library_mirror_state` row and
+    /// marks it `deleted_locally` (a tombstone), in the same transaction as the
+    /// delete. This is deliberate: if a later sync saw no mirror-state row at all for
+    /// that url, it would treat the design as never seen before and re-download it,
+    /// silently undoing the user's deletion.
+    ///
+    /// The tombstone, not the stored hashes, is what keeps the deletion in force: a
+    /// mirror pass skips every tombstoned url whatever the remote hashes are, so a
+    /// later change to the remote design cannot resurrect it. A url without a
+    /// mirror-state row (a hand-imported design) has nothing to tombstone. The cost:
+    /// the row is now permanently orphaned (no `diagram_entries` row will match its
+    /// `url` again unless the exact same design is deliberately re-imported), which is
+    /// invisible to a sync UI unless it asks -- see
+    /// [`Self::count_mirror_states_without_entry`].
+    ///
     /// # Errors
     ///
     /// Returns an error if the underlying `DELETE` fails, or if `entry_id` does not
-    /// match any row (zero rows affected).
+    /// match any row (zero rows affected). Nothing is changed in either case.
     pub fn delete_diagram_entry(&self, entry_id: i64) -> Result<()> {
-        let changed = self
-            .conn
+        let tx = self.conn.unchecked_transaction().context(format!(
+            "Failed to start the delete of diagram entry {entry_id}"
+        ))?;
+        // Before the DELETE: the url is only known while the row still exists.
+        tx.execute(
+            "UPDATE library_mirror_state SET deleted_locally = 1
+             WHERE url = (SELECT url FROM diagram_entries WHERE id = ?1)",
+            params![entry_id],
+        )
+        .context(format!(
+            "Failed to tombstone the mirror state of diagram entry {entry_id}"
+        ))?;
+        let changed = tx
             .execute(
                 "DELETE FROM diagram_entries WHERE id = ?1",
                 params![entry_id],
@@ -275,6 +361,8 @@ impl Database {
         if changed == 0 {
             return Err(anyhow::anyhow!("No diagram entry with id {entry_id}."));
         }
-        Ok(())
+        tx.commit().context(format!(
+            "Failed to commit the delete of diagram entry {entry_id}"
+        ))
     }
 }

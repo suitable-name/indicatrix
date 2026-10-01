@@ -26,12 +26,18 @@ pub enum ComputeMode {
     OnlyCpu,
 }
 
+/// Arguments of `indicatrix-worker render`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderArgs {
+    /// Scene file to render.
     pub scene: PathBuf,
+    /// Output image path.
     pub out: PathBuf,
+    /// Image width in pixels.
     pub width: u32,
+    /// Image height in pixels.
     pub height: u32,
+    /// Samples per pixel.
     pub samples: u32,
     /// `0` means "let the OS decide" -- see `render_core::effective_thread_count`.
     /// Governs only the CPU tracer -- see `USAGE_RENDER`'s `--threads` entry.
@@ -42,23 +48,30 @@ pub struct RenderArgs {
     pub compute_mode: ComputeMode,
 }
 
+/// Arguments of `indicatrix-worker serve`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServeArgs {
+    /// Listen address (`host:port`).
     pub bind: String,
     /// `0` means "let the OS decide" -- see `render_core::effective_thread_count`.
     /// Governs only the CPU tracer -- see `USAGE_SERVE`'s `--threads` entry.
     pub threads: usize,
+    /// Whether to bind a non-loopback address.
     pub allow_remote: bool,
     /// CA certificate path. Required by `serve::run` unless `insecure_no_tls` is set;
     /// left optional here because parsing doesn't validate that dependency.
     pub ca: Option<PathBuf>,
+    /// Server certificate path.
     pub cert: Option<PathBuf>,
+    /// Server private key path.
     pub key: Option<PathBuf>,
     /// The VIEWER allowlist. Defaults to `pki::default_viewer_allowlist_path(ca)`
     /// (`allowlist-viewers.txt` next to `--ca`, or a pre-role `allowlist.txt` while only
     /// that exists) when `None` -- see `serve::run`.
     pub allowlist: Option<PathBuf>,
+    /// Accept any client certificate that chains to the CA, skipping the allowlist.
     pub trust_any_client_cert: bool,
+    /// Serve plain TCP without TLS.
     pub insecure_no_tls: bool,
     /// `--only-gpu`/`--only-cpu` (default `Hybrid`) -- see [`ComputeMode`]. `OnlyCpu`
     /// forces `Backend::Cpu` for every request even with a usable GPU adapter. Only
@@ -97,6 +110,12 @@ pub struct ServeArgs {
     /// (library-only or `worker`). A connection past its cap is still accepted and told
     /// so with a definitive `<- ERROR` reply, not left to hang.
     pub max_connections: usize,
+    /// `--max-preauth-per-ip <n>` (default [`super::DEFAULT_MAX_PREAUTH_PER_IP`], at
+    /// least 1): the most viewer-port connections one source IP address may have open
+    /// that have not finished authenticating. A connection stops counting once its TLS
+    /// handshake and allowlist check succeed (for `--insecure-no-tls`, once its
+    /// `--max-connections` slot is decided); a connection over the cap is closed at once.
+    pub max_preauth_per_ip: usize,
     /// `--interactive-workers <n>` (advanced, default 0): how many
     /// of the fastest idle joined workers an `Interactive` (live-view) request may take
     /// besides the own lane. `0` keeps the live view on the own lane alone; a coordinator
@@ -109,35 +128,51 @@ pub struct ServeArgs {
     pub pin_interactive_worker: Option<String>,
     /// `--max-job-memory-mib <n>` (default [`super::DEFAULT_MAX_JOB_MEMORY_MIB`]): the
     /// in-flight buffer budget of multi-lane coordinator jobs (each charged
-    /// width x height x 48 bytes); a job that would exceed it is refused.
+    /// width x height x 48 bytes, plus width x height x 36 bytes per lane and its HDR
+    /// map and viewer contribution bytes); a job that would exceed it even with a single
+    /// lane is refused.
     pub max_job_memory_mib: u32,
 }
 
+/// Arguments of `cert init`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertInitArgs {
+    /// Directory the CA is created in.
     pub dir: PathBuf,
 }
 
+/// Arguments of `cert issue-server`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertIssueServerArgs {
+    /// Directory holding the CA.
     pub dir: PathBuf,
+    /// DNS names for the certificate.
     pub hosts: Vec<String>,
+    /// IP addresses for the certificate.
     pub ips: Vec<IpAddr>,
 }
 
+/// Arguments of `cert issue-client`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertIssueClientArgs {
+    /// Directory holding the CA.
     pub dir: PathBuf,
+    /// Client name placed in the certificate.
     pub name: String,
+    /// Output bundle path.
     pub out: PathBuf,
     /// `--role viewer|worker` (default viewer) -- see `crate::pki::role`.
     pub role: PeerRole,
 }
 
+/// Arguments of `cert issue-token`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertIssueTokenArgs {
+    /// CA directory or file used to sign.
     pub ca: PathBuf,
+    /// Enrollment listener address.
     pub admin_addr: String,
+    /// Client name the token enrolls.
     pub name: String,
     /// `--role viewer|worker` (default viewer): which enrollment listener `admin_addr`
     /// must be -- the viewer one (7879) or the worker one (7881). A mismatch is refused
@@ -156,7 +191,10 @@ pub struct JoinArgs {
     /// -- or, with `--token`, where the claimed bundle is written first. Default
     /// `worker-cert` in the working directory.
     pub cert_dir: PathBuf,
-    /// `--slots K` (default 1): parallel connections, each serving one request stream.
+    /// `--slots K` (default 2): parallel connections, each serving one request stream.
+    /// A joined worker's own chunk transfer/decode gap otherwise leaves it idle between
+    /// chunks on a single slot (see `DEFAULT_JOIN_SLOTS`'s own doc comment); 2 keeps a
+    /// second chunk in flight to cover it.
     pub slots: usize,
     /// `--threads` for the CPU tracer; `0` = all cores.
     pub threads: usize,
@@ -169,24 +207,37 @@ pub struct JoinArgs {
     pub enroll_addr: Option<String>,
 }
 
+/// Arguments of `cert claim`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CertClaimArgs {
+    /// Enrollment token to redeem.
     pub token: String,
+    /// Enrollment listener address.
     pub addr: String,
+    /// Where the claimed bundle is written.
     pub out: PathBuf,
 }
 
+/// A parsed command line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
+    /// Render a scene to an image file.
     Render(RenderArgs),
     /// Boxed: by far the largest variant (`clippy::large_enum_variant`).
     Serve(Box<ServeArgs>),
+    /// Join a coordinator as a render worker.
     Join(JoinArgs),
+    /// Create a certificate authority.
     CertInit(CertInitArgs),
+    /// Issue a server certificate.
     CertIssueServer(CertIssueServerArgs),
+    /// Issue a client certificate bundle.
     CertIssueClient(CertIssueClientArgs),
+    /// Mint an enrollment token.
     CertIssueToken(CertIssueTokenArgs),
+    /// Redeem an enrollment token.
     CertClaim(CertClaimArgs),
+    /// Print a help page.
     Help(HelpTopic),
 }
 

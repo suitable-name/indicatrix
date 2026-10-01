@@ -7,7 +7,13 @@ import { GemViewportView } from "components/gem_viewport.slint";
 import { CuttingTableView } from "components/cutting_table.slint";
 import { AttachmentsView } from "components/attachments_view.slint";
 import { Toast } from "components/toast.slint";
-import { DetachedRenderWindow } from "detached_render_window.slint";
+// The visual before/after compare window (a second top-level OS window) and its
+// model -- see `models/compare.slint`.
+import { CompareWindow } from "compare_window.slint";
+import { CompareModel } from "models/compare.slint";
+// The Rough Planner window (a separate top-level OS window, like `CompareWindow`)
+// and its model -- see `rough_planner_window.slint` and `models/rough_plan.slint`.
+import { RoughPlannerWindow } from "rough_planner_window.slint";
 import { EditorView } from "components/editor_view.slint";
 import { EditorStatusStrip } from "components/editor_status_strip.slint";
 // `RetargetRowItem` stays imported here (not just where `RetargetDialog` is
@@ -25,6 +31,8 @@ import { TabViewPillRow } from "components/app/tab_pill_row.slint";
 import { GlobalDialogsOverlay } from "components/app/global_dialogs.slint";
 
 import { SolidPreviewModel } from "models/solid_preview.slint";
+// The Solid viewport's drag handles and hint line -- see `models/manipulate.slint`.
+import { ManipulateModel } from "models/manipulate.slint";
 import { ActivityModel, ActivityItem } from "models/activity.slint";
 import { ViewportModel } from "models/viewport.slint";
 import { RetargetModel } from "models/retarget.slint";
@@ -39,17 +47,23 @@ import { EditorModel } from "models/editor.slint";
 import { GuideModel, GuideStepData, GuideAllow } from "models/guide.slint";
 import { ShortcutsModel, ShortcutItem } from "models/shortcuts.slint";
 import { TemplateGalleryModel, TemplateCardData } from "models/templates.slint";
+// The Rough Planner (Library > Plan Rough...) -- see `models/rough_plan.slint`.
+import { RoughPlanModel, RoughPlanResult, RoughPlanStoneGroup, RoughMetric, RoughCutRow, SavedRoughPlanRow } from "models/rough_plan.slint";
 
 export {
     DiagramItem, AngleItem, FileItem, DiagramDetailData, OpticalMetricsData,
     LightingPresetItem, WorkerItem, PerformanceFilterRow, EditorTierItem,
-    OptimizeResultRow, GearRemapRow, RetargetRowItem, DetachedRenderWindow,
-    SolidPreviewModel, ViewportModel, RetargetModel, ExportModel, SettingsModel,
+    OptimizeResultRow, GearRemapRow, RetargetRowItem,
+    SolidPreviewModel, ManipulateModel, ViewportModel, RetargetModel, ExportModel, SettingsModel,
     RemoteWorkerModel, BatchModel, TiltModel, TiltVideoExportModel, LibraryModel, EditorModel, UndoRedoLabels,
     // ActivityModel: the app's background-activity/status model -- see ui/models/activity.slint.
     ActivityModel, ActivityItem,
     // Guidance globals: guide, keyboard shortcuts overlay, template gallery -- see each global's doc comment.
-    GuideModel, GuideStepData, GuideAllow, ShortcutsModel, ShortcutItem, TemplateGalleryModel, TemplateCardData
+    GuideModel, GuideStepData, GuideAllow, ShortcutsModel, ShortcutItem, TemplateGalleryModel, TemplateCardData,
+    // The visual compare window and its model -- see ui/models/compare.slint.
+    CompareWindow, CompareModel,
+    // The Rough Planner window, global and its row structs -- see ui/rough_planner_window.slint.
+    RoughPlannerWindow, RoughPlanModel, RoughPlanResult, RoughPlanStoneGroup, RoughMetric, RoughCutRow, SavedRoughPlanRow
 }
 
 // --- Sizing notes -----------------------------------------------------------
@@ -94,10 +108,16 @@ export component MainWindow inherits Window {
     title: (EditorModel.enabled && EditorModel.is_dirty ? "* " : "")
         + "Indicatrix Cut"
         + (root.loaded_design_name == "" ? "" : " — " + root.loaded_design_name);
+    // The titlebar/taskbar icon. The `.exe`'s embedded icon resource (build.rs) only
+    // covers Explorer: winit registers its window class without an icon, so a window
+    // with no `icon` of its own shows the generic Windows application icon. Slint
+    // embeds the image in the binary, so nothing needs to be installed beside it.
+    // Every other top-level window sets the same icon.
+    icon: @image-url("../assets/icon.png");
     preferred-width: 1600px;
     preferred-height: 900px;
-    // Kept below the 900px stacking threshold so a window between 720-899px
-    // still exercises the narrow (<900px, stacked) layout further down
+    // Kept below the 1100px stacking threshold so a window between 720-1099px
+    // still exercises the narrow (<1100px, stacked) layout further down
     // rather than the side-by-side split it has no room for -- `EditorView`'s
     // own command bar/design settings need real room, and `clip: true` is
     // what keeps a window this narrow readable instead of unreadable.
@@ -110,8 +130,6 @@ export component MainWindow inherits Window {
     callback active_tab_changed(int);
     in-out property <int> render_view_tab: 0;
     callback render_view_tab_changed(int);
-    in-out property <bool> live_render_detached: false;
-    callback live_render_detach_toggled(bool);
 
     callback open_user_manual();
 
@@ -130,8 +148,13 @@ export component MainWindow inherits Window {
     // `close_confirm_discard` handlers do the actual `render_ctx.running = false` +
     // settings-flush + `window().hide()` that an ordinary close does
     // unconditionally. Cancel needs no Rust round trip -- it only ever resets this
-    // property, handled inline below.
+    // property, handled inline below. The same guard also stops a close that would only
+    // lose Rough Planner work (unsaved results, a running plan): `on_close_requested`
+    // then sets `close_confirm_message` to what would be lost and `close_confirm_can_save`
+    // to false, because there is no design to save, and the dialog hides its Save button.
     in-out property <bool> close_confirm_open: false;
+    in-out property <string> close_confirm_message: "Closing the window will discard the current design's unsaved changes.";
+    in-out property <bool> close_confirm_can_save: true;
     callback close_confirm_save();
     callback close_confirm_discard();
 
@@ -152,7 +175,7 @@ export component MainWindow inherits Window {
         EditorModel.dock_width = clamp(
             EditorModel.dock_width,
             600px,
-            min(1000px, max(600px, available - 380px - 6px - 24px))
+            min(1000px, max(600px, available - 380px - 6px - 24px - (GuideModel.open ? 272px : 0px)))
         );
         EditorModel.layout_changed();
     }
@@ -238,6 +261,14 @@ export component MainWindow inherits Window {
                 enabled: EditorModel.enabled && GuideModel.allows_file_ops();
                 activated => { EditorModel.export_asc(); }
             }
+            // Experimental: the `.gcs` writer follows the published Gem Cut Studio
+            // 1.1 file description; the command bar's "Export..." entry carries
+            // the tooltip saying so (a `MenuItem` has no tooltip).
+            MenuItem {
+                title: "Export as Gem Cut Studio (.gcs)... (experimental)";
+                enabled: EditorModel.enabled && GuideModel.allows_file_ops();
+                activated => { EditorModel.export_gcs(); }
+            }
             // "Export Cutting Sheet (HTML)..."/"Export Diagram (PNG)..." live on
             // the command bar's own "Export..." split button
             // (`ui/components/export_split_button.slint`, mounted in
@@ -250,9 +281,10 @@ export component MainWindow inherits Window {
             // `UndoRedoLabels.undo_label`/`redo_label` -- a cutter-facing summary of
             // what Ctrl+Z/Ctrl+Y will actually do (e.g. "Undo: Set P1 angle to
             // -41.0 degrees"), from `Edit::describe` via
-            // `History::peek_undo`/`peek_redo`. See that global's own doc
-            // comment (`ui/components/editor_command_bar.slint`) for the Rust-side
-            // handoff that still needs to push it -- until then both read "".
+            // `History::peek_undo`/`peek_redo`. `gui::editor::view::panel` pushes
+            // both after every edit (`ui.global::<UndoRedoLabels>().set_undo_label`/
+            // `set_redo_label`); empty only when there is nothing to undo/redo,
+            // matching `can_undo`/`can_redo` above.
             MenuItem {
                 title: (EditorModel.can_undo && UndoRedoLabels.undo_label != "" ? "Undo: " + UndoRedoLabels.undo_label : "Undo") + " (Ctrl+Z)";
                 enabled: EditorModel.enabled && EditorModel.can_undo && GuideModel.allows_history();
@@ -262,6 +294,34 @@ export component MainWindow inherits Window {
                 title: (EditorModel.can_redo && UndoRedoLabels.redo_label != "" ? "Redo: " + UndoRedoLabels.redo_label : "Redo") + " (Ctrl+Y)";
                 enabled: EditorModel.enabled && EditorModel.can_redo && GuideModel.allows_history();
                 activated => { EditorModel.redo(); }
+            }
+        }
+        // Whole-catalogue batches (`gui::batch::regenerate_all`): each item opens the
+        // same confirm step the other triggers use. Disabled only while that batch is
+        // RUNNING (`start_batch` refuses a second one anyway). A showing confirm step
+        // or finished summary does not block the menu: `offer_batch_confirmation`
+        // rewrites the whole offer, so re-offering over it is harmless, and gating on
+        // `*_visible` left the menu dead whenever a dialog was left open.
+        Menu {
+            title: "Library";
+            MenuItem {
+                title: "Regenerate All Preview Images...";
+                enabled: !BatchModel.preview_batch_running;
+                activated => { LibraryModel.regenerate_all_previews(); }
+            }
+            MenuItem {
+                title: "Regenerate All Tilt Curves...";
+                enabled: !BatchModel.tilt_batch_running;
+                activated => { LibraryModel.regenerate_all_tilt_curves(); }
+            }
+            MenuItem {
+                title: "Regenerate Both...";
+                enabled: !BatchModel.preview_batch_running && !BatchModel.tilt_batch_running;
+                activated => { LibraryModel.regenerate_all_previews_and_tilt_curves(); }
+            }
+            MenuItem {
+                title: "Plan Rough...";
+                activated => { RoughPlanModel.open(); }
             }
         }
         Menu {
@@ -440,7 +500,7 @@ export component MainWindow inherits Window {
             spacing: 6px;
 
             // 1. TOP BAR
-            header_toolbar := HeaderToolbar {}
+            header_toolbar := HeaderToolbar { compact: root.width < 1100px; }
 
             // 2. MAIN SPLIT WORKSPACE
             HorizontalLayout {
@@ -465,76 +525,24 @@ export component MainWindow inherits Window {
                         window_width: root.width;
                     }
 
-                    // Catalogue tab pills + the Live Render/Edit/Pop Out view pills --
+                    // Catalogue tab pills + the Live Render/Edit view pills --
                     // see `TabViewPillRow`'s own doc comment
                     // (`components/app/tab_pill_row.slint`) for why this is split out.
                     TabViewPillRow {
+                        compact: root.width < 1200px;
                         active_tab <=> root.active_tab;
                         active_tab_changed(v) => { root.active_tab_changed(v); }
                         render_view_tab <=> root.render_view_tab;
                         render_view_tab_changed(v) => { root.render_view_tab_changed(v); }
-                        live_render_detached: root.live_render_detached;
-                        live_render_detach_toggled(v) => { root.live_render_detach_toggled(v); }
                     }
 
                     // Tab 0: 3D Preview
                     if root.active_tab == 0: VerticalLayout {
                         spacing: 8px;
 
-                        // The Live Render/Edit/Pop Out view pills live in the shared
+                        // The Live Render/Edit view pills live in the shared
                         // tab/view-pill row above (see that row's own doc comment for why).
-                        if root.render_view_tab == 0 && !root.live_render_detached: GemViewportView {}
-
-                        if root.render_view_tab == 0 && root.live_render_detached: Rectangle {
-                            vertical-stretch: 1;
-                            preferred-height: 480px;
-                            background: Theme.bg-card;
-                            border-radius: Theme.radius-md;
-                            border-width: 1px;
-                            border-color: Theme.border-subtle;
-
-                            VerticalLayout {
-                                alignment: center;
-                                spacing: 12px;
-                                Image {
-                                    source: @image-url("icons/arrow-up-right.svg");
-                                    colorize: Theme.text-muted;
-                                    width: 40px;
-                                    height: 40px;
-                                    horizontal-alignment: center;
-                                }
-                                Text {
-                                    text: "Live Render is open in its own window";
-                                    font-size: 14px;
-                                    font-weight: 700;
-                                    color: Theme.text-primary;
-                                    horizontal-alignment: center;
-                                }
-                                Text {
-                                    text: "It stays on top of this window -- move it anywhere, or dock it back here.";
-                                    font-size: 11px;
-                                    color: Theme.text-muted;
-                                    horizontal-alignment: center;
-                                }
-                                Rectangle {
-                                    height: 32px;
-                                    width: 130px;
-                                    background: dock_back_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
-                                    border-radius: Theme.radius-sm;
-                                    border-width: 1px;
-                                    border-color: Theme.border-medium;
-                                    dock_back_touch := TouchArea { clicked => { root.live_render_detach_toggled(false); } }
-                                    Text {
-                                        text: "Dock Back";
-                                        font-size: 11px;
-                                        font-weight: 600;
-                                        color: Theme.text-primary;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
+                        if root.render_view_tab == 0: GemViewportView {}
 
                         // Edit mode: the solid viewport and the resizable edit
                         // dock side by side (full column height), with a single
@@ -554,7 +562,7 @@ export component MainWindow inherits Window {
                             spacing: 8px;
                             vertical-stretch: 1;
 
-                            // Below ~900px, dock >= 600px + the
+                            // Below ~1100px (plus 272px while the guide is docked), dock >= 600px + the
                             // viewport's own 380px + the handle + gaps already exceeds
                             // the window, so the side-by-side split below always left
                             // the dock (Detach/Duplicate/delete, first) silently
@@ -564,7 +572,7 @@ export component MainWindow inherits Window {
                             // still-narrow width rather than whatever a side-by-side
                             // split would have left it -- the 380px reserved for the
                             // viewport is what was starving it.
-                            if root.width >= 900px: edit_row := HorizontalLayout {
+                            if root.width >= 1100px + (GuideModel.open ? 272px : 0px): edit_row := HorizontalLayout {
                                 spacing: 12px;
                                 vertical-stretch: 1;
 
@@ -624,7 +632,7 @@ export component MainWindow inherits Window {
                                         EditorModel.dock_width = clamp(
                                             EditorModel.dock_width - d,
                                             600px,
-                                            min(1000px, max(600px, parent.width - 380px - self.width - 24px))
+                                            min(1000px, max(600px, parent.width - 380px - self.width - 24px - (GuideModel.open ? 272px : 0px)))
                                         );
                                         EditorModel.layout_changed();
                                     }
@@ -635,10 +643,10 @@ export component MainWindow inherits Window {
                                 }
                             }
 
-                            // The narrow (<900px) stack: no drag handle -- there is
+                            // The narrow (<1100px, or <1372px with the guide docked) stack: no drag handle -- there is
                             // nothing horizontal left to drag -- so a fixed 2:3
                             // (viewport:dock) `vertical-stretch` ratio takes its place.
-                            if root.width < 900px: VerticalLayout {
+                            if root.width < 1100px + (GuideModel.open ? 272px : 0px): VerticalLayout {
                                 spacing: 8px;
                                 vertical-stretch: 1;
 
@@ -650,7 +658,7 @@ export component MainWindow inherits Window {
                                         height: 100%;
                                     }
 
-                                    // Same overlay as the wide (>=900px) layout's copy
+                                    // Same overlay as the wide (>=1100px) layout's copy
                                     // above. No `GuidePanel` column here -- the narrow
                                     // stack has no spare width, so the guide floats
                                     // instead (`GuideOverlayLayer`, below).
@@ -671,7 +679,7 @@ export component MainWindow inherits Window {
                         }
                     }
 
-                    // Tab 1: Cutting Schedule Table
+                    // Tab 1: Cutting Instructions Table
                     if root.active_tab == 1: CuttingTableView {}
 
                     // Tab 2: Attached Files & GemCAD downloads
@@ -688,17 +696,26 @@ export component MainWindow inherits Window {
             y: 0px;
             width: 100%;
             height: 100%;
-            docked: root.active_tab == 0 && root.render_view_tab == 1 && EditorModel.enabled && root.width >= 900px;
+            docked: root.active_tab == 0 && root.render_view_tab == 1 && EditorModel.enabled && root.width >= 1100px + (GuideModel.open ? 272px : 0px);
         }
 
         // Every dialog driven only by a global model -- see
         // `GlobalDialogsOverlay`'s own doc comment
         // (`components/app/global_dialogs.slint`) for the full list and why this
-        // is split out. `MaterialEditorDialog` and `ExportDialog` need the
-        // identical treatment but are mounted in `gem_viewport.slint` instead.
+        // is split out. That list includes `MaterialEditorDialog` and
+        // `PerformanceGraphDialog`; only `ExportDialog` is still mounted in
+        // `gem_viewport.slint`.
         // `close_confirm_open`'s dialog and `Toast` below stay here since both
         // read `MainWindow`'s own local properties/callbacks.
-        GlobalDialogsOverlay {}
+        // The size is explicit (and `x`/`y` too, so it adds no constraints to the
+        // window): the overlay's children are all `if` branches, so left to
+        // itself it would be 0 x 0 and every dialog would draw nothing.
+        GlobalDialogsOverlay {
+            x: 0px;
+            y: 0px;
+            width: 100%;
+            height: 100%;
+        }
 
         // Window-close unsaved-changes guard -- see `close_confirm_open`'s own doc
         // comment. Its own Save/Discard buttons call straight into `MainWindow`'s own
@@ -710,8 +727,9 @@ export component MainWindow inherits Window {
             height: 100%;
             z: 500;
             heading: "Unsaved Changes";
-            message: "Closing the window will discard the current design's unsaved changes.";
-            primary_label: "Save";
+            message: root.close_confirm_message;
+            // An empty label hides the button: nothing to save without a dirty design.
+            primary_label: root.close_confirm_can_save ? "Save" : "";
             secondary_label: "Discard";
             primary => { root.close_confirm_save(); }
             secondary => { root.close_confirm_discard(); }
@@ -719,6 +737,7 @@ export component MainWindow inherits Window {
         }
 
         Toast {
+            width: min(380px, parent.width - 32px);
             x: (parent.width - self.width) / 2;
             // Offset above the Edit sub-tab's status strip while it
             // is showing, so a sticky error toast never hides the exact solver/

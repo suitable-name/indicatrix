@@ -1,0 +1,133 @@
+import { Theme } from "theme.slint";
+import { AppModel, GalleryModel } from "../models/app_model.slint";
+import { GuideModel } from "../models/guide_model.slint";
+
+// Shown in the main area until a design is loaded -- modelled on the desktop's
+// `components/empty_state.slint` card grid, reduced to the two ways in the browser
+// has: a New Design from the template gallery, or an opened/dropped file. A link below
+// them starts the guided walkthrough.
+component Card inherits Rectangle {
+    in property <string> title;
+    in property <string> body;
+    // False while the guided walkthrough locks what the card does: it dims, ignores clicks
+    // and its tooltip says why.
+    in property <bool> enabled: true;
+    // The guided walkthrough's outline around the control a step points at.
+    in property <bool> highlighted: false;
+    callback clicked();
+
+    // 190px where there is room; the two cards share a phone-width view instead of the
+    // second running off its edge.
+    preferred-width: 190px;
+    min-width: 110px;
+    max-width: 190px;
+    min-height: 92px;
+    opacity: root.enabled ? 1.0 : 0.4;
+    accessible-role: button;
+    accessible-label: root.title;
+    background: touch.has-hover && root.enabled ? Theme.bg-elevated : Theme.bg-input;
+    border-radius: Theme.radius-md;
+    border-width: root.highlighted ? 2px : 1px;
+    border-color: (touch.has-hover && root.enabled) || root.highlighted ? Theme.accent-cyan : Theme.border-medium;
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { root.clicked(); }
+    }
+    if !root.enabled: Tooltip { text: @markdown("\{GuideModel.locked-hint}"); }
+    VerticalLayout {
+        alignment: center;
+        padding: 10px;
+        spacing: 4px;
+        Text {
+            text: root.title;
+            font-size: 12px;
+            font-weight: 700;
+            color: Theme.text-primary;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.body;
+            font-size: 10px;
+            color: Theme.text-muted;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}
+
+export component EmptyState inherits Rectangle {
+    background: Theme.bg-card;
+    border-radius: Theme.radius-md;
+
+    VerticalLayout {
+        alignment: center;
+        padding: 24px;
+        spacing: 14px;
+
+        Text {
+            text: "No design loaded";
+            font-size: 16px;
+            font-weight: 700;
+            color: Theme.text-primary;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: "Start a design one of these ways:";
+            font-size: 11px;
+            color: Theme.text-muted;
+            horizontal-alignment: center;
+        }
+
+        HorizontalLayout {
+            alignment: center;
+            spacing: 12px;
+            Card {
+                title: "New Design...";
+                body: "Empty, or one of the built-in templates.";
+                enabled: GuideModel.allows-new-design();
+                highlighted: GuideModel.highlight-target == "new_design_dialog" && !GalleryModel.open;
+                clicked => { GalleryModel.open = true; }
+            }
+            Card {
+                title: "Open file...";
+                body: ".asc, native pair (.asc + .indicatrix.toml), .indicatrix.toml, .gem, .gcs";
+                enabled: GuideModel.allows-file-ops();
+                clicked => { AppModel.open-file(); }
+            }
+        }
+
+        // The worked example, for a first visit: builds a stone step by step.
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: walkthrough-label.preferred-width + 20px;
+                height: 26px;
+                border-radius: Theme.radius-sm;
+                background: walkthrough-touch.has-hover ? Theme.bg-elevated : transparent;
+                walkthrough-label := Text {
+                    text: GuideModel.open ? "Guided walkthrough (running)" : "New here? Take the guided walkthrough \u{2192}";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.accent-cyan;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                walkthrough-touch := TouchArea {
+                    enabled: !GuideModel.open;
+                    mouse-cursor: pointer;
+                    clicked => { GuideModel.start(); }
+                }
+                Tooltip { text: @markdown("Build a small round stone from an empty design, one step at a time. The steps lock everything but the control each one asks for; close the guide to unlock them."); }
+            }
+        }
+
+        Text {
+            text: "You can also drop files onto this window. Several files can be opened together, e.g. an .asc with its .indicatrix.toml.";
+            font-size: 10px;
+            color: Theme.text-muted;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+    }
+}

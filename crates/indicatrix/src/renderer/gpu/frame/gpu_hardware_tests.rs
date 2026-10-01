@@ -1,11 +1,15 @@
 //! Hardware tests for renderer poisoning, wavefront chunk-sizing, HDR
 //! storage-binding declines, and the reduction's non-finite rule -- unlike
 //! `tests` above, every test here needs a real `wgpu` adapter, so each one acquires its
-//! OWN `GpuContext`/[`GpuFrameRenderer`] and prints a note and returns (a clean skip,
-//! not a failure) when `GpuContext::acquire` finds none. Run with:
+//! OWN `GpuContext`/[`GpuFrameRenderer`] through
+//! [`renderer_or_skip`](crate::renderer::gpu::merge_tests::renderer_or_skip), which prints
+//! a note and returns (a clean skip, not a failure) when `GpuContext::acquire` finds none
+//! -- unless `INDICATRIX_REQUIRE_GPU=1` is set, in which case a missing adapter fails the
+//! test. Run with:
 //!
 //! ```text
 //! cargo test -p indicatrix --features gpu -- gpu_hardware_tests
+//! INDICATRIX_REQUIRE_GPU=1 cargo test -p indicatrix --features gpu -- gpu_hardware_tests
 //! ```
 
 use std::sync::atomic::Ordering;
@@ -18,10 +22,13 @@ use crate::{
         materials::GemMaterial,
         raytracer::{Camera, EnvironmentSource, LightingPreset, add_finite_sample},
     },
-    renderer::{env_map::EnvironmentMap, gpu::compute},
+    renderer::{
+        env_map::EnvironmentMap,
+        gpu::{compute, merge_tests::renderer_or_skip},
+    },
 };
 
-use super::{GpuFrameError, GpuFrameScene, GpuPipelineKind, renderer::GpuFrameRenderer};
+use super::{GpuFrameError, GpuFrameScene, GpuPipelineKind};
 
 /// A tiny scene good enough to dispatch a real chunk with -- the same fixture
 /// [`super::equivalence::run_pipeline_equivalence`] above already uses, reused rather
@@ -37,8 +44,8 @@ fn tiny_scene_material() -> GemMaterial {
 /// cleanly -- [`GpuFrameError::UnsupportedEnvironment`] -- not panic or hang.
 #[test]
 fn oversized_hdr_environment_is_declined_not_panicked() {
-    let Ok(mut renderer) = GpuFrameRenderer::new() else {
-        println!("skipping oversized_hdr_environment_is_declined_not_panicked: no GPU adapter");
+    let Some(mut renderer) = renderer_or_skip("oversized_hdr_environment_is_declined_not_panicked")
+    else {
         return;
     };
     let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
@@ -79,8 +86,7 @@ fn oversized_hdr_environment_is_declined_not_panicked() {
 /// standalone (not merely as the second half of that test).
 #[test]
 fn in_bounds_hdr_environment_renders() {
-    let Ok(mut renderer) = GpuFrameRenderer::new() else {
-        println!("skipping in_bounds_hdr_environment_renders: no GPU adapter");
+    let Some(mut renderer) = renderer_or_skip("in_bounds_hdr_environment_renders") else {
         return;
     };
     let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
@@ -116,10 +122,9 @@ fn in_bounds_hdr_environment_renders() {
 /// own doc comments.
 #[test]
 fn wavefront_1080p_dispatch_does_not_error_as_the_ema_grows() {
-    let Ok(mut renderer) = GpuFrameRenderer::new() else {
-        println!(
-            "skipping wavefront_1080p_dispatch_does_not_error_as_the_ema_grows: no GPU adapter"
-        );
+    let Some(mut renderer) =
+        renderer_or_skip("wavefront_1080p_dispatch_does_not_error_as_the_ema_grows")
+    else {
         return;
     };
     renderer.set_pipeline_kind(GpuPipelineKind::Wavefront);
@@ -169,8 +174,8 @@ fn wavefront_1080p_dispatch_does_not_error_as_the_ema_grows() {
 /// [`GpuFrameError::DeviceLost`], every time, never dispatch into it again.
 #[test]
 fn abandon_in_flight_poisons_the_renderer_permanently() {
-    let Ok(mut renderer) = GpuFrameRenderer::new() else {
-        println!("skipping abandon_in_flight_poisons_the_renderer_permanently: no GPU adapter");
+    let Some(mut renderer) = renderer_or_skip("abandon_in_flight_poisons_the_renderer_permanently")
+    else {
         return;
     };
     renderer.abandon_in_flight();
@@ -211,11 +216,9 @@ fn abandon_in_flight_poisons_the_renderer_permanently() {
 /// uncaptured error into an ordinary `Err` return.
 #[test]
 fn validation_error_seen_flag_turns_the_next_turn_into_device_lost() {
-    let Ok(mut renderer) = GpuFrameRenderer::new() else {
-        println!(
-            "skipping validation_error_seen_flag_turns_the_next_turn_into_device_lost: no \
-             GPU adapter"
-        );
+    let Some(mut renderer) =
+        renderer_or_skip("validation_error_seen_flag_turns_the_next_turn_into_device_lost")
+    else {
         return;
     };
     renderer
@@ -252,8 +255,8 @@ fn validation_error_seen_flag_turns_the_next_turn_into_device_lost() {
 /// bit-identical to the CPU rule's sum over the same tuples in the same order.
 #[test]
 fn reduce_drops_non_finite_samples_like_its_cpu_twin() {
-    let Ok(renderer) = GpuFrameRenderer::new() else {
-        println!("skipping reduce_drops_non_finite_samples_like_its_cpu_twin: no GPU adapter");
+    let Some(renderer) = renderer_or_skip("reduce_drops_non_finite_samples_like_its_cpu_twin")
+    else {
         return;
     };
     let ctx = &renderer.ctx;
@@ -363,11 +366,9 @@ fn reduce_drops_non_finite_samples_like_its_cpu_twin() {
 /// this ever fails.
 #[test]
 fn repeated_turns_with_camera_changes_never_poison_the_renderer() {
-    let Ok(mut renderer) = GpuFrameRenderer::new() else {
-        println!(
-            "skipping repeated_turns_with_camera_changes_never_poison_the_renderer: no \
-             GPU adapter"
-        );
+    let Some(mut renderer) =
+        renderer_or_skip("repeated_turns_with_camera_changes_never_poison_the_renderer")
+    else {
         return;
     };
     let planes = StandardGemCuts::standard_round_brilliant();
@@ -385,15 +386,7 @@ fn repeated_turns_with_camera_changes_never_poison_the_renderer() {
     for (turn, &(width, height)) in sizes.iter().enumerate() {
         // A fresh yaw/pitch every turn -- exactly what `on_camera_orbit` writes into
         // `RenderContext` on every `moved` event mid-drag.
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "turn index is tiny; precision loss is not a concern in this test"
-        )]
         let yaw = (turn as f32).mul_add(0.37, 0.1);
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "turn index is tiny; precision loss is not a concern in this test"
-        )]
         let pitch = (turn as f32).mul_add(0.11, 0.2).clamp(-1.4, 1.4);
         let camera = Camera::new(yaw, pitch, 5.0, 18.0);
         let scene = GpuFrameScene {

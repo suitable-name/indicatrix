@@ -176,7 +176,7 @@ impl Design {
 
 /// Rotates each tier's own slice of `facet_planes` (in
 /// [`StandardGemCuts::from_asc_schedule`]'s order, i.e. NOT including the
-/// preform's own planes) around the vertical axis by that tier's
+/// preform's own planes) about the vertical axis by that tier's
 /// [`Design::cheater_offset_deg`], if any -- the geometric half of a
 /// "cheater"/azimuth-offset annotation. Without this rotation, an offset would
 /// be persisted and printed on the cut sheet but completely ignored by the
@@ -189,11 +189,17 @@ impl Design {
 ///
 /// # Sign convention
 ///
-/// A positive `offset_deg` rotates a tier's facet(s) counter-clockwise about
-/// `+Y` (the same right-handed sense `glam::DMat3::from_rotation_y` uses) --
-/// this crate's own choice, since neither `.asc` nor `GemCad` define one for a
-/// cheater angle; a caller displaying the value (the cut sheet, the inspector)
-/// should say so once rather than leave the sign unexplained.
+/// A positive `offset_deg` moves a tier's facet(s) toward HIGHER index numbers:
+/// each facet's azimuth `phi` (see
+/// [`StandardGemCuts::index_to_azimuth`], `2 pi (index + reference) / gear`)
+/// becomes `phi + offset_deg`, the same direction as the index shift
+/// `Design::to_asc_schedule_from_solved_with_cheater_offsets` bakes into the
+/// exported `.asc` indices. Facet normals are `(sin(theta) cos(phi), +-cos(theta),
+/// sin(theta) sin(phi))`, so this is a rotation about `+Y` by `-offset_deg` in
+/// `glam::DMat3::from_rotation_y`'s sense (which maps `phi` to `phi - angle`).
+/// Neither `.asc` nor `GemCad` define a sign for a cheater angle; this is the
+/// crate's one convention, shared by the solid, the tracer, the diagram and the
+/// export.
 ///
 /// `n . x <= m`'s offset `m` is unchanged by any rotation about the origin
 /// (rotation preserves distance from the axis), so only each plane's normal
@@ -220,7 +226,9 @@ fn apply_cheater_offsets(
             && offset_deg != 0.0
             && prev < end
         {
-            let rotation = glam::DMat3::from_rotation_y(offset_deg.to_radians());
+            // Negated: `from_rotation_y(a)` maps azimuth `phi` to `phi - a`, and a
+            // positive offset must move the facet to `phi + offset` (see above).
+            let rotation = glam::DMat3::from_rotation_y(-offset_deg.to_radians());
             for plane in &mut facet_planes[prev..end] {
                 plane.0 = rotation * plane.0;
             }

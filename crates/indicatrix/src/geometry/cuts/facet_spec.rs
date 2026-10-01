@@ -1,7 +1,7 @@
-//! [`FacetSpec`]: a UI-toolkit-agnostic row of a GemCAD-style cutting
-//! schedule.
+//! [`FacetSpec`]: a UI-toolkit-agnostic row of GemCAD-style cutting
+//! instructions.
 
-/// A single row of a GemCAD-style cutting schedule: one facet's angle, index
+/// A single row of GemCAD-style cutting instructions: one facet's angle, index
 /// position(s), and any notes.
 ///
 /// Exactly as scraped/stored (plain strings, no numeric parsing done yet -- see

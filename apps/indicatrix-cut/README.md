@@ -5,7 +5,7 @@
 
 The desktop faceting-design editor: browse, search, and render your own
 faceting-design library with `indicatrix`'s full spectral renderer, and edit
-cutting schedules with material retargeting and a solid inspection view.
+cutting instructions with material retargeting and a solid inspection view.
 Import and export your own `.asc` files.
 
 Built with [Slint](https://slint.dev/). This crate is both a library
@@ -91,8 +91,13 @@ session, and is a normal outcome, not an error — see
   analysis graph — 19 measured tilt angles swept at four camera azimuths (0°,
   45°, 90°, 135°), switchable or overlaid, with a hover readout that
   interpolates between the measured points.
-- View the cutting-schedule table (facet/angle/index/notes) and any attached
+- View the cutting-instructions table (facet/angle/index/notes) and any attached
   original files.
+- Edit tab: drag the angle, depth, or index handle on a selected facet in the
+  Solid viewport (Solid, Path-traced, or Both view) to tilt, move, or turn its
+  whole tier live, with snapping (Shift for fine steps, a Snap pill to turn it
+  off), the tiers that follow outlined before you let go, and one undo step per
+  drag — see Chapter 13 of the manual.
 - Import your own `.asc` file(s) — a single file, or a folder, optionally
   including its subfolders — into the local library. Imports run off the UI
   thread with progress, and geometry-derived metadata (proportions, and a
@@ -128,7 +133,7 @@ src/
     editor/           the Edit sub-tab: tier list, solve, Deep Solve/Optimize/Retarget,
                       the worked-example guide, templates, native files
     render/           camera/lighting, materials/quality, the high-resolution export's
-                      UI side (render_export/), the detached Live Render window
+                      UI side (render_export/)
     remote/           the Remote Coordinator form, Test connection, enrollment, and
                       the preview-then-handoff orchestrator (orchestrator/)
     batch/            catalogue-wide preview and tilt-curve batches
@@ -160,7 +165,7 @@ ui/
 `MainWindow` (`ui/app.slint`) layout: a top toolbar (search, shape/gear filters,
 range sliders, import, the Remote Coordinator panel with its denoise toggle), a
 diagram-list panel on the left, and on the right a detail header plus three
-tabs — the 3D viewport, the cutting-schedule table, and attachments.
+tabs — the 3D viewport, the cutting-instructions table, and attachments.
 
 ## Testing
 

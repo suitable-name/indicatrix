@@ -207,6 +207,7 @@ fn set_material_then_undo_restores_the_old_selection() {
                     name: Some("Diamond".to_string()),
                     specific_gravity_override: None,
                     refractive_index_override: None,
+                    body_colour_override: None,
                 },
             },
         )

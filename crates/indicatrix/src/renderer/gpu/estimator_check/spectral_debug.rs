@@ -5,7 +5,7 @@
 
 use crate::{
     optics::raytracer::{
-        LightingPreset, apply_von_kries_white_balance, compute_illuminant_white_balance,
+        LightingPreset, apply_von_kries_white_balance, environment::environment_white_balance,
         illuminant_temperature_k, integrate_channels_to_xyz_families,
     },
     renderer::{
@@ -21,14 +21,17 @@ use super::{
     test_camera, tier3_material,
 };
 
+/// Outcome of the spectral debug check.
 #[derive(Debug, Clone)]
 pub struct SpectralDebugResult {
+    /// Total number of cases run.
     pub total_cases: usize,
     /// Max ULP distance between the GPU's own `out_xyz` and re-integrating the GPU's
     /// own per-channel `(radiance, lambdas, path_pdf)` debug output through the REAL
     /// CPU `optics::raytracer::integrate_channels_to_xyz` -- see this function's own
     /// doc comment for exactly what this does and does not prove.
     pub max_self_consistency_ulp: u32,
+    /// Number of comparisons that exceeded the budget.
     pub over_budget_count: usize,
 }
 
@@ -96,7 +99,9 @@ fn run_spectral_debug_studio_case(
     let material = tier3_material();
     let gpu_material = GpuGemMaterial::encode(&material);
     let temp_k = illuminant_temperature_k(LightingPreset::Daylight);
-    let wb = compute_illuminant_white_balance(temp_k);
+    // The production scale (identity for the D65 Daylight rig), exactly as the frame
+    // path derives it from the studio environment.
+    let wb = environment_white_balance(LightingPreset::Daylight.studio(1.0, 0.0, 0.0));
     let camera_params = camera_params_for(&camera, width, height, samples);
     let params = GpuTransportParams::new(
         width * height,
@@ -259,6 +264,7 @@ fn accumulate_spectral_debug_case(
 }
 
 impl SpectralDebugResult {
+    /// Whether every compared value stayed within its budget.
     #[must_use]
     pub const fn passed(&self) -> bool {
         self.over_budget_count == 0

@@ -9,7 +9,11 @@ use crate::{
     material::MaterialSelection,
     preform::PreformSpec,
 };
-use indicatrix::{geometry::meet_solver::SolvedTier, optics::materials::GemMaterial};
+use glam::DVec3;
+use indicatrix::{
+    geometry::{GpuFacetPlane, cuts::StandardGemCuts, meet_solver::SolvedTier},
+    optics::materials::GemMaterial,
+};
 
 fn round_brilliant_design() -> Design {
     Design::new(
@@ -148,6 +152,50 @@ fn cheater_offset_rotates_only_its_own_tiers_planes() {
     }
 }
 
+/// The rotated plane normals (what the solid, tracer and diagram read) and the
+/// normals rebuilt from the `.asc` export with the offset baked into its
+/// indices must agree including sign: a positive offset moves the facet toward
+/// higher index numbers in both.
+///
+/// The offset is half an index-wheel tooth (`360 / 96 / 2` degrees) so the baked
+/// index shift of `0.5` survives the export's 3-decimal rounding exactly.
+#[test]
+fn cheater_offset_rotation_matches_the_exported_index_shift() {
+    let mut design = round_brilliant_design();
+    let solved = design
+        .solve()
+        .expect("every tier is pinned via ScaleReference");
+    let unshifted = design.planes_from_solved(&solved);
+    design.cheater_offsets_deg.insert(2, 1.875);
+    let via_rotation = design.planes_from_solved(&solved);
+
+    let exported = design.to_asc_schedule_from_solved_with_cheater_offsets(&solved, &[]);
+    let via_indices: Vec<(DVec3, f64)> = StandardGemCuts::from_asc_schedule(&exported)
+        .into_iter()
+        .map(GpuFacetPlane::to_halfspace_f64)
+        .collect();
+
+    let preform_len = design.preform.planes().len();
+    assert_eq!(via_rotation.len() - preform_len, via_indices.len());
+    let mut moved = 0usize;
+    for (i, expected) in via_indices.iter().enumerate() {
+        let (normal, offset) = via_rotation[preform_len + i];
+        assert!(
+            (normal - expected.0).length() < 1e-5,
+            "facet plane {i}: rotated normal {normal:?} vs exported-index normal {:?}",
+            expected.0
+        );
+        assert!((offset - expected.1).abs() < 1e-5, "facet plane {i} offset");
+        if (normal - unshifted[preform_len + i].0).length() > 1e-3 {
+            moved += 1;
+        }
+    }
+    assert!(
+        moved > 0,
+        "the offset must actually move Crown Main's facets"
+    );
+}
+
 /// A cheater offset of exactly `0.0` (the default -- no offset actually
 /// recorded, or one explicitly cleared back to zero) must leave every plane
 /// unchanged, matching "never print a value the picture ignores" the other
@@ -242,6 +290,7 @@ fn effective_refractive_index_with_prefers_the_override_over_a_custom_entry() {
         name: Some("My Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: Some(1.70),
+        body_colour_override: None,
     };
     let custom = [custom_garnet(1.90)];
     assert_eq!(design.effective_refractive_index_with(&custom), 1.70);
@@ -258,6 +307,7 @@ fn effective_refractive_index_with_resolves_a_custom_material_by_name() {
         name: Some("My Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
+        body_colour_override: None,
     };
     // The built-ins-only version has no idea what "My Garnet" is and falls all
     // the way back to the legacy schedule RI.
@@ -279,6 +329,7 @@ fn effective_refractive_index_with_falls_back_to_a_built_in_when_no_custom_entry
         name: Some("Quartz".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
+        body_colour_override: None,
     };
     let custom: [GemMaterial; 0] = [];
     assert_eq!(
@@ -313,6 +364,7 @@ fn to_asc_schedule_with_resolves_a_custom_materials_own_refractive_index() {
         name: Some("My Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
+        body_colour_override: None,
     };
     let custom = [custom_garnet(1.9)];
 
@@ -340,6 +392,7 @@ fn to_asc_schedule_from_solved_with_resolves_a_custom_materials_own_refractive_i
         name: Some("My Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
+        body_colour_override: None,
     };
     let custom = [custom_garnet(1.9)];
     let solved = design
@@ -372,6 +425,7 @@ fn to_asc_schedule_with_matches_the_old_entry_point_byte_for_byte_on_a_built_in(
         name: Some("Diamond".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
+        body_colour_override: None,
     };
     // A custom catalogue with an unrelated entry must not perturb a design named
     // after a built-in -- built-ins take precedence over nothing here, since

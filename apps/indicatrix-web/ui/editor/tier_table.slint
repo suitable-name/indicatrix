@@ -1,0 +1,157 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { GuideModel } from "../models/guide_model.slint";
+import { TableStyle } from "tier_table_style.slint";
+import { TierTableModel } from "tier_table_model.slint";
+import { TierTableToolbar } from "tier_table_toolbar.slint";
+import { TierTableHeader } from "tier_table_header.slint";
+import { TierTableRow } from "tier_table_row.slint";
+
+// The Design dock's tier table, modelled on the desktop's `editor_tier_table.slint`.
+//
+// Dumb about the design: rows, the selection and the multi-selection are pushed in by
+// `src/editor/table.rs`, and every action leaves through a `TierTableModel` callback --
+// nothing here edits a design. The selected row IS the keyboard cursor; a change made
+// elsewhere (a click on a facet in the Solid or Diagram view) moves it too, because the
+// selection is pushed back into `TierTableModel.selected-index`.
+//
+// Keyboard (while the list has focus, click a row to give it): Up / Down / Home / End /
+// PageUp / PageDown move the selection; Enter re-selects; Delete removes the tier; Ctrl+D
+// duplicates it; F2 edits its angle; Alt+Up / Alt+Down reorder it; Escape clears the
+// selection. Everything else falls through to the window's global shortcuts.
+//
+// Wide rows scroll sideways: the body is one `ScrollView`, and the header (which stays put
+// while the body scrolls vertically) follows its horizontal offset.
+export component TierTable inherits Rectangle {
+    vertical-stretch: 1;
+    min-height: 120px;
+    background: Theme.bg-darkest;
+    border-radius: Theme.radius-sm;
+    // The guided walkthrough outlines the table on its "Check the orbits" step.
+    border-width: (root.table-focused || GuideModel.highlight-target == "tier_table") ? 2px : 1px;
+    border-color: (root.table-focused || GuideModel.highlight-target == "tier_table") ? Theme.accent-cyan : Theme.border-subtle;
+
+    property <bool> table-focused: false;
+    property <int> inline-edit-target: -1;
+    property <int> inline-edit-pulse: 0;
+    // Mirrors the selection so a `changed` handler can scroll it into view whatever moved
+    // it (a key, a click in the list, or the 3D view).
+    property <int> tracked-selection: TierTableModel.selected-index;
+    property <length> pitch: TableStyle.row-pitch;
+
+    // The vertical offset that shows row `idx` in full, given the current offset.
+    function scrolled-to-show(idx: int, offset: length, visible: length, total: length) -> length {
+        if idx < 0 {
+            return offset;
+        }
+        if -offset > idx * root.pitch {
+            return -max(0px, idx * root.pitch);
+        } else if (-offset + visible) < (idx * root.pitch + TableStyle.row-height) {
+            return -max(0px, min(total - visible, idx * root.pitch + TableStyle.row-height - visible));
+        }
+        return offset;
+    }
+
+    changed tracked-selection => {
+        scroll.content-y = root.scrolled-to-show(root.tracked-selection, scroll.content-y, scroll.visible-height, scroll.content-height);
+    }
+
+    VerticalLayout {
+        padding: 6px;
+        spacing: 4px;
+
+        TierTableToolbar {}
+
+        // The header sits outside the scrolling body so it stays visible while the rows
+        // scroll vertically; `x` follows the body's horizontal offset.
+        Rectangle {
+            height: 22px;
+            clip: true;
+            TierTableHeader {
+                x: scroll.content-x;
+                width: max(scroll.content-width, scroll.visible-width);
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            min-height: 60px;
+
+            focus := FocusScope {
+                width: 100%;
+                height: 100%;
+                changed has-focus => { root.table-focused = self.has-focus; }
+                key-pressed(event) => {
+                    if event.modifiers.alt && event.text == Key.UpArrow {
+                        if TierTableModel.selected-index >= 0 && GuideModel.allows-tier-table() { TierTableModel.move-tier(TierTableModel.selected-index, -1); }
+                        return accept;
+                    } else if event.modifiers.alt && event.text == Key.DownArrow {
+                        if TierTableModel.selected-index >= 0 && GuideModel.allows-tier-table() { TierTableModel.move-tier(TierTableModel.selected-index, 1); }
+                        return accept;
+                    } else if event.text == Key.DownArrow {
+                        TierTableModel.select-tier(TierTableModel.selected-index < 0 ? 0
+                            : Math.min(TierTableModel.selected-index + 1, TierTableModel.rows.length - 1));
+                        return accept;
+                    } else if event.text == Key.UpArrow {
+                        TierTableModel.select-tier(TierTableModel.selected-index <= 0 ? 0 : TierTableModel.selected-index - 1);
+                        return accept;
+                    } else if event.text == Key.Home {
+                        TierTableModel.select-tier(0);
+                        return accept;
+                    } else if event.text == Key.End {
+                        TierTableModel.select-tier(TierTableModel.rows.length - 1);
+                        return accept;
+                    } else if event.text == Key.PageUp {
+                        TierTableModel.select-tier(TierTableModel.selected-index < 0 ? 0 : Math.max(0, TierTableModel.selected-index - 10));
+                        return accept;
+                    } else if event.text == Key.PageDown {
+                        TierTableModel.select-tier(TierTableModel.selected-index < 0 ? 0
+                            : Math.min(TierTableModel.selected-index + 10, TierTableModel.rows.length - 1));
+                        return accept;
+                    } else if event.text == Key.Return {
+                        if TierTableModel.selected-index >= 0 { TierTableModel.select-tier(TierTableModel.selected-index); }
+                        return accept;
+                    } else if event.text == Key.Delete {
+                        if TierTableModel.selected-index >= 0 && GuideModel.allows-tier-table() { TierTableModel.remove-tier(TierTableModel.selected-index); }
+                        return accept;
+                    } else if (event.modifiers.control || event.modifiers.meta) && event.text == "d" {
+                        if TierTableModel.selected-index >= 0 && GuideModel.allows-tier-table() { TierTableModel.duplicate-tier(TierTableModel.selected-index); }
+                        return accept;
+                    } else if event.text == Key.F2 {
+                        if TierTableModel.selected-index >= 0 && GuideModel.allows-tier-table() {
+                            root.inline-edit-target = TierTableModel.selected-index;
+                            root.inline-edit-pulse += 1;
+                        }
+                        return accept;
+                    } else if event.text == Key.Escape {
+                        TierTableModel.select-tier(-1);
+                        return accept;
+                    }
+                    reject
+                }
+
+                scroll := ScrollView {
+                    VerticalLayout {
+                        spacing: 2px;
+                        for row in TierTableModel.rows: TierTableRow {
+                            item: row;
+                            table-focused: root.table-focused;
+                            select-mode: TierTableModel.select-mode;
+                            inline-edit-target: root.inline-edit-target;
+                            inline-edit-pulse: root.inline-edit-pulse;
+                            request-focus-return => { focus.focus(); }
+                        }
+                    }
+                }
+            }
+
+            if TierTableModel.rows.length == 0: Text {
+                text: "No tiers yet -- use + Add Tier to author one.";
+                font-size: 11px;
+                color: Theme.text-muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+}

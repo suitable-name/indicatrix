@@ -55,6 +55,12 @@ fn new_a2_edit_variants_apply_and_invert_exactly_over_generated_tier_lists() {
         let before = design.clone();
 
         let mut history = History::new();
+        // A snapshot after EACH edit (starting with `before` itself), so undo/redo
+        // can be checked one step at a time below -- not just "fully undone
+        // matches the start, fully redone matches the end", which a bug in an
+        // INTERMEDIATE step could satisfy by coincidence (e.g. two wrong undos that
+        // happen to cancel out over the whole sequence).
+        let mut snapshots = vec![before.clone()];
         history
             .apply(
                 &mut design,
@@ -65,6 +71,7 @@ fn new_a2_edit_variants_apply_and_invert_exactly_over_generated_tier_lists() {
                 },
             )
             .expect("set schedule must apply");
+        snapshots.push(design.clone());
         history
             .apply(
                 &mut design,
@@ -75,6 +82,7 @@ fn new_a2_edit_variants_apply_and_invert_exactly_over_generated_tier_lists() {
                 },
             )
             .expect("remap must apply");
+        snapshots.push(design.clone());
         let retarget_changes: Vec<(usize, f64, f64)> = design
             .tiers
             .iter()
@@ -89,6 +97,7 @@ fn new_a2_edit_variants_apply_and_invert_exactly_over_generated_tier_lists() {
                 },
             )
             .expect("retarget must apply");
+        snapshots.push(design.clone());
         let after_edits = design.clone();
 
         assert_ne!(
@@ -96,13 +105,43 @@ fn new_a2_edit_variants_apply_and_invert_exactly_over_generated_tier_lists() {
             "seed {seed}: the edits above must have changed something"
         );
 
-        while history.undo(&mut design).unwrap() {}
+        // Undo one step at a time, checking each intermediate state against the
+        // matching forward snapshot (`snapshots` in reverse, skipping `after_edits`
+        // itself since `design` already IS that).
+        for expected in snapshots.iter().rev().skip(1) {
+            assert!(
+                history.undo(&mut design).unwrap(),
+                "seed {seed}: undo must still have a step left"
+            );
+            assert_eq!(
+                design, *expected,
+                "seed {seed}: one undo step did not restore the matching intermediate state"
+            );
+        }
+        assert!(
+            !history.undo(&mut design).unwrap(),
+            "seed {seed}: nothing should be left to undo"
+        );
         assert_eq!(
             design, before,
             "seed {seed}: undoing all the way back must restore the original design exactly"
         );
 
-        while history.redo(&mut design).unwrap() {}
+        // Redo one step at a time, same per-step check in the forward direction.
+        for expected in snapshots.iter().skip(1) {
+            assert!(
+                history.redo(&mut design).unwrap(),
+                "seed {seed}: redo must still have a step left"
+            );
+            assert_eq!(
+                design, *expected,
+                "seed {seed}: one redo step did not restore the matching intermediate state"
+            );
+        }
+        assert!(
+            !history.redo(&mut design).unwrap(),
+            "seed {seed}: nothing should be left to redo"
+        );
         assert_eq!(
             design, after_edits,
             "seed {seed}: redoing all the way forward must reproduce the fully-edited design exactly"

@@ -34,14 +34,22 @@ use crate::optics::{
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct DispersionParams {
+    /// Model type.
     pub model_type: u32,
     _pad_after_model_type: [u32; 3],
+    /// Param a.
     pub param_a: [f32; 4],
+    /// Param b.
     pub param_b: [f32; 4],
+    /// Param c.
     pub param_c: [f32; 4],
+    /// C axis and birefringence.
     pub c_axis_and_birefringence: [f32; 4],
+    /// Is anisotropic.
     pub is_anisotropic: u32,
+    /// Biaxial delta beta alpha.
     pub biaxial_delta_beta_alpha: f32,
+    /// Has biaxial delta.
     pub has_biaxial_delta: u32,
     _pad_tail: f32,
 }
@@ -63,8 +71,11 @@ const _: () = {
 /// `renderer/shaders/layout_echo.wgsl` and (eventually) any real dispersion-evaluating
 /// kernel.
 pub mod dispersion_model_type {
+    /// Identifier for sellmeier1.
     pub const SELLMEIER1: u32 = 0;
+    /// Identifier for sellmeier3.
     pub const SELLMEIER3: u32 = 1;
+    /// Identifier for cauchy.
     pub const CAUCHY: u32 = 2;
 }
 
@@ -96,8 +107,11 @@ pub const MAX_ABSORPTION_BANDS: usize = 8;
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuAbsorptionBand {
+    /// Center nm.
     pub center_nm: f32,
+    /// Width nm.
     pub width_nm: f32,
+    /// Peak.
     pub peak: f32,
     /// Which domain this band is Gaussian in -- see [`band_shape`] for the
     /// discriminants, mirroring `optics::absorption::BandShape`.
@@ -116,7 +130,9 @@ const _: () = {
 /// match `renderer/shaders/transport_physics.wgsl`'s `spectral_absorption`'s own
 /// `band.shape == 1u` branch.
 pub mod band_shape {
+    /// Identifier for gaussian wavelength.
     pub const GAUSSIAN_WAVELENGTH: u32 = 0;
+    /// Identifier for gaussian energy.
     pub const GAUSSIAN_ENERGY: u32 = 1;
 }
 
@@ -126,12 +142,19 @@ pub mod band_shape {
 /// material-evaluating kernel's own numbering. Order matches
 /// `optics::materials::CrystalSystem`'s own declaration order.
 pub mod crystal_system {
+    /// Identifier for cubic.
     pub const CUBIC: u32 = 0;
+    /// Identifier for tetragonal.
     pub const TETRAGONAL: u32 = 1;
+    /// Identifier for hexagonal.
     pub const HEXAGONAL: u32 = 2;
+    /// Identifier for trigonal.
     pub const TRIGONAL: u32 = 3;
+    /// Identifier for orthorhombic.
     pub const ORTHORHOMBIC: u32 = 4;
+    /// Identifier for monoclinic.
     pub const MONOCLINIC: u32 = 5;
+    /// Identifier for triclinic.
     pub const TRICLINIC: u32 = 6;
 }
 /// `optical_character` discriminants for [`GpuGemMaterial`].
@@ -140,10 +163,15 @@ pub mod crystal_system {
 /// material-evaluating kernel's own numbering. Order matches
 /// `optics::materials::OpticalCharacter`'s own declaration order.
 pub mod optical_character {
+    /// Identifier for isotropic.
     pub const ISOTROPIC: u32 = 0;
+    /// Identifier for uniaxial positive.
     pub const UNIAXIAL_POSITIVE: u32 = 1;
+    /// Identifier for uniaxial negative.
     pub const UNIAXIAL_NEGATIVE: u32 = 2;
+    /// Identifier for biaxial positive.
     pub const BIAXIAL_POSITIVE: u32 = 3;
+    /// Identifier for biaxial negative.
     pub const BIAXIAL_NEGATIVE: u32 = 4;
 }
 
@@ -178,17 +206,26 @@ pub mod optical_character {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuGemMaterial {
+    /// Dispersion.
     pub dispersion: DispersionParams,
+    /// Crystal system.
     pub crystal_system: u32,
+    /// Optical character.
     pub optical_character: u32,
+    /// Is pleochroic.
     pub is_pleochroic: u32,
+    /// O ray band count.
     pub o_ray_band_count: u32,
+    /// E ray band count.
     pub e_ray_band_count: u32,
+    /// O ray bands.
     pub o_ray_bands: [GpuAbsorptionBand; MAX_ABSORPTION_BANDS],
+    /// E ray bands.
     pub e_ray_bands: [GpuAbsorptionBand; MAX_ABSORPTION_BANDS],
     /// Inclusion/subsurface scattering: mirrors
     /// `optics::materials::GemMaterial::scattering_sigma_s`/`scattering_g` exactly.
     pub scattering_sigma_s: f32,
+    /// Scattering g.
     pub scattering_g: f32,
     /// Facet edge rounding: mirrors
     /// `optics::materials::GemMaterial::edge_rounding_radius` exactly.
@@ -260,12 +297,13 @@ const _: () = {
 /// `has_beta_ray`/`beta_ray_band_count`/`beta_ray_bands`, consumed by the shader's
 /// genuinely biaxial absorption path whenever `dispersion.has_biaxial_delta != 0`.
 impl GpuGemMaterial {
-    /// # Panics
+    /// This is the production upload path (`gpu::frame`'s accumulate and async paths) as
+    /// well as the self-test encoder.
     ///
-    /// Panics if `material` has more than [`MAX_ABSORPTION_BANDS`] bands in either
-    /// eigenmode's `Vec<AbsorptionBand>` -- every built-in material has at most 3, so
-    /// this is only reachable for a hand-constructed test material; acceptable to
-    /// panic in this self-test-only encoder rather than silently truncate a band set.
+    /// A band set longer than [`MAX_ABSORPTION_BANDS`] in any of the three eigenmode
+    /// sets is truncated to its first [`MAX_ABSORPTION_BANDS`] bands and a
+    /// `tracing::warn!` is emitted; the network validator already rejects such a material
+    /// before it reaches the GPU, and every built-in material has at most 3 bands.
     #[must_use]
     pub fn encode(material: &GemMaterial) -> Self {
         let crystal_system_val = match material.crystal_system {
@@ -293,7 +331,7 @@ impl GpuGemMaterial {
             .as_deref()
             .map_or_else(empty_bands, encode_bands);
 
-        // None (every built-in except Quartz/Amethyst/Citrine) encodes to
+        // None (every built-in except Quartz/Amethyst/Citrine/Rutile) encodes to
         // has_extraordinary_dispersion == 0 and an all-zero curve the shader never reads.
         let (
             has_extraordinary_dispersion,
@@ -397,16 +435,21 @@ pub(super) const fn empty_bands() -> ([GpuAbsorptionBand; MAX_ABSORPTION_BANDS],
 }
 
 /// Encodes a `Vec<AbsorptionBand>` into a fixed [`MAX_ABSORPTION_BANDS`]-capacity array
-/// plus its real length, panicking (see [`GpuGemMaterial::encode`]'s doc comment) if the
-/// source has more bands than the GPU encoding can hold.
+/// plus its stored length. A source with more bands than the GPU encoding can hold is
+/// truncated to the first [`MAX_ABSORPTION_BANDS`] bands (see
+/// [`GpuGemMaterial::encode`]'s doc comment), with a warning, so the returned count never
+/// exceeds the array capacity.
 pub(super) fn encode_bands(
     bands: &[AbsorptionBand],
 ) -> ([GpuAbsorptionBand; MAX_ABSORPTION_BANDS], u32) {
-    assert!(
-        bands.len() <= MAX_ABSORPTION_BANDS,
-        "material has {} absorption bands, exceeding MAX_ABSORPTION_BANDS ({MAX_ABSORPTION_BANDS})",
-        bands.len()
-    );
+    if bands.len() > MAX_ABSORPTION_BANDS {
+        tracing::warn!(
+            band_count = bands.len(),
+            max = MAX_ABSORPTION_BANDS,
+            "material has more absorption bands than the GPU encoding holds; truncating"
+        );
+    }
+    let bands = &bands[..bands.len().min(MAX_ABSORPTION_BANDS)];
     let mut out = [GpuAbsorptionBand {
         center_nm: 0.0,
         width_nm: 1.0,

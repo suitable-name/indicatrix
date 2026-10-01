@@ -95,6 +95,24 @@ pub fn create_compute_pipeline_with_constants(
     entry_point: &str,
     constants: &[(&str, f64)],
 ) -> wgpu::ComputePipeline {
+    create_compute_pipeline_cached(device, None, label, wgsl_source, entry_point, constants)
+}
+
+/// Like [`create_compute_pipeline_with_constants`], but compiles through `cache` when one
+/// is given (see [`create_pipeline_cache`]); `None` behaves exactly as the uncached call.
+///
+/// # Panics
+///
+/// Same as [`create_compute_pipeline_with_constants`].
+#[must_use]
+pub fn create_compute_pipeline_cached(
+    device: &wgpu::Device,
+    cache: Option<&wgpu::PipelineCache>,
+    label: &str,
+    wgsl_source: &str,
+    entry_point: &str,
+    constants: &[(&str, f64)],
+) -> wgpu::ComputePipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
@@ -108,8 +126,35 @@ pub fn create_compute_pipeline_with_constants(
             constants,
             zero_initialize_workgroup_memory: true,
         },
-        cache: None,
+        cache,
     })
+}
+
+/// The pipeline cache to share across every compute pipeline one device compiles, or
+/// `None` when the device was not created with [`wgpu::Features::PIPELINE_CACHE`].
+///
+/// Expected effect: the feature exists only on Vulkan, where the driver can then reuse
+/// compiled kernels across the several large pipelines one session builds (the
+/// material-class specialisations of the same 5,000-line megakernel share most of their
+/// intermediate work). On every other backend, and on a device created without the
+/// feature, this returns `None` and pipeline creation is unchanged. The cache starts
+/// empty and lives as long as the device; persisting [`wgpu::PipelineCache::get_data`]
+/// across runs, which is what removes the cold-start compile, is left to the caller.
+#[must_use]
+pub fn create_pipeline_cache(device: &wgpu::Device) -> Option<wgpu::PipelineCache> {
+    if !device.features().contains(wgpu::Features::PIPELINE_CACHE) {
+        return None;
+    }
+    // SAFETY: `data` is `None`, so there is no externally supplied blob whose provenance
+    // the driver would have to trust; the cache starts empty.
+    let cache = unsafe {
+        device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+            label: Some("indicatrix gpu pipeline cache"),
+            data: None,
+            fallback: true,
+        })
+    };
+    Some(cache)
 }
 
 /// Uploads `data` into a new buffer with `usage` via

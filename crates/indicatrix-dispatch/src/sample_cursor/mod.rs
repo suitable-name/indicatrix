@@ -104,26 +104,30 @@ impl SampleCursor {
     ///
     /// `want == 0` always returns `None` rather than a zero-length range.
     ///
-    /// # Why `fetch_add` alone is enough
+    /// # A CAS that never advances past `end`
     ///
-    /// One atomic read-modify-write, unconditionally advancing `next` by `want` and
-    /// then checking whether the range it was handed starts past `end`. `fetch_add` is
-    /// inherently exclusive, so every call receives a DISTINCT `start` with no CAS
-    /// retry loop needed. `next` can end up advanced PAST `end` (the last claim before
-    /// exhaustion typically requests more than remains) -- harmless, since the
-    /// returned `count` is clamped to `end - start` and every later claim sees
-    /// `start >= end` and reports `None`. `saturating` is not needed in practice
-    /// (budgets are far below `u32::MAX`), but `fetch_add` wraps, so a budget near
-    /// `u32::MAX` must not be used.
+    /// `next` is updated with [`AtomicU32::try_update`], whose closure refuses (`None`)
+    /// once `next >= end`, leaving `next` untouched -- unlike a plain `fetch_add`, which
+    /// unconditionally advances `next` by `want` on EVERY call, including a call that
+    /// finds nothing left to claim. An idle lane polling [`claim_any`](Self::claim_any)
+    /// every tick while another lane's chunk is still in flight (see
+    /// `indicatrix_dispatch::pool::epoch::Epoch::claim`) would otherwise keep advancing
+    /// `next` for as long as it waits, with no work ever handed out -- given enough
+    /// idle polls, `next` (a `u32`) could wrap and hand out a range already traced.
+    /// With the CAS, a call that finds `next >= end` costs nothing and changes nothing,
+    /// however many times it repeats.
     pub fn claim(&self, want: u32) -> Option<(u32, u32)> {
         if want == 0 {
             return None;
         }
-        let start = self.next.fetch_add(want, Ordering::Relaxed);
-        if start >= self.end {
-            return None;
-        }
-        Some((start, want.min(self.end - start)))
+        let end = self.end;
+        let start = self
+            .next
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                (current < end).then(|| current.saturating_add(want).min(end))
+            })
+            .ok()?;
+        Some((start, want.min(end - start)))
     }
 
     /// Claims for the LOCAL lane only: a previously remote-failed range first (WHOLE,
@@ -171,6 +175,7 @@ impl SampleCursor {
     /// to `end` has been handed out to some engine. Says nothing about the retry
     /// piles. A cheap, lock-free read for callers deciding whether waiting around could
     /// still yield work.
+    #[must_use]
     pub fn shared_pool_exhausted(&self) -> bool {
         self.next.load(Ordering::Relaxed) >= self.end
     }
@@ -179,6 +184,7 @@ impl SampleCursor {
     /// both retry piles are empty. A range currently being traced may still come back
     /// through [`requeue`](Self::requeue) or [`return_to_local`](Self::return_to_local)
     /// if its lane fails.
+    #[must_use]
     pub fn fully_claimed(&self) -> bool {
         self.shared_pool_exhausted()
             && self

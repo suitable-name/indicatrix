@@ -11,9 +11,13 @@
 //! 3. [`authored_checks::check_gear_quantization`]: an authored index-wheel position does not
 //!    land on a real gear tooth.
 //! 4. [`authored_checks::check_cut_order`]: a tier's stated meet target comes later in the
-//!    schedule than the tier itself -- geometrically solvable (the solver
-//!    doesn't care about file order, see `indicatrix::geometry::meet_solver`'s
-//!    module docs) but physically uncuttable in that order.
+//!    schedule than the tier itself -- geometrically solvable (the solver can
+//!    resolve a forward reference numerically, without the referenced facet
+//!    physically existing yet -- but its OWN result is still file-order
+//!    dependent: phase 1 runs in strict file order, so this is "does not need a
+//!    cutting sequence", never "order doesn't matter", see
+//!    `indicatrix::geometry::meet_solver`'s module docs and
+//!    `crate::resolve`'s own doc comment) but physically uncuttable in that order.
 //! 5. [`authored_checks::check_meet_name_asc_safety`]: a tier's stated meet target
 //!    NAME would not survive a plain `.asc` export/re-import --
 //!    geometrically fine today, but silently loses or mis-targets the reference

@@ -1,0 +1,57 @@
+[package]
+name = "indicatrix-web-core"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+authors = { workspace = true }
+description = "The compute side of the indicatrix browser app with no DOM or Slint in it: the Web Worker protocol, the scene spec that builds the desktop's exact render scene, the CPU chunk tracer, pass accumulation and chunk planning, the worker-side solve, and (wasm32 only) the host-side Worker pool the UI calls."
+license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+documentation = "https://docs.rs/indicatrix-web-core"
+keywords = ["gemstone", "faceting", "wasm", "webworker", "rendering"]
+categories = ["wasm", "rendering"]
+publish = { workspace = true }
+
+[dependencies]
+# The spectral tracer (`renderer::cpu_frame`, `renderer::frame_scene`), the shared
+# render setup (`render_setup::*`) and, through `hdr`, the one `.hdr` decoder every
+# node uses (`renderer::env_map::environment_from_hdr_bytes`). No `gpu`: the browser
+# renders on CPU Web Workers (compiling the megakernel takes Chrome's GPU process
+# down). `serde`: the session's custom
+# `GemMaterial`s travel inside `scene::MaterialSpec` as they are (the page holds them as
+# built materials, not as the snapshots they came from).
+indicatrix = { workspace = true, features = ["hdr", "serde"] }
+# `Design`, the native TOML load/save pair and `MaterialSelection` -- the solve worker's
+# design transport and the linked-material override.
+indicatrix-cut-core = { workspace = true }
+# `CustomMaterialSnapshot`, the native file's custom-material fields.
+indicatrix-formats = { workspace = true }
+# The solve policy (`solve_cancellably`, the plane-cap diagnosis) and the view-model
+# helpers the solve worker formats its status and warnings with, plus
+# `traced_gem_material` for the linked-material override.
+indicatrix-editor = { workspace = true }
+glam = { workspace = true }
+postcard = { workspace = true }
+serde = { workspace = true }
+# `settings::SessionPayload`'s JSON form (the page's `sessionStorage` entry).
+serde_json = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# The host-side Worker pool (`host` module): spawning Workers, `postMessage` with a
+# transferred `ArrayBuffer`, timers for the solve timeout.
+js-sys = "0.3.106"
+wasm-bindgen = "0.2.129"
+web-sys = { version = "0.3.106", default-features = false, features = ["Blob", "ErrorEvent", "MessageEvent", "Navigator", "Performance", "Url", "Window", "Worker", "console"] }
+# The one-shot channel behind `SolveClient::solve`'s future. Already in the graph
+# (`indicatrix`'s own wasm32 arm uses it), so this adds nothing to `Cargo.lock`.
+futures-channel = { version = "0.3.34", default-features = false, features = ["std"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# `renderer::gpu::hybrid::cpu_accumulate`, the desktop's CPU estimator, is the
+# reference the render recombination test checks against. It lives behind `gpu`, so
+# the native test build turns that on; the library itself never does.
+indicatrix = { workspace = true, features = ["gpu", "hdr"] }
+
+[lints]
+workspace = true

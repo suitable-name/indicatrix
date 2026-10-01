@@ -14,6 +14,7 @@ mod editor_layout;
 // Opening the bundled user manual and revealing the Edit tab's last-saved folder --
 // see the module's own doc comment.
 mod external_links;
+pub(crate) mod latest_worker;
 mod library;
 // Building/wiring the `MainWindow` and its `MainWindowHandle` RAII guard -- see the
 // module's own doc comment. Moved out of this file purely to keep it from growing
@@ -25,15 +26,20 @@ mod optics;
 mod picker_field;
 // The single shared 5x7 bitmap-font glyph lookup for `solid_preview::diagram2d`'s
 // panel labels and `tilt::video_export::overlay`'s readout text -- see the
-// module's own doc comment.
-pub(in crate::gui) mod pixel_font;
+// module's own doc comment. Moved into `indicatrix-solid` (`solid_preview::
+// diagram2d`'s own crate) and re-exported here at its old path so this app's own
+// `tilt::video_export::overlay` keeps resolving `gui::pixel_font` unchanged.
+pub(in crate::gui) use indicatrix_solid::pixel_font;
 // The one place the `rfd` crate's file dialog is ever constructed in this app
 // -- an off-UI-thread native picker/save-as/pick-folder worker plus the
 // UI-thread rendezvous and test hook every other module's own picker needs
 // use through this. See the module's own doc comment.
 mod pickers;
 mod remote;
-mod render;
+pub(crate) mod render;
+// The Library menu's "Plan Rough..." dialog: up to K stones of library designs out of
+// one rough block -- see the module's own doc comment.
+mod rough_plan;
 pub mod solid_preview;
 // The real `PreviewSink` that hops a finished solid-preview frame back onto the UI
 // thread -- see the module's own doc comment. Moved out of this file purely to keep
@@ -52,6 +58,11 @@ mod window_sizing;
 // The window-close unsaved-changes guard's Save/Discard callbacks -- see the
 // module's own doc comment.
 mod window_close;
+// A rolling, regression-based time-remaining estimator shared by the still-image
+// export queue (`render::render_export::queue`) and the tilt-video export
+// (`tilt::video_export::run`) -- see the module's own doc comment for why a
+// regression over a window rather than an instantaneous rate.
+mod progress_eta;
 
 // `sync_range_bounds_to_ui` is defined in `library::diagram_list` but re-exported here
 // so its public path (`gui::sync_range_bounds_to_ui`) is unchanged for a downstream
@@ -106,21 +117,33 @@ pub fn main() -> anyhow::Result<()> {
 /// covers.
 pub fn run_gui() -> anyhow::Result<()> {
     let handle = build_main_window()?;
-    // Spelled out instead of `MainWindow::run` so the monitor fit can be queued
-    // between `show` and the event loop (the winit window only exists once the loop
-    // turns -- see `window_sizing`).
-    handle.ui.show()?;
     // Whether the user has ever touched the Edit sub-tab's layout -- read from the
     // settings store's own in-memory snapshot (already seeded from disk by
     // `editor_layout::apply_editor_layout_from_settings` above) rather than the UI's
     // `EditorModel.dock_width`/etc. directly, since `fit_initial_window_size` only
     // needs this one flag, not the whole layout. See `window_sizing`'s own doc
     // comment for what it does with it.
+    //
+    // Read BEFORE `show()` below, not after: `apply_editor_layout_from_settings`'s
+    // own startup push only QUEUES its property writes, and `show()` is what flushes them -- which, on a
+    // truly fresh settings file, raises `EditorModel.layout_changed` purely
+    // because `editor_layout::FIRST_RUN_INSPECTOR_HEIGHT` differs from the
+    // compiled default (340px vs. 260px), not because of anything the user did.
+    // Reading the snapshot after `show()` used to see whatever that spurious
+    // flush had already written back (`editor_layout::setup_editor_layout_
+    // callbacks`'s own `on_layout_changed` sets `editor_layout_touched = true`
+    // unconditionally), so the small-screen default below never actually saw a
+    // fresh install as fresh. Reading it here instead captures the true on-disk
+    // value, from before that flush can happen.
     let editor_layout_touched = handle
         .settings_store
         .snapshot()
         .settings
         .editor_layout_touched;
+    // Spelled out instead of `MainWindow::run` so the monitor fit can be queued
+    // between `show` and the event loop (the winit window only exists once the loop
+    // turns -- see `window_sizing`).
+    handle.ui.show()?;
     window_sizing::fit_initial_window_size(&handle.ui, editor_layout_touched);
     slint::run_event_loop()?;
     handle.ui.hide()?;

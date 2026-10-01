@@ -35,9 +35,9 @@ impl GemMaterial {
     /// curve) when present, falling back to the constant-offset `n_o +
     /// birefringence_delta` approximation every material used before that field
     /// existed -- see that field's own doc comment for which built-ins (Quartz,
-    /// Amethyst, Citrine) carry a real curve, and for the GPU port
-    /// (`shaders/spectral_transport.wgsl`'s own `extraordinary_index_at`) mirroring
-    /// this exactly.
+    /// Amethyst, Citrine, Rutile) carry a real curve, and for the GPU port
+    /// (`extraordinary_dispersion_evaluate` called from
+    /// `shaders/transport_bounce/08_bounce_step.wgsl`) mirroring this exactly.
     #[must_use]
     pub fn extraordinary_index_at(&self, lambda_nm: f32, n_o: f32) -> f32 {
         self.uniaxial_extraordinary_dispersion

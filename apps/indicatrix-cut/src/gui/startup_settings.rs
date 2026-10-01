@@ -88,13 +88,24 @@ pub(super) fn apply_loaded_settings(
     // STARTING material -- must be set here too, not just from `on_material_changed`,
     // or a session restored on an isotropic material (e.g. the "Diamond" default) would
     // show the slider as enabled until the user touched the material dropdown once.
+    // `effective_material_name` is either the persisted selection (only ever reached
+    // this far when `material_found` already confirmed it's in `material_options`) or
+    // `DEFAULT_MATERIAL_NAME` ("Diamond") -- both should always resolve, but
+    // `resolve_material` is `Option` (no `materials[0]` fallback, see its own doc
+    // comment), so `None` is handled the same defensive way
+    // `material_quality::setup_material_changed_callback` does: Diamond stands in for
+    // these two UI-default computations only, never for anything that reaches the
+    // tracer.
     let starting_material = resolve_material(
         &GemMaterial::all_materials(),
         &RenderContext::lock(render_ctx).custom_materials,
         effective_material_name,
     );
-    ui.global::<SettingsModel>()
-        .set_c_axis_override_available(is_c_axis_override_available(&starting_material));
+    ui.global::<SettingsModel>().set_c_axis_override_available(
+        starting_material
+            .as_ref()
+            .is_some_and(is_c_axis_override_available),
+    );
     // The RI-tolerance filter default -- same "must be set here too" reasoning as
     // `c_axis_override_available` immediately above: `on_material_changed` (wired later,
     // in `material_quality::setup_material_changed_callback`) only fires on a SUBSEQUENT
@@ -104,7 +115,10 @@ pub(super) fn apply_loaded_settings(
     // the same value -- it is `in-out` (the user can drag it away afterward), but a
     // freshly opened session should start with the tolerance band centred on whatever
     // is actually loaded, not on the placeholder.
-    let ri_default = crate::bridge::preview_render::material_ri_at_sodium_d(&starting_material);
+    let ri_default = starting_material.as_ref().map_or_else(
+        || crate::bridge::preview_render::material_ri_at_sodium_d(&GemMaterial::diamond()),
+        crate::bridge::preview_render::material_ri_at_sodium_d,
+    );
     // `ri_default` is an f64; Slint's `float` property type is f32 -- a lossy but
     // harmless cast for a display/filter-default value in the 1.0-3.0 RI range,
     // `cast_possible_truncation` is workspace-`allow`ed (`Cargo.toml`).
@@ -164,8 +178,12 @@ fn apply_loaded_render_context(
     ctx.width = s.render_width;
     ctx.height = s.render_height;
     ctx.max_bounces = s.max_bounces;
-    ctx.exposure = s.exposure;
-    ctx.inclusion_sigma_s = s.inclusion_sigma_s;
+    // Clamped the same way the live handlers do (`gui::render::material_quality`'s
+    // `on_exposure_changed`/`on_inclusion_changed`) -- a hand-edited or stale settings
+    // file could otherwise carry an out-of-range value straight into the render loop,
+    // which every live-drag path already refuses to do.
+    ctx.exposure = s.exposure.clamp(0.2, 5.0);
+    ctx.inclusion_sigma_s = s.inclusion_sigma_s.clamp(0.0, 3.0);
     // The settings dialog drags degrees, `RenderContext` stores the already-
     // resolved `Vec3` -- see `RenderContext::c_axis_override`'s own doc comment for
     // why this crossing happens here rather than downstream in `bridge`.
@@ -182,6 +200,13 @@ fn apply_loaded_render_context(
     ctx.pitch = crate::gui::render::camera_lighting::wrap_pitch(s.camera_pitch);
     // Same dynamic zoom clamp as the live orbit camera, not a fixed range.
     // A saved distance for a larger/smaller design must not get pulled back.
+    //
+    // `DEFAULT_MESH_BOUNDING_RADIUS`, not `main_window`'s live `Arc<Mutex<f64>>`
+    // (unlike `lighting_presets`' live-apply and the export fan-out, which both clamp
+    // against that live figure): this function runs exactly once, at startup, BEFORE
+    // any design has ever loaded/solved and updated the live radius away from its own
+    // default -- the two values are identical at this call site, so reading the
+    // constant directly here is not a shortcut, it is the correct value already.
     let (min_distance, max_distance) = crate::gui::render::camera_lighting::orbit_distance_bounds(
         crate::gui::solid_preview::preview_state::DEFAULT_MESH_BOUNDING_RADIUS,
     );
@@ -223,11 +248,16 @@ fn apply_loaded_ui_mirrors(
         .set_preview_spp_val(s.preview_spp as f32);
     ui.global::<SettingsModel>()
         .set_bounce_index(bounces_index(s.max_bounces));
-    ui.global::<SettingsModel>().set_exposure_val(s.exposure);
+    // Clamped identically to `apply_loaded_render_context`'s own write into
+    // `RenderContext` (same bounds the live handlers use) -- so a hand-edited or
+    // stale out-of-range value shows the slider at the value ACTUALLY being traced,
+    // not the raw unclamped figure the file happened to carry.
+    ui.global::<SettingsModel>()
+        .set_exposure_val(s.exposure.clamp(0.2, 5.0));
     ui.global::<SettingsModel>()
         .set_backdrop_index(s.backdrop.index());
     ui.global::<SettingsModel>()
-        .set_inclusion_sigma_s(s.inclusion_sigma_s);
+        .set_inclusion_sigma_s(s.inclusion_sigma_s.clamp(0.0, 3.0));
     ui.global::<SettingsModel>()
         .set_c_axis_override_enabled(s.c_axis_override_enabled);
     ui.global::<SettingsModel>()
@@ -247,9 +277,21 @@ fn apply_loaded_ui_mirrors(
     ui.global::<SettingsModel>()
         .set_local_compute_target_index(local_compute_target_index(s.local_compute_target));
     ui.global::<SettingsModel>()
-        .set_light_yaw_deg(s.light_yaw_deg);
+        .set_contribute_to_final_picture(s.contribute_to_final_picture);
     ui.global::<SettingsModel>()
-        .set_light_pitch_deg(s.light_pitch_deg);
+        .set_light_yaw_deg(s.light_yaw_deg);
+    // Clamped identically to `apply_loaded_render_context`'s own
+    // `ctx.light_pitch` write (same `[0.15, 1.55]` radians bound the live drag
+    // handler uses, `gui::render::camera_lighting`'s `on_light_move`/
+    // `light_pos_changed`) -- otherwise a hand-edited or stale out-of-range
+    // persisted degree value showed the slider at a pitch the render loop was
+    // never actually going to use.
+    ui.global::<SettingsModel>().set_light_pitch_deg(
+        s.light_pitch_deg
+            .to_radians()
+            .clamp(0.15, 1.55)
+            .to_degrees(),
+    );
     // Restore the library panel's collapsed/expanded state.
     ui.global::<LibraryModel>()
         .set_panel_collapsed(s.library_panel_collapsed);
@@ -279,10 +321,10 @@ fn apply_loaded_ui_mirrors(
     // File > Open Recent (`MainWindow.recent_native_files`, `ui/app.slint`) -- a
     // root-component property, not an `EditorModel` one. `gui::editor::native_io`'s
     // `record_recent_native_file` keeps this same property live afterward on every
-    // Save/Open Native (it reads/writes the settings file directly rather than
-    // through this call's own already-loaded `s`, so the two never race each
-    // other); this seeds it once at startup, before that module's own callbacks are
-    // even wired up.
+    // Save/Open Native, recording each entry through the `SettingsPersister` whose
+    // snapshot was seeded from this same loaded `s`, so the list on screen and the
+    // list that gets written on exit never diverge; this seeds it once at startup,
+    // before that module's own callbacks are even wired up.
     ui.set_recent_native_files(ModelRc::new(VecModel::from(
         s.recent_native_files
             .iter()
@@ -422,6 +464,13 @@ pub(in crate::gui) const fn local_compute_target_from_index(index: i32) -> Local
 /// selections (material, lighting rig) from persisted names. Returns `None` if the
 /// name isn't present (e.g., deleted custom material or legacy option).
 ///
+/// Case-insensitive, matching every other name lookup this app's material/lighting
+/// names go through (`resolve_material`, `built_in_name_collision`, etc.) -- an exact
+/// `==` here let a persisted or hand-typed name that differs only in case (e.g. a
+/// custom material saved as "my Sapphire" against a combo entry "My Sapphire") report
+/// `None` and silently fail to restore the selection, even though every actual material
+/// resolution for that same name would have matched.
+///
 /// Public to `gui` so other modules can reuse this logic instead of duplicating it.
 #[must_use]
 pub(in crate::gui) fn find_option_index(
@@ -429,7 +478,9 @@ pub(in crate::gui) fn find_option_index(
     needle: &str,
 ) -> Option<i32> {
     (0..options.row_count()).find_map(|i| {
-        let matches = options.row_data(i).is_some_and(|s| s.as_str() == needle);
+        let matches = options
+            .row_data(i)
+            .is_some_and(|s| s.as_str().eq_ignore_ascii_case(needle));
         matches.then_some(i as i32)
     })
 }
@@ -637,6 +688,14 @@ mod tests {
         ]));
         assert_eq!(find_option_index(&options, "Sapphire"), Some(1));
         assert_eq!(find_option_index(&options, "Ruby"), Some(2));
+    }
+
+    #[test]
+    fn find_option_index_matches_case_insensitively() {
+        let options: ModelRc<SharedString> =
+            ModelRc::new(VecModel::from(vec![SharedString::from("My Sapphire")]));
+        assert_eq!(find_option_index(&options, "my sapphire"), Some(0));
+        assert_eq!(find_option_index(&options, "MY SAPPHIRE"), Some(0));
     }
 
     #[test]

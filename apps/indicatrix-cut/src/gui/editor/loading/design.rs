@@ -1,88 +1,19 @@
-//! Resolves a [`Design`] from a catalogue entry's full record, or from a bare
-//! `.asc` file's own text -- preferring a real attached schedule (and, when present,
-//! its paired native sidecar) over the angle-table placeholder reconstruction.
+//! Resolves a [`Design`] from a catalogue entry's full record -- preferring a real
+//! attached schedule (and, when present, its paired native sidecar) over the
+//! angle-table placeholder reconstruction. The bare-`.asc` half
+//! (`design_from_asc_text`, the default preform, [`LoadedDesign`]) lives in
+//! `indicatrix_editor::loading`, shared with the web app.
 
 use indicatrix::geometry::stone_metrics::ExternalProportions;
 use indicatrix_cut_core::{
-    Design, PreformSpec, load_paired,
+    Design, load_paired,
     native::{LEGACY_NATIVE_EXTENSION_SUFFIX, NATIVE_EXTENSION_SUFFIX},
+};
+use indicatrix_editor::loading::{
+    LoadedDesign, default_preform_for_schedule, design_from_asc_text,
 };
 use indicatrix_vault::model::file::AttachedFile;
 use tracing::warn;
-
-/// A preform sized to bound a design that may already fully specify its own closed
-/// shape (a real `.asc` file's tiers, or the placeholder reconstruction in
-/// [`design_from_full_record`]): generously large relative to the "mast order 1" scale
-/// every facet offset in this codebase uses (see `indicatrix_cut_core::preform`'s module doc
-/// comment), so this backstop rough does not itself clip a single facet of an
-/// already-complete design -- only a schedule that's missing a closing facet in some
-/// direction would ever actually touch this preform's own walls.
-///
-/// `length_over_width` is read from the catalogue's own recorded `lw_ratio` when it
-/// parses as a positive finite number, so an oval design's preform isn't needlessly
-/// round; `1.0` (round/square) otherwise, matching `indicatrix_cut_core::PreformSpec`'s own default
-/// shape assumption.
-fn default_preform_for_schedule(
-    schedule: &indicatrix_formats::asc::AscSchedule,
-    lw_ratio: Option<&str>,
-) -> PreformSpec {
-    let length_over_width = lw_ratio
-        .and_then(|s| s.trim().parse::<f64>().ok())
-        .filter(|v| v.is_finite() && *v > 0.0)
-        .unwrap_or(1.0);
-    PreformSpec::cylinder_for_schedule(schedule, 3.0, length_over_width, 3.0)
-}
-
-/// [`design_from_full_record`]'s full result -- see that function's own doc comment.
-pub(in crate::gui::editor) struct LoadedDesign {
-    pub(in crate::gui::editor) design: Design,
-    /// `true` iff no real attached `.asc` was found and `design`'s schedule instead
-    /// came from the angle-table placeholder reconstruction (every mast `0.0`) --
-    /// see [`design_from_full_record`]'s doc comment.
-    pub(in crate::gui::editor) used_placeholder: bool,
-    /// The real attached `.asc`'s own bare file name, `None` on the placeholder
-    /// path. Reconstructed text was never a real `.asc` this catalogue entry
-    /// ships, so there is nothing there worth [`indicatrix_cut_core::save_paired`]
-    /// preserving verbatim. Fed to `super::state::EditorState::asc_filename` by
-    /// `super::callbacks::setup_load_selected_callback`.
-    pub(in crate::gui::editor) asc_filename: Option<String>,
-    /// The real attached `.asc`'s own exact original text, `None` on the
-    /// placeholder path for the identical reason. Fed to
-    /// `super::state::EditorState::original_asc_text`.
-    pub(in crate::gui::editor) original_asc_text: Option<String>,
-}
-
-/// Builds a [`LoadedDesign`] from a real `.asc` file's own text, always along the
-/// "real schedule" outcome (`used_placeholder: false` -- there is no angle-table
-/// fallback here, since that reconstruction needs a full catalogue record's columns
-/// this function never sees).
-///
-/// Factored out of [`design_from_full_record`]'s own real-attachment branch so
-/// `gui::editor::callbacks::tier_actions::setup_load_selected_callback`'s remote
-/// branch can build the identical [`Design`] from
-/// `gui::library::remote::RemoteDesignSource::asc_text` -- the exact bytes/text a
-/// locally-attached `.asc` file would carry (see that struct's own doc comment) --
-/// without needing a `FullDiagramRecord` at all (a remote fetch never has one; only
-/// the bare file name and text cross the wire).
-///
-/// # Errors
-///
-/// Returns `Err` (the parse failure's own message) when `text` does not parse as a
-/// `.asc` cutting schedule at all.
-pub(in crate::gui::editor) fn design_from_asc_text(
-    file_name: &str,
-    text: &str,
-    lw_ratio: Option<&str>,
-) -> Result<LoadedDesign, String> {
-    let schedule = indicatrix_formats::asc::parse_asc(text).map_err(|e| e.to_string())?;
-    let preform = default_preform_for_schedule(&schedule, lw_ratio);
-    Ok(LoadedDesign {
-        design: Design::from_asc_schedule(preform, &schedule),
-        used_placeholder: false,
-        asc_filename: Some(file_name.to_string()),
-        original_asc_text: Some(text.to_string()),
-    })
-}
 
 /// A sibling native sidecar (current `.indicatrix.toml`, or the legacy
 /// `.gemcut.toml`) among `files`, if the catalogue entry has one attached alongside
@@ -136,9 +67,75 @@ fn design_from_asc_and_native(
     }
 }
 
+/// The design built from `full`'s design-file attachment, picked by
+/// `indicatrix_vault::local::design_attachment_position` (the first `.asc`, else the
+/// first `.gem`, else the first `.gcs`, extension case-insensitive) and read as
+/// `.asc` text by `indicatrix_vault::local::design_file_to_asc_text` -- a `.gem`/
+/// `.gcs` converted to cutting instructions, so the design loads with its real
+/// masts instead of the angle-table placeholder. Reading runs inside
+/// `gui::library::local::catch_file_panic`, the importer's own per-file guard.
+///
+/// A `.asc` paired with a native sidecar attachment goes through
+/// [`design_from_asc_and_native`]; a converted `.gem`/`.gcs` never does (a
+/// sidecar's fingerprint describes a `.asc`).
+///
+/// `None` when the record has no design-file attachment; `Some(Err)` (a ready
+/// message) when it has one that does not read, convert or parse.
+///
+/// Also the design-file half of `super::catalogue_planes::resolve_catalogue_planes`,
+/// so the editor's Load Selected and every plane consumer read the same file.
+pub(super) fn design_from_attachment(
+    full: &indicatrix_vault::model::entry::FullDiagramRecord,
+) -> Option<Result<LoadedDesign, String>> {
+    let (position, kind) = indicatrix_vault::local::design_attachment_position(
+        full.attached_files.iter().map(|f| f.name.as_str()),
+    )?;
+    let attached = &full.attached_files[position];
+    let read = crate::gui::library::local::catch_file_panic(std::panic::AssertUnwindSafe(|| {
+        indicatrix_vault::local::design_file_to_asc_text(&attached.name, kind, &attached.content)
+    }));
+    let file = match read {
+        Ok(Ok(file)) => file,
+        Ok(Err(e)) => return Some(Err(format!("'{}': {e}", attached.name))),
+        Err(panic_msg) => {
+            return Some(Err(format!(
+                "'{}': internal error: {panic_msg}",
+                attached.name
+            )));
+        }
+    };
+    if !file.warnings.is_empty() {
+        warn!(
+            "Attached '{}' on diagram #{} converted with notes: {:?}",
+            attached.name, full.entry_id, file.warnings
+        );
+    }
+    let lw_ratio = full.lw_ratio.as_deref();
+    let sidecar = if kind == indicatrix_vault::local::DesignFileKind::Asc {
+        native_sidecar_attachment(&full.attached_files)
+    } else {
+        None
+    };
+    let loaded = sidecar.map_or_else(
+        || design_from_asc_text(&file.asc_file_name, &file.asc_text, lw_ratio),
+        |sidecar| {
+            let native_text = String::from_utf8_lossy(&sidecar.content);
+            design_from_asc_and_native(
+                &file.asc_file_name,
+                &file.asc_text,
+                &native_text,
+                lw_ratio,
+                full.entry_id,
+            )
+        },
+    );
+    Some(loaded.map_err(|e| format!("'{}': {e}", attached.name)))
+}
+
 /// Builds the design that should be loaded for one catalogue entry's full record.
 ///
-/// Prefers a real attached `.asc` file's own schedule -- its mast values are the
+/// Prefers a real attached design file's own schedule ([`design_from_attachment`]:
+/// a `.asc`, else a `.gem`, else a `.gcs`) -- its mast values are the
 /// file's actual recorded depths -- over `indicatrix_vault::local::reconstruct_asc_schedule`'s
 /// placeholder reconstruction from the angle/index table alone, which (per that
 /// function's own doc comment) has no depth data to work with at all and fills every
@@ -156,39 +153,20 @@ fn design_from_asc_and_native(
 ///
 /// # Errors
 ///
-/// Returns `Err` (a human-readable message) only when there is no attached `.asc` AND
-/// no angle-settings table to reconstruct from at all -- nothing in this diagram's
-/// record describes a cutting schedule.
+/// Returns `Err` (a human-readable message) only when there is no readable attached
+/// `.asc`/`.gem`/`.gcs` AND no angle-settings table to reconstruct from at all --
+/// nothing in this diagram's record describes cutting instructions.
 pub(in crate::gui::editor) fn design_from_full_record(
     full: &indicatrix_vault::model::entry::FullDiagramRecord,
 ) -> Result<LoadedDesign, String> {
-    if let Some(attached) = full
-        .attached_files
-        .iter()
-        .find(|f| f.name.to_lowercase().ends_with(".asc"))
-    {
-        let text = String::from_utf8_lossy(&attached.content);
-        let loaded = native_sidecar_attachment(&full.attached_files).map_or_else(
-            || design_from_asc_text(&attached.name, &text, full.lw_ratio.as_deref()),
-            |sidecar| {
-                let native_text = String::from_utf8_lossy(&sidecar.content);
-                design_from_asc_and_native(
-                    &attached.name,
-                    &text,
-                    &native_text,
-                    full.lw_ratio.as_deref(),
-                    full.entry_id,
-                )
-            },
-        );
-        match loaded {
-            Ok(loaded) => return Ok(loaded),
-            Err(e) => warn!(
-                "Attached .asc '{}' on diagram #{} failed to parse ({e}); falling back to the \
-                 angle-table reconstruction.",
-                attached.name, full.entry_id
-            ),
-        }
+    match design_from_attachment(full) {
+        Some(Ok(loaded)) => return Ok(loaded),
+        Some(Err(e)) => warn!(
+            "Attached design file on diagram #{} could not be loaded ({e}); falling back to \
+             the angle-table reconstruction.",
+            full.entry_id
+        ),
+        None => {}
     }
 
     let schedule = indicatrix_vault::local::reconstruct_asc_schedule(
@@ -197,7 +175,8 @@ pub(in crate::gui::editor) fn design_from_full_record(
         full.index_gear.as_deref(),
         &full.angle_settings,
     )
-    .ok_or_else(|| "This diagram has no cutting-schedule data to load.".to_string())?;
+    .map_err(|e| format!("This diagram's cutting-instructions data could not be read: {e}"))?
+    .ok_or_else(|| "This diagram has no cutting-instructions data to load.".to_string())?;
     let preform = default_preform_for_schedule(&schedule, full.lw_ratio.as_deref());
     Ok(LoadedDesign {
         design: Design::from_asc_schedule(preform, &schedule),
@@ -285,21 +264,6 @@ mod tests {
             angle_settings: Vec::new(),
             attached_files: Vec::new(),
         }
-    }
-
-    #[test]
-    fn design_from_asc_text_parses_a_real_schedule() {
-        let text = "GemCad 5.0\ng 96 0.0\ny 4 y\nI 1.54\na -41.000000 0.64991234 92 n 1 84\n";
-        let loaded = design_from_asc_text("design.asc", text, None).unwrap();
-        assert!(!loaded.used_placeholder);
-        assert_eq!(loaded.asc_filename.as_deref(), Some("design.asc"));
-        assert_eq!(loaded.original_asc_text.as_deref(), Some(text));
-        assert_eq!(loaded.design.tiers.len(), 1);
-    }
-
-    #[test]
-    fn design_from_asc_text_rejects_unparseable_text() {
-        assert!(design_from_asc_text("bad.asc", "not a real .asc schedule", None).is_err());
     }
 
     #[test]
@@ -400,6 +364,70 @@ mod tests {
             loaded.design.tiers[0].constraint,
             MeetConstraint::ScaleReference(0.0)
         );
+    }
+
+    /// A record whose only design file is a `.gem` (254 real catalogue details,
+    /// none with an `.asc` sibling) opens with the `.gem`'s real geometry, not the
+    /// zero-mast angle-table placeholder.
+    #[test]
+    fn design_from_full_record_opens_a_gem_only_record_with_real_masts() {
+        use crate::gui::library::local::test_gem::{SYNTHETIC_GEM_TIERS, encode_gem};
+        let mut full = empty_full_record();
+        full.attached_files.push(AttachedFile {
+            name: "Synthetic.GEM".to_string(),
+            url: String::new(),
+            content: encode_gem(SYNTHETIC_GEM_TIERS, 96, "Synthetic Gem"),
+        });
+        // An angle-table row too, as a scraped catalogue detail has: the `.gem`
+        // must win over it.
+        full.angle_settings
+            .push(indicatrix_vault::model::angle::AngleSetting {
+                order_index: 0,
+                facet: "T".to_string(),
+                angle: "0".to_string(),
+                index: String::new(),
+                notes: String::new(),
+            });
+        let loaded = design_from_full_record(&full).expect("a .gem-only record loads");
+        assert!(!loaded.used_placeholder);
+        assert_eq!(loaded.asc_filename.as_deref(), Some("Synthetic.asc"));
+        assert_eq!(loaded.design.tiers.len(), SYNTHETIC_GEM_TIERS.len());
+        let schedule = loaded
+            .design
+            .to_asc_schedule()
+            .expect("the .gem's masts anchor every tier");
+        assert_eq!(schedule.tiers.len(), SYNTHETIC_GEM_TIERS.len());
+        for (tier, spec) in schedule.tiers.iter().zip(SYNTHETIC_GEM_TIERS) {
+            assert!(
+                (tier.mast.abs() - spec.2).abs() < 1e-6,
+                "tier {} must keep the .gem's real mast {}, got {}",
+                spec.0,
+                spec.2,
+                tier.mast
+            );
+        }
+    }
+
+    /// A corrupt `.gem` falls back to the angle table, exactly like an `.asc`
+    /// that fails to parse.
+    #[test]
+    fn design_from_full_record_falls_back_when_the_gem_does_not_parse() {
+        let mut full = empty_full_record();
+        full.attached_files.push(AttachedFile {
+            name: "broken.gem".to_string(),
+            url: String::new(),
+            content: vec![1, 2, 3],
+        });
+        full.angle_settings
+            .push(indicatrix_vault::model::angle::AngleSetting {
+                order_index: 0,
+                facet: "T".to_string(),
+                angle: "0".to_string(),
+                index: String::new(),
+                notes: String::new(),
+            });
+        let loaded = design_from_full_record(&full).expect("the angle table still loads");
+        assert!(loaded.used_placeholder);
     }
 
     #[test]

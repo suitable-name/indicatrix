@@ -20,6 +20,7 @@ fn sample_summary() -> DesignSummary {
         competition_diagram: None,
         ignored: false,
         version: [7u8; 32],
+        design_version: [8u8; 32],
     }
 }
 
@@ -97,6 +98,10 @@ fn library_response_variants_round_trip() {
         symmetry_order: Some("8".to_string()),
         mirror_symmetry: Some(true),
         designer: Some("Capps, Jerry".to_string()),
+        source_citation: Some("Lapidary Journal, May 1994, p95".to_string()),
+        pdf_file: Some("2002SSCMasters.pdf".to_string()),
+        gem_file: Some("USFG-SSC-2020-Novice-1.gem".to_string()),
+        shape_category: Some("5".to_string()),
         angle_settings: vec![AngleSettingWire {
             order_index: 0,
             facet: "P1".to_string(),
@@ -137,6 +142,7 @@ fn library_response_variants_round_trip() {
         LibraryResponse::Error(ErrorMsg {
             code: 1,
             message: "bad filter".to_string(),
+            request_id: None,
         }),
         LibraryResponse::SearchResultsPage {
             results: vec![sample_summary()],
@@ -285,6 +291,24 @@ fn design_summary_ignored_flag_round_trips_both_settings() {
         assert_eq!(decoded, summary);
         assert_eq!(decoded.ignored, ignored);
     }
+}
+
+/// [`DesignSummary::design_version`] round-trips as its own field: distinct from
+/// [`DesignSummary::version`], and not reset or swapped on decode.
+#[test]
+fn design_summary_design_version_round_trips_independently_of_version() {
+    let summary = DesignSummary {
+        version: [3u8; 32],
+        design_version: [4u8; 32],
+        ..sample_summary()
+    };
+    let mut buf = Vec::new();
+    write_message(&mut buf, &summary).unwrap();
+    let mut cursor = std::io::Cursor::new(buf);
+    let decoded: DesignSummary = read_message(&mut cursor).unwrap();
+    assert_eq!(decoded, summary);
+    assert_eq!(decoded.version, [3u8; 32]);
+    assert_eq!(decoded.design_version, [4u8; 32]);
 }
 
 /// A nonzero [`LibraryResponse::SearchResults::excluded_for_missing_curves`]

@@ -347,12 +347,10 @@ pub(super) fn setup_tier_mirror_indices_callback(
                 return;
             };
             let mut st = state.borrow_mut();
-            match st
-                .design
-                .mirror_indices(tier_index)
-                .and_then(|edit| st.apply(edit))
-            {
-                Ok(()) => {
+            // Through the shared session -- see
+            // `indicatrix_editor::EditorSession::mirror_indices`.
+            match st.mirror_indices(tier_index) {
+                Ok(_) => {
                     refresh_editor_panel_stale(
                         &ui,
                         &render_ctx,

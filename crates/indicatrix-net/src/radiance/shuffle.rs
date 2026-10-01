@@ -9,8 +9,22 @@
 //! Pure byte permutations: bit-exact for every `f32` bit pattern (NaN payloads, signed
 //! zeros, subnormals, infinities), since no value is ever interpreted as a float.
 
+use glam::Vec3;
+
 /// Bytes per `f32` value: the number of byte planes.
 pub const PLANES: usize = 4;
+
+/// Whether a received radiance sample may be summed.
+///
+/// Every component must be finite and not negative. A sample failing this is dropped (it
+/// adds nothing) but still counts towards the frame's sample total, the same rule every
+/// render backend applies to its own samples, so one hostile or corrupt value can never
+/// poison a running sum.
+#[inline]
+#[must_use]
+pub fn is_valid_sample(v: Vec3) -> bool {
+    v.is_finite() && v.x >= 0.0 && v.y >= 0.0 && v.z >= 0.0
+}
 
 /// Byte-shuffles `src` (little-endian `f32` values) into `dst`: all byte 0s, then all
 /// byte 1s, then all byte 2s, then all byte 3s. The inverse of [`unshuffle_into`].
@@ -96,9 +110,71 @@ pub fn add_unshuffled(planes: &[u8], acc: &mut [f32]) {
     }
 }
 
+/// Adds the pixels encoded in shuffled `planes` onto `acc`, skipping every pixel that
+/// fails [`is_valid_sample`]. Returns how many pixels were skipped.
+///
+/// For valid pixels this is bit-identical to [`add_unshuffled`] over the same floats (one
+/// IEEE `f32` add per component).
+///
+/// # Panics
+///
+/// Panics if `planes.len() != acc.len() * 12`.
+pub fn add_unshuffled_valid(planes: &[u8], acc: &mut [Vec3]) -> u32 {
+    assert_eq!(
+        planes.len(),
+        acc.len() * 3 * PLANES,
+        "planes must hold exactly three f32 per accumulator pixel"
+    );
+    let n = acc.len() * 3;
+    let (p0, rest) = planes.split_at(n);
+    let (p1, rest) = rest.split_at(n);
+    let (p2, p3) = rest.split_at(n);
+    let at = |i: usize| f32::from_le_bytes([p0[i], p1[i], p2[i], p3[i]]);
+    let mut dropped = 0u32;
+    for (pixel, a) in acc.iter_mut().enumerate() {
+        let base = pixel * 3;
+        let v = Vec3::new(at(base), at(base + 1), at(base + 2));
+        if is_valid_sample(v) {
+            *a += v;
+        } else {
+            dropped = dropped.saturating_add(1);
+        }
+    }
+    dropped
+}
+
 #[cfg(test)]
 mod tests {
     use super::{super::test_support::*, *};
+
+    /// Non-finite and negative pixels are skipped and counted; valid pixels sum exactly
+    /// like the unguarded add.
+    #[test]
+    fn add_unshuffled_valid_skips_and_counts_invalid_pixels() {
+        let pixels = [
+            Vec3::new(1.0, 2.0, 3.0),
+            Vec3::new(f32::NAN, 1.0, 1.0),
+            Vec3::new(1.0, f32::INFINITY, 1.0),
+            Vec3::new(1.0, 1.0, -0.5),
+            Vec3::new(0.0, -0.0, 4.0),
+        ];
+        let raw: Vec<u8> = pixels
+            .iter()
+            .flat_map(Vec3::to_array)
+            .flat_map(f32::to_le_bytes)
+            .collect();
+        let mut planes = vec![0; raw.len()];
+        shuffle_into(&raw, &mut planes);
+
+        let mut acc = vec![Vec3::ONE; pixels.len()];
+        let dropped = add_unshuffled_valid(&planes, &mut acc);
+        assert_eq!(dropped, 3);
+        assert_eq!(acc[0], Vec3::new(2.0, 3.0, 4.0));
+        assert_eq!(acc[1], Vec3::ONE);
+        assert_eq!(acc[2], Vec3::ONE);
+        assert_eq!(acc[3], Vec3::ONE);
+        assert_eq!(acc[4], Vec3::new(1.0, 1.0, 5.0));
+    }
 
     /// Property: for many lengths and seeds, unshuffle(shuffle(x)) == x byte for byte.
     #[test]

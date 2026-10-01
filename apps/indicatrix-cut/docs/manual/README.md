@@ -19,7 +19,7 @@ exporting a design of your own.
    — searching and filtering, the 3D viewport's controls, and the
    tilt-performance graph.
 3. [Loading a Design Into the Editor and Understanding the Tier List](03-loading-and-tier-list.md)
-   — cutting-schedule terms, loading a design, starting a new one, and
+   — cutting-instructions terms, loading a design, starting a new one, and
    every tier-list column.
 4. [Editing Tiers](04-editing-tiers.md) — the tabbed inspector, the tier
    form, per-facet and whole-tier detaching, reordering and removing
@@ -53,11 +53,18 @@ exporting a design of your own.
     one place.
 13. [The Solid Inspection View](13-solid-inspection-view.md) — the Edit
     tab's second viewport: view modes, orbiting, hover/click facet
-    picking, the critical-angle and pending-edit overlays, and its own
-    "Not solved" banner.
+    picking, dragging a facet's angle/depth/index handles, slicing a new
+    facet with the mouse, the critical-angle and pending-edit overlays, and
+    its own "Not solved" banner.
 14. [Retarget, Snapshot, Compare, and Tilt Curves](14-retarget-snapshot-compare-tilt-curves.md)
     — a quick map of these four "compare two things" tools, and which of
     their results actually survive after you close the design.
+15. [Planning a Rough](15-planning-a-rough.md) — Library → Plan Rough...:
+    the Rough Planner window. Modelling a block, cylinder or pebble with
+    edge, corner and face cuts (including click-to-cut in the 3D view) and the
+    live weight check; the plan settings and the first-run measuring pass; the
+    3D view; reading the ranked layouts, their metrics and cut plans; library
+    links; saved plans, export and import; shortcuts; and the limitations.
 
 ### Appendices
 
@@ -72,7 +79,7 @@ exporting a design of your own.
 
 ## How to read this manual
 
-You do not need to read this front to back. Three common starting points:
+You do not need to read this front to back. Four common starting points:
 
 - **New to the app:** read Chapters 1, 3, and 7 — the main window, how the
   tier list and its terms work, and a full worked example of building a
@@ -82,6 +89,9 @@ You do not need to read this front to back. Three common starting points:
   material, then Deep Solve/Optimize/Adopt to verify and improve it.
 - **Rendering a design:** read Chapters 9 and 10 — exporting an image, and
   setting up a remote coordinator if you want faster or higher-quality renders.
+- **Planning what to cut from a piece of rough:** read Chapter 15 — how to
+  model your rough and rank the library's designs by the weight they yield from
+  it.
 
 Whatever your starting point, Chapter 12 and the appendices are there when
 something goes wrong or you need to look up a term, a shortcut, or a

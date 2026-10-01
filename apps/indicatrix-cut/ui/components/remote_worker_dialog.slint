@@ -86,10 +86,10 @@ export component RemoteWorkerDialog inherits PopupWindow {
     height: content.preferred-height;
 
     Rectangle {
-        background: #111827ee;
+        background: Theme.popup-surface;
         border-radius: Theme.radius-md;
         border-width: 1px;
-        border-color: #334155;
+        border-color: Theme.border-dialog;
         drop-shadow-blur: 24px;
         drop-shadow-color: #000000ee;
         drop-shadow-offset-y: 6px;
@@ -112,7 +112,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                 width: 24px;
                 height: 24px;
                 border-radius: 12px;
-                background: close_btn.has-hover ? #1e293b : transparent;
+                background: close_btn.has-hover ? Theme.surface-raised : transparent;
                 close_btn := TouchArea { clicked => { root.close(); } }
                 Text { text: "×"; font-size: 16px; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
             }
@@ -138,7 +138,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
             }
         }
 
-        Rectangle { height: 1px; background: #1e293b; }
+        Rectangle { height: 1px; background: Theme.surface-raised; }
 
         // Which library is currently being browsed: the local one, or the remote's.
         HorizontalLayout {
@@ -160,14 +160,14 @@ export component RemoteWorkerDialog inherits PopupWindow {
                     text: label;
                     font-size: 11px;
                     font-weight: 600;
-                    color: RemoteWorkerModel.library_source_worker_index == idx - 1 ? #0f172a : Theme.text-secondary;
+                    color: RemoteWorkerModel.library_source_worker_index == idx - 1 ? Theme.text-on-accent : Theme.text-secondary;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                 }
             }
         }
 
-        Rectangle { height: 1px; background: #1e293b; }
+        Rectangle { height: 1px; background: Theme.surface-raised; }
 
         // Denoise toggle -- applies to the merged image regardless of source. See
         // `settings::model::AppSettings::denoise_enabled`'s doc comment on why this is
@@ -183,7 +183,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                 width: 36px;
                 height: 20px;
                 border-radius: 10px;
-                background: RemoteWorkerModel.denoise_enabled ? Theme.accent-cyan : #334155;
+                background: RemoteWorkerModel.denoise_enabled ? Theme.accent-cyan : Theme.border-dialog;
                 TouchArea { clicked => { RemoteWorkerModel.denoise_toggled(!RemoteWorkerModel.denoise_enabled); } }
                 Rectangle {
                     width: 16px;
@@ -199,10 +199,10 @@ export component RemoteWorkerDialog inherits PopupWindow {
 
         // The configured endpoint.
         if RemoteWorkerModel.configured && !root.editing: Rectangle {
-            background: #0f172a;
+            background: Theme.surface-sunken;
             border-radius: Theme.radius-sm;
             border-width: 1px;
-            border-color: #334155;
+            border-color: Theme.border-dialog;
 
             VerticalLayout {
                 padding: 8px;
@@ -210,20 +210,20 @@ export component RemoteWorkerDialog inherits PopupWindow {
 
                 HorizontalLayout {
                     alignment: space-between;
-                    Text { text: RemoteWorkerModel.endpoint.name == "" ? RemoteWorkerModel.endpoint.address : RemoteWorkerModel.endpoint.name; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
+                    Text { text: RemoteWorkerModel.endpoint.name == "" ? RemoteWorkerModel.endpoint.address : RemoteWorkerModel.endpoint.name; font-size: 11px; font-weight: 700; color: Theme.text-primary; overflow: elide; horizontal-stretch: 1; min-width: 0px; }
                     HorizontalLayout {
                         spacing: 4px;
                         Rectangle {
                             width: 20px; height: 20px; border-radius: 4px;
-                            background: edit_touch.has-hover ? #1e293b : transparent;
+                            background: edit_touch.has-hover ? Theme.surface-raised : transparent;
                             edit_touch := TouchArea { clicked => { root.open_form(); } }
                             Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-muted; width: 11px; height: 11px; horizontal-alignment: center; vertical-alignment: center; }
                         }
                         Rectangle {
                             width: 20px; height: 20px; border-radius: 4px;
-                            background: remove_touch.has-hover ? #450a0a : transparent;
+                            background: remove_touch.has-hover ? Theme.danger-surface-hover : transparent;
                             remove_touch := TouchArea { clicked => { RemoteWorkerModel.remove_remote(); } }
-                            Text { text: "×"; font-size: 13px; color: #f87171; horizontal-alignment: center; vertical-alignment: center; }
+                            Text { text: "×"; font-size: 13px; color: Theme.danger; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                 }
@@ -260,13 +260,13 @@ export component RemoteWorkerDialog inherits PopupWindow {
                 if RemoteWorkerModel.test_connection_result != "": Text {
                     text: RemoteWorkerModel.test_connection_result;
                     font-size: 9px;
-                    color: RemoteWorkerModel.test_connection_is_error ? #f87171 : Theme.accent-emerald;
+                    color: RemoteWorkerModel.test_connection_is_error ? Theme.danger : Theme.accent-emerald;
                     wrap: word-wrap;
                 }
                 if RemoteWorkerModel.mirror_in_progress: Rectangle {
                     height: 4px;
                     border-radius: 2px;
-                    background: #1e293b;
+                    background: Theme.surface-raised;
                     Rectangle {
                         x: 0px;
                         width: parent.width * RemoteWorkerModel.mirror_progress_fraction;
@@ -279,7 +279,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
                 if RemoteWorkerModel.mirror_status_text != "": Text {
                     text: RemoteWorkerModel.mirror_status_text;
                     font-size: 9px;
-                    color: RemoteWorkerModel.mirror_in_progress ? Theme.text-muted : (RemoteWorkerModel.mirror_has_error ? #f87171 : Theme.accent-emerald);
+                    color: RemoteWorkerModel.mirror_in_progress ? Theme.text-muted : (RemoteWorkerModel.mirror_has_error ? Theme.danger : Theme.accent-emerald);
                     wrap: word-wrap;
                 }
             }
@@ -300,7 +300,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
         // The form.
         if root.editing: VerticalLayout {
             spacing: 6px;
-            Rectangle { height: 1px; background: #1e293b; }
+            Rectangle { height: 1px; background: Theme.surface-raised; }
             Text { text: RemoteWorkerModel.configured ? "Edit remote coordinator" : "Set up remote coordinator"; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
 
             LineEdit { placeholder-text: "Name (e.g. \"Office coordinator\")"; text <=> root.form_name; }
@@ -355,7 +355,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
             if RemoteWorkerModel.claim_result_text != "": Text {
                 text: RemoteWorkerModel.claim_result_text;
                 font-size: 11px;
-                color: RemoteWorkerModel.claim_result_is_error ? #f87171 : Theme.accent-emerald;
+                color: RemoteWorkerModel.claim_result_is_error ? Theme.danger : Theme.accent-emerald;
                 wrap: word-wrap;
             }
 
@@ -424,7 +424,7 @@ export component RemoteWorkerDialog inherits PopupWindow {
             if RemoteWorkerModel.test_connection_result != "": Text {
                 text: RemoteWorkerModel.test_connection_result;
                 font-size: 9px;
-                color: RemoteWorkerModel.test_connection_is_error ? #f87171 : Theme.accent-emerald;
+                color: RemoteWorkerModel.test_connection_is_error ? Theme.danger : Theme.accent-emerald;
                 wrap: word-wrap;
             }
 

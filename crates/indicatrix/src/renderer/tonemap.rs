@@ -18,6 +18,10 @@
 //! before tone-mapping, so [`tonemap_to_rgba_with_threads`] takes that scale as a
 //! parameter rather than three near-duplicate functions.
 //!
+//! A live view converts a frame many times a second, so [`tonemap_to_rgba_into`] and
+//! [`tonemap_to_rgba_with_threads_into`] write into a buffer the caller keeps (or straight
+//! into a display surface); the `Vec`-returning forms are thin wrappers around them.
+//!
 //! # The export's final 8-bit conversion
 //!
 //! [`tonemap_accumulation`] (float sum -> RGBA8 for an export's colour space) lives here,
@@ -33,28 +37,34 @@ use crate::{
 };
 use glam::Vec3;
 
-/// Resolves a `--threads`-style argument (`0` meaning "let the OS decide") to an actual
-/// thread count. Mirrors `renderer::denoise::effective_thread_count` and
-/// `indicatrix-worker::render_core::effective_thread_count` exactly (duplicated rather
-/// than shared across the three independent `thread::scope` call sites).
-//
-// `wasm32-unknown-unknown` has no OS thread to spawn: `std::thread::Scope::spawn` (this
-// module's only caller of the value returned here) panics at runtime on this target, so
-// this returns `1` unconditionally rather than merely capping `threads` -- that makes
-// [`tonemap_to_rgba_with_threads`]'s "whole buffer fits in one chunk" fast path always
-// taken, so `std::thread::scope` is never reached on this target at all. A separate
-// `cfg`-gated definition (rather than one function with an internal `#[cfg]` block) so
-// this wasm32 body can be `const fn`, since the native arm calls
-// `std::thread::available_parallelism`, which is not `const`-compatible.
+/// Resolves a `--threads`-style argument to an actual thread count (`0` meaning "let
+/// the OS decide").
+///
+/// The one definition the tone-mapper, the A-Trous denoiser and the worker's tracer all
+/// share, so every independent `thread::scope` site agrees on what "auto" means (the
+/// OS's available parallelism, falling back to 8).
+///
+/// `wasm32-unknown-unknown` has no OS thread to spawn: `std::thread::Scope::spawn` panics
+/// at runtime on this target, so this returns `1` unconditionally rather than merely
+/// capping `threads` -- that makes [`tonemap_to_rgba_with_threads`]'s "whole buffer fits
+/// in one chunk" fast path always taken, so `std::thread::scope` is never reached on this
+/// target at all. A separate `cfg`-gated definition (rather than one function with an
+/// internal `#[cfg]` block) so this wasm32 body can be `const fn`, since the native arm
+/// calls `std::thread::available_parallelism`, which is not `const`-compatible.
 #[cfg(target_arch = "wasm32")]
 #[must_use]
-const fn effective_thread_count(_threads: usize) -> usize {
+pub const fn effective_thread_count(_threads: usize) -> usize {
     1
 }
 
+/// Resolves a `--threads`-style argument to an actual thread count.
+///
+/// `0` ("let the OS decide") becomes the OS's available parallelism (falling back to 8);
+/// any other value is returned unchanged. See the wasm32 definition above for the shared
+/// rationale.
 #[cfg(not(target_arch = "wasm32"))]
 #[must_use]
-fn effective_thread_count(threads: usize) -> usize {
+pub fn effective_thread_count(threads: usize) -> usize {
     if threads == 0 {
         std::thread::available_parallelism().map_or(8, std::num::NonZero::get)
     } else {
@@ -79,30 +89,38 @@ fn tonemap_chunk(colors: &[Vec3], dst: &mut [u8], scale: f32) {
     }
 }
 
-/// Tone-maps `colors` into a fresh `colors.len() * 4`-byte RGBA buffer.
+/// Tone-maps `colors` into the caller's `out` buffer, allocating nothing.
 ///
-/// Each value is scaled by `scale` first. Parallelised across `threads` OS threads via
-/// `std::thread::scope` (`threads == 0` auto-detects, see [`effective_thread_count`]).
+/// Each value is scaled by `scale` first. `min(colors.len(), out.len() / 4)` pixels are
+/// converted into the leading bytes of `out`; any bytes beyond that are left untouched,
+/// so a caller that sizes `out` as `colors.len() * 4` converts everything. Parallelised
+/// across `threads` OS threads via `std::thread::scope` (`threads == 0` auto-detects, see
+/// [`effective_thread_count`]).
 ///
 /// Because [`tonemap_chunk`] is a pure per-pixel function with no cross-pixel
 /// dependency, the output is bit-identical for any `threads >= 1`, including thread
-/// counts that do not evenly divide `colors.len()` and thread counts that exceed
-/// `colors.len()`.
-#[must_use]
-pub fn tonemap_to_rgba_with_threads(colors: &[Vec3], scale: f32, threads: usize) -> Vec<u8> {
-    let mut out = vec![0u8; colors.len() * 4];
+/// counts that do not evenly divide the pixel count and thread counts that exceed it.
+pub fn tonemap_to_rgba_with_threads_into(
+    colors: &[Vec3],
+    scale: f32,
+    threads: usize,
+    out: &mut [u8],
+) {
+    let pixels = colors.len().min(out.len() / 4);
+    let colors = &colors[..pixels];
+    let out = &mut out[..pixels * 4];
     if colors.is_empty() {
-        return out;
+        return;
     }
 
     let num_threads = effective_thread_count(threads).max(1);
-    let chunk_len = colors.len().div_ceil(num_threads).max(1);
+    let chunk_len = pixels.div_ceil(num_threads).max(1);
 
-    if chunk_len >= colors.len() {
+    if chunk_len >= pixels {
         // Whole buffer fits in one chunk (small image, or threads == 1): skip the
         // thread::scope machinery entirely rather than spawn a single worker for it.
-        tonemap_chunk(colors, &mut out, scale);
-        return out;
+        tonemap_chunk(colors, out, scale);
+        return;
     }
 
     std::thread::scope(|s| {
@@ -112,14 +130,32 @@ pub fn tonemap_to_rgba_with_threads(colors: &[Vec3], scale: f32, threads: usize)
             s.spawn(move || tonemap_chunk(color_chunk, byte_chunk, scale));
         }
     });
+}
 
+/// Same as [`tonemap_to_rgba_with_threads_into`] with the OS-decided ("auto") thread count.
+///
+/// The allocation-free entry point for a caller that reuses its byte buffer (or writes
+/// straight into a display surface) every frame.
+pub fn tonemap_to_rgba_into(colors: &[Vec3], scale: f32, out: &mut [u8]) {
+    tonemap_to_rgba_with_threads_into(colors, scale, 0, out);
+}
+
+/// Tone-maps `colors` into a fresh `colors.len() * 4`-byte RGBA buffer.
+///
+/// [`tonemap_to_rgba_with_threads_into`] into a new allocation; see it for the scale,
+/// threading and bit-identity contract.
+#[must_use]
+pub fn tonemap_to_rgba_with_threads(colors: &[Vec3], scale: f32, threads: usize) -> Vec<u8> {
+    let mut out = vec![0u8; colors.len() * 4];
+    tonemap_to_rgba_with_threads_into(colors, scale, threads, &mut out);
     out
 }
 
 /// Same as [`tonemap_to_rgba_with_threads`] with the OS-decided ("auto") thread count.
 ///
-/// The entry point every real call site should use; the explicit-thread-count form
-/// exists mainly for tests and callers that already manage their own thread budget.
+/// The entry point every real call site that needs a fresh buffer should use; the
+/// explicit-thread-count form exists mainly for tests and callers that already manage
+/// their own thread budget.
 #[must_use]
 pub fn tonemap_to_rgba(colors: &[Vec3], scale: f32) -> Vec<u8> {
     tonemap_to_rgba_with_threads(colors, scale, 0)
@@ -284,6 +320,44 @@ mod tests {
         assert_eq!(out.len(), 4);
     }
 
+    /// Writing into a caller-provided buffer gives exactly the bytes the allocating form
+    /// returns, for every thread count, and a reused (dirty) buffer is fully overwritten.
+    #[test]
+    fn into_variant_matches_the_allocating_form() {
+        let colors = irregular_colors(3_001, 0x5a5a_1234);
+        let scale = 0.61;
+        let expected = tonemap_to_rgba_with_threads(&colors, scale, 1);
+
+        let mut reused = vec![0xAB_u8; colors.len() * 4];
+        for threads in [1usize, 2, 7, 64] {
+            reused.fill(0xAB);
+            tonemap_to_rgba_with_threads_into(&colors, scale, threads, &mut reused);
+            assert_eq!(reused, expected, "threads={threads}");
+        }
+
+        reused.fill(0xAB);
+        tonemap_to_rgba_into(&colors, scale, &mut reused);
+        assert_eq!(reused, expected, "auto thread count");
+    }
+
+    /// A mismatched buffer is handled without a panic: only the pixels that fit are
+    /// converted and the rest of `out` is left as it was.
+    #[test]
+    fn into_variant_converts_only_what_fits() {
+        let colors = irregular_colors(10, 0x0102_0304);
+        let full = tonemap_to_rgba(&colors, 1.0);
+
+        let mut short = vec![0xCD_u8; 4 * 6 + 3];
+        tonemap_to_rgba_into(&colors, 1.0, &mut short);
+        assert_eq!(short[..24], full[..24]);
+        assert_eq!(short[24..], [0xCD; 3]);
+
+        let mut long = vec![0xCD_u8; 4 * 12];
+        tonemap_to_rgba_into(&colors, 1.0, &mut long);
+        assert_eq!(long[..40], full[..]);
+        assert_eq!(long[40..], [0xCD; 8]);
+    }
+
     /// The export's tone-mapping exactly as `indicatrix-cut`'s
     /// `export_thread::tonemap_png::tonemap_accumulation` wrote it before it moved here,
     /// serial and unrefactored: the "before" side of the byte-identity pin.
@@ -347,11 +421,12 @@ mod tests {
     /// [`pre_move_export_tonemap`], i.e. the code as it was before the move.
     #[test]
     fn tonemap_accumulation_output_is_pinned() {
+        // Pinned with the sRGB encode's final 8-bit quantisation at round-to-nearest.
         const PINNED: [(ColorSpace, u64); 4] = [
-            (ColorSpace::Srgb, 0x458f_849e_bca6_2419),
-            (ColorSpace::DisplayP3, 0x0ecc_68d8_b9f5_8b8e),
-            (ColorSpace::Rec2020, 0xe362_52ed_72b5_da29),
-            (ColorSpace::AcesCg, 0x67b0_ab59_6169_1909),
+            (ColorSpace::Srgb, 0x74aa_b8aa_51e1_87e5),
+            (ColorSpace::DisplayP3, 0xdcf9_71d4_dbd5_c9d9),
+            (ColorSpace::Rec2020, 0x4855_a258_e239_8cf4),
+            (ColorSpace::AcesCg, 0x1f4f_8288_d988_9085),
         ];
         let (width, height) = (8_u32, 5_u32);
         let accum = irregular_colors((width * height) as usize, 0x1357_9bdf);

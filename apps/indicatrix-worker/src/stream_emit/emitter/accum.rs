@@ -146,6 +146,9 @@ pub(in crate::stream_emit) struct EmitterAccum {
     /// A `DisplayOnly` request's denoise thread, started by the first
     /// [`Self::display_tick`] (never for any other transfer mode).
     display: Option<DisplayDenoiser>,
+    /// `samples_done` as of the most recent `PREVIEW` this emitter actually wrote --
+    /// `None` before the first one. See [`Self::preview_due`].
+    last_preview_samples_done: Option<u32>,
 }
 
 impl EmitterAccum {
@@ -166,6 +169,7 @@ impl EmitterAccum {
             spare: vec![Vec3::ZERO; pixel_count],
             encoder: PayloadEncoder::new(encoding),
             display: None,
+            last_preview_samples_done: None,
         }
     }
 
@@ -180,6 +184,7 @@ impl EmitterAccum {
             spare,
             encoder: PayloadEncoder::new(PayloadEncoding::Raw),
             display: None,
+            last_preview_samples_done: None,
         }
     }
 
@@ -244,6 +249,35 @@ impl EmitterAccum {
     /// emitter's own copy, never read from `SharedState`.
     pub(in crate::stream_emit) fn running_total(&self) -> &[Vec3] {
         &self.running_total
+    }
+
+    /// Whether a `PREVIEW` for `samples_done` (out of `sample_budget` total) should
+    /// actually go out now, given whichever one this emitter last wrote.
+    ///
+    /// The first opportunity (nothing written yet this request) always qualifies, so a
+    /// caller sees the earliest possible look rather than waiting on 1% of what may be
+    /// a very large budget. Every later one needs `samples_done` to have advanced by at
+    /// least 1% of `sample_budget` (floored, never less than one sample) since that
+    /// last write -- otherwise a coordinator job's per-merge cadence (whose running
+    /// total, and so `samples_done`, only advances when a chunk merges: see
+    /// `crate::coordinator::job::producer`) would resend an unchanged `PREVIEW` on
+    /// every cadence tick between merges.
+    #[must_use]
+    pub(in crate::stream_emit) fn preview_due(
+        &self,
+        samples_done: u32,
+        sample_budget: u32,
+    ) -> bool {
+        self.last_preview_samples_done.is_none_or(|last| {
+            let threshold = (sample_budget / 100).max(1);
+            samples_done.saturating_sub(last) >= threshold
+        })
+    }
+
+    /// Records that a `PREVIEW` reflecting `samples_done` was just written -- see
+    /// [`Self::preview_due`].
+    pub(in crate::stream_emit) const fn record_preview_sent(&mut self, samples_done: u32) {
+        self.last_preview_samples_done = Some(samples_done);
     }
 
     /// A `DisplayOnly` cadence tick's picture work (see `super::display`): starts this

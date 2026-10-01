@@ -7,6 +7,7 @@ use indicatrix::geometry::meet_solver::SolveStrategy;
 
 use crate::types::{ConstraintKind, TierResult};
 
+/// Prints every aggregate table of the validation report.
 #[expect(
     clippy::too_many_lines,
     reason = "straight-line report printing in a temporary probe; splitting it up would \
@@ -239,12 +240,14 @@ fn print_percentiles(sorted: &[f64]) {
     );
 }
 
+/// Upper median of the values, zero when empty.
 pub fn median(vals: &[f64]) -> f64 {
     let mut v = vals.to_vec();
     v.sort_by(|a, b| a.partial_cmp(b).unwrap());
     if v.is_empty() { 0.0 } else { v[v.len() / 2] }
 }
 
+/// Percentage of `n` in `total`, zero when `total` is zero.
 pub fn pct(n: usize, total: usize) -> f64 {
     if total == 0 {
         0.0

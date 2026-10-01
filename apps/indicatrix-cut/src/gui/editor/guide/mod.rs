@@ -1,7 +1,8 @@
-//! The worked-example walkthrough: its step content ([`steps`]), pushing that
-//! content into `ui/models/guide.slint`'s `GuideModel` once at startup
-//! ([`setup_guide`]), and advancing it automatically once the design reaches the
-//! current step's goal ([`progress`]).
+//! The worked-example walkthrough: pushing its step content
+//! (`indicatrix_editor::guide::STEPS`, shared with the web app) into
+//! `ui/models/guide.slint`'s `GuideModel` once at startup ([`setup_guide`]), and
+//! advancing it automatically once the design reaches the current step's goal
+//! ([`progress`], over `indicatrix_editor::guide::goal_reached`).
 //!
 //! The Slint side owns navigation (`start`/`next`/`back`/`close`, the short "Done"
 //! moment before an automatic advance) and every lock: each control ANDs a
@@ -11,25 +12,15 @@
 //! [`progress::check_progress`] for where that is called from.
 
 mod progress;
-mod steps;
-#[cfg(test)]
-mod tests;
 
+pub(in crate::gui::editor) use indicatrix_editor::guide::NEW_DESIGN_CREATED;
 pub(in crate::gui::editor) use progress::{check_design_progress, check_progress, notify};
 
 use super::state::EditorState;
 use crate::{GuideAllow, GuideModel, GuideStepData, MainWindow};
+use indicatrix_editor::guide::{Group, STEPS, Step};
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::{cell::RefCell, rc::Rc};
-use steps::{Group, STEPS, Step};
-
-/// The completion key of a reading step: it never completes through
-/// `GuideModel.notify`, only through its own Next/Finish button.
-const MANUAL: &str = "manual";
-
-/// Completion key reported by `callbacks::tier_actions::do_new_design_create` itself
-/// (an event, not a state [`progress::goal_reached`] could read back afterwards).
-pub(in crate::gui::editor) const NEW_DESIGN_CREATED: &str = "new_design_created";
 
 /// `allow`'s groups as the Slint `GuideAllow` struct: a group not listed is locked.
 fn guide_allow(allow: &[Group]) -> GuideAllow {

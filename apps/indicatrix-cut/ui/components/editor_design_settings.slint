@@ -14,8 +14,8 @@ import { GuideLockTip } from "guide_lock.slint";
 
 // The Edit sub-tab's schedule-wide settings -- material combo (built-ins, custom
 // catalogue materials, then "Custom RI…"), RI override/effective/critical-angle
-// readouts, gear combo, symmetry order and mirror. Two rows: material/RI on top,
-// gear/symmetry below, each ending in a stretch spacer so nothing here stretches
+// readouts, gear combo, symmetry order and mirror. Rows: 1a material/RI/colour/apply,
+// 1b chips/new-edit/linked, then gear/symmetry, then printed details, each ending in a stretch spacer so nothing here stretches
 // to fill the dock's own width. Collapsible as a whole (`SectionHeader`, title
 // "DESIGN") via `EditorModel.settings_collapsed`; the gear-remap confirmation
 // nested inside is separately collapsible (title "GEAR REMAP") via
@@ -98,6 +98,7 @@ export component EditorDesignSettings inherits Rectangle {
         HorizontalLayout {
             spacing: 10px;
             VerticalLayout {
+                horizontal-stretch: 1;
                 spacing: 3px;
                 Rectangle {
                     height: mat_combo_lbl.preferred-height;
@@ -106,7 +107,8 @@ export component EditorDesignSettings inherits Rectangle {
                 }
                 ComboBox {
                     enabled: root.unlocked;
-                    max-width: 200px;
+                    min-width: 0px;
+                    max-width: 240px;
                     model: EditorModel.material_combo_options;
                     current-index <=> EditorModel.material_combo_index;
                     selected => { root.material_pending = true; }
@@ -126,10 +128,26 @@ export component EditorDesignSettings inherits Rectangle {
                     placeholder-text: "auto";
                     edited => { root.material_pending = true; }
                     accepted => {
-                        EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text);
+                        EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text, EditorModel.body_colour_index);
                         root.material_pending = false;
                     }
                     changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                }
+            }
+            VerticalLayout {
+                spacing: 3px;
+                Rectangle {
+                    height: colour_lbl.preferred-height;
+                    Tooltip { text: @markdown("Body colour -- render this design in a different colour of the same material (e.g. a yellow instead of a blue sapphire) without creating a custom material. Isotropic: the material's pleochroism is not modelled while a colour override is set."); }
+                    colour_lbl := Text { text: "Colour"; font-size: 10px; color: Theme.text-muted; }
+                }
+                ComboBox {
+                    enabled: root.unlocked;
+                    min-width: 0px;
+                    max-width: 160px;
+                    model: EditorModel.body_colour_options;
+                    current-index <=> EditorModel.body_colour_index;
+                    selected => { root.material_pending = true; }
                 }
             }
             VerticalLayout {
@@ -145,11 +163,18 @@ export component EditorDesignSettings inherits Rectangle {
                     text: root.material_pending ? "Apply Material *" : "Apply Material";
                     primary: root.material_pending;
                     clicked => {
-                        EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text);
+                        EditorModel.apply_design_material(EditorModel.material_combo_index, EditorModel.ri_override_text, EditorModel.body_colour_index);
                         root.material_pending = false;
                     }
                 }
             }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        // Row 1b: read-only chips, material editor and the render link toggle,
+        // split from row 1a so neither row exceeds the dock's 576px minimum.
+        HorizontalLayout {
+            spacing: 10px;
             // Read-only chips, same small-rounded-rectangle style as
             // `detail_header.slint`'s metric grid.
             VerticalLayout {
@@ -184,7 +209,7 @@ export component EditorDesignSettings inherits Rectangle {
             }
             // Opens the custom-material editor next to the combo that consumes it,
             // so creating a material does not require leaving the Edit tab;
-            // `solid_viewport.slint` mounts `MaterialEditorDialog` for this tab.
+            // `components/app/global_dialogs.slint` mounts `MaterialEditorDialog` window-wide.
             VerticalLayout {
                 alignment: end;
                 Button {
@@ -264,6 +289,8 @@ export component EditorDesignSettings inherits Rectangle {
                 }
                 ComboBox {
                     enabled: root.unlocked;
+                    min-width: 0px;
+                    preferred-width: 120px;
                     max-width: 160px;
                     model: ["96", "80", "77", "72", "64", "120", "Custom"];
                     current-index <=> EditorModel.gear_index;
@@ -378,31 +405,34 @@ export component EditorDesignSettings inherits Rectangle {
         HorizontalLayout {
             spacing: 10px;
             VerticalLayout {
+                horizontal-stretch: 1;
                 spacing: 3px;
                 Rectangle {
                     height: title_lbl.preferred-height;
                     Tooltip { text: @markdown("The design's own name -- the .asc file's first header line. Seeds the window title and a saved/exported file's default name."); }
                     title_lbl := Text { text: "Title"; font-size: 10px; color: Theme.text-muted; }
                 }
-                LineEdit { enabled: root.unlocked; width: 150px; text <=> EditorModel.design_title; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                LineEdit { enabled: root.unlocked; min-width: 90px; preferred-width: 150px; max-width: 220px; horizontal-stretch: 1; text <=> EditorModel.design_title; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
             }
             VerticalLayout {
+                horizontal-stretch: 1;
                 spacing: 3px;
                 Rectangle {
                     height: extra_headers_lbl.preferred-height;
                     Tooltip { text: @markdown("Further .asc header lines beyond the title. Join several with \"; \"."); }
                     extra_headers_lbl := Text { text: "Extra Header Lines"; font-size: 10px; color: Theme.text-muted; }
                 }
-                LineEdit { enabled: root.unlocked; width: 150px; text <=> EditorModel.design_extra_headers; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                LineEdit { enabled: root.unlocked; min-width: 90px; preferred-width: 150px; max-width: 220px; horizontal-stretch: 1; text <=> EditorModel.design_extra_headers; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
             }
             VerticalLayout {
+                horizontal-stretch: 1;
                 spacing: 3px;
                 Rectangle {
                     height: footnotes_lbl.preferred-height;
                     Tooltip { text: @markdown("Footnote lines written at the end of the .asc file. Join several with \"; \"."); }
                     footnotes_lbl := Text { text: "Footnotes"; font-size: 10px; color: Theme.text-muted; }
                 }
-                LineEdit { enabled: root.unlocked; width: 150px; text <=> EditorModel.design_footnotes; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                LineEdit { enabled: root.unlocked; min-width: 90px; preferred-width: 150px; max-width: 220px; horizontal-stretch: 1; text <=> EditorModel.design_footnotes; edited => { root.meta_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
             }
             VerticalLayout {
                 spacing: 3px;

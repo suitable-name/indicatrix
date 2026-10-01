@@ -20,8 +20,8 @@ use std::{
 };
 
 /// Re-issues `ctx`'s current `active_planes` at its (just-updated) camera pose to
-/// `preview_state`, sized to the Solid viewport's own logical size -- see
-/// `docs/plans/solid_preview_B2_WIRING.md` part (d): camera-follow only (same
+/// `preview_state`, sized to the Solid viewport's own logical size --
+/// camera-follow only (same
 /// planes, new pose), never a re-solve. A no-op while nothing has been solved
 /// into the shared viewport yet (`active_planes` empty), matching
 /// `gui::editor::view::refresh_viewport`'s own "no design, no planes" contract.
@@ -97,7 +97,7 @@ pub(in crate::gui) fn resubmit_at_current_pose(
         );
         // Path-traced/Both letterbox the traced image to `ctx.width`/
         // `ctx.height`'s own aspect ratio (`solid_viewport.slint`'s
-        // `image-fit: contain`) whenever it differs from the viewport's -- see
+        // `image-fit: contain`) whenever it differs from the viewport's --
         // `contained_request_size`'s own doc comment.
         contained_request_size(view_mode, viewport_size, (ctx.width, ctx.height))
     };
@@ -178,45 +178,14 @@ pub(in crate::gui) fn contained_request_size(
     }
 }
 
-/// Matches every `Camera::new` call across this crate's own convention of a
-/// hardcoded `42.0` degree (vertical) field of view -- [`fit_distance_for_radius`]
-/// needs the SAME half-angle `raster.rs`'s `project` actually renders with, or
-/// the "Fit" pose it computes would not match what ends up on screen.
-const CAMERA_FOV_DEG: f32 = 42.0;
-
-/// The orbit camera's zoom clamp for a solid with the given bounding radius. A
-/// fixed `[1.2, 8.0]` range clips a large preform's facets out of the frame at
-/// minimum distance (`raster.rs` drops a whole facet whose ring has any point
-/// behind the near plane) and leaves a small one lost in mostly empty space at
-/// maximum, so the clamp scales with the mesh instead.
-///
-/// The two factors are chosen so a mesh at exactly
-/// [`super::super::solid_preview::preview_state::DEFAULT_MESH_BOUNDING_RADIUS`]
-/// (`1.5`, a standard round brilliant's own half-width) reproduces that same
-/// `[1.2, 8.0]` range exactly (`1.5 * 0.8 == 1.2`, `1.5 * (16.0/3.0) == 8.0`), so the
-/// common case is unchanged -- only a design meaningfully larger or smaller than that
-/// gets a clamp actually sized to it.
-#[must_use]
-pub(in crate::gui) fn orbit_distance_bounds(bounding_radius: f64) -> (f32, f32) {
-    const MIN_FACTOR: f32 = 0.8;
-    const MAX_FACTOR: f32 = 16.0 / 3.0;
-    let radius = (bounding_radius as f32).max(0.01);
-    (radius * MIN_FACTOR, radius * MAX_FACTOR)
-}
-
-/// The orbit distance that frames a sphere of `bounding_radius` exactly at the
-/// vertical edges of the camera's own field of view (`CAMERA_FOV_DEG`), times a
-/// small margin so the "Fit" pose leaves a little breathing room instead
-/// of touching the frame's edge exactly. Mirrors `Camera::generate_ray`'s own
-/// `v = ... * fov_tan` convention: a point at height `bounding_radius` and this
-/// distance subtends exactly `fov_tan` at the screen edge before the margin is
-/// applied.
-#[must_use]
-pub(in crate::gui) fn fit_distance_for_radius(bounding_radius: f64) -> f32 {
-    const MARGIN: f32 = 1.15;
-    let half_fov_tan = (CAMERA_FOV_DEG.to_radians() * 0.5).tan();
-    (bounding_radius as f32).max(0.01) / half_fov_tan * MARGIN
-}
+// The orbit clamp (`orbit_distance_bounds`), the "Fit" distance
+// (`fit_distance_for_radius`) and the pitch wrap (`wrap_pitch`) moved to
+// `indicatrix_solid::preview::camera` (shared with the web app's Solid view);
+// re-exported here at their old paths. This module's tests below stay as their
+// pins.
+pub(in crate::gui) use indicatrix_solid::preview::camera::{
+    fit_distance_for_radius, orbit_distance_bounds, wrap_pitch,
+};
 
 /// The Live Render tab's own solid-raster redraw: identical to
 /// [`resubmit_at_current_pose`]'s Live-tab branch, except it never checks
@@ -269,24 +238,6 @@ pub(in crate::gui) fn resubmit_live_solid(
         0,
         ctx.design_gear,
     );
-}
-
-/// Wires up camera orbit/zoom, light move/position, and reset-camera callbacks. Each
-/// also feeds the debounced `settings_store` so camera pose and light position survive
-/// a restart. Split out of `run_gui` purely to keep that function under
-/// clippy's function-length lint.
-///
-/// `preview_state` is the solid-inspection preview controller -- dragging or
-/// zooming the Live Render viewport also moves the Solid viewport's shared
-/// camera (yaw/pitch/distance), so both `on_camera_orbit`/`on_camera_zoom` below
-/// re-issue the last solved plane set at the new pose (see
-/// `resubmit_at_current_pose`) while still holding `render_ctx`'s lock.
-/// Wraps an orbit pitch into `[-pi, pi)`: the camera may orbit freely over the poles
-/// (see `Camera::new`'s pole handling), the wrap only keeps the persisted value
-/// bounded.
-pub(in crate::gui) fn wrap_pitch(pitch: f32) -> f32 {
-    use std::f32::consts::PI;
-    (pitch + PI).rem_euclid(2.0 * PI) - PI
 }
 
 /// Wires `ViewportModel.on_light_move`/`on_light_pos_changed`, persisting the
@@ -389,6 +340,16 @@ fn setup_set_view_callback(
     });
 }
 
+/// Wires up camera orbit/zoom, light move/position, and reset-camera callbacks. Each
+/// also feeds the debounced `settings_store` so camera pose and light position survive
+/// a restart. Split out of `run_gui` purely to keep that function under
+/// clippy's function-length lint.
+///
+/// `preview_state` is the solid-inspection preview controller -- dragging or
+/// zooming the Live Render viewport also moves the Solid viewport's shared
+/// camera (yaw/pitch/distance), so both `on_camera_orbit`/`on_camera_zoom` below
+/// re-issue the last solved plane set at the new pose (see
+/// `resubmit_at_current_pose`) while still holding `render_ctx`'s lock.
 pub(in crate::gui) fn setup_camera_and_lighting_callbacks(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
@@ -437,7 +398,7 @@ pub(in crate::gui) fn setup_camera_and_lighting_callbacks(
             let distance = {
                 let mut ctx = RenderContext::lock(&render_ctx_zoom);
                 // The clamp is sized to the CURRENT solid's own bounding radius
-                // rather than a fixed `[1.2, 8.0]` range -- see
+                // rather than a fixed `[1.2, 8.0]` range --
                 // `orbit_distance_bounds`'s own doc comment.
                 let radius = *mesh_bounding_radius_zoom.lock().unwrap();
                 let (min, max) = orbit_distance_bounds(radius);
@@ -493,6 +454,25 @@ pub(in crate::gui) fn setup_camera_and_lighting_callbacks(
             s.settings.light_yaw_deg = 0.85_f32.to_degrees();
             s.settings.light_pitch_deg = 0.95_f32.to_degrees();
         });
+    });
+}
+
+/// Mirrors `ViewportModel.camera_drag_begin`/`camera_drag_end` (both viewports' orbit
+/// and light drags) into `RenderContext::camera_drag_held` -- see that field's doc
+/// comment. Nothing else changes here: the per-move
+/// restart in `on_camera_orbit`/`on_light_move` IS the interactive preview and stays.
+pub(in crate::gui) fn setup_camera_drag_callbacks(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+) {
+    let render_ctx_begin = render_ctx.clone();
+    ui.global::<ViewportModel>().on_camera_drag_begin(move || {
+        RenderContext::lock(&render_ctx_begin).camera_drag_held = true;
+    });
+
+    let render_ctx_end = render_ctx.clone();
+    ui.global::<ViewportModel>().on_camera_drag_end(move || {
+        RenderContext::lock(&render_ctx_end).camera_drag_held = false;
     });
 }
 

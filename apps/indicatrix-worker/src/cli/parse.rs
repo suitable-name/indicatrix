@@ -400,6 +400,7 @@ fn default_serve_args() -> ServeArgs {
         worker_allowlist: None,
         db: None,
         max_connections: super::DEFAULT_MAX_CONNECTIONS,
+        max_preauth_per_ip: super::DEFAULT_MAX_PREAUTH_PER_IP,
         interactive_workers: 0,
         pin_interactive_worker: None,
         max_job_memory_mib: super::DEFAULT_MAX_JOB_MEMORY_MIB,
@@ -471,7 +472,26 @@ fn parse_serve_flag(
         "--no-workers" => out.no_workers = true,
         "--worker-allowlist" => out.worker_allowlist = Some(PathBuf::from(value(&mut i)?)),
         "--db" => out.db = Some(PathBuf::from(value(&mut i)?)),
-        "--max-connections" => out.max_connections = parse_u32(flag, &value(&mut i)?)? as usize,
+        "--max-connections" => {
+            let max_connections = parse_u32(flag, &value(&mut i)?)?;
+            if max_connections == 0 {
+                return Err(
+                    "--max-connections must be positive (0 would accept no connections at all)"
+                        .to_string(),
+                );
+            }
+            out.max_connections = max_connections as usize;
+        }
+        "--max-preauth-per-ip" => {
+            let max = parse_u32(flag, &value(&mut i)?)?;
+            if max == 0 {
+                return Err(
+                    "--max-preauth-per-ip must be positive (0 would refuse every connection)"
+                        .to_string(),
+                );
+            }
+            out.max_preauth_per_ip = max as usize;
+        }
         "--interactive-workers" => out.interactive_workers = parse_u32(flag, &value(&mut i)?)?,
         "--pin-interactive-worker" => {
             out.pin_interactive_worker = Some(parse_worker_label(&value(&mut i)?)?);

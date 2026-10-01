@@ -20,7 +20,10 @@ fn check(name: &str, ok: bool, detail: &str) -> bool {
     ok
 }
 
-#[allow(clippy::too_many_lines)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "straight-line self-test sequence; splitting it would hide the order of checks"
+)]
 fn main() {
     let mut all_ok = true;
 

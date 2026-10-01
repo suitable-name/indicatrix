@@ -29,8 +29,8 @@ fn frame_for(ang_deg: f32, c_axis: Vec3) -> UniaxialFrame {
 /// The isotropic limit of this module's own boundary-matching machinery (feed it
 /// `n_o == n_e`, no coupling should remain) must reproduce this crate's EXISTING
 /// scalar `r_s`/`r_p` Fresnel formula (`refraction.rs`'s `r_s_k`/`r_p_k`) exactly,
-/// including its sign convention -- this is the same check the Python prototype's
-/// `iso_iso_check` ran before any Rust was written.
+/// including its sign convention -- this is the same check the isotropic-to-isotropic
+/// check run against the reference prototype before the Rust implementation existed.
 #[test]
 fn entry_solve_matches_existing_scalar_fresnel_at_zero_birefringence() {
     let n = 1.7f32;
@@ -215,7 +215,7 @@ fn normal_incidence_inplane_axis_gives_pure_ordinary_extraordinary_fresnel() {
     assert!(sol_p.r_s.norm_sqr().sqrt() < 1e-4);
 }
 
-/// Requirement 9: Rutile's extreme birefringence (`+0.287`, the highest of any
+/// Requirement 9: Rutile's extreme birefringence (`+0.2957`, the highest of any
 /// built-in) should make the new closed-form entry Fresnel reflectance visibly
 /// diverge from the OLD "effective index" scalar approximation (a single
 /// isotropic-style Fresnel evaluated at `BirefringenceParams::
@@ -235,6 +235,14 @@ fn normal_incidence_inplane_axis_gives_pure_ordinary_extraordinary_fresnel() {
 /// actually visible; this geometry (20 degrees incidence, optic axis close to the
 /// surface plane but with a genuine out-of-plane `beta` component) was found, by a
 /// small sweep over angle/axis combinations, to land closest to that figure.
+///
+/// Bound derivation: the geometry (20 degrees, `c_axis`) is fixed, so the deviation
+/// depends on the indices only through the relative anisotropy `(n_e - n_o) / n_o`.
+/// That is `0.2957 / 2.6129 = 0.1132` for the Sellmeier-3 Rutile fit (`n_o = 2.6129`,
+/// `n_e = 2.9086` at 589.3 nm) against `0.1097` for the earlier Cauchy pair
+/// (`0.287 / 2.616`), a 3% increase, which moves a ~15% deviation by well under one
+/// percentage point even if it scaled quadratically. The `0.08..=0.25` window is
+/// therefore unchanged.
 #[test]
 fn rutile_fresnel_diverges_from_isotropic_effective_index_approximation_by_about_15_percent() {
     use crate::optics::{birefringence::BirefringenceParams, materials::GemMaterial};
@@ -243,8 +251,9 @@ fn rutile_fresnel_diverges_from_isotropic_effective_index_approximation_by_about
     let n_o = rutile.dispersion.evaluate(589.3);
     let n_e = rutile.extraordinary_index_at(589.3, n_o);
     assert!(
-        (n_e - n_o - 0.287).abs() < 1e-3,
-        "test premise: Rutile's birefringence should be +0.287, got n_o={n_o} n_e={n_e}"
+        (n_e - n_o - rutile.birefringence_delta).abs() < 1e-3
+            && (rutile.birefringence_delta - 0.2957).abs() < 1e-4,
+        "test premise: Rutile's birefringence should be +0.2957, got n_o={n_o} n_e={n_e}"
     );
 
     let c_axis = Vec3::new(0.05, 0.95, 0.3).normalize();
@@ -272,7 +281,7 @@ fn rutile_fresnel_diverges_from_isotropic_effective_index_approximation_by_about
         (0.08..=0.25).contains(&relative_deviation),
         "Rutile's new closed-form |r_pp|^2 (={r_pp_new_sq}) should diverge from the \
          old effective-index approximation r_p^2 (={r_pp_old_sq}) by roughly the \
-         ~15% the review predicted -- got {:.2}%",
+         ~15% expected -- got {:.2}%",
         relative_deviation * 100.0
     );
 }

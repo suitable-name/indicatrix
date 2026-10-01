@@ -31,48 +31,36 @@
 //! read directly by `view::push_trace_staleness`.
 //!
 //! Reachable only from within `gui::editor` -- see [`ResultKind`]/[`stamp`]/
-//! [`clear`]/[`refresh_badges`]'s own visibility.
+//! [`clear`]/[`refresh_badges`]'s own visibility. The registry itself
+//! (`ResultKind`/`StaleStamps`) lives in `indicatrix_editor::stale`, shared with the
+//! web app; this module keeps the UI-thread holder and the Slint badge push.
 
 use crate::{MainWindow, RetargetModel};
+pub(in crate::gui::editor) use indicatrix_editor::stale::ResultKind;
+use indicatrix_editor::stale::StaleStamps;
 use slint::ComponentHandle;
-use std::{cell::RefCell, collections::BTreeMap};
-
-/// Which analysis result a generation stamp names. `Ord`/`PartialOrd` (needed only
-/// for `BTreeMap`'s key bound, per this crate's "no `HashMap`/`HashSet` iteration
-/// in a decision path" house rule) follow the derive order below, which has no
-/// significance beyond satisfying the trait.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(in crate::gui::editor) enum ResultKind {
-    /// "Retarget for material"'s held proposal (`RetargetModel.rows`/`notes`) --
-    /// see the module doc comment for why this is the one result actually using
-    /// this registry today.
-    Retarget,
-}
+use std::cell::RefCell;
 
 thread_local! {
     /// UI-thread-only bookkeeping (Slint's event loop is single-threaded, the same
     /// soundness argument `callbacks::retarget_actions::RETARGET_ASYNC`'s own doc
     /// comment makes for its own `thread_local!`) -- the generation each
     /// [`ResultKind`] was last [`stamp`]ed at, or absent for "no result to badge".
-    static STAMPS: RefCell<BTreeMap<ResultKind, u64>> = const { RefCell::new(BTreeMap::new()) };
+    static STAMPS: RefCell<StaleStamps> = const { RefCell::new(StaleStamps::new()) };
 }
 
 /// Records that `kind`'s current result was computed against `generation` --
 /// called the moment a fresh result actually lands (a rebuilt Shift-mode proposal,
 /// a completed async Optimize-mode search).
 pub(in crate::gui::editor) fn stamp(kind: ResultKind, generation: u64) {
-    STAMPS.with(|cell| {
-        cell.borrow_mut().insert(kind, generation);
-    });
+    STAMPS.with(|cell| cell.borrow_mut().stamp(kind, generation));
 }
 
 /// Forgets `kind`'s stamp -- called whenever its result is discarded outright
 /// (the dialog closes, the held proposal is applied/cancelled) so a badge can
 /// never survive its own result.
 pub(in crate::gui::editor) fn clear(kind: ResultKind) {
-    STAMPS.with(|cell| {
-        cell.borrow_mut().remove(&kind);
-    });
+    STAMPS.with(|cell| cell.borrow_mut().clear(kind));
 }
 
 /// Re-derives every `*_stale` Slint property this registry drives, against the
@@ -81,70 +69,9 @@ pub(in crate::gui::editor) fn clear(kind: ResultKind) {
 /// Deep-Solve/Optimize staleness pushes (see the module doc comment for why those
 /// two are not routed through here).
 pub(in crate::gui::editor) fn refresh_badges(ui: &MainWindow, live_generation: u64) {
-    let stamped = |kind: ResultKind| STAMPS.with(|cell| cell.borrow().get(&kind).copied());
-    ui.global::<RetargetModel>()
-        .set_stale(super::state::result_is_stale(
-            stamped(ResultKind::Retarget),
-            live_generation,
-        ));
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_kind_with_no_stamp_is_never_stale() {
-        STAMPS.with(|cell| cell.borrow_mut().clear());
-        assert_eq!(
-            STAMPS.with(|cell| cell.borrow().get(&ResultKind::Retarget).copied()),
-            None
-        );
-    }
-
-    #[test]
-    fn stamping_then_reading_back_the_same_generation_round_trips() {
-        STAMPS.with(|cell| cell.borrow_mut().clear());
-        stamp(ResultKind::Retarget, 7);
-        assert_eq!(
-            STAMPS.with(|cell| cell.borrow().get(&ResultKind::Retarget).copied()),
-            Some(7)
-        );
-    }
-
-    #[test]
-    fn clearing_a_stamped_kind_forgets_it() {
-        STAMPS.with(|cell| cell.borrow_mut().clear());
-        stamp(ResultKind::Retarget, 3);
-        clear(ResultKind::Retarget);
-        assert_eq!(
-            STAMPS.with(|cell| cell.borrow().get(&ResultKind::Retarget).copied()),
-            None
-        );
-    }
-
-    #[test]
-    fn restamping_overwrites_the_previous_generation() {
-        STAMPS.with(|cell| cell.borrow_mut().clear());
-        stamp(ResultKind::Retarget, 1);
-        stamp(ResultKind::Retarget, 2);
-        assert_eq!(
-            STAMPS.with(|cell| cell.borrow().get(&ResultKind::Retarget).copied()),
-            Some(2)
-        );
-    }
-
-    #[test]
-    fn result_is_stale_agrees_with_a_stamped_then_moved_generation() {
-        // The actual decision `refresh_badges` reduces to for each kind -- exercised
-        // here directly (rather than through a live `MainWindow`, which this crate's
-        // test environment cannot construct -- see `activity`'s own test module doc
-        // comment for the identical constraint) against `state::result_is_stale`,
-        // the same pure function Deep Solve/Optimize's own staleness already uses.
-        STAMPS.with(|cell| cell.borrow_mut().clear());
-        stamp(ResultKind::Retarget, 5);
-        let stamped = STAMPS.with(|cell| cell.borrow().get(&ResultKind::Retarget).copied());
-        assert!(!super::super::state::result_is_stale(stamped, 5));
-        assert!(super::super::state::result_is_stale(stamped, 6));
-    }
+    let stale = STAMPS.with(|cell| {
+        cell.borrow()
+            .is_stale(ResultKind::Retarget, live_generation)
+    });
+    ui.global::<RetargetModel>().set_stale(stale);
 }

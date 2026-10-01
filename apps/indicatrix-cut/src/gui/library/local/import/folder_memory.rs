@@ -1,5 +1,5 @@
 //! Remembers where the cutter last imported/saved to, and quietly checks that
-//! folder for new `.asc` files once per session.
+//! folder for new `.asc`/`.gem`/`.gcs` files once per session.
 
 use super::confirm::count_pending_collisions;
 use crate::{LibraryModel, MainWindow, gui::show_toast, settings::SettingsPersister};
@@ -27,13 +27,13 @@ pub(super) fn last_save_folder(settings_store: &Arc<SettingsPersister>) -> Optio
 }
 
 /// The library never rescans the save folder on its own; once per session, this
-/// quietly checks [`last_save_folder`] for `.asc` files not yet in
+/// quietly checks [`last_save_folder`] for design files not yet in
 /// the local catalogue at all (the `total - collisions` half of
 /// [`count_pending_collisions`]'s own count) and, if it finds any, toasts a pointer at
 /// the existing "Choose folder..." picker rather than importing anything itself.
 ///
 /// Deliberately informational, not automatic: this app's own precedent for "something
-/// found at startup" (`setup_startup_restore`, `gui::editor::mod`) is an explicit
+/// found at startup" (`setup_startup_restore`, `gui::editor::setup`) is an explicit
 /// OFFER, never a silent action, for the same "must not surprise the cutter with an
 /// unasked-for write" reasoning -- an automatic
 /// import here would also have to decide, unasked, what to do about any filename
@@ -63,7 +63,7 @@ pub(super) fn spawn_save_folder_rescan(
             show_toast(
                 &ui,
                 &format!(
-                    "{new_files} new .asc file(s) found in your last save folder -- open \
+                    "{new_files} new design file(s) found in your last save folder -- open \
                      Import > Choose folder to bring {} in.",
                     if new_files == 1 { "it" } else { "them" }
                 ),

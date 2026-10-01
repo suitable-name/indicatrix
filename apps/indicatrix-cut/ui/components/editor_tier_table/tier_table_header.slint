@@ -33,7 +33,14 @@ export component TierTableHeader inherits Rectangle {
         padding-right: 4px;
         Text { width: root.col_hash_width; text: root.select_mode ? "\u{2713}" : "#"; font-size: 11px; font-weight: 700; color: root.select_mode ? Theme.accent-amber : Theme.text-muted; vertical-alignment: center; }
         Text { width: root.col_warn_width; text: ""; }
-        Text { width: root.col_block_width; text: ""; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+        // The row's block letter (`C`/`P`/`G`), derived from the tier's angle.
+        // 9px so the three-letter label fits the narrow `col_block_width`.
+        Rectangle {
+            width: root.col_block_width;
+            height: 100%;
+            Text { text: "C/P/G"; font-size: 9px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
+            Tooltip { text: @markdown("Block classified from the angle: C crown, P pavilion, G girdle (exactly 90 deg)."); }
+        }
         Text { width: root.col_angle_width; text: "ANGLE"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
         Text { horizontal-stretch: 1; min-width: root.col_name_min_width; overflow: elide; text: "NAME"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }
         Text { horizontal-stretch: 1; min-width: root.col_indices_min_width; overflow: elide; text: "INDICES"; font-size: 11px; font-weight: 700; color: Theme.text-muted; vertical-alignment: center; }

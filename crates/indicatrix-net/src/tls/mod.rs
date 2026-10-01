@@ -41,8 +41,28 @@ use std::{
     sync::Arc,
 };
 
+mod key_file;
+
+pub use key_file::write_private_key_pem;
+
 /// A SHA-256 client-certificate fingerprint, as stored in an [`Allowlist`].
 pub type Fingerprint = [u8; 32];
+
+/// The host part of a `host:port` address, as `rustls::pki_types::ServerName` accepts it.
+///
+/// Everything before the last `:`, with the square brackets of an IPv6 literal
+/// (`[::1]:7879`) removed; `None` if `addr` has no `:`. The one place this rule lives, so every dialer (enrollment, join, desktop viewer)
+/// handles bracketed IPv6 the same way. Full validation still happens in
+/// `ServerName::try_from`.
+#[must_use]
+pub fn host_for_server_name(addr: &str) -> Option<&str> {
+    let (host, _port) = addr.rsplit_once(':')?;
+    Some(
+        host.strip_prefix('[')
+            .and_then(|h| h.strip_suffix(']'))
+            .unwrap_or(host),
+    )
+}
 
 /// Everything that can go wrong loading certs/keys from disk or building a `rustls`
 /// config from them.
@@ -52,16 +72,17 @@ pub type Fingerprint = [u8; 32];
 /// certificate, a clock-skew rejection, and a CA mismatch stay distinguishable.
 #[derive(Debug)]
 pub enum TlsError {
+    /// `path` couldn't be opened or read.
     Io {
         path: PathBuf,
         source: std::io::Error,
     },
-    NoCertificates {
-        path: PathBuf,
-    },
-    NoPrivateKey {
-        path: PathBuf,
-    },
+    /// `path` was read but contained no PEM-encoded certificate.
+    NoCertificates { path: PathBuf },
+    /// `path` was read but contained no recognizable private key block.
+    NoPrivateKey { path: PathBuf },
+    /// `rustls` itself refused a certificate, key, or handshake (expired, clock skew,
+    /// wrong CA, no matching SAN, or a malformed config) -- its own `Display` names which.
     Rustls(rustls::Error),
     /// A malformed line in an [`Allowlist`] file: not blank, not a `#` comment, and not
     /// 64 hex characters.
@@ -316,16 +337,19 @@ impl Allowlist {
         Ok(Self { fingerprints })
     }
 
+    /// Whether `fp` is in the allowlist.
     #[must_use]
     pub fn contains(&self, fp: &Fingerprint) -> bool {
         self.fingerprints.contains(fp)
     }
 
+    /// Number of fingerprints in the allowlist.
     #[must_use]
     pub fn len(&self) -> usize {
         self.fingerprints.len()
     }
 
+    /// Whether the allowlist holds no fingerprints.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.fingerprints.is_empty()
@@ -353,6 +377,12 @@ pub fn sanitize_allowlist_label(label: &str) -> String {
     label.replace(['\r', '\n', '#'], "_")
 }
 
+/// Serializes every [`append_to_allowlist`] call within this process against every
+/// other -- see that function's doc comment. Does not protect against a SECOND
+/// process appending to the same file at the same time; enrollment is expected to run
+/// from one `serve` process per allowlist file.
+static ALLOWLIST_APPEND_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Appends one `fingerprint  # label` line to the allowlist file at `path`, creating
 /// the file (and its parent directory) if it doesn't exist yet.
 ///
@@ -360,125 +390,83 @@ pub fn sanitize_allowlist_label(label: &str) -> String {
 /// automatically; removing trust later is still the manual one-line file edit above.
 /// `label` is sanitized via [`sanitize_allowlist_label`] before being written.
 ///
+/// # Corruption this guards against
+///
+/// Three separate hazards, all closed here:
+/// 1. **No trailing newline on the existing file's last line.** A hand-edited allowlist
+///    that doesn't end in `\n` would otherwise glue the new fingerprint onto the
+///    previous line's comment (that entry silently stops parsing as a bare
+///    fingerprint) or directly onto a bare fingerprint (128 hex characters in a row,
+///    which [`Allowlist::load`] rejects as [`TlsError::MalformedAllowlistLine`] --
+///    failing every client, not just the new one, since `load` treats one bad line as a
+///    hard parse error). Detected by reading the file's last byte first and prefixing a
+///    `\n` onto the new line when it's missing (or the file is empty/new).
+/// 2. **Multiple `write_all` calls from one appender.** The pre-fix code used `writeln!`
+///    on a `File`, whose blanket `io::Write` impl of `write_fmt` performs one
+///    `write_all` per piece of the format string (the fingerprint, the literal
+///    `"  # "`, the label, the newline) rather than one for the whole line --
+///    interleave-able by another thread's write between any of those pieces even within
+///    ONE process. Fixed by building the complete line in a `String` first and writing
+///    it with exactly one `write_all` call.
+/// 3. **Two concurrent claims in DIFFERENT threads of this same process.** Even a
+///    single `write_all` per call doesn't prevent two such calls from interleaving with
+///    each other (two `O_APPEND` writers can still race at the OS level on some
+///    platforms, and nothing serialized the "check trailing newline, then write" pair
+///    above across threads). [`ALLOWLIST_APPEND_LOCK`] holds all of it -- the trailing-
+///    newline read, the write, and the post-write re-validation below -- under one
+///    process-wide mutex.
+///
+/// Re-validates with [`Allowlist::load`] after writing (holding the same lock) so a
+/// write that somehow still produced a malformed file is caught immediately, as an
+/// error from THIS call, rather than silently failing every future connection's
+/// allowlist check.
+///
 /// # Errors
 ///
-/// [`TlsError::Io`] if the parent directory can't be created or the file can't be
-/// opened for appending.
+/// [`TlsError::Io`] if the parent directory can't be created, the existing file can't be
+/// read, or the file can't be opened for appending/written to.
+/// [`TlsError::MalformedAllowlistLine`] if the post-write re-validation finds the file
+/// malformed despite this call's own write (see point 3 above for what that would mean).
 pub fn append_to_allowlist(path: &Path, fp: &Fingerprint, label: &str) -> Result<(), TlsError> {
     use std::io::Write;
+
+    let _guard = ALLOWLIST_APPEND_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
 
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
         std::fs::create_dir_all(parent).map_err(|e| io_err(path, e))?;
     }
+
+    // Whether the file already ends in a newline (or doesn't exist / is empty, in which
+    // case no leading newline is needed either) -- see point 1 above.
+    let needs_leading_newline = match std::fs::read(path) {
+        Ok(bytes) => !bytes.is_empty() && bytes.last() != Some(&b'\n'),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(e) => return Err(io_err(path, e)),
+    };
+
+    let mut line = String::new();
+    if needs_leading_newline {
+        line.push('\n');
+    }
+    line.push_str(&fingerprint_to_hex(fp));
+    line.push_str("  # ");
+    line.push_str(&sanitize_allowlist_label(label));
+    line.push('\n');
+
     let mut file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(path)
         .map_err(|e| io_err(path, e))?;
-    writeln!(
-        file,
-        "{}  # {}",
-        fingerprint_to_hex(fp),
-        sanitize_allowlist_label(label)
-    )
-    .map_err(|e| io_err(path, e))?;
-    Ok(())
-}
+    file.write_all(line.as_bytes())
+        .map_err(|e| io_err(path, e))?;
+    drop(file);
 
-/// Writes a PEM-encoded private key to `path` and immediately restricts its permissions.
-///
-/// `restrict_key_file` runs before this function returns successfully, not as a
-/// separate pass after, so there's no window where the key file is observable
-/// unprotected. If restricting permissions fails, the just-written file is deleted
-/// rather than left behind unprotected.
-///
-/// Shared by `apps/indicatrix-worker` and `apps/indicatrix-cut` (via
-/// [`crate::enroll::claim`]'s `client.key`). Returns a plain `String` rather than
-/// [`TlsError`] since the failure modes here (directory creation, an external
-/// `icacls`/`whoami` process) aren't TLS or certificate-parsing errors.
-///
-/// # Errors
-///
-/// A human-readable message if the parent directory can't be created, the file can't be
-/// written, or its permissions can't be restricted (see `restrict_key_file`).
-pub fn write_private_key_pem(path: &Path, pem: &str) -> Result<(), String> {
-    if let Some(parent) = path.parent()
-        && !parent.as_os_str().is_empty()
-    {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("could not create {}: {e}", parent.display()))?;
-    }
-    std::fs::write(path, pem).map_err(|e| format!("could not write {}: {e}", path.display()))?;
-
-    if let Err(e) = restrict_key_file(path) {
-        let _ = std::fs::remove_file(path);
-        return Err(format!(
-            "wrote {} but could not restrict its permissions ({e}) -- the file has been removed rather than left \
-             behind world-readable; fix the underlying issue and retry",
-            path.display()
-        ));
-    }
-    Ok(())
-}
-
-/// Restricts `path` to the current user (plus `SYSTEM` and `Administrators`) via
-/// `icacls` -- Windows has no `chmod`, so this needs an ACL instead.
-#[cfg(windows)]
-fn restrict_key_file(path: &Path) -> Result<(), String> {
-    let user = current_user_account()?;
-    let path_str = path.to_str().ok_or_else(|| {
-        format!(
-            "{}: path is not valid Unicode, icacls requires a printable path",
-            path.display()
-        )
-    })?;
-
-    let status = std::process::Command::new("icacls")
-        .arg(path_str)
-        // Drop inherited ACEs (parent dirs typically grant `Users` read access) before
-        // granting anything back, so the end state is exactly the three grants below.
-        .arg("/inheritance:r")
-        .arg("/grant:r")
-        .arg(format!("{user}:F"))
-        .arg("/grant:r")
-        .arg("SYSTEM:F")
-        // Administrators by well-known SID: the localized group name varies by display language.
-        .arg("/grant:r")
-        .arg("*S-1-5-32-544:F")
-        // icacls's own success chatter isn't useful; the exit status is what's checked.
-        .stdout(std::process::Stdio::null())
-        .status()
-        .map_err(|e| format!("failed to run icacls: {e}"))?;
-
-    if !status.success() {
-        return Err(format!("icacls exited with {status}"));
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn current_user_account() -> Result<String, String> {
-    let output = std::process::Command::new("whoami")
-        .output()
-        .map_err(|e| format!("failed to run whoami: {e}"))?;
-    if !output.status.success() {
-        return Err(format!("whoami exited with {}", output.status));
-    }
-    let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if name.is_empty() {
-        return Err("whoami printed no output".to_string());
-    }
-    Ok(name)
-}
-
-/// Non-Windows fallback: `chmod 600`.
-#[cfg(not(windows))]
-fn restrict_key_file(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| format!("chmod 600 failed: {e}"))
+    Allowlist::load(path).map(|_| ())
 }
 
 #[cfg(test)]
@@ -491,6 +479,14 @@ mod tests {
         let hex = fingerprint_to_hex(&fp);
         assert_eq!(hex.len(), 64);
         assert_eq!(fingerprint_from_hex(&hex), Some(fp));
+    }
+
+    #[test]
+    fn host_for_server_name_strips_ipv6_brackets() {
+        assert_eq!(host_for_server_name("127.0.0.1:7879"), Some("127.0.0.1"));
+        assert_eq!(host_for_server_name("worker.lan:7879"), Some("worker.lan"));
+        assert_eq!(host_for_server_name("[::1]:7879"), Some("::1"));
+        assert_eq!(host_for_server_name("worker.lan"), None);
     }
 
     #[test]
@@ -587,6 +583,43 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    /// Appending to a hand-edited allowlist whose last line has no trailing
+    /// newline must not glue the new fingerprint onto the previous line -- both entries
+    /// must parse as their own, separate lines.
+    #[test]
+    fn append_to_allowlist_prefixes_a_newline_when_the_file_lacks_a_trailing_one() {
+        let dir = std::env::temp_dir().join(format!(
+            "indicatrix-net-allowlist-no-trailing-newline-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("allowlist.txt");
+        let existing: Fingerprint = std::array::from_fn(|i| i as u8);
+        // Deliberately no trailing `\n` -- exactly the hand-edited shape described above.
+        std::fs::write(
+            &path,
+            format!("{}  # existing", fingerprint_to_hex(&existing)),
+        )
+        .unwrap();
+
+        let new_fp: Fingerprint = std::array::from_fn(|i| (i as u8).wrapping_add(1));
+        append_to_allowlist(&path, &new_fp, "new-client").unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            contents.lines().count(),
+            2,
+            "the new entry must be its own line, not glued onto the previous one: {contents:?}"
+        );
+
+        let list = Allowlist::load(&path).unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list.contains(&existing));
+        assert!(list.contains(&new_fp));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn append_to_allowlist_creates_file_and_parent_dir() {
         let dir = std::env::temp_dir().join(format!(
@@ -599,25 +632,6 @@ mod tests {
         append_to_allowlist(&path, &fp, "laptop").unwrap();
         let list = Allowlist::load(&path).unwrap();
         assert!(list.contains(&fp));
-
-        std::fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn write_private_key_pem_creates_parent_dirs_and_writes_the_exact_content() {
-        let dir = std::env::temp_dir().join(format!(
-            "indicatrix-net-write-key-test-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        let path = dir.join("nested").join("client.key");
-        let pem = "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----\n";
-
-        write_private_key_pem(&path, pem).unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), pem);
 
         std::fs::remove_dir_all(&dir).ok();
     }

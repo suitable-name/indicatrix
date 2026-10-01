@@ -91,6 +91,13 @@ fn try_split_exit_channel(
     fill_dir: vec3<f32>,
     sin_lp: f32,
     observer: vec3<f32>,
+    // optics::raytracer::refraction::ExitSplitCtx::split_mis_weight -- the balance-
+    // heuristic weight against a live incoming NEE carry from the scatter event that
+    // led into THIS bounce (`1.0` outside that case, reproducing the unweighted
+    // addition exactly). Computed once per bounce by the caller (mirrors
+    // `dispatch_bounce`'s CPU-side `exit.split_mis_weight` assignment), not here --
+    // this function stays a pure per-channel fan-out primitive.
+    split_mis_weight: f32,
 ) {
     let probe = intersect_ray(hit_point + dir_k * 1e-4, dir_k);
     if (probe.hit) {
@@ -98,7 +105,7 @@ fn try_split_exit_channel(
         return;
     }
     let env_spectral = sample_environment_with_rig(dir_k, lambda_k, key_dir, fill_dir, sin_lp, observer);
-    (*split_radiance)[k] = fma(max(transmitted_intensity, 0.0), env_spectral, (*split_radiance)[k]);
+    (*split_radiance)[k] = fma(max(transmitted_intensity, 0.0) * split_mis_weight, env_spectral, (*split_radiance)[k]);
 }
 
 // optics::raytracer::shading_normal_near_edge -- reads the `planes` storage binding

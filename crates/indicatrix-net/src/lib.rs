@@ -2,8 +2,9 @@
 //! every build speaks, and (optionally) offloading `indicatrix` spectral ray-sample
 //! computation to it as a remote render worker.
 //!
-//! Types, codec, and framing only -- no networking. Every function operates on an
-//! in-memory buffer, a `[u8]` slice, or a generic `Read`/`Write`, so the whole crate is
+//! Types, codec, and framing, plus one small client: [`enroll::claim`] opens a
+//! `TcpStream` to a worker's enrollment listener. Everything else operates on an
+//! in-memory buffer, a `[u8]` slice, or a generic `Read`/`Write`, so the crate is
 //! testable with `std::io::Cursor`. `apps/indicatrix-worker` wires these to a real
 //! `TcpStream`/TLS connection.
 //!
@@ -27,8 +28,9 @@
 //! splits by SAMPLE INDEX rather than screen-space tile, since a gem only occupies part
 //! of the frame and background pixels are nearly free to trace (tile partitioning would
 //! load-balance badly). Relies on RNG seeds deriving from `hash_u32(pixel_index,
-//! sample_number)` with decorrelated per-bounce streams;
-//! `tests/partition_correctness.rs` verifies additivity against `trace_spectral_ray`.
+//! sample_number)` with decorrelated per-bounce streams. Additivity against
+//! `trace_spectral_ray` itself is verified in `apps/indicatrix-worker`'s
+//! `render_core::mod` (around its partition test) and `live_split` (around its own).
 //!
 //! # Modules
 //!
@@ -57,17 +59,39 @@
 //!   for a certificate bundle. Shared by `indicatrix-worker`'s `cert claim` and
 //!   `indicatrix-cut`'s token-redeem UI.
 
+/// Viewer-side protocol driver -- see this doc comment's "Modules" section.
 pub mod client;
+/// The v14 8-bit picture payloads (`DISPLAY_FRAME`, `FINAL_IMAGE`) -- see this doc
+/// comment's "Modules" section.
 pub mod display;
+/// Enrollment wire messages and claiming client -- see this doc comment's "Modules"
+/// section.
 pub mod enroll;
+/// Length-prefixed message framing over any `Read`/`Write` -- see this doc comment's
+/// "Modules" section.
 pub mod framing;
+/// Build-compatibility check -- see this doc comment's "Modules" section.
 pub mod handshake;
+/// Read-only design-library sync protocol, always available -- see this doc comment's
+/// "Modules" section.
 pub mod library;
+/// `HELLO`/`WELCOME` and the tagged `ClientMessage`/`StreamEvent` families -- see this
+/// doc comment's "Modules" section.
 pub mod messages;
+/// Per-pixel radiance-buffer codec and the v14 lossless payload encodings -- see this
+/// doc comment's "Modules" section.
 pub mod radiance;
+/// [`scene::SceneState`] (`render` feature only).
+///
+/// Everything a worker needs to trace a frame's samples, fully resolved -- see this doc
+/// comment's "Modules" section.
 #[cfg(feature = "render")]
 pub mod scene;
+/// Mutual-TLS config and the client-certificate fingerprint allowlist -- see this doc
+/// comment's "Modules" section.
 pub mod tls;
+/// Compact `GW1-...` codec for one-time worker-enrollment tokens -- see this doc
+/// comment's "Modules" section.
 pub mod token;
 
 #[cfg(feature = "render")]

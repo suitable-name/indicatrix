@@ -3,24 +3,24 @@
 //! [`GcsInfo`] (free-text design metadata).
 
 /// The `<index .../>` element: the index-wheel setup shared by every tier.
+///
+/// Only `gear` is required. `base`, `symmetry` and `mirror` are optional and
+/// "represent the current state of the UI in the app ... NOT the values for
+/// symmetry/mirror as would be printed in a faceting diagram" (Gem Cut Studio
+/// User's Manual v1.1.0, p.58); the parser defaults them to `0`, `1` and `0`.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct GcsIndex {
-    /// Index-wheel tooth count. Confirmed to match `.asc`'s `g` line tooth count
-    /// (as a magnitude) -- see the module docs.
+    /// Index-wheel tooth count. Matches `.asc`'s `g` line tooth count as a
+    /// magnitude (`.gcs` never signs it).
     pub gear: u32,
-    /// Kept as-is; presumed analogous to `.asc`'s gear reference-angle field, but
-    /// every sample in the corpus has `base = 0`, so this module has no non-zero
-    /// real example to confirm that against. Treat as **unconfirmed**.
+    /// UI state: the base index the app was set to (manual pp.36-44). `0` in
+    /// every corpus file. Not `.asc`'s gear offset.
     pub base: f64,
-    /// Kept as-is. Sometimes matches the design's real rotational symmetry order
-    /// (per its `.asc` sibling), but is very often `1` regardless -- see the
-    /// module docs. Treat as **unconfirmed** unless cross-checked against another
-    /// source for the specific design at hand.
+    /// UI state: the symmetry of the tier being cut, which "does not necessarily
+    /// define the final gem's symmetry" (manual p.40). Not a design property.
     pub symmetry: u32,
-    /// Kept as-is. **Not a boolean.** Real corpus values include `0` through `5`,
-    /// which rules out a simple flag matching `.asc`'s `y`/`n` mirror field. This
-    /// module could not determine what the value represents -- see the module
-    /// docs.
+    /// UI state: the ± mirror offset in index steps around the base index (manual
+    /// pp.41-44), `0` to `5` in the corpus. Not a boolean mirror flag.
     pub mirror: u32,
 }
 
@@ -45,9 +45,8 @@ pub struct GcsRender {
     /// Material name as Gem Cut Studio's own material library names it (e.g.
     /// `"176 Corundum"`, or the literal `"(from file)"` seen in some samples).
     pub material: String,
-    /// Refractive index. Confirmed to match `.asc`'s `I` line in every pair
-    /// checked where the two files describe the same material -- see the module
-    /// docs' "Known discrepancies" for the ones that do not.
+    /// Refractive index. Matches `.asc`'s `I` line wherever the two files describe
+    /// the same material. `0.0` when the attribute is absent.
     pub refractive_index: f64,
     /// Dispersion value, as Gem Cut Studio's material library records it.
     pub dispersion: f64,

@@ -1,0 +1,663 @@
+import { Button, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { AppModel } from "../models/app_model.slint";
+import { GuideModel } from "../models/guide_model.slint";
+
+// One row of the gear-remap confirmation (`indicatrix_editor::material::GearRemapPreviewRow`).
+export struct GearRemapRow {
+    name: string,
+    old-indices: string,
+    new-indices: string,
+    non-integral: bool,
+}
+
+// The design's schedule-wide settings (modelled on the desktop's
+// `editor_design_settings.slint`): material, RI override and colour, index gear (with
+// the remap confirmation), symmetry and mirror, title / headers / footnotes, printed
+// proportions. Pushed by `src/editor/settings`.
+export global DesignSettingsModel {
+    in-out property <bool> open: false;
+
+    // -- Material ----------------------------------------------------------------------
+    in property <[string]> material-options: [];
+    in-out property <int> material-index: 0;
+    in-out property <string> ri-override-text: "";
+    in property <[string]> colour-options: [];
+    in-out property <int> colour-index: 0;
+    in property <string> effective-ri-text: "";
+    in property <string> critical-angle-text: "";
+    // Where the effective RI came from (`indicatrix_editor::material::ri_source_text`).
+    in property <string> ri-source-text: "";
+    // The inferred-material guess ("Sapphire? (from RI 1.76)"), `""` once a material is
+    // named; the name it would set; the other candidates within tolerance.
+    in property <string> guess-text: "";
+    in property <string> guess-name: "";
+    in property <string> guess-others: "";
+
+    // -- Index gear and symmetry ---------------------------------------------------------
+    in-out property <int> gear-index: 0;
+    in-out property <string> gear-custom-text: "";
+    in-out property <string> symmetry-order-text: "";
+    in-out property <bool> mirror: true;
+    // "N tiers would become incomplete orbits" for the typed order / mirror.
+    in property <string> symmetry-preview-text: "";
+
+    // -- Details -----------------------------------------------------------------------
+    in-out property <string> title: "";
+    in-out property <string> extra-headers: "";
+    in-out property <string> footnotes: "";
+    in-out property <string> gear-reference-angle: "";
+
+    // -- Printed proportions ---------------------------------------------------------------
+    in-out property <string> printed-vol-w3: "";
+    in-out property <string> printed-lw: "";
+    in-out property <string> printed-cw: "";
+    in-out property <string> printed-pw: "";
+    in-out property <string> printed-hw: "";
+
+    // -- Unapplied-edit markers ("Apply Material *") ------------------------------------------
+    in-out property <bool> material-pending: false;
+    in-out property <bool> gear-pending: false;
+    in-out property <bool> symmetry-pending: false;
+    in-out property <bool> meta-pending: false;
+    in-out property <bool> printed-pending: false;
+
+    // -- The gear-remap confirmation ---------------------------------------------------------
+    in property <bool> gear-remap-open: false;
+    in property <[GearRemapRow]> gear-remap-rows: [];
+
+    // -- The custom-material editor (a compact one: the fields that decide the optics) ------
+    in-out property <bool> custom-open: false;
+    in-out property <string> custom-name: "";
+    in-out property <string> custom-ri: "1.60";
+    in-out property <string> custom-dispersion: "0.020";
+    in-out property <string> custom-birefringence: "0";
+    in-out property <string> custom-specific-gravity: "";
+    in-out property <int> custom-colour-index: 0;
+    in property <string> custom-error: "";
+
+    callback apply-material();
+    // Builds the material from the `custom-*` fields, offers it in the material lists and
+    // makes it this design's material.
+    callback save-custom-material();
+    callback apply-gear();
+    callback remap-set-rounding(int);
+    callback remap-confirm();
+    callback remap-cancel();
+    callback apply-symmetry();
+    // The order field or the mirror switch changed: refresh the preview text.
+    callback symmetry-edited();
+    callback apply-meta();
+    callback apply-printed();
+    callback set-material-from-guess();
+}
+
+component Lbl inherits Text {
+    font-size: 10px;
+    color: Theme.text-muted;
+}
+
+component Section inherits Text {
+    font-size: 11px;
+    font-weight: 700;
+    color: Theme.text-primary;
+}
+
+component Rule inherits Rectangle {
+    height: 1px;
+    background: Theme.border-subtle;
+}
+
+// A read-only "Eff. RI: 1.5442" chip.
+component Chip inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    background: Theme.bg-input;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        padding-top: 4px;
+        padding-bottom: 4px;
+        spacing: 4px;
+        Text { text: root.label; font-size: 11px; color: Theme.text-muted; }
+        Text { text: root.value == "" ? "-" : root.value; font-size: 11px; font-weight: 600; color: Theme.text-primary; }
+    }
+}
+
+// A labelled text field bound to a global string.
+component TextField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> placeholder: "";
+    in-out property <string> value;
+    callback edited();
+    callback accepted();
+    spacing: 3px;
+    Lbl { text: root.label; }
+    LineEdit {
+        // The style's LineEdit is at least 160px wide, which stretched every row that holds
+        // two or more fields past the dialog and made its whole body scroll sideways.
+        min-width: 0px;
+        text <=> root.value;
+        placeholder-text: root.placeholder;
+        edited => { root.edited(); }
+        accepted => { root.accepted(); }
+        changed has-focus => { AppModel.text-focus = self.has-focus; }
+    }
+}
+
+// The schedule-wide settings as a modal, opened by Design > Design settings...
+// (`DesignSettingsModel.open`); mounted by `app.slint`.
+export component DesignSettingsDialog inherits Rectangle {
+    background: Theme.overlay-backdrop;
+
+    TouchArea {
+        clicked => { DesignSettingsModel.open = false; }
+    }
+
+    FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                DesignSettingsModel.open = false;
+                return accept;
+            }
+            reject
+        }
+    }
+
+    Rectangle {
+        width: min(600px, root.width - 32px);
+        height: min(620px, root.height - 32px);
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        background: Theme.bg-card;
+        border-radius: Theme.radius-md;
+        // The guided walkthrough outlines the dialog on its "Pick a real material" step.
+        border-width: GuideModel.highlight-target == "design_settings" ? 2px : 1px;
+        border-color: GuideModel.highlight-target == "design_settings" ? Theme.accent-cyan : Theme.border-medium;
+        drop-shadow-blur: 20px;
+        drop-shadow-color: Theme.toast-shadow;
+        clip: true;
+
+        TouchArea {}
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+
+            HorizontalLayout {
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Design settings";
+                    font-size: 14px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                }
+                Button {
+                    text: "Close";
+                    clicked => { DesignSettingsModel.open = false; }
+                }
+            }
+
+            ScrollView {
+                vertical-stretch: 1;
+                // The body is laid out at the visible width, never wider: a row too wide for a
+                // phone-width dialog then squeezes its fields (and wraps its text) instead of
+                // pushing the RI override and the Apply buttons out of sight to the right.
+                content-width: self.visible-width;
+                VerticalLayout {
+                    spacing: 8px;
+                    padding-right: 12px;
+
+                    Section { text: "Material"; }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 3px;
+                            Lbl { text: "Material"; }
+                            ComboBox {
+                                min-width: 0px;
+                                model: DesignSettingsModel.material-options;
+                                current-index <=> DesignSettingsModel.material-index;
+                                selected => { DesignSettingsModel.material-pending = true; }
+                            }
+                        }
+                        VerticalLayout {
+                            width: 100px;
+                            spacing: 3px;
+                            Lbl { text: "RI override"; }
+                            LineEdit {
+                                min-width: 0px;
+                                text <=> DesignSettingsModel.ri-override-text;
+                                placeholder-text: "auto";
+                                edited => { DesignSettingsModel.material-pending = true; }
+                                accepted => { DesignSettingsModel.apply-material(); }
+                                changed has-focus => { AppModel.text-focus = self.has-focus; }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 3px;
+                            Lbl { text: "Colour"; }
+                            ComboBox {
+                                min-width: 0px;
+                                model: DesignSettingsModel.colour-options;
+                                current-index <=> DesignSettingsModel.colour-index;
+                                selected => { DesignSettingsModel.material-pending = true; }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: end;
+                            Button {
+                                text: DesignSettingsModel.material-pending ? "Apply Material *" : "Apply Material";
+                                enabled: GuideModel.allows-design-settings();
+                                primary: DesignSettingsModel.material-pending;
+                                clicked => { DesignSettingsModel.apply-material(); }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Chip { label: "Eff. RI:"; value: DesignSettingsModel.effective-ri-text; }
+                        Chip { label: "Crit.:"; value: DesignSettingsModel.critical-angle-text; }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    Text {
+                        text: DesignSettingsModel.ri-source-text;
+                        font-size: 10px;
+                        color: Theme.text-secondary;
+                        wrap: word-wrap;
+                    }
+                    if DesignSettingsModel.guess-text != "": HorizontalLayout {
+                        spacing: 6px;
+                        Rectangle {
+                            width: guess-lbl.preferred-width + 10px;
+                            height: guess-lbl.preferred-height + 6px;
+                            background: Theme.accent-amber.with-alpha(0.14);
+                            border-radius: Theme.radius-sm;
+                            border-width: 1px;
+                            border-color: Theme.accent-amber;
+                            guess-lbl := Text {
+                                text: DesignSettingsModel.guess-text;
+                                font-size: 10px;
+                                font-italic: true;
+                                color: Theme.accent-amber;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Button {
+                            text: "Set material";
+                            enabled: GuideModel.allows-design-settings();
+                            clicked => { DesignSettingsModel.set-material-from-guess(); }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    if DesignSettingsModel.guess-text != "" && DesignSettingsModel.guess-others != "": Text {
+                        text: DesignSettingsModel.guess-others;
+                        font-size: 9px;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+
+                    // The render material: the Render tab has the one "Linked to design"
+                    // switch (its MATERIAL section); this dialog only points at it.
+                    Text {
+                        text: "The Render view follows this material while \"Linked to design\" is on (Render settings > MATERIAL).";
+                        font-size: 9px;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+
+                    // A material of your own (a compact editor: the desktop's has more pickers).
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Button {
+                            text: DesignSettingsModel.custom-open ? "Custom material \u{25BC}" : "Custom material \u{25B6}";
+                            enabled: GuideModel.allows-design-settings();
+                            clicked => { DesignSettingsModel.custom-open = !DesignSettingsModel.custom-open; }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    if DesignSettingsModel.custom-open: VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: "Define a material by its optics. Saving offers it in every material list and sets it as this design's material; the native file keeps it, colour included.";
+                            font-size: 9px;
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                        }
+                        TextField {
+                            label: "Name";
+                            value <=> DesignSettingsModel.custom-name;
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            TextField {
+                                label: "Refractive index (1.30 - 3.20)";
+                                value <=> DesignSettingsModel.custom-ri;
+                            }
+                            TextField {
+                                label: "Dispersion (0 - 0.12)";
+                                value <=> DesignSettingsModel.custom-dispersion;
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 6px;
+                            TextField {
+                                label: "Birefringence (-0.05 - 0.10)";
+                                value <=> DesignSettingsModel.custom-birefringence;
+                            }
+                            TextField {
+                                label: "Specific gravity (blank: none)";
+                                value <=> DesignSettingsModel.custom-specific-gravity;
+                            }
+                        }
+                        HorizontalLayout {
+                            spacing: 10px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 3px;
+                                Lbl { text: "Colour"; }
+                                ComboBox {
+                                    min-width: 0px;
+                                    model: DesignSettingsModel.colour-options;
+                                    current-index <=> DesignSettingsModel.custom-colour-index;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: end;
+                                Button {
+                                    text: "Save and use";
+                                    primary: true;
+                                    enabled: GuideModel.allows-design-settings();
+                                    clicked => { DesignSettingsModel.save-custom-material(); }
+                                }
+                            }
+                        }
+                        if DesignSettingsModel.custom-error != "": Text {
+                            text: DesignSettingsModel.custom-error;
+                            font-size: 10px;
+                            font-weight: 700;
+                            color: Theme.danger;
+                            wrap: word-wrap;
+                        }
+                    }
+
+                    Rule {}
+                    Section { text: "Index gear and symmetry"; }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 3px;
+                            Lbl { text: "Index gear"; }
+                            ComboBox {
+                                min-width: 0px;
+                                model: ["96", "80", "77", "72", "64", "120", "Custom"];
+                                current-index <=> DesignSettingsModel.gear-index;
+                                selected => { DesignSettingsModel.gear-pending = true; }
+                            }
+                        }
+                        if DesignSettingsModel.gear-index == 6: VerticalLayout {
+                            width: 90px;
+                            spacing: 3px;
+                            Lbl { text: "Custom teeth"; }
+                            LineEdit {
+                                min-width: 0px;
+                                text <=> DesignSettingsModel.gear-custom-text;
+                                edited => { DesignSettingsModel.gear-pending = true; }
+                                changed has-focus => { AppModel.text-focus = self.has-focus; }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: end;
+                            Button {
+                                text: DesignSettingsModel.gear-pending ? "Apply Gear *" : "Apply Gear";
+                                enabled: GuideModel.allows-design-settings();
+                                primary: DesignSettingsModel.gear-pending;
+                                clicked => { DesignSettingsModel.apply-gear(); }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            preferred-width: 110px;
+                            min-width: 70px;
+                            spacing: 3px;
+                            // Short on a phone-width dialog: the full label plus the Apply
+                            // button ran past the content width.
+                            Lbl { text: root.width < 520px ? "Sym. order" : "Symmetry order"; }
+                            LineEdit {
+                                min-width: 0px;
+                                text <=> DesignSettingsModel.symmetry-order-text;
+                                edited => {
+                                    DesignSettingsModel.symmetry-pending = true;
+                                    DesignSettingsModel.symmetry-edited();
+                                }
+                                accepted => { DesignSettingsModel.apply-symmetry(); }
+                                changed has-focus => { AppModel.text-focus = self.has-focus; }
+                            }
+                        }
+                        VerticalLayout {
+                            spacing: 3px;
+                            Lbl { text: "Mirror"; }
+                            Rectangle {
+                                width: 32px;
+                                height: 20px;
+                                border-radius: 10px;
+                                background: DesignSettingsModel.mirror ? Theme.accent-cyan : Theme.bg-card-hover;
+                                TouchArea {
+                                    clicked => {
+                                        DesignSettingsModel.mirror = !DesignSettingsModel.mirror;
+                                        DesignSettingsModel.symmetry-pending = true;
+                                        DesignSettingsModel.symmetry-edited();
+                                    }
+                                }
+                                Rectangle {
+                                    width: 14px;
+                                    height: 14px;
+                                    border-radius: 7px;
+                                    background: white;
+                                    x: DesignSettingsModel.mirror ? parent.width - self.width - 3px : 3px;
+                                    y: 3px;
+                                    animate x { duration: 120ms; }
+                                }
+                            }
+                        }
+                        if root.width >= 520px: VerticalLayout {
+                            alignment: end;
+                            Button {
+                                text: DesignSettingsModel.symmetry-pending ? "Apply Symmetry *" : "Apply Symmetry";
+                                enabled: GuideModel.allows-design-settings();
+                                primary: DesignSettingsModel.symmetry-pending;
+                                clicked => { DesignSettingsModel.apply-symmetry(); }
+                            }
+                        }
+                    }
+                    // On a phone-width dialog the button gets its own row: beside the two
+                    // fields it ran past the content's right edge.
+                    if root.width < 520px: HorizontalLayout {
+                        Button {
+                            text: DesignSettingsModel.symmetry-pending ? "Apply Symmetry *" : "Apply Symmetry";
+                            enabled: GuideModel.allows-design-settings();
+                            primary: DesignSettingsModel.symmetry-pending;
+                            clicked => { DesignSettingsModel.apply-symmetry(); }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    if DesignSettingsModel.symmetry-preview-text != "": Text {
+                        text: DesignSettingsModel.symmetry-preview-text;
+                        font-size: 10px;
+                        color: Theme.text-secondary;
+                        wrap: word-wrap;
+                    }
+
+                    Rule {}
+                    Section { text: "Details"; }
+                    TextField {
+                        label: "Title (the .asc file's first header line)";
+                        value <=> DesignSettingsModel.title;
+                        edited => { DesignSettingsModel.meta-pending = true; }
+                    }
+                    TextField {
+                        label: "Extra header lines (join with \";\")";
+                        value <=> DesignSettingsModel.extra-headers;
+                        edited => { DesignSettingsModel.meta-pending = true; }
+                    }
+                    TextField {
+                        label: "Footnotes (join with \";\")";
+                        value <=> DesignSettingsModel.footnotes;
+                        edited => { DesignSettingsModel.meta-pending = true; }
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        TextField {
+                            width: 130px;
+                            label: "Gear ref. angle";
+                            value <=> DesignSettingsModel.gear-reference-angle;
+                            edited => { DesignSettingsModel.meta-pending = true; }
+                        }
+                        VerticalLayout {
+                            alignment: end;
+                            Button {
+                                text: DesignSettingsModel.meta-pending ? "Apply Details *" : "Apply Details";
+                                enabled: GuideModel.allows-design-settings();
+                                primary: DesignSettingsModel.meta-pending;
+                                clicked => { DesignSettingsModel.apply-meta(); }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+
+                    Rule {}
+                    Section { text: "Printed proportions"; }
+                    Text {
+                        text: "The figures printed on a GemCad-style sheet; blank means not typed. They are saved in a native file.";
+                        font-size: 10px;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        TextField {
+                            label: "Vol/W\u{b3}";
+                            value <=> DesignSettingsModel.printed-vol-w3;
+                            edited => { DesignSettingsModel.printed-pending = true; }
+                        }
+                        TextField {
+                            label: "L/W";
+                            value <=> DesignSettingsModel.printed-lw;
+                            edited => { DesignSettingsModel.printed-pending = true; }
+                        }
+                        TextField {
+                            label: "C/W";
+                            value <=> DesignSettingsModel.printed-cw;
+                            edited => { DesignSettingsModel.printed-pending = true; }
+                        }
+                        TextField {
+                            label: "P/W";
+                            value <=> DesignSettingsModel.printed-pw;
+                            edited => { DesignSettingsModel.printed-pending = true; }
+                        }
+                        TextField {
+                            label: "H/W";
+                            value <=> DesignSettingsModel.printed-hw;
+                            edited => { DesignSettingsModel.printed-pending = true; }
+                        }
+                    }
+                    HorizontalLayout {
+                        Button {
+                            text: DesignSettingsModel.printed-pending ? "Apply Printed *" : "Apply Printed";
+                            enabled: GuideModel.allows-design-settings();
+                            primary: DesignSettingsModel.printed-pending;
+                            clicked => { DesignSettingsModel.apply-printed(); }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                }
+            }
+        }
+
+        // The gear-remap confirmation, a second modal inside the dialog: every tier's
+        // indices are recomputed for the new gear.
+        if DesignSettingsModel.gear-remap-open: Rectangle {
+            background: Theme.overlay-backdrop;
+            TouchArea {
+                clicked => { DesignSettingsModel.remap-cancel(); }
+            }
+            Rectangle {
+                width: min(440px, parent.width - 24px);
+                height: min(360px, parent.height - 24px);
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                background: Theme.bg-elevated;
+                border-radius: Theme.radius-md;
+                border-width: 1px;
+                border-color: Theme.border-medium;
+                clip: true;
+                TouchArea {}
+                VerticalLayout {
+                    padding: 14px;
+                    spacing: 8px;
+                    Text {
+                        text: "Confirm index remap";
+                        font-size: 13px;
+                        font-weight: 700;
+                        color: Theme.text-primary;
+                    }
+                    Text {
+                        text: "Every tier's indices are recomputed for the new gear (red: not a whole tooth):";
+                        font-size: 10px;
+                        color: Theme.accent-amber;
+                        wrap: word-wrap;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Lbl { text: "Rounding"; vertical-alignment: center; }
+                        ComboBox {
+                            model: ["Nearest", "Floor", "Ceil"];
+                            current-index: 0;
+                            selected(val) => {
+                                DesignSettingsModel.remap-set-rounding(val == "Nearest" ? 0 : (val == "Floor" ? 1 : 2));
+                            }
+                        }
+                    }
+                    ScrollView {
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            spacing: 2px;
+                            for row in DesignSettingsModel.gear-remap-rows: HorizontalLayout {
+                                spacing: 6px;
+                                Text { width: 60px; text: row.name; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                                Text {
+                                    horizontal-stretch: 1;
+                                    text: row.old-indices + "  ->  " + row.new-indices;
+                                    font-size: 10px;
+                                    font-weight: row.non-integral ? 700 : 400;
+                                    color: row.non-integral ? Theme.danger : Theme.text-secondary;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        alignment: end;
+                        Button { text: "Cancel"; clicked => { DesignSettingsModel.remap-cancel(); } }
+                        Button { text: "Confirm remap"; primary: true; clicked => { DesignSettingsModel.remap-confirm(); } }
+                    }
+                }
+            }
+        }
+    }
+}

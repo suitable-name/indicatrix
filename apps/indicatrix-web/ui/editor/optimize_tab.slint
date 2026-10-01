@@ -1,0 +1,144 @@
+import { Button, CheckBox, LineEdit, Slider } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { AppModel } from "../models/app_model.slint";
+import { GuideModel } from "../models/guide_model.slint";
+import { StaleBadge } from "../components/stale_badge.slint";
+import { OptimizeModel } from "optimize_model.slint";
+import { FieldLabel, InfoLine, SectionTitle } from "inspector_widgets.slint";
+
+// The Optimize tab (modelled on the desktop's `editor_inspector/optimize_tab.slint`):
+// weights, budget and seed, Run / Cancel with live progress from the solve Worker, the
+// before/after table, the tiers it would change, and Apply.
+export component OptimizeTab inherits VerticalLayout {
+    property <bool> busy: OptimizeModel.running;
+    property <color> status-color: OptimizeModel.running ? Theme.accent-amber : (OptimizeModel.status-is-problem ? Theme.danger : Theme.accent-emerald);
+
+    spacing: 8px;
+
+    SectionTitle { text: "Optimize"; }
+    InfoLine { text: OptimizeModel.hint; }
+
+    FieldLabel { text: "Weights: windowing / extinction / tilt brilliance"; wrap: word-wrap; }
+    // `min-width: 0px` on every field of a row: the style's LineEdit is at least 160px wide,
+    // so three of them made the whole tab wider than the dock (the hint text stopped
+    // wrapping and the third field was cut off).
+    HorizontalLayout {
+        spacing: 4px;
+        LineEdit { min-width: 0px; enabled: !root.busy; text <=> OptimizeModel.weight-windowing; placeholder-text: "windowing"; changed has-focus => { AppModel.text-focus = self.has-focus; } }
+        LineEdit { min-width: 0px; enabled: !root.busy; text <=> OptimizeModel.weight-extinction; placeholder-text: "extinction"; changed has-focus => { AppModel.text-focus = self.has-focus; } }
+        LineEdit { min-width: 0px; enabled: !root.busy; text <=> OptimizeModel.weight-tilt-brilliance; placeholder-text: "tilt"; changed has-focus => { AppModel.text-focus = self.has-focus; } }
+    }
+    FieldLabel { text: "Relative weights, any non-negative number; higher matters more."; wrap: word-wrap; }
+    FieldLabel { text: "Yield weight: " + Math.round(OptimizeModel.weight-yield * 100) + "%"; }
+    Slider {
+        enabled: !root.busy;
+        minimum: 0.0;
+        maximum: 1.0;
+        value <=> OptimizeModel.weight-yield;
+    }
+    FieldLabel { text: "Evaluation budget / seed"; }
+    HorizontalLayout {
+        spacing: 4px;
+        LineEdit { min-width: 0px; enabled: !root.busy; text <=> OptimizeModel.budget-text; placeholder-text: "budget"; changed has-focus => { AppModel.text-focus = self.has-focus; } }
+        LineEdit { min-width: 0px; enabled: !root.busy; text <=> OptimizeModel.seed-text; placeholder-text: "seed"; changed has-focus => { AppModel.text-focus = self.has-focus; } }
+    }
+    HorizontalLayout {
+        spacing: 10px;
+        CheckBox { enabled: !root.busy; text: "Polish"; checked <=> OptimizeModel.polish-enabled; }
+        CheckBox { enabled: !root.busy; text: "Only selected tiers"; checked <=> OptimizeModel.only-selected; }
+    }
+
+    HorizontalLayout {
+        spacing: 6px;
+        Button {
+            text: "Optimize";
+            primary: true;
+            enabled: OptimizeModel.available && !root.busy && GuideModel.allows-advanced();
+            clicked => { OptimizeModel.run(); }
+        }
+        if root.busy: Button {
+            // The first press asks the Worker for its best result so far; while it winds
+            // down (a few seconds), the button becomes "Stop now", which gives that result up.
+            text: OptimizeModel.cancelling ? "Stop now" : "Cancel";
+            clicked => { OptimizeModel.cancel(); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+
+    // A result computed for an older design stays on screen, badged (the desktop's
+    // `optimize_stale`); Recompute runs Optimize again on the current design.
+    if OptimizeModel.result-stale && !root.busy: HorizontalLayout {
+        StaleBadge {
+            enabled: GuideModel.allows-advanced();
+            recompute => { OptimizeModel.run(); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+
+    if OptimizeModel.running || OptimizeModel.status != "": Rectangle {
+        background: Theme.bg-input;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: root.status-color;
+        VerticalLayout {
+            padding: 6px;
+            spacing: 4px;
+            Text {
+                text: OptimizeModel.status;
+                font-size: 10px;
+                color: root.status-color;
+                wrap: word-wrap;
+            }
+            if OptimizeModel.running && OptimizeModel.progress >= 0: Rectangle {
+                height: 6px;
+                background: Theme.bg-darkest;
+                border-radius: 3px;
+                clip: true;
+                Rectangle {
+                    x: 0;
+                    width: parent.width * Math.max(0, Math.min(1, OptimizeModel.progress));
+                    background: Theme.accent-amber;
+                }
+            }
+            if OptimizeModel.result-rows.length > 0: VerticalLayout {
+                spacing: 2px;
+                for row in OptimizeModel.result-rows: HorizontalLayout {
+                    spacing: 4px;
+                    Text { horizontal-stretch: 1; text: row.label; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                    Text { text: row.before; font-size: 10px; color: Theme.text-muted; }
+                    Text { text: "->"; font-size: 10px; color: Theme.text-muted; }
+                    Text {
+                        text: row.after;
+                        font-size: 10px;
+                        font-weight: 600;
+                        color: row.direction > 0 ? Theme.accent-emerald : (row.direction < 0 ? Theme.danger : Theme.text-primary);
+                    }
+                }
+            }
+            if OptimizeModel.change-rows.length > 0: VerticalLayout {
+                spacing: 2px;
+                Text { text: "Tiers this would change:"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text { width: 28px; text: "#"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                    Text { horizontal-stretch: 1; text: "NAME"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                    Text { width: 52px; text: "FROM"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                    Text { width: 52px; text: "TO"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                }
+                for change in OptimizeModel.change-rows: HorizontalLayout {
+                    spacing: 4px;
+                    Text { width: 28px; text: change.tier-number; font-size: 10px; color: Theme.text-secondary; }
+                    Text { horizontal-stretch: 1; text: change.name == "" ? "(unnamed)" : change.name; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                    Text { width: 52px; text: change.from-angle; font-size: 10px; color: Theme.text-muted; }
+                    Text { width: 52px; text: change.to-angle; font-size: 10px; font-weight: 600; color: Theme.text-primary; }
+                }
+            }
+            if OptimizeModel.can-apply: Button {
+                text: "Apply Optimize Result";
+                enabled: GuideModel.allows-advanced();
+                primary: true;
+                clicked => { OptimizeModel.apply(); }
+            }
+        }
+    }
+}

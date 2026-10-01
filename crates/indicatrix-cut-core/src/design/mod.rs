@@ -1,4 +1,4 @@
-//! A design: a preform plus an editable cutting schedule of *authored
+//! A design: a preform plus editable cutting instructions of *authored
 //! constraints*, and the derivation from that state down to a renderable solid.
 //!
 //! # Constraints, not masts
@@ -59,7 +59,7 @@ use crate::{material::MaterialSelection, preform::PreformSpec};
 use std::collections::BTreeMap;
 use targets::TierTargetMap;
 
-/// A preform plus the cutting schedule being edited against it.
+/// A preform plus the cutting instructions being edited against it.
 ///
 /// `tiers` is authored constraint state (see the module docs); `meta` is every
 /// other `.asc` schedule field. There is no single `AscSchedule` field --
@@ -69,8 +69,11 @@ use targets::TierTargetMap;
 /// the reverse direction, for loading one.
 #[derive(Debug, Clone)]
 pub struct Design {
+    /// Rough (preform) the design is cut from.
     pub preform: PreformSpec,
+    /// Schedule metadata carried through `.asc` import and export.
     pub meta: ScheduleMeta,
+    /// Authored constraint tiers, in cutting order.
     pub tiers: Vec<ConstraintTier>,
     /// The design's real-world girdle diameter, in millimetres -- the one dimension
     /// a lapidary actually measures with calipers on a finished stone, and this
@@ -149,25 +152,36 @@ pub struct Design {
     /// structurally. A future pass that widens `ConstraintTier` directly can
     /// fold this map into it and drop the renumbering logic.
     ///
-    /// **Not yet wired into geometry**: an offset recorded here does not yet
-    /// shift the corresponding facet's plane azimuth -- that needs a matching
-    /// change in `apps/indicatrix-cut/src/gui/solid_preview/facet_map.rs` and
-    /// `indicatrix::geometry::cuts::StandardGemCuts` (both outside this
-    /// crate), which the module doc comment on `crate::cutting_sheet` calls
-    /// out as needing to move together. Until then this is authored, undoable
-    /// display/export data only -- see
-    /// [`crate::cutting_sheet::CutSheetRow::cheater_offset_deg`].
+    /// **Rotates the facet's plane azimuth**: [`Design::planes`]/
+    /// [`Design::planes_from_solved`] apply this offset (via
+    /// `design::export::planes::apply_cheater_offsets`) when building the plane
+    /// arrangement every production consumer -- the solid preview, the facet map,
+    /// the manufacturability checks -- reads from, so changing this changes the
+    /// measured solid, not just display/export text. It is NOT folded into the
+    /// exported `.asc` schedule as a real rotation, since `.asc` has no field for
+    /// one; instead [`Design::to_asc_schedule_from_solved_with_cheater_offsets`]
+    /// (the one [`crate::native::save_paired`] actually writes to disk) bakes an
+    /// authored offset into that tier's own exported index-wheel positions
+    /// instead (`offset_deg / 360 * gear_teeth`, added to every index and rounded
+    /// to 3 decimals), so a real `GemCAD` file that has never heard of this field
+    /// still shows the same rotated facet.
     ///
     /// # Round-tripping through the native format
     ///
     /// Carried as `indicatrix_formats::native::TierTable::cheater_offset_deg`, per
     /// tier, by array position -- see `crate::native::to_native_file` and
-    /// [`crate::native::load_paired`]. Exactly like
-    /// [`Self::tier_notes`], an offset changes no geometry at all (see the
-    /// "Not yet wired into geometry" note above), so it is applied on load
-    /// whenever the tier overlay itself is, not gated on anything additional.
-    /// It survives a save/reopen round trip like every other authored
-    /// annotation here.
+    /// [`crate::native::load_paired`]. Unlike [`Self::tier_notes`], an offset DOES
+    /// change geometry (see above), so -- like `constraint`/`detached` -- it is
+    /// only restored on load when [`crate::native::TierOverlay`]'s own
+    /// fingerprint-gated condition holds, never merely because the tier counts
+    /// agree: restoring it against a `.asc` that changed underneath the sidecar
+    /// would silently re-shift the wrong facet's indices, and restoring it a
+    /// second time on top of a `.asc` that was ALREADY exported with this same
+    /// offset baked into its indices would double the rotation. The sidecar also
+    /// always carries the tier's own true, UNSHIFTED `indices` (not just this
+    /// offset), and [`crate::native::load_paired`] restores those too under the
+    /// same gate, so the shift from a previous export is never re-applied on top
+    /// of itself.
     pub cheater_offsets_deg: BTreeMap<usize, f64>,
     /// A per-tier cutter-authored free-text note (e.g. "check meet here", "grind
     /// slowly"), keyed by the tier's CURRENT position in [`Self::tiers`] -- the
@@ -248,6 +262,19 @@ impl Design {
     #[must_use]
     pub fn tier_id_at(&self, index: usize) -> Option<TierId> {
         self.tier_ids.get(index).copied()
+    }
+
+    /// Whether `self` and `other` give every tier slot the same [`TierId`].
+    ///
+    /// `PartialEq` deliberately leaves the ids out (they are bookkeeping, not
+    /// authored content), so a round trip that reproduced every tier but
+    /// replaced their identities still compares equal; this is the check that
+    /// catches it. True when both designs have the same tier count and
+    /// [`Self::tier_id_at`] agrees at every index.
+    #[must_use]
+    pub fn tier_ids_eq(&self, other: &Self) -> bool {
+        self.tiers.len() == other.tiers.len()
+            && (0..self.tiers.len()).all(|index| self.tier_id_at(index) == other.tier_id_at(index))
     }
 
     /// [`Self::tier_id_at`], falling back to a synthetic `TierId(index as u64)`

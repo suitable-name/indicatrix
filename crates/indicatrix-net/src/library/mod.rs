@@ -1,6 +1,7 @@
-//! The read-only design-library sync protocol: a client (a future viewer, or a mobile
-//! client with no renderer compiled in) mirrors designs from a `indicatrix-worker`'s
-//! catalogue.
+//! The read-only design-library sync protocol.
+//!
+//! A client (a future viewer, or a mobile client with no renderer compiled in) mirrors
+//! designs from a `indicatrix-worker`'s catalogue.
 //!
 //! [`LibraryRequest`]/[`LibraryResponse`] are their own message family, tagged into the
 //! same [`crate::messages::ClientMessage`] envelope the render protocol uses
@@ -25,23 +26,24 @@
 //! [`DesignRecord::version`], here for read-side staleness detection, double as what a
 //! future `Put` needs for optimistic-concurrency conflict detection.
 //!
-//! # Staleness: a content hash, not a sequence number
+//! # Staleness: a content hash and a revision token
 //!
-//! [`DesignSummary::version`]/[`DesignRecord::version`] is a SHA-256 hash over the
-//! fields that response carries (excluding the hash field itself, and -- for
-//! [`DesignRecord`] -- attachment content, metadata only). `indicatrix-worker` computes
-//! it at serve time; this crate only carries the resulting 32 bytes.
+//! [`DesignSummary::version`] is a SHA-256 content hash over the fields the summary
+//! carries (excluding the hash field itself and `entry_id`, which is a per-database row
+//! id and differs between databases holding the same design). `indicatrix-worker`
+//! computes it at serve time; this crate only carries the resulting 32 bytes.
 //!
-//! A content hash rather than a sequence number or timestamp, because the underlying
-//! schema has neither column and this phase must not write to the database. A value that
-//! changes and later changes back looks unchanged, but that's harmless here: worst case
-//! is one wasted round trip.
+//! [`DesignRecord::version`] and [`DesignSummary::design_version`] are not content
+//! hashes: they are an O(1) revision token derived from the design's `url` and its
+//! `diagram_entries.updated_at`, so the summary can name the full record's revision
+//! without reading the detail rows or image bytes. Equal tokens mean the same stored
+//! revision; a token that changes and later changes back looks unchanged, but that's
+//! harmless here: worst case is one wasted round trip.
 //!
-//! [`DesignSummary::version`] covers only what [`DesignSummary`] carries (cheap, up to
-//! 1000 rows per search); [`DesignRecord::version`] additionally covers the full detail
-//! record and image bytes, so it's authoritative for deciding whether a full re-fetch is
-//! needed. Treat the summary hash as a cheap first filter and confirm against the record
-//! hash before skipping a `FetchDesign`.
+//! [`DesignSummary::version`] is the cheap first filter (up to 1000 rows per search);
+//! compare [`DesignSummary::design_version`] against the mirrored token to decide whether
+//! a `FetchDesign` is needed, and [`DesignRecord::version`] is the same token on the
+//! fetched record.
 //!
 //! # Attachments: fetched separately, one at a time
 //!
@@ -59,7 +61,7 @@
 //! [`LibraryRequest::FetchDesignSource`]/[`LibraryResponse::DesignSource`] is a
 //! narrower, purpose-built sibling of the general `FetchAttachment` path above: it
 //! names the design by `entry_id` rather than an attachment id, and it specifically
-//! finds and returns that design's own `.asc` cutting-schedule attachment's TEXT (not
+//! finds and returns that design's own `.asc` cutting-instructions attachment's TEXT (not
 //! an arbitrary attachment's raw bytes), decoded as UTF-8. This is what lets
 //! `apps/indicatrix-cut`'s cutting-design editor load a remote design exactly the way
 //! it already loads a local one -- see [`LibraryResponse::DesignSourceNotAvailable`]

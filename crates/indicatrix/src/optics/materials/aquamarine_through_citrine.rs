@@ -15,11 +15,12 @@ impl GemMaterial {
     ///
     /// # Dispersion-figure convention note (applies to every entry in this file)
     ///
-    /// Every gemological "dispersion" target below is the standard Fraunhofer B-G
+    /// The stored convention is the Fraunhofer F-C interval (486.1-656.3 nm). Every
+    /// gemological "dispersion" target below is the standard Fraunhofer B-G
     /// table value (e.g. Andradite/demantoid's famous "0.057," higher than diamond's
-    /// own 0.044) and is converted B-G -> F-C via the same physically-derived 0.579
-    /// ratio the Emerald/Zircon/Topaz/Tourmaline/Tanzanite entries above use, rather
-    /// than taken at face value as F-C. The exception is entries with a genuine named
+    /// own 0.044) and is converted B-G -> F-C by multiplying with the physically-derived
+    /// 0.579 ratio (range 0.569-0.587) the Emerald/Zircon/Topaz/Tourmaline/Tanzanite
+    /// entries above use, rather than taken at face value as F-C. The exception is entries with a genuine named
     /// primary dispersion source (Chrysoberyl/Aquamarine/Morganite, which reuse an
     /// already-F-C-fitted host-mineral curve directly; YAG, whose real Zelmon 1998
     /// Sellmeier is used as-is per this file's primary-source-wins rule; and the two
@@ -34,7 +35,7 @@ impl GemMaterial {
     /// unverified extrapolation, not a measurement. Left out.
     ///
     /// Rutile needs the full anisotropic (uniaxial, extremely high birefringence
-    /// +0.287) Fresnel treatment, compounded by rutile's very strong dispersion, so
+    /// +0.2957) Fresnel treatment, compounded by rutile's very strong dispersion, so
     /// it gets its own dedicated entry -- see [`Self::built_in_material_rutile`].
     pub(super) fn built_in_materials_aquamarine_through_citrine() -> Vec<Self> {
         vec![

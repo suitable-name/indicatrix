@@ -13,10 +13,7 @@ use std::sync::{
 };
 
 /// The `source_id` a mirror sync attributes every design it saves/updates to -- distinct
-/// per configured worker (its address), so `Database::find_cross_source_duplicates`
-/// naturally treats two different remote libraries (or a remote library vs. a local
-/// import / the legacy scraped catalogue) as different sources, exactly as it already
-/// does for the local-import/legacy-scrape distinction.
+/// per configured worker (its address).
 #[must_use]
 pub fn mirror_source_id(worker: &WorkerSettings) -> String {
     format!("remote-library:{}", worker.address)
@@ -49,21 +46,47 @@ impl Default for MirrorOptions {
 pub struct MirrorCounts {
     /// Total designs the remote catalogue reported, across every `SearchPage` page.
     pub total_found: usize,
+    /// Designs added to the local library by this sync.
     pub new_count: usize,
+    /// Existing designs updated by this sync.
     pub updated_count: usize,
-    /// Skipped without a `FetchDesign` at all -- summary hash unchanged since the last
-    /// sync. See the module doc comment's "Identity and staleness" section.
+    /// Skipped without a `FetchDesign` at all -- neither the summary hash nor the design
+    /// revision token changed since the last sync. See the module doc comment's
+    /// "Identity and staleness" section.
     pub skipped_unchanged: usize,
+    /// Skipped because the user deleted the mirrored design locally (tombstone); never fetched.
+    pub skipped_deleted: usize,
     /// A design whose fetch or local save failed for any reason (network error,
     /// database error, or it vanished server-side between `Search` and `FetchDesign`).
     /// Left exactly as it was locally before this sync (if it existed at all) -- never
     /// marked as synced, so the next sync retries it.
     pub failed: usize,
+    /// Attachment files downloaded by this sync.
     pub attachments_fetched: usize,
     /// An attachment skipped for exceeding [`MirrorOptions::max_attachment_bytes`] --
     /// its design was still saved, just without this one file's bytes.
     pub attachments_skipped_too_large: usize,
+    /// Total bytes of attachments downloaded by this sync.
     pub attachment_bytes_fetched: u64,
+    /// A remote design whose `url` already names a LOCAL row this sync has never
+    /// mirrored (no `library_mirror_state` entry for it) -- left completely untouched
+    /// rather than overwritten, per the "additive/update-only" rule in the mirror
+    /// module's own doc comment (a worker serving its own `local://` imports, or
+    /// a hand-imported design that happens to collide with a remote page URL, must
+    /// never lose its data to a sync). Counted separately from [`Self::failed`] --
+    /// this is not an error, and retrying it on the next sync would only skip it
+    /// again the same way.
+    pub local_conflicts_skipped: usize,
+    /// How many `library_mirror_state` rows have no matching local design left
+    /// (`Database::count_mirror_states_without_entry`) -- designs this sync (or an
+    /// earlier one) mirrored, that the user then deleted locally. "Local delete wins"
+    /// is the intended semantics (owner decision, see the mirror module's own doc
+    /// comment): a mirror sync never resurrects a design the user deleted, and never
+    /// will, so this count is what lets the sync summary say so instead of that
+    /// orphaning being entirely invisible. Populated once, at the end of a sync
+    /// ([`super::sync::run_mirror_sync`]'s return, whether completed or cancelled) --
+    /// not a per-design running tally like the fields above.
+    pub orphaned_mirror_states: u64,
 }
 
 /// One progress update, delivered after each design this sync examines (whether it was
@@ -73,7 +96,9 @@ pub struct MirrorProgress {
     /// How many of `counts.total_found` designs have been examined so far, including
     /// this one.
     pub processed: usize,
+    /// Running totals of the sync so far.
     pub counts: MirrorCounts,
+    /// Title of the design currently being synced.
     pub current_title: String,
 }
 
@@ -98,6 +123,7 @@ pub struct MirrorHandle {
 }
 
 impl MirrorHandle {
+    /// Requests cancellation; the running job stops at its next check.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }

@@ -24,6 +24,7 @@ pub enum RemoteUnavailable {
 }
 
 impl RemoteUnavailable {
+    /// Human-readable explanation for the user.
     #[must_use]
     pub fn message(&self) -> String {
         match self {
@@ -42,6 +43,7 @@ impl RemoteUnavailable {
 /// [`indicatrix_net::messages::RenderRequest`] against it needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteCapability {
+    /// Connection settings of the remote worker.
     pub worker: WorkerSettings,
     /// This worker's advertised `RenderCapability::max_pixels` -- checked against the
     /// export's `width * height` BEFORE ever dispatching, never assumed to be the

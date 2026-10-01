@@ -199,7 +199,10 @@ pub(in crate::gui::editor) fn setup_apply_preform_y_offset_callback(
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
                             .clone()
                     })
-                    .filter(|solved| solved.len() == st.design.tiers.len())
+                    // the shared cache is now generation-tagged -- only
+                    // the masts themselves matter here.
+                    .filter(|(_, solved)| solved.len() == st.design.tiers.len())
+                    .map(|(_, solved)| solved)
                 else {
                     show_toast(&ui, "Solve first, then set a Y-offset.", "error");
                     return;

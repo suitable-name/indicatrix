@@ -44,7 +44,7 @@ use indicatrix_worker::render_core::trace_samples_with_gpu;
 /// Largest sub-batch traced in one call before folding into the delta.
 const SUBBATCH: u32 = 64;
 
-/// Default cap: a capture projected to take longer than this is skipped (the brief's
+/// Default cap: a capture projected to take longer than this is skipped (a
 /// ~2 min cap). An optional second argument overrides it, in seconds.
 const MAX_CAPTURE_SECS: f64 = 120.0;
 

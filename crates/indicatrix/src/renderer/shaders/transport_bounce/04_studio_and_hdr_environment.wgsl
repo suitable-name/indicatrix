@@ -16,7 +16,7 @@ fn studio_rig_fill_dir(light_yaw: f32, light_pitch: f32) -> vec3<f32> {
 
 fn studio_rig_ring_dir(i: u32, light_yaw: f32, sin_lp: f32) -> vec3<f32> {
     let angle = fma(f32(i), PI * 2.0 / f32(RING_LIGHT_COUNT), light_yaw);
-    return normalize(vec3<f32>(cos(angle) * 0.75, sin_lp * 0.8, sin(angle) * 0.75));
+    return normalize(vec3<f32>(sin(angle) * 0.75, sin_lp * 0.8, cos(angle) * 0.75));
 }
 
 // optics::raytracer::environment::sample_light_tent -- needs `studio_rig_ring_dir` for

@@ -1,0 +1,53 @@
+import { Button } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { AppModel } from "../models/app_model.slint";
+import { InspectorModel } from "inspector_model.slint";
+import { InfoLine, SectionTitle } from "inspector_widgets.slint";
+
+// The Schedule tab (modelled on the desktop's `editor_inspector/schedule_tab.slint`): the
+// design's own cut order, built from the same conversion the `.asc` export writes, with
+// the cutting-sheet download beside it.
+export component ScheduleTab inherits VerticalLayout {
+    spacing: 6px;
+
+    SectionTitle { text: "Schedule"; }
+    if InspectorModel.schedule-rows.length == 0: Text {
+        text: "Not solved -- the design's own cut order appears here once it solves.";
+        font-size: 10px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+    if InspectorModel.schedule-rows.length > 0: VerticalLayout {
+        spacing: 2px;
+        HorizontalLayout {
+            spacing: 6px;
+            Text { horizontal-stretch: 1; text: "FACET"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+            Text { width: 48px; text: "ANGLE"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+            Text { horizontal-stretch: 2; text: "INDEX"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+        }
+        for row in InspectorModel.schedule-rows: VerticalLayout {
+            HorizontalLayout {
+                spacing: 6px;
+                Text { horizontal-stretch: 1; text: row.facet; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                Text { width: 48px; text: row.angle; font-size: 10px; color: Theme.text-secondary; }
+                Text { horizontal-stretch: 2; text: row.index-val; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+            }
+            if row.notes != "": Text { text: row.notes; font-size: 9px; color: Theme.text-muted; wrap: word-wrap; }
+        }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Button {
+            text: "Cutting sheet (HTML)";
+            enabled: AppModel.has-design;
+            clicked => { AppModel.download-cutting-sheet(); }
+        }
+        Button {
+            text: "Diagram (PNG)";
+            enabled: AppModel.has-design;
+            clicked => { AppModel.download-diagram(); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+    InfoLine { text: "The .asc export is the copyable form of this table (File > Save .asc)."; }
+}

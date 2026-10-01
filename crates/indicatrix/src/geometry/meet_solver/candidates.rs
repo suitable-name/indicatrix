@@ -79,8 +79,8 @@ pub(super) fn tier_normals(
 /// Every tier's per-instance unit facet-plane normals.
 ///
 /// Exactly the construction [`solve_meet_points`](super::solve_meet_points) uses
-/// internally (same gear/azimuth/crown conventions, same unsigned-zero side
-/// inheritance), made public so external measurement code (e.g.
+/// internally (same gear/azimuth/crown conventions, same sign-of-zero side
+/// rule), made public so external measurement code (e.g.
 /// [`super::super::stone_metrics`]) can rebuild the same plane arrangement from
 /// any mast vector, real or solved.
 #[must_use]
@@ -123,10 +123,17 @@ fn flush_candidate_batch(
 ) {
     let sol = crate::simd::solve_triple_batch(batch);
     for (lane, owners) in owner_meta.iter().enumerate().take(batch.len) {
-        if sol.det[lane].abs() < MIN_TRIPLE_DET {
+        // `is_nan() || .. < MIN_TRIPLE_DET` rather than a plain `.. < MIN_TRIPLE_DET`:
+        // a NaN determinant (a non-finite mast or index) fails the plain `<`
+        // comparison and would otherwise fall through to a NaN-tainted vertex.
+        let det_abs = sol.det[lane].abs();
+        if det_abs.is_nan() || det_abs < MIN_TRIPLE_DET {
             continue;
         }
         let v = DVec3::new(sol.vx[lane], sol.vy[lane], sol.vz[lane]);
+        if !v.is_finite() {
+            continue;
+        }
         if v.x.abs() > BLANK_HALF_EXTENT + 1.0
             || v.y.abs() > BLANK_HALF_EXTENT + 1.0
             || v.z.abs() > BLANK_HALF_EXTENT + 1.0

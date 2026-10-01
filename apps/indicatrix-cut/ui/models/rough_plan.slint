@@ -1,0 +1,208 @@
+// The Rough Planner ("Library > Plan Rough..."): given a rough block, cylinder,
+// or water-worn pebble, with optional shape cuts, it ranks the layouts of catalogue
+// designs that yield the most weight. The planning itself is Rust
+// (`gui::rough_plan`, `indicatrix_cut_core::rough_plan`); this global is the state
+// window (`rough_planner_window.slint`) shows and edits.
+//
+// Slint instantiates every global once PER top-level window, so this global has
+// two independent instances, and Rust reaches each through its own window handle:
+// - `MainWindow`'s instance only carries `open()`, which the Library menu item calls;
+// - `RoughPlannerWindow`'s instance carries everything else (the model inputs, shape cuts,
+//   planning settings, view state, results, saved plans, and callbacks).
+//
+// The property and callback list below is a FIXED contract shared with the Rust
+// side (`ui.global::<RoughPlanModel>()`), so it must not drift from it. Inputs
+// are NOT persisted: the window opens with these defaults on every launch, and
+// the values only survive between openings within one session. The numeric
+// inputs are strings on purpose: Rust parses them, and an invalid value comes
+// back as `error_text` rather than being clamped silently.
+
+export struct RoughMetric {
+    label: string,
+    value: string,
+}
+
+// One design's share of a layout: `count` stones of the design `entry_id`.
+export struct RoughPlanStoneGroup {
+    entry_id: int,        // LibraryModel.select_diagram(entry_id) on click
+    name: string,         // design title
+    count: int,           // stones of this design in the layout
+    detail: string,       // e.g. "5.10 x 5.10 x 3.40 mm, 0.62 ct each"
+    swatch: color,        // palette colour
+    thumbnail: image,     // library preview or placeholder
+    has_thumbnail: bool,
+    metrics: [RoughMetric],
+    status: string,       // "", "design deleted", "design changed since saved", "matched by title"
+    status_level: int,    // 0 none, 1 info, 2 warn, 3 error
+    linkable: bool,       // false for a deleted design; a remote library is `links_enabled`, and a link is live only when both hold
+    excluded: bool,       // display copy of "this design is excluded from the planner"; change it only by calling `toggle_exclude`
+}
+
+// One ranked layout.
+export struct RoughPlanResult {
+    rank: int,            // 1-based
+    total_ct: string,     // "3.71 ct"
+    yield_pct: string,    // "41.2 %"
+    stone_count: int,
+    groups: [RoughPlanStoneGroup],
+    cut_plan: string,     // multi-line text, "\n"-separated
+    yield_weight_text: string, // "" when no weight entered
+    saw_text: string,     // "5 cuts · kerf loss <= 0.21 ct"
+    thumbnail: image,
+    has_thumbnail: bool,
+    keep: bool,           // display copy of the Rust-owned save tick; change it only by calling `toggle_keep`
+}
+
+export struct RoughCutRow {
+    kind: int,            // 0 edge, 1 corner, 2 face
+    title: string,        // "Edge Top-Front"
+    hint: string,         // muted line under the title ("azimuth has no effect at elevation ±90" for a vertical face), "" for none
+    a: string,
+    b: string,
+    c: string,            // setbacks (edge: a,b; corner: a,b,c)
+    azimuth: string,
+    elevation: string,    // face direction in degrees (app converts with libm)
+    depth: string,        // face depth mm
+    removed_text: string, // "removes 84 mm³ (1.11 ct)" or ""
+    error: string,        // "" when valid
+    face_index: int,      // edge: index into edge_options; corner: index into corner_options; face: -1
+}
+
+export struct SavedRoughPlanRow {
+    id: int,
+    name: string,
+    summary: string,
+    date: string,
+}
+
+export global RoughPlanModel {
+    // state
+    in property <bool> running: false;                // a plan is running: the model and the saved-plan actions are locked
+
+    // inputs (strings parsed in Rust; invalid input -> error_text)
+    in-out property <string> rough_x: "";
+    in-out property <string> rough_y: "";
+    in-out property <string> rough_z: "";
+    in-out property <int> count: 1;                 // SpinBox 1..=99, "up to"
+    in property <[string]> materials;               // filled by Rust when the window opens
+    in-out property <int> material_index: 0;
+    in-out property <bool> losses_open: false;
+    in-out property <string> kerf_mm: "0.30";
+    in-out property <string> allowance_mm: "0.20";
+    in-out property <string> skin_mm: "0.00";
+    in-out property <string> min_width_mm: "1.00";
+    in-out property <bool> use_filter: true;        // true = current library filter, false = whole library
+    in property <int> filter_count: 0;              // designs in the current filter (set on open; -1 = still counting)
+    in property <int> library_count: 0;             // designs in the whole library (set on open; -1 = still counting)
+    in property <string> filter_count_text: "";     // `filter_count` with thousands separators ("1,234"); "counting..." while -1, "" before any count
+    in property <string> library_count_text: "";    // the same for `library_count`
+    in property <[int]> excluded_ids;               // entry ids of the designs the planner leaves out, in the order of `excluded_names`
+    in property <[string]> excluded_names;          // their titles, parallel to `excluded_ids`
+    in property <int> excluded_count: 0;            // how many designs are excluded; Rust pushes it with the two lists
+    in-out property <bool> excluded_open: false;    // the "Excluded designs" list under the candidate choice is open (UI-only)
+
+    // rough base & live model
+    in-out property <int> base_kind: 0;            // 0 block, 1 cylinder, 2 pebble
+    in-out property <string> cyl_diameter: "";
+    in-out property <string> cyl_length: "";
+    in-out property <int> cyl_axis: 1;             // 0 x, 1 y, 2 z
+    in-out property <string> weighed_ct: "";
+    in property <[RoughCutRow]> cuts;
+    in-out property <int> selected_cut: -1;
+    in-out property <int> focus_cut_row: -1;       // a cut row that was just added: its first field takes the keyboard focus (and resets this to -1)
+    in property <bool> can_undo;
+    in property <bool> can_redo;
+    in property <string> model_text;               // "Model 257 mm³ · 3.40 ct (Quartz, SG 2.65)"
+    in property <string> weight_check_text;
+    in property <int> weight_check_level;          // 0 none, 1 ok, 2 close, 3 bad
+    in property <string> model_error;              // "" when the model is valid
+    in property <[string]> edge_options;           // 12 names, Rust-filled, fixed order
+    in property <[string]> corner_options;         // 8 names, Rust-filled, fixed order
+    in property <bool> links_enabled: true;        // false for a remote library: every library link is disabled
+    in-out property <bool> show_cut_faces: true;   // model mode: tint the cut faces
+    in property <bool> thumbnails_pending;         // true while result thumbnails are rendering
+    in property <int> keep_count;                  // results with `keep` set; Slint cannot count them, Rust pushes it with every keep change
+
+    // 3D view
+    in property <image> view_image;
+    in-out property <int> view_mode: 0;            // 0 model, 1 selected result
+    in property <string> view_hint;
+    in-out property <bool> show_rough: true;
+    in-out property <bool> show_saw: true;
+    in-out property <bool> show_stones: true;
+    in-out property <bool> face_from_view_armed: false;
+    in-out property <int> selected_result: -1;
+    in-out property <int> selected_group: -1;
+
+    // progress
+    in property <float> progress_fraction: 0;       // 0..1
+    in property <string> stage: "";                 // "Measuring designs 120 / 3,299", "Planning: cut orders (3 of 6 finished)", "Refining"
+
+    // outcome
+    in property <string> error_text: "";            // input or run error, shown in red, empty = none
+    in property <[RoughPlanResult]> results;
+    in property <string> summary: "";               // e.g. "10 layouts from 2,431 designs -- 3.2 s"
+    in property <int> skipped_count: 0;             // angle_table + unbounded rows
+    in-out property <bool> results_unsaved: false;  // the results on screen are a fresh plan that has not been saved
+    in-out property <string> status_text: "";       // neutral one-line note ("Saved 3 results as ..."), empty = none
+    in-out property <int> status_level: 0;          // colour of `status_text`: 0 neutral, 1 warning (for example a staleness note)
+    in-out property <bool> view_busy: false;        // the 3D view is being redrawn
+    in-out property <int> expanded_index: -1;       // which result's cut plan is open (UI-only)
+
+    // saved plans
+    in property <[SavedRoughPlanRow]> saved_plans;
+    in-out property <bool> saved_open: false;
+    in property <string> loaded_banner;            // "" when not showing a saved plan
+    in-out property <bool> save_name_open: false;
+    in-out property <string> save_name;
+    in-out property <bool> save_selected_only: false; // which button opened the name row: true = the ticked results, false = all of them
+    in-out property <bool> confirm_replace_open: false; // asking whether to replace results that have not been saved
+    in-out property <int> confirm_replace_count: 0; // layouts that would be replaced
+
+    // callbacks
+    callback open();                                // main window's menu item -> Rust: create or show the planner window
+    callback plan();                                // Plan button
+    callback cancel();                              // Cancel while running
+    callback select_design(int);                    // entry_id -> Rust calls the LibraryModel select path
+
+    callback set_base(int);
+    callback base_field_committed();               // any base/material/weight field committed
+    callback fit_to_weight();                       // Fit to weight: scales the model to the typed carat
+    callback add_cut(int);                         // kind
+    callback remove_cut(int);
+    callback cut_field_edited(int, int, string);   // row, field (0 a,1 b,2 c,3 azimuth,4 elevation,5 depth), text
+    callback cut_field_committed(int);
+    callback undo_shape();
+    callback redo_shape();
+    callback view_resized(length, length);
+    callback view_orbit(length, length);           // drag deltas
+    callback view_zoom(float);
+    callback view_drag_begin();
+    callback view_drag_end();
+    callback view_hover(length, length);
+    callback view_click(length, length);
+    callback view_double_click(length, length);
+    callback view_preset(int);                     // 0 front, 1 top, 2 side, 3 reset
+    callback select_result(int);
+    callback select_group(int, int);              // result, group
+    callback show_result_in_library(int);
+    callback show_all_in_library();
+    callback begin_save(bool);                     // true = selected only
+    callback confirm_save();                       // uses save_name
+    callback confirm_replace(bool);                 // answer to the replace question: true = replace, false = keep the results
+    callback open_saved(int);
+    callback rename_saved(int, string);
+    callback delete_saved(int);
+    callback export_saved(int);
+    callback import_saved();
+    callback replan_loaded();
+    callback new_model();
+    callback cut_faces_changed(int, int);          // row, new face_index
+    callback toggle_keep(int);                     // result row: Rust flips `keep` and re-pushes the row
+    callback toggle_exclude(int);                  // entry_id: Rust flips the design's planner exclusion in the library and re-pushes the lists and the row flags
+    callback restore_excluded(int);                // entry_id: Rust clears the design's planner exclusion
+    callback restore_all_excluded();               // Rust clears every planner exclusion
+    callback open_help();                          // "?" button
+    callback cut_selected(int);                    // a cut row became the selected one: Rust asks for its figures
+    callback view_toggles_changed();               // Cut faces / Rough / Saw / Stones toggled: Rust redraws
+}

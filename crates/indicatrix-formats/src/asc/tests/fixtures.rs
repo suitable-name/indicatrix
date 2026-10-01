@@ -47,8 +47,9 @@ a 10.000000 0.48799664 96 n C 16 32 48 64 80\n\
 F \"For small stones\"\n";
 
 /// `attached_files` id 4210 ("pc46019.asc") -- "PC 46.019 For Fun" by Michiko
-/// Huyhn. Exercises an unsigned zero-angle culet-like tier ("U") with no explicit
-/// crown/pavilion marker, and several tiers with repeated `n <name>` groups.
+/// Huyhn. Exercises a positive zero-angle tier ("U", the table: a zero angle with a
+/// positive distance is always the table), and several tiers with repeated
+/// `n <name>` groups.
 pub(super) const ASC_FOR_FUN: &str = "GemCad 5.0\n\
 g 96 0.0\n\
 y 1 y\n\
@@ -76,8 +77,9 @@ a 0.000000 0.72641642 80 n T G Make table large enough to show all of the star\n
 F Leave #4 frosted\n";
 
 /// `attached_files` id 4422 ("pc43001a.asc") -- "PC 43.001A Shah (Replica)". No
-/// facet names anywhere (exercises the "no name at all" path), a rare
-/// negative-mast tier at an unsigned zero angle, and a fractional index (`1.7`).
+/// facet names anywhere (exercises the "no name at all" path), a culet written the
+/// way the `GemCAD` manual documents it (zero angle, negative distance), and a
+/// fractional index (`1.7`).
 pub(super) const ASC_SHAH_REPLICA_NO_NAMES: &str = "GemCad 4.51\n\
 g 64 64.0\n\
 y 1 n\n\
@@ -92,7 +94,7 @@ F Does not agree with Barbour's 43.001. Glass replica has rounded facets on the 
 
 pub(super) fn assert_round_trips(content: &str) {
     let original = parse_asc(content).expect("real sample must parse");
-    let serialized = to_asc_string(&original);
+    let serialized = to_asc_string(&original).expect("real fixtures carry safe names/notes");
     let reparsed = parse_asc(&serialized).unwrap_or_else(|e| {
         panic!("serialized output must itself parse: {e}\n--- serialized ---\n{serialized}")
     });

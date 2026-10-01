@@ -125,7 +125,8 @@ mod tests {
         assert!(reconstructed.headers[0].starts_with("RECONSTRUCTED"));
 
         // Must still round-trip through the .asc writer/reader.
-        let text = to_asc_string(&reconstructed);
+        let text =
+            to_asc_string(&reconstructed).expect("reconstructed schedule must itself serialize");
         let reparsed = parse_asc(&text).expect("reconstructed schedule must itself parse");
         assert_eq!(reparsed, reconstructed);
     }

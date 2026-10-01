@@ -65,10 +65,7 @@ mod scheduling;
 #[cfg(test)]
 mod tests;
 
-pub(super) use dispatch::{
-    cancel_in_flight_solve, dispatch_background_solve, likely_hit_plane_cap, solve_cancellably,
-    too_many_planes_message,
-};
+pub(super) use dispatch::{cancel_in_flight_solve, dispatch_background_solve, solve_cancellably};
 pub(super) use replan::{
     design_to_gpu_planes_from_solved, schedule_idle_replan_if_stale, stash_current_design,
     take_matching_design,
@@ -77,6 +74,4 @@ pub(super) use runtime::{
     activity, editor_state, init, preview_state, render_ctx, solid_last_solved, stash_editor_state,
     stash_render_ctx,
 };
-pub(super) use scheduling::{
-    last_solve, on_edit, record_solve_duration, reset_for_new_design, should_solve_synchronously,
-};
+pub(super) use scheduling::{last_solve, on_edit, record_solve_duration, reset_for_new_design};

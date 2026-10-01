@@ -47,11 +47,16 @@ fn a_changed_paired_asc_reports_a_mismatch_and_skips_the_tier_overlay() {
     );
 }
 
-/// A `note`/`cheater_offset_deg` is geometry-free (neither feeds the solver),
-/// so it must still be applied when the tier counts agree, even on a fingerprint
-/// mismatch that skips the `constraint`/`detached` overlay.
+/// A `note` is truly geometry-free (it feeds nothing but display), so it must
+/// still be applied when the tier counts agree, even on a fingerprint mismatch
+/// that skips the `constraint`/`detached` overlay. A `cheater_offset_deg`, by
+/// contrast, DOES feed geometry (it rotates the tier's own facet plane, and is
+/// baked into a tier's exported `.asc` indices -- see
+/// `Design::cheater_offsets_deg`'s own doc comment) and so must be skipped right
+/// alongside `constraint`/`detached` on the very same mismatch (restoring it against a `.asc` that changed underneath the
+/// sidecar would silently re-shift the wrong facet's indices).
 #[test]
-fn a_fingerprint_mismatch_still_applies_geometry_free_per_tier_fields() {
+fn a_fingerprint_mismatch_still_applies_the_note_but_not_the_cheater_offset() {
     let mut design = simple_design();
     design.tier_notes.insert(1, "check meet here".to_string());
     design.cheater_offsets_deg.insert(1, -0.75);
@@ -74,9 +79,11 @@ fn a_fingerprint_mismatch_still_applies_geometry_free_per_tier_fields() {
         loaded.design.tiers[1].constraint,
         MeetConstraint::MeetExisting
     );
-    // ...but the geometry-free fields were still applied.
+    // ...the true display-only field was still applied...
     assert_eq!(loaded.design.tier_note(1), Some("check meet here"));
-    assert_eq!(loaded.design.cheater_offset_deg(1), Some(-0.75));
+    // ...but the geometry-affecting cheater offset was skipped right alongside
+    // `constraint`/`detached`.
+    assert_eq!(loaded.design.cheater_offset_deg(1), None);
 }
 
 /// A fingerprint mismatch must not be the last word when the caller explicitly asks

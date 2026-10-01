@@ -47,9 +47,10 @@
 
 use glam::Vec3;
 use indicatrix::optics::raytracer::{
-    Camera, EnvironmentSource, FacetFinish, add_finite_sample, build_plane_soa, pixel_rotations,
-    sample_draws, trace_spectral_ray_with_finish_soa,
+    Camera, DEFAULT_FOV_DEG, EnvironmentSource, FacetFinish, add_finite_sample, build_plane_soa,
+    pixel_rotations, sample_draws, trace_spectral_ray_with_finish_soa,
 };
+use indicatrix_dispatch::SampleRange;
 use indicatrix_net::SceneState;
 use std::{
     sync::{
@@ -57,6 +58,7 @@ use std::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
+    time::Duration,
 };
 
 use indicatrix::renderer::gpu_backend::{GpuAccumulate, GpuBackend, GpuSceneRef};
@@ -79,28 +81,14 @@ fn resolve_facet_finishes(scene: &SceneState) -> Vec<FacetFinish> {
     }
 }
 
-/// Fixed FOV matching the viewer's own hard-coded value.
-///
-/// `SceneState` carries no FOV field of its own (see that struct's doc comment on what it
-/// deliberately does and doesn't carry), so this must match the `42.0` of
-/// `apps/indicatrix-cut/src/bridge/render_thread/` and `export_thread/` exactly for a remote worker's camera rays to line up
-/// with the viewer's. Also the camera of a coordinator's display-frame guide prepass
-/// (`stream_emit`'s display denoiser).
-pub const VIEWER_FOV_DEG: f32 = 42.0;
-
 /// Resolves a `--threads`-style argument (`0` meaning "let the OS decide") to an actual
 /// thread count.
 ///
 /// Shared by [`trace_samples`]'s own chunking and by `serve`'s `Welcome` message (which
-/// reports the thread count it actually renders with, not the literal `0` sentinel).
-#[must_use]
-pub fn effective_thread_count(threads: usize) -> usize {
-    if threads == 0 {
-        thread::available_parallelism().map_or(8, std::num::NonZero::get)
-    } else {
-        threads
-    }
-}
+/// reports the thread count it actually renders with, not the literal `0` sentinel). The
+/// one definition lives in `indicatrix::renderer::tonemap`, shared with the tone-mapper
+/// and the denoiser.
+pub use indicatrix::renderer::tonemap::effective_thread_count;
 
 /// A process-wide counting semaphore over CPU tracer threads -- see this module's own
 /// doc comment ("A process-wide permit pool...") for why this exists.
@@ -116,6 +104,10 @@ struct ThreadPermits {
     freed: Condvar,
 }
 
+/// How long one [`ThreadPermits::acquire`] wait slice lasts before re-checking its
+/// caller's cancel flag -- see that method's doc comment.
+const ACQUIRE_POLL: Duration = Duration::from_millis(100);
+
 impl ThreadPermits {
     fn new(capacity: usize) -> Self {
         Self {
@@ -126,7 +118,8 @@ impl ThreadPermits {
     }
 
     /// Blocks until `wanted` permits are free, then claims them, returning how many
-    /// were actually acquired (== `wanted.clamp(1, self.capacity)`).
+    /// were actually acquired (== `wanted.clamp(1, self.capacity)`); `None` if `cancel`
+    /// was observed set first (nothing is claimed then).
     ///
     /// `wanted` is clamped to `self.capacity` first: a single request asking for more
     /// threads than exist on this machine (or than this pool was ever sized for) must
@@ -134,20 +127,32 @@ impl ThreadPermits {
     /// would otherwise block forever, since that many can never be simultaneously free.
     /// Clamped to at least 1 too, so a caller can't accidentally acquire zero permits
     /// and skip the accounting entirely.
-    fn acquire(&self, wanted: usize) -> usize {
+    ///
+    /// Waits in [`ACQUIRE_POLL`] slices (`wait_timeout`, never a plain, uninterruptible
+    /// `wait`) and re-checks `cancel` between them: every permit holder releases
+    /// promptly on its own (`PermitGuard`'s `Drop`), but a request queued behind one
+    /// that is wedged -- heartbeating without tracer progress, the coordinator-side
+    /// mechanism this guards against -- must not wait on permits that may never come
+    /// free.
+    fn acquire(&self, wanted: usize, cancel: &AtomicBool) -> Option<usize> {
         let wanted = wanted.clamp(1, self.capacity);
         let mut available = self
             .available
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         while *available < wanted {
+            if cancel.load(Ordering::Relaxed) {
+                return None;
+            }
             available = self
                 .freed
-                .wait(available)
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
+                .wait_timeout(available, ACQUIRE_POLL)
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .0;
         }
         *available -= wanted;
-        wanted
+        drop(available);
+        Some(wanted)
     }
 
     /// Returns `held` permits (as returned by a matching [`Self::acquire`] call) to the
@@ -214,20 +219,23 @@ pub fn trace_samples(
         return buffer;
     }
 
-    let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, VIEWER_FOV_DEG);
+    let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, DEFAULT_FOV_DEG);
     // The studio rig, or the HDR map the request path resolved -- see
     // `crate::assets::resolved_hdr_map`.
     let hdr_map = crate::assets::resolved_hdr_map(scene);
     let environment = crate::assets::environment_source(scene, hdr_map.as_deref());
 
-    trace_into(
+    // No cancellation concept on this path (see this function's own doc comment); a
+    // permit wait can never be cut short here, so `trace_into` always returns `true`.
+    let never_cancel = AtomicBool::new(false);
+    let _ = trace_into(
         scene,
-        first_sample,
-        samples,
+        SampleRange::new(first_sample, samples),
         threads,
         &camera,
         environment,
         &mut buffer,
+        &never_cancel,
     );
     buffer
 }
@@ -294,7 +302,7 @@ pub fn trace_samples_with_gpu_cancellable(
         return Some(buffer);
     }
 
-    let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, VIEWER_FOV_DEG);
+    let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, DEFAULT_FOV_DEG);
     // The studio rig, or the HDR map the request path resolved -- see
     // `crate::assets::resolved_hdr_map`.
     let hdr_map = crate::assets::resolved_hdr_map(scene);
@@ -320,18 +328,25 @@ pub fn trace_samples_with_gpu_cancellable(
         GpuAccumulate::Declined => {}
     }
 
-    // The GPU declined (no adapter, ComputeMode::OnlyCpu, or an unsupported material).
-    // `buffer` is guaranteed still all-zero -- a decline never partially writes -- so
-    // falling back is exactly trace_samples' own zero-initialized start.
-    trace_into(
+    // The GPU declined (no adapter, ComputeMode::OnlyCpu, an unsupported material, or a
+    // device lost part-way through the request). `buffer` is still all-zero:
+    // `GpuBackend::try_accumulate_cancellable` traces into its own scratch buffer and
+    // adds it into `buffer` only on `Done`, so even a decline on a late turn writes
+    // nothing here -- falling back is exactly trace_samples' own zero-initialized start.
+    // `trace_into` returning `false` means `cancel` fired while still queued for CPU
+    // permits, before any tracing began, so `buffer` is still all-zero: reporting `None`
+    // here is exact, same as the GPU-side `Cancelled` case above.
+    if !trace_into(
         scene,
-        first_sample,
-        samples,
+        SampleRange::new(first_sample, samples),
         threads,
         &camera,
         environment,
         &mut buffer,
-    );
+        cancel,
+    ) {
+        return None;
+    }
     Some(buffer)
 }
 
@@ -351,13 +366,21 @@ pub fn trace_samples_with_gpu_cancellable(
 /// bit-identical regardless of how rows are distributed across threads.
 fn trace_into(
     scene: &SceneState,
-    first_sample: u32,
-    samples: u32,
+    range: SampleRange,
     threads: usize,
     camera: &Camera,
     environment: EnvironmentSource<'_>,
     buffer: &mut [Vec3],
-) {
+    cancel: &AtomicBool,
+) -> bool {
+    // Destructured immediately so every use below reads exactly as it did before this
+    // was bundled into one `SampleRange` (keeping `trace_into`'s own argument count at
+    // clippy's default limit -- the `cancel` flag for the cancellable permit wait would
+    // otherwise have pushed it to eight).
+    let SampleRange {
+        first_sample,
+        samples,
+    } = range;
     let width = scene.width;
     let height = scene.height;
     let width_usize = width as usize;
@@ -369,8 +392,12 @@ fn trace_into(
     // `requested_threads` exceeds it) and returns exactly how many were granted; that's
     // the number of scoped threads actually spawned below, so held permits and live
     // threads always agree. `_permits` releases them (even on panic) once this
-    // `trace_into` call's `thread::scope` returns.
-    let num_threads = THREAD_PERMITS.acquire(requested_threads);
+    // `trace_into` call's `thread::scope` returns. Returns `false` (leaving `buffer`
+    // untouched) if `cancel` fired while still waiting for permits, so a cancelled
+    // caller queued behind a wedged tracer is never stuck here indefinitely.
+    let Some(num_threads) = THREAD_PERMITS.acquire(requested_threads, cancel) else {
+        return false;
+    };
     let _permits = PermitGuard(num_threads);
 
     let planes = &scene.planes;
@@ -468,6 +495,8 @@ fn trace_into(
             });
         }
     });
+
+    true
 }
 
 #[cfg(test)]

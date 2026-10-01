@@ -5,7 +5,7 @@
 
 use indicatrix::renderer::gpu::{GpuContext, estimator_check, layout_check, transport_check};
 
-use crate::common::{LayoutCheckFn, report_transport_ulp_check};
+use crate::common::{LayoutCheckFn, report_image_comparison_material, report_transport_ulp_check};
 
 // ---------------------------------------------------------------------------------
 // Transport physics.
@@ -130,34 +130,7 @@ fn report_transport_determinism(ctx: &GpuContext) -> bool {
 /// connected-component clustering) -- see [`estimator_check::run_image_comparison`]'s
 /// doc comment.
 fn report_image_comparison(ctx: &GpuContext) -> bool {
-    print!(
-        "[Tier 3] statistical image comparison (Spinel, studio rig, {}x{} pixels) ... ",
-        48, 48
-    );
-    let result = estimator_check::run_image_comparison(ctx);
-    let passed = result.passed();
-    println!("{}", if passed { "PASS" } else { "FAIL" });
-    println!(
-        "  {} pixels, {} CPU samples/pixel, {} GPU samples/pixel (disjoint ranges)",
-        result.total_pixels, result.cpu_samples_per_pixel, result.gpu_samples_per_pixel
-    );
-    println!("  image-aggregate mean z = {:.4}", result.mean_z);
-    println!(
-        "  |z|>3 pixels: {} observed / {} total ({:.4}% vs {:.4}% binomial expectation)",
-        result.over_3_sigma_count,
-        result.total_pixels,
-        100.0 * result.over_3_sigma_count as f64 / result.total_pixels as f64,
-        100.0 * result.over_3_sigma_expected
-    );
-    println!(
-        "  max |z| = {:.3} at pixel ({}, {})",
-        result.max_abs_z, result.max_abs_z_pixel.0, result.max_abs_z_pixel.1
-    );
-    println!(
-        "  connected components of |z|>3 pixels (largest first, up to 10 shown): {:?}",
-        &result.cluster_sizes[..result.cluster_sizes.len().min(10)]
-    );
-    passed
+    report_image_comparison_material("Spinel", &estimator_check::run_image_comparison(ctx))
 }
 
 /// Spectral-space debug self-consistency (GPU per-channel radiance/lambdas/

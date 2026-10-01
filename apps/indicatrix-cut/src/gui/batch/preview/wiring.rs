@@ -11,7 +11,10 @@ use super::{
 use crate::{
     BatchModel, LibraryModel, MainWindow, SettingsModel,
     bridge::{preview_render, render_thread::RenderContext},
-    gui::batch::batch_queue::{LanePlan, WorkQueue, local_lane_count},
+    gui::batch::{
+        batch_queue::{LanePlan, WorkQueue, local_lane_count},
+        preview_cache::PreviewThumbnailCache,
+    },
     settings::{LiveComputeTarget, SettingsPersister, WorkerSettings},
 };
 use indicatrix::renderer::gpu_backend::GpuBackend;
@@ -19,11 +22,11 @@ use indicatrix_vault::db::sqlite::Database;
 use slint::{ComponentHandle, Model, Weak};
 use std::{
     cell::RefCell,
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     rc::Rc,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     thread,
 };
@@ -36,6 +39,7 @@ pub struct PreviewBatchHandle {
 }
 
 impl PreviewBatchHandle {
+    /// Asks the running batch to stop before it claims another item.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
@@ -46,6 +50,8 @@ impl PreviewBatchHandle {
 pub struct PreviewBatchOutcome {
     pub generated: u32,
     pub failed: u32,
+    /// Designs whose geometry came from the angle table (no usable design file).
+    pub angle_table: usize,
     pub cancelled: bool,
 }
 
@@ -58,14 +64,24 @@ pub struct PreviewBatchSettings {
     pub live_compute_target: LiveComputeTarget,
     pub preview_size: u32,
     pub preview_spp: u32,
+    /// The library card thumbnail cache; invalidated per design once its previews are
+    /// saved, so the card shows the new images immediately.
+    pub thumbnail_cache: PreviewThumbnailCache,
 }
 
+/// Starts a preview-image batch over the requested library entries on a background thread and returns a handle that can cancel it.
 pub fn spawn_preview_batch(
     ui_weak: Weak<MainWindow>,
     db: Arc<Mutex<Database>>,
     render_ctx: Arc<Mutex<RenderContext>>,
     settings: PreviewBatchSettings,
     entry_ids: Vec<i64>,
+    // This batch's own id, plus the shared "most recently started batch" counter --
+    // see `start_batch`'s own doc comment for why the final summary/done push below
+    // compares them before writing anything, rather than trusting this is still the
+    // only batch anyone cares about by the time it finishes.
+    batch_id: u64,
+    current_batch_id: Arc<AtomicU64>,
 ) -> PreviewBatchHandle {
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_thread = Arc::clone(&cancel);
@@ -112,12 +128,15 @@ pub fn spawn_preview_batch(
         // The one remote endpoint -- see this group's `mod.rs` doc
         // comment's "Local + remote" section.
         let remote_worker = settings.worker;
+        let thumbnail_cache = settings.thumbnail_cache;
+        let angle_table_entries = Mutex::new(BTreeSet::new());
         let ctx = BatchContext {
             db: &db,
             material_candidates: &material_candidates,
             preview_size: settings.preview_size,
             preview_spp: settings.preview_spp,
             gpu_retired: &gpu_retired,
+            angle_table_entries: &angle_table_entries,
         };
 
         let queue = WorkQueue::new(build_items(&entry_ids));
@@ -152,6 +171,7 @@ pub fn spawn_preview_batch(
             cancel: &cancel_thread,
             design_total,
             local_lane_total,
+            thumbnail_cache: &thumbnail_cache,
         };
 
         // Every lane borrows `shared`/`gpu`/`remote_lane_done` by plain reference (no
@@ -172,34 +192,53 @@ pub fn spawn_preview_batch(
         let outcome = PreviewBatchOutcome {
             generated: tally.generated.load(Ordering::Relaxed),
             failed: tally.failed.load(Ordering::Relaxed),
+            angle_table: super::super::angle_table_count(&angle_table_entries),
             cancelled: cancel_thread.load(Ordering::Relaxed),
         };
-        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-            ui.global::<BatchModel>().set_preview_summary(
-                format!(
-                    "Generated previews for {} design(s){}{}.",
-                    outcome.generated,
-                    if outcome.failed > 0 {
-                        format!(", {} failed", outcome.failed)
-                    } else {
-                        String::new()
-                    },
-                    if outcome.cancelled {
-                        " (cancelled)"
-                    } else {
-                        ""
-                    }
-                )
-                .into(),
-            );
-            ui.global::<BatchModel>().set_preview_done(true);
-        });
+        // Dropped, not pushed, when a NEWER batch has already started -- `start_batch`
+        // refuses a second batch while `preview_batch_running` is true, but a batch
+        // that finishes in the same tick a fresh one starts (Close then immediately
+        // re-trigger) could otherwise still land its summary/done on top of the new
+        // batch's own freshly reset dialog state. See `start_batch`'s own doc comment.
+        if current_batch_id.load(Ordering::SeqCst) == batch_id {
+            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+                ui.global::<BatchModel>().set_preview_summary(
+                    format!(
+                        "Generated previews for {} design(s){}{}{}.",
+                        outcome.generated,
+                        if outcome.failed > 0 {
+                            format!(", {} failed", outcome.failed)
+                        } else {
+                            String::new()
+                        },
+                        super::super::angle_table_summary(outcome.angle_table),
+                        if outcome.cancelled {
+                            " (cancelled)"
+                        } else {
+                            ""
+                        }
+                    )
+                    .into(),
+                );
+                ui.global::<BatchModel>().set_preview_done(true);
+            });
+        }
         // `_busy_guard` drops here, clearing `export_active` and
         // `preview_batch_running` unconditionally -- see this group's `mod.rs` doc
         // comment.
     });
 
     PreviewBatchHandle { cancel }
+}
+
+/// The per-window state every [`start_batch`] call site shares, bundled to keep that
+/// function's argument count under clippy's limit: the running batch's cancel handle,
+/// the "most recently started batch" counter and the card thumbnail cache the batch
+/// invalidates as designs finish.
+struct BatchSlots {
+    handle_slot: Rc<RefCell<Option<PreviewBatchHandle>>>,
+    current_batch_id: Arc<AtomicU64>,
+    thumbnail_cache: PreviewThumbnailCache,
 }
 
 /// Starts a batch for `entry_ids`, reading `preview_size`/`preview_spp`/the configured
@@ -210,15 +249,40 @@ pub fn spawn_preview_batch(
 /// context-menu and confirmed-offer handlers, and its own `spawn_missing_preview_scan`
 /// result handler) funnels through, so all three read settings the same way and none of
 /// them can drift.
+/// Refuses (toasts) rather than starting a SECOND batch while one is already
+/// running: every caller (the confirm step, the single-design context-menu
+/// trigger, and the missing-previews scan's own confirm offer, plus the library's
+/// own post-import "generate previews for what was just imported" offer) funnels
+/// through here, but nothing previously stopped two of them firing close together
+/// -- `handle_slot`'s previous `Some(handle)` would simply be overwritten,
+/// orphaning the FIRST batch's thread with no `PreviewBatchHandle` left to cancel
+/// it, and resetting the dialog's progress fields out from under it mid-run.
+/// `current_batch_id` is bumped on every ACCEPTED start and threaded into
+/// [`spawn_preview_batch`], which compares it before writing its own final
+/// summary/done -- see that function's own comment on the completion push.
 fn start_batch(
     ui: &MainWindow,
     db: &Arc<Mutex<Database>>,
     render_ctx: &Arc<Mutex<RenderContext>>,
     settings_store: &Arc<SettingsPersister>,
-    handle_slot: &Rc<RefCell<Option<PreviewBatchHandle>>>,
+    slots: &BatchSlots,
     entry_ids: Vec<i64>,
 ) {
+    let BatchSlots {
+        handle_slot,
+        current_batch_id,
+        thumbnail_cache,
+    } = slots;
     if entry_ids.is_empty() {
+        return;
+    }
+    if ui.global::<BatchModel>().get_preview_batch_running() {
+        crate::gui::show_toast(
+            ui,
+            "A preview batch is already running -- wait for it to finish or cancel it \
+             first.",
+            "info",
+        );
         return;
     }
     let snapshot = settings_store.snapshot();
@@ -237,6 +301,7 @@ fn start_batch(
     ui.global::<BatchModel>()
         .set_preview_summary(String::new().into());
 
+    let batch_id = current_batch_id.fetch_add(1, Ordering::SeqCst) + 1;
     let handle = spawn_preview_batch(
         ui.as_weak(),
         Arc::clone(db),
@@ -246,8 +311,11 @@ fn start_batch(
             live_compute_target: snapshot.settings.live_compute_target,
             preview_size: snapshot.settings.preview_size,
             preview_spp: snapshot.settings.preview_spp,
+            thumbnail_cache: thumbnail_cache.clone(),
         },
         entry_ids,
+        batch_id,
+        Arc::clone(current_batch_id),
     );
     *handle_slot.borrow_mut() = Some(handle);
 }
@@ -271,17 +339,13 @@ pub fn offer_batch_confirmation(ui: &MainWindow, ids: &[i64]) {
     if ids.is_empty() {
         return;
     }
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "entry ids are SQLite AUTOINCREMENT row ids from a several-thousand-\
-                  row local catalogue, nowhere near i32::MAX; Slint's `[int]` model \
-                  type has no i64 element type to use instead"
-    )]
     let ids_i32: Vec<i32> = ids.iter().map(|&id| id as i32).collect();
     ui.global::<BatchModel>()
         .set_preview_offer_ids(slint::ModelRc::new(slint::VecModel::from(ids_i32)));
     ui.global::<BatchModel>()
         .set_preview_offer_count(ids.len() as i32);
+    ui.global::<BatchModel>()
+        .set_preview_offer_regenerate(false);
     ui.global::<BatchModel>().set_preview_confirming(true);
     ui.global::<BatchModel>().set_preview_visible(true);
 }
@@ -302,14 +366,23 @@ pub fn offer_batch_confirmation(ui: &MainWindow, ids: &[i64]) {
 /// of this function itself only ever being called once, from `gui::build_main_window`,
 /// rather than needing its own separate "already asked" flag.
 ///
+/// `thumbnail_cache` is the library card thumbnail cache
+/// (`gui::batch::preview_cache::setup_preview_thumbnail_callback`'s return value); every
+/// batch this wires up invalidates it per saved design so the cards refresh at once.
+///
 /// Called once, from `gui::build_main_window`, alongside every other `setup_*` call.
 pub fn setup_preview_batch_callbacks(
     ui: &MainWindow,
     db: &Arc<Mutex<Database>>,
     render_ctx: &Arc<Mutex<RenderContext>>,
     settings_store: &Arc<SettingsPersister>,
+    thumbnail_cache: &PreviewThumbnailCache,
 ) {
     let handle: Rc<RefCell<Option<PreviewBatchHandle>>> = Rc::new(RefCell::new(None));
+    // Shared by every `start_batch` call site below -- see that function's own doc
+    // comment for why the completion push in `spawn_preview_batch` compares against
+    // it.
+    let current_batch_id: Arc<AtomicU64> = Arc::new(AtomicU64::new(0));
 
     // Preview render size/spp sliders are exposed as settings: plain settings-file writes, no `RenderContext`/live-viewport
     // involvement at all, since these only ever affect the NEXT batch dispatch's
@@ -337,6 +410,7 @@ pub fn setup_preview_batch_callbacks(
         if let Some(ui) = ui_weak_close.upgrade() {
             ui.global::<BatchModel>().set_preview_visible(false);
             ui.global::<BatchModel>().set_preview_done(false);
+            crate::gui::batch::regenerate_all::preview_dialog_closed(&ui);
         }
     });
 
@@ -345,13 +419,18 @@ pub fn setup_preview_batch_callbacks(
         if let Some(ui) = ui_weak_dismiss.upgrade() {
             ui.global::<BatchModel>().set_preview_visible(false);
             ui.global::<BatchModel>().set_preview_confirming(false);
+            crate::gui::batch::regenerate_all::preview_dialog_closed(&ui);
         }
     });
 
     let db_confirm = Arc::clone(db);
     let render_ctx_confirm = Arc::clone(render_ctx);
     let settings_store_confirm = Arc::clone(settings_store);
-    let handle_confirm = Rc::clone(&handle);
+    let slots_confirm = BatchSlots {
+        handle_slot: Rc::clone(&handle),
+        current_batch_id: Arc::clone(&current_batch_id),
+        thumbnail_cache: thumbnail_cache.clone(),
+    };
     let ui_weak_confirm = ui.as_weak();
     ui.global::<BatchModel>()
         .on_preview_generate_confirmed(move || {
@@ -367,7 +446,7 @@ pub fn setup_preview_batch_callbacks(
                     &db_confirm,
                     &render_ctx_confirm,
                     &settings_store_confirm,
-                    &handle_confirm,
+                    &slots_confirm,
                     ids,
                 );
             }
@@ -376,7 +455,11 @@ pub fn setup_preview_batch_callbacks(
     let db_entry = Arc::clone(db);
     let render_ctx_entry = Arc::clone(render_ctx);
     let settings_store_entry = Arc::clone(settings_store);
-    let handle_entry = Rc::clone(&handle);
+    let slots_entry = BatchSlots {
+        handle_slot: Rc::clone(&handle),
+        current_batch_id: Arc::clone(&current_batch_id),
+        thumbnail_cache: thumbnail_cache.clone(),
+    };
     let ui_weak_entry = ui.as_weak();
     ui.global::<LibraryModel>()
         .on_generate_previews_for_entry(move |id: i32| {
@@ -386,14 +469,21 @@ pub fn setup_preview_batch_callbacks(
                     &db_entry,
                     &render_ctx_entry,
                     &settings_store_entry,
-                    &handle_entry,
+                    &slots_entry,
                     vec![i64::from(id)],
                 );
             }
         });
 
     let db_scan = Arc::clone(db);
-    spawn_missing_preview_scan(ui.as_weak(), db_scan, |ui, ids| {
-        offer_batch_confirmation(ui, &ids);
-    });
+    let scan_settings = settings_store.snapshot().settings;
+    spawn_missing_preview_scan(
+        ui.as_weak(),
+        db_scan,
+        scan_settings.preview_size,
+        scan_settings.preview_spp,
+        |ui, ids| {
+            offer_batch_confirmation(ui, &ids);
+        },
+    );
 }

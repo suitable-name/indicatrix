@@ -12,12 +12,13 @@ use crate::{
     gui::{
         editor::{
             state::{
-                cutting_schedule_rows, girdle_and_ratio_texts, preform_mm_texts,
+                cutting_instructions_rows, girdle_and_ratio_texts, preform_mm_texts,
                 preform_y_offset_mm_text, proportions_texts, push_multi_selected_count, push_tiers,
             },
             view::{
                 facet_count_from_solved, girdle_and_ratio_texts_from_solved,
-                preform_mm_texts_from_solved, proportions_texts_from_solved, scaled_viewport_size,
+                preform_mm_texts_from_solved, proportions_texts_from_solved,
+                push_proportion_verdicts_from_solved, scaled_viewport_size,
             },
         },
         render::camera_lighting::contained_request_size,
@@ -65,10 +66,22 @@ pub(super) struct BackgroundSolveResult {
     /// never recomputed from `EditorState` there (a solve completion has no access
     /// to it beyond this snapshot).
     pub(super) multi_selected_count: usize,
+    /// The design's effective refractive index, the SAME value `panel_inputs`
+    /// computed for the tier table's own critical-angle margin column -- kept
+    /// here so [`push_solve_dependent_background_fields`] can judge the
+    /// proportion-verdict chips against it too, without a second
+    /// `RenderContext` lock just to recompute it.
+    pub(super) n_d: f64,
+    /// `true` iff this result is [`BackgroundSolveResult::panicked`]'s minimal
+    /// placeholder -- every OTHER field above is an empty/zero
+    /// placeholder in that case, not a real solve, so
+    /// [`apply_background_solve_result`] must report the failure and stop
+    /// rather than push any of them over whatever the panel already showed.
+    pub(super) panicked: bool,
     /// The SAME `Design` snapshot this worker
     /// solved, moved in here rather than dropped once `panel_inputs`/`solved`
     /// are built -- [`apply_background_solve_result`] needs it to build
-    /// proportions/girdle-ratio/preform-mm/facet-count/cutting-schedule the same
+    /// proportions/girdle-ratio/preform-mm/facet-count/cutting-instructions the same
     /// way `super::super::view::refresh_editor_panel_from_solve` does, so the
     /// background-solve path builds these too instead of leaving them stale
     /// until the next foreground refresh (see that function's own doc comment).
@@ -76,6 +89,62 @@ pub(super) struct BackgroundSolveResult {
     /// worker closure for `Design::solve`; nothing else in this struct needs
     /// it again after construction, so moving it costs nothing further.
     pub(super) design: Design,
+}
+
+impl BackgroundSolveResult {
+    /// A minimal placeholder for a dispatch `dispatch::solve_and_build_result`
+    /// cancelled before finishing `dispatch::panel_inputs` -- built
+    /// without paying for any of that function's five-plus solve-derived
+    /// helpers. In practice this never reaches the screen at all:
+    /// `dispatch::cancel_in_flight_solve` ("Abandon Solve") bumps
+    /// `Runtime::current_seq` on the very same click that sets the cancel flag
+    /// this result answers, so `apply_background_solve_result`'s own
+    /// `is_current(seq)` check discards it before any field below is read for
+    /// real -- see [`dispatch::solve_cancellably`]'s own doc comment. These
+    /// values exist only so the struct can be built at all on that path.
+    pub(super) const fn cancelled(
+        design: Design,
+        elapsed: Duration,
+        multi_selected_count: usize,
+    ) -> Self {
+        Self {
+            elapsed,
+            tiers: Vec::new(),
+            status_text: String::new(),
+            status_is_problem: false,
+            warnings: Vec::new(),
+            yield_texts: (String::new(), String::new(), String::new(), String::new()),
+            planes: Vec::new(),
+            solved: None,
+            too_many_planes: false,
+            gear: (
+                design.meta.gear_teeth_abs(),
+                design.meta.gear_reference_angle as f32,
+            ),
+            multi_selected_count,
+            n_d: 0.0,
+            panicked: false,
+            design,
+        }
+    }
+
+    /// a minimal, TOASTED placeholder for a worker that panicked inside
+    /// `dispatch::solve_and_build_result` -- unlike [`Self::cancelled`], this
+    /// case is not guaranteed stale (a panic can happen on an otherwise still-
+    /// current dispatch), so `apply_background_solve_result` reports it via
+    /// `panicked` instead of silently discarding it, while leaving whatever the
+    /// panel already showed untouched (every other field here is an empty
+    /// placeholder, not a real solve, and must never overwrite good data).
+    pub(super) fn panicked(design: Design, elapsed: Duration, multi_selected_count: usize) -> Self {
+        Self {
+            status_text: "Solve failed unexpectedly (internal error) -- try again or simplify \
+                          the design."
+                .to_string(),
+            status_is_problem: true,
+            panicked: true,
+            ..Self::cancelled(design, elapsed, multi_selected_count)
+        }
+    }
 }
 
 /// Frees `super::runtime::Runtime::solve_in_flight`/`super::runtime::Runtime::current_cancel`
@@ -165,6 +234,21 @@ pub(super) fn apply_background_solve_result(
         return;
     }
 
+    if result.panicked {
+        // `result`'s own tiers/planes/etc. are empty placeholders, not a
+        // real solve -- pushing them would blank out whatever the panel
+        // already showed. Report the failure and stop; `solve_running` above
+        // is already cleared, which is all "Abandon Solve"'s own reset does
+        // for this case too.
+        ui.global::<EditorModel>()
+            .set_status_text(result.status_text.clone().into());
+        ui.global::<EditorModel>().set_status_is_problem(true);
+        ui.global::<EditorModel>().set_solve_state("failed".into());
+        show_toast(ui, &result.status_text, "error");
+        dispatch_pending(ui, render_ctx, pending);
+        return;
+    }
+
     maybe_toast_too_many_planes(ui, &result);
 
     // Pushed first, before ANY field of `result` is
@@ -227,24 +311,51 @@ pub(super) fn apply_background_solve_result(
     // no edit touched them since `refresh_editor_panel_stale` last pushed them at
     // edit time. Nothing to refresh here.
 
-    let planes = Arc::new(result.planes);
+    if !push_viewport_after_background_solve(
+        ui,
+        render_ctx,
+        started_generation,
+        result.planes,
+        result.gear,
+        result.solved,
+    ) {
+        dispatch_pending(ui, render_ctx, pending);
+        return;
+    }
+
+    dispatch_pending(ui, render_ctx, pending);
+}
+
+/// [`apply_background_solve_result`]'s viewport/solid-preview-redraw/tilt-
+/// staleness tail -- split out purely to keep that function under clippy's
+/// function-length lint. Returns `false` when `started_generation` lost the
+/// race to claim `render_ctx`'s shared plane slot (a newer editor state already
+/// owns it -- the `is_current(seq)` guard `apply_background_solve_result`
+/// already ran should have caught this, so this is only the belt to that
+/// braces), in which case the caller must treat this result as stale and skip
+/// the rest of the pipeline rather than push a redraw/cache write for it.
+fn push_viewport_after_background_solve(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    started_generation: u64,
+    planes: Vec<GpuFacetPlane>,
+    gear: (u32, f32),
+    solved: Option<Vec<SolvedTier>>,
+) -> bool {
+    let planes = Arc::new(planes);
     let mut ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
     // `started_generation` rather than the live counter: a
     // background solve that finished against an older design must not out-rank the
     // claim a newer edit already made, which is exactly what `may_claim_active_planes`
-    // compares. A refused claim here means a newer editor state owns the planes and
-    // this result is stale -- the `is_current(seq)` guard above should already have
-    // returned, so this is the belt to that braces.
+    // compares.
     if !ctx.claim_active_planes(
         Arc::clone(&planes),
-        Some(result.gear),
+        Some(gear),
         PlanesOwner::Editor {
             generation: started_generation,
         },
     ) {
-        drop(ctx);
-        dispatch_pending(ui, render_ctx, pending);
-        return;
+        return false;
     }
     ctx.dirty = true;
     let design_gear = ctx.design_gear;
@@ -277,8 +388,12 @@ pub(super) fn apply_background_solve_result(
     if let Some(preview_state) = preview_state {
         preview_state.request_redraw_with_gear(redraw_planes, camera, size, view_mode, design_gear);
     }
-    if let (Some(solved), Some(cache)) = (result.solved, solid_last_solved) {
-        *cache.lock().unwrap_or_else(PoisonError::into_inner) = Some(solved);
+    if let (Some(solved), Some(cache)) = (solved, solid_last_solved) {
+        // stamped with `started_generation`, not the live counter --
+        // this completion already confirmed `generation.load(..) ==
+        // started_generation` above, so `started_generation` names exactly
+        // the design this solve ran against.
+        *cache.lock().unwrap_or_else(PoisonError::into_inner) = Some((started_generation, solved));
     }
 
     // This background solve just replaced the shared plane
@@ -296,22 +411,23 @@ pub(super) fn apply_background_solve_result(
     if ui.global::<TiltModel>().get_dialog_open() {
         ui.global::<TiltModel>().invoke_request_tilt_profile_axes();
     }
-
-    dispatch_pending(ui, render_ctx, pending);
+    true
 }
 
-/// The proportions/girdle-ratio/preform-mm/facet-count/cutting-schedule push half
+/// The proportions/girdle-ratio/preform-mm/facet-count/cutting-instructions push half
 /// of [`apply_background_solve_result`] -- split out purely to keep that function
 /// under clippy's function-length lint, the same reasoning `view::
 /// push_solve_dependent_panel_fields` documents for itself.
 ///
 /// These are the fields every OTHER
 /// solve-completion path pushes -- proportions, girdle/ratio texts, preform mm
-/// readouts, facet count, the cutting schedule. The standard round brilliant template alone
-/// sums ~72 plane indices, comfortably over `scheduling::SYNC_SOLVE_PLANE_LIMIT` (32),
-/// so essentially every real design takes THIS path (background solve) rather than
+/// readouts, facet count, the cutting instructions. The standard round brilliant template alone
+/// sums ~72 plane indices, over the 32-plane limit of
+/// `indicatrix_editor::solve_policy::should_solve_synchronously_for` (which also
+/// requires few meet-derived tiers, no tier targets and a fast last solve), so
+/// essentially every real design takes THIS path (background solve) rather than
 /// `refresh_editor_panel_from_solve`'s synchronous one; without this function, the
-/// Proportions section would read "-", the Schedule tab would stay empty, preform mm
+/// Proportions section would read "-", the Cutting Instructions tab would stay empty, preform mm
 /// readouts would stay blank, and the status strip's facet count would freeze at whatever
 /// the last SYNCHRONOUSLY solved design had, for every one of those designs.
 /// `result.solved` is the SAME single `Design::solve()` this dispatch already
@@ -374,13 +490,18 @@ fn push_solve_dependent_background_fields(ui: &MainWindow, result: &BackgroundSo
     ui.global::<EditorModel>().set_facet_count(facet_count);
 
     if let Some(solved) = solved_slice {
-        let rows: Vec<AngleItem> = cutting_schedule_rows(&result.design, solved);
+        let rows: Vec<AngleItem> = cutting_instructions_rows(&result.design, solved);
         ui.global::<EditorModel>()
             .set_cutting_rows(ModelRc::new(VecModel::from(rows)));
     } else {
         ui.global::<EditorModel>()
             .set_cutting_rows(ModelRc::new(VecModel::from(Vec::<AngleItem>::new())));
     }
+
+    // see `view::panel::push_proportion_verdicts_from_solved`'s own doc
+    // comment for why a background-solve completion is one of the paths that
+    // used to leave this chip stale.
+    push_proportion_verdicts_from_solved(ui, &result.design, solved_slice, result.n_d);
 }
 
 /// Re-dispatches whatever `super::runtime::Runtime::pending_dispatch`
@@ -399,6 +520,7 @@ fn dispatch_pending(
             pending.design,
             &pending.generation,
             pending.multi_selected,
+            pending.started_generation,
         );
     }
 }

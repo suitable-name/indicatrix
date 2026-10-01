@@ -1,6 +1,6 @@
 //! `indicatrix` is a physically-based spectral gemstone renderer.
 //!
-//! Turns GemCAD-style cutting schedules (facet angles and index positions)
+//! Turns GemCAD-style cutting instructions (facet angles and index positions)
 //! into rendered output: spectral analytical / Monte-Carlo raytracing through
 //! faceted gemstone geometry, plus brilliance / fire / scintillation metrics.
 //!
@@ -14,10 +14,25 @@
 // upgrade nests deeper.
 #![recursion_limit = "256"]
 
+/// Colour science: CIE 1931 colour matching, gamut mapping, tone mapping, and the
+/// brilliance/fire/scintillation optical metrics.
 pub mod color;
+/// Faceted gemstone solid geometry: the plane-arrangement B-rep, standard cut
+/// tables, girdle classification, and the meet-point solver.
 pub mod geometry;
+/// Physically-based optics: materials, dispersion, birefringence, polarization, and
+/// the spectral raytracer itself.
 pub mod optics;
+/// Pure render-setup helpers shared by every renderer built on this crate.
+///
+/// Material resolution and overrides, the backdrop mapping, plane-set identity,
+/// girdle-width measurement, ICC/PNG export encoding, and the samples-slider exponent
+/// mapping -- see this module's own doc comment.
+pub mod render_setup;
+/// CPU and (behind the `gpu` feature) GPU rendering backends, buffer encoding,
+/// denoising, and tone mapping.
 pub mod renderer;
+/// SIMD-accelerated plane-arena intersection kernels shared by the CPU raytracer.
 pub mod simd;
 
 pub use geometry::cuts::FacetSpec;

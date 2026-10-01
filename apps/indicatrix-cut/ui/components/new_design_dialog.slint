@@ -174,33 +174,36 @@ export component NewDesignDialog inherits Rectangle {
             HorizontalLayout {
                 spacing: 6px;
                 VerticalLayout {
+                    horizontal-stretch: 1;
                     spacing: 2px;
                     Rectangle {
                         height: hw_lbl.preferred-height;
                         Tooltip { text: @markdown("Half the rough's width, in mast units -- the same scale a facet's own mast offset uses (1.0 = where the finished girdle will sit)."); }
                         hw_lbl := Text { text: "Half-Width"; font-size: 9px; color: Theme.text-muted; }
                     }
-                    LineEdit { text <=> EditorModel.new_preform_half_width; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { min-width: 0px; text <=> EditorModel.new_preform_half_width; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                     Text { text: root.half_width_valid ? "" : "must be > 0"; font-size: 8px; color: Theme.accent-ruby; }
                 }
                 VerticalLayout {
+                    horizontal-stretch: 1;
                     spacing: 2px;
                     Rectangle {
                         height: lw_lbl.preferred-height;
                         Tooltip { text: @markdown("Ratio of the rough's length to its width -- 1.0 is square/round, higher values give an elongated oval or rectangular rough."); }
                         lw_lbl := Text { text: "Length / Width"; font-size: 9px; color: Theme.text-muted; }
                     }
-                    LineEdit { text <=> EditorModel.new_preform_length_over_width; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { min-width: 0px; text <=> EditorModel.new_preform_length_over_width; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                     Text { text: root.length_over_width_valid ? "" : "must be > 0"; font-size: 8px; color: Theme.accent-ruby; }
                 }
                 VerticalLayout {
+                    horizontal-stretch: 1;
                     spacing: 2px;
                     Rectangle {
                         height: depth_lbl.preferred-height;
                         Tooltip { text: @markdown("The rough's total top-to-bottom extent (table to culet), in the same mast units as Half-Width."); }
                         depth_lbl := Text { text: "Depth"; font-size: 9px; color: Theme.text-muted; }
                     }
-                    LineEdit { text <=> EditorModel.new_preform_depth; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { min-width: 0px; text <=> EditorModel.new_preform_depth; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                     Text { text: root.depth_valid ? "" : "must be > 0"; font-size: 8px; color: Theme.accent-ruby; }
                 }
             }
@@ -218,6 +221,7 @@ export component NewDesignDialog inherits Rectangle {
                         gear_lbl := Text { text: "Index Gear"; font-size: 9px; color: Theme.text-muted; }
                     }
                     ComboBox {
+                        min-width: 0px;
                         model: ["96", "80", "77", "72", "64", "120", "Custom"];
                         current-index <=> EditorModel.new_gear_index;
                         enabled: !root.template_locks_fields;
@@ -226,7 +230,7 @@ export component NewDesignDialog inherits Rectangle {
                 if EditorModel.new_gear_index == 6 && !root.template_locks_fields: VerticalLayout {
                     spacing: 2px;
                     Text { text: "Custom Teeth"; font-size: 9px; color: Theme.text-muted; }
-                    LineEdit { text <=> EditorModel.new_gear_custom_text; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
+                    LineEdit { min-width: 0px; text <=> EditorModel.new_gear_custom_text; changed has-focus => { EditorModel.text_focus = self.has-focus; } }
                     Text { text: root.custom_gear_valid ? "" : "must be > 0"; font-size: 8px; color: Theme.accent-ruby; }
                 }
             }

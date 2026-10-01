@@ -46,8 +46,9 @@ pub const LIVE_FIRST_CHUNK_SAMPLES: u32 = 8;
 /// Floor for a rate-sized chunk -- per-request overhead dominates below this.
 pub const LIVE_CHUNK_MIN_SAMPLES: u32 = 2;
 /// Ceiling for one chunk: the worker's own per-request limit
-/// (`indicatrix-worker`'s `MAX_SAMPLES_PER_REQUEST`, not advertised in `Welcome`).
-pub const LIVE_CHUNK_MAX_SAMPLES: u32 = 65_536;
+/// (`indicatrix-worker`'s `MAX_SAMPLES_PER_REQUEST`, not advertised in `Welcome`), the
+/// one definition `indicatrix_dispatch` owns.
+pub use indicatrix_dispatch::DEFAULT_MAX_CHUNK_SAMPLES as LIVE_CHUNK_MAX_SAMPLES;
 /// Consecutive chunk failures after which the lane stops claiming for this epoch.
 pub const MAX_CONSECUTIVE_CHUNK_FAILURES: u32 = 2;
 
@@ -285,6 +286,29 @@ impl LiveLane {
         Some(end)
     }
 
+    /// The in-flight chunk `request_id` was cut off by a live-remote suspension (live
+    /// rendering paused, or an export/batch job starting -- see
+    /// `gui::remote::orchestrator::tick::poll::suspend_live_remote`), confirmed by the
+    /// worker's `DONE { cancelled: true }`: merges the chunk's valid prefix into the
+    /// epoch and hands back any untraced remainder exactly like [`Self::chunk_done`],
+    /// but -- unlike `chunk_done` -- touches neither [`Self::rate`] nor the
+    /// consecutive-failure streak, since a worker cut off mid-chunk by a local pause
+    /// says nothing about its throughput or reliability. The lane is left `Active` and
+    /// idle either way (never `Exhausted`/`GaveUp` from this alone), ready for
+    /// `resume_idle_lane` to continue it once allowed again. Not expected to be called
+    /// for a [`Self::display_only`] lane -- that kind is abandoned outright on
+    /// suspension instead, since its one request cannot be resumed mid-stream. `None`
+    /// if `request_id` is not the chunk in flight (already superseded by an
+    /// `abandon`).
+    pub fn chunk_paused(&mut self, request_id: u32) -> Option<ChunkEnd> {
+        self.take_in_flight(request_id)?;
+        let end = self.epoch.finish_chunk()?;
+        if end.done < end.count {
+            self.hand_back(end);
+        }
+        Some(end)
+    }
+
     /// The in-flight chunk `request_id` failed (worker error, transport error or
     /// liveness timeout): keeps its valid prefix, hands the remainder back (see the
     /// module doc comment) and decides whether to continue. `None` if `request_id` is
@@ -352,4 +376,79 @@ fn measured_rate(flight: &InFlight, done: u32, now: Instant) -> Option<f64> {
         return None;
     }
     Some(f64::from(done) / span.as_secs_f64())
+}
+
+/// [`LiveLane::chunk_paused`] tests -- kept inline (rather than in [`tests`], this
+/// module's own separate file) purely so the live-remote-suspension fix that added
+/// `chunk_paused` touches exactly one file under `bridge::remote::live_lane`.
+#[cfg(test)]
+mod chunk_paused_tests {
+    use super::*;
+    use crate::bridge::sample_cursor::tests::apply_frame;
+
+    fn t(ms: u64) -> Instant {
+        static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+        *ORIGIN.get_or_init(Instant::now) + Duration::from_millis(ms)
+    }
+
+    /// A full chunk paused after it actually finished tracing everything still merges
+    /// the whole thing, hands back nothing, and reports no remainder.
+    #[test]
+    fn a_fully_traced_chunk_paused_at_completion_merges_everything() {
+        let epoch = Arc::new(LiveEpoch::new(1, 1, 100));
+        let mut lane = LiveLane::new(Arc::clone(&epoch), true);
+        let chunk = lane.next_chunk(1, t(0)).unwrap();
+        apply_frame(
+            &chunk.accumulator,
+            1,
+            chunk.first_sample,
+            chunk.samples,
+            2.0,
+        );
+        let end = lane.chunk_paused(1).expect("in flight");
+        assert_eq!(end.remainder(), (chunk.first_sample + chunk.samples, 0));
+        assert_eq!(epoch.remote_done(), chunk.samples);
+    }
+
+    /// The common case: cancelled mid-chunk. The valid prefix is merged, the untraced
+    /// remainder is handed back to the local tracer (`local_lane: true`), and -- unlike
+    /// `chunk_failed` -- nothing here counts as a failure: two pauses in a row must
+    /// never give up the lane.
+    #[test]
+    fn a_chunk_paused_mid_flight_merges_the_prefix_and_hands_back_the_remainder() {
+        let epoch = Arc::new(LiveEpoch::new(1, 1, 100));
+        let mut lane = LiveLane::new(Arc::clone(&epoch), true);
+        let chunk = lane.next_chunk(1, t(0)).unwrap();
+        assert!(chunk.samples > 1, "need room for a partial trace");
+        apply_frame(&chunk.accumulator, 1, chunk.first_sample, 1, 3.0);
+
+        let end = lane.chunk_paused(1).expect("in flight");
+        assert_eq!(end.done, 1);
+        assert_eq!(epoch.remote_done(), 1, "the valid prefix was merged");
+        assert!(lane.is_idle(), "left Active and idle, not GaveUp/Exhausted");
+
+        for _ in 0..=MAX_CONSECUTIVE_CHUNK_FAILURES {
+            let c = lane.next_chunk(2, t(10)).expect("still claimable");
+            assert!(
+                lane.chunk_paused(c.request_id).is_some(),
+                "repeated pauses must never exhaust the failure budget"
+            );
+        }
+        assert!(
+            lane.is_idle(),
+            "chunk_paused must never drive the lane to GaveUp"
+        );
+    }
+
+    /// A stale/superseded request id (already abandoned, or from a different chunk)
+    /// merges nothing and reports no chunk in flight.
+    #[test]
+    fn a_mismatched_request_id_is_a_no_op() {
+        let epoch = Arc::new(LiveEpoch::new(1, 1, 100));
+        let mut lane = LiveLane::new(Arc::clone(&epoch), true);
+        let chunk = lane.next_chunk(1, t(0)).unwrap();
+        assert!(lane.chunk_paused(chunk.request_id + 1).is_none());
+        // The real in-flight chunk is untouched -- it can still be paused correctly.
+        assert!(lane.chunk_paused(chunk.request_id).is_some());
+    }
 }

@@ -11,7 +11,7 @@ use indicatrix::{
         evaluate_gem_optical_metrics,
     },
     geometry::GpuFacetPlane,
-    optics::materials::GemMaterial,
+    optics::{materials::GemMaterial, raytracer::LightingPreset},
 };
 
 /// The canonical camera-independent light pose every fixed-pose measurement in this
@@ -24,7 +24,17 @@ use indicatrix::{
 /// same numeric convention means an optimized design's objective is measured under
 /// the same illumination the editor's own live preview already shows the user.
 pub const CANONICAL_LIGHT_YAW: f32 = 0.85;
+/// The pitch half of [`CANONICAL_LIGHT_YAW`]'s own pose -- see that constant's
+/// doc comment for what the pair means and why it is duplicated here rather
+/// than imported.
 pub const CANONICAL_LIGHT_PITCH: f32 = 0.95;
+
+/// The lighting preset [`evaluate_objective`] scores under: the editor's default rig.
+///
+/// The metrics describe the image lit by a preset, so the same design scores differently
+/// under another one; a caller that optimizes for the preset the user has selected uses
+/// [`evaluate_objective_under`] instead.
+pub const CANONICAL_LIGHTING_PRESET: LightingPreset = LightingPreset::RingLights;
 
 /// User-visible, user-adjustable weights for [`ObjectiveComponents`].
 ///
@@ -132,7 +142,9 @@ impl ObjectiveWeights {
 /// never instead of it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ObjectiveComponents {
+    /// Percentage of the stone that windows.
     pub windowing_pct: f32,
+    /// Percentage of the stone that extinguishes.
     pub extinction_pct: f32,
     /// Mean `brilliance_pct` across every sample point [`ObjectiveFidelity`] evaluates
     /// (HIGHER is better -- unlike the other two fields, this is not itself a loss;
@@ -179,12 +191,28 @@ pub(super) fn to_gpu_planes(planes: &[(DVec3, f64)]) -> Vec<GpuFacetPlane> {
 /// already solved and meshed a candidate never pays for a second solve just to
 /// score it -- the same "already-solved" convention
 /// [`crate::manufacturability::check_manufacturability`] uses.
+///
+/// Lit by [`CANONICAL_LIGHTING_PRESET`] at the canonical light pose; see
+/// [`evaluate_objective_under`] for another preset.
 #[must_use]
 pub fn evaluate_objective(
     planes: &[GpuFacetPlane],
     material: &GemMaterial,
     fidelity: ObjectiveFidelity,
 ) -> ObjectiveComponents {
+    evaluate_objective_under(planes, material, fidelity, CANONICAL_LIGHTING_PRESET)
+}
+
+/// [`evaluate_objective`] lit by `preset` at the canonical light pose
+/// ([`CANONICAL_LIGHT_YAW`], [`CANONICAL_LIGHT_PITCH`]).
+#[must_use]
+pub fn evaluate_objective_under(
+    planes: &[GpuFacetPlane],
+    material: &GemMaterial,
+    fidelity: ObjectiveFidelity,
+    preset: LightingPreset,
+) -> ObjectiveComponents {
+    let environment = preset.studio(1.0, CANONICAL_LIGHT_YAW, CANONICAL_LIGHT_PITCH);
     match fidelity {
         ObjectiveFidelity::Fast => {
             let m = evaluate_gem_optical_metrics(
@@ -192,8 +220,7 @@ pub fn evaluate_objective(
                 material,
                 0.0,
                 90.0f32.to_radians(),
-                CANONICAL_LIGHT_YAW,
-                CANONICAL_LIGHT_PITCH,
+                environment,
             );
             ObjectiveComponents {
                 windowing_pct: m.windowing_pct,
@@ -207,13 +234,8 @@ pub fn evaluate_objective(
             let mut windowing_sum = 0.0f64;
             let mut n = 0u32;
             for &azimuth in &PROFILE_AZIMUTHS_DEG {
-                let (brilliance, extinction, windowing) = evaluate_full_axis_profile_at_azimuth(
-                    planes,
-                    material,
-                    azimuth,
-                    CANONICAL_LIGHT_YAW,
-                    CANONICAL_LIGHT_PITCH,
-                );
+                let (brilliance, extinction, windowing) =
+                    evaluate_full_axis_profile_at_azimuth(planes, material, azimuth, environment);
                 for i in 0..TILT_ANGLES_DEG.len() {
                     brilliance_sum += f64::from(brilliance[i]);
                     extinction_sum += f64::from(extinction[i]);

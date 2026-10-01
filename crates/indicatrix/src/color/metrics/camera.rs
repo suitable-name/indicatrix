@@ -1,25 +1,21 @@
 //! Observer point-of-view camera basis shared by every metrics ray-fan.
 
+use crate::optics::raytracer::{Camera, DEFAULT_FOV_DEG};
 use glam::Vec3;
+
+/// Distance handed to [`Camera::new`] for the basis only: the basis is the normalised
+/// direction towards the origin, so any positive distance yields the same frame.
+const BASIS_CAMERA_DISTANCE: f32 = 1.0;
 
 /// Builds the observer-PoV view basis (forward, right, up) from camera yaw/pitch.
 ///
-/// Uses the exact same convention as `Camera::new` in `optics::raytracer` (same
-/// `world_up` fallback threshold and axis), so that gemological metrics are evaluated
-/// against the same frame that is actually rendered.
+/// Reads the frame straight off [`Camera::new`], the render camera itself, so the
+/// gemological metrics are evaluated against the frame that is actually rendered,
+/// including its `world_up` choice at and past the poles.
 #[must_use]
 pub fn camera_view_basis(cam_yaw: f32, cam_pitch: f32) -> (Vec3, Vec3, Vec3) {
-    let cos_cp = cam_pitch.cos();
-    let sin_cp = cam_pitch.sin();
-    let cos_cy = cam_yaw.cos();
-    let sin_cy = cam_yaw.sin();
-    let cam_forward = Vec3::new(-cos_cp * sin_cy, -sin_cp, -cos_cp * cos_cy).normalize();
-    let world_up = if cos_cp.abs() < 1e-4 {
-        Vec3::new(0.0, 0.0, -1.0)
-    } else {
-        Vec3::Y
-    };
-    let cam_right = cam_forward.cross(world_up).normalize();
-    let cam_up = cam_right.cross(cam_forward).normalize();
-    (cam_forward, cam_right, cam_up)
+    // The field of view scales the ray spread, never the forward/right/up frame, so the
+    // render camera's own default serves.
+    let camera = Camera::new(cam_yaw, cam_pitch, BASIS_CAMERA_DISTANCE, DEFAULT_FOV_DEG);
+    (camera.forward, camera.right, camera.up)
 }

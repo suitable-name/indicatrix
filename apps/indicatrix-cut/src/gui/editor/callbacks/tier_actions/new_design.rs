@@ -147,6 +147,16 @@ pub(super) fn do_new_design_create(
     // longer describes anything on screen -- see `clear_analysis_results`'s own
     // doc comment.
     clear_analysis_results(ui);
+    // a material-suggestion banner (or an accepted/dismissed one's
+    // leftover text) describes the design "New" just replaced -- see
+    // `native_io::open_commit::finish_state_replace`'s matching fix for Open
+    // Native. `tier_actions::apply_loaded_design`'s own Load Selected path
+    // sets/clears this from the newly loaded design's schedule RI; "New" has
+    // no schedule RI of its own to suggest against, so it simply clears it.
+    ui.global::<EditorModel>()
+        .set_material_suggestion_name("".into());
+    ui.global::<EditorModel>()
+        .set_material_suggestion_text("".into());
     refresh_all_now(
         ui,
         render_ctx,
@@ -194,18 +204,13 @@ pub(super) fn install_new_design(st: &mut EditorState, spec: FreshDesignSpec, te
     // `fresh_from_spec` hand back a brand-new one, so a background Deep
     // Solve/Optimize/auto-solve dispatched against the design being replaced still
     // observes that it changed (see that method's own doc comment).
-    st.replace_wholesale(EditorState::fresh_from_spec(spec));
-    // Seeded AFTER the replacement, directly on the fresh design, rather than
-    // through `History`: this is the design's starting state, not an edit to it,
-    // so it must not be undoable back to an empty schedule the cutter never saw.
-    // `saved_generation` already matches, so the new design still reads as clean.
-    // `usize::try_from` refuses a negative index (0 = "Empty", or a stale/corrupt
-    // value) instead of panicking on the cast.
-    if let Ok(table_index) = usize::try_from(template_index - 1)
-        && let Some(template) = indicatrix_cut_core::templates::TEMPLATES.get(table_index)
-    {
-        st.design.tiers = template.tiers();
-    }
+    // Seeded directly on the fresh design, not through `History`: this is the
+    // design's starting state, not an edit to it, so it must not be undoable back to
+    // an empty schedule the cutter never saw (see
+    // `indicatrix_editor::EditorSession::from_template`, which also refuses a
+    // negative/stale index instead of panicking). The replacement is marked saved,
+    // so the new design still reads as clean.
+    st.replace_wholesale(EditorState::fresh_from_template(spec, template_index));
     // `fresh_from_spec` already says so; restated here because this is the promise
     // the empty-state overlay depends on.
     st.has_design = true;

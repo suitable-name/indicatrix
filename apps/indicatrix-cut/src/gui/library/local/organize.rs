@@ -87,6 +87,80 @@ pub fn setup_ignore_toggle_callback(
         });
 }
 
+/// Wires the per-design "Exclude from planner"/"Include in planner" context-menu toggle
+/// (`diagram_list.slint`, beside "Ignore"). The mark only keeps the design out of the
+/// Rough Planner's candidate set; unlike "Ignore" the design stays in the list and in
+/// every other batch. Refuses outright while a remote library is being browsed, same
+/// reasoning as [`setup_ignore_toggle_callback`]: `Database::set_planner_excluded` is a
+/// local-database write and the remote library protocol has no request for it.
+///
+/// After the write the library list is refreshed (the row's "not planned" marker and the
+/// menu wording follow the database) and the planner window, when it exists, re-reads its
+/// excluded-designs list and counts through `rough_plan::exclusions_changed`.
+pub fn setup_planner_exclusion_toggle_callback(
+    ui: &MainWindow,
+    db: &Arc<Mutex<Database>>,
+    source: &Arc<Mutex<LibrarySource>>,
+) {
+    let db_exclude = Arc::clone(db);
+    let source_exclude = Arc::clone(source);
+    let ui_weak = ui.as_weak();
+    ui.global::<LibraryModel>()
+        .on_toggle_planner_excluded(move |id: i32| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            if source_exclude
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_remote()
+            {
+                show_toast(
+                    &ui,
+                    "Switch to the local library to change which designs are planned.",
+                    "error",
+                );
+                return;
+            }
+            // The visible row already carries the current state (`DiagramItem.
+            // planner_excluded`) and the title the toast quotes, so no database round
+            // trip is needed to answer "is this excluded now". A row missing from the
+            // visible list (a stale click racing a refresh) counts as not excluded, so
+            // the click excludes it, which is the direction this item is mostly used
+            // for and costs one more click to undo.
+            let shown = ui
+                .global::<LibraryModel>()
+                .get_diagram_list()
+                .iter()
+                .find(|item| item.id == id);
+            let new_excluded = !shown.as_ref().is_some_and(|item| item.planner_excluded);
+            let title = shown.map_or_else(|| format!("#{id}"), |item| item.title.to_string());
+            let result = {
+                let db = db_exclude
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                db.set_planner_excluded(i64::from(id), new_excluded)
+            };
+            match result {
+                Ok(()) => {
+                    let message = if new_excluded {
+                        format!("Excluded \"{title}\" from the rough planner.")
+                    } else {
+                        format!("\"{title}\" can be planned again.")
+                    };
+                    show_toast(&ui, &message, "success");
+                    refresh_after_library_change(&ui, &db_exclude, &source_exclude);
+                    crate::gui::rough_plan::exclusions_changed();
+                }
+                Err(e) => show_toast(
+                    &ui,
+                    &format!("Failed to change the planner exclusion: {e}"),
+                    "error",
+                ),
+            }
+        });
+}
+
 /// Wires up the detail header's inline rename (pencil icon -> `rename_diagram`).
 ///
 /// Refuses outright while a remote library is being browsed: the selected entry id in
@@ -154,7 +228,9 @@ pub fn setup_rename_callback(
 ///
 /// The rest of the [`MetadataUpdate`] below is read straight back out of the design's
 /// current record and passed through unchanged, so the net effect is `shape` and
-/// nothing else. In particular the proportions are NOT recomputed: they are measured
+/// nothing else. The record carries each stored double as the shortest text that parses
+/// back to exactly that double, so the numbers survive the trip to the last digit.
+/// In particular the proportions are NOT recomputed: they are measured
 /// data (see `super::import::apply_measured_metadata`, which derives them once at
 /// import from the design's own geometry), and re-deriving them on an unrelated shape
 /// edit would be both wasted work and a chance to disagree with the stored value.
@@ -457,7 +533,7 @@ pub fn setup_delete_callback(
 mod tests {
     use super::*;
     use crate::gui::library::local::helpers::test_support::{open_temp_db, temp_db_path_for_test};
-    use indicatrix_vault::model::detail::FacetDiagramDetail;
+    use indicatrix_vault::model::detail::FacetingDiagramDetail;
 
     /// `set_diagram_shape` must edit `shape` and NOTHING else.
     ///
@@ -472,12 +548,12 @@ mod tests {
         let db_arc = open_temp_db(&path);
         let db = db_arc.lock().expect("lock temp db");
 
-        let entry = indicatrix_vault::model::entry::FacetDiagramEntry {
+        let entry = indicatrix_vault::model::entry::FacetingDiagramEntry {
             title: "Shape edit probe".to_string(),
             url: "local://shape_probe.asc".to_string(),
             design_id: String::new(),
         };
-        let detail = FacetDiagramDetail {
+        let detail = FacetingDiagramDetail {
             refractive_index: Some("1.762".to_string()),
             index_gear: Some("96".to_string()),
             facets_count: Some("57".to_string()),
@@ -490,7 +566,7 @@ mod tests {
             volume: Some("0.187".to_string()),
             designer_info: Some("Somebody; Some Journal".to_string()),
             shape: Some("Oval".to_string()),
-            ..FacetDiagramDetail::default()
+            ..FacetingDiagramDetail::default()
         };
         let entry_id = db
             .save_diagram_entry(&entry, indicatrix_vault::local::LOCAL_SOURCE_ID)
@@ -523,6 +599,61 @@ mod tests {
             after.designer_info.as_deref(),
             Some("Somebody; Some Journal")
         );
+
+        drop(db);
+        drop(db_arc);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The round trip behind a shape edit must not change a stored ratio by even its
+    /// last digit. The record used to be read through `CAST(real AS TEXT)`, which keeps
+    /// 15 significant digits, so `0.30000000000000004` came back as `0.3` and the
+    /// edit wrote that back.
+    #[test]
+    fn set_diagram_shape_keeps_every_digit_of_a_stored_double() {
+        let path = temp_db_path_for_test("set_shape_digits");
+        let db_arc = open_temp_db(&path);
+        let db = db_arc.lock().expect("lock temp db");
+
+        let entry = indicatrix_vault::model::entry::FacetingDiagramEntry {
+            title: "Digits probe".to_string(),
+            url: "local://digits_probe.asc".to_string(),
+            design_id: String::new(),
+        };
+        let entry_id = db
+            .save_diagram_entry(&entry, indicatrix_vault::local::LOCAL_SOURCE_ID)
+            .expect("save entry");
+        db.save_diagram_detail(&FacetingDiagramDetail::default(), entry_id)
+            .expect("save detail");
+        // Both need 17 significant digits: 0.1 + 0.2, and 1 + 2^-52.
+        let update = MetadataUpdate {
+            shape: Some("Oval".to_string()),
+            lw_ratio: Some("0.30000000000000004".to_string()),
+            refractive_index: Some("1.0000000000000002".to_string()),
+            ..MetadataUpdate::default()
+        };
+        db.update_diagram_metadata(entry_id, &update)
+            .expect("store the doubles");
+
+        let before = db
+            .get_diagram_full(entry_id)
+            .expect("read back")
+            .expect("row exists");
+        assert_eq!(before.lw_ratio.as_deref(), Some("0.30000000000000004"));
+        assert_eq!(
+            before.refractive_index.as_deref(),
+            Some("1.0000000000000002")
+        );
+
+        set_diagram_shape(&db, entry_id, "Cushion").expect("set shape");
+
+        let after = db
+            .get_diagram_full(entry_id)
+            .expect("read back")
+            .expect("row exists");
+        assert_eq!(after.shape.as_deref(), Some("Cushion"));
+        assert_eq!(after.lw_ratio, before.lw_ratio);
+        assert_eq!(after.refractive_index, before.refractive_index);
 
         drop(db);
         drop(db_arc);

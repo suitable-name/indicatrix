@@ -116,6 +116,13 @@ fn dist2d_pdf(dir: vec3<f32>) -> f32 {
 // and `facet_finishes` are read directly off the global
 // `material`/`facet_finishes` bindings instead, exactly as the megakernel's own scatter
 // call site above (`transport_bounce_step`) already does for the SAME quantities.
+// This deposit is a complete, self-contained direct-lighting sample -- it must
+// be combined into XYZ using `path_pdf`/`compat` AS THEY STAND RIGHT NOW (this
+// scattering event's own per-channel technique densities), never the FINAL
+// `path_pdf`/`compat` the rest of the path happens to end up with (unrelated further
+// bounces this same light sample has no bearing on). Integrated locally into `nee_deposit`
+// then folded into the caller's own running `*nee_xyz` immediately below, mirroring
+// `optics::raytracer::scattering::try_scatter_step`'s identical CPU-side fix.
 fn nee_contribution_hg_scatter(
     lambdas: ptr<function, array<f32, 8>>,
     n_inside_hero: f32,
@@ -125,7 +132,9 @@ fn nee_contribution_hg_scatter(
     rng_seed: u32,
     bounce: u32,
     stokes: ptr<function, array<vec4<f32>, 8>>,
-    radiance: ptr<function, array<f32, 8>>,
+    path_pdf: ptr<function, array<f32, 8>>,
+    compat: ptr<function, array<u32, 8>>,
+    nee_xyz: ptr<function, vec3<f32>>,
     alphas: array<f32, 8>,
 ) {
     let u0 = f32(hash_u32(rng_seed ^ hash_u32(bounce ^ NEE_ENV_DIR_U_STREAM))) / 4294967295.0;
@@ -184,13 +193,23 @@ fn nee_contribution_hg_scatter(
     let hit_t_scaled = hit.t * material.absorption_path_scale;
 
     let nee_common = t_unpol * phase_val * mis_weight / sample.pdf;
+    var nee_deposit: array<f32, 8>;
     for (var k: u32 = 0u; k < 8u; k = k + 1u) {
         let transmittance_k = exp_poly(-(alphas[k] + material.scattering_sigma_s) * hit_t_scaled);
         let env_k = rgb_to_spectral_radiance(env_rgb.x, env_rgb.y, env_rgb.z, (*lambdas)[k]);
-        (*radiance)[k] = fma((*stokes)[k].x * transmittance_k * nee_common * env_k, 1.0, (*radiance)[k]);
+        nee_deposit[k] = fma((*stokes)[k].x * transmittance_k * nee_common * env_k, 1.0, 0.0);
     }
+    (*nee_xyz) = (*nee_xyz) + integrate_channels_to_xyz_family(nee_deposit, *lambdas, *path_pdf, *compat);
 }
 
+// Deliberately still deposits straight into the caller's shared `radiance` (weighted,
+// like every other channel's contribution, by the FINAL post-loop `path_pdf` at
+// `transport_finalize_ray`), unlike `nee_contribution_hg_scatter` above -- see
+// `optics::raytracer::scattering::apply_frosted_bounce`'s "Why the exterior NEE deposit
+// needs no separate `nee_xyz` accumulator" doc comment for why that is exact,
+// not an oversight: both call sites below are convex-polyhedron surface points sampled
+// into their own true-outward half-space, so the very next bounce is guaranteed to
+// escape directly with no intervening `path_pdf` update.
 fn nee_contribution_frosted_exterior(
     lambdas: ptr<function, array<f32, 8>>,
     ext_normal: vec3<f32>,

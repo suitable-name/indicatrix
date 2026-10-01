@@ -27,9 +27,12 @@ mod tests;
 /// blend the hybrid CPU/GPU split uses.
 pub const DEFAULT_SMOOTHING: f64 = 0.3;
 
-/// The worker's hidden per-request cap (`MAX_SAMPLES_PER_REQUEST` in
-/// `indicatrix-worker`'s request validation): a chunk sent to a worker must never be
-/// larger, or the worker rejects the whole request.
+/// The worker's hidden per-request cap: a chunk sent to a worker must never be larger,
+/// or the worker rejects the whole request.
+///
+/// The one definition: `indicatrix-worker`'s request validation
+/// (`MAX_SAMPLES_PER_REQUEST`) and the desktop's live remote lane
+/// (`LIVE_CHUNK_MAX_SAMPLES`) re-export it under their own names.
 pub const DEFAULT_MAX_CHUNK_SAMPLES: u32 = 65_536;
 
 /// Throughput in samples per second: `delta_samples` traced over `elapsed`. `None`
@@ -124,6 +127,48 @@ impl ChunkPolicy {
     #[must_use]
     pub fn first_chunk_samples(&self) -> u32 {
         self.calibration_samples.clamp(1, self.bounds().1)
+    }
+
+    /// Tail-aware, share-aware chunk size for a lane measured at `rate`, given the
+    /// run's whole outstanding sample count `remaining` (every lane, not just this one)
+    /// and `sum_rates`, the sum of every lane's current rate (guess or estimate):
+    ///
+    /// ```text
+    /// want = min(rate * target_secs, ceil(remaining * rate / sum_rates))
+    /// ```
+    ///
+    /// clamped to `[min_samples, max_samples]` exactly like [`Self::samples_for_rate`].
+    /// The first term is the plain target-duration chunk; the second is this lane's
+    /// proportional share of what is left. Taking the smaller keeps ordinary chunk
+    /// sizing unchanged while samples are plentiful (the share term is then far
+    /// larger than the target term) and only shrinks the LAST few chunks of a run, so a
+    /// slow lane can no longer claim a disproportionate slice of a small tail and force
+    /// a fast lane sitting idle in [`crate::pool::epoch::Epoch::claim`] to wait out that
+    /// whole oversized chunk.
+    ///
+    /// Falls back to plain [`Self::samples_for_rate`] when `remaining` is `0` or
+    /// `sum_rates` is non-finite/non-positive (a single lane's `sum_rates` is its own
+    /// `rate`, so this only ever changes anything once `remaining` gets small relative
+    /// to that lane's own target-duration chunk -- exactly the run's tail).
+    #[must_use]
+    pub fn tail_aware_samples(&self, rate: f64, remaining: u32, sum_rates: f64) -> u32 {
+        let by_target = self.samples_for_rate(rate);
+        if remaining == 0 || !sum_rates.is_finite() || sum_rates <= 0.0 {
+            return by_target;
+        }
+        let share = (f64::from(remaining) * rate / sum_rates).ceil();
+        if !share.is_finite() {
+            return by_target;
+        }
+        let (min, max) = self.bounds();
+        let share_samples = if share <= 0.0 {
+            min
+        } else if share >= f64::from(max) {
+            max
+        } else {
+            (share as u32).clamp(min, max)
+        };
+        by_target.min(share_samples).max(min)
     }
 }
 

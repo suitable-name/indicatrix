@@ -26,6 +26,7 @@ use glam::Vec3;
 
 const SHADER_SRC: &str = include_str!("../shaders/shading_normal.wgsl");
 
+/// One input case for the shading normal check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ShadingNormalCase {
@@ -114,22 +115,30 @@ fn cpu_shading_normal(planes: &[GpuFacetPlane], c: &ShadingNormalCase) -> [f32; 
     .to_array()
 }
 
+/// Outcome of the shading normal check.
 #[derive(Debug, Clone)]
 pub struct ShadingNormalResult {
+    /// Total.
     pub total: usize,
+    /// Max genuine ulp.
     pub max_genuine_ulp: u32,
+    /// Largest ULP distance including exempt comparisons.
     pub max_raw_ulp: u32,
+    /// Number of comparisons that exceeded the budget.
     pub over_budget_count: usize,
+    /// Exempted near zero.
     pub exempted_near_zero: usize,
 }
 
 impl ShadingNormalResult {
+    /// Whether every compared value stayed within its budget.
     #[must_use]
     pub const fn passed(&self) -> bool {
         self.over_budget_count == 0
     }
 }
 
+/// Runs the check against the CPU reference.
 #[must_use]
 pub fn run(ctx: &crate::renderer::gpu::GpuContext) -> ShadingNormalResult {
     let planes = StandardGemCuts::standard_round_brilliant();

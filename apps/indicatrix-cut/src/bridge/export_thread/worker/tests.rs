@@ -17,7 +17,10 @@ use crate::{
     settings::LocalComputeTarget,
 };
 use glam::Vec3;
-use indicatrix::{optics::raytracer::Camera, renderer::gpu_backend::GpuBackend};
+use indicatrix::{
+    optics::raytracer::{Camera, DEFAULT_FOV_DEG},
+    renderer::gpu_backend::GpuBackend,
+};
 use std::sync::{Mutex, atomic::AtomicBool};
 
 /// The shared core's CPU-only path (`ComputeTarget::LocalOnly`,
@@ -28,7 +31,8 @@ use std::sync::{Mutex, atomic::AtomicBool};
 /// all-zero accumulation buffer and the same `samples_already_done == 0` seed.
 #[test]
 fn render_accumulation_cpu_only_path_matches_render_batch_directly() {
-    let scene = SceneSnapshot::capture(&Mutex::new(RenderContext::default()));
+    let scene =
+        SceneSnapshot::capture(&Mutex::new(RenderContext::default())).expect("Diamond resolves");
     let (width, height, spp) = (8u32, 8u32, 4u32);
     let (cam_yaw, cam_pitch) = (0.3f32, 0.2f32);
 
@@ -61,7 +65,7 @@ fn render_accumulation_cpu_only_path_matches_render_batch_directly() {
         }
     };
 
-    let camera = Camera::new(cam_yaw, cam_pitch, scene.distance, 42.0);
+    let camera = Camera::new(cam_yaw, cam_pitch, scene.distance, DEFAULT_FOV_DEG);
     let mut via_batch = vec![Vec3::ZERO; (width * height) as usize];
     render_batch(width, height, spp, 0, &camera, &scene, &mut via_batch);
 

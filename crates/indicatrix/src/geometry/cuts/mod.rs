@@ -19,6 +19,7 @@ mod round_brilliant;
 #[cfg(test)]
 mod tests;
 
+pub use asc_schedule::normals_coincide;
 pub use error::CutError;
 pub use facet_spec::FacetSpec;
 pub use round_brilliant::STANDARD_ROUND_BRILLIANT_GIRDLE_FACETS;

@@ -18,10 +18,11 @@ pub enum MaterialKind {
 
 /// One material a picker may offer.
 ///
-/// Covers the CAD editor's design-settings combo, the New Design dialog, and the
-/// live-render viewport's Render Material combo -- enough of its optics is
-/// summarized here to describe it without re-deriving them from the resolved
-/// [`GemMaterial`] at every call site.
+/// Covers the CAD editor's design-settings combo and the New Design dialog --
+/// enough of its optics is summarized here to describe it without re-deriving
+/// them from the resolved [`GemMaterial`] at every call site. The live-render
+/// viewport's Render Material combo does not read the catalogue; it lists
+/// [`GemMaterial::all_materials`] sorted by name, with custom materials appended.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MaterialEntry {
     /// Exactly the [`GemMaterial::name`] this entry resolves through
@@ -57,10 +58,11 @@ pub struct MaterialEntry {
 /// order, followed by every custom catalogue material, sorted by name
 /// (case-insensitive).
 ///
-/// This type is the one list a caller on either side can build from. Both the
-/// live-render viewport's Render Material combo and the CAD editor's design-settings
-/// combo now read from this catalogue, so a species present in one picker and not the
-/// other cannot happen by construction.
+/// Only the CAD editor's design-settings combo and the New Design dialog read from
+/// this catalogue (through `indicatrix-editor`'s `builtin_preset_names`). The
+/// live-render viewport's Render Material combo builds its own list from
+/// [`GemMaterial::all_materials`] (sorted by name) with the custom materials
+/// appended, so its order differs from this catalogue's.
 ///
 /// [bpn]: ../../../indicatrix_cut/gui/editor/state/fn.builtin_preset_names.html
 #[derive(Debug, Clone, PartialEq, Default)]

@@ -1,0 +1,216 @@
+import { ComboBox } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { AppModel } from "../models/app_model.slint";
+import { GuideModel } from "../models/guide_model.slint";
+
+// One view-tab pill (Render / Solid / Diagram).
+component TabPill inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    // True while the guided walkthrough locks the tab (the Render tab, `view_tabs`): it
+    // dims, ignores clicks and its tooltip says why.
+    in property <bool> locked: false;
+    // The tooltip (what the tab shows and its shortcut).
+    in property <string> hint;
+    callback clicked();
+
+    min-width: label.preferred-width + 20px;
+    height: 26px;
+    opacity: root.locked ? 0.4 : 1.0;
+    accessible-role: tab;
+    accessible-label: root.text;
+    border-radius: Theme.radius-sm;
+    background: root.active ? Theme.accent-cyan-surface : (touch.has-hover && !root.locked ? Theme.bg-elevated : Theme.bg-input);
+    border-width: 1px;
+    border-color: root.active ? Theme.accent-cyan : Theme.border-subtle;
+    touch := TouchArea {
+        enabled: !root.locked;
+        clicked => { root.clicked(); }
+    }
+    Tooltip { text: root.locked ? @markdown("\{GuideModel.locked-hint}") : @markdown("\{root.hint}"); }
+    label := Text {
+        text: root.text;
+        font-size: 11px;
+        font-weight: root.active ? 700 : 500;
+        color: root.active ? Theme.accent-cyan : Theme.text-secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// The Render / Solid / Diagram tabs.
+component ViewTabs inherits HorizontalLayout {
+    spacing: 4px;
+    TabPill {
+        text: "Render";
+        hint: "Render: the stone traced on your CPU cores (Alt+1).";
+        active: AppModel.view-tab == 0;
+        locked: !GuideModel.allows-view-tabs();
+        clicked => { AppModel.view-tab = 0; AppModel.view-tab-changed(0); }
+    }
+    TabPill {
+        text: "Solid";
+        hint: "Solid: the flat-shaded stone, with the angle, depth and index handles and the Slice tool (Alt+2).";
+        active: AppModel.view-tab == 1;
+        clicked => { AppModel.view-tab = 1; AppModel.view-tab-changed(1); }
+    }
+    TabPill {
+        text: "Diagram";
+        hint: "Diagram: the crown, pavilion and profile drawings (Alt+3).";
+        active: AppModel.view-tab == 2;
+        clicked => { AppModel.view-tab = 2; AppModel.view-tab-changed(2); }
+    }
+}
+
+// The logo tile.
+component Logo inherits Rectangle {
+    width: 22px;
+    height: 22px;
+    background: #1e3a8a;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: Theme.accent-cyan;
+    Text {
+        // (U+25C8 is not in the web build's font; the inverted triangle is a gem's pavilion.)
+        text: "\u{25BC}";
+        font-size: 12px;
+        color: Theme.accent-cyan;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// The toolbar under the menu bar, modelled on the desktop's
+// `components/header.slint`: logo and title, the render material and lighting
+// combos (settings state the renderer renders with) and the
+// Render / Solid / Diagram view tabs. The File menu itself is `app.slint`'s
+// `MenuBar` (a `MenuBar` must be a direct child of the Window).
+//
+// Wide (the default): one 40px row. `compact` (set by `app.slint` below 640px) stacks
+// two rows -- logo, title and the tabs on top, the two combos (sharing the width, their
+// labels dropped) underneath -- so the header's minimum width is that of the tabs plus
+// the logo instead of the whole wide row, and a 360px viewport fits.
+export component Header inherits Rectangle {
+    in property <bool> compact: false;
+
+    height: root.compact ? 76px : 40px;
+    background: Theme.bg-card;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    if !root.compact: HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+
+        VerticalLayout {
+            alignment: center;
+            Logo {}
+        }
+        Text {
+            text: "Indicatrix Web";
+            overflow: elide;
+            font-size: 13px;
+            font-weight: 700;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+        }
+
+        // Filler: takes the slack, so the controls sit at the right edge.
+        Rectangle { horizontal-stretch: 1; }
+
+        Text {
+            text: "Material";
+            overflow: elide;
+            font-size: 10px;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+        }
+        VerticalLayout {
+            alignment: center;
+            ComboBox {
+                min-width: 90px;
+                preferred-width: 170px;
+                height: 28px;
+                model: AppModel.material-options;
+                current-index <=> AppModel.material-index;
+                selected(value) => { AppModel.material-changed(self.current-index); }
+            }
+        }
+
+        Text {
+            text: "Lighting";
+            overflow: elide;
+            font-size: 10px;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+        }
+        VerticalLayout {
+            alignment: center;
+            ComboBox {
+                min-width: 90px;
+                preferred-width: 200px;
+                height: 28px;
+                model: AppModel.lighting-options;
+                current-index <=> AppModel.lighting-index;
+                selected(value) => { AppModel.lighting-changed(self.current-index); }
+            }
+        }
+
+        Rectangle { width: 4px; }
+
+        VerticalLayout {
+            alignment: center;
+            ViewTabs {}
+        }
+    }
+
+    if root.compact: VerticalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 5px;
+        padding-bottom: 5px;
+        spacing: 5px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            VerticalLayout {
+                alignment: center;
+                Logo {}
+            }
+            Text {
+                text: "Indicatrix Web";
+                overflow: elide;
+                font-size: 13px;
+                font-weight: 700;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            VerticalLayout {
+                alignment: center;
+                ViewTabs {}
+            }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            ComboBox {
+                horizontal-stretch: 1;
+                min-width: 70px;
+                height: 28px;
+                model: AppModel.material-options;
+                current-index <=> AppModel.material-index;
+                selected(value) => { AppModel.material-changed(self.current-index); }
+            }
+            ComboBox {
+                horizontal-stretch: 1;
+                min-width: 70px;
+                height: 28px;
+                model: AppModel.lighting-options;
+                current-index <=> AppModel.lighting-index;
+                selected(value) => { AppModel.lighting-changed(self.current-index); }
+            }
+        }
+    }
+}

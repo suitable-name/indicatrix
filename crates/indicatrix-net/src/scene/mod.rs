@@ -1,5 +1,6 @@
-//! [`SceneState`]: the fully-resolved description of one frame that a remote render
-//! worker needs to reproduce it -- and nothing else.
+//! [`SceneState`]: the fully-resolved description of one frame.
+//!
+//! Everything a remote render worker needs to reproduce it -- and nothing else.
 //!
 //! The viewer stores a gem material as `material_name: String` and a diagram as an id
 //! looked up against `indicatrix-vault`, but a remote worker has neither the database

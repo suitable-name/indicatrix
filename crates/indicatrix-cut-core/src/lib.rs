@@ -1,5 +1,5 @@
 //! `indicatrix-cut-core` is the editor-core library for a faceting-design editor: it owns the
-//! preform, the editable cutting schedule, undo/redo, and live-solid validation --
+//! preform, the editable cutting instructions, undo/redo, and live-solid validation --
 //! everything a UI needs to answer "what does this schedule look like right now,
 //! and is it a real stone" without itself touching a window, a database, or a
 //! renderer.
@@ -68,19 +68,80 @@
 //! takes a seed at all -- identical seed, identical result, always caller-supplied,
 //! never derived from wall-clock time.
 
+/// [`design::Design::cutting_sheet`]'s own output type.
+///
+/// [`cutting_sheet::CuttingSheet`]: every tier in cutting order, with angle,
+/// indices, solved mast and a printable meet instruction) plus the
+/// before/after diff over it ([`cutting_sheet::diff_tiers`]).
 pub mod cutting_sheet;
+/// A design's preform plus editable cutting instructions.
+///
+/// The derivation from authored constraints down to a renderable solid --
+/// see this module's own doc comment ("Constraints, not masts"/ "Scale
+/// anchoring").
 pub mod design;
+/// Reversible edits over a [`design::Design`].
+///
+/// [`edit::Edit`]/[`edit::History`]: the command/inverse-pair undo/redo
+/// stack built on them.
 pub mod edit;
+/// Warnings-only checks over an already-solved [`design::Design`].
+///
+/// Vanishing/undersized facets, gear-quantization error, out-of-order meets.
 pub mod manufacturability;
+/// A design's material choice and the specific-gravity lookup table.
+///
+/// [`material::MaterialSelection`] and the built-in refractive-index/specific-
+/// gravity lookup tables a design resolves its optics against.
 pub mod material;
+/// Pairs a real `.asc` export with the native `.indicatrix.toml` sidecar.
+///
+/// See this module's own doc comment for the split with
+/// `indicatrix_formats::native`.
 pub mod native;
+/// Pure critical-angle math shared by several consumers.
+///
+/// The material-retarget path and the solid preview's risk overlay.
 pub mod optics_hints;
+/// A deterministic coordinate search over a design's free facet angles.
+///
+/// The objective ([`optimize::evaluate_objective`]) and
+/// [`optimize::optimize_design`] itself.
 pub mod optimize;
+/// Derives a tier's symmetry-generated facet groups from schedule metadata.
+///
+/// The `Design::*_orbit_member` helpers keep membership changes
+/// orbit-consistent by construction.
 pub mod orbit;
+/// The physical rough a design's facets are cut from.
+///
+/// Always a closed plane set, so a brand-new design already renders as a
+/// real solid.
 pub mod preform;
+/// Shape/material classification for the proportion-verdict windows.
+///
+/// The windows a solved design's measurements are judged against.
 pub mod proportions_windows;
+/// Re-solves only the tiers an edit could actually change.
+///
+/// [`resolve::resolve_after_edit`], instead of
+/// [`design::Design::solve`]'s whole-design re-solve.
 pub mod resolve;
+/// Plans how many stones of which designs fit one rough block.
+///
+/// [`rough_plan::plan_rough`]: staged guillotine cuts (six cut orders), a
+/// mixed-design DP over a shared piece table, single-design layouts and a
+/// continuous refinement of the cut positions, ranked by finished volume.
+pub mod rough_plan;
+/// The built-in "New Design" template gallery.
+///
+/// See this module's own doc comment for the `ScaleReference`-only
+/// restriction every entry follows.
 pub mod templates;
+/// The real-unit binding and the figures built on it.
+///
+/// [`yield_metrics::mm_per_unit`]: exact volumetric yield, an estimated
+/// carat weight, and the design-bigger-than-its-rough check.
 pub mod yield_metrics;
 
 pub use cutting_sheet::{CutSheetRow, CuttingSheet, TierDelta, diff_tiers};
@@ -108,11 +169,11 @@ pub use optics_hints::{
     tier_margin_deg, windowing_risk,
 };
 pub use optimize::{
-    AngleChange, ObjectiveComponents, ObjectiveFidelity, ObjectiveWeights, OptimizeConfig,
-    OptimizeOutcome, SearchHooks, apply_optimize_outcome, evaluate_objective, free_tier_indices,
-    optimize_design,
+    AngleChange, CANONICAL_LIGHTING_PRESET, ObjectiveComponents, ObjectiveFidelity,
+    ObjectiveWeights, OptimizeConfig, OptimizeOutcome, SearchHooks, apply_optimize_outcome,
+    evaluate_objective, evaluate_objective_under, free_tier_indices, optimize_design,
 };
-pub use orbit::{OrbitUnit, mirror_indices, orbit_units, rotate_indices};
+pub use orbit::{OrbitUnit, expected_orbit, mirror_indices, orbit_units, rotate_indices};
 pub use preform::{PreformShape, PreformSpec};
 pub use proportions_windows::{MaterialClass, Metric as ProportionMetric, ShapeClass, Verdict};
 pub use resolve::resolve_after_edit;

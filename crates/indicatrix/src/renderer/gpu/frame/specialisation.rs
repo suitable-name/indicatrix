@@ -19,8 +19,11 @@ pub mod material_class {
     /// Every class, runtime-dispatched inside the kernel -- the override's own declared
     /// default, so a dispatch that never sets it (every self-test) is unaffected.
     pub const GENERIC: u32 = 0;
+    /// Identifier for isotropic.
     pub const ISOTROPIC: u32 = 1;
+    /// Identifier for uniaxial.
     pub const UNIAXIAL: u32 = 2;
+    /// Identifier for biaxial.
     pub const BIAXIAL: u32 = 3;
 }
 
@@ -52,8 +55,8 @@ pub fn classify_material(material: &GemMaterial) -> u32 {
 impl GpuFrameRenderer {
     /// Builds and caches the specialised pipeline for `class`, if not already built --
     /// see the parent module's doc comment's "Material-class kernel specialisation"
-    /// section for why this is lazy. A no-op for [`material_class::GENERIC`], built
-    /// eagerly in [`GpuFrameRenderer::new`].
+    /// section for why this is lazy. A no-op for [`material_class::GENERIC`], which
+    /// [`Self::pipeline_for_class`] compiles on its first request instead.
     pub(super) fn ensure_specialized_pipeline(&mut self, class: u32) {
         // The `_` arm below treats every out-of-range class exactly like
         // GENERIC (a silent no-op) -- correct for GENERIC itself, but it would just as
@@ -78,18 +81,35 @@ impl GpuFrameRenderer {
                 "transport_main (MATERIAL_CLASS=biaxial)",
             ),
             // GENERIC (and any other value -- none other is caller-reachable) has nothing
-            // to build: Self::new already compiled self.pipeline.
+            // to build here: `Self::pipeline_for_class` owns its lazy compile.
             _ => return,
         };
         if slot.is_none() {
-            *slot = Some(compute::create_compute_pipeline_with_constants(
+            *slot = Some(compute::create_compute_pipeline_cached(
                 &self.ctx.device,
+                self.pipeline_cache.as_ref(),
                 label,
                 SHADER_SRC,
                 "transport_main",
                 &[("MATERIAL_CLASS", f64::from(class))],
             ));
         }
+    }
+
+    /// The GENERIC pipeline, compiled on first request and kept for the renderer's life.
+    /// Production never reaches it (see [`classify_material`]); the self-tests and the
+    /// specialisation equivalence checks do.
+    fn generic_pipeline(&self) -> &wgpu::ComputePipeline {
+        self.pipeline_generic.get_or_init(|| {
+            compute::create_compute_pipeline_cached(
+                &self.ctx.device,
+                self.pipeline_cache.as_ref(),
+                "transport_main",
+                SHADER_SRC,
+                "transport_main",
+                &[],
+            )
+        })
     }
 
     /// Returns the already-built pipeline for `class` -- [`Self::ensure_specialized_pipeline`]
@@ -101,7 +121,7 @@ impl GpuFrameRenderer {
     /// Panics if `class` is a specialised value whose pipeline was never built via
     /// [`Self::ensure_specialized_pipeline`] -- a bug in this module's own call
     /// ordering, never a condition a caller outside it can trigger.
-    pub(super) const fn pipeline_for_class(&self, class: u32) -> &wgpu::ComputePipeline {
+    pub(super) fn pipeline_for_class(&self, class: u32) -> &wgpu::ComputePipeline {
         // Same reasoning as `ensure_specialized_pipeline`'s identical
         // assertion -- the `_` arm below silently routes any out-of-range class onto the
         // generic pipeline instead of the `expect` below ever firing.
@@ -113,7 +133,7 @@ impl GpuFrameRenderer {
             material_class::ISOTROPIC => self.pipeline_isotropic.as_ref(),
             material_class::UNIAXIAL => self.pipeline_uniaxial.as_ref(),
             material_class::BIAXIAL => self.pipeline_biaxial.as_ref(),
-            _ => Some(&self.pipeline),
+            _ => return self.generic_pipeline(),
         }
         .expect("ensure_specialized_pipeline must be called for this class before dispatching")
     }

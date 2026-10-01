@@ -140,25 +140,32 @@ component EditorLogPopup inherits PopupWindow {
 
                         // Validation status line -- the old green/ruby "Closed solid --
                         // volume …" banner's full text.
-                        if EditorModel.status_text != "": HorizontalLayout {
-                            spacing: 6px;
-                            Rectangle { width: 8px; height: 8px; border-radius: 4px; background: EditorModel.status_is_problem ? Theme.accent-ruby : Theme.accent-emerald; }
-                            Text { horizontal-stretch: 1; text: EditorModel.status_text; font-size: 11px; font-weight: 600; color: EditorModel.status_is_problem ? Theme.accent-ruby : Theme.accent-emerald; wrap: word-wrap; }
+                        // Dot + wrapped text are absolutely placed inside a Rectangle sized to
+                        // the text's wrapped height (a wrapped Text inside a HorizontalLayout
+                        // reports a one-line height, so the next row would overlap it).
+                        if EditorModel.status_text != "": Rectangle {
+                            height: status_row_t.preferred-height;
+                            Rectangle { x: 0px; y: 3px; width: 8px; height: 8px; border-radius: 4px; background: EditorModel.status_is_problem ? Theme.accent-ruby : Theme.accent-emerald; }
+                            status_row_t := Text { x: 14px; y: 0px; width: parent.width - 14px; text: EditorModel.status_text; font-size: 11px; font-weight: 600; color: EditorModel.status_is_problem ? Theme.accent-ruby : Theme.accent-emerald; wrap: word-wrap; }
                         }
 
                         // Deep Solve status/hint line.
                         if root.has_deep_solve: VerticalLayout {
                             spacing: 4px;
-                            HorizontalLayout {
-                                spacing: 6px;
+                            Rectangle {
+                                height: deep_row_t.preferred-height;
                                 Rectangle {
+                                    x: 0px;
+                                    y: 3px;
                                     width: 8px;
                                     height: 8px;
                                     border-radius: 4px;
                                     background: EditorModel.deep_solve_running ? Theme.accent-amber : (EditorModel.deep_solve_status != "" ? (EditorModel.deep_solve_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.text-muted);
                                 }
-                                Text {
-                                    horizontal-stretch: 1;
+                                deep_row_t := Text {
+                                    x: 14px;
+                                    y: 0px;
+                                    width: parent.width - 14px;
                                     text: root.deep_solve_line;
                                     font-size: 11px;
                                     color: EditorModel.deep_solve_running ? Theme.accent-amber : (EditorModel.deep_solve_status != "" ? (EditorModel.deep_solve_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald) : Theme.text-muted);
@@ -184,16 +191,20 @@ component EditorLogPopup inherits PopupWindow {
                         // Optimize tab.
                         if EditorModel.optimize_running || EditorModel.optimize_status != "": VerticalLayout {
                             spacing: 4px;
-                            HorizontalLayout {
-                                spacing: 6px;
+                            Rectangle {
+                                height: opt_row_t.preferred-height;
                                 Rectangle {
+                                    x: 0px;
+                                    y: 3px;
                                     width: 8px;
                                     height: 8px;
                                     border-radius: 4px;
                                     background: EditorModel.optimize_running ? Theme.accent-amber : (EditorModel.optimize_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald);
                                 }
-                                Text {
-                                    horizontal-stretch: 1;
+                                opt_row_t := Text {
+                                    x: 14px;
+                                    y: 0px;
+                                    width: parent.width - 14px;
                                     text: EditorModel.optimize_status;
                                     font-size: 11px;
                                     color: EditorModel.optimize_running ? Theme.accent-amber : (EditorModel.optimize_status_is_problem ? Theme.accent-ruby : Theme.accent-emerald);
@@ -687,6 +698,9 @@ export component EditorStatusStrip inherits Rectangle {
                 clicked => { log_popup.show(); root.log_open_pulse += 1; }
             }
             Text {
+                x: 0px;
+                width: parent.width;
+                height: parent.height;
                 text: root.strip_text;
                 font-size: 11px;
                 color: root.strip_color;

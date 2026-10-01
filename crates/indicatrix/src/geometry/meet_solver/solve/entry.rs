@@ -4,7 +4,9 @@
 use std::collections::BTreeMap;
 
 use super::{
-    super::{MAX_PLANES, MeetTierInput, SolveControl, SolveError, SolvedTier},
+    super::{
+        MAX_PLANES, MeetTierInput, SolveControl, SolveError, SolvedTier, first_non_finite_tier,
+    },
     context::SolveContext,
 };
 
@@ -15,9 +17,15 @@ use super::{
 /// three-phase algorithm.
 ///
 /// `gear_teeth_abs` is the index wheel's tooth count (see
-/// [`indicatrix_formats::asc::AscSchedule::gear_teeth_abs`]). `tiers` should be in the
-/// schedule's own file order (needed only to resolve an unsigned-zero angle's
-/// crown/pavilion side); the solve itself is order-independent.
+/// [`indicatrix_formats::asc::AscSchedule::gear_teeth_abs`]). `tiers` must be in the
+/// schedule's own file order: phase 1's dependency-order pass
+/// (see the module docs' "three-phase algorithm") walks tiers in this same
+/// file order and its result depends on it -- permuting the tier list changes
+/// which mast a `DependencyOrder`-strategy tier solves to, not just the
+/// order of the returned [`SolvedTier`]s. This is why
+/// `Design::apply_edit(Edit::MoveTier { .. })` (in `indicatrix-cut-core`,
+/// outside this crate) re-solves after moving a tier rather than reusing the
+/// previous solve's masts.
 ///
 /// Deterministic: two calls with identical inputs produce identical outputs. No
 /// hashed iteration and no convex-hull library anywhere in this path.
@@ -32,7 +40,7 @@ use super::{
 pub fn solve_meet_points(gear_teeth_abs: u32, tiers: &[MeetTierInput]) -> Vec<SolvedTier> {
     match solve_meet_points_with(gear_teeth_abs, tiers, &SolveControl::default()) {
         Ok(solved) => solved,
-        Err(SolveError::TooManyPlanes { .. }) => {
+        Err(SolveError::TooManyPlanes { .. } | SolveError::NonFiniteInput { .. }) => {
             SolveContext::new(gear_teeth_abs, tiers).failed_solved()
         }
         Err(SolveError::Cancelled) => {
@@ -51,15 +59,20 @@ pub fn solve_meet_points(gear_teeth_abs: u32, tiers: &[MeetTierInput]) -> Vec<So
 ///
 /// # Errors
 ///
-/// [`SolveError::TooManyPlanes`] when the design has more than [`MAX_PLANES`]
-/// facet-plane instances (checked before any solving starts, so this returns
-/// immediately); [`SolveError::Cancelled`] the first time `control`'s cancel
-/// flag is observed set.
+/// [`SolveError::NonFiniteInput`] when any tier carries a non-finite (NaN or
+/// infinite) `angle_deg`, index, or `ScaleReference` mast (checked before any
+/// solving starts, so this returns immediately -- see that variant's doc
+/// comment for why); [`SolveError::TooManyPlanes`] when the design has more
+/// than [`MAX_PLANES`] facet-plane instances; [`SolveError::Cancelled`] the
+/// first time `control`'s cancel flag is observed set.
 pub fn solve_meet_points_with(
     gear_teeth_abs: u32,
     tiers: &[MeetTierInput],
     control: &SolveControl<'_>,
 ) -> Result<Vec<SolvedTier>, SolveError> {
+    if let Some(err) = first_non_finite_tier(tiers) {
+        return Err(err);
+    }
     let ctx = SolveContext::new(gear_teeth_abs, tiers);
     if ctx.total_planes > MAX_PLANES {
         return Err(SolveError::TooManyPlanes {

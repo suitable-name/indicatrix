@@ -7,7 +7,8 @@ authors = { workspace = true }
 description = "Coordinator and render worker for an indicatrix-backed design catalogue. `serve` (default build) is the coordinator: it serves indicatrix-net's read-only design-library protocol to viewers over mutual TLS and accepts joining render workers on a separate worker port. The optional `worker` feature adds render capacity -- `join` (dial a coordinator and render its requests), `serve --render` (render with the coordinator's own CPU/GPU) and `render` (a one-shot scene-to-PNG CLI)."
 license = { workspace = true }
 repository = { workspace = true }
-documentation = { workspace = true }
+homepage = { workspace = true }
+documentation = "https://docs.rs/indicatrix-worker"
 keywords = ["gemstone", "raytracer", "server", "rendering", "spectral"]
 categories = ["command-line-utilities", "network-programming", "rendering"]
 publish = { workspace = true }
@@ -22,6 +23,10 @@ path = "src/main.rs"
 # a generic message to the peer -- see that module's doc comment).
 anyhow = { workspace = true }
 bytemuck = { workspace = true, optional = true }
+# Always present: `crate::serve::library` decodes a stored `.asc` attachment with
+# `indicatrix_formats::asc::decode_asc_bytes` (many are Windows-1252). Already in the
+# graph through `indicatrix-vault`.
+indicatrix-formats = { workspace = true }
 # Always present: the design library this binary serves. Opened read-only when
 # possible (`--db`, or the default `facet_diagrams.sqlite` -- see `crate::serve::library`
 # and `indicatrix_vault::db::sqlite::Database::open_read_only`).
@@ -87,13 +92,20 @@ zeroize = "1.9"
 # `compression` feature); the bench keeps its own direct dependency because it also
 # measures variants production never sends (unshuffled LZ4/zstd, zstd level 3).
 [dev-dependencies]
-lz4_flex = "0.11"
-zstd = "0.13"
+lz4_flex = "0.14.0"
+zstd = "0.14.0"
 
 # Renders real FRAME payloads with the production render core (needs `worker`; add
 # `gpu` to trace on the adapter).
 [[example]]
 name = "capture_frame_payloads"
+required-features = ["worker"]
+
+# Writes a fixed training `SceneState` to a JSON file -- needs `worker` for
+# `indicatrix-net`'s `SceneState`/`render` types. See that example's own doc comment;
+# `scripts/pgo-bolt-build.sh`'s BOLT stage is the one caller.
+[[example]]
+name = "write_pgo_scene"
 required-features = ["worker"]
 
 [features]
@@ -121,5 +133,9 @@ gpu = ["worker", "indicatrix/gpu"]
 [lints]
 workspace = true
 
-[target.'cfg(windows)'.build-dependencies]
+[build-dependencies]
+# Unconditional on purpose: a `[target.'cfg(windows)'.build-dependencies]` gate follows
+# the platform the build script is evaluated for, so a Windows binary cross-compiled
+# from Linux lost its icon. `build.rs` decides at run time from `CARGO_CFG_TARGET_OS`
+# whether to embed anything; `winresource` compiles on every host.
 winresource = { workspace = true }

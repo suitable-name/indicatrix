@@ -34,6 +34,9 @@ export component TierFormTab inherits VerticalLayout {
 
     in property <int> loaded_tier_index: -1;
     in property <bool> show_dirty_warning: false;
+    // The design changed this tier after the draft below was started -- see
+    // `EditorInspector.external_change_pending`.
+    in property <bool> show_external_change: false;
     in property <int> pending_load_index: -1;
     // Angle field invalid if > 90 degrees (locally checkable) or if Rust
     // reported an angle-field error.
@@ -48,11 +51,32 @@ export component TierFormTab inherits VerticalLayout {
     // show_dirty_warning`'s own doc comment for what defers to this.
     callback keep_draft();
     callback confirm_discard_and_load();
+    // The external-change notice's two answers: drop the draft for the design's
+    // current values, or keep the draft and hide the notice.
+    callback reload_from_design();
+    callback dismiss_external_change();
     // Commits whichever tier `loaded_tier_index` says the form represents.
     // Forwarded to `EditorInspector.save_form()`, which reads `loaded_tier_index`
     // rather than `EditorModel.selected_tier_index` directly -- see that
     // function's own doc comment for why the two can disagree.
     callback save_form();
+
+    // The typed angle as a number (0 for unparsable text), for the side hint on
+    // the Angle label: exactly +-90 reads "girdle" (the same band
+    // `classify_blocks` uses), otherwise the sign picks pavilion/crown.
+    property <float> angle_value: root.tier_angle.to-float();
+    // The per-kind explanation for the constraint value row, shown as a tooltip
+    // on that row's label cell instead of as a paragraph above the input.
+    // `@markdown(...)` needs a literal, so the tooltip interpolates this property.
+    property <string> constraint_hint: root.tier_constraint_kind == 1
+        ? "Facet names, comma-separated: this facet meets the named facet(s)."
+        : (root.tier_constraint_kind == 2
+            ? "Scale value: a plane offset along this facet's normal, in model units (girdle half-width = 1) -- not a caliper dimension."
+            : (root.tier_constraint_kind == 3
+                ? "Depth: this facet's plane offset, in mm, measured the same way the MAST column's own mm tooltip is -- converted through the design's girdle diameter (needs one set in Design Settings)."
+                : (root.tier_constraint_kind == 4
+                    ? "Girdle thickness: this tier's own mast is searched (bisected) until the solved design's girdle thickness matches this value in mm -- same girdle-diameter mm conversion as Depth, so it costs several solves rather than one."
+                    : "Table width: this tier's own mast is searched (bisected) until the table facet's measured width matches this value in mm -- same girdle-diameter mm conversion as Depth, so it costs several solves rather than one.")));
 
     // Up/Down/Shift/Ctrl step this scratch buffer the SAME +-0.1/1/0.01deg the
     // tier table's inline cell uses, but purely as local text here -- this form
@@ -67,6 +91,23 @@ export component TierFormTab inherits VerticalLayout {
             return (current.to-float() + sign * 0.01).to-fixed(2);
         }
         return (current.to-float() + sign * 0.1).to-fixed(2);
+    }
+
+    // Clears a stale validation-error marker the moment the field it points at is
+    // retyped -- an implicit "let me try again" (a disabled Save button prevents
+    // retrying outright). Rust re-validates on the next save attempt. Used from
+    // every field's own user-edit event (`edited`/`selected`/the angle's Up/Down
+    // `key-pressed`) below, not a `changed <field>` handler on the scratch
+    // property itself -- that would ALSO fire for `EditorInspector.apply_load`'s
+    // own programmatic seeding, and `changed` handlers are QUEUED (see the SLINT
+    // FACTS this task was briefed with) so a `loading`-style guard around that
+    // can never actually distinguish the two in time (see `EditorInspector.
+    // form_dirty`'s own doc comment for the same problem, one level up).
+    function clear_field_error(field: string) {
+        if EditorModel.tier_form_error_field == field {
+            EditorModel.tier_form_error_field = "";
+            EditorModel.tier_form_error = "";
+        }
     }
 
     spacing: 8px;
@@ -115,44 +156,97 @@ export component TierFormTab inherits VerticalLayout {
             }
         }
     }
-    Rectangle {
-        height: angle_lbl.preferred-height;
-        Tooltip { text: @markdown("Angle from the girdle plane in degrees. Negative is pavilion, zero or positive is crown. A signed zero (\"-0.0\") inherits the previous tier's side instead of defaulting to crown."); }
-        // Live side hint from the sign of typed value. An approximation
-        // (can't see previous tier), so exact zero shows no hint.
-        angle_lbl := Text {
-            text: "Angle (deg)" + (root.tier_angle.to-float() < 0
-                ? "  -- pavilion"
-                : (root.tier_angle.to-float() > 0 ? "  -- crown" : ""));
-            font-size: 10px;
-            color: Theme.text-muted;
+    // A drag, nudge or pin moved this tier while the draft below was being typed:
+    // the draft is kept (Save Tier would write it over that edit), and the cutter
+    // chooses. Hidden again once the draft matches its baseline or is reloaded.
+    if root.show_external_change && !root.show_dirty_warning: Rectangle {
+        background: Theme.bg-input;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.accent-amber;
+        VerticalLayout {
+            padding: 6px;
+            spacing: 4px;
+            Text {
+                text: "\u{26A0} Tier #" + (root.loaded_tier_index + 1)
+                    + " changed in the design after you started this draft. Saving writes your draft over that change.";
+                font-size: 10px;
+                font-weight: 700;
+                color: Theme.accent-amber;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                Button {
+                    enabled: root.unlocked;
+                    text: "Reload From Design";
+                    clicked => { root.reload_from_design(); }
+                }
+                Button {
+                    enabled: root.unlocked;
+                    text: "Keep Draft";
+                    clicked => { root.dismiss_external_change(); }
+                }
+            }
         }
     }
-    // Red border on invalid angle (the one local check possible).
-    // LineEdit has no border-color, so border lives on this wrapper.
-    Rectangle {
-        border-width: root.angle_field_invalid ? 1px : 0px;
-        border-color: Theme.danger;
-        border-radius: Theme.radius-sm;
-        LineEdit {
-            enabled: root.unlocked;
-            text <=> root.tier_angle;
-            accepted => { root.save_form(); }
-            changed has-focus => { EditorModel.text_focus = self.has-focus; }
-            // Live critical-angle guidance fires on every keystroke
-            // so the bar updates before the cutter leaves the field.
-            edited => { EditorModel.angle_live_preview(root.tier_angle); }
-            key-pressed(event) => {
-                if event.text == Key.UpArrow {
-                    root.tier_angle = root.stepped_angle_text(root.tier_angle, event.modifiers.shift, event.modifiers.control, 1.0);
+    // Every authored field is ONE row (fixed-width label cell + stretching input) so
+    // title + Angle + Meets + Name + Indices fit in roughly 200px: the tab used to
+    // stack label over input, which pushed Meets/Name/Indices below the inspector's
+    // ScrollView fold (guide step 2 needs all four visible without scrolling). The
+    // label cell wraps (`word-wrap`) inside its fixed 104px width and centres
+    // vertically against the input, so a two-line label never grows the row.
+    HorizontalLayout {
+        spacing: 6px;
+        Rectangle {
+            width: 104px;
+            Tooltip { text: @markdown("Angle from the girdle plane in degrees. Negative is pavilion, zero or positive is crown. Exactly 90 (or -90) is a girdle facet. A signed zero (\"-0.0\") inherits the previous tier's side instead of defaulting to crown."); }
+            // Live side hint from the typed value. An approximation (can't see
+            // the previous tier), so exact zero shows no hint.
+            Text {
+                text: "Angle (deg)" + (Math.abs(root.angle_value) == 90
+                    ? "  -- girdle"
+                    : (root.angle_value < 0
+                        ? "  -- pavilion"
+                        : (root.angle_value > 0 ? "  -- crown" : "")));
+                font-size: 10px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+                vertical-alignment: center;
+            }
+        }
+        // Red border on invalid angle (the one local check possible).
+        // LineEdit has no border-color, so border lives on this wrapper.
+        Rectangle {
+            horizontal-stretch: 1;
+            border-width: root.angle_field_invalid ? 1px : 0px;
+            border-color: Theme.danger;
+            border-radius: Theme.radius-sm;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> root.tier_angle;
+                accepted => { root.save_form(); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                // Live critical-angle guidance fires on every keystroke
+                // so the bar updates before the cutter leaves the field.
+                edited => {
                     EditorModel.angle_live_preview(root.tier_angle);
-                    return accept;
-                } else if event.text == Key.DownArrow {
-                    root.tier_angle = root.stepped_angle_text(root.tier_angle, event.modifiers.shift, event.modifiers.control, -1.0);
-                    EditorModel.angle_live_preview(root.tier_angle);
-                    return accept;
+                    root.clear_field_error("angle");
                 }
-                reject
+                key-pressed(event) => {
+                    if event.text == Key.UpArrow {
+                        root.tier_angle = root.stepped_angle_text(root.tier_angle, event.modifiers.shift, event.modifiers.control, 1.0);
+                        EditorModel.angle_live_preview(root.tier_angle);
+                        root.clear_field_error("angle");
+                        return accept;
+                    } else if event.text == Key.DownArrow {
+                        root.tier_angle = root.stepped_angle_text(root.tier_angle, event.modifiers.shift, event.modifiers.control, -1.0);
+                        EditorModel.angle_live_preview(root.tier_angle);
+                        root.clear_field_error("angle");
+                        return accept;
+                    }
+                    reject
+                }
             }
         }
     }
@@ -167,6 +261,137 @@ export component TierFormTab inherits VerticalLayout {
         color: Theme.danger;
         wrap: word-wrap;
     }
+    // What this facet meets, not a depth number -- the constraint
+    // is the authored value; the mast (shown read-only in the
+    // tier table) is only ever solved.
+    HorizontalLayout {
+        spacing: 6px;
+        Rectangle {
+            width: 104px;
+            Tooltip { text: @markdown("How the depth is derived: an unnamed meet, named facets, or a stated dimension (anchor)."); }
+            Text {
+                text: "Meets";
+                font-size: 10px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+        }
+        ComboBox {
+            horizontal-stretch: 1;
+            enabled: root.unlocked;
+            // Three authoring-level targets (Cut to depth, Girdle thickness,
+            // Table width) that resolve to scale references before solving.
+            model: [
+                "Unspecified vertex",
+                "Named facet(s)",
+                "Exact scale value",
+                "Cut to depth (mm)",
+                "Girdle thickness (mm)",
+                "Table width (mm)",
+            ];
+            current-index <=> root.tier_constraint_kind;
+            selected => { root.clear_field_error("constraint"); }
+        }
+    }
+    // The constraint value row. The per-kind explanation that used to be five
+    // word-wrapped paragraphs here now lives in the label cell's tooltip
+    // (`constraint_hint`), so the row costs one input height instead of ~60px.
+    // Red border for Meets constraint validation errors (unresolved
+    // name, empty, or not a number). Same as Angle field above.
+    if root.tier_constraint_kind != 0: HorizontalLayout {
+        spacing: 6px;
+        Rectangle {
+            width: 104px;
+            Tooltip { text: @markdown("\{root.constraint_hint}"); }
+            Text {
+                text: root.tier_constraint_kind == 1 ? "Facet names"
+                    : (root.tier_constraint_kind == 2 ? "Scale value" : "Value (mm)");
+                font-size: 10px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+                vertical-alignment: center;
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+            border-width: root.constraint_field_invalid ? 1px : 0px;
+            border-color: Theme.danger;
+            border-radius: Theme.radius-sm;
+            HorizontalLayout {
+                spacing: 4px;
+                LineEdit {
+                    enabled: root.unlocked;
+                    text <=> root.tier_constraint_text;
+                    accepted => { root.save_form(); }
+                    changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                    edited => { root.clear_field_error("constraint"); }
+                }
+                // Three targets are in millimetres (unlike kind 2's model-unit scale value).
+                if root.tier_constraint_kind >= 3: Text {
+                    text: "mm";
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Rectangle {
+            width: 104px;
+            // Facet names can use '/' to give one tier multiple names (e.g., "P1/P2").
+            Tooltip { text: @markdown("Facet name, referenced by other tiers' named-facet field. Join several names with '/' (e.g. \"P1/P2\") to give one tier more than one name; avoid reusing a name another tier already has. Left blank, a new tier is named from its angle (C crown, P pavilion, G girdle)."); }
+            Text {
+                text: "Name";
+                font-size: 10px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+        }
+        // Red border for name-collision rejection.
+        Rectangle {
+            horizontal-stretch: 1;
+            border-width: root.name_field_invalid ? 1px : 0px;
+            border-color: Theme.danger;
+            border-radius: Theme.radius-sm;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> root.tier_name;
+                accepted => { root.save_form(); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                edited => { root.clear_field_error("name"); }
+            }
+        }
+    }
+    HorizontalLayout {
+        spacing: 6px;
+        Rectangle {
+            width: 104px;
+            Tooltip { text: @markdown("Gear positions this tier occupies, comma-separated. Several values form a symmetric family."); }
+            Text {
+                text: "Indices (comma-separated)";
+                font-size: 10px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+                vertical-alignment: center;
+            }
+        }
+        // Red border for invalid index (out-of-range, duplicate, non-numeric).
+        Rectangle {
+            horizontal-stretch: 1;
+            border-width: root.indices_field_invalid ? 1px : 0px;
+            border-color: Theme.danger;
+            border-radius: Theme.radius-sm;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> root.tier_indices;
+                accepted => { root.save_form(); }
+                changed has-focus => { EditorModel.text_focus = self.has-focus; }
+                edited => { root.clear_field_error("indices"); }
+            }
+        }
+    }
     // The manual's worked example describes a
     // girdle as a 0-degree tier, which `classify_blocks` (only
     // `|cos(theta)| <= 1e-6`, i.e. exactly +-90) actually reads as
@@ -175,7 +400,9 @@ export component TierFormTab inherits VerticalLayout {
     // IS a real girdle facet -- 90 degrees (either sign classifies
     // the same way), pinned to the model's own half-width-1
     // convention -- rather than expecting a newcomer to know that
-    // convention and type it by hand.
+    // convention and type it by hand. Sits AFTER the four authored
+    // rows so they stay inside the fold; the preset only touches
+    // Angle and Meets (not Name/Indices).
     Button {
         enabled: root.unlocked;
         text: "Girdle Facet Preset (90\u{b0}, scale = 1)";
@@ -183,94 +410,8 @@ export component TierFormTab inherits VerticalLayout {
             root.tier_angle = "90";
             root.tier_constraint_kind = 2;
             root.tier_constraint_text = "1";
-        }
-    }
-    // What this facet meets, not a depth number -- the constraint
-    // is the authored value; the mast (shown read-only in the
-    // tier table) is only ever solved.
-    Rectangle {
-        height: meets_lbl.preferred-height;
-        Tooltip { text: @markdown("How the depth is derived: an unnamed meet, named facets, or a stated dimension (anchor)."); }
-        meets_lbl := Text { text: "Meets"; font-size: 10px; color: Theme.text-muted; }
-    }
-    ComboBox {
-        enabled: root.unlocked;
-        // Three authoring-level targets (Cut to depth, Girdle thickness,
-        // Table width) that resolve to scale references before solving.
-        model: [
-            "Unspecified vertex",
-            "Named facet(s)",
-            "Exact scale value",
-            "Cut to depth (mm)",
-            "Girdle thickness (mm)",
-            "Table width (mm)",
-        ];
-        current-index <=> root.tier_constraint_kind;
-    }
-    if root.tier_constraint_kind == 1: Text { text: "Facet names (comma-separated)"; font-size: 10px; color: Theme.text-muted; }
-    // Plane offset along this facet's normal, in model units
-    // (girdle half-width = 1), not a caliper dimension.
-    if root.tier_constraint_kind == 2: Text { text: "Scale value: a plane offset along this facet's normal, in model units (girdle half-width = 1) -- not a caliper dimension"; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
-    // Depth, girdle, table-width targets convert through design's girdle diameter.
-    if root.tier_constraint_kind == 3: Text { text: "Depth: this facet's plane offset, in mm, measured the same way the MAST column's own mm tooltip is -- converted through the design's girdle diameter (needs one set in Design Settings)."; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
-    if root.tier_constraint_kind == 4: Text { text: "Girdle thickness: this tier's own mast is searched (bisected) until the solved design's girdle thickness matches this value in mm -- same girdle-diameter mm conversion as Depth, so it costs several solves rather than one."; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
-    if root.tier_constraint_kind == 5: Text { text: "Table width: this tier's own mast is searched (bisected) until the table facet's measured width matches this value in mm -- same girdle-diameter mm conversion as Depth, so it costs several solves rather than one."; font-size: 10px; color: Theme.text-muted; wrap: word-wrap; }
-    // Red border for Meets constraint validation errors (unresolved
-    // name, empty, or not a number). Same as Angle field above.
-    if root.tier_constraint_kind != 0: Rectangle {
-        border-width: root.constraint_field_invalid ? 1px : 0px;
-        border-color: Theme.danger;
-        border-radius: Theme.radius-sm;
-        HorizontalLayout {
-            spacing: 4px;
-            LineEdit {
-                enabled: root.unlocked;
-                text <=> root.tier_constraint_text;
-                accepted => { root.save_form(); }
-                changed has-focus => { EditorModel.text_focus = self.has-focus; }
-            }
-            // Three targets are in millimetres (unlike kind 2's model-unit scale value).
-            if root.tier_constraint_kind >= 3: Text {
-                text: "mm";
-                font-size: 10px;
-                color: Theme.text-muted;
-                vertical-alignment: center;
-            }
-        }
-    }
-    Rectangle {
-        height: name_lbl.preferred-height;
-        // Facet names can use '/' to give one tier multiple names (e.g., "P1/P2").
-        Tooltip { text: @markdown("Facet name, referenced by other tiers' named-facet field. Join several names with '/' (e.g. \"P1/P2\") to give one tier more than one name; avoid reusing a name another tier already has."); }
-        name_lbl := Text { text: "Name"; font-size: 10px; color: Theme.text-muted; }
-    }
-    // Red border for name-collision rejection.
-    Rectangle {
-        border-width: root.name_field_invalid ? 1px : 0px;
-        border-color: Theme.danger;
-        border-radius: Theme.radius-sm;
-        LineEdit {
-            enabled: root.unlocked;
-            text <=> root.tier_name;
-            accepted => { root.save_form(); }
-            changed has-focus => { EditorModel.text_focus = self.has-focus; }
-        }
-    }
-    Rectangle {
-        height: indices_lbl.preferred-height;
-        Tooltip { text: @markdown("Gear positions this tier occupies, comma-separated. Several values form a symmetric family."); }
-        indices_lbl := Text { text: "Indices (comma-separated)"; font-size: 10px; color: Theme.text-muted; }
-    }
-    // Red border for invalid index (out-of-range, duplicate, non-numeric).
-    Rectangle {
-        border-width: root.indices_field_invalid ? 1px : 0px;
-        border-color: Theme.danger;
-        border-radius: Theme.radius-sm;
-        LineEdit {
-            enabled: root.unlocked;
-            text <=> root.tier_indices;
-            accepted => { root.save_form(); }
-            changed has-focus => { EditorModel.text_focus = self.has-focus; }
+            root.clear_field_error("angle");
+            root.clear_field_error("constraint");
         }
     }
 
@@ -302,8 +443,7 @@ export component TierFormTab inherits VerticalLayout {
                     // `@markdown(...)` needs a string literal, not an
                     // arbitrary expression -- the ternary is computed
                     // here first, then interpolated as a single value
-                    // below (see the SLINT FACTS this task was briefed
-                    // with).
+                    // below.
                     property <string> chip_tooltip: chip.detached
                         ? "Position " + chip.label + ", detached from orbit-wide propagation. \u{2702} reattaches, \u{2715} removes it."
                         : "Position " + chip.label + ". \u{2702} detaches it from orbit-wide propagation, \u{2715} removes it.";
@@ -412,7 +552,7 @@ export component TierFormTab inherits VerticalLayout {
         spacing: 4px;
         Rectangle {
             height: cheater_lbl.preferred-height;
-            Tooltip { text: @markdown("Cheater/azimuth offset in degrees -- compensates cutting an off-tooth index or a known machine error. Blank clears it."); }
+            Tooltip { text: @markdown("Cheater/azimuth offset in degrees -- compensates cutting an off-tooth index or a known machine error. Positive moves the facet toward higher index numbers. Blank clears it."); }
             cheater_lbl := Text { text: "Cheater Offset (deg)"; font-size: 10px; color: Theme.text-muted; }
         }
         HorizontalLayout {

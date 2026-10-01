@@ -41,6 +41,7 @@ pub enum LibrarySource {
 }
 
 impl LibrarySource {
+    /// Whether the source is a remote worker.
     #[must_use]
     pub const fn is_remote(&self) -> bool {
         matches!(self, Self::Remote(_))

@@ -1,0 +1,123 @@
+import { ComboBox } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { GuideModel } from "../models/guide_model.slint";
+import { MiniField, TableStyle, ToolButton } from "tier_table_style.slint";
+import { TierTableModel } from "tier_table_model.slint";
+
+// The quick-add panel opened by the command bar's "Quick add" button: the desktop's three
+// starting-anchor presets (Table, Girdle, Culet -- each a scale-referenced tier with
+// reasonable starting values, so a first-time cutter has something solvable to adjust)
+// and a small tier form (angle, name, indices, what the tier meets) parsed with the same
+// `tier_form` code as the desktop's Tier tab. A new tier goes in right after the selected
+// row, or at the end when nothing is selected.
+//
+// Meets: "Meet existing" leaves the depth to the solver (the design needs an anchor
+// elsewhere), "Meet named" takes facet names, "Scale reference" pins the tier to an exact
+// scale value.
+export component QuickAdd inherits Rectangle {
+    background: Theme.bg-input;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    height: content.preferred-height;
+
+    property <[string]> meets-options: ["Meet existing", "Meet named", "Scale reference"];
+
+    function submit() {
+        if GuideModel.allows-tier-form() {
+            TierTableModel.add-tier(angle-field.text, kind-combo.current-index, meets-field.text, name-field.text, indices-field.text);
+        }
+    }
+
+    content := VerticalLayout {
+        padding: 6px;
+        spacing: 4px;
+
+        HorizontalLayout {
+            spacing: 6px;
+            Text {
+                text: "Quick add:";
+                font-size: 9px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            ToolButton {
+                text: "Table";
+                locked: !GuideModel.allows-tier-form();
+                accent: Theme.accent-emerald;
+                hint: "Add a Table tier (0\u{b0}, pinned to an exact scale value) -- a starting anchor for the crown.";
+                clicked => { TierTableModel.add-preset(0); }
+            }
+            ToolButton {
+                text: "Girdle";
+                locked: !GuideModel.allows-tier-form();
+                accent: Theme.accent-emerald;
+                hint: "Add a Girdle tier (90\u{b0}, pinned to an exact scale value = half-width) -- 90\u{b0} is required for a real girdle band.";
+                clicked => { TierTableModel.add-preset(1); }
+            }
+            ToolButton {
+                text: "Culet";
+                locked: !GuideModel.allows-tier-form();
+                accent: Theme.accent-emerald;
+                hint: "Add a Culet tier (a flat pavilion facet, pinned to an exact scale value) -- a starting anchor for the pavilion.";
+                clicked => { TierTableModel.add-preset(2); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            ToolButton {
+                text: "\u{00D7}";
+                accent: Theme.text-secondary;
+                hint: "Close the quick-add panel.";
+                clicked => { TierTableModel.quick-add-open = false; }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 4px;
+            angle-field := MiniField {
+                width: 56px;
+                placeholder-text: "angle\u{b0}";
+                accepted => { root.submit(); }
+            }
+            name-field := MiniField {
+                horizontal-stretch: 1;
+                placeholder-text: "Name (blank: auto)";
+                accepted => { root.submit(); }
+            }
+            indices-field := MiniField {
+                horizontal-stretch: 1;
+                placeholder-text: "Indices, e.g. 6 x8 or 0:12:96";
+                accepted => { root.submit(); }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 4px;
+            kind-combo := ComboBox {
+                width: 120px;
+                height: 24px;
+                model: root.meets-options;
+                current-index: 0;
+            }
+            meets-field := MiniField {
+                horizontal-stretch: 1;
+                enabled: kind-combo.current-index != 0;
+                placeholder-text: kind-combo.current-index == 1 ? "facet names, e.g. C1/C2" : (kind-combo.current-index == 2 ? "scale value, e.g. 0.32" : "(the solver decides)");
+                accepted => { root.submit(); }
+            }
+            ToolButton {
+                text: "Add tier";
+                locked: !GuideModel.allows-tier-form();
+                accent: Theme.accent-emerald;
+                hint: "Add this tier after the selected row (Enter in any field does the same).";
+                clicked => { root.submit(); }
+            }
+        }
+
+        if TierTableModel.quick-add-error != "": Text {
+            text: TierTableModel.quick-add-error;
+            font-size: 10px;
+            color: TableStyle.ruby;
+            wrap: word-wrap;
+        }
+    }
+}

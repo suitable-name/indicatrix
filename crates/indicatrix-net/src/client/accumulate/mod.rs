@@ -32,7 +32,10 @@
 //! The v14 picture events (`DISPLAY_FRAME`, `FINAL_IMAGE`) are epoch-gated the same way
 //! and kept ENCODED (see [`PictureSnapshot`]); decode them with `crate::display` when
 //! they are shown or saved. `PONG` and `CAPABILITY_CHANGED` carry no `request_id` and are
-//! reported regardless of the epoch, like `ERROR`.
+//! always reported regardless of the epoch. `ERROR` (v15) is gated exactly like
+//! `FRAME`/`PREVIEW`/`DONE` when it carries a `request_id`, and reported unconditionally
+//! only when it doesn't (a connection-level refusal that precedes any request) -- see
+//! [`crate::messages::ErrorMsg`]'s doc comment.
 //!
 //! # Expected sample range: containment, not contiguity
 //!
@@ -41,9 +44,9 @@
 //! `[first_sample, first_sample + samples)` does not lie inside that range is a
 //! protocol bug somewhere (a worker tracing indices it was never assigned would
 //! silently duplicate samples another backend also traces, biasing the merged
-//! average). Such a frame trips a `debug_assert!` in debug builds and is dropped as
-//! [`ApplyOutcome::StaleDropped`] (with a `tracing::warn!`) in release builds, so a
-//! misbehaving peer can never sum an out-of-range delta into the buffer.
+//! average). Such a frame is rejected with [`RadianceError::FrameOutsideRange`] (and a
+//! `tracing::warn!`), so a misbehaving peer can never sum an out-of-range delta into the
+//! buffer.
 //!
 //! The check is CONTAINMENT of each frame in the request range, never contiguity
 //! between frames: a coordinator's `FRAME` carries a SET of samples gathered from
@@ -52,13 +55,30 @@
 //! samples)` is still inside the request range while the individual samples need not
 //! be that exact interval. The sample COUNT (`samples_done`) is what the divisor uses,
 //! and it is exact either way.
+//!
+//! Containment alone does not catch every misbehaving peer: two `FRAME`s that are each
+//! individually inside `[start, end)` can still double-count samples if their declared
+//! ranges overlap (or if either lane simply over-reports its own `samples`). So
+//! [`Accumulator::apply_frame`] also checks the CUMULATIVE total: this epoch's running
+//! `samples_done` plus the incoming `FRAME`'s `samples` must not exceed the range's total
+//! width `end - start`. A `FRAME` that would push the total over that width is rejected
+//! with [`RadianceError::SampleCountOverrun`] -- this catches an overlapping or
+//! over-counted contribution that a purely per-frame containment check cannot. A `FRAME`
+//! claiming zero samples is rejected with [`RadianceError::ZeroSampleFrame`].
+//!
+//! # Invalid radiance values
+//!
+//! A pixel of a summed `FRAME` with a non-finite or negative component is not added (the
+//! tracer's own rule: dropped but still counted in `samples_done`). The running total of
+//! skipped pixels is [`Accumulator::dropped_pixels`], logged once when the epoch's `DONE`
+//! arrives.
 
 #[cfg(test)]
 mod tests;
 
 use crate::{
     messages::{
-        DisplayEncoding, Done, ErrorMsg, FrameHeader, PreviewHeader, Progress, StreamEvent,
+        DisplayEncoding, Done, ErrorMsg, FrameHeader, PreviewHeader, Progress, Stats, StreamEvent,
     },
     radiance::{PayloadDecoder, RadianceError},
 };
@@ -70,9 +90,14 @@ use glam::Vec3;
 #[derive(Debug, Clone, PartialEq)]
 // `buffer: Vec<Vec3>` is float data, so `Eq` isn't derivable here.
 pub struct PreviewSnapshot {
+    /// Preview width in pixels, from the event header.
     pub width: u32,
+    /// Preview height in pixels, from the event header.
     pub height: u32,
+    /// The whole request's progress so far (not a sub-range) -- see [`FrameHeader`]'s
+    /// doc comment for the analogous `FRAME` field.
     pub samples_done: u32,
+    /// The decoded, reduced-resolution radiance buffer -- `width * height` long.
     pub buffer: Vec<Vec3>,
 }
 
@@ -109,8 +134,10 @@ pub enum ApplyOutcome {
     /// `DONE` for the current epoch -- the request finished or was cancelled; no
     /// further payload for this epoch follows.
     Done { cancelled: bool },
-    /// `ERROR` -- the worker rejected the request. Not epoch-gated: an error carries no
-    /// `request_id` of its own, so it's always surfaced to the caller.
+    /// `ERROR` -- the worker rejected or failed a request, or refused the connection
+    /// outright. Only reached for the current epoch (or for one that carries no
+    /// `request_id` at all) -- see [`crate::messages::ErrorMsg`]'s doc comment; a stale
+    /// one is [`Self::StaleDropped`] instead.
     WorkerError,
     /// The event's `request_id` didn't match [`Accumulator::current_request_id`] --
     /// dropped without touching `buffer` or `last_preview`. See the module doc comment.
@@ -153,6 +180,10 @@ pub struct Accumulator {
     last_preview: Option<PreviewSnapshot>,
     last_display_frame: Option<PictureSnapshot>,
     final_image: Option<PictureSnapshot>,
+    /// v16: the current epoch's `DONE.stats`, once it arrived -- see [`Self::done_stats`].
+    done_stats: Option<Stats>,
+    /// Pixels skipped this epoch for a non-finite or negative component.
+    dropped_pixels: u64,
     /// Reusable decompression scratch for compressed payloads (v14).
     decoder: PayloadDecoder,
 }
@@ -187,6 +218,8 @@ impl Accumulator {
             last_preview: None,
             last_display_frame: None,
             final_image: None,
+            done_stats: None,
+            dropped_pixels: 0,
             decoder: PayloadDecoder::new(),
         }
     }
@@ -208,6 +241,8 @@ impl Accumulator {
         self.last_preview = None;
         self.last_display_frame = None;
         self.final_image = None;
+        self.done_stats = None;
+        self.dropped_pixels = 0;
     }
 
     /// [`begin_request`](Self::begin_request), plus declaring the absolute sample
@@ -226,21 +261,28 @@ impl Accumulator {
         self.expected_range
     }
 
+    /// The current epoch's `request_id`, or `None` before the first
+    /// [`begin_request`](Self::begin_request) call.
     #[must_use]
     pub const fn current_request_id(&self) -> Option<u32> {
         self.current_request_id
     }
 
+    /// The running `width * height` radiance sum for the current epoch -- what every
+    /// current-epoch `FRAME` has summed into so far (see [`ApplyOutcome::FrameSummed`]).
     #[must_use]
     pub fn buffer(&self) -> &[Vec3] {
         &self.buffer
     }
 
+    /// Samples summed into [`Self::buffer`] so far for the current epoch.
     #[must_use]
     pub const fn samples_done(&self) -> u32 {
         self.samples_done
     }
 
+    /// The most recent `PREVIEW` snapshot for the current epoch, if any -- replaced
+    /// (never summed) by the next one, and cleared by [`begin_request`](Self::begin_request).
     #[must_use]
     pub const fn last_preview(&self) -> Option<&PreviewSnapshot> {
         self.last_preview.as_ref()
@@ -258,6 +300,23 @@ impl Accumulator {
         self.final_image.as_ref()
     }
 
+    /// The current epoch's `DONE.stats` (v16), once `DONE` arrived -- e.g.
+    /// `reclaimed_samples` for a final-picture export where the viewer's own
+    /// contribution didn't arrive in time. Cleared by
+    /// [`begin_request`](Self::begin_request).
+    #[must_use]
+    pub const fn done_stats(&self) -> Option<Stats> {
+        self.done_stats
+    }
+
+    /// Pixels of this epoch's `FRAME`s that were skipped for a non-finite or negative
+    /// component. Reset by [`begin_request`](Self::begin_request).
+    #[must_use]
+    pub const fn dropped_pixels(&self) -> u64 {
+        self.dropped_pixels
+    }
+
+    /// This accumulator's fixed `(width, height)`, set once at [`Self::new`].
     #[must_use]
     pub const fn dimensions(&self) -> (u32, u32) {
         (self.width, self.height)
@@ -267,9 +326,11 @@ impl Accumulator {
     /// `payload` being whatever it returned alongside), enforcing the epoch rule
     /// described in the module doc comment.
     ///
-    /// [`StreamEvent::Error`], [`StreamEvent::Pong`], [`StreamEvent::CapabilityChanged`]
-    /// and [`StreamEvent::NeedAsset`] are never epoch-gated (they carry no `request_id`)
-    /// and are always reported, regardless of what's currently current.
+    /// [`StreamEvent::Pong`], [`StreamEvent::CapabilityChanged`] and
+    /// [`StreamEvent::NeedAsset`] are never epoch-gated (they carry no `request_id`) and
+    /// are always reported, regardless of what's currently current. [`StreamEvent::Error`]
+    /// (v15) is gated exactly like a `FRAME`/`PREVIEW`/`DONE` when it names a
+    /// `request_id`, and reported unconditionally only when it doesn't.
     ///
     /// # Errors
     ///
@@ -295,9 +356,20 @@ impl Accumulator {
             StreamEvent::Progress(Progress { samples_done, .. }) => Ok(ApplyOutcome::Progress {
                 samples_done: *samples_done,
             }),
-            StreamEvent::Done(Done { cancelled, .. }) => Ok(ApplyOutcome::Done {
-                cancelled: *cancelled,
-            }),
+            StreamEvent::Done(Done {
+                cancelled, stats, ..
+            }) => {
+                self.done_stats = Some(*stats);
+                if self.dropped_pixels > 0 {
+                    tracing::warn!(
+                        dropped_pixels = self.dropped_pixels,
+                        "skipped pixels with non-finite or negative radiance in this request's frames"
+                    );
+                }
+                Ok(ApplyOutcome::Done {
+                    cancelled: *cancelled,
+                })
+            }
             StreamEvent::Error(ErrorMsg { .. }) => Ok(ApplyOutcome::WorkerError),
             StreamEvent::Pong { nonce } => Ok(ApplyOutcome::Pong { nonce: *nonce }),
             StreamEvent::CapabilityChanged { .. } => Ok(ApplyOutcome::CapabilityChanged),
@@ -327,36 +399,62 @@ impl Accumulator {
         }
     }
 
-    /// The current-epoch `FRAME` path: range containment check, then decode-and-sum.
+    /// The current-epoch `FRAME` path: zero-sample and range checks, then decode-and-sum.
     fn apply_frame(
         &mut self,
         header: &FrameHeader,
         bytes: &[u8],
     ) -> Result<ApplyOutcome, RadianceError> {
-        if let Some((start, end)) = self.expected_range {
-            let inside = frame_within_range(header.first_sample, header.samples, start, end);
-            debug_assert!(
-                inside,
-                "FRAME [{}, +{}) lies outside the expected range [{start}, {end}) \
-                 of request {}",
-                header.first_sample, header.samples, header.request_id
+        if header.samples == 0 {
+            tracing::warn!(
+                request_id = header.request_id,
+                "rejecting a FRAME that claims zero samples"
             );
-            if !inside {
+            return Err(RadianceError::ZeroSampleFrame);
+        }
+        if let Some((start, end)) = self.expected_range {
+            if !frame_within_range(header.first_sample, header.samples, start, end) {
                 tracing::warn!(
                     request_id = header.request_id,
                     first_sample = header.first_sample,
                     samples = header.samples,
                     expected_start = start,
                     expected_end = end,
-                    "dropping a FRAME outside the requested sample range"
+                    "rejecting a FRAME outside the requested sample range"
                 );
-                return Ok(ApplyOutcome::StaleDropped);
+                return Err(RadianceError::FrameOutsideRange {
+                    first_sample: header.first_sample,
+                    samples: header.samples,
+                    start,
+                    end,
+                });
+            }
+
+            // Containment alone doesn't catch two individually-in-range FRAMEs whose
+            // ranges overlap (or a lane that over-reports its own `samples`): check the
+            // CUMULATIVE total against the range's own width too (module doc comment).
+            let range_len = end - start;
+            let cumulative = self.samples_done.saturating_add(header.samples);
+            if cumulative > range_len {
+                tracing::warn!(
+                    request_id = header.request_id,
+                    first_sample = header.first_sample,
+                    samples = header.samples,
+                    samples_done = self.samples_done,
+                    range_len,
+                    "rejecting a FRAME that would push this epoch's cumulative samples_done over \
+                     the requested range's width"
+                );
+                return Err(RadianceError::SampleCountOverrun {
+                    cumulative,
+                    range_len,
+                });
             }
         }
         // Decodes straight into the running sum: a raw payload is reinterpreted in
         // place, a compressed one summed from its decompressed planes -- never an owned
         // full-frame copy first.
-        self.decoder.decode_and_add(
+        let dropped = self.decoder.decode_and_add(
             header.encoding,
             header.raw_len,
             bytes,
@@ -364,6 +462,7 @@ impl Accumulator {
             self.height,
             &mut self.buffer,
         )?;
+        self.dropped_pixels = self.dropped_pixels.saturating_add(u64::from(dropped));
         self.samples_done = self.samples_done.saturating_add(header.samples);
         Ok(ApplyOutcome::FrameSummed {
             samples_done: self.samples_done,

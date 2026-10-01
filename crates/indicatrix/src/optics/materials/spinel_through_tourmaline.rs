@@ -22,9 +22,9 @@ impl GemMaterial {
             // Encoded via Sellmeier3 with the unused 3rd pole zeroed (b=0, c=1.0 um^2,
             // outside the visible-range l^2 domain). Verified: n_d = 1.71610, Delta
             // n(F-C) = 0.01181, Abbe V_d = 60.63. Cross-check: gemological (B-G)
-            // dispersion table lists Spinel = 0.020; 0.020*0.591 (the B-G->F-C ratio,
-            // see Emerald entry) = 0.0118, matching this Sellmeier-derived value
-            // almost exactly.
+            // dispersion table lists Spinel = 0.020; 0.020*0.579 (the B-G->F-C ratio
+            // used throughout, see Emerald entry) = 0.01158, within 2% of this
+            // Sellmeier-derived value. The stored convention is F-C (486.1-656.3 nm).
             Self {
                 name: "Spinel".to_string(),
                 crystal_system: CrystalSystem::Cubic,
@@ -67,8 +67,9 @@ impl GemMaterial {
             // constant); the other two are the genuine poles. Verified: n_d = 1.54421,
             // Delta n(F-C) = 0.00781, Abbe V_d = 69.65. Note: this is lower than the
             // ~0.013 gemological "dispersion" figure often quoted for quartz -- that
-            // figure is the standard B-G (not F-C) interval (0.013*0.591 = 0.00768,
-            // matching this Ghosh-derived value to within 2%).
+            // figure is the standard B-G (not F-C) interval (0.013*0.579 = 0.00753,
+            // within 4% of this Ghosh-derived value; the stored curve is the Ghosh
+            // fit itself, in the F-C convention, not the converted figure).
             Self {
                 name: "Quartz".to_string(),
                 crystal_system: CrystalSystem::Trigonal,
@@ -93,8 +94,9 @@ impl GemMaterial {
                 scattering_g: 0.0,
                 edge_rounding_radius: 0.0,
                 absorption_path_scale: 1.0,
-                // Quartz is the one built-in with a genuine primary e-ray Sellmeier
-                // fit alongside its o-ray one -- G. Ghosh, Opt. Commun. 163, 95-102
+                // Quartz (with Amethyst and Citrine, which reuse this exact curve) and
+                // Rutile are the built-ins with a genuine primary e-ray Sellmeier
+                // fit alongside the o-ray one -- for Quartz, G. Ghosh, Opt. Commun. 163, 95-102
                 // (1999), extraordinary-ray fit (refractiveindex.info "SiO2:
                 // Ghosh-e"), valid 0.198-2.0531 um:
                 //   n^2-1 = 0.28851804 + 1.09509924*l^2/(l^2-0.0102101864) + 1.15662475*l^2/(l^2-100)

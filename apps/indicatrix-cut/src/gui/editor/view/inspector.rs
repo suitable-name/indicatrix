@@ -1,84 +1,25 @@
 //! The design settings panel's refresh ([`refresh_design_settings`]), the
-//! "linked to design" viewport material sync ([`sync_viewport_material_link`],
-//! [`traced_material_for`]), the material-guess badge, and the Tier tab's
+//! "linked to design" viewport material sync ([`sync_viewport_material_link`], over
+//! `indicatrix_editor::material_lookup::traced_material_for`), the material-guess
+//! badge, and the Tier tab's
 //! per-facet chip row ([`selected_tier_chips`]/[`push_selected_tier_chips`]).
 
 use super::state::{
-    EditorState, ScratchDelta, builtin_preset_names, design_material_index_from_name,
-    gear_index_from_teeth, index_chip_items, push_rows, ri_source_text,
+    EditorState, ScratchDelta, body_colour_index_for, body_colour_options, builtin_preset_names,
+    design_material_index_from_name, gear_index_from_teeth, index_chip_items, push_rows,
+    ri_source_text,
 };
 use crate::{
     EditorModel, IndexChipItem, MainWindow, ViewportModel,
     bridge::render_thread::RenderContext,
     gui::editor::material_lookup::{
-        EditorMaterialLookup, MATERIAL_MATCH_TOLERANCE, material_for_refractive_index,
-        material_guess_candidates, nearest_built_in_material, traced_gem_material,
+        EditorMaterialLookup, material_guess, traced_gem_material, traced_material_for,
     },
 };
-use indicatrix_cut_core::{Design, MaterialLookup, critical_angle_deg};
+use indicatrix::optics::materials::GemMaterial;
+use indicatrix_cut_core::{Design, critical_angle_deg};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::sync::{Arc, Mutex};
-
-/// The material name the tracer should use for `design`, and -- when there is no
-/// honest answer -- the sentence saying why it will not trace at all.
-///
-/// A design built from an `.asc`, or a brand-new one, carries
-/// `MaterialSelection::none()`: the schedule records a refractive index but never a
-/// species. Substituting `"Diamond"` in that case would let a quartz design get
-/// traced, tilt-swept and HUD-scored at n=2.417 while MARGIN and the critical angle
-/// beside them use its real n=1.5442 -- two numbers on screen contradicting each
-/// other with no hint why, and angles that window badly in quartz looking fine in
-/// the render.
-///
-/// The rule, preferred over silently substituting anything: use the
-/// design's own named material when it has one; otherwise the nearest built-in
-/// within [`MATERIAL_MATCH_TOLERANCE`] of its actual refractive index; and when
-/// nothing is that close, refuse. A `Some(reason)` suspends both tracing and metrics
-/// (see `bridge::render_thread::frame_helpers::SuspensionFlags`), and the reason is
-/// shown in place of a simulation nobody should trust.
-fn traced_material_for(
-    design: &Design,
-    custom: &[indicatrix::optics::materials::GemMaterial],
-) -> (String, Option<String>) {
-    if let Some(name) = &design.material.name {
-        // Checked against the SAME catalogue [`EditorMaterialLookup`] resolves
-        // through, so this can never disagree with what actually gets traced.
-        // Returning `(name.clone(), None)` unconditionally for ANY named selection
-        // would let a design naming a custom material since deleted (or an old
-        // `.asc`'s hand-typed/typo'd name) trace as "resolved" with no override
-        // set -- `sync_viewport_material_link` would then fall through to
-        // `resolve_material`'s own by-name lookup, which silently substitutes
-        // `materials[0]` (Diamond) for an unrecognized name.
-        return if EditorMaterialLookup::new(custom).lookup(name).is_some() {
-            (name.clone(), None)
-        } else {
-            (
-                String::new(),
-                Some(format!(
-                    "This design's material '{name}' is not a built-in preset or a \
-                     saved custom material, so there is nothing to trace -- pick a \
-                     material in Design Settings, or re-save the missing custom \
-                     material, rather than rendering it as something else."
-                )),
-            )
-        };
-    }
-    let n_d = design.effective_refractive_index();
-    if let Some((name, _)) = nearest_built_in_material(n_d, MATERIAL_MATCH_TOLERANCE) {
-        return (name, None);
-    }
-    // The name is left empty deliberately: nothing should trace, so there is no
-    // material to name, and a plausible-looking placeholder here is exactly the bug.
-    (
-        String::new(),
-        Some(format!(
-            "This design names no material, and its refractive index ({n_d:.4}) matches \
-             no built-in preset within {MATERIAL_MATCH_TOLERANCE:.2}. Pick a material in \
-             Design Settings -- rendering it as something else would give you the optics \
-             of a different stone."
-        )),
-    )
-}
 
 /// The material-guess badge's push half of [`refresh_design_settings`] --
 /// split out purely to keep that function under clippy's function-length
@@ -86,44 +27,68 @@ fn traced_material_for(
 /// `design.material.name` is `None`
 /// (every untouched `.asc` import carries only an `I`-line refractive index,
 /// no species), this looks up the nearest built-in preset within tolerance
-/// ([`material_for_refractive_index`]) and pushes a guess label plus the
-/// OTHER close candidates ([`material_guess_candidates`]) for the tooltip.
+/// (`indicatrix_editor::material_lookup::material_guess`) and pushes a guess label
+/// plus the OTHER close candidates for the tooltip.
 /// Once a name IS set, every one of these three properties goes back to
 /// `""` -- there is nothing left to guess, and [`super::state::
 /// proportion_verdicts`]-style "guess vs fact" confusion is exactly what this
 /// exists to prevent.
 fn push_material_guess(ui: &MainWindow, design: &Design, n_d: f64) {
-    let clear = || {
-        ui.global::<EditorModel>()
-            .set_material_guess_text(SharedString::new());
-        ui.global::<EditorModel>()
-            .set_material_guess_name(SharedString::new());
-        ui.global::<EditorModel>()
-            .set_material_guess_other_candidates_text(SharedString::new());
-    };
-    if design.material.name.is_some() {
-        clear();
-        return;
+    let (text, name, others) = material_guess(design, n_d).unwrap_or_default();
+    ui.global::<EditorModel>()
+        .set_material_guess_text(text.into());
+    ui.global::<EditorModel>()
+        .set_material_guess_name(name.into());
+    ui.global::<EditorModel>()
+        .set_material_guess_other_candidates_text(others.into());
+}
+
+/// The Live Render readout for a design's body-colour variant: the traced material's
+/// name with the colour's label (`Sapphire (Yellow)`), or `""` when the design sets
+/// no colour or nothing traces at all (`traced_material_for`'s refusal) -- the same
+/// name `sync_viewport_material_link` traces, so the readout can never name a
+/// different stone than the one rendered. Computed whether or not the viewport is
+/// linked; the toolbar only shows it while linked.
+fn body_colour_readout(design: &Design, custom: &[GemMaterial]) -> String {
+    design
+        .material
+        .body_colour_label()
+        .map_or_else(String::new, |colour| {
+            let (name, unresolved) = traced_material_for(design, custom);
+            if unresolved.is_some() {
+                String::new()
+            } else {
+                format!("{name} ({colour})")
+            }
+        })
+}
+
+/// The design settings panel's Colour combo half of [`refresh_design_settings`] --
+/// split out purely to keep that function under clippy's function-length lint. The
+/// option list is static, so it is pushed only while the combo does not hold it yet;
+/// the selected index is re-seeded from the design only when `material_changed` (the
+/// same [`ScratchDelta::material`] gate as the material combo, so an in-progress pick
+/// survives an unrelated refresh); `readout` (see [`body_colour_readout`]) always.
+fn push_body_colour_fields(
+    ui: &MainWindow,
+    design: &Design,
+    readout: String,
+    material_changed: bool,
+) {
+    let model = ui.global::<EditorModel>();
+    let options = body_colour_options();
+    if model.get_body_colour_options().row_count() != options.len() {
+        model.set_body_colour_options(ModelRc::new(VecModel::from(
+            options
+                .into_iter()
+                .map(SharedString::from)
+                .collect::<Vec<_>>(),
+        )));
     }
-    let Some((name, _)) = material_for_refractive_index(n_d) else {
-        clear();
-        return;
-    };
-    ui.global::<EditorModel>()
-        .set_material_guess_text(format!("{name}? (from RI {n_d:.2})").into());
-    ui.global::<EditorModel>()
-        .set_material_guess_name(name.clone().into());
-    let others: Vec<String> = material_guess_candidates(n_d, MATERIAL_MATCH_TOLERANCE)
-        .into_iter()
-        .filter(|(candidate, _)| candidate != &name)
-        .map(|(candidate, ri)| format!("{candidate} ({ri:.3})"))
-        .collect();
-    ui.global::<EditorModel>()
-        .set_material_guess_other_candidates_text(if others.is_empty() {
-            SharedString::new()
-        } else {
-            format!("Also within tolerance: {}", others.join(", ")).into()
-        });
+    if material_changed {
+        model.set_body_colour_index(body_colour_index_for(design.material.body_colour_override));
+    }
+    model.set_body_colour_readout(readout.into());
 }
 
 /// Pushes the design settings panel's state (material combo options and index,
@@ -167,10 +132,11 @@ pub(super) fn refresh_design_settings(
     // it, and is a real `Drop` guard released at the end of this block rather
     // than sitting locked across the `delta`-gated pushes below, which touch
     // only `design`/`ui` -- clippy::nursery's `significant_drop_tightening`.
-    let (n_d, options) = {
+    let (n_d, options, colour_readout) = {
         let ctx = render_ctx
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let colour_readout = body_colour_readout(design, &ctx.custom_materials);
         // Custom-catalogue-aware: unlike `effective_refractive_index`,
         // this also resolves a custom material by name before falling back to a built-in
         // or the design's `I` line -- see `ri_source_text` below for the matching
@@ -183,8 +149,9 @@ pub(super) fn refresh_design_settings(
         // selections below are gated on `delta`.
         let options = state.material_combo_options(&ctx.custom_materials);
         drop(ctx);
-        (n_d, options)
+        (n_d, options, colour_readout)
     };
+    push_body_colour_fields(ui, design, colour_readout, delta.material);
     // A second, separate lock acquisition (rather than reusing the guard
     // above): its own last use sits right at this block's own end, so the
     // lock is never held across work -- the `delta`-gated pushes below -- that
@@ -344,7 +311,10 @@ pub(in crate::gui::editor) fn sync_viewport_material_link(
     // colourless whatever the schedule said. `traced_gem_material` returns `None`
     // instead of substituting, and an absent override falls through to
     // `context::resolve_material`'s own by-name lookup, so the name and the override
-    // can no longer describe two different stones.
+    // can no longer describe two different stones. The design's body-colour variant
+    // rides along here too (`MaterialSelection::apply_overrides`, inside
+    // `traced_gem_material`): `material_name` stays the species ("Sapphire"), the
+    // override carries its recoloured absorption.
     let resolved = unresolved
         .is_none()
         .then(|| {
@@ -454,7 +424,7 @@ mod tests {
                 detached: Vec::new(),
             });
         }
-        state.design
+        state.session.design
     }
 
     // --- selected_tier_chips ---
@@ -480,45 +450,5 @@ mod tests {
         assert_eq!(chips.len(), 2);
         assert!(!chips[0].detached);
         assert!(chips[1].detached);
-    }
-
-    // --- traced_material_for (the missing-name case must
-    // refuse, never silently fall through to `resolve_material`'s own
-    // materials[0]/Diamond fallback) ---
-
-    #[test]
-    fn traced_material_for_names_a_resolvable_built_in_selection() {
-        let mut design = EditorState::fresh().design;
-        design.material.name = Some("Sapphire".to_string());
-        let (name, unresolved) = traced_material_for(&design, &[]);
-        assert_eq!(name, "Sapphire");
-        assert_eq!(unresolved, None);
-    }
-
-    #[test]
-    fn traced_material_for_names_a_resolvable_custom_selection() {
-        let mut design = EditorState::fresh().design;
-        design.material.name = Some("My Garnet".to_string());
-        let mut custom = indicatrix::optics::materials::GemMaterial::diamond();
-        custom.name = "My Garnet".to_string();
-        let (name, unresolved) = traced_material_for(&design, &[custom]);
-        assert_eq!(name, "My Garnet");
-        assert_eq!(unresolved, None);
-    }
-
-    /// The actual bug case this guards against: a design naming a material that
-    /// resolves through NEITHER the built-in table NOR the live custom-material
-    /// list (a deleted custom material, or a typo'd/hand-edited name) must refuse
-    /// -- not report itself resolved and leave `sync_viewport_material_link` to
-    /// fall through to `resolve_material`'s silent `materials[0]` (Diamond)
-    /// fallback.
-    #[test]
-    fn traced_material_for_refuses_a_name_no_catalogue_resolves() {
-        let mut design = EditorState::fresh().design;
-        design.material.name = Some("Deleted Custom Garnet".to_string());
-        let (name, unresolved) = traced_material_for(&design, &[]);
-        assert_eq!(name, "");
-        let reason = unresolved.expect("an unresolvable name must refuse, not substitute");
-        assert!(reason.contains("Deleted Custom Garnet"));
     }
 }

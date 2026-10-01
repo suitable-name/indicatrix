@@ -125,4 +125,47 @@ export component LiveComputePicker inherits VerticalLayout {
         color: Theme.text-muted;
         wrap: word-wrap;
     }
+
+    // v16: final-picture EXPORTS (the still export and tilt videos, not the live
+    // viewport above) can fold this machine's own idle samples into the remote's --
+    // same switch idiom as `settings_dialog.slint`'s "Frosted Girdle" toggle.
+    HorizontalLayout {
+        alignment: space-between;
+        Rectangle {
+            height: contribute_lbl.preferred-height;
+            Tooltip { text: @markdown("Your GPU/CPU traces part of the samples and uploads them; the coordinator merges them before tone-mapping."); }
+            contribute_lbl := Text {
+                text: "Final-picture exports: this machine renders a share too";
+                font-size: 11px;
+                font-weight: 600;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+        }
+        Rectangle {
+            width: 36px;
+            height: 20px;
+            border-radius: 10px;
+            opacity: RemoteWorkerModel.live_remote_available ? 1.0 : 0.45;
+            background: SettingsModel.contribute_to_final_picture ? Theme.accent-cyan : #334155;
+
+            TouchArea {
+                enabled: RemoteWorkerModel.live_remote_available;
+                clicked => {
+                    SettingsModel.contribute_to_final_picture = !SettingsModel.contribute_to_final_picture;
+                    SettingsModel.contribute_to_final_picture_changed(SettingsModel.contribute_to_final_picture);
+                }
+            }
+
+            Rectangle {
+                width: 16px;
+                height: 16px;
+                border-radius: 8px;
+                background: white;
+                x: SettingsModel.contribute_to_final_picture ? parent.width - self.width - 2px : 2px;
+                y: 2px;
+                animate x { duration: 120ms; }
+            }
+        }
+    }
 }

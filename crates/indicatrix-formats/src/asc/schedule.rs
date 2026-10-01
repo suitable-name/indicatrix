@@ -1,9 +1,50 @@
-//! [`AscSchedule`]: a fully parsed `GemCAD` `.asc` cutting schedule.
+//! [`AscSchedule`]: a fully parsed `GemCAD` `.asc` file's cutting instructions.
 
 use super::tier::AscTier;
 use std::fmt;
 
-/// A fully parsed `GemCAD` `.asc` cutting schedule.
+/// The line terminator an `.asc` file uses, recorded by [`super::parse_asc`] and
+/// reproduced by [`super::to_asc_string`].
+///
+/// `GemCAD` itself writes CRLF, and Gem Cut Studio 1.1 reportedly misreads the last
+/// facet name of an LF-only file, so a schedule built from scratch (the
+/// [`Default`]) writes CRLF. A parsed file keeps whatever it used: the real
+/// catalogue is almost entirely LF (5,757 of 5,759 files, measured 2026-09-28), and
+/// re-exporting it unchanged must not rewrite every line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AscLineEnding {
+    /// A bare line feed.
+    Lf,
+    /// Carriage return plus line feed, as `GemCAD` writes it.
+    #[default]
+    CrLf,
+}
+
+impl AscLineEnding {
+    /// The terminator text itself: `"\n"` or `"\r\n"`.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Lf => "\n",
+            Self::CrLf => "\r\n",
+        }
+    }
+
+    /// What `text` uses: [`Self::CrLf`] as soon as it contains one `"\r\n"` pair,
+    /// [`Self::Lf`] otherwise (including a CR-only file after
+    /// [`super::decode_asc_bytes`] has normalised it, and a one-line file with no
+    /// terminator at all).
+    #[must_use]
+    pub fn detect(text: &str) -> Self {
+        if text.contains("\r\n") {
+            Self::CrLf
+        } else {
+            Self::Lf
+        }
+    }
+}
+
+/// A fully parsed `GemCAD` `.asc` file's cutting instructions.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct AscSchedule {
     /// The `GemCad` version string from the file's first line (e.g. "5.0", "4.51").
@@ -26,6 +67,23 @@ pub struct AscSchedule {
     pub footnotes: Vec<String>,
     /// Every facet tier, in file order.
     pub tiers: Vec<AscTier>,
+    /// Lenient-parse diagnostics [`super::parse_asc`] collected instead of failing
+    /// outright: free text after the last facet tier that was not folded in as a
+    /// continuation, an unrecognised line anywhere else, a stray index-position
+    /// token that could not be classified as a number, a name, or a marker, a
+    /// keyword glued to its value (`g96`), a negative mast on a nonzero-angle tier,
+    /// and a duplicate `g` (gear) line whose value overrode an earlier one. Empty
+    /// for a clean file. Never round-trips back into
+    /// `.asc` text -- these describe what the *source* file looked like, not
+    /// anything [`super::to_asc_string`] would ever reproduce -- so a schedule built
+    /// by hand (e.g. from a `Design`) should simply leave this `Vec::new()`, its
+    /// [`Default`].
+    pub warnings: Vec<String>,
+    /// The line terminator the source file used (see [`AscLineEnding`]);
+    /// [`super::to_asc_string`] writes every line with it. [`Default`] is
+    /// [`AscLineEnding::CrLf`], `GemCAD`'s own convention, for a schedule built by
+    /// hand.
+    pub line_ending: AscLineEnding,
 }
 
 impl AscSchedule {

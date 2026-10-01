@@ -12,7 +12,7 @@ fn seeded_db(rows: &[(&str, &str, &str, &str, &str, &str)]) -> Database {
     let path = temp_db_path("search");
     let db = Database::new(Some(path.to_str().unwrap())).expect("create migrated db");
     for (title, shape, ri, lw, volume, facets_count) in rows {
-        let entry = FacetDiagramEntry {
+        let entry = FacetingDiagramEntry {
             title: (*title).to_string(),
             url: format!("https://example.test/{title}"),
             design_id: String::new(),
@@ -20,7 +20,7 @@ fn seeded_db(rows: &[(&str, &str, &str, &str, &str, &str)]) -> Database {
         let entry_id = db
             .save_diagram_entry(&entry, LEGACY_SOURCE_ID)
             .expect("save entry");
-        let detail = FacetDiagramDetail {
+        let detail = FacetingDiagramDetail {
             shape: Some((*shape).to_string()),
             refractive_index: Some((*ri).to_string()),
             lw_ratio: Some((*lw).to_string()),
@@ -47,7 +47,7 @@ fn search_diagrams_matches_a_term_found_only_in_tier_notes() {
 
     let noted_entry = db
         .save_diagram_entry(
-            &FacetDiagramEntry {
+            &FacetingDiagramEntry {
                 title: "Noted Design".to_string(),
                 url: "local://noted.asc".to_string(),
                 design_id: String::new(),
@@ -56,7 +56,7 @@ fn search_diagrams_matches_a_term_found_only_in_tier_notes() {
         )
         .expect("save noted entry");
     db.save_diagram_detail(
-        &FacetDiagramDetail {
+        &FacetingDiagramDetail {
             angle_settings_table: vec![crate::model::angle::AngleSetting {
                 order_index: 0,
                 facet: "P1".to_string(),
@@ -72,7 +72,7 @@ fn search_diagrams_matches_a_term_found_only_in_tier_notes() {
 
     let plain_entry = db
         .save_diagram_entry(
-            &FacetDiagramEntry {
+            &FacetingDiagramEntry {
                 title: "Plain Design".to_string(),
                 url: "local://plain.asc".to_string(),
                 design_id: String::new(),
@@ -80,7 +80,7 @@ fn search_diagrams_matches_a_term_found_only_in_tier_notes() {
             LEGACY_SOURCE_ID,
         )
         .expect("save plain entry");
-    db.save_diagram_detail(&FacetDiagramDetail::default(), plain_entry)
+    db.save_diagram_detail(&FacetingDiagramDetail::default(), plain_entry)
         .expect("save plain detail");
 
     let results = db
@@ -105,7 +105,7 @@ fn search_diagrams_treats_underscore_and_percent_as_literal_characters() {
 
     let underscore_entry = db
         .save_diagram_entry(
-            &FacetDiagramEntry {
+            &FacetingDiagramEntry {
                 title: "Round_Brilliant".to_string(),
                 url: "local://has-underscore.asc".to_string(),
                 design_id: String::new(),
@@ -113,12 +113,12 @@ fn search_diagrams_treats_underscore_and_percent_as_literal_characters() {
             LEGACY_SOURCE_ID,
         )
         .expect("save underscore entry");
-    db.save_diagram_detail(&FacetDiagramDetail::default(), underscore_entry)
+    db.save_diagram_detail(&FacetingDiagramDetail::default(), underscore_entry)
         .expect("save underscore detail");
 
     let plain_entry = db
         .save_diagram_entry(
-            &FacetDiagramEntry {
+            &FacetingDiagramEntry {
                 title: "Round Brilliant".to_string(),
                 url: "local://no-underscore.asc".to_string(),
                 design_id: String::new(),
@@ -126,7 +126,7 @@ fn search_diagrams_treats_underscore_and_percent_as_literal_characters() {
             LEGACY_SOURCE_ID,
         )
         .expect("save plain entry");
-    db.save_diagram_detail(&FacetDiagramDetail::default(), plain_entry)
+    db.save_diagram_detail(&FacetingDiagramDetail::default(), plain_entry)
         .expect("save plain detail");
 
     let underscore_results = db
@@ -143,7 +143,7 @@ fn search_diagrams_treats_underscore_and_percent_as_literal_characters() {
 
     let percent_entry = db
         .save_diagram_entry(
-            &FacetDiagramEntry {
+            &FacetingDiagramEntry {
                 title: "50% Off Design".to_string(),
                 url: "local://has-percent.asc".to_string(),
                 design_id: String::new(),
@@ -151,7 +151,7 @@ fn search_diagrams_treats_underscore_and_percent_as_literal_characters() {
             LEGACY_SOURCE_ID,
         )
         .expect("save percent entry");
-    db.save_diagram_detail(&FacetDiagramDetail::default(), percent_entry)
+    db.save_diagram_detail(&FacetingDiagramDetail::default(), percent_entry)
         .expect("save percent detail");
 
     let percent_results = db
@@ -500,7 +500,7 @@ fn search_excludes_ignored_designs_by_default_and_includes_them_when_opted_in() 
     let db = Database::new(Some(path.to_str().unwrap())).expect("create migrated db");
     let visible_id = db
         .save_diagram_entry(
-            &FacetDiagramEntry {
+            &FacetingDiagramEntry {
                 title: "Visible".to_string(),
                 url: "local://visible.asc".to_string(),
                 design_id: String::new(),
@@ -510,7 +510,7 @@ fn search_excludes_ignored_designs_by_default_and_includes_them_when_opted_in() 
         .unwrap();
     let hidden_id = db
         .save_diagram_entry(
-            &FacetDiagramEntry {
+            &FacetingDiagramEntry {
                 title: "Hidden".to_string(),
                 url: "local://hidden.asc".to_string(),
                 design_id: String::new(),
@@ -593,7 +593,7 @@ fn search_diagrams_display_with_count_agrees_with_the_two_separate_calls() {
     for (i, windowing) in [10.0, 15.0, 18.0, 55.0, 90.0].iter().enumerate() {
         let entry_id = db
             .save_diagram_entry(
-                &FacetDiagramEntry {
+                &FacetingDiagramEntry {
                     title: format!("Design {i}"),
                     url: format!("local://design-{i}.asc"),
                     design_id: String::new(),
@@ -601,11 +601,17 @@ fn search_diagrams_display_with_count_agrees_with_the_two_separate_calls() {
                 "local-import",
             )
             .unwrap();
-        db.save_tilt_curves(entry_id, &flat_tilt_curves(*windowing), None, 1)
-            .unwrap();
+        db.save_tilt_curves(
+            entry_id,
+            &flat_tilt_curves(*windowing),
+            1,
+            "test-fingerprint",
+            db.entry_updated_at(entry_id).unwrap(),
+        )
+        .unwrap();
     }
     db.save_diagram_entry(
-        &FacetDiagramEntry {
+        &FacetingDiagramEntry {
             title: "No Curves".to_string(),
             url: "local://no-curves.asc".to_string(),
             design_id: String::new(),

@@ -154,7 +154,7 @@ export component DetailHeaderView inherits Rectangle {
     // Edit-mode-driven). No persisted settings-store property fits this
     // component's own model surface (`ui/models/library.slint`/
     // `ui/models/tilt.slint` only), so this defaults to collapsed on a short window (<900 logical px,
-    // matching the BUILD brief's own fallback rule) and stays a session-only,
+    // the fallback for short screens) and stays a session-only,
     // non-persisted toggle otherwise -- the `root.window_height < 900px` initializer
     // is a plain Slint property binding, live until the FIRST imperative assignment
     // (the chevron's `clicked` handlers below), at which point it becomes a sticky
@@ -204,6 +204,8 @@ export component DetailHeaderView inherits Rectangle {
     delete_diagram => { LibraryModel.delete_diagram(); }
     callback export_asc();
     export_asc => { LibraryModel.export_asc(); }
+    callback export_gcs();
+    export_gcs => { LibraryModel.export_gcs(); }
     // Opens the metadata editor modal (`metadata_editor_dialog.slint`, hosted at
     // `app.slint`'s root -- see that file for why it isn't hosted here: this
     // component's own `Rectangle` is only as tall as its content, not the full
@@ -397,6 +399,16 @@ export component DetailHeaderView inherits Rectangle {
                     c_export_touch := TouchArea { clicked => { root.export_asc(); } }
                     Tooltip { text: @markdown("Save the original file stored in the catalogue, not your edits."); }
                     Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
+                }
+                Rectangle {
+                    width: 28px; height: 28px;
+                    border-radius: Theme.radius-sm;
+                    background: c_export_gcs_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                    border-width: 1px;
+                    border-color: Theme.border-subtle;
+                    c_export_gcs_touch := TouchArea { clicked => { root.export_gcs(); } }
+                    Tooltip { text: @markdown("Export as Gem Cut Studio (.gcs)... -- Experimental: written from the published Gem Cut Studio 1.1 file description; chiral designs are untested."); }
+                    Text { text: "gcs"; font-size: 9px; font-weight: 700; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                 }
                 if !root.confirming_delete: Rectangle {
                     width: 28px; height: 28px;
@@ -609,6 +621,19 @@ export component DetailHeaderView inherits Rectangle {
                         cexport_touch := TouchArea { clicked => { root.export_asc(); } }
                         Tooltip { text: @markdown("Export .asc -- save the original file stored in the catalogue, not your edits."); }
                         Image { source: @image-url("../icons/save.svg"); colorize: Theme.text-secondary; width: 12px; height: 12px; }
+                    }
+
+                    // The catalogue's cutting instructions as a Gem Cut Studio file
+                    // (`gui::library::local::export`); experimental, see the tooltip.
+                    Rectangle {
+                        width: 28px; height: 28px;
+                        border-radius: Theme.radius-sm;
+                        background: cexport_gcs_touch.has-hover ? Theme.bg-elevated : Theme.bg-input;
+                        border-width: 1px;
+                        border-color: Theme.border-subtle;
+                        cexport_gcs_touch := TouchArea { clicked => { root.export_gcs(); } }
+                        Tooltip { text: @markdown("Export as Gem Cut Studio (.gcs)... -- Experimental: written from the published Gem Cut Studio 1.1 file description; chiral designs are untested."); }
+                        Text { text: "gcs"; font-size: 9px; font-weight: 700; color: Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
                     }
 
                     // Metadata editor: title, designer, shape, refractive index, index

@@ -7,7 +7,7 @@ use glam::DVec3;
 use indicatrix::geometry::{GpuFacetPlane, cuts::FacetSpec, girdle, stone_metrics};
 use indicatrix_vault::{
     db::sqlite::DEFAULT_SHAPES,
-    model::{detail::FacetDiagramDetail, entry::FullDiagramRecord},
+    model::{detail::FacetingDiagramDetail, entry::FullDiagramRecord},
 };
 
 /// Fills in the proportion fields `indicatrix_vault::local::import_asc` always leaves
@@ -23,7 +23,7 @@ use indicatrix_vault::{
 /// convention one call site up. The real `facet_diagrams.sqlite`'s ratio/volume columns
 /// are all REAL-affinity, so SQLite normalises whatever numeric text is written here
 /// regardless of decimal-place convention -- it only has to parse as a plain number.
-pub fn apply_measured_metadata(detail: &mut FacetDiagramDetail) {
+pub fn apply_measured_metadata(detail: &mut FacetingDiagramDetail) {
     // `reconstruct_planes` falls back to `standard_round_brilliant()` for no facet
     // specs -- right for the viewport, but measuring that fallback here would
     // attribute a fabricated design's proportions to this one.
@@ -101,7 +101,7 @@ pub fn apply_measured_metadata(detail: &mut FacetDiagramDetail) {
 /// typed metadata" contract this function exists to uphold. `angle_settings_table` and
 /// `attached_files` are deliberately NOT touched here: those two are the whole point
 /// of a re-import and must always come from the fresh file.
-pub fn merge_reimport_metadata(fresh: &mut FacetDiagramDetail, existing: &FullDiagramRecord) {
+pub fn merge_reimport_metadata(fresh: &mut FacetingDiagramDetail, existing: &FullDiagramRecord) {
     if fresh.page_url.is_empty() {
         fresh.page_url.clone_from(&existing.page_url);
     }
@@ -159,7 +159,7 @@ pub fn merge_reimport_metadata(fresh: &mut FacetDiagramDetail, existing: &FullDi
         .or_else(|| existing.shape_category.clone());
 }
 
-/// Assigns [`FacetDiagramDetail::shape`], but only where the design's own girdle
+/// Assigns [`FacetingDiagramDetail::shape`], but only where the design's own girdle
 /// outline makes the call unambiguous. Returns `None` otherwise -- a blank shape is
 /// correctable by the user, whereas a confidently wrong one looks authoritative and
 /// would quietly poison the library's shape filter.

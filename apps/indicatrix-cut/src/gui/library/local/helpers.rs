@@ -233,6 +233,9 @@ a 41.000000 0.5 92 n T\n";
             "indicatrix_cut_test_{label}_{n}_{}",
             std::process::id()
         ));
+        // Windows reuses process ids, so an earlier (killed) test run can have left a
+        // directory with this exact name behind; start from an empty one.
+        let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("create temp test dir");
         dir
     }
@@ -243,10 +246,15 @@ a 41.000000 0.5 92 n T\n";
     pub(in crate::gui::library::local) fn temp_db_path_for_test(label: &str) -> PathBuf {
         static COUNTER: AtomicU32 = AtomicU32::new(0);
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
+        let path = std::env::temp_dir().join(format!(
             "indicatrix_cut_test_db_{label}_{n}_{}.sqlite",
             std::process::id()
-        ))
+        ));
+        // Windows reuses process ids, so an earlier (killed) test run can have left a
+        // database with this exact name behind; a test that builds its own schema on
+        // it then fails with "table ... already exists".
+        let _ = std::fs::remove_file(&path);
+        path
     }
 
     pub(in crate::gui::library::local) fn open_temp_db(

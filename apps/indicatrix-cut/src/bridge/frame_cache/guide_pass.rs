@@ -37,14 +37,21 @@
 //! ready.
 
 use crate::bridge::render_thread::hash_planes;
-use indicatrix::{geometry::plane::GpuFacetPlane, optics::raytracer::Camera};
+use indicatrix::{
+    geometry::plane::GpuFacetPlane,
+    optics::raytracer::{Camera, DEFAULT_FOV_DEG},
+};
+use std::sync::atomic::AtomicBool;
 
 // The pure prepass moved to `indicatrix::renderer::guide_pass` (so a coordinator can
 // compute the same guides for its denoised display frames); re-exported so every GUI
 // call site keeps its `bridge::frame_cache::guide_pass::...` path.
 pub use indicatrix::renderer::guide_pass::{
-    GuideBuffers, generate_guide_buffers, generate_guide_buffers_cancellable,
+    GuideBuffers, generate_guide_buffers_cancellable, generate_guide_buffers_into,
 };
+// Only the tests build guides synchronously into a fresh allocation.
+#[cfg(test)]
+pub use indicatrix::renderer::guide_pass::generate_guide_buffers;
 
 /// Everything that determines the guide buffers: resolution, camera pose, and the
 /// active facet geometry (light/material/exposure are deliberately excluded -- see the
@@ -91,6 +98,7 @@ impl Default for GuideCache {
 }
 
 impl GuideCache {
+    /// Creates an empty instance.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -125,8 +133,16 @@ impl GuideCache {
     ) -> &GuideBuffers {
         let key = Self::key_for(width, height, yaw, pitch, distance, planes);
         if self.key.as_ref() != Some(&key) {
-            let camera = Camera::new(yaw, pitch, distance, 42.0);
-            self.buffers = generate_guide_buffers(width, height, &camera, planes);
+            let camera = Camera::new(yaw, pitch, distance, DEFAULT_FOV_DEG);
+            let completed = generate_guide_buffers_into(
+                width,
+                height,
+                &camera,
+                planes,
+                &AtomicBool::new(false),
+                &mut self.buffers,
+            );
+            debug_assert!(completed, "an uncancelled prepass always completes");
             self.key = Some(key);
             self.generation += 1;
         }
@@ -248,7 +264,7 @@ mod tests {
         assert_eq!(
             cache.generation(),
             2,
-            "a changed cutting schedule must invalidate the cache even with an \
+            "a changed set of cutting instructions must invalidate the cache even with an \
              unchanged camera pose"
         );
     }
@@ -301,7 +317,7 @@ mod tests {
     #[test]
     fn guide_cache_adopt_installs_externally_computed_buffers_without_recomputing() {
         let planes = StandardGemCuts::standard_round_brilliant();
-        let camera = Camera::new(0.60, 0.45, 2.4, 42.0);
+        let camera = Camera::new(0.60, 0.45, 2.4, DEFAULT_FOV_DEG);
         let buffers = generate_guide_buffers(8, 8, &camera, &planes);
         let key = GuideCache::key_for(8, 8, 0.60, 0.45, 2.4, &planes);
 

@@ -1,6 +1,6 @@
 //! Cross-checks the `VertexAccumulator`-indexed dedup against the linear-scan
 //! reference in [`super`], on the module's hand-built fixtures and on real
-//! cutting schedules.
+//! cutting instructions.
 
 use glam::DVec3;
 

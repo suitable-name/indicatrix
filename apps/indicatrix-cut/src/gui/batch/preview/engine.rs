@@ -4,22 +4,23 @@
 //! shape, and "Progress with N local lanes (plus remote) in flight" for the
 //! [`LiveProgress`]/[`push_progress`] bookkeeping below.
 
+use super::remote_lane::run_remote_lane;
 use crate::{
     BatchModel, MainWindow,
-    bridge::preview_render::{self, PreviewJob, PreviewView},
-    gui::{batch::batch_queue::WorkQueue, library::detail::reconstruct_planes},
+    bridge::preview_render::{self, CacheKind, PreviewJob, PreviewView},
+    gui::batch::batch_queue::WorkQueue,
     settings::WorkerSettings,
 };
 use indicatrix::{
-    geometry::{cuts::FacetSpec, plane::GpuFacetPlane},
-    optics::materials::GemMaterial,
+    geometry::plane::GpuFacetPlane,
+    optics::{materials::GemMaterial, raytracer::DEFAULT_MAX_BOUNCES},
     renderer::gpu_backend::GpuBackend,
 };
 use indicatrix_vault::db::sqlite::Database;
 use slint::{ComponentHandle, Weak};
 use std::{
     any::Any,
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     panic::{self, AssertUnwindSafe},
     sync::{
         Mutex, PoisonError,
@@ -30,13 +31,18 @@ use std::{
 };
 use tracing::warn;
 
+mod accumulator;
+
+pub(super) use accumulator::{DesignAccum, RecordRevision};
+use accumulator::{FinishedViews, record_item_result};
+
 /// Every preview render's bounce cap -- fixed, not a settings-file field the way
 /// `preview_size`/`preview_spp` are (see `bridge::preview_render`'s module doc comment
-/// for why those two ARE exposed). `12` matches `settings::model::app_settings::
-/// DEFAULT_MAX_BOUNCES` (this app's own fresh-install live-viewport default) and the
-/// bounce count the sizing table in `bridge::preview_render`'s doc comment was measured
-/// at, so the measured cost figures there stay accurate.
-const PREVIEW_MAX_BOUNCES: u32 = 12;
+/// for why those two ARE exposed). It is the raytracer's [`DEFAULT_MAX_BOUNCES`] (this
+/// app's own fresh-install live-viewport default) and the bounce count the sizing table
+/// in `bridge::preview_render`'s doc comment was measured at, so the measured cost
+/// figures there stay accurate.
+pub(super) const PREVIEW_MAX_BOUNCES: u32 = DEFAULT_MAX_BOUNCES;
 
 /// How close (absolute refractive-index difference) a `GemMaterial` preset must be to a
 /// design's own scraped RI to count as a match for
@@ -114,13 +120,6 @@ pub fn seeded_random_unit(entry_id: i64) -> impl FnMut() -> f64 {
     let time_bits = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos() as u64);
-    #[allow(
-        clippy::cast_sign_loss,
-        reason = "entry_id is a SQLite AUTOINCREMENT row id, always non-negative in \
-                  practice; this cast only feeds a hash seed, where a wrapped negative \
-                  id would still produce a valid (if different) seed rather than a \
-                  wrong answer"
-    )]
     let mut state = (entry_id as u64) ^ time_bits;
     move || {
         state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -160,6 +159,10 @@ pub(super) struct BatchContext<'a> {
     /// exposes no such method, and its own internal `lost` flag is set only on a
     /// cleanly-reported `DeviceLost`, which a raw panic never reaches.
     pub(super) gpu_retired: &'a AtomicBool,
+    /// The designs whose geometry came from the angle table rather than a design
+    /// file -- see `gui::batch::record_planes_for_batch`. Read once at the end for
+    /// the batch's summary line.
+    pub(super) angle_table_entries: &'a Mutex<BTreeSet<i64>>,
 }
 
 /// One claimable unit of work: ONE view of ONE design -- see this group's `mod.rs` doc
@@ -172,45 +175,51 @@ pub(super) struct PreviewItem {
 }
 
 /// One design's resolved geometry/material -- the shared prelude both
-/// [`render_item_local`] and [`render_item_remote`]'s callers need before rendering
+/// [`render_item_local`] and `remote_lane::render_item_remote`'s callers need before rendering
 /// anything. See this group's `mod.rs` doc comment's "Why per-item resolve" section for
 /// why there is deliberately no cache sharing this between a design's two items.
-struct ResolvedDesign {
-    title: String,
-    planes: Vec<GpuFacetPlane>,
-    material: GemMaterial,
+pub(super) struct ResolvedDesign {
+    pub(super) title: String,
+    pub(super) planes: Vec<GpuFacetPlane>,
+    pub(super) material: GemMaterial,
+    /// The record version `planes` and `material` were resolved from; hand it to
+    /// [`finish_item_at_revision`] with the rendered bytes so a result from a superseded
+    /// record is never saved.
+    pub(super) revision: RecordRevision,
+}
+
+/// `full`'s facet planes for a preview render -- the design file first, the angle
+/// table only as the fallback (`gui::batch::record_planes_for_batch`, shared with the
+/// tilt batch and the library detail view). Both the local and the remote lane get
+/// their planes here, through [`resolve_design`]; a remote render ships these planes
+/// in its scene, so the worker never resolves a record itself.
+pub(super) fn record_planes(
+    ctx: &BatchContext<'_>,
+    full: &indicatrix_vault::model::entry::FullDiagramRecord,
+) -> Option<Vec<GpuFacetPlane>> {
+    super::super::record_planes_for_batch(full, ctx.angle_table_entries)
 }
 
 /// Resolves `entry_id`'s geometry and preview material, or `None` if either step comes
 /// up empty (malformed/unreadable row, unreconstructable geometry, or no material could
 /// be matched/assigned).
-fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<ResolvedDesign> {
-    let full = {
+pub(super) fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<ResolvedDesign> {
+    // The record and its revision stamp are read under one lock hold, so the stamp
+    // describes exactly this record.
+    let (full, updated_at) = {
         let guard = ctx.db.lock().unwrap_or_else(PoisonError::into_inner);
-        guard.get_diagram_full(entry_id)
+        (
+            guard.get_diagram_full(entry_id),
+            guard.entry_updated_at(entry_id),
+        )
     };
     let Ok(Some(full)) = full else {
         return None;
     };
-
-    let facet_specs: Vec<FacetSpec> = full
-        .angle_settings
-        .iter()
-        .map(|a| FacetSpec {
-            facet: a.facet.clone(),
-            angle: a.angle.clone(),
-            index: a.index.clone(),
-            notes: a.notes.clone(),
-        })
-        .collect();
-    let planes = reconstruct_planes(
-        full.shape.as_deref(),
-        full.index_gear.as_deref(),
-        &facet_specs,
-    );
-    if planes.is_empty() {
+    let Ok(updated_at) = updated_at else {
         return None;
-    }
+    };
+    let planes = record_planes(ctx, &full)?;
 
     let target_ri = target_ri_for_design(&full);
     let material_name = {
@@ -233,13 +242,14 @@ fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<ResolvedDesig
         title: full.title,
         planes,
         material,
+        revision: RecordRevision::Stamp(updated_at),
     })
 }
 
 /// Downcasts a `catch_unwind` payload to a human-readable message -- the exact same
 /// convention `gui::library::local::import::catch_file_panic` and
 /// `bridge::export_thread::spawn_export` already use for this.
-fn panic_message(payload: &(dyn Any + Send)) -> String {
+pub(super) fn panic_message(payload: &(dyn Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()
         .map(|s| (*s).to_string())
@@ -247,23 +257,11 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
         .unwrap_or_else(|| "unknown panic".to_string())
 }
 
-/// Runs `f` (a single view's render, local or remote) under `catch_unwind`, so a panic
-/// tracing this one view can never take the rest of the batch down with it -- see this
-/// group's `mod.rs` doc comment's "Panic isolation" section.
-fn catch_render(view: PreviewView, f: impl FnOnce() -> Option<Vec<u8>>) -> Option<Vec<u8>> {
-    panic::catch_unwind(AssertUnwindSafe(f)).unwrap_or_else(|payload| {
-        warn!(
-            "Preview render panicked for a {view:?} view: {}",
-            panic_message(&*payload)
-        );
-        None
-    })
-}
-
-/// Runs `f` (one LOCAL view's render) under `catch_unwind`, exactly like
-/// [`catch_render`], but ALSO retires the shared `GpuBackend` for the rest of this
-/// batch when the panic message names a wgpu/mapped-buffer failure -- the
-/// exact class of panic traced to a failed GPU chunk readback
+/// Runs `f` (one LOCAL view's render) under `catch_unwind`, so a panic tracing this one
+/// view can never take the rest of the batch down with it -- see this group's `mod.rs`
+/// doc comment's "Panic isolation" section -- and ALSO retires the shared `GpuBackend`
+/// for the rest of this batch when the panic message names a wgpu/mapped-buffer failure
+/// -- the exact class of panic traced to a failed GPU chunk readback
 /// leaving a persistent staging buffer mapped, after which every LATER caller of the
 /// same renderer hits `Queue::submit ... is still mapped` too. Every local lane shares
 /// ONE `GpuBackend` for the whole batch (see [`BatchContext`]'s own doc comment), so
@@ -317,73 +315,6 @@ fn render_item_local(
     })
 }
 
-/// Renders `resolved`'s `view` against `worker` (`bridge::preview_render::
-/// render_view_remote`'s own doc comment). Returns `None` on ANY shortfall, per that
-/// function's own contract.
-fn render_item_remote(
-    ctx: &BatchContext<'_>,
-    worker: &WorkerSettings,
-    resolved: &ResolvedDesign,
-    view: PreviewView,
-    cancel: &AtomicBool,
-) -> Option<Vec<u8>> {
-    let job = PreviewJob {
-        planes: &resolved.planes,
-        material: &resolved.material,
-        size: ctx.preview_size,
-        spp: ctx.preview_spp,
-        max_bounces: PREVIEW_MAX_BOUNCES,
-    };
-    catch_render(view, || {
-        preview_render::render_view_remote(&job, view, worker, cancel)
-    })
-}
-
-/// One design's front/top views as they trickle in from (possibly) two different
-/// lanes, plus how many of its (always 2) items are still outstanding. Lives in
-/// `super::spawn_preview_batch`'s shared `design_state` map for exactly as long as at
-/// least one of a design's two items hasn't finished yet -- [`record_item_result`]
-/// removes the entry the moment `remaining` reaches `0` and hands the finished pair to
-/// its caller for saving.
-pub(super) struct DesignAccum {
-    front: Option<Vec<u8>>,
-    top: Option<Vec<u8>>,
-    remaining: u8,
-}
-
-/// A finished design's front/top pair, ready to save -- `record_item_result`'s return
-/// type, factored into a named alias purely to keep that signature legible (clippy's
-/// `type_complexity` lint).
-type FinishedViews = Option<(Option<Vec<u8>>, Option<Vec<u8>>)>;
-
-/// Records one item's result (`bytes`, `None` on any failure) against `entry_id`'s
-/// accumulator, creating it on first touch. Returns `Some((front, top))` -- ready to
-/// save -- the moment this was the design's LAST outstanding item, regardless of which
-/// lane produced either result; `None` while the design still has an item in flight
-/// elsewhere.
-fn record_item_result(
-    design_state: &Mutex<HashMap<i64, DesignAccum>>,
-    entry_id: i64,
-    view: PreviewView,
-    bytes: Option<Vec<u8>>,
-) -> FinishedViews {
-    let mut map = design_state.lock().unwrap_or_else(PoisonError::into_inner);
-    let accum = map.entry(entry_id).or_insert_with(|| DesignAccum {
-        front: None,
-        top: None,
-        remaining: 2,
-    });
-    match view {
-        PreviewView::Front => accum.front = bytes,
-        PreviewView::Top => accum.top = bytes,
-    }
-    accum.remaining = accum.remaining.saturating_sub(1);
-    if accum.remaining > 0 {
-        return None;
-    }
-    map.remove(&entry_id).map(|done| (done.front, done.top))
-}
-
 /// Running totals both lanes update concurrently -- plain atomics (not a `Mutex`)
 /// suffice since `generated`/`failed` are independent counters with no invariant
 /// between them that needs atomic coupling.
@@ -418,7 +349,7 @@ pub(super) struct LiveProgress {
 /// count `super::spawn_preview_batch` decided via `batch_queue::local_lane_count`), so
 /// it travels as a plain parameter here rather than living inside the per-update
 /// [`LiveProgress`] -- the same reason `design_total` already does.
-fn push_progress(
+pub(super) fn push_progress(
     ui_weak: &Weak<MainWindow>,
     design_total: u32,
     local_lane_total: u32,
@@ -445,7 +376,7 @@ fn push_progress(
     });
 }
 
-fn set_remote_status(progress: &Mutex<LiveProgress>, active: bool, title: &str) {
+pub(super) fn set_remote_status(progress: &Mutex<LiveProgress>, active: bool, title: &str) {
     let mut p = progress.lock().unwrap_or_else(PoisonError::into_inner);
     p.remote_active = active;
     p.remote_title = title.to_string();
@@ -486,43 +417,128 @@ pub(super) struct LaneShared<'a> {
     /// read fresh by each lane) purely so every `push_progress` call site has it without
     /// needing its own separate parameter.
     pub(super) local_lane_total: u32,
+    /// The library card thumbnail cache, invalidated per design in [`finish_item`] once
+    /// its previews are saved.
+    pub(super) thumbnail_cache: &'a crate::gui::batch::preview_cache::PreviewThumbnailCache,
 }
 
-/// Persists a finished design's front/top pair (whatever combination succeeded) and
-/// folds the result into `shared.tally`/`shared.progress` -- called once a design's
-/// LAST outstanding item comes back, from whichever lane that happens to be (see
-/// [`record_item_result`]).
-fn finish_item(
+/// Stores a finished design's pair, unless the design changed while it was rendered.
+/// Returns whether the pair was stored.
+///
+/// The images go in only if the catalogue row still carries the `updated_at` the items
+/// resolved their record at (`Database::save_preview_images`'s compare-and-swap), so a
+/// re-import, metadata edit or re-sync that lands during the seconds of rendering is
+/// never followed by a write of the old geometry's pictures. A design whose two items
+/// disagree about the record version is refused the same way. An item pair that never
+/// reported a revision (`RecordRevision::Unknown`) is saved against the row's current
+/// stamp, i.e. without that protection.
+fn save_finished_design(shared: &LaneShared<'_>, entry_id: i64, done: &FinishedViews) -> bool {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX));
+    let guard = shared.ctx.db.lock().unwrap_or_else(PoisonError::into_inner);
+    let expected_updated_at = match done.revision {
+        RecordRevision::Stamp(stamp) => stamp,
+        RecordRevision::Unknown => match guard.entry_updated_at(entry_id) {
+            Ok(stamp) => stamp,
+            Err(e) => {
+                warn!("Could not save the previews for entry {entry_id}: {e}");
+                return false;
+            }
+        },
+        RecordRevision::Conflicting => {
+            warn!(
+                "Discarded the previews rendered for entry {entry_id}: the design changed \
+                 between its two views"
+            );
+            return false;
+        }
+    };
+    let material = guard.get_preview_material(entry_id).ok().flatten();
+    let fingerprint = preview_render::cache_fingerprint(
+        CacheKind::Preview {
+            size: shared.ctx.preview_size,
+            spp: shared.ctx.preview_spp,
+            max_bounces: PREVIEW_MAX_BOUNCES,
+        },
+        material.as_deref(),
+    );
+    let stored = guard.save_preview_images(
+        entry_id,
+        done.front.as_deref(),
+        done.top.as_deref(),
+        now,
+        &fingerprint,
+        expected_updated_at,
+    );
+    drop(guard);
+    match stored {
+        Ok(true) => true,
+        Ok(false) => {
+            warn!(
+                "Discarded the previews rendered for entry {entry_id}: the design changed \
+                 while they were rendering"
+            );
+            false
+        }
+        Err(e) => {
+            warn!("Failed to save the previews for entry {entry_id}: {e}");
+            false
+        }
+    }
+}
+
+/// [`finish_item_at_revision`] for an item with no record revision to report. Right for
+/// a failure hand-back (`bytes` is `None`, so there is nothing to protect); a caller
+/// holding rendered bytes should pass its design's [`ResolvedDesign::revision`] to
+/// [`finish_item_at_revision`] instead, since an item without one leaves its half of the
+/// pair unchecked against edits made during the render.
+pub(super) fn finish_item(
     shared: &LaneShared<'_>,
     ui_weak: &Weak<MainWindow>,
     entry_id: i64,
     view: PreviewView,
     bytes: Option<Vec<u8>>,
 ) {
-    let Some((front, top)) = record_item_result(shared.design_state, entry_id, view, bytes) else {
+    finish_item_at_revision(
+        shared,
+        ui_weak,
+        entry_id,
+        view,
+        bytes,
+        RecordRevision::Unknown,
+    );
+}
+
+/// Persists a finished design's front/top pair (whatever combination succeeded) and
+/// folds the result into `shared.tally`/`shared.progress` -- called once a design's
+/// LAST outstanding item comes back, from whichever lane that happens to be (see
+/// [`record_item_result`]). `revision` is the record version this item's `bytes` were
+/// rendered from ([`ResolvedDesign::revision`]); see [`save_finished_design`] for how
+/// the design's items' revisions gate the save.
+pub(super) fn finish_item_at_revision(
+    shared: &LaneShared<'_>,
+    ui_weak: &Weak<MainWindow>,
+    entry_id: i64,
+    view: PreviewView,
+    bytes: Option<Vec<u8>>,
+    revision: RecordRevision,
+) {
+    let Some(done) = record_item_result(shared.design_state, entry_id, view, bytes, revision)
+    else {
         // This design still has its other view in flight elsewhere -- nothing to save
         // or tally yet.
         return;
     };
 
-    let saved = (front.is_some() || top.is_some()) && {
-        #[allow(
-            clippy::cast_possible_wrap,
-            reason = "unix seconds fits in i64 until well past the year 292 billion; \
-                      the column this feeds (`diagram_previews.preview_generated_at`) \
-                      is already declared INTEGER (i64) to match"
-        )]
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as i64);
-        let guard = shared.ctx.db.lock().unwrap_or_else(PoisonError::into_inner);
-        guard
-            .save_preview_images(entry_id, front.as_deref(), top.as_deref(), now)
-            .is_ok()
-    };
+    let saved = (done.front.is_some() || done.top.is_some())
+        && save_finished_design(shared, entry_id, &done);
 
     if saved {
         shared.tally.generated.fetch_add(1, Ordering::Relaxed);
+        // The library card re-queries this design's thumbnails on its next frame,
+        // replacing the placeholder or the stale image.
+        shared.thumbnail_cache.invalidate(ui_weak, entry_id);
     } else {
         shared.tally.failed.fetch_add(1, Ordering::Relaxed);
     }
@@ -573,8 +589,11 @@ pub(super) fn run_local_lane(
         );
 
         let resolved = resolve_design(shared.ctx, item.entry_id);
+        let revision = resolved
+            .as_ref()
+            .map_or(RecordRevision::Unknown, |r| r.revision);
         let bytes = resolved.and_then(|r| render_item_local(shared.ctx, gpu, &r, item.view));
-        finish_item(shared, ui_weak, item.entry_id, item.view, bytes);
+        finish_item_at_revision(shared, ui_weak, item.entry_id, item.view, bytes, revision);
 
         adjust_local_active(shared.progress, -1);
         push_progress(
@@ -584,75 +603,6 @@ pub(super) fn run_local_lane(
             shared.progress,
         );
     }
-}
-
-/// Runs the REMOTE lane: claims fresh items via `WorkQueue::claim_shared` only (never
-/// a local-retried one -- that pile is reserved for the local lane, see
-/// `gui::batch::batch_queue`'s doc comment) until the shared pool is empty, then
-/// signals `remote_lane_done` so the local lane knows no further requeues are coming.
-///
-/// `worker` is `None` only for `RemoteOnly` with no worker configured -- treated as an
-/// immediate shortfall (no attempt possible) rather than a connection failure, so this
-/// never touches the network in that case. `fallback_to_local` is `true` only for
-/// `LiveComputeTarget::Both` -- for `RemoteOnly` every failure is final and tallied
-/// `failed` directly: a remote failure is reported as failed and never silently
-/// re-rendered locally.
-pub(super) fn run_remote_lane(
-    shared: &LaneShared<'_>,
-    ui_weak: &Weak<MainWindow>,
-    worker: Option<&WorkerSettings>,
-    fallback_to_local: bool,
-    remote_lane_done: &AtomicBool,
-) {
-    loop {
-        if shared.cancel.load(Ordering::Relaxed) {
-            break;
-        }
-        let Some(item) = shared.queue.claim_shared() else {
-            break;
-        };
-
-        let resolved = resolve_design(shared.ctx, item.entry_id);
-        let title = resolved
-            .as_ref()
-            .map_or_else(|| format!("Design #{}", item.entry_id), |r| r.title.clone());
-        set_remote_status(shared.progress, true, &title);
-        push_progress(
-            ui_weak,
-            shared.design_total,
-            shared.local_lane_total,
-            shared.progress,
-        );
-
-        let bytes = match (resolved, worker) {
-            (Some(r), Some(w)) => render_item_remote(shared.ctx, w, &r, item.view, shared.cancel),
-            _ => None,
-        };
-
-        if bytes.is_some() {
-            finish_item(shared, ui_weak, item.entry_id, item.view, bytes);
-        } else if fallback_to_local {
-            // Not accounted for yet -- the local lane will attempt this exact item
-            // next, and IT is the one that finally tallies/completes its design. See
-            // `gui::batch::batch_queue`'s module doc comment for why this never goes
-            // back to the shared pool.
-            shared.queue.return_to_local(item);
-        } else {
-            // `RemoteOnly`: no local fallback exists, so this failure is final.
-            finish_item(shared, ui_weak, item.entry_id, item.view, None);
-        }
-    }
-    set_remote_status(shared.progress, false, "");
-    push_progress(
-        ui_weak,
-        shared.design_total,
-        shared.local_lane_total,
-        shared.progress,
-    );
-    // Ordered AFTER every possible `return_to_local` call above (all inside the loop
-    // this follows) -- see `gui::batch::batch_queue`'s doc comment for why the local
-    // lane's own stop condition depends on that ordering.
-    remote_lane_done.store(true, Ordering::Release);
 }
 
 /// One [`PreviewItem`] per view (front, then top) of every id in `entry_ids` -- the

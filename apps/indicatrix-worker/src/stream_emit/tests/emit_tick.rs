@@ -365,3 +365,87 @@ fn emit_tick_swap_leaves_the_emitter_copy_independent_of_the_shared_pending_delt
          state.pending_delta's buffer, not an alias of it"
     );
 }
+
+/// A second `PREVIEW` opportunity that hasn't advanced `samples_done` by
+/// at least 1% of the request's sample budget since the last one this emitter actually
+/// wrote is suppressed -- the gate that keeps a coordinator `FinalImageRequest` job
+/// (whose running total, and so `samples_done`, only changes when a chunk merges) from
+/// resending an unchanged `PREVIEW` on every 1 s cadence tick in between. A later tick
+/// that does clear the threshold resumes sending.
+#[test]
+fn emit_tick_preview_is_gated_by_one_percent_of_the_sample_budget_since_the_last_one() {
+    let scene = tiny_scene();
+    let pixel_count = scene.width as usize * scene.height as usize;
+    let request = RenderRequest {
+        intent: indicatrix_net::messages::RequestIntent::Batch,
+        request_id: 1,
+        scene,
+        first_sample: 0,
+        samples: 200, // 1% of 200 == 2 samples.
+        stream: stream_config_with_preview_at(TransferMode::FinalOnly, 2, 2),
+    };
+    let state = Arc::new(Mutex::new(shared_state(pixel_count, 4)));
+    let mut emitter = EmitterAccum::from_running_total(vec![Vec3::ONE; pixel_count]);
+    let mut emission_count: u32 = 0;
+
+    // First opportunity: nothing written yet this request, so it always qualifies.
+    let mut out = Vec::new();
+    emit_tick(
+        &mut out,
+        &request,
+        &state,
+        &mut emitter,
+        &mut emission_count,
+    )
+    .unwrap();
+    assert!(
+        decode_events(&out)
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Preview(_))),
+        "the first preview opportunity must always qualify"
+    );
+
+    // Second tick: samples_done advances by only 1 (< the 2-sample threshold) -> the
+    // running total is otherwise unchanged, so re-sending would be pure waste.
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .samples_done = 5;
+    let mut out = Vec::new();
+    emit_tick(
+        &mut out,
+        &request,
+        &state,
+        &mut emitter,
+        &mut emission_count,
+    )
+    .unwrap();
+    assert!(
+        !decode_events(&out)
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Preview(_))),
+        "a preview that has not advanced by 1% of the sample budget must be suppressed"
+    );
+
+    // Third tick: cumulative advance from the last WRITTEN preview (samples_done 4)
+    // now reaches the 2-sample threshold -> resumes.
+    state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .samples_done = 6;
+    let mut out = Vec::new();
+    emit_tick(
+        &mut out,
+        &request,
+        &state,
+        &mut emitter,
+        &mut emission_count,
+    )
+    .unwrap();
+    assert!(
+        decode_events(&out)
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Preview(_))),
+        "a preview that has advanced by 1% since the last one must resume"
+    );
+}

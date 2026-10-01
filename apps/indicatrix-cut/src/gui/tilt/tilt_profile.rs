@@ -33,7 +33,7 @@
 //! the ~724 total raytrace evaluations per run).
 //!
 //! Reads `RenderContext::active_planes`/`material_name`/`custom_materials`/
-//! `light_yaw`/`light_pitch` directly -- the same inputs
+//! `lighting_preset`/`light_yaw`/`light_pitch` directly -- the same inputs
 //! `bridge::render_thread::metrics::compute_or_reuse_metrics` keys its own cache on,
 //! minus camera yaw/pitch (irrelevant here since this always sweeps the full axis at
 //! four fixed azimuths).
@@ -45,9 +45,9 @@ use crate::{
     settings::SettingsPersister,
 };
 use indicatrix::{
-    color::metrics::{PROFILE_AZIMUTHS_DEG, evaluate_full_axis_profile_at_azimuth},
+    color::metrics::evaluate_all_axes_profiles,
     geometry::plane::GpuFacetPlane,
-    optics::materials::GemMaterial,
+    optics::{materials::GemMaterial, raytracer::LightingPreset},
 };
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::sync::{
@@ -56,10 +56,12 @@ use std::sync::{
 };
 
 /// Cheap identity for "would recomputing the four full-axis sweeps produce a different
-/// result" -- the same fields `bridge::render_thread::metrics::MetricsCacheKey` keys
-/// on, minus camera yaw/pitch (irrelevant here, see this module's doc comment).
+/// result" -- the same fields `indicatrix::color::metrics::MetricsCacheKey` keys on,
+/// minus camera yaw/pitch (irrelevant here, see this module's doc comment).
 #[derive(Clone, PartialEq)]
 struct AxesCacheKey {
+    /// The selected lighting preset: the same stone scores differently under another.
+    lighting_preset: LightingPreset,
     light_yaw: f32,
     light_pitch: f32,
     /// The fully resolved material (`resolve_material`'s output), not merely its
@@ -100,23 +102,23 @@ type AxisCurveRows = Vec<[f32; 181]>;
 fn sweep_all_axes(
     planes: &[GpuFacetPlane],
     material: &GemMaterial,
+    lighting_preset: LightingPreset,
     light_yaw: f32,
     light_pitch: f32,
 ) -> (AxisCurveRows, AxisCurveRows, AxisCurveRows) {
-    let mut brilliance_rows: AxisCurveRows = Vec::with_capacity(PROFILE_AZIMUTHS_DEG.len());
-    let mut extinction_rows: AxisCurveRows = Vec::with_capacity(PROFILE_AZIMUTHS_DEG.len());
-    let mut windowing_rows: AxisCurveRows = Vec::with_capacity(PROFILE_AZIMUTHS_DEG.len());
-    for &azimuth_deg in &PROFILE_AZIMUTHS_DEG {
-        let (b, e, w) = evaluate_full_axis_profile_at_azimuth(
-            planes,
-            material,
-            azimuth_deg,
-            light_yaw,
-            light_pitch,
-        );
-        brilliance_rows.push(b);
-        extinction_rows.push(e);
-        windowing_rows.push(w);
+    // The sweep itself lives in `indicatrix::color::metrics` (the browser app's Worker
+    // runs the same one); this only splits its axes into the dialog's three row sets.
+    // Scored under the selected preset at the current light pose, the lighting the
+    // viewport renders with.
+    let environment = lighting_preset.studio(1.0, light_yaw, light_pitch);
+    let axes = evaluate_all_axes_profiles(planes, material, environment);
+    let mut brilliance_rows: AxisCurveRows = Vec::with_capacity(axes.len());
+    let mut extinction_rows: AxisCurveRows = Vec::with_capacity(axes.len());
+    let mut windowing_rows: AxisCurveRows = Vec::with_capacity(axes.len());
+    for axis in axes {
+        brilliance_rows.push(axis.brilliance);
+        extinction_rows.push(axis.extinction);
+        windowing_rows.push(axis.windowing);
     }
     (brilliance_rows, extinction_rows, windowing_rows)
 }
@@ -134,7 +136,15 @@ fn handle_request_tilt_profile_axes(
     completed_key: &Arc<Mutex<Option<AxesCacheKey>>>,
     generation: &Arc<AtomicU64>,
 ) {
-    let (planes, material_name, material_override, custom_materials, light_yaw, light_pitch) = {
+    let (
+        planes,
+        material_name,
+        material_override,
+        custom_materials,
+        lighting_preset,
+        light_yaw,
+        light_pitch,
+    ) = {
         let ctx = render_ctx
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -143,6 +153,7 @@ fn handle_request_tilt_profile_axes(
             ctx.material_name.clone(),
             ctx.material_override.clone(),
             ctx.custom_materials.clone(),
+            ctx.lighting_preset,
             ctx.light_yaw,
             ctx.light_pitch,
         )
@@ -155,14 +166,21 @@ fn handle_request_tilt_profile_axes(
     // catalogue custom material or a typed RI override has no built-in name to
     // find, so resolving by name alone would silently sweep a different stone
     // from the one being edited.
-    let material = resolve_material_with_override(
+    // Refuses (see `resolve_material`'s own doc comment) rather than sweeping tilt
+    // curves for Diamond or a previous design's material when the current one does
+    // not resolve -- there is nothing honest to sweep, and the viewport's own
+    // `ViewportModel.trace_refusal` banner already tells the cutter why.
+    let Some(material) = resolve_material_with_override(
         &GemMaterial::all_materials(),
         &custom_materials,
         material_override.as_ref(),
         &material_name,
-    );
+    ) else {
+        return;
+    };
 
     let key = AxesCacheKey {
+        lighting_preset,
         light_yaw,
         light_pitch,
         material: material.clone(),
@@ -213,6 +231,7 @@ fn handle_request_tilt_profile_axes(
         SweepRequest {
             planes,
             material,
+            lighting_preset,
             light_yaw,
             light_pitch,
             key,
@@ -233,6 +252,7 @@ fn handle_request_tilt_profile_axes(
 struct SweepRequest {
     planes: Arc<Vec<GpuFacetPlane>>,
     material: GemMaterial,
+    lighting_preset: LightingPreset,
     light_yaw: f32,
     light_pitch: f32,
     /// The exact [`AxesCacheKey`] this sweep was launched for -- stamped into
@@ -272,6 +292,7 @@ fn spawn_tilt_profile_sweep(
     let SweepRequest {
         planes,
         material,
+        lighting_preset,
         light_yaw,
         light_pitch,
         key,
@@ -284,7 +305,7 @@ fn spawn_tilt_profile_sweep(
     } = bookkeeping;
     std::thread::spawn(move || {
         let (brilliance_rows, extinction_rows, windowing_rows) =
-            sweep_all_axes(&planes, &material, light_yaw, light_pitch);
+            sweep_all_axes(&planes, &material, lighting_preset, light_yaw, light_pitch);
 
         let brilliance_paths: Vec<SharedString> = brilliance_rows
             .iter()
@@ -450,7 +471,7 @@ pub fn cached_curve_material_is_stale(
 #[cfg(test)]
 mod tests {
     use super::{AxesCacheKey, cached_curve_material_is_stale, should_recompute_axes};
-    use indicatrix::optics::materials::GemMaterial;
+    use indicatrix::optics::{materials::GemMaterial, raytracer::LightingPreset};
 
     #[test]
     fn no_cached_material_is_never_stale() {
@@ -470,6 +491,7 @@ mod tests {
 
     fn sample_key(material: GemMaterial) -> AxesCacheKey {
         AxesCacheKey {
+            lighting_preset: LightingPreset::RingLights,
             light_yaw: 48.0,
             light_pitch: 54.0,
             material,
@@ -499,6 +521,16 @@ mod tests {
         let mut moved_geometry = current.clone();
         moved_geometry.planes_hash = 43;
         assert!(should_recompute_axes(Some(&current), &moved_geometry));
+    }
+
+    /// The curves are scored under the selected preset, so switching preset alone must
+    /// re-launch the sweep.
+    #[test]
+    fn should_recompute_axes_is_true_when_only_the_lighting_preset_differs() {
+        let current = sample_key(GemMaterial::all_materials()[0].clone());
+        let mut other_preset = current.clone();
+        other_preset.lighting_preset = LightingPreset::LightTent;
+        assert!(should_recompute_axes(Some(&current), &other_preset));
     }
 
     /// A custom material can be edited (RI, birefringence, dispersion, ...) while a

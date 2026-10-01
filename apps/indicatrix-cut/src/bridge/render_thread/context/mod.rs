@@ -25,11 +25,15 @@ use crate::{
 use glam::Vec3;
 use indicatrix::{
     geometry::{cuts::StandardGemCuts, plane::GpuFacetPlane},
-    optics::{materials::GemMaterial, raytracer::LightingPreset},
+    optics::{
+        materials::GemMaterial,
+        raytracer::{DEFAULT_MAX_BOUNCES, DEFAULT_POSE, LightingPreset},
+    },
     renderer::env_map::EnvironmentMap,
 };
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
+/// Everything the render thread needs to draw one frame.
 pub struct RenderContext {
     /// Live render resolution, set via `settings_dialog.slint`'s pill selector
     /// (`gui::mod::on_resolution_changed`). Restricted to fixed choices (640x480 ...
@@ -40,20 +44,29 @@ pub struct RenderContext {
     /// scaling. A change here is picked up by `update_accumulation_state`, which resets
     /// accumulation and the guide/framebuffer transfer on the next frame.
     pub width: u32,
+    /// Image height in pixels.
     pub height: u32,
+    /// Camera yaw.
     pub yaw: f32,
+    /// Camera pitch.
     pub pitch: f32,
+    /// Camera distance from the stone.
     pub distance: f32,
+    /// Light yaw.
     pub light_yaw: f32,
+    /// Light pitch.
     pub light_pitch: f32,
+    /// Name of the selected material.
     pub material_name: String,
     /// A fully-resolved material that, when present, takes priority over
     /// `material_name` in [`resolve_material_with_override`]. Plain by-name lookup
     /// cannot represent designs with no material name or unlisted RI overrides,
-    /// which would fall back to Diamond. The intended writer is
-    /// `gui::editor::material_lookup::resolved_gem_material`. `None` (default)
+    /// which would (before [`resolve_material`] dropped its Diamond fallback) have
+    /// silently substituted a different stone. The intended writer is
+    /// `gui::editor::view::inspector::sync_viewport_material_link`. `None` (default)
     /// reproduces by-name-only resolution.
     pub material_override: Option<GemMaterial>,
+    /// Lighting preset the render uses.
     pub lighting_preset: LightingPreset,
     /// What the camera sees behind the stone -- `AppSettings::backdrop`.
     pub backdrop: crate::settings::model::Backdrop,
@@ -63,7 +76,9 @@ pub struct RenderContext {
     /// `[0, target_samples)`. Samples-per-frame is derived from it, not chosen directly
     /// -- see `resolve_material_and_quality`.
     pub target_samples: u32,
+    /// Maximum number of ray bounces per path.
     pub max_bounces: u32,
+    /// Exposure multiplier applied when tone-mapping.
     pub exposure: f32,
     /// Inclusion/subsurface scattering amount, applied via
     /// `GemMaterial::with_scattering_amount`. `0.0` (default) is off; useful range is
@@ -126,10 +141,16 @@ pub struct RenderContext {
     /// [`Self::claim_active_planes`] for the intended single point of mutation.
     pub planes_owner: PlanesOwner,
     /// Why the design cannot be traced honestly, as a cutter-facing message.
-    /// `None` when tracing is valid. Set when a design has no material name and
-    /// its refractive index matches no built-in preset; refusal to substitute is
-    /// the chosen behaviour over silent fallback to Diamond.
+    /// `None` when tracing is valid. Set both when a design has no material name and
+    /// its refractive index matches no built-in preset, and when it names a material
+    /// that is neither a built-in preset nor a saved custom material; refusal to
+    /// substitute is the chosen behaviour over silent fallback to Diamond. Surfaced
+    /// to the cutter via `ViewportModel.trace_refusal` (`gem_viewport.slint`'s
+    /// banner), and consulted by [`resolve_material`]'s callers -- `SceneSnapshot::
+    /// capture`, the remote dispatch tick, and the tilt-video export -- which all
+    /// refuse rather than trace/export the wrong stone while this is set.
     pub material_unresolved: Option<String>,
+    /// User-defined gem materials.
     pub custom_materials: Arc<Vec<GemMaterial>>,
     /// Name -> specific gravity for custom catalogue materials. A parallel side
     /// channel to [`Self::custom_materials`], not on `GemMaterial` itself (SG is
@@ -140,22 +161,36 @@ pub struct RenderContext {
     /// Shutdown signal for the render thread. Setting this `false` ends the loop
     /// *permanently* -- never reuse this as a pause mechanism; see `paused`.
     pub running: bool,
+    /// Whether the context changed since the last render.
     pub dirty: bool,
     /// User-initiated pause/stop control, independent of `tab_visible`: both suspend
     /// rendering when off, but switching tabs must never clear an explicit pause, and
     /// pausing must never look like a tab-visibility change.
     pub paused: bool,
     /// Automatic suspend when the rendered image isn't visible anywhere: combines the
-    /// UI's `active_tab`, the Live Render/Edit sub-tab, and whether Live Render has
-    /// been popped into its own OS window -- see
-    /// `gui::detached_render::setup_live_render_visibility_callbacks`, the single place
-    /// that computes this flag. Not user-facing on its own.
+    /// UI's `active_tab`, the Live Render/Edit sub-tab, each sub-tab's view mode and
+    /// the open Retarget dialog -- see `gui::render::render_visibility`, the single
+    /// place that computes this flag. Not user-facing on its own.
     pub tab_visible: bool,
     /// Whether the À-Trous denoiser is applied to the tone-mapped output -- see
     /// `AppSettings::denoise_enabled`. `true` by default. Independent of
     /// `remote_active`: this is about WHETHER to denoise, not which backend produced
     /// the samples.
     pub denoise_enabled: bool,
+    /// One-shot "redraw the current image now" request, set by the global denoise
+    /// toggle (`gui::remote::worker_callbacks::setup_denoise_toggle_callback`) so
+    /// flipping it takes effect immediately even when accumulation has already
+    /// converged. Consumed (read-and-cleared) alongside `dirty` in
+    /// `snapshot_frame_inputs`, and treated like `remote_advanced` by the render
+    /// loop: forces exactly one display cycle (bypassing both the "already converged"
+    /// early sleep and `DENOISE_MIN_INTERVAL`'s cadence gate) without resetting
+    /// accumulation or tracing a single new sample -- toggling denoise must re-tonemap
+    /// the SAME accumulated buffer, not restart convergence. Does nothing on its own
+    /// while `RenderContext::effective_live_target` is `RemoteOnly`, since that mode
+    /// suspends this loop entirely -- see the toggle callback's own doc comment for
+    /// how that case redraws instead (`orchestrator::tick::update::redraw_from_epoch`,
+    /// called directly from the callback).
+    pub redisplay_requested: bool,
     /// Set by the remote-rendering orchestrator while a settled epoch's remote work
     /// owns (part of) the displayed image. Distinct from `paused`: driven by the
     /// handoff state machine, not the user, and never observable as a user pause.
@@ -221,6 +256,16 @@ pub struct RenderContext {
     /// The render loop still ANDs this with `!remote_active` before applying
     /// `local_preview_scale` as a belt-and-suspenders guard.
     pub camera_moving: bool,
+    /// Whether a mouse button is currently held for an orbit or light drag in either
+    /// viewport -- written by `ViewportModel.camera_drag_begin`/`camera_drag_end`
+    /// (`gui::render::camera_lighting::setup_camera_drag_callbacks`), cleared by
+    /// `gui::render::render_visibility::recompute_tab_visible` on every tab/view switch.
+    /// Read only by the remote orchestrator's poll tick, which refuses to settle (leave
+    /// `HandoffState::Previewing`, so `camera_moving` and the reduced preview
+    /// resolution persist, and no remote handoff is dispatched) while this holds --
+    /// see `poll::POSE_SETTLE_DEBOUNCE`. Not a scene field: `scene_identity` and
+    /// `snapshot_frame_inputs` ignore it.
+    pub camera_drag_held: bool,
     /// HDR environment maps: `Some(map)` replaces the analytic studio rig with a
     /// loaded Radiance `.hdr` panorama as the render loop's `EnvironmentSource` -- see
     /// `indicatrix::renderer::env_map`. `None` (default) is the studio-rig-only path.
@@ -419,9 +464,9 @@ impl Default for RenderContext {
         Self {
             width: 800,
             height: 600,
-            yaw: 0.60,   // 35 degrees azimuthal
-            pitch: 0.45, // 26 degrees elevation (showing crown, table, and pavilion sparkle in 3D)
-            distance: 2.4,
+            yaw: DEFAULT_POSE.yaw,
+            pitch: DEFAULT_POSE.pitch,
+            distance: DEFAULT_POSE.distance,
             light_yaw: 0.85,   // ~48 degrees azimuth
             light_pitch: 0.95, // ~54 degrees elevation
             material_name: "Diamond".to_string(),
@@ -429,7 +474,7 @@ impl Default for RenderContext {
             lighting_preset: LightingPreset::RingLights,
             backdrop: crate::settings::model::Backdrop::default(),
             target_samples: 256,
-            max_bounces: 12,
+            max_bounces: DEFAULT_MAX_BOUNCES,
             exposure: 1.0,
             inclusion_sigma_s: 0.0,
             c_axis_override: None,
@@ -447,6 +492,7 @@ impl Default for RenderContext {
             paused: false,
             tab_visible: true,
             denoise_enabled: true,
+            redisplay_requested: false,
             remote_active: false,
             live_epoch: None,
             export_active_count: 0,
@@ -455,6 +501,7 @@ impl Default for RenderContext {
             local_compute_target: LocalComputeTarget::CpuGpu,
             local_preview_scale: LocalPreviewScale::Off,
             camera_moving: false,
+            camera_drag_held: false,
             env_map: None,
             scene_identity: SceneIdentity::default(),
         }

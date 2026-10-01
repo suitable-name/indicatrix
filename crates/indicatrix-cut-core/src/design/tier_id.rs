@@ -23,7 +23,11 @@
 //! knew moved" without re-deriving anything from position. Survives add/remove/move/
 //! undo/redo exactly like every other piece of a tier's own state, because
 //! [`super::Design::tier_ids`] is mutated by the very same [`crate::edit::Design::apply_edit`]
-//! arms that mutate `tiers`, never independently.
+//! arms that mutate `tiers`, never independently. The integration tests
+//! `undoing_a_tier_removal_restores_the_exact_tier_id` and
+//! `history_undo_and_redo_of_a_removal_keep_the_tier_ids` (`tests/edit_roundtrip.rs`)
+//! pin this, comparing identities through [`super::Design::tier_ids_eq`].
+/// Stable identifier of one tier slot; never reused within a design.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TierId(pub u64);
 

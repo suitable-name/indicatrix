@@ -5,19 +5,18 @@
 //!
 //! # `History` is the only thing that mutates `Design`
 //!
-//! `indicatrix_cut_core::History::undo`/`redo` each `.expect(...)` that the recorded
-//! inverse they're about to replay still applies -- a failure there can only mean
-//! something else mutated `Design` behind `History`'s back, and silently swallowing
-//! that would hide real corruption. So nothing in this group may call
-//! `Design::apply_edit` directly: [`state::EditorState::apply`]/
-//! [`apply_coalescing`](state::EditorState::apply_coalescing)/
-//! [`undo`](state::EditorState::undo)/[`redo`](state::EditorState::redo)/
-//! [`apply_optimize_outcome`](state::EditorState::apply_optimize_outcome) are the
-//! only five functions that touch `design` and `history` together, all routing
-//! through `History`, and every callback in [`callbacks`]/[`native_io`] calls one of
-//! those five. (This doc comment predates `apply_coalescing`, the angle-nudge
-//! coalescing path added alongside `setup_nudge_angle_callback`; see
-//! `state::EditorState`'s own doc comment, which already accounts for it.)
+//! `indicatrix_cut_core::History::undo`/`redo` replay a recorded inverse against the
+//! `Design` and return `Err(EditError)` -- leaving the undo/redo entry in place -- when
+//! it no longer applies. That can only mean something else mutated `Design` behind
+//! `History`'s back, and silently swallowing it would hide real corruption, so the
+//! callers in [`callbacks`] surface the error (a toast) instead of unwrapping it. For
+//! the same reason nothing in this group may call `Design::apply_edit` directly: every
+//! edit of `design` goes through the shared `indicatrix_editor::EditorSession`,
+//! reached via [`state::EditorState`]'s entry points (`apply`, `undo`, `redo`,
+//! `nudge_angles`, `set_tier_angle`, `pin_tier_mast`, `rotate_tier_indices`, and
+//! `apply_optimize_outcome` through `Deref`), all of which route through `History`.
+//! `EditorState::apply_coalescing` exists only for tests; the production nudge path
+//! is `nudge_angles`.
 //!
 //! # Feeding the viewport
 //!
@@ -65,17 +64,19 @@
 //! Every one of this group's `Design::solve` call sites (directly, or via
 //! [`state::tier_items`]/[`state::status_text_and_is_problem`]/
 //! [`state::yield_report_texts`]/[`state::design_to_gpu_planes`], which each
-//! solve internally) now runs OFF the UI
-//! thread, following `deep_solve.rs`'s own `thread::spawn` +
-//! `Weak::upgrade_in_event_loop` convention -- see [`auto_solve`]'s module doc
-//! comment for the full epoch/sequence-number mechanism a completed background solve
-//! is checked against before it is allowed to touch the display.
+//! solve internally) must run OFF the UI thread, following `deep_solve.rs`'s own
+//! `thread::spawn` + `Weak::upgrade_in_event_loop` convention -- see [`auto_solve`]'s
+//! module doc comment for the full epoch/sequence-number mechanism a completed
+//! background solve is checked against before it is allowed to touch the display. A
+//! call site that solves on the UI thread is a defect (a solve costs from a fraction
+//! of a millisecond to several seconds); the exception below is the only sanctioned one.
 //!
 //! The one exception: [`view::refresh_all`] (New/Load Selected/Adopt/the explicit
 //! "Solve" action) still solves synchronously for a design at or under
-//! [`auto_solve::should_solve_synchronously`], both because that is fast enough in
-//! practice not to matter and because "New" specifically promises an immediately
-//! solved, unstale design. Above that tier count, [`view::refresh_all`] pushes the
+//! `indicatrix_editor::solve_policy::should_solve_synchronously_for` (few planes, few
+//! meet-derived tiers, no tier targets, and a last measured solve that was fast), both
+//! because that is fast enough in practice not to matter and because "New" specifically
+//! promises an immediately solved, unstale design. Above that cost, [`view::refresh_all`] pushes the
 //! same stale content [`view::refresh_editor_panel_stale`] does after any other edit,
 //! then immediately dispatches a background solve -- see [`view::refresh_all`]'s own
 //! doc comment.
@@ -95,7 +96,8 @@
 //! [`loading`] (resolving a `Design` from a catalogue record, parsing edit forms),
 //! [`view`] (pushing state into `EditorView`/the viewport, Deep Solve/Optimize
 //! formatting), [`callbacks`] (Slint callback wiring), [`native_io`] (`.asc`
-//! export, native save/open), and [`auto_solve`] (background/auto-solve machinery --
+//! export, native save/open), [`setup`] (the startup-restore offer, the solve-cancel and
+//! tier-cutoff wirings) and [`auto_solve`] (background/auto-solve machinery --
 //! see "Never block the UI thread with a solve" above), with
 //! [`setup_editor_callbacks`] as this group's main public entry point.
 //!
@@ -110,6 +112,9 @@
 mod activity;
 mod auto_solve;
 mod callbacks;
+// The visual before/after compare window (Retarget, Optimize, Snapshot) -- see
+// that module's own doc comment.
+mod compare;
 mod cut_sheet;
 mod deep_solve;
 // The coalesce-at-the-source UI intent queue: `setup_tier_cutoff_callback`
@@ -120,15 +125,25 @@ pub(in crate::gui::editor) mod edit_intent;
 // The worked-example walkthrough: step content, automatic advance, and the
 // completion checks every refresh ends in -- see this module's own doc comment.
 mod guide;
+// Byte-identity pins for everything shared with `crates/indicatrix-editor` -- see
+// that module's own doc comment.
+#[cfg(test)]
+mod identity_pins;
 mod loading;
 pub(in crate::gui) mod material_lookup;
+// Mouse-driven angle/depth/index drag handles on the Solid viewport's selected facet --
+// see that module's own doc comment.
+mod manipulate;
 // `pub(in crate::gui)`, not private: `gui::library::local::import` reuses
 // `native_io::ask_write_confirm`'s in-window confirm dialog/continuation for its
 // own "replace existing design(s)?" prompt -- see that function's own doc
 // comment.
 pub(in crate::gui) mod native_io;
 mod optimize_solve;
-pub mod retarget;
+// "Retarget for material" moved to `indicatrix-editor` unchanged; re-exported at
+// its old path.
+pub use indicatrix_editor::retarget;
+mod setup;
 // The shortcut table shared by the in-app overlay and the generated section of
 // appendix B -- see this module's own doc comment.
 mod shortcuts;
@@ -143,6 +158,9 @@ mod state;
 mod templates;
 mod view;
 
+// Called wherever the main window hides, so the compare window never outlives it.
+pub(in crate::gui) use compare::close_compare_window;
+
 use crate::{
     MainWindow,
     bridge::{library::source::LibrarySource, render_thread::RenderContext},
@@ -150,194 +168,13 @@ use crate::{
 };
 use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_vault::db::sqlite::Database;
-use slint::{ComponentHandle as _, Model as _};
+use setup::{setup_solve_cancel_callback, setup_startup_restore, setup_tier_cutoff_callback};
 use state::EditorState;
 use std::{
     cell::RefCell,
     rc::Rc,
     sync::{Arc, Mutex},
 };
-
-/// Wires every "Edit" sub-tab callback (declared on `EditorModel`, `ui/models/editor.slint`'s
-/// global -- see `ui/README.md` for how a `.slint` component reaches it directly, with
-/// no forwarding through `MainWindow`) to a shared [`EditorState`], and populates the
-/// tab's own display once up front (see [`view::refresh_editor_panel`]) so it isn't
-/// blank when first opened.
-///
-/// Split into one `setup_*` function per callback (in [`callbacks`]/[`native_io`]),
-/// the same shape every other `gui::*` module in this crate uses.
-///
-/// `auto_solve::cancel_in_flight_solve` invalidates the in-flight result, drops any
-/// queued dispatch, AND flips the worker's own cancel flag; this function is what
-/// gives the cutter their editor back on the same click, rather than leaving the
-/// Solve button disabled until the abandoned worker lands. The design itself is
-/// untouched, so the honest state afterwards is "stale" -- it still needs a solve,
-/// just not that one.
-///
-/// The worker stops for real, typically within a sweep or pipeline run
-/// (single-digit milliseconds). `dispatch_background_solve` threads
-/// `SolveControl::with_cancel` through `Design::solve_with` via
-/// `auto_solve::solve_cancellably`, the same cancellation `deep_solve`/
-/// `optimize_solve` already use for their long-running searches. This means the
-/// design genuinely stops solving, not merely discards a result still running in
-/// the background.
-fn setup_solve_cancel_callback(ui: &MainWindow) {
-    let ui_weak = ui.as_weak();
-    ui.global::<crate::EditorModel>().on_solve_cancel(move || {
-        let Some(ui) = ui_weak.upgrade() else {
-            return;
-        };
-        auto_solve::cancel_in_flight_solve();
-        let model = ui.global::<crate::EditorModel>();
-        model.set_solve_running(false);
-        model.set_solve_state("stale".into());
-        model.set_status_text("Solve abandoned -- click Solve when you are ready.".into());
-        model.set_status_is_problem(true);
-    });
-}
-
-/// Offers to reopen at startup instead of always
-/// opening on a blank design.
-///
-/// Deliberately an OFFER, matching the item's own wording. Silently reopening
-/// yesterday's design would be a surprise on a tool people also use to start new
-/// work -- and worse, it would hide a crash-recovery file inside an ordinary-looking
-/// session, so a cutter could overwrite unsaved work without ever being told it
-/// existed.
-///
-/// A leftover autosave outranks the recent-files list: that file is on disk only
-/// because a previous run did not shut down cleanly, and it holds work that was
-/// never saved at all. An ordinary recent file can always be reopened later from
-/// File > Open Recent; the autosave is deleted by the next successful save.
-fn setup_startup_restore(
-    ui: &MainWindow,
-    state: &Rc<RefCell<EditorState>>,
-    render_ctx: &Arc<Mutex<RenderContext>>,
-    preview_state: &Arc<SolidPreviewState>,
-    solid_last_solved: &view::SolidLastSolved,
-) {
-    let model = ui.global::<crate::EditorModel>();
-    let autosave = native_io::find_leftover_autosave();
-    let offer = autosave.clone().or_else(|| {
-        ui.get_recent_native_files()
-            .iter()
-            .next()
-            .map(|path| std::path::PathBuf::from(path.as_str()))
-    });
-    let Some(offer) = offer else {
-        return;
-    };
-    model.set_startup_restore_is_autosave(autosave.is_some());
-    model.set_startup_restore_path(offer.display().to_string().into());
-
-    let state_accept = Rc::clone(state);
-    let render_ctx_accept = Arc::clone(render_ctx);
-    let preview_accept = Arc::clone(preview_state);
-    let solved_accept = Arc::clone(solid_last_solved);
-    let ui_weak = ui.as_weak();
-    ui.global::<crate::EditorModel>()
-        .on_startup_restore_accept(move || {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            // Cleared FIRST: the open below can itself toast or open the
-            // fingerprint-mismatch dialog, and this prompt must be gone by then
-            // rather than stacked underneath it.
-            let path = ui.global::<crate::EditorModel>().get_startup_restore_path();
-            ui.global::<crate::EditorModel>()
-                .set_startup_restore_path(String::new().into());
-            native_io::open_recent_native_path(
-                &ui,
-                &state_accept,
-                &render_ctx_accept,
-                &preview_accept,
-                &solved_accept,
-                std::path::PathBuf::from(path.as_str()),
-            );
-        });
-
-    let ui_weak_dismiss = ui.as_weak();
-    ui.global::<crate::EditorModel>()
-        .on_startup_restore_dismiss(move || {
-            let Some(ui) = ui_weak_dismiss.upgrade() else {
-                return;
-            };
-            // The file is left exactly where it is -- declining the offer is not a
-            // decision to throw work away. A leftover autosave is removed only by
-            // the next successful save (see `finish_save_native_success`).
-            ui.global::<crate::EditorModel>()
-                .set_startup_restore_path(String::new().into());
-        });
-}
-
-/// Redraws the preview when the tier-cutoff slider moves.
-///
-/// `submit_preview_replan` already reads `SolidPreviewModel.tier_cutoff` and hands it
-/// to `SolidPreviewState::set_tier_cutoff`, but nothing asked for a replan when the
-/// slider itself moved -- so the whole path from slider to `Design::planes_through_tier`
-/// was correct and simply never ran until an unrelated edit triggered one.
-///
-/// An empty `dirty` set with `force_full_solve: false`: changing how much of the
-/// schedule is DRAWN does not change the design, so the solve is reusable and only
-/// the plane arrangement needs rebuilding.
-///
-/// `solid_viewport.slint`'s slider uses its own `changed(value)` INTERACTION
-/// callback (fires only on an actual drag/keyboard nudge/click, not on a tier
-/// push moving the bound expression). This is the only handler left on this path,
-/// using `try_borrow`/skip rather than plain `borrow()`: a writer already
-/// holding the guard will submit its own replan on its way out, so this tick's
-/// work would only be redundant.
-///
-/// A `changed(value)` tick fires on every pixel of drag, far more often than once
-/// per 16ms frame. Each one posts an [`edit_intent::EditIntent::CutOff`] into a
-/// queue this function builds once (see [`edit_intent::EditIntentQueue`]'s own doc
-/// comment for the coalescing/timer mechanics). This avoids calling
-/// [`view::submit_preview_replan`] directly (which clones the whole `Design`
-/// twice), so a whole drag burst pays for at most one replan per 16ms tick rather
-/// than one per pixel.
-fn setup_tier_cutoff_callback(
-    ui: &MainWindow,
-    state: &Rc<RefCell<EditorState>>,
-    render_ctx: &Arc<Mutex<RenderContext>>,
-    preview_state: &Arc<SolidPreviewState>,
-    solid_last_solved: &view::SolidLastSolved,
-) {
-    let intent_queue = {
-        let state = Rc::clone(state);
-        let render_ctx = Arc::clone(render_ctx);
-        let preview_state = Arc::clone(preview_state);
-        let solid_last_solved = Arc::clone(solid_last_solved);
-        let ui_weak = ui.as_weak();
-        edit_intent::EditIntentQueue::new(move |_intent| {
-            let Some(ui) = ui_weak.upgrade() else {
-                return;
-            };
-            let Ok(st) = state.try_borrow() else {
-                return;
-            };
-            view::submit_preview_replan(
-                &ui,
-                &render_ctx,
-                &preview_state,
-                &solid_last_solved,
-                &st,
-                std::collections::BTreeSet::new(),
-                false,
-            );
-        })
-    };
-    let ui_weak = ui.as_weak();
-    ui.global::<crate::SolidPreviewModel>()
-        .on_tier_cutoff_changed(move || {
-            stall_guard::stall_guard("on_tier_cutoff_changed", || {
-                let Some(ui) = ui_weak.upgrade() else {
-                    return;
-                };
-                let count = ui.global::<crate::SolidPreviewModel>().get_tier_cutoff();
-                intent_queue.post(edit_intent::EditIntent::CutOff { count });
-            });
-        });
-}
 
 /// Wires up every editor callback (Tier form, Deep Solve/Optimize, Retarget, undo/
 /// redo, native I/O, and the rest of [`callbacks`]) against `ui` and a freshly
@@ -583,13 +420,16 @@ fn setup_editor_tertiary_callbacks(
     solid_pick_state: &SolidPickState,
 ) {
     // Snapshot Design / Compare to Snapshot -- see
-    // `callbacks::retarget_actions::setup_snapshot_callbacks`'s own doc comment;
-    // no visible button calls either yet (see that function's doc comment for the
-    // exact trigger this app's command bar or menu still needs).
+    // `callbacks::retarget_actions::setup_snapshot_callbacks`'s own doc comment; the
+    // command bar's Snapshot and Compare buttons (`editor_command_bar.slint`) call
+    // `EditorModel.snapshot_design()`/`compare_to_snapshot()`.
     callbacks::setup_snapshot_callbacks(ui, state, solid_last_solved);
+    // The visual compare window's entry points (Retarget/Optimize "Compare…",
+    // the snapshot table's "Compare visually…").
+    compare::setup_compare_callbacks(ui, state, render_ctx, preview_state, solid_last_solved);
     // Pin to verified mast -- see `callbacks::setup_deep_solve_pin_callback`'s
-    // own doc comment; no visible button calls it yet (`editor_status_strip.slint`'s
-    // Deep Solve table still needs one).
+    // own doc comment; the per-tier pin control in `editor_status_strip.slint`'s
+    // Deep Solve table calls `EditorModel.pin_verified_mast`.
     callbacks::setup_deep_solve_pin_callback(
         ui,
         state,
@@ -598,8 +438,8 @@ fn setup_editor_tertiary_callbacks(
         solid_last_solved,
     );
     // Optimize Preview toggle -- see `callbacks::setup_optimize_preview_callback`'s
-    // own doc comment; no visible checkbox calls it yet (`editor_inspector.slint`'s
-    // Optimize tab still needs one).
+    // own doc comment; the Preview checkbox in `editor_inspector/optimize_tab.slint`
+    // calls `EditorModel.optimize_preview_toggled`.
     callbacks::setup_optimize_preview_callback(
         ui,
         state,
@@ -634,6 +474,15 @@ fn setup_editor_tertiary_callbacks(
         render_ctx,
         preview_state,
         solid_last_solved,
+    );
+    // The angle/depth/index drag handles on the selected facet, and the Snap pill.
+    manipulate::setup_manipulate_callbacks(
+        ui,
+        state,
+        render_ctx,
+        preview_state,
+        solid_last_solved,
+        solid_pick_state,
     );
 }
 
@@ -692,48 +541,54 @@ pub fn apply_matching_preview_frame(
     }
 }
 
-/// Builds the SAME 3D planes/gear-teeth/reference-angle for the catalogue-view
-/// route that the local load route shows. Uses the SAME [`indicatrix_cut_core::Design`]
-/// it loads (via [`loading::design_from_full_record`], then [`indicatrix_cut_core::Design::planes`]
-/// -- the exact pipeline [`state::design_to_gpu_planes`] already uses), instead of
-/// the catalogue route's `reconstruct_planes`, which never had access to a real
-/// `.asc` schedule and always hardcoded a `0.0` reference angle.
+/// Runs on the UI thread after every solid-preview frame has been stored (its pick
+/// buffer, [`SolidPickState::geometry`] and the pushed images); the manipulation
+/// handles refresh from here (see `manipulate::on_frame_landed`: a few `Mutex` reads
+/// and one cached `FacetMap`, never a rebuild per orbit frame).
 ///
-/// Returns plain [`indicatrix::geometry::GpuFacetPlane`]/`u32`/`f32` rather than a
-/// `Design` or a struct wrapping one, keeping `gui::library` decoupled from
-/// `indicatrix_cut_core::Design` at this boundary. `gui::library::detail` calls this
-/// directly -- see that call site's own doc comment -- with a `None` fallback to its
-/// existing placeholder reconstruction whenever this returns `Ok(None)` or `Err`.
+/// `generation` is the landed frame's own generation
+/// (`PreviewFrame::generation`): a frame of the COMMITTED design landing while a
+/// provisional slice is on screen has replaced the provisional picture, and the Slice
+/// tool re-renders it (or, when the design moved on, discards the slice).
 ///
-/// `Ok(None)` when a `Design` WAS resolved but has no valid `ScaleReference` anchor
-/// for `Design::planes()` to place its tiers against
-/// ([`indicatrix_cut_core::MissingAnchor`]) -- the caller falls back to its own
-/// placeholder reconstruction exactly as it would for an `Err`.
-///
-/// # Errors
-///
-/// Returns the same `Err` [`loading::design_from_full_record`] does: only when the
-/// record has neither a real attached `.asc` nor any angle-settings row to reconstruct
-/// even a placeholder schedule from.
-pub fn resolve_catalogue_planes(
-    full: &indicatrix_vault::model::entry::FullDiagramRecord,
-) -> Result<Option<(Vec<indicatrix::geometry::GpuFacetPlane>, u32, f32)>, String> {
-    let loaded = loading::design_from_full_record(full)?;
-    let Ok(halfspaces) = loaded.design.planes() else {
-        return Ok(None);
-    };
-    // Same sign-flip convention as `state::design_to_gpu_planes`/
-    // `auto_solve::design_to_gpu_planes_from_solved` (`GpuFacetPlane`'s `n . x + d = 0`
-    // vs. `planes()`'s `n . x <= m` half-space, `d = -m`).
-    let planes = halfspaces
-        .into_iter()
-        .map(|(normal, offset)| {
-            indicatrix::geometry::GpuFacetPlane::new(normal.as_vec3(), -offset as f32)
-        })
-        .collect();
-    Ok(Some((
-        planes,
-        loaded.design.meta.gear_teeth_abs(),
-        loaded.design.meta.gear_reference_angle as f32,
-    )))
+/// `pub` because its caller, `gui::solid_sink::SlintSolidSink::apply`, lives in `gui`,
+/// outside this module.
+pub fn on_solid_frame_landed(ui: &MainWindow, generation: u64) {
+    manipulate::on_frame_landed(ui, generation);
 }
+
+/// Whether a solid-preview frame stamped `generation` describes the COMMITTED design
+/// and so may update `solid_last_solved`, the tier table and the path tracer's planes.
+/// `false` only for the Slice tool's reserved provisional generation
+/// (`manipulate::PROVISIONAL_GENERATION`): such a frame shows a design that is not
+/// (yet) the committed one.
+///
+/// `pub` because `gui::solid_sink::SlintSolidSink::apply` lives outside this module.
+#[must_use]
+pub const fn frame_updates_mast_cache(generation: u64) -> bool {
+    manipulate::frame_updates_mast_cache(generation)
+}
+
+/// Hands the Slice tool the solved masts of a provisional-generation frame -- the sink
+/// keeps them out of `solid_last_solved`, but the provisional tier's outline and handles
+/// need them. A no-op without a provisional slice.
+///
+/// `pub` because `gui::solid_sink::SlintSolidSink::apply` lives outside this module.
+pub fn note_provisional_frame_masts(masts: Vec<SolvedTier>) {
+    manipulate::note_provisional_masts(masts);
+}
+
+/// Hands the Slice tool the plane arrangement a provisional-generation frame was drawn
+/// from, so later camera / view-mode / background-solve redraws (which reproject the
+/// committed planes) keep drawing the provisional facet. A no-op without a provisional
+/// slice, and for planes that do not match the provisional design.
+///
+/// `pub` because `gui::solid_sink::SlintSolidSink::apply` lives outside this module.
+pub fn note_provisional_frame_planes(planes: &[(glam::Vec3, f32)]) {
+    manipulate::note_provisional_planes(planes);
+}
+
+// The one resolution of a catalogue record's facet planes (design file first, angle
+// table as the fallback) -- the detail view's 3D preview and both batch engines
+// call it. See `loading::catalogue_planes`' own module doc comment.
+pub use loading::{CataloguePlanesSource, resolve_catalogue_planes};

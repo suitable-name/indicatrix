@@ -4,7 +4,77 @@
 
 use super::types::DisplayFilters;
 use crate::model::filter::RangeFilter;
+use rusqlite::functions::FunctionFlags;
 use std::fmt::Write as _;
+
+/// Registers the `fold(text)` SQL scalar function [`build_search_predicate`]'s title/
+/// designer `LIKE` clauses wrap both sides in (see [`fold`]'s own doc comment for what
+/// it does and why). Must be called exactly once per [`rusqlite::Connection`], right
+/// after it's opened -- both [`crate::db::sqlite::Database::new`] and
+/// [`crate::db::sqlite::Database::open_read_only`] call this, since search runs over
+/// read-only connections too (e.g. `indicatrix-worker`'s per-request connection). A
+/// `SELECT` naming `fold(...)` on a connection this was never called on fails outright
+/// ("no such function: fold"), never silently falling back to an unfolded comparison.
+///
+/// # Errors
+///
+/// Returns an error if `rusqlite::Connection::create_scalar_function` fails.
+pub(in crate::db::sqlite) fn register_fold_function(
+    conn: &rusqlite::Connection,
+) -> anyhow::Result<()> {
+    conn.create_scalar_function(
+        "fold",
+        1,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC,
+        |ctx| {
+            // `dd.designer_info`/`dd.designer` are nullable columns (and the `LEFT
+            // JOIN` to `dd` itself can produce a NULL row), so `fold(...)` must accept
+            // SQL NULL as an ordinary input, not just a `String` -- `ctx.get::<String>`
+            // errors out on a NULL argument ("Invalid function parameter type Null"),
+            // which used to abort the ENTIRE search query (not just that one row) the
+            // moment it reached a design with no `designer_info`/`designer` recorded.
+            // `NULL` propagates to `NULL` here, exactly like SQLite's own `LIKE`
+            // already treats a NULL operand -- "no match", never an error.
+            let text = ctx.get::<Option<String>>(0)?;
+            Ok(text.map(|t| fold(&t)))
+        },
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to register the fold() SQL function: {e}"))
+}
+
+/// Folds `text` for a typography-/case-insensitive `LIKE` comparison:
+///
+/// - Lowercases, Unicode-aware (not just ASCII) -- SQLite's own `LIKE` only case-folds
+///   ASCII `A-Z`/`a-z`, so e.g. `"TORBJÖRN"` and `"torbjörn"` compare UNEQUAL through a
+///   plain `LIKE`, even though a human reading the catalogue considers them the same
+///   name.
+/// - Maps the curly-quote/dash Unicode punctuation a scraped web page (or a word
+///   processor) commonly substitutes for the plain ASCII character a user types into a
+///   search box: U+2018/U+2019 (`'`/`'`) -> `'`, U+201C/U+201D (`"`/`"`) -> `"`,
+///   U+2013/U+2014 (`-`/`—`) -> `-`. So a plain `"Cam's"` typed in the search box finds
+///   a designer name scraped with a real typographic apostrophe (`"Cam’s"`).
+///
+/// Deliberately NOT full Unicode normalization (no NFKC): this is a small, fixed,
+/// auditable substitution list sized to the punctuation this catalogue actually has
+/// trouble with, not a general text-folding library. None of the six substituted
+/// characters, nor lowercasing, touches `%`/`_`/`\` -- the `LIKE` wildcards and
+/// `ESCAPE '\'` escape character [`escape_like_pattern`] relies on all survive folding
+/// untouched, since [`register_fold_function`]'s SQL function is applied to both the
+/// column and the bound pattern.
+#[must_use]
+pub(super) fn fold(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        let mapped = match ch {
+            '\u{2018}' | '\u{2019}' => '\'',
+            '\u{201c}' | '\u{201d}' => '"',
+            '\u{2013}' | '\u{2014}' => '-',
+            other => other,
+        };
+        out.extend(mapped.to_lowercase());
+    }
+    out
+}
 
 /// Builds the `SELECT ... WHERE ...` predicate (everything through the last filter
 /// clause, not `ORDER BY`/`LIMIT`) shared by
@@ -81,12 +151,32 @@ pub(super) fn build_search_predicate(
         // so matching it needs an `EXISTS` subquery rather than a plain joined
         // column, which would otherwise duplicate a design once per matching tier.
         //
+        // `dd.designer` (the machine-split designer name -- see `FacetingDiagramDetail::designer`'s
+        // doc comment) is matched here too, not just `dd.designer_info`: before this,
+        // a query that only appeared in the split `designer` column (never in the
+        // free-text `designer_info` blob it was split from) silently matched nothing
+        // -- the "Cam's finds nothing" case was exactly a `designer_info` miss with
+        // no `designer` fallback.
+        //
+        // `de.title`/`dd.designer_info`/`dd.designer` are wrapped in `fold(...)` on
+        // BOTH sides (column and `?1` pattern) -- see `fold`'s own doc comment: SQLite's
+        // `LIKE` only case-folds ASCII, so an accented name typed in a different case
+        // (`TORBJÖRN` vs `torbjörn`) would otherwise never match, and a plain ASCII
+        // apostrophe typed by the user would never match a scraped typographic one.
+        // `de.design_id`/the notes `EXISTS` subquery are deliberately NOT folded: an id
+        // is an exact scraped token, not prose, and notes text has no reported
+        // apostrophe/case complaint to fix -- folding it would only add cost with no
+        // known benefit.
+        //
         // `ESCAPE '\'` on every LIKE here, paired with `escape_like_pattern` above:
         // without it, a literal `%`/`_` a user typed (both appear in real titles and
         // designer names) is read as a SQL wildcard instead of the character it looks
-        // like -- an unescaped `_` alone matches every row's title.
+        // like -- an unescaped `_` alone matches every row's title. `fold` never
+        // touches `%`/`_`/`\`, so the escape still works after folding.
         sql.push_str(
-            " AND (de.title LIKE ?1 ESCAPE '\\' OR dd.designer_info LIKE ?1 ESCAPE '\\'
+            " AND (fold(de.title) LIKE fold(?1) ESCAPE '\\'
+                   OR fold(dd.designer_info) LIKE fold(?1) ESCAPE '\\'
+                   OR fold(dd.designer) LIKE fold(?1) ESCAPE '\\'
                    OR de.design_id LIKE ?1 ESCAPE '\\'
                    OR EXISTS (
                        SELECT 1 FROM angle_settings a

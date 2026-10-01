@@ -1,0 +1,398 @@
+import { Theme } from "../../theme.slint";
+import { LineEdit, ComboBox } from "std-widgets.slint";
+import { RoughPlanModel, RoughCutRow } from "../../models/rough_plan.slint";
+import { RoughPill } from "fields.slint";
+
+// Compact field for cut parameters that reports edits directly. The incoming
+// `text` is pushed into the `LineEdit` again on every change: once the user has
+// typed, the `LineEdit` no longer follows a plain binding, so without this a
+// value pushed from Rust (undo, default setbacks, a shape-worker echo) would not
+// show.
+component CutParamField inherits VerticalLayout {
+    in property <string> label;
+    in property <string> text;
+    in property <bool> editable: true;
+    // The field of a cut that was just added takes the keyboard focus when it appears,
+    // so the default value can be typed over at once.
+    in property <bool> autofocus: false;
+    callback edited(string);
+    callback committed();
+    // The field took keyboard focus: its owner selects the row.
+    callback focused();
+    // The field took the keyboard focus because its cut was just added.
+    callback autofocused();
+
+    // Set by a keystroke, cleared by the commit, so Enter followed by the focus
+    // loss it causes reports one edit, not two.
+    property <bool> dirty: false;
+
+    horizontal-stretch: 1;
+    spacing: 2px;
+
+    init => {
+        if root.autofocus {
+            field.focus();
+            field.select-all();
+            root.autofocused();
+            RoughPlanModel.focus_cut_row = -1;
+        }
+    }
+
+    changed text => {
+        field.text = root.text;
+        root.dirty = false;
+    }
+
+    Text {
+        text: root.label;
+        font-size: 10px;
+        color: Theme.text-muted;
+    }
+    field := LineEdit {
+        min-width: 0px;
+        text: root.text;
+        enabled: root.editable;
+        edited(t) => {
+            root.dirty = true;
+            root.edited(t);
+        }
+        accepted => {
+            if root.dirty {
+                root.dirty = false;
+                root.committed();
+            }
+        }
+        changed has-focus => {
+            if self.has-focus {
+                root.focused();
+            } else if root.dirty {
+                root.dirty = false;
+                root.committed();
+            }
+        }
+    }
+}
+
+// The edge or corner picker of a cut row. The incoming `index` is pushed into the
+// combo box again on every change, for the same reason as `CutParamField`.
+component FaceCombo inherits VerticalLayout {
+    in property <[string]> options;
+    in property <int> index;
+    in property <bool> editable: true;
+    callback picked(int);
+
+    changed index => { combo.current-index = root.index; }
+
+    combo := ComboBox {
+        min-width: 0px;
+        model: root.options;
+        current-index: root.index;
+        enabled: root.editable;
+        selected(value) => { root.picked(self.current-index); }
+    }
+}
+
+// One cut row in the shape section
+component CutRowItem inherits Rectangle {
+    in property <RoughCutRow> cut;
+    in property <int> index;
+    in property <bool> is_selected;
+    callback selected();
+    callback remove();
+    // The row was just added and is laid out: its window position and height, so the
+    // scrolling list around it can bring it into view.
+    callback revealed(length, length);
+
+    // Editing a field of a row selects the row, as a click on it does.
+    function select_row() {
+        if RoughPlanModel.selected_cut != root.index {
+            RoughPlanModel.selected_cut = root.index;
+            RoughPlanModel.cut_selected(root.index);
+        }
+    }
+
+    // Set when a field of this row takes focus because the row is new; the timer
+    // reports the row's position once the layout has placed it.
+    property <bool> reveal_pending: false;
+
+    background: root.is_selected ? Theme.surface-raised : Theme.bg-card;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: root.is_selected ? Theme.accent-cyan : Theme.border-subtle;
+
+    Timer {
+        interval: 40ms;
+        running: root.reveal_pending;
+        triggered => {
+            root.reveal_pending = false;
+            root.revealed(root.absolute-position.y, root.height);
+        }
+    }
+
+    // Declared first, so it sits under the fields and buttons and only receives
+    // the clicks they do not handle.
+    TouchArea {
+        clicked => { root.selected(); }
+    }
+
+    VerticalLayout {
+        padding: 6px;
+        spacing: 4px;
+
+        // Row header: title and delete button
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: center;
+
+            Text {
+                horizontal-stretch: 1;
+                text: (root.index + 1) + ". " + root.cut.title;
+                font-size: 11px;
+                font-weight: 700;
+                color: root.is_selected ? Theme.accent-cyan : Theme.text-primary;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            // Deleting edits the model, which a running plan is using.
+            Rectangle {
+                width: 18px;
+                height: 18px;
+                border-radius: Theme.radius-sm;
+                background: RoughPlanModel.running ? Theme.surface-disabled
+                    : (del_touch.has-hover ? Theme.danger-surface-hover : Theme.danger-surface);
+                border-width: 1px;
+                border-color: RoughPlanModel.running ? Theme.border-subtle : Theme.danger-border;
+
+                Text {
+                    text: "\u{00D7}";
+                    font-size: 12px;
+                    font-weight: 700;
+                    color: RoughPlanModel.running ? Theme.text-disabled : Theme.danger;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+
+                del_touch := TouchArea {
+                    enabled: !RoughPlanModel.running;
+                    mouse-cursor: self.enabled ? pointer : default;
+                    clicked => { root.remove(); }
+                }
+            }
+        }
+
+        // A note on the cut itself (a vertical face ignores its azimuth)
+        if root.cut.hint != "": Text {
+            text: root.cut.hint;
+            font-size: 11px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+
+        // Which edge or corner the cut sits on (faces have a direction instead)
+        if root.cut.kind != 2: FaceCombo {
+            options: root.cut.kind == 0 ? RoughPlanModel.edge_options : RoughPlanModel.corner_options;
+            index: root.cut.face_index;
+            editable: !RoughPlanModel.running;
+            picked(i) => {
+                RoughPlanModel.selected_cut = root.index;
+                RoughPlanModel.cut_faces_changed(root.index, i);
+            }
+        }
+
+        // Row fields depending on cut kind (0 edge, 1 corner, 2 face)
+        if root.cut.kind == 0: HorizontalLayout {
+            spacing: 6px;
+            CutParamField {
+                label: "Setback A (mm)";
+                autofocus: RoughPlanModel.focus_cut_row == root.index;
+                autofocused => { root.reveal_pending = true; }
+                text: root.cut.a;
+                editable: !RoughPlanModel.running;
+                edited(t) => { RoughPlanModel.cut_field_edited(root.index, 0, t); }
+                committed => { RoughPlanModel.cut_field_committed(root.index); }
+                focused => { root.select_row(); }
+            }
+            CutParamField {
+                label: "Setback B (mm)";
+                text: root.cut.b;
+                editable: !RoughPlanModel.running;
+                edited(t) => { RoughPlanModel.cut_field_edited(root.index, 1, t); }
+                committed => { RoughPlanModel.cut_field_committed(root.index); }
+                focused => { root.select_row(); }
+            }
+        }
+
+        if root.cut.kind == 1: HorizontalLayout {
+            spacing: 6px;
+            CutParamField {
+                label: "Setback A (mm)";
+                autofocus: RoughPlanModel.focus_cut_row == root.index;
+                autofocused => { root.reveal_pending = true; }
+                text: root.cut.a;
+                editable: !RoughPlanModel.running;
+                edited(t) => { RoughPlanModel.cut_field_edited(root.index, 0, t); }
+                committed => { RoughPlanModel.cut_field_committed(root.index); }
+                focused => { root.select_row(); }
+            }
+            CutParamField {
+                label: "Setback B (mm)";
+                text: root.cut.b;
+                editable: !RoughPlanModel.running;
+                edited(t) => { RoughPlanModel.cut_field_edited(root.index, 1, t); }
+                committed => { RoughPlanModel.cut_field_committed(root.index); }
+                focused => { root.select_row(); }
+            }
+            CutParamField {
+                label: "Setback C (mm)";
+                text: root.cut.c;
+                editable: !RoughPlanModel.running;
+                edited(t) => { RoughPlanModel.cut_field_edited(root.index, 2, t); }
+                committed => { RoughPlanModel.cut_field_committed(root.index); }
+                focused => { root.select_row(); }
+            }
+        }
+
+        if root.cut.kind == 2: HorizontalLayout {
+            spacing: 6px;
+            CutParamField {
+                label: "Azimuth (\u{00B0})";
+                autofocus: RoughPlanModel.focus_cut_row == root.index;
+                autofocused => { root.reveal_pending = true; }
+                text: root.cut.azimuth;
+                editable: !RoughPlanModel.running;
+                edited(t) => { RoughPlanModel.cut_field_edited(root.index, 3, t); }
+                committed => { RoughPlanModel.cut_field_committed(root.index); }
+                focused => { root.select_row(); }
+            }
+            CutParamField {
+                label: "Elevation (\u{00B0})";
+                text: root.cut.elevation;
+                editable: !RoughPlanModel.running;
+                edited(t) => { RoughPlanModel.cut_field_edited(root.index, 4, t); }
+                committed => { RoughPlanModel.cut_field_committed(root.index); }
+                focused => { root.select_row(); }
+            }
+            CutParamField {
+                label: "Depth (mm)";
+                text: root.cut.depth;
+                editable: !RoughPlanModel.running;
+                edited(t) => { RoughPlanModel.cut_field_edited(root.index, 5, t); }
+                committed => { RoughPlanModel.cut_field_committed(root.index); }
+                focused => { root.select_row(); }
+            }
+        }
+
+        if root.cut.removed_text != "": Text {
+            text: root.cut.removed_text;
+            font-size: 10px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+
+        if root.cut.error != "": Text {
+            text: root.cut.error;
+            font-size: 10px;
+            color: Theme.danger;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// Shape section: undo/redo, cut creation buttons, list of cut rows
+export component CutList inherits VerticalLayout {
+    // A cut row that was just added reports where it sits (window position, height)
+    // once laid out; the scroll view that holds this list scrolls it into view.
+    callback reveal_row(length, length);
+
+    spacing: 8px;
+
+    // Header with Undo / Redo
+    HorizontalLayout {
+        spacing: 6px;
+        alignment: center;
+
+        Text {
+            horizontal-stretch: 1;
+            text: "SHAPE";
+            font-size: 11px;
+            font-weight: 700;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+        }
+
+        // Every model edit is locked while a plan runs (the plan works on a snapshot,
+        // and the window keeps showing the model it is planning).
+        RoughPill {
+            text: "Undo";
+            enabled: RoughPlanModel.can_undo && !RoughPlanModel.running;
+            clicked => { RoughPlanModel.undo_shape(); }
+        }
+        RoughPill {
+            text: "Redo";
+            enabled: RoughPlanModel.can_redo && !RoughPlanModel.running;
+            clicked => { RoughPlanModel.redo_shape(); }
+        }
+    }
+
+    // Add buttons
+    HorizontalLayout {
+        spacing: 4px;
+        alignment: start;
+
+        RoughPill {
+            text: "+Edge";
+            enabled: RoughPlanModel.base_kind == 0 && !RoughPlanModel.running;
+            clicked => { RoughPlanModel.add_cut(0); }
+        }
+        RoughPill {
+            text: "+Corner";
+            enabled: RoughPlanModel.base_kind == 0 && !RoughPlanModel.running;
+            clicked => { RoughPlanModel.add_cut(1); }
+        }
+        RoughPill {
+            text: "+Face";
+            active: true;
+            enabled: !RoughPlanModel.running;
+            clicked => { RoughPlanModel.add_cut(2); }
+        }
+        RoughPill {
+            text: "Face from view";
+            active: RoughPlanModel.face_from_view_armed;
+            // It picks a face of the rough in the model view; the result view shows
+            // the stones instead. An armed pick can still be switched off there.
+            enabled: !RoughPlanModel.running
+                && (RoughPlanModel.view_mode == 0 || RoughPlanModel.face_from_view_armed);
+            clicked => {
+                RoughPlanModel.face_from_view_armed = !RoughPlanModel.face_from_view_armed;
+            }
+        }
+    }
+
+    if RoughPlanModel.base_kind != 0: Text {
+        text: "Edge and corner cuts need a block";
+        font-size: 10px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+
+    // Cut rows
+    for cut[index] in RoughPlanModel.cuts: CutRowItem {
+        cut: cut;
+        index: index;
+        is_selected: RoughPlanModel.selected_cut == index;
+        selected => {
+            RoughPlanModel.selected_cut = index;
+            RoughPlanModel.cut_selected(index);
+        }
+        remove => { RoughPlanModel.remove_cut(index); }
+        revealed(row_y, row_height) => { root.reveal_row(row_y, row_height); }
+    }
+
+    if RoughPlanModel.cuts.length == 0: Text {
+        text: "No cuts yet. Cut edges or corners, or click faces in the 3D view.";
+        font-size: 10px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+}

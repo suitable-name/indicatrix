@@ -1,0 +1,140 @@
+import { Button, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// One section of the user guide.
+export struct GuideSectionText {
+    heading: string,
+    body: string,
+}
+
+// Whether the user guide (Help > User guide) is open, and its text. The text is plain,
+// short and specific to the browser build; the guided walkthrough (Help > Guided
+// walkthrough) is the hands-on introduction, this is the reference card.
+export global UserGuideModel {
+    in-out property <bool> open: false;
+
+    out property <[GuideSectionText]> sections: [
+        {
+            heading: "Start a design",
+            body: "File > New Design starts from Empty or one of five built-in templates. File > Open (or dropping files on the page) reads .asc files, a native pair (.asc plus .indicatrix.toml, opened together), a single .indicatrix.toml, and GemCAD .gem / .gcs files. Help > Guided walkthrough builds a stone step by step.",
+        },
+        {
+            heading: "Edit in the Design dock",
+            body: "The tier table lists every tier: double-click an angle to edit it (Enter applies), Ctrl+wheel nudges it, and the buttons above the table add, delete, mirror and complete tiers. The inspector below it has four tabs: Tier (the selected tier's form and facets), Preform (the starting rough, proportions and yield), Optimize (a coordinate search for the best angles) and Schedule (the cutting instructions). Design > Design settings changes the material, index gear, symmetry and printed proportions. Ctrl+Z / Ctrl+Y undo and redo.",
+        },
+        {
+            heading: "Solve",
+            body: "A design is solved before it can be shown: press Solve or F5. With Auto set to a time budget, an edit re-solves by itself while this design solves faster than the budget. Big designs solve in a background worker, so the page stays usable.",
+        },
+        {
+            heading: "Render, Solid and Diagram",
+            body: "Render traces the stone's light path on your CPU cores, adds samples until the target is reached, then denoises the result. Drag to orbit; the settings panel sets exposure, light, backdrop, bounces and an optional .hdr environment map. The numbers at the bottom left are the stone's brilliance, fire, scintillation, windowing and extinction for the pose on screen, and the Tilt Curve button plots them against tilt. Solid shows the flat-shaded stone and Diagram the crown, pavilion and profile drawings; click a facet to select its tier, double-click a diagram panel to enlarge it. In a small window the Diagram tab opens on the Crown panel alone (so its labels stay readable); click the highlighted panel button again for all three.",
+        },
+        {
+            heading: "Change the stone with the mouse",
+            body: "In the Solid tab, select a facet: three handles appear. Drag A to tilt the tier, D to move it in or out, I to turn it around the index wheel. Shift snaps finely, Esc cancels, and one drag is one undo step. The Slice button (or S) cuts a new facet along a line you draw; Enter keeps it, Esc drops it, F cuts the other side.",
+        },
+        {
+            heading: "Save and export",
+            body: "Nothing is uploaded. Save .asc, Save native pair and Save native only download files through your browser; Ctrl+S saves the pair. File > Export PNG renders a still at a chosen size (up to 4096 px) and colour space. The cutting sheet (HTML) and the diagram (PNG) download as well. Save the native pair to keep everything, including the design's history and a custom material.",
+        },
+        {
+            heading: "What the browser remembers",
+            body: "Your settings, the current design and the walkthrough's place are kept in this tab's session storage, so a reload brings them back. Closing the tab forgets them; download the design first. Private windows may block storage, in which case the app simply starts empty.",
+        },
+        {
+            heading: "Limits",
+            body: "Rendering runs on the CPU, so it is slower than the desktop app's GPU renderer; a few hundred samples take a while on a laptop. Environment maps are limited to 64 MiB and 8192 x 4096 texels. Not in the browser build: the design library, remote rendering, Deep Solve and GPU rendering. Use a current Chrome, Edge, Firefox or Safari.",
+        },
+    ];
+
+    public function close() {
+        root.open = false;
+    }
+}
+
+// The user guide dialog; mounted by `app.slint` while `UserGuideModel.open`. Escape, the
+// Close button and a click outside the card close it; other keys are swallowed so the
+// global shortcuts cannot act on the design underneath, and Tab reaches the button.
+export component UserGuideDialog inherits Rectangle {
+    background: Theme.overlay-backdrop;
+
+    TouchArea {
+        clicked => { UserGuideModel.close(); }
+    }
+
+    FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                UserGuideModel.close();
+                return accept;
+            } else if event.text == Key.Tab {
+                return reject;
+            }
+            accept
+        }
+    }
+
+    Rectangle {
+        width: min(560px, root.width - 24px);
+        height: min(600px, root.height - 24px);
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        background: Theme.bg-card;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-medium;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.toast-shadow;
+        clip: true;
+
+        TouchArea {}
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+
+            Text {
+                text: "User guide";
+                font-size: 14px;
+                font-weight: 700;
+                color: Theme.text-primary;
+            }
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    spacing: 10px;
+                    for section in UserGuideModel.sections: VerticalLayout {
+                        spacing: 3px;
+                        Text {
+                            text: section.heading;
+                            font-size: 12px;
+                            font-weight: 700;
+                            color: Theme.accent-cyan;
+                        }
+                        Text {
+                            text: section.body;
+                            font-size: 11px;
+                            color: Theme.text-secondary;
+                            wrap: word-wrap;
+                        }
+                    }
+                    Text {
+                        text: "Press ? for the keyboard shortcuts.";
+                        font-size: 10px;
+                        color: Theme.text-muted;
+                    }
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                Button {
+                    text: "Close";
+                    primary: true;
+                    clicked => { UserGuideModel.close(); }
+                }
+            }
+        }
+    }
+}

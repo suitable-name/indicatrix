@@ -42,12 +42,14 @@
 //! content across it). [`SpecificGravity::representative`] is always the midpoint of
 //! the cited spread, not a blind average of the family's theoretical extremes.
 //!
-//! There is no "Garnet" preset at all: `GemMaterial::all_materials` covers thirteen
-//! named species only, and adding an SG row with no corresponding optical entry would
-//! let a material picker offer a species it can never actually render.
+//! The SG table covers fourteen species (Rutile, the synthetic reference material, has
+//! its own row), a subset of `GemMaterial::all_materials`: the optical list also holds
+//! species (the individual garnets among them) that have no SG row yet. There is no
+//! generic "Garnet" preset, and an SG row with no corresponding optical entry would let
+//! a material picker offer a species it can never actually render.
 //! [`MaterialSelection::specific_gravity_override`] exists precisely so a user cutting
-//! a species this table has no entry for (garnet included) can type their own
-//! specimen's known or estimated SG directly.
+//! a species this table has no entry for can type their own specimen's known or
+//! estimated SG directly.
 
 mod catalogue;
 mod selection;
@@ -59,6 +61,6 @@ mod tests;
 pub use catalogue::{MaterialCatalogue, MaterialEntry, MaterialKind};
 pub use selection::{
     BuiltinMaterials, MaterialLookup, MaterialSelection, ResolvedMaterial,
-    built_in_refractive_index,
+    built_in_material_by_exact_name, built_in_refractive_index,
 };
 pub use specific_gravity::{SpecificGravity, built_in_specific_gravity};

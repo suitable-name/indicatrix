@@ -31,17 +31,16 @@ use indicatrix::{
     optics::{
         materials::GemMaterial,
         raytracer::{
-            BACKDROP_GREY, Camera, EnvironmentSource, LightingPreset, build_plane_soa, hash_u32,
-            trace_spectral_ray_with_finish_soa, xyz_to_srgb_gamma,
+            BACKDROP_GREY, Camera, DEFAULT_FOV_DEG, EnvironmentSource, LightingPreset,
+            build_plane_soa, hash_u32, trace_spectral_ray_with_finish_soa, xyz_to_srgb_gamma,
         },
     },
 };
 use std::f32::consts::FRAC_PI_2;
 
 const MAX_BOUNCES: u32 = 12;
-/// The editor's own field of view and default camera distance, so the gallery matches
-/// what the Live Render tab shows.
-const FOV_DEG: f32 = 42.0;
+/// The editor's own default camera distance (with [`DEFAULT_FOV_DEG`] as its field of
+/// view), so the gallery matches what the Live Render tab shows.
 const CAMERA_DISTANCE: f32 = 2.4;
 /// The editor's default key-light pose (azimuth / elevation in degrees).
 const DEFAULT_LIGHT_YAW_DEG: f32 = 48.0;
@@ -101,7 +100,12 @@ impl Shot {
     }
 
     fn camera(&self) -> Camera {
-        Camera::new(self.view.yaw, self.view.pitch, CAMERA_DISTANCE, FOV_DEG)
+        Camera::new(
+            self.view.yaw,
+            self.view.pitch,
+            CAMERA_DISTANCE,
+            DEFAULT_FOV_DEG,
+        )
     }
 
     /// The scene's environment, with `GemRay`'s grey card behind the stone so the

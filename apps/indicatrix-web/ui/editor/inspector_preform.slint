@@ -1,0 +1,139 @@
+import { Button, ComboBox, LineEdit } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { AppModel } from "../models/app_model.slint";
+import { GuideModel } from "../models/guide_model.slint";
+import { InspectorModel, Verdict } from "inspector_model.slint";
+import { DesignSettingsModel } from "design_settings.slint";
+import { Divider, FieldLabel, InfoLine, MaterialGuessBadge, SectionTitle, VerdictChip } from "inspector_widgets.slint";
+
+// One proportion figure with its verdict chip; the verdict's reason is shown beneath it
+// when the figure is near or outside its window.
+component FigureRow inherits VerticalLayout {
+    in property <string> text;
+    in property <Verdict> verdict;
+    spacing: 1px;
+    HorizontalLayout {
+        spacing: 6px;
+        InfoLine { horizontal-stretch: 1; text: root.text; }
+        VerdictChip { level: root.verdict.level; }
+    }
+    if root.verdict.level >= 1 && root.verdict.reason != "": Text {
+        text: root.verdict.reason;
+        font-size: 9px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+}
+
+// The Preform tab (modelled on the desktop's `editor_inspector/preform_tab.slint`): the
+// starting rough, the read-only proportions with their verdicts, and the real-unit yield
+// inputs and results.
+export component PreformTab inherits VerticalLayout {
+    spacing: 8px;
+
+    SectionTitle { text: "Preform"; }
+    ComboBox {
+        model: ["Block", "Cylinder"];
+        current-index <=> InspectorModel.preform-shape-index;
+        selected => { InspectorModel.preform-pending = true; }
+    }
+    FieldLabel { text: "Half-width (model units, girdle half-width = 1)"; }
+    LineEdit {
+        text <=> InspectorModel.preform-half-width;
+        edited => { InspectorModel.preform-pending = true; }
+        changed has-focus => { AppModel.text-focus = self.has-focus; }
+    }
+    if InspectorModel.readout.half-width-mm != "": Text { text: InspectorModel.readout.half-width-mm; font-size: 9px; color: Theme.text-muted; }
+    FieldLabel { text: "Length / width (ratio)"; }
+    LineEdit {
+        text <=> InspectorModel.preform-length-over-width;
+        edited => { InspectorModel.preform-pending = true; }
+        changed has-focus => { AppModel.text-focus = self.has-focus; }
+    }
+    FieldLabel { text: "Depth (model units, girdle half-width = 1)"; }
+    LineEdit {
+        text <=> InspectorModel.preform-depth;
+        edited => { InspectorModel.preform-pending = true; }
+        changed has-focus => { AppModel.text-focus = self.has-focus; }
+    }
+    if InspectorModel.readout.depth-mm != "": Text { text: InspectorModel.readout.depth-mm; font-size: 9px; color: Theme.text-muted; }
+    FieldLabel { text: "Girdle Y-offset (mm; positive moves the girdle plane toward the crown)"; }
+    LineEdit {
+        text <=> InspectorModel.preform-y-offset-mm;
+        edited => { InspectorModel.preform-pending = true; }
+        changed has-focus => { AppModel.text-focus = self.has-focus; }
+    }
+    Button {
+        text: InspectorModel.preform-pending ? "Apply Preform *" : "Apply Preform";
+        enabled: GuideModel.allows-preform-tab();
+        primary: InspectorModel.preform-pending;
+        clicked => { InspectorModel.apply-preform(); }
+    }
+
+    Divider {}
+
+    // The figures every faceter checks first, from the last solve; "-" whenever the
+    // design does not solve or close.
+    SectionTitle { text: "Proportions"; }
+    FigureRow {
+        text: "Table: " + InspectorModel.readout.table-pct + "    L/W: " + InspectorModel.readout.length-to-width;
+        verdict: InspectorModel.verdicts.table;
+    }
+    InfoLine { text: "Crown height: " + InspectorModel.readout.crown-height; }
+    InfoLine { text: "Pavilion depth: " + InspectorModel.readout.pavilion-depth; }
+    FigureRow {
+        text: "Crown angle (main facet): " + (InspectorModel.verdicts.crown-angle.level >= 0 ? "estimated from schedule" : "-");
+        verdict: InspectorModel.verdicts.crown-angle;
+    }
+    FigureRow {
+        text: "Pavilion angle (main facet): " + (InspectorModel.verdicts.pavilion-angle.level >= 0 ? "estimated from schedule" : "-");
+        verdict: InspectorModel.verdicts.pavilion-angle;
+    }
+    FigureRow {
+        text: "Total depth: " + InspectorModel.readout.total-depth;
+        verdict: InspectorModel.verdicts.total-depth;
+    }
+    InfoLine { text: "Girdle thickness: " + InspectorModel.readout.girdle-thickness; }
+    FigureRow {
+        text: "C/W: " + InspectorModel.readout.crown-to-width + "    P/W: " + InspectorModel.readout.pavilion-to-width + "    G/W: " + InspectorModel.readout.girdle-to-width;
+        verdict: InspectorModel.verdicts.girdle;
+    }
+
+    Divider {}
+
+    SectionTitle { text: "Yield"; }
+    InfoLine {
+        text: "Eff. RI " + (DesignSettingsModel.effective-ri-text == "" ? "-" : DesignSettingsModel.effective-ri-text) + ": " + DesignSettingsModel.ri-source-text;
+    }
+    MaterialGuessBadge {}
+    FieldLabel { text: "Girdle diameter (mm)"; }
+    LineEdit {
+        text <=> InspectorModel.girdle-diameter-mm;
+        placeholder-text: "unset";
+        edited => { InspectorModel.yield-pending = true; }
+        changed has-focus => { AppModel.text-focus = self.has-focus; }
+    }
+    FieldLabel { text: "Specific gravity override (carat estimate only)"; }
+    LineEdit {
+        text <=> InspectorModel.specific-gravity-override;
+        placeholder-text: "use material default";
+        edited => { InspectorModel.yield-pending = true; }
+        changed has-focus => { AppModel.text-focus = self.has-focus; }
+    }
+    Button {
+        text: InspectorModel.yield-pending ? "Apply Yield Inputs *" : "Apply Yield Inputs";
+        enabled: GuideModel.allows-preform-tab();
+        primary: InspectorModel.yield-pending;
+        clicked => { InspectorModel.apply-yield(); }
+    }
+    InfoLine { text: "Volumetric yield: " + (InspectorModel.readout.volumetric-yield == "" ? "-" : InspectorModel.readout.volumetric-yield); }
+    InfoLine { text: "Est. carat weight: " + (InspectorModel.readout.carat-weight == "" ? "-" : InspectorModel.readout.carat-weight); }
+    InfoLine { text: "Specific gravity used: " + (InspectorModel.readout.specific-gravity-used == "" ? "-" : InspectorModel.readout.specific-gravity-used); }
+    if InspectorModel.readout.preform-fit-warning != "": Text {
+        text: "\u{26A0} " + InspectorModel.readout.preform-fit-warning;
+        font-size: 10px;
+        font-weight: 700;
+        color: Theme.accent-amber;
+        wrap: word-wrap;
+    }
+}

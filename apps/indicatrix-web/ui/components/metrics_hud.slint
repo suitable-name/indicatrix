@@ -1,0 +1,98 @@
+import { Theme } from "theme.slint";
+import { MetricsModel } from "metrics_model.slint";
+
+// One "Label: value" pair of the HUD.
+component Stat inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <color> tint;
+    spacing: 4px;
+    Text {
+        text: root.label;
+        font-size: 11px;
+        font-weight: 600;
+        color: Theme.text-muted;
+        vertical-alignment: center;
+    }
+    Text {
+        text: root.value;
+        font-size: 11px;
+        font-weight: 700;
+        color: root.tint;
+        vertical-alignment: center;
+    }
+}
+
+// The desktop's "Real-Time 5-Point Gemological Metrics HUD" (`gem_viewport.slint`): the
+// same labels, units and thresholds -- Brilliance, Fire, Scintillation, Windowing (ruby
+// above 10%) and Extinction (amber above 12%). Sits over the Render tab; `compact` stacks
+// the five into two rows for a narrow view.
+export component MetricsHud inherits Rectangle {
+    in property <bool> compact: false;
+
+    opacity: MetricsModel.pending ? 0.55 : 1.0;
+    background: #0f172aee;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-medium;
+    width: hud.preferred-width;
+    height: hud.preferred-height;
+
+    hud := VerticalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 6px;
+        padding-bottom: 6px;
+        spacing: 3px;
+
+        if MetricsModel.has-metrics: HorizontalLayout {
+            spacing: 12px;
+            Stat { label: "Brilliance:"; value: Math.round(MetricsModel.brilliance-pct) + "%"; tint: Theme.accent-emerald; }
+            Stat { label: "Fire:"; value: "" + Math.round(MetricsModel.fire-index * 100.0) / 100.0; tint: Theme.accent-cyan; }
+            if !root.compact: Stat { label: "Scintillation:"; value: Math.round(MetricsModel.scintillation-pct) + "%"; tint: Theme.accent-purple; }
+            if !root.compact: Stat {
+                label: "Windowing:";
+                value: Math.round(MetricsModel.windowing-pct) + "%";
+                tint: MetricsModel.windowing-pct > 10.0 ? Theme.accent-ruby : Theme.text-secondary;
+            }
+            if !root.compact: Stat {
+                label: "Extinction:";
+                value: Math.round(MetricsModel.extinction-pct) + "%";
+                tint: MetricsModel.extinction-pct > 12.0 ? Theme.accent-amber : Theme.text-secondary;
+            }
+        }
+        // The compact layout is three rows (two, two and one): all five in two rows were
+        // ~340px of text, which ran past a 390px window's right edge and cut "Extinction" off.
+        if MetricsModel.has-metrics && root.compact: HorizontalLayout {
+            spacing: 12px;
+            Stat { label: "Scintillation:"; value: Math.round(MetricsModel.scintillation-pct) + "%"; tint: Theme.accent-purple; }
+            Stat {
+                label: "Windowing:";
+                value: Math.round(MetricsModel.windowing-pct) + "%";
+                tint: MetricsModel.windowing-pct > 10.0 ? Theme.accent-ruby : Theme.text-secondary;
+            }
+        }
+        if MetricsModel.has-metrics && root.compact: HorizontalLayout {
+            spacing: 12px;
+            Stat {
+                label: "Extinction:";
+                value: Math.round(MetricsModel.extinction-pct) + "%";
+                tint: MetricsModel.extinction-pct > 12.0 ? Theme.accent-amber : Theme.text-secondary;
+            }
+            // Keeps the lone stat at its own width instead of stretching label and value apart.
+            Rectangle { horizontal-stretch: 1; }
+        }
+        // What the numbers were scored under, when that is not the viewport's preset.
+        if MetricsModel.has-metrics && MetricsModel.scored-under-text != "": Text {
+            text: MetricsModel.scored-under-text;
+            font-size: 10px;
+            color: Theme.text-muted;
+            overflow: elide;
+        }
+        if !MetricsModel.has-metrics: Text {
+            text: MetricsModel.status-text;
+            font-size: 11px;
+            color: Theme.text-muted;
+        }
+    }
+}

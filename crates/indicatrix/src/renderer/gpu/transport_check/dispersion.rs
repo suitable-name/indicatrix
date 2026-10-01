@@ -4,6 +4,7 @@ use crate::{optics::dispersion::DispersionModel, renderer::gpu::compute};
 
 use super::{SHADER_SRC, UlpAccumulator, UlpCheckResult};
 
+/// One input case for the dispersion check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct DispersionCase {
@@ -83,6 +84,7 @@ fn build_dispersion_cases() -> Vec<(DispersionCase, DispersionModel)> {
     out
 }
 
+/// Runs the dispersion check against the CPU reference.
 #[must_use]
 pub fn run_dispersion(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<DispersionCase> {
     let with_models = build_dispersion_cases();

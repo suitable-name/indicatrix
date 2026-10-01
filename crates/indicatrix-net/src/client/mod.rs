@@ -21,8 +21,13 @@
 //!   deliberately NOT routed through [`session::run_client_session`]/[`Accumulator`]
 //!   since `TILT_CURVES` is a single request/response family, not a stream.
 
+/// The epoch-gated radiance sum -- see this module's "Modules" doc section.
 pub mod accumulate;
+/// `HELLO`/`WELCOME` and the client-side build-compatibility check -- see this module's
+/// "Modules" doc section.
 pub mod handshake;
+/// Wires a request write and its reply stream together -- see this module's "Modules"
+/// doc section.
 pub mod session;
 
 pub use accumulate::{Accumulator, ApplyOutcome, PictureSnapshot, PreviewSnapshot};
@@ -30,7 +35,7 @@ pub use handshake::{ConnectionInfo, handshake_with_hello, test_connection};
 pub use session::{SessionUpdate, run_client_session, send_cancel, send_library_request};
 #[cfg(feature = "render")]
 pub use session::{
-    recv_tilt_curves_response, send_asset, send_final_image_request, send_ping,
+    recv_tilt_curves_response, send_asset, send_contribution, send_final_image_request, send_ping,
     send_render_request, send_tilt_curves_request,
 };
 

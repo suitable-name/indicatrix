@@ -86,8 +86,9 @@ makes "never merge a stale partial into the next render" mechanical: a `CANCEL`
 can be in flight past a worker that's already mid-batch, so `FRAME`/`PREVIEW`
 payloads for the just-cancelled request may still arrive after it. The worker's
 side of this is the same cooperative pattern used elsewhere in this workspace
-(an atomic flag the tracer checks *between* sub-batches, never mid-batch): once
-observed, the tracer stops and the emitter discards whatever hasn't been sent
+(an atomic flag the tracer checks *between* sub-batches, never mid-sub-batch; the
+GPU path additionally checks it before every chunk it dispatches, several per
+sub-batch on a slow adapter): once observed, the tracer stops and the emitter discards whatever hasn't been sent
 yet rather than flushing it — `DONE { cancelled: true }` carries no further
 payload. A client pipelining its next `RenderRequest` ahead of a `DONE` for the
 current one is treated as an *implicit* cancel of the current one, immediately
@@ -189,6 +190,23 @@ A viewer's request is planned before anything is streamed (`job/plan.rs`):
   retired; when every lane is gone the viewer gets `ALL_WORKERS_LOST`. The job runs on
   a producer thread (`job/producer.rs`) feeding the same emitter the direct route uses.
 
+  **Rate book.** Each lane's measured rate lives in `RateBook`
+  (`coordinator::job::RateBook`), which is coordinator-**process**-wide
+  (`Coordinator::rates`), not rebuilt per viewer connection: a GUI export's
+  successive one-shot connections share one book, keyed by `LaneKey` (a joined
+  worker's certificate label when it has one, else its ephemeral registration id),
+  so a worker's calibrated rate survives both across those connections and across
+  the worker's own reconnects, instead of restarting from an 8-sample calibration
+  probe every chunk. Rates are stored pixel-normalized (samples/sec at a
+  reference pixel count) so a rate calibrated at one resolution still reads back
+  correctly at another. Chunk sizing is also tail-aware
+  (`indicatrix_dispatch::ChunkPolicy::tail_aware_samples`, driven from
+  `Epoch::want`): each lane's next chunk is the smaller of the plain
+  target-duration chunk and that lane's proportional share (by rate) of the run's
+  remaining samples, so a slow lane can no longer claim an oversized slice of what
+  is left and leave a fast joined worker idling for the whole of one chunk near
+  the end of a run.
+
 Which workers a job takes: an export-type request (`Batch` intent with
 `FinalOnly` transfer, and every `FINAL_IMAGE_REQUEST`) takes every idle worker whose
 `max_pixels` accepts the image (and, for an HDR scene, that advertises `hdr`). A
@@ -242,6 +260,23 @@ machine (or a device lost mid-run), `--only-cpu`, or an **HDR environment map to
 large** for the device's storage-buffer limit. HDR maps otherwise render on the GPU —
 the megakernel has its own environment mode for them.
 
+**Device loss.** A device that stops responding (or a renderer left unusable by
+a panic) is a decline like the others, for the request that hits it and for
+every request after it until the device comes back. The decline is clean: the
+GPU backend traces each request into its own scratch buffer and adds it to the
+worker's buffer only when the whole request completed, so a loss on a late turn
+leaves that buffer all-zero and the CPU tracer re-traces the full sample range
+without double counting what the GPU had already finished. Loss is not
+permanent. After a 30 s cool-down (measured from the loss, and again from each
+failed attempt) the next request acquires a fresh adapter and compiles a new
+renderer; if that succeeds the GPU serves again, otherwise the worker stays on
+the CPU tracer. At most 6 attempts start per hour, so a dead device is not
+hammered. A worker that found no adapter at start-up never retries. A joined
+worker recomputes the backend it advertises on every reconnect, giving a lost
+device its attempt first, so it re-registers as `Gpu` after a recovery and as
+`Cpu` while the GPU is down; a connection that stays up keeps the capability
+it registered with.
+
 Biaxial materials (Alexandrite, Topaz, Tanzanite) do **not** decline.
 The `BiaxialIndicatrix` machinery is ported to WGSL and verified at the same
 Tier 2 / Tier 3 bar as every other material, so `GemMaterial::gpu_supported()` is
@@ -250,8 +285,8 @@ unconditionally `true` — see that method's own doc comment, and
 decline list.
 
 `serve --render` tells the truth about which it is. `WELCOME.render.backend` reports
-`Backend::Gpu { adapter }` **only when an adapter was genuinely acquired at
-startup** — not merely when the feature was compiled in — and `Backend::Cpu`
+`Backend::Gpu { adapter }` **only when an adapter was genuinely acquired and is
+currently usable** — not merely when the feature was compiled in — and `Backend::Cpu`
 otherwise (a `join`ed worker reports the same in its `HELLO`; a coordinator with
 joined workers reports `Backend::Coordinator` with the summed threads and GPUs).
 Without `--render`, `serve` never acquires a GPU at all. Note this is a connection-level signal: the wire protocol carries no
@@ -281,10 +316,33 @@ cost to pay for itself. `render`'s single one-shot dispatch never calibrates at 
 `--only-gpu`/`Hybrid` (the default) behave identically there, both simply tracing
 through the plain GPU-preferred, CPU-fallback path.
 
+**Calibration is cached process-wide, not re-run per job.** `calibrate_cached`
+(`render_core::hybrid`) keys a `BTreeMap` cache by `JobKey` — GPU adapter identity,
+realized thread count, `ComputeMode`, and the scene's resolution rounded up to the
+enclosing power of two — and stores the DECISION (GPU-only, or a split seeded at a
+`gpu_frac`), not the raw measurement. The very first job matching a given resource
+profile pays the 3-sample probe (`calibrate`) and fills the cache; every later job on
+that same profile (another `RenderRequest`, another coordinator lane chunk, another
+live Direct request) skips the probe entirely and starts from the cached decision.
+In `Hybrid` mode with a GPU adapter present, `serve` and `join` already pay that probe
+once at start-up on a representative scene (`hybrid::calibrate_now`), so the first
+real request normally hits the cache too.
+Each job still re-measures its own split from there via the 0.7-old/0.3-new moving
+average above, and the job's own final blended `gpu_frac` is written back into the
+cache when it ends (`finalize_split_cache`), so the seed keeps improving across jobs.
+Deliberately not keyed on the scene's material/geometry/lighting or which samples are
+traced — those shift both engines' per-sample cost together, not their relative
+split, so a wrong guess there self-corrects within one job.
+
 **Cancellation latency is unchanged.** GPU dispatches ride the same adaptive
 `TARGET_SUBBATCH` (~100 ms) loop that already bounded the CPU tracer, with the
 cancel flag checked *between* sub-batches — a GPU dispatch is simply one more
-blocking way to produce one sub-batch, not a new latency class.
+blocking way to produce one sub-batch, not a new latency class. Inside a GPU
+sub-batch the flag is also checked before each chunk is dispatched (a chunk is
+sized to about 150 ms once the adapter has been timed, and a turn is two
+chunks), so a long sub-batch on a slow adapter stops sooner than the next
+sub-batch boundary. A cancelled or declined GPU sub-batch writes nothing into
+the worker's buffer; see "Device loss" above.
 
 **Why this is safe to mix with CPU workers.** A GPU worker's samples remain
 additively mergeable with a CPU viewer's: sample ranges stay disjoint and

@@ -108,10 +108,18 @@ How the remote's result travels back to you is a separate choice from
 - **Final picture only** — the remote renders the whole image, tone-maps
   and (live view) denoises it itself — with the same denoiser and tone curve
   this app uses — and sends finished pictures: far less data over a slow home
-  link, but your own CPU/GPU do not help with that image. Every current
-  coordinator offers this, whether it renders itself or through joined
-  workers. If a remote answers that it cannot, the app falls back to full
-  data once, with a note, and does not ask that remote again until you
+  link. For a still export or tilt video (not the live view), your own CPU/GPU
+  can still pitch in: **Final-picture exports: this machine renders a share
+  too**, in Rendering Settings next to Live Compute (on by default, greyed
+  out without a remote configured), has your computer trace a reserved tail
+  of the sample budget alongside the remote — but only when that export's
+  Compute choice is Local + Remote — and upload its share for the coordinator
+  to fold in before tone-mapping. If your share doesn't arrive in time, the
+  coordinator quietly renders that tail itself instead, so a slow or
+  interrupted local machine never stalls or breaks the export. Every current
+  coordinator offers Final picture only, whether it renders itself or through
+  joined workers. If a remote answers that it cannot, the app falls back to
+  full data once, with a note, and does not ask that remote again until you
   reconnect or re-save it.
 
 Either way the data is compressed losslessly on the wire when both sides
@@ -134,7 +142,7 @@ Where the choice lives:
 
 Click **Test connection**. While it runs, the button shows "Testing...".
 On success you'll see something like "Compatible -- coordinator (3
-workers) (protocol v14)" (or "CPU, 16 threads" / a GPU description for a
+workers) (protocol v16)" (or "CPU, 16 threads" / a GPU description for a
 coordinator that renders on its own with `--render` and has no workers
 joined yet, or "library only (no render capacity)" if the remote only
 serves the design library — a coordinator with no joined workers and no
@@ -172,7 +180,7 @@ The panel's **Library** row switches between **Local** and **Remote**:
   **Cancel mirror** button while it runs.
 
 While browsing a remote library, **Load Selected** (Chapter 3) fetches
-that design's original `.asc` cutting-schedule file straight from the
+that design's original `.asc` cutting-instructions file straight from the
 worker and loads it into the editor, the same as a local design — you no
 longer need to mirror it locally first just to open it for editing. This
 only works for a design that actually has a `.asc` file attached on the

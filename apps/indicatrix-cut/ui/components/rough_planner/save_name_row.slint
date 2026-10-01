@@ -1,0 +1,61 @@
+import { Theme } from "../../theme.slint";
+import { LineEdit } from "std-widgets.slint";
+import { RoughPlanModel } from "../../models/rough_plan.slint";
+import { RoughPill } from "fields.slint";
+
+// Inline save naming row at the top of the right column. Its title says how many
+// results the save will take: the ticked ones when it was opened from a "Save
+// selected" control, every result when it was opened from "Save all".
+export component SaveNameRow inherits Rectangle {
+    property <int> count: RoughPlanModel.save_selected_only ? RoughPlanModel.keep_count
+        : RoughPlanModel.results.length;
+
+    background: Theme.surface-raised;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.accent-cyan;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+
+        Text {
+            text: RoughPlanModel.save_selected_only
+                ? (root.count == 1 ? "Save 1 result" : "Save " + root.count + " results")
+                : (root.count == 1 ? "Save the 1 result" : "Save all " + root.count + " results");
+            font-size: 11px;
+            font-weight: 700;
+            color: Theme.text-primary;
+        }
+
+        HorizontalLayout {
+            spacing: 6px;
+            alignment: center;
+
+            name_input := LineEdit {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                text <=> RoughPlanModel.save_name;
+                placeholder-text: "Plan name...";
+                init => { self.focus(); }
+                accepted => {
+                    if !RoughPlanModel.running {
+                        RoughPlanModel.confirm_save();
+                    }
+                }
+            }
+
+            RoughPill {
+                text: "Save";
+                active: true;
+                enabled: !RoughPlanModel.running;
+                clicked => { RoughPlanModel.confirm_save(); }
+            }
+
+            RoughPill {
+                text: "Cancel";
+                clicked => { RoughPlanModel.save_name_open = false; }
+            }
+        }
+    }
+}

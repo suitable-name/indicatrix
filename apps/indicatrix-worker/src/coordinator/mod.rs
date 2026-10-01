@@ -65,8 +65,8 @@ pub fn viewer_render_capability(
     Some(RenderCapability {
         backend: Backend::Coordinator {
             workers: workers.workers,
-            threads: workers.threads + own_threads,
-            gpus: workers.gpus + own_gpus,
+            threads: workers.threads.saturating_add(own_threads),
+            gpus: workers.gpus.saturating_add(own_gpus),
         },
         max_pixels: own.map_or(workers.max_pixels, |o| o.max_pixels.max(workers.max_pixels)),
         min_cadence_ms: own.map_or(crate::stream_emit::MIN_CADENCE_FLOOR_MS, |o| {

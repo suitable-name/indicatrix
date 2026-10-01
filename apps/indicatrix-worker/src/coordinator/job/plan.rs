@@ -143,6 +143,7 @@ fn refusal(workers: &[(WorkerInfo, bool)], need: LaneNeed) -> ErrorMsg {
     {
         return ErrorMsg {
             code: error_codes::UNSUPPORTED_REQUEST,
+            request_id: None,
             message: "the scene is lit by an HDR map, but no joined worker renders HDR environments \
                       (their asset caches are disabled) and this coordinator has no own render lane \
                       (--render)"
@@ -152,6 +153,7 @@ fn refusal(workers: &[(WorkerInfo, bool)], need: LaneNeed) -> ErrorMsg {
     if workers.is_empty() {
         return ErrorMsg {
             code: error_codes::NO_RENDER_CAPACITY,
+            request_id: None,
             message:
                 "this coordinator has no render lane -- no joined workers and no --render; its \
                       WELCOME advertised no render capability"
@@ -165,6 +167,7 @@ fn refusal(workers: &[(WorkerInfo, bool)], need: LaneNeed) -> ErrorMsg {
         .unwrap_or(0);
     ErrorMsg {
         code: error_codes::UNSUPPORTED_REQUEST,
+        request_id: None,
         message: format!(
             "the image has {pixels} px, more than any joined worker accepts (largest max_pixels \
              {largest}) and this coordinator has no own render lane (--render)"
@@ -174,11 +177,13 @@ fn refusal(workers: &[(WorkerInfo, bool)], need: LaneNeed) -> ErrorMsg {
 
 /// Orders `candidates` for an `Interactive` pick: workers never measured on this
 /// viewer connection first (GPU before CPU, more threads first -- each gets one chance
-/// to be measured), then measured ones by rate, fastest first.
-pub fn rank_fastest(candidates: &mut [WorkerInfo], rates: &RateBook) {
+/// to be measured), then measured ones by rate, fastest first. `pixels` is the current
+/// request's image size, used to read each worker's [`RateBook`] entry back at a
+/// comparable resolution (see [`RateBook`]'s doc comment).
+pub fn rank_fastest(candidates: &mut [WorkerInfo], rates: &RateBook, pixels: u32) {
     candidates.sort_by(|a, b| {
         let key = |w: &WorkerInfo| {
-            let measured = rates.worker(w.worker_id);
+            let measured = rates.worker(w, pixels);
             let guess = match w.capability.backend {
                 Backend::Gpu { .. } => f64::from(u32::MAX),
                 Backend::Cpu { threads } => f64::from(threads),

@@ -19,8 +19,20 @@ use std::{
 #[derive(Debug)]
 pub enum EncodeOutcome {
     Mp4(PathBuf),
-    Gif(PathBuf),
-    FramesOnly { readme: PathBuf },
+    Gif {
+        path: PathBuf,
+        /// `None` when ffmpeg was simply never found on `PATH` (the common,
+        /// unremarkable reason this fallback ran at all); `Some(reason)` when
+        /// ffmpeg WAS found but [`mux_mp4`] itself failed (stderr-augmented, see
+        /// [`last_stderr_line`]) -- so the caller's status message can say what
+        /// actually went wrong instead of always blaming a missing ffmpeg even
+        /// when one was found and failed for some other reason (an odd
+        /// dimension, an unsupported codec, a permissions error).
+        mp4_failure_reason: Option<String>,
+    },
+    FramesOnly {
+        readme: PathBuf,
+    },
 }
 
 /// Whether an `ffmpeg` executable answers on `PATH` -- probed by actually trying to run
@@ -60,7 +72,11 @@ pub fn ffmpeg_command_line(digits: usize, fps: u32, out_name: &str) -> String {
 pub fn mux_mp4(frame_dir: &Path, digits: usize, fps: u32, out_path: &Path) -> Result<(), String> {
     let partial = out_path.with_extension("mp4.partial");
     let pattern = format!("frame_%0{digits}d.png");
-    let status = Command::new("ffmpeg")
+    // `.output()`, not `.status()`, and stderr `piped()` rather than `null()`: ffmpeg's
+    // own diagnostic (the actual codec/pixel-format/permissions reason a mux failed)
+    // goes to stderr, and a bare exit status told a cutter reading the fallback
+    // warning/toast nothing actionable -- see `last_stderr_line`'s own doc comment.
+    let output = Command::new("ffmpeg")
         .current_dir(frame_dir)
         .arg("-y")
         .arg("-framerate")
@@ -71,15 +87,33 @@ pub fn mux_mp4(frame_dir: &Path, digits: usize, fps: u32, out_path: &Path) -> Re
         .arg(&partial)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .stderr(Stdio::piped())
+        .output()
         .map_err(|e| format!("Failed to launch ffmpeg: {e}"))?;
-    if !status.success() {
+    if !output.status.success() {
         let _ = std::fs::remove_file(&partial);
-        return Err(format!("ffmpeg exited with status {status}"));
+        return Err(format!(
+            "ffmpeg exited with status {}{}",
+            output.status,
+            last_stderr_line(&output.stderr)
+        ));
     }
     std::fs::rename(&partial, out_path)
         .map_err(|e| format!("Failed to finalize {}: {e}", out_path.display()))
+}
+
+/// The last non-empty line of ffmpeg's captured stderr, formatted as `" -- <line>"` (an
+/// empty string when stderr had no non-empty line at all, so a caller can splice this
+/// straight onto the end of a sentence with no dangling separator). ffmpeg's last
+/// stderr line is almost always the actual failure reason (an unsupported codec, a bad
+/// pixel format for the input, a permissions error on the output path) -- the many
+/// lines before it are just its per-frame/stream banner noise.
+fn last_stderr_line(stderr: &[u8]) -> String {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .map_or_else(String::new, |line| format!(" -- {}", line.trim()))
 }
 
 /// Encodes an animated GIF from the already-written PNG frame sequence, decoding one
@@ -149,16 +183,26 @@ pub fn encode(
     out_name: &str,
 ) -> EncodeOutcome {
     let mp4_path = frame_dir.join(format!("{out_name}.mp4"));
-    if ffmpeg_available() {
+    let mp4_failure_reason = if ffmpeg_available() {
         match mux_mp4(frame_dir, digits, fps, &mp4_path) {
             Ok(()) => return EncodeOutcome::Mp4(mp4_path),
-            Err(e) => tracing::warn!("Tilt video: ffmpeg mux failed, falling back to GIF: {e}"),
+            Err(e) => {
+                tracing::warn!("Tilt video: ffmpeg mux failed, falling back to GIF: {e}");
+                Some(e)
+            }
         }
-    }
+    } else {
+        None
+    };
 
     let gif_path = frame_dir.join(format!("{out_name}.gif"));
     match mux_gif(frame_paths, fps, &gif_path) {
-        Ok(()) => return EncodeOutcome::Gif(gif_path),
+        Ok(()) => {
+            return EncodeOutcome::Gif {
+                path: gif_path,
+                mp4_failure_reason,
+            };
+        }
         Err(e) => {
             tracing::warn!("Tilt video: GIF fallback failed, leaving the frame sequence: {e}");
         }
@@ -199,6 +243,16 @@ mod tests {
         assert!(result.is_err());
         assert!(!out.exists());
         assert!(!out.with_extension("mp4.partial").exists());
+    }
+
+    #[test]
+    fn last_stderr_line_picks_the_last_non_empty_line() {
+        assert_eq!(
+            last_stderr_line(b"frame=  1 fps=0.0\nUnknown encoder 'libx264'\n\n"),
+            " -- Unknown encoder 'libx264'"
+        );
+        assert_eq!(last_stderr_line(b""), "");
+        assert_eq!(last_stderr_line(b"\n\n   \n"), "");
     }
 
     #[test]

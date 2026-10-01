@@ -5,8 +5,8 @@ use glam::DVec3;
 
 use super::{
     super::{
-        MAX_PLANES, MeetConstraint, MeetTierInput, SolveControl, SolveError, SolvePhase,
-        SolveProgress, SolveStrategy,
+        MAX_PLANES, MeetConstraint, MeetTierInput, NonFiniteField, SolveControl, SolveError,
+        SolvePhase, SolveProgress, SolveStrategy,
     },
     solve_meet_points, solve_meet_points_with,
 };
@@ -306,6 +306,89 @@ fn solve_meet_points_with_reports_too_many_planes_above_the_cap() {
     assert!((legacy[0].mast - 1.0).abs() < 1e-12);
 }
 
+/// A NaN `ScaleReference` mast must be rejected up front, never
+/// silently folded away by the scale-prior/domination-limit computation and
+/// never reach candidate-vertex geometry as a NaN plane offset.
+#[test]
+fn solve_meet_points_with_rejects_a_nan_mast() {
+    let gear = 96;
+    let tiers = vec![
+        MeetTierInput {
+            angle_deg: 90.0,
+            indices: vec![0.0, 24.0, 48.0, 72.0],
+            constraint: MeetConstraint::ScaleReference(f64::NAN),
+            names: vec![],
+        },
+        MeetTierInput {
+            angle_deg: 41.0,
+            indices: vec![12.0, 36.0, 60.0, 84.0],
+            constraint: MeetConstraint::MeetExisting,
+            names: vec![],
+        },
+    ];
+    let result = solve_meet_points_with(gear, &tiers, &SolveControl::default());
+    match result {
+        Err(SolveError::NonFiniteInput { tier, field }) => {
+            assert_eq!(tier, 0);
+            assert_eq!(field, NonFiniteField::Mast);
+        }
+        other => panic!(
+            "expected Err(SolveError::NonFiniteInput), got {other:?} (never a solved/Closed result)"
+        ),
+    }
+}
+
+/// An infinite index must be rejected the same way a NaN mast is --
+/// checked before `SolveContext::new` derives anything from it.
+#[test]
+fn solve_meet_points_with_rejects_an_infinite_index() {
+    let gear = 96;
+    let tiers = vec![
+        MeetTierInput {
+            angle_deg: 90.0,
+            indices: vec![0.0, 24.0, 48.0, f64::INFINITY],
+            constraint: MeetConstraint::ScaleReference(1.0),
+            names: vec![],
+        },
+        MeetTierInput {
+            angle_deg: 41.0,
+            indices: vec![12.0, 36.0, 60.0, 84.0],
+            constraint: MeetConstraint::MeetExisting,
+            names: vec![],
+        },
+    ];
+    let result = solve_meet_points_with(gear, &tiers, &SolveControl::default());
+    match result {
+        Err(SolveError::NonFiniteInput { tier, field }) => {
+            assert_eq!(tier, 0);
+            assert_eq!(field, NonFiniteField::Index);
+        }
+        other => panic!(
+            "expected Err(SolveError::NonFiniteInput), got {other:?} (never a solved/Closed result)"
+        ),
+    }
+}
+
+/// A non-finite `angle_deg` is rejected the same way.
+#[test]
+fn solve_meet_points_with_rejects_a_nan_angle() {
+    let gear = 96;
+    let tiers = vec![MeetTierInput {
+        angle_deg: f64::NAN,
+        indices: vec![0.0],
+        constraint: MeetConstraint::ScaleReference(1.0),
+        names: vec![],
+    }];
+    let result = solve_meet_points_with(gear, &tiers, &SolveControl::default());
+    match result {
+        Err(SolveError::NonFiniteInput { tier, field }) => {
+            assert_eq!(tier, 0);
+            assert_eq!(field, NonFiniteField::AngleDeg);
+        }
+        other => panic!("expected Err(SolveError::NonFiniteInput), got {other:?}"),
+    }
+}
+
 /// The progress callback must report [`SolvePhase::Constructive`] before
 /// [`SolvePhase::LeastSquares`] before [`SolvePhase::Refine`] (the fixed
 /// phase order the module docs describe), `sweep` must never decrease
@@ -385,4 +468,68 @@ fn solve_meet_points_with_reports_monotonic_progress_reaching_every_phases_total
         reached_total.contains(&2),
         "Refine phase never reported blocks_done == blocks_total: {reports:?}"
     );
+}
+
+/// Solved masts must scale exactly proportionally with a design's
+/// absolute `ScaleReference` anchors, and every tier must settle on the same
+/// [`SolveStrategy`] regardless of the design's absolute scale. Before
+/// `SolveContext::scale_norm`'s normalisation, this RBC-shaped design (masts
+/// of order `k`) diverged at k=70 (a crown tier's `mast/k` differed from the
+/// k=1 baseline) and every meet-derived tier fell to
+/// [`SolveStrategy::LeastSquaresFallback`] at k=100 -- because
+/// [`super::super::EPS_FEAS`]/[`super::super::EPS_INCIDENT`]/[`super::super::LEVEL_TOL`]/
+/// [`super::super::BLANK_HALF_EXTENT`] are absolute constants tuned for masts
+/// of order 1. Regression coverage for that measured divergence.
+#[test]
+fn solve_meet_points_scales_masts_proportionally_with_scale_reference() {
+    const GIRDLE: [f64; 16] = [
+        0.0, 6.0, 12.0, 18.0, 24.0, 30.0, 36.0, 42.0, 48.0, 54.0, 60.0, 66.0, 72.0, 78.0, 84.0,
+        90.0,
+    ];
+    const BREAK: [f64; 16] = [
+        95.0, 1.0, 11.0, 13.0, 23.0, 25.0, 35.0, 37.0, 47.0, 49.0, 59.0, 61.0, 71.0, 73.0, 83.0,
+        85.0,
+    ];
+    const MAIN: [f64; 8] = [0.0, 12.0, 24.0, 36.0, 48.0, 60.0, 72.0, 84.0];
+    const STAR: [f64; 8] = [6.0, 18.0, 30.0, 42.0, 54.0, 66.0, 78.0, 90.0];
+
+    let rbc = |k: f64| -> Vec<MeetTierInput> {
+        let t = |angle_deg: f64, indices: &[f64], constraint: MeetConstraint| MeetTierInput {
+            angle_deg,
+            indices: indices.to_vec(),
+            constraint,
+            names: vec![],
+        };
+        vec![
+            t(0.0, &[], MeetConstraint::ScaleReference(0.32 * k)),
+            t(15.0, &STAR, MeetConstraint::MeetExisting),
+            t(34.5, &MAIN, MeetConstraint::MeetExisting),
+            t(41.0, &BREAK, MeetConstraint::MeetExisting),
+            t(90.0, &GIRDLE, MeetConstraint::ScaleReference(1.0 * k)),
+            t(-41.0, &MAIN, MeetConstraint::MeetExisting),
+            t(-42.5, &BREAK, MeetConstraint::MeetExisting),
+            t(-0.0, &[], MeetConstraint::ScaleReference(0.88 * k)),
+        ]
+    };
+
+    let gear = 96;
+    let baseline = solve_meet_points(gear, &rbc(1.0));
+    for &k in &[0.001, 0.01, 0.1, 10.0, 20.0, 40.0, 70.0, 100.0] {
+        let solved = solve_meet_points(gear, &rbc(k));
+        assert_eq!(solved.len(), baseline.len());
+        for (i, (s, b)) in solved.iter().zip(&baseline).enumerate() {
+            assert_eq!(
+                s.strategy, b.strategy,
+                "tier {i}: strategy changed at k={k} ({:?} vs baseline {:?})",
+                s.strategy, b.strategy
+            );
+            let rel = (s.mast / k - b.mast).abs() / b.mast.abs().max(1e-9);
+            assert!(
+                rel < 1e-6,
+                "tier {i}: mast/k {} vs baseline {} at k={k} (rel {rel})",
+                s.mast / k,
+                b.mast
+            );
+        }
+    }
 }

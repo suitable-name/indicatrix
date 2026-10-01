@@ -149,8 +149,8 @@ mod tests;
 pub use apply::apply_optimize_outcome;
 pub use candidate::free_tier_indices;
 pub use objective::{
-    CANONICAL_LIGHT_PITCH, CANONICAL_LIGHT_YAW, ObjectiveComponents, ObjectiveFidelity,
-    ObjectiveWeights, evaluate_objective,
+    CANONICAL_LIGHT_PITCH, CANONICAL_LIGHT_YAW, CANONICAL_LIGHTING_PRESET, ObjectiveComponents,
+    ObjectiveFidelity, ObjectiveWeights, evaluate_objective, evaluate_objective_under,
 };
 pub use search::{
     AngleChange, OptimizeConfig, OptimizeOutcome, SearchHooks, SearchStage,

@@ -206,6 +206,7 @@ export component TierTableRow inherits Rectangle {
                         angle_cell := TierAngleCell {
                             width: root.col_angle_width;
                             value: root.item.angle_deg;
+                            full_value: root.item.angle_full;
                             proposed: root.item.proposed_angle;
                             index: root.item.index;
                             focus_target: root.inline_edit_target;
@@ -442,15 +443,16 @@ export component TierTableRow inherits Rectangle {
                         // straight on the fix the tooltip below describes rather than
                         // having to notice and pick that combo entry unassisted.
                         //
-                        // The index round-trip through `-1` guarantees a real
-                        // `selected_tier_index` transition (and so a real
-                        // `load_tier_into_form` call that actually consumes the
-                        // suggestion) even when this row is already selected --
-                        // assigning the same value again fires no `changed` at all
-                        // (see `EditorModel.form_reset_pulse`'s own doc comment for
-                        // the general rule), which would otherwise strand the
-                        // suggestion to misapply itself to the next unrelated
-                        // selection instead.
+                        // Goes through `root.tier_selected` -- the SAME callback a
+                        // plain click on this row fires -- rather than writing
+                        // `EditorModel.selected_tier_index` directly: `EditorView`'s
+                        // own handler for that callback (`editor_view.slint`) already
+                        // covers the "this row is already selected" case explicitly
+                        // (a same-value property write raises no `changed` at all) so the
+                        // old code round-tripped the index through `-1` to force one;
+                        // that trick did not actually work, since a same-pass
+                        // `A -> -1 -> A` collapses to no change too, and is no longer
+                        // needed now that the real fix lives in one place).
                         Rectangle {
                             width: root.col_anchor_width;
                             if root.item.needs_anchor: Rectangle {
@@ -470,10 +472,7 @@ export component TierTableRow inherits Rectangle {
                                     enabled: root.unlocked;
                                     clicked => {
                                         EditorModel.suggested_constraint_kind = 2;
-                                        if root.item.index == EditorModel.selected_tier_index {
-                                            EditorModel.selected_tier_index = -1;
-                                        }
-                                        EditorModel.selected_tier_index = root.item.index;
+                                        root.tier_selected(root.item.index);
                                         EditorModel.inspector_tab = 0;
                                         EditorModel.inspector_collapsed = false;
                                     }

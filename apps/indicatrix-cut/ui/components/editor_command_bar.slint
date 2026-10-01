@@ -43,7 +43,7 @@ export global UndoRedoLabels {
 // Solve/Auto-solve/Deep Solve/Optimize/Retarget (`SolveGroup`) and Export/Save
 // Native/Open Native (`FileActionsGroup`) -- each a small `HorizontalLayout`
 // bundling controls that always appear together, so `EditorCommandBar` itself can
-// arrange them into either one row (wide) or two (narrow, see its own doc
+// arrange them into shared or separate rows (wide vs narrow, see its own doc
 // comment below) without duplicating any button's hover/TouchArea/callback
 // wiring.
 component NewLoadUndoRedoGroup inherits HorizontalLayout {
@@ -340,7 +340,7 @@ component TierGroup inherits HorizontalLayout {
 // second row (see `EditorCommandBar` below).
 component AnalysisGroup inherits HorizontalLayout {
     height: 34px;
-    spacing: 8px;
+    spacing: 6px;
 
     function set_hint(text: string) {
         EditorModel.hover_hint = text;
@@ -466,7 +466,7 @@ component AnalysisGroup inherits HorizontalLayout {
         height: snapshot_btn.preferred-height;
         changed has-hover => { if self.has-hover { root.set_hint("Capture the current design and its solved masts, to compare against later."); } else { root.clear_hint("Capture the current design and its solved masts, to compare against later."); } }
         snapshot_btn := Button {
-            text: "Snapshot Design";
+            text: "Snapshot";
             enabled: GuideModel.allows_advanced();
             clicked => { EditorModel.snapshot_design(); }
         }
@@ -488,7 +488,7 @@ component AnalysisGroup inherits HorizontalLayout {
             }
         }
         compare_snapshot_btn := Button {
-            text: "Compare to Snapshot";
+            text: "Compare";
             enabled: EditorModel.has_snapshot && GuideModel.allows_advanced();
             clicked => { EditorModel.compare_to_snapshot(); }
         }
@@ -505,7 +505,7 @@ component AnalysisGroup inherits HorizontalLayout {
         height: compute_tilt_btn.preferred-height;
         changed has-hover => { if self.has-hover { root.set_hint("Compute this design's tilt-performance curves (brilliance/extinction/windowing vs. tilt)."); } else { root.clear_hint("Compute this design's tilt-performance curves (brilliance/extinction/windowing vs. tilt)."); } }
         compute_tilt_btn := Button {
-            text: "Compute Tilt Curves";
+            text: "Tilt Curves";
             enabled: GuideModel.allows_advanced();
             clicked => { EditorModel.compute_tilt_curves_for_open_design(); }
         }
@@ -544,7 +544,7 @@ component FileActionsGroup inherits HorizontalLayout {
         // "Save the original file... not your edits" warning.
         changed has-hover => { if self.has-hover { root.set_hint("Export the design as edited in this tab to disk; your library is not updated."); } else { root.clear_hint("Export the design as edited in this tab to disk; your library is not updated."); } }
         export_btn := Button {
-            text: "Export Edited .asc";
+            text: "Export .asc";
             enabled: GuideModel.allows_file_ops();
             clicked => { EditorModel.export_asc(); }
         }
@@ -590,7 +590,7 @@ component FileActionsGroup inherits HorizontalLayout {
     TouchArea {
         width: open_native_btn.preferred-width;
         height: open_native_btn.preferred-height;
-        changed has-hover => { if self.has-hover { root.set_hint("Open a native design file."); } else { root.clear_hint("Open a native design file."); } }
+        changed has-hover => { if self.has-hover { root.set_hint("Open a native design file, or a .asc, .gem or .gcs file."); } else { root.clear_hint("Open a native design file, or a .asc, .gem or .gcs file."); } }
         open_native_btn := Button {
             text: "Open Native";
             enabled: GuideModel.allows_file_ops();
@@ -600,14 +600,18 @@ component FileActionsGroup inherits HorizontalLayout {
     }
 }
 
-// The Edit sub-tab's command bar, two fixed rows sized for the dock's 600px
-// minimum width (`app.slint`'s `dock_width` clamp): row 1 is the editing
-// group (New Design.../Load Selected/Undo/Redo) plus Solve and its auto-solve
-// budget, row 2 the tier group (Add/Duplicate/Delete/Move), the slower
-// analyses (Deep Solve/Optimize/Retarget) and the native file actions. Each
-// row ends in a stretch spacer so a wider dock leaves the buttons left-aligned
-// instead of spreading them. (`FlexboxLayout`, which would wrap automatically,
-// is not enabled in this Slint build.)
+// The Edit sub-tab's command bar, three or four fixed rows sized for the dock's
+// 600-1000px clamp (`app.slint`'s `dock_width` clamp; content is at most 976px):
+// row 1 is always the editing group (New Design.../Load Selected/Undo/Redo) plus
+// Solve and its auto-solve budget. Then, in a wide dock, one row with
+// [Tier | divider | FileActions] (Add/Duplicate/Delete/Move plus the native file
+// actions); in a narrow dock (`narrow_dock`, below 930px) [Tier] and
+// [FileActions] each take their own row. The last row is always [Analysis] (the
+// slower analyses: Deep Solve/Optimize/Retarget/Snapshot/Compare/Tilt Curves),
+// mounted once outside any `if`. Each row ends in a
+// stretch spacer so a wider dock leaves the buttons left-aligned instead of
+// spreading them. (`FlexboxLayout`, which would wrap automatically, is not
+// enabled in this Slint build.)
 //
 // No caption text lives under any one button: hovering any control in any
 // group sets `EditorModel.hover_hint`, shown as a single line below the row(s)
@@ -622,6 +626,9 @@ component FileActionsGroup inherits HorizontalLayout {
 // `layoutinfo-h -> layout-cache -> width -> ... -> narrow` binding loop the
 // `.slint` compiler rejects outright.
 export component EditorCommandBar inherits Rectangle {
+    // Keyed off `EditorModel.dock_width` (external), never this bar's own width.
+    property <bool> narrow_dock: EditorModel.dock_width < 930px;
+
     VerticalLayout {
         spacing: 2px;
 
@@ -633,14 +640,34 @@ export component EditorCommandBar inherits Rectangle {
             SolveGroup {}
             Rectangle { horizontal-stretch: 1; }
         }
-        HorizontalLayout {
+        // Wide dock: tier group | file actions share one row.
+        if !root.narrow_dock: HorizontalLayout {
             height: 34px;
             spacing: 8px;
             TierGroup {}
             Rectangle { width: 1px; background: Theme.border-subtle; }
-            AnalysisGroup {}
-            Rectangle { width: 1px; background: Theme.border-subtle; }
             FileActionsGroup {}
+            Rectangle { horizontal-stretch: 1; }
+        }
+        // Narrow dock: tier group and file actions each on their own row.
+        if root.narrow_dock: HorizontalLayout {
+            height: 34px;
+            spacing: 8px;
+            TierGroup {}
+            Rectangle { horizontal-stretch: 1; }
+        }
+        if root.narrow_dock: HorizontalLayout {
+            height: 34px;
+            spacing: 8px;
+            FileActionsGroup {}
+            Rectangle { horizontal-stretch: 1; }
+        }
+        // Analyses: mounted once, outside any `if`, so AnalysisGroup's local
+        // `optimize_cancel_requested` latch survives the dock crossing the breakpoint.
+        HorizontalLayout {
+            height: 34px;
+            spacing: 8px;
+            AnalysisGroup { }
             Rectangle { horizontal-stretch: 1; }
         }
 

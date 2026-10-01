@@ -28,6 +28,21 @@
 //! If no GPU adapter is available at all, this reports that plainly and exits nonzero
 //! -- it does not panic, and it does not report untested checks as passing.
 //!
+//! # Recording a run
+//!
+//! ```text
+//! cargo run --profile probe -p indicatrix --features gpu --example gpu_equivalence_harness \
+//!     -- --json crates/indicatrix/docs/gpu_harness_last_run.json --date 2026-09-30
+//! ```
+//!
+//! `--json <path>` writes a machine-readable summary (see `summary.rs`): the `--date` passed
+//! on the command line, the adapter, `BUILD_ID`, the maximum genuine ULP per tier, every
+//! ULP check's statistics, every image comparison's z-score statistics and the verdict. It
+//! is written even when a check failed (with `"passed": false`), and never when no
+//! adapter was found -- a run that tested nothing leaves no artefact. Exit codes: 0 all
+//! passed, 1 a check failed, 2 no adapter or bad command line, 3 the summary could not be
+//! written.
+//!
 //! # Tiers
 //!
 //! - **Tier 0** (GPU self-determinism): [`indicatrix::renderer::gpu::determinism_check`],
@@ -89,6 +104,7 @@ mod phase2_transport;
 mod phase3_uniaxial;
 mod phase4_biaxial;
 mod scattering_and_absorption;
+mod summary;
 
 use frosted_girdle_and_edge_rounding::{
     run_task2_edge_rounding_checks, run_task2_frosted_girdle_checks,
@@ -104,7 +120,43 @@ use phase3_uniaxial::run_phase3_checks;
 use phase4_biaxial::run_phase4_checks;
 use scattering_and_absorption::{run_p1_absorption_path_scale_checks, run_task1_scattering_checks};
 
+/// Runs every check group in order -- a failing group never stops the later ones -- records
+/// each group's verdict for the run summary, and returns whether all of them passed.
+fn run_all_groups(ctx: &GpuContext) -> bool {
+    let results = [
+        ("phase0_and_phase1", run_phase0_and_phase1_checks(ctx)),
+        ("phase2_isotropic_estimator", run_phase2_checks(ctx)),
+        ("phase3_uniaxial", run_phase3_checks(ctx)),
+        ("phase4_biaxial", run_phase4_checks(ctx)),
+        ("inclusion_scattering", run_task1_scattering_checks(ctx)),
+        ("frosted_girdle", run_task2_frosted_girdle_checks(ctx)),
+        ("edge_rounding", run_task2_edge_rounding_checks(ctx)),
+        (
+            "absorption_path_scale",
+            run_p1_absorption_path_scale_checks(ctx),
+        ),
+        ("lighting_models", run_lighting_model_checks(ctx)),
+        ("chunked_dispatch", run_chunk_check()),
+        ("wavefront_pipeline", run_wavefront_pipeline_checks()),
+        ("kernel_specialisation", run_all_specialisation_checks(ctx)),
+        ("hdr_nee", run_finding_g7_nee_checks(ctx)),
+    ];
+    for (name, passed) in results {
+        summary::record_group(name, passed);
+    }
+    results.iter().all(|&(_, passed)| passed)
+}
+
 fn main() {
+    let options = match summary::parse_cli(std::env::args().skip(1)) {
+        Ok(options) => options,
+        Err(message) => {
+            eprintln!("gpu_equivalence_harness: {message}");
+            eprintln!("{}", summary::USAGE);
+            std::process::exit(2);
+        }
+    };
+
     // Without a subscriber, `GpuContext::acquire_async`'s `on_uncaptured_error` handler's
     // `tracing::error!` call goes nowhere -- the actual wgpu validation/device error text
     // that produces a `GpuFrameError::DeviceLost` report below would otherwise be
@@ -130,40 +182,31 @@ fn main() {
         }
     };
     let adapter_info = ctx.adapter.get_info();
-    println!(
-        "adapter: {} ({:?}, backend={:?})",
+    let adapter_label = format!(
+        "{} ({:?}, backend={:?})",
         adapter_info.name, adapter_info.device_type, adapter_info.backend
     );
+    println!("adapter: {adapter_label}");
 
-    let phase0_and_phase1_passed = run_phase0_and_phase1_checks(&ctx);
+    let all_passed = run_all_groups(&ctx);
 
-    let phase2_passed = run_phase2_checks(&ctx);
-    let phase3_passed = run_phase3_checks(&ctx);
-    let phase4_passed = run_phase4_checks(&ctx);
-    let task1_scattering_passed = run_task1_scattering_checks(&ctx);
-    let task2_frosted_girdle_passed = run_task2_frosted_girdle_checks(&ctx);
-    let task2_edge_rounding_passed = run_task2_edge_rounding_checks(&ctx);
-    let p1_absorption_path_scale_passed = run_p1_absorption_path_scale_checks(&ctx);
-    let lighting_models_passed = run_lighting_model_checks(&ctx);
-
-    let chunk_passed = run_chunk_check();
-    let wavefront_passed = run_wavefront_pipeline_checks();
-    let specialisation_passed = run_all_specialisation_checks(&ctx);
-    let g7_nee_passed = run_finding_g7_nee_checks(&ctx);
-
-    let all_passed = phase0_and_phase1_passed
-        && phase2_passed
-        && phase3_passed
-        && phase4_passed
-        && task1_scattering_passed
-        && task2_frosted_girdle_passed
-        && task2_edge_rounding_passed
-        && p1_absorption_path_scale_passed
-        && lighting_models_passed
-        && chunk_passed
-        && wavefront_passed
-        && specialisation_passed
-        && g7_nee_passed;
+    if let (Some(path), Some(date)) = (&options.json_path, &options.date) {
+        let header = summary::RunHeader {
+            date,
+            build_id: indicatrix::BUILD_ID,
+            adapter: &adapter_label,
+        };
+        match summary::write_json(path, &header, all_passed) {
+            Ok(()) => println!("gpu_equivalence_harness: wrote {}", path.display()),
+            Err(e) => {
+                eprintln!(
+                    "gpu_equivalence_harness: cannot write {}: {e}",
+                    path.display()
+                );
+                std::process::exit(3);
+            }
+        }
+    }
 
     println!();
     if all_passed {

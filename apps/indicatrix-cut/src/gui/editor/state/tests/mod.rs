@@ -1,8 +1,5 @@
-//! `EditorState`/view-model unit tests, split by topic: [`material`] (material/RI
-//! and gear presets), [`rows`] (tier-list row builders), [`history`] (undo/redo,
-//! coalescing, dirty/epoch tracking), and [`status`] (the validation-banner text).
+//! `EditorState` unit tests: [`history`] (undo/redo, coalescing, dirty/epoch
+//! tracking through the desktop's session wrapper). The view-model, material and
+//! banner tests moved with their code to `indicatrix_editor::view_model`.
 
 mod history;
-mod material;
-mod rows;
-mod status;

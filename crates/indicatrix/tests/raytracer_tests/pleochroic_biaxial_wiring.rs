@@ -1,9 +1,9 @@
 //! Pleochroic and biaxial-indicatrix absorption wiring tests: every built-in
 //! material stays finite through the pleochroic absorption block, Sapphire's
 //! uniaxial pleochroism actually attenuates end-to-end, Tanzanite's true biaxial
-//! eigenmodes diverge from the uniaxial fallback off-axis, non-biaxial materials
-//! stay bit-identical to their pre-refactor golden values, and the three biaxial
-//! built-ins measurably differ from the uniaxial approximation.
+//! eigenmodes diverge from the uniaxial fallback off-axis, non-biaxial materials'
+//! CURRENT render output stays pinned even after the biaxial-indicatrix wiring landed,
+//! and the three biaxial built-ins measurably differ from the uniaxial approximation.
 
 use glam::Vec3;
 use indicatrix::{
@@ -166,13 +166,16 @@ fn tanzanite_biaxial_eigenmodes_diverge_from_uniaxial_fallback_off_axis() {
 
 /// Wiring the biaxial indicatrix into refraction/walk-off must not perturb a single
 /// bit of output for any NON-biaxial material -- cubic (isotropic) or uniaxial. Pins
-/// exact hex-encoded `f32` bit patterns (`to_bits()`, a literal bitwise comparison) for
-/// two cubic materials (Diamond, Cubic Zirconia) and three uniaxial materials spanning
-/// different crystal systems and birefringence signs (Sapphire and Ruby -- both
-/// trigonal corundum but opposite pleochroism; Synthetic Moissanite -- hexagonal, the
-/// strongest birefringence in the catalogue).
+/// exact hex-encoded `f32` bit patterns (`to_bits()`, a literal bitwise comparison),
+/// to CURRENT values (see this test's own name -- despite the golden's derivation below,
+/// these are NOT the values from before biaxial wiring; they are what
+/// this test now pins going forward), for two cubic materials (Diamond, Cubic
+/// Zirconia) and three uniaxial materials spanning different crystal systems and
+/// birefringence signs (Sapphire and Ruby -- both trigonal corundum but opposite
+/// pleochroism; Synthetic Moissanite -- hexagonal, the strongest birefringence in the
+/// catalogue).
 #[test]
-fn non_biaxial_materials_render_bit_identical_to_pre_chapter_04_golden_values() {
+fn non_biaxial_materials_render_is_pinned_to_current_post_chapter_04_values() {
     const SEED: u32 = 1;
 
     let planes = StandardGemCuts::standard_round_brilliant();
@@ -198,7 +201,7 @@ fn non_biaxial_materials_render_bit_identical_to_pre_chapter_04_golden_values() 
     //     assigned-mode alpha (`birefringence::assigned_mode_alpha`) rather than the
     //     Stokes degree-of-polarization heuristic; substituting the heuristic back in
     //     (with (1) also reverted) reproduces the axis-aligned sapphire cases in
-    //     `studio_rig_refactor_is_bit_identical_to_pre_refactor_baseline` exactly.
+    //     `studio_rig_trace_output_is_pinned_to_current_values` exactly.
     // (3) the Mueller frame-rotation mirror fix (`polarization.rs`) accounts for what
     //     remains on the OBLIQUE uniaxial rows here: Sapphire +115/+226/+112 % and Ruby
     //     +31/+38/+42 % once (1) and (2) are accounted for -- corundum's absorption acts
@@ -207,15 +210,30 @@ fn non_biaxial_materials_render_bit_identical_to_pre_chapter_04_golden_values() 
     //     and is attributed by elimination: mode re-coupling, the TIR guard, exit
     //     splitting, the observer, the backdrop, the RNG streams and the Studio
     //     lighting were each ruled out by toggle or by proof.
+    //
+    // What these values are: drift detectors captured from the code's own output, not
+    // independently verified physics. They catch an unintended change in the tracer's
+    // bits; they cannot say whether the pinned radiance is right. An independent check
+    // would need a single-wavelength analytic absorption case: one channel, a
+    // non-dispersive slab or a path of known geometric length, with the transmitted
+    // fraction compared against the closed-form Beer-Lambert `exp(-alpha * length)`
+    // for the assigned mode's absorption coefficient.
+    //
+    // Re-pinned on 2026-10-01 when the test profile started optimising this crate
+    // (`[profile.test.package.indicatrix]` in the workspace manifest): every row moved
+    // by 1 to 3 ULP per component, because the studio sampler rounds a few ULP
+    // differently between the unoptimised and the optimised build, and a release build
+    // had computed these bits all along. `cargo test` and `cargo test --release` now
+    // share them.
     let golden: &[(&str, u32, u32, u32)] = &[
-        ("Diamond", 0x3F12_4124, 0x3F16_03EE, 0x3F1C_561E),
-        ("Cubic Zirconia", 0x3FDA_E16F, 0x3FD1_A440, 0x4018_44C7),
-        ("Sapphire", 0x3B75_335A, 0x3B0C_1C8D, 0x3C95_4BE3),
-        ("Ruby", 0x3C12_D2A5, 0x3B9D_0EF2, 0x3C0C_1D99),
+        ("Diamond", 0x3F12_4125, 0x3F16_03EE, 0x3F1C_561C),
+        ("Cubic Zirconia", 0x3FDA_E16D, 0x3FD1_A43F, 0x4018_44C4),
+        ("Sapphire", 0x3B75_3359, 0x3B0C_1C8B, 0x3C95_4BE3),
+        ("Ruby", 0x3C12_D2A3, 0x3B9D_0EF1, 0x3C0C_1D99),
         (
             "Synthetic Moissanite",
-            0x3E8D_87DC,
-            0x3E8C_CAC5,
+            0x3E8D_87DA,
+            0x3E8C_CAC6,
             0x3EA8_5663,
         ),
     ];

@@ -11,7 +11,7 @@ use super::convert::{
 use crate::design::{Design, DesignSolveError};
 use indicatrix::{
     geometry::{
-        meet_solver::{SolveStrategy, SolvedTier},
+        meet_solver::{MeetConstraint, SolveStrategy, SolvedTier},
         stone_metrics::ExternalProportions,
     },
     optics::materials::GemMaterial,
@@ -34,12 +34,19 @@ pub enum SaveError {
     /// The (always-succeeds-in-practice, see [`to_toml_string`]'s own doc comment)
     /// TOML serialization step failed.
     Toml(NativeFormatError),
+    /// The paired `.asc` text could not be written: a header, footnote, or notes
+    /// string would not survive a `.asc` write/re-parse round trip unchanged (a
+    /// tier name never fails this way -- see
+    /// [`indicatrix_formats::asc::asc_safe_tier_name`]). See
+    /// [`indicatrix_formats::asc::AscWriteError`].
+    AscWrite(indicatrix_formats::asc::AscWriteError),
 }
 
 impl fmt::Display for SaveError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Toml(e) => write!(f, "cannot save: {e}"),
+            Self::AscWrite(e) => write!(f, "cannot save: {e}"),
         }
     }
 }
@@ -64,6 +71,17 @@ pub enum DraftReason {
     /// and the paired `.asc` is a placeholder with one dummy facet record, present
     /// only so the file parses at all.
     NoTiers,
+    /// `design.solve()` returned `Ok`, but at least one tier that is NOT itself a
+    /// [`indicatrix::geometry::meet_solver::MeetConstraint::ScaleReference`] came
+    /// back with [`SolveStrategy::Failed`] -- `Design::solve`'s own legacy
+    /// above-`MAX_PLANES` fallback (see that method's doc comment) turns a real
+    /// solver error into an `Ok` result full of fabricated masts (each
+    /// [`SolveStrategy::Failed`]'s own doc comment already says "should not be
+    /// trusted") instead of propagating it, so this case has to be detected here
+    /// from the solved masts themselves rather than from `design.solve()`'s
+    /// `Result`. Handled exactly like [`Self::Unsolved`]: none of these masts is a
+    /// real cut instruction, so this is a draft too.
+    TooManyPlanes,
 }
 
 impl fmt::Display for DraftReason {
@@ -75,6 +93,11 @@ impl fmt::Display for DraftReason {
                 "no tiers yet -- add at least one (with a scale-reference anchor) before this \
                  file can be reopened"
             ),
+            Self::TooManyPlanes => write!(
+                f,
+                "too many planes for the solver to verify -- the masts below are unsolved \
+                 placeholders, not real cutting instructions"
+            ),
         }
     }
 }
@@ -83,9 +106,24 @@ impl std::error::Error for DraftReason {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Unsolved(e) => Some(e),
-            Self::NoTiers => None,
+            Self::NoTiers | Self::TooManyPlanes => None,
         }
     }
+}
+
+/// `true` iff `solved` (a [`Design::solve`] result already known to be `Ok`)
+/// contains at least one tier that is not itself a
+/// [`indicatrix::geometry::meet_solver::MeetConstraint::ScaleReference`] yet came
+/// back with [`SolveStrategy::Failed`] -- the legacy above-`MAX_PLANES` fallback
+/// `Design::solve`'s own doc comment describes (see [`DraftReason::TooManyPlanes`]).
+/// A `ScaleReference` tier is excluded: its own mast is authored, never solved, so
+/// it is never itself the thing this check is trying to catch.
+#[must_use]
+fn is_too_many_planes(design: &Design, solved: &[SolvedTier]) -> bool {
+    design.tiers.iter().zip(solved).any(|(tier, solved_tier)| {
+        !matches!(tier.constraint, MeetConstraint::ScaleReference(_))
+            && matches!(solved_tier.strategy, SolveStrategy::Failed)
+    })
 }
 
 /// Everything [`save_paired`] produced.
@@ -95,6 +133,7 @@ impl std::error::Error for DraftReason {
 /// (already fingerprinted against `asc_text`).
 #[derive(Debug)]
 pub struct PairedSave {
+    /// Text of the `.asc` file to write.
     pub asc_text: String,
     /// `true` iff `asc_text` is `original_asc_text` unchanged; `false` iff it was
     /// freshly regenerated -- see [`save_paired`]'s doc comment for exactly when
@@ -104,7 +143,9 @@ pub struct PairedSave {
     /// [`Self::draft_reason`]) -- a placeholder-mast `.asc` is never the caller's own
     /// preserved text.
     pub asc_preserved: bool,
+    /// Parsed form of the native sidecar file.
     pub native: NativeDesignFile,
+    /// TOML text of the native sidecar file.
     pub native_toml: String,
     /// `Some(reason)` iff this save fell back to a draft instead of an ordinary save
     /// -- either `design` did not currently solve (see [`Design::solve`]) or
@@ -144,7 +185,7 @@ pub struct PairedSave {
 /// use this when `design` itself came from a placeholder reconstruction (e.g. a
 /// catalogue entry with no attached `.asc`, only an angle table, so every mast is a
 /// fabricated `0.0`) so the file this writes can never be mistaken for a real,
-/// verified cutting schedule. Skips the preserve-original-text path entirely when
+/// verified cutting instructions. Skips the preserve-original-text path entirely when
 /// set: a placeholder-derived design's masts are never worth preserving verbatim even
 /// if they happen to already be marked.
 ///
@@ -220,6 +261,14 @@ pub fn save_paired_extended(
     }
 
     match design.solve() {
+        Ok(solved) if is_too_many_planes(design, &solved) => draft_save(
+            design,
+            asc_filename,
+            &draft_asc_schedule(design, original_asc_text, extras.custom_catalogue),
+            DraftReason::TooManyPlanes,
+            printed_proportions,
+            extras,
+        ),
         Ok(solved) => save_paired_extended_from_solved(
             design,
             &solved,
@@ -278,12 +327,18 @@ pub fn save_paired_extended_from_solved(
     extras: &SaveExtras<'_>,
 ) -> Result<PairedSave, SaveError> {
     let asc_filename = asc_filename.into();
+    // The cheater-offset-baking variant, not the plain `_with` this design's own
+    // internal render/measurement path uses -- see
+    // `Design::to_asc_schedule_from_solved_with_cheater_offsets`'s own doc
+    // comment: only the real file-writing path (here) should fold an authored
+    // offset into the exported indices at all.
     let mut current_schedule =
-        design.to_asc_schedule_from_solved_with(solved, extras.custom_catalogue);
+        design.to_asc_schedule_from_solved_with_cheater_offsets(solved, extras.custom_catalogue);
 
     if let Some(note) = placeholder_note {
         indicatrix_formats::asc::mark_reconstructed(&mut current_schedule, note);
-        let asc_text = indicatrix_formats::asc::to_asc_string(&current_schedule);
+        let asc_text = indicatrix_formats::asc::to_asc_string(&current_schedule)
+            .map_err(SaveError::AscWrite)?;
         let native = to_native_file(
             design,
             asc_filename,
@@ -307,15 +362,14 @@ pub fn save_paired_extended_from_solved(
             .then(|| original.to_string())
     });
 
-    let (asc_text, asc_preserved) = preserved.map_or_else(
-        || {
-            (
-                indicatrix_formats::asc::to_asc_string(&current_schedule),
-                false,
-            )
-        },
-        |original| (original, true),
-    );
+    let (asc_text, asc_preserved) = match preserved {
+        Some(original) => (original, true),
+        None => (
+            indicatrix_formats::asc::to_asc_string(&current_schedule)
+                .map_err(SaveError::AscWrite)?,
+            false,
+        ),
+    };
 
     let native = to_native_file(
         design,
@@ -351,20 +405,44 @@ fn schedules_equal_ignoring_refractive_index(
     original: &AscSchedule,
     current: &AscSchedule,
 ) -> bool {
-    let masked_current = AscSchedule {
+    // The `.asc` on disk can only ever carry the writer's sanitised tier names
+    // (`indicatrix_formats::asc::asc_safe_tier_name`: "Crown Main" is written as
+    // `Crown_Main`), and its parser-side `warnings` describe that text, not the
+    // design -- so both are normalised to the original's form before comparing.
+    //
+    // Two more fields describe the original TEXT rather than the design and are
+    // masked the same way: `line_ending` (the parser records LF or CRLF; a design
+    // export defaults to CRLF, so an untouched LF catalogue file would otherwise
+    // never count as untouched) and each tier's `index_names` (the per-index name
+    // positions the parser recorded; a design export leaves them empty and lets the
+    // writer place the tier name after the first index).
+    let mut masked_current = AscSchedule {
         refractive_index: original.refractive_index,
+        warnings: original.warnings.clone(),
+        line_ending: original.line_ending,
         ..current.clone()
     };
+    for (tier, orig) in masked_current.tiers.iter_mut().zip(&original.tiers) {
+        let safe = indicatrix_formats::asc::asc_safe_tier_name(&tier.name);
+        if safe != tier.name {
+            tier.name = safe.into_owned();
+        }
+        if tier.index_names.is_empty() {
+            tier.index_names.clone_from(&orig.index_names);
+        }
+    }
     *original == masked_current
 }
 
 /// The shared tail of [`save_paired_extended`]'s two draft paths (unsolved,
-/// tier-less): builds `asc_text` from `draft_schedule` (marking it reconstructed
-/// too, when the design itself is placeholder-derived, is deliberately NOT done
-/// here -- a draft's `.asc` is already self-evidently a placeholder via
-/// [`NativeDesignFile::draft`] and its own made-up masts, so `placeholder_note` is
-/// not threaded into this path), and the native sidecar with every
-/// `ConstraintTier` field intact.
+/// tier-less, too-many-planes): builds `asc_text` from `draft_schedule` --
+/// marked [`mark_reconstructed`] with `reason`'s own [`DraftReason`] message, so
+/// the written `.asc` is unmistakably a placeholder even to software that has
+/// never heard of [`NativeDesignFile::draft`] -- and the native sidecar with
+/// every `ConstraintTier` field intact, plus a stashed [`crate::design::ScheduleMeta`]
+/// (via [`stash_schedule_meta`]) so [`super::load::load_native_only`] can open
+/// this exact draft sidecar even if its paired `.asc` (a placeholder anyway) is
+/// lost or never written.
 fn draft_save(
     design: &Design,
     asc_filename: String,
@@ -373,7 +451,10 @@ fn draft_save(
     printed_proportions: Option<&ExternalProportions>,
     extras: &SaveExtras<'_>,
 ) -> Result<PairedSave, SaveError> {
-    let asc_text = indicatrix_formats::asc::to_asc_string(draft_schedule);
+    let mut schedule = draft_schedule.clone();
+    indicatrix_formats::asc::mark_reconstructed(&mut schedule, &reason.to_string());
+    let asc_text =
+        indicatrix_formats::asc::to_asc_string(&schedule).map_err(SaveError::AscWrite)?;
 
     let material = material_table_from_selection(&design.material)
         .with_custom(extras.custom_material.cloned());
@@ -391,6 +472,7 @@ fn draft_save(
     if let Some(props) = printed_proportions {
         native = native.with_source(source_table_from_proportions(props));
     }
+    stash_schedule_meta(&mut native.unknown, &design.meta);
     let native_toml = to_toml_string(&native).map_err(SaveError::Toml)?;
 
     Ok(PairedSave {
@@ -485,8 +567,11 @@ fn draft_asc_schedule_for_no_tiers(design: &Design, custom: &[GemMaterial]) -> A
             mast: DRAFT_PLACEHOLDER_MAST,
             name: NO_TIERS_PLACEHOLDER_NAME.to_string(),
             indices: Vec::new(),
+            index_names: Vec::new(),
             notes: "draft save: design has no tiers yet".to_string(),
         }],
+        warnings: Vec::new(),
+        line_ending: indicatrix_formats::asc::AscLineEnding::default(),
     }
 }
 

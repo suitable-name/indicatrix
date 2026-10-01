@@ -1,0 +1,267 @@
+import { Theme } from "theme.slint";
+
+// The 181-point (+-90 degree, 1 degree step) performance chart canvas of the Tilt
+// dialog: the desktop's `performance_graph/tilt_curve_chart.slint` without its hover
+// preview thumbnail. Tilt angle is continuous, so each channel is a line (`Path`
+// commands; Slint has no polyline element) rather than bars. Hovering shows the value of
+// every visible channel at the tilt under the pointer.
+export component TiltChart inherits Rectangle {
+    // All four sweeps have arrived.
+    in property <bool> ready: false;
+    in property <bool> loading: false;
+    // "All axes" overlay: every azimuth's line for a visible channel, faded except the
+    // selected one.
+    in property <bool> show-all-axes: false;
+    in property <int> selected-axis-index: 0;
+    in property <bool> show-extinction: true;
+    in property <bool> show-windowing: true;
+    in property <bool> show-brilliance: true;
+    // SVG path data of all four azimuths (`M x y L x y ...`, viewbox 100 x 100).
+    in property <[string]> extinction-paths;
+    in property <[string]> windowing-paths;
+    in property <[string]> brilliance-paths;
+    // The selected axis' own path and values, in the flat shape the chart and its hover
+    // card want.
+    in property <string> active-extinction-path;
+    in property <string> active-windowing-path;
+    in property <string> active-brilliance-path;
+    in property <[float]> active-brilliance-values;
+    in property <[float]> active-extinction-values;
+    in property <[float]> active-windowing-values;
+
+    // X-axis tick labels for the +-90 degree (tilt-from-table-up) domain: 7 ticks, 30
+    // degrees apart.
+    property <[string]> axis-tick-labels: ["-90° (edge-on)", "-60°", "-30°", "0° (table-up)", "30°", "60°", "90° (edge-on)"];
+
+    // Linear interpolation between the two 1 degree samples straddling `tilt-deg` (the
+    // hover readout). `values` is indexed like `TILT_ANGLES_DEG`: index 0 is -90, 90 is 0,
+    // 180 is +90. Everything between the measured points is INTERPOLATED, not traced.
+    pure function interpolated-value(values: [float], tilt-deg: float) -> float {
+        if values.length < 181 {
+            return 0.0;
+        }
+        let clamped: float = Math.max(-90.0, Math.min(90.0, tilt-deg));
+        let shifted: float = clamped + 90.0;
+        let lower-idx: int = Math.max(0, Math.min(179, Math.floor(shifted)));
+        if lower-idx >= 179 {
+            return values[180];
+        }
+        let frac: float = shifted - lower-idx;
+        return values[lower-idx] * (1.0 - frac) + values[lower-idx + 1] * frac;
+    }
+
+    // Snaps a horizontal pixel offset within the plot to the nearest whole degree across
+    // the full -90..+90 range: the chart's native resolution.
+    pure function snap-tilt-deg(mouse-x: length, plot-width: length) -> float {
+        let frac: float = Math.max(0.0, Math.min(1.0, mouse-x / plot-width));
+        return Math.round(frac * 180.0) - 90.0;
+    }
+
+    height: 180px;
+    background: #050811;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: #1e293b;
+    clip: true;
+
+    if !root.ready: VerticalLayout {
+        alignment: center;
+        Text {
+            text: root.loading
+                ? "Sweeping ±90° across all 4 axes (181 points x 4)..."
+                : "Press Run to sweep the tilt curves.";
+            font-size: 11px;
+            color: Theme.text-muted;
+            horizontal-alignment: center;
+        }
+    }
+
+    // Y-axis reference grid. `plot`'s y/height (10px/140px) are mirrored here as literals:
+    // `plot` only exists while `ready`, and an always-present sibling cannot read the
+    // geometry of a conditionally instantiated element.
+    Rectangle { y: 10px + 140px * 0.25; width: 100%; height: 1px; background: #1e293b44; }
+    Rectangle { y: 10px + 140px * 0.50; width: 100%; height: 1px; background: #1e293b66; }
+    Rectangle { y: 10px + 140px * 0.75; width: 100%; height: 1px; background: #1e293b44; }
+
+    Text { x: 6px; y: 10px - 4px; text: "100%"; font-size: 11px; color: Theme.text-disabled; }
+    Text { x: 6px; y: 10px + 140px * 0.25 - 4px; text: "75%"; font-size: 11px; color: Theme.text-disabled; }
+    Text { x: 6px; y: 10px + 140px * 0.50 - 4px; text: "50%"; font-size: 11px; color: Theme.text-disabled; }
+    Text { x: 6px; y: 10px + 140px * 0.75 - 4px; text: "25%"; font-size: 11px; color: Theme.text-disabled; }
+
+    // One wrapper `if` around `plot` and the floating card: the card reads `plot`'s and
+    // the hover area's geometry, which is only in scope where `plot` is.
+    if root.ready: chart-content := Rectangle {
+        width: 100%;
+        height: 100%;
+
+        plot := Rectangle {
+            x: 32px;
+            y: 10px;
+            width: parent.width - 44px;
+            height: 140px;
+
+            // "All axes" overlay. Extinction first, then Windowing, then Brilliance: the
+            // same stacking as the single-line case.
+            for path[idx] in root.extinction-paths : Path {
+                visible: root.show-all-axes && root.show-extinction;
+                width: 100%; height: 100%; fit: fill;
+                commands: path;
+                viewbox-width: 100; viewbox-height: 100;
+                stroke: #ef4444;
+                stroke-width: root.selected-axis-index == idx ? 2px : 1.2px;
+                opacity: root.selected-axis-index == idx ? 1.0 : 0.28;
+                fill: transparent;
+            }
+            for path[idx] in root.windowing-paths : Path {
+                visible: root.show-all-axes && root.show-windowing;
+                width: 100%; height: 100%; fit: fill;
+                commands: path;
+                viewbox-width: 100; viewbox-height: 100;
+                stroke: Theme.accent-amber;
+                stroke-width: root.selected-axis-index == idx ? 2px : 1.2px;
+                opacity: root.selected-axis-index == idx ? 1.0 : 0.28;
+                fill: transparent;
+            }
+            for path[idx] in root.brilliance-paths : Path {
+                visible: root.show-all-axes && root.show-brilliance;
+                width: 100%; height: 100%; fit: fill;
+                commands: path;
+                viewbox-width: 100; viewbox-height: 100;
+                stroke: Theme.accent-cyan;
+                stroke-width: root.selected-axis-index == idx ? 2px : 1.2px;
+                opacity: root.selected-axis-index == idx ? 1.0 : 0.28;
+                fill: transparent;
+            }
+
+            // Single-axis view: the selected axis' line per visible channel.
+            if !root.show-all-axes && root.show-extinction: Path {
+                width: 100%; height: 100%; fit: fill;
+                commands: root.active-extinction-path;
+                viewbox-width: 100; viewbox-height: 100;
+                stroke: #ef4444;
+                stroke-width: 2px;
+                fill: transparent;
+            }
+            if !root.show-all-axes && root.show-windowing: Path {
+                width: 100%; height: 100%; fit: fill;
+                commands: root.active-windowing-path;
+                viewbox-width: 100; viewbox-height: 100;
+                stroke: Theme.accent-amber;
+                stroke-width: 2px;
+                fill: transparent;
+            }
+            if !root.show-all-axes && root.show-brilliance: Path {
+                width: 100%; height: 100%; fit: fill;
+                commands: root.active-brilliance-path;
+                viewbox-width: 100; viewbox-height: 100;
+                stroke: Theme.accent-cyan;
+                stroke-width: 2px;
+                fill: transparent;
+            }
+
+            // The shared table-up (tilt 0) point every axis passes through.
+            Rectangle {
+                x: plot.width * 0.5 - 0.5px;
+                width: 1px;
+                height: 100%;
+                background: #33415577;
+            }
+
+            tooltip-area := TouchArea {
+                width: 100%;
+                height: 100%;
+            }
+
+            if tooltip-area.has-hover: Rectangle {
+                x: plot.width * ((root.snap-tilt-deg(tooltip-area.mouse-x, plot.width) + 90.0) / 180.0) - 0.5px;
+                width: 1px;
+                height: 100%;
+                background: #94a3b877;
+            }
+        }
+
+        // The floating card: a sibling of `plot` so it draws over every line and the
+        // crosshair; clamped inside `plot` on both axes, flipping to the cursor's left
+        // near the right edge.
+        if tooltip-area.has-hover: tooltip-card := Rectangle {
+            property <float> tilt-deg: root.snap-tilt-deg(tooltip-area.mouse-x, plot.width);
+            property <length> crosshair-x: plot.width * ((self.tilt-deg + 90.0) / 180.0);
+            property <int> visible-channel-count:
+                (root.show-brilliance ? 1 : 0) + (root.show-windowing ? 1 : 0) + (root.show-extinction ? 1 : 0);
+            property <length> card-w: 132px;
+            property <length> card-h: 24px + (self.visible-channel-count * 15px);
+            property <bool> flip: self.crosshair-x > (plot.width - self.card-w - 12px);
+            x: plot.x + Math.max(0px, Math.min(plot.width - self.card-w,
+                self.flip ? (self.crosshair-x - self.card-w - 10px) : (self.crosshair-x + 10px)));
+            y: plot.y + Math.max(0px, Math.min(plot.height - self.card-h, tooltip-area.mouse-y - self.card-h - 8px));
+            width: self.card-w;
+            height: self.card-h;
+            background: #0f1523ee;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: #334155;
+
+            VerticalLayout {
+                padding: 5px;
+                spacing: 2px;
+
+                Text {
+                    text: "Tilt " + (Math.round(tooltip-card.tilt-deg * 10.0) / 10.0) + "°";
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                }
+                if root.show-brilliance: HorizontalLayout {
+                    spacing: 5px;
+                    Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.accent-cyan; }
+                    Text {
+                        text: "Brilliance " + Math.round(root.interpolated-value(root.active-brilliance-values, tooltip-card.tilt-deg)) + "%";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: Theme.text-primary;
+                    }
+                }
+                if root.show-windowing: HorizontalLayout {
+                    spacing: 5px;
+                    Rectangle { width: 7px; height: 7px; border-radius: 3px; background: Theme.accent-amber; }
+                    Text {
+                        text: "Windowing " + Math.round(root.interpolated-value(root.active-windowing-values, tooltip-card.tilt-deg)) + "%";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: Theme.text-primary;
+                    }
+                }
+                if root.show-extinction: HorizontalLayout {
+                    spacing: 5px;
+                    Rectangle { width: 7px; height: 7px; border-radius: 3px; background: #ef4444; }
+                    Text {
+                        text: "Extinction " + Math.round(root.interpolated-value(root.active-extinction-values, tooltip-card.tilt-deg)) + "%";
+                        font-size: 11px;
+                        font-weight: 600;
+                        color: Theme.text-primary;
+                    }
+                }
+            }
+        }
+    }
+
+    // X-axis angle labels: -90 to +90 in 30 degree steps, evenly spaced. `x`/`width`
+    // mirror `plot`'s literally (`plot` is conditional, this row is not). "0°" is the
+    // shared table-up point, bolded as the sweep's centre.
+    HorizontalLayout {
+        x: 32px;
+        y: 154px;
+        width: parent.width - 44px;
+        spacing: 2px;
+
+        for val[idx] in root.axis-tick-labels : Text {
+            horizontal-stretch: 1;
+            text: val;
+            font-size: 11px;
+            color: idx == 3 ? Theme.accent-cyan : #64748b;
+            font-weight: idx == 3 ? 700 : 400;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+}

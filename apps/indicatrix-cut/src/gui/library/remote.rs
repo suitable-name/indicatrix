@@ -79,12 +79,26 @@ pub fn setup_library_source_callbacks(
         };
 
         ui.global::<LibraryModel>().set_status_message(format!("Connecting to {}...", worker_display_name(&worker)).into());
+        // Captured BEFORE the probe is even dispatched (matching
+        // `search::refresh_diagram_list_remote`'s own "bump before the async work
+        // starts" rule): a second switch clicked while this probe is still in flight
+        // bumps the sequence again, so THIS reply -- whichever of the two lands last --
+        // can tell it has been superseded and must never commit
+        // `LibrarySource::Remote`.
+        let switch_seq = crate::gui::library::search::bump_search_seq();
         let source_probe = Arc::clone(&source_switch);
         let ui_weak_result = ui.as_weak();
         let worker_for_probe = worker;
         std::thread::spawn(move || {
             let result = library_client::probe(&worker_for_probe);
-            let _ = ui_weak_result.upgrade_in_event_loop(move |ui| match result {
+            let _ = ui_weak_result.upgrade_in_event_loop(move |ui| {
+                if !crate::gui::library::search::is_current_search(switch_seq) {
+                    // A newer switch (to Local, or to this-or-another remote worker)
+                    // already owns the display -- this probe reply is stale and must
+                    // never touch `source`/the UI, success or not.
+                    return;
+                }
+                match result {
                 Ok(info) if info.library => {
                     // Invalidates any in-flight LOCAL (or previous remote
                     // worker's) search reply from before this switch -- see the `idx <
@@ -127,6 +141,7 @@ pub fn setup_library_source_callbacks(
                     show_toast(&ui, &format!("Could not switch library: {e}"), "error");
                     ui.global::<LibraryModel>().set_status_message("Ready.".into());
                 }
+                }
             });
         });
     });
@@ -141,18 +156,30 @@ fn apply_source_badge(ui: &MainWindow, source: &LibrarySource) {
         .set_library_source_label(source.label().into());
     ui.global::<RemoteWorkerModel>()
         .set_library_is_remote(source.is_remote());
+    crate::gui::rough_plan::refresh_links_enabled();
 }
 
 /// Loads `worker`'s filter options (shapes/gears/attribute ranges) and initial diagram
 /// list -- the remote counterpart of `gui::diagram_list::load_filter_options_and_initial_list`,
 /// run when a switch to that worker just succeeded.
 fn load_filter_options_and_initial_list_remote(ui: &MainWindow, worker: WorkerSettings) {
+    // Captured before this request is dispatched -- see
+    // `search::refresh_diagram_list_remote`'s own doc comment for why. Without this,
+    // a slow `FilterOptions` reply landing after the cutter switched away (back to
+    // Local, or to browsing a different remote worker) would still reset the
+    // shape/gear dropdowns and chain into `refresh_diagram_list_remote` -- which would
+    // itself mint a FRESH seq for a search against a worker the UI is no longer even
+    // showing, making that stale search look current again.
+    let seq = crate::gui::library::search::bump_search_seq();
     let worker_for_search = worker.clone();
     crate::bridge::library::source::spawn_library_request(
         ui.as_weak(),
         worker,
         LibraryRequest::FilterOptions,
         move |ui, result| {
+            if !crate::gui::library::search::is_current_search(seq) {
+                return;
+            }
             match result {
                 Ok(LibraryResponse::FilterOptions {
                     shapes,
@@ -288,7 +315,6 @@ pub fn setup_mirror_sync_callbacks(
 
             ui.global::<RemoteWorkerModel>()
                 .set_mirror_in_progress(true);
-            ui.global::<RemoteWorkerModel>().set_mirror_worker_index(0);
             ui.global::<RemoteWorkerModel>()
                 .set_mirror_progress_fraction(0.0);
             ui.global::<RemoteWorkerModel>().set_mirror_has_error(false);
@@ -322,17 +348,30 @@ fn on_mirror_progress(ui: &MainWindow, progress: &MirrorProgress) {
         .set_mirror_progress_fraction(fraction);
     ui.global::<RemoteWorkerModel>().set_mirror_status_text(
         format!(
-            "{}/{} -- {} (new {}, updated {}, unchanged {}, failed {})",
+            "{}/{} -- {} (new {}, updated {}, unchanged {}, local conflicts {}, failed {})",
             progress.processed,
             progress.counts.total_found,
             progress.current_title,
             progress.counts.new_count,
             progress.counts.updated_count,
             progress.counts.skipped_unchanged,
+            progress.counts.local_conflicts_skipped,
             progress.counts.failed,
         )
         .into(),
     );
+}
+
+/// A trailing `" (N designs skipped -- deleted locally.)"` clause for the mirror
+/// summary, or empty when `orphaned_mirror_states` is `0` -- see
+/// `MirrorCounts::orphaned_mirror_states`'s own doc comment for what this counts
+/// (owner decision: "local delete wins", so these never come back on their own).
+fn orphaned_mirror_states_suffix(orphaned: u64) -> String {
+    if orphaned == 0 {
+        String::new()
+    } else {
+        format!(" ({orphaned} design(s) skipped -- deleted locally.)")
+    }
 }
 
 fn on_mirror_done(ui: &MainWindow, outcome: &MirrorOutcome) {
@@ -341,16 +380,31 @@ fn on_mirror_done(ui: &MainWindow, outcome: &MirrorOutcome) {
     let (text, is_error, toast_kind) = match outcome {
         MirrorOutcome::Completed(c) => (
             format!(
-                "Mirror complete: {} new, {} updated, {} unchanged, {} failed (of {} found).",
-                c.new_count, c.updated_count, c.skipped_unchanged, c.failed, c.total_found
+                "Mirror complete: {} new, {} updated, {} unchanged, {} deleted locally \
+                 (skipped), {} local conflicts skipped, {} failed (of {} found).{}",
+                c.new_count,
+                c.updated_count,
+                c.skipped_unchanged,
+                c.skipped_deleted,
+                c.local_conflicts_skipped,
+                c.failed,
+                c.total_found,
+                orphaned_mirror_states_suffix(c.orphaned_mirror_states),
             ),
             c.failed > 0,
             if c.failed > 0 { "error" } else { "success" },
         ),
         MirrorOutcome::Cancelled(c) => (
             format!(
-                "Mirror cancelled after {} new, {} updated, {} unchanged (of {} found so far).",
-                c.new_count, c.updated_count, c.skipped_unchanged, c.total_found
+                "Mirror cancelled after {} new, {} updated, {} unchanged, {} deleted \
+                 locally (skipped), {} local conflicts skipped (of {} found so far).{}",
+                c.new_count,
+                c.updated_count,
+                c.skipped_unchanged,
+                c.skipped_deleted,
+                c.local_conflicts_skipped,
+                c.total_found,
+                orphaned_mirror_states_suffix(c.orphaned_mirror_states),
             ),
             false,
             "info",
@@ -364,7 +418,7 @@ fn on_mirror_done(ui: &MainWindow, outcome: &MirrorOutcome) {
     show_toast(ui, &text, toast_kind);
 }
 
-/// One remote design's original `.asc` cutting-schedule text, fetched via
+/// One remote design's original `.asc` cutting-instructions text, fetched via
 /// [`fetch_remote_design_source`] -- the exact bytes/text a locally-attached `.asc`
 /// file would carry (never the placeholder angle-table reconstruction), so
 /// `gui::editor::loading::design_from_full_record`'s own `indicatrix_formats::asc::parse_asc` +
@@ -445,7 +499,8 @@ fn map_design_source_response(
             Err("That design no longer exists on the remote library.".to_string())
         }
         Ok(LibraryResponse::DesignSourceNotAvailable) => Err(
-            "This design has no attached .asc file on the remote library -- nothing to load."
+            "This design has no attached .asc, .gem or .gcs file on the remote library -- \
+             nothing to load."
                 .to_string(),
         ),
         Ok(LibraryResponse::Error(e)) => Err(e.message),
@@ -492,6 +547,7 @@ mod remote_design_source_tests {
         let err = map_design_source_response(Ok(LibraryResponse::Error(ErrorMsg {
             code: indicatrix_net::messages::error_codes::LIBRARY_FAILED,
             message: "internal error serving the design library".to_string(),
+            request_id: None,
         })))
         .expect_err("Error must map to Err");
         assert_eq!(err, "internal error serving the design library");

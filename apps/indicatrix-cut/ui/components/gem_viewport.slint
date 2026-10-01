@@ -1,8 +1,6 @@
 import { Theme } from "../theme.slint";
 import { LightingPresetItem } from "../types.slint";
 import { SettingsDialog } from "settings_dialog.slint";
-import { MaterialEditorDialog } from "material_editor_dialog.slint";
-import { PerformanceGraphDialog } from "performance_graph_dialog.slint";
 import { ExportDialog } from "export_dialog.slint";
 import { ExportModel } from "../models/export.slint";
 import { ViewportModel } from "../models/viewport.slint";
@@ -45,11 +43,22 @@ export component GemViewportView inherits Rectangle {
     // viewport_width`/`viewport_height`: if this component and `SolidViewportView`
     // pushed their layout size into the SAME two properties, whichever one
     // resized last would silently clobber the other's pending redraw size
-    // (undocking or resizing the Live Render window while the Edit tab was open
+    // (resizing the Live Render viewport while the Edit tab was open
     // would leave ITS next redraw sized to the Live tab's viewport, or vice
     // versa). See `SolidPreviewModel.live_viewport_width`'s own doc comment.
     changed width => { SolidPreviewModel.live_viewport_width = self.width; }
     changed height => { SolidPreviewModel.live_viewport_height = self.height; }
+    // Also pushed once on mount, not left to the two `changed` handlers above
+    // alone: those only fire on a REAL size change relative to what this
+    // component's own tracker last saw, but a fresh instance (this component
+    // sits inside a conditional elsewhere -- switching away from and back to
+    // the Live Render tab remounts it) starts with no size pushed at all,
+    // which can leave `SolidPreviewModel.live_viewport_*` reading a stale size
+    // from whatever WAS mounted before, right up until the next real resize.
+    init => {
+        SolidPreviewModel.live_viewport_width = self.width;
+        SolidPreviewModel.live_viewport_height = self.height;
+    }
 
     // Viewport TouchArea for Orbit, Pan, Zoom with True Incremental Deltas
     touch_area := TouchArea {
@@ -75,8 +84,28 @@ export component GemViewportView inherits Rectangle {
                 root.is_right_drag = (event.button == PointerEventButton.right)
                     || event.modifiers.shift;
                 root.is_dragging = true;
+                ViewportModel.camera_drag_begin();
             } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                if (root.is_dragging) {
+                    root.is_dragging = false;
+                    ViewportModel.camera_drag_end();
+                }
+            }
+        }
+        // Belt and braces for a release that never arrives as `up`/`cancel` (a lost
+        // grab, focus loss) or an area disabled mid-drag (settings, the material
+        // editor, the Tilt Curve dialog): whenever Slint's own pressed state drops,
+        // the drag is over.
+        changed pressed => {
+            if (!self.pressed && root.is_dragging) {
                 root.is_dragging = false;
+                ViewportModel.camera_drag_end();
+            }
+        }
+        changed enabled => {
+            if (!self.enabled && root.is_dragging) {
+                root.is_dragging = false;
+                ViewportModel.camera_drag_end();
             }
         }
         moved => {
@@ -105,6 +134,56 @@ export component GemViewportView inherits Rectangle {
         height: 100%;
         source: ViewportModel.render_image;
         image-fit: contain;
+        // Dimmed to a bare silhouette while `ViewportModel.trace_refusal` is set --
+        // see that property's own doc comment. Never hidden outright: a dimmed
+        // last-good frame still orients the cutter better than a blank rectangle,
+        // while the banner below makes it unmistakable that the material is refused,
+        // not merely that this reflects the current design.
+        opacity: ViewportModel.trace_refusal == "" ? 1.0 : 0.15;
+    }
+
+    // Material-refusal banner -- shown instead of trusting a render, export or tilt
+    // sweep that would otherwise trace the wrong stone (as Diamond, or as whatever
+    // the previous design's material was) -- see `ViewportModel.trace_refusal`'s own
+    // doc comment. Path-traced mode only: the Solid raster carries no material at
+    // all, so there is nothing wrong with it to warn about.
+    if ViewportModel.live_view_mode == 1 && ViewportModel.trace_refusal != "": Rectangle {
+        x: 0;
+        y: 0;
+        width: 100%;
+        height: 100%;
+
+        VerticalLayout {
+            alignment: center;
+            padding: 32px;
+
+            Rectangle {
+                border-radius: Theme.radius-md;
+                background: Theme.accent-amber;
+
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 6px;
+
+                    Text {
+                        text: "Cannot trace this design";
+                        font-size: 14px;
+                        font-weight: 700;
+                        color: Theme.bg-darkest;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+
+                    Text {
+                        text: ViewportModel.trace_refusal;
+                        font-size: 12px;
+                        color: Theme.bg-darkest;
+                        horizontal-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
     }
 
     // Solid Rendered Image -- Solid mode only. `SolidPreviewModel.image` is the SAME
@@ -189,7 +268,7 @@ export component GemViewportView inherits Rectangle {
         // same pill style as `solid_viewport.slint`'s Edit-tab toggle. Lets a user
         // browse the library with the fast CPU solid rasterizer and only pay for the
         // spectral path tracer on the design they actually want to inspect -- see
-        // `gui::render::detached_render::render_is_visible`'s own doc comment for how
+        // `gui::render::render_visibility::render_is_visible`'s own doc comment for how
         // this gates the tracer itself, not just what's displayed.
         HorizontalLayout {
             spacing: 8px;
@@ -245,74 +324,79 @@ export component GemViewportView inherits Rectangle {
 
         // A layout never shrinks below its children's minimum width; without this
         // wrapper a toolbar wider than the window inflates the whole render column and
-        // pushes the viewport image off-centre. Overflow is clipped here instead, and
-        // the metrics HUD below is the element that yields space first.
+        // pushes the viewport image off-centre. Overflow is clipped here instead.
+        // The metrics HUD used to share this row and squeezed the actions; it now has
+        // its own row below.
         Rectangle {
             min-width: 0px;
             clip: true;
             height: toolbar.preferred-height;
             toolbar := HorizontalLayout {
-                alignment: space-between;
-
                 // Material & Lighting Selectors & Action Buttons -- see
                 // `GemViewportToolbarActions`'s own doc comment
                 // (`gem_viewport/toolbar_actions.slint`) for why this is split out.
-                GemViewportToolbarActions {}
+                // `compact` drops the labels that only decorate an icon or a toggle.
+                GemViewportToolbarActions { compact: root.width < 1000px; }
+            }
+        }
 
-                // Real-Time 5-Point Gemological Metrics HUD -- belongs to the tracer:
-                // only shown in Path-traced mode (`live_view_mode == 1`). Solid mode's
-                // flat-shaded raster has no brilliance/fire/scintillation/windowing/
-                // extinction samples to report.
-                if ViewportModel.live_view_mode == 1: Rectangle {
-                    min-width: 0px;
-                    horizontal-stretch: 1;
-                    clip: true;
-                    background: #0f172aee;
-                    border-radius: Theme.radius-sm;
-                    border-width: 1px;
-                    border-color: Theme.border-medium;
+        // Real-Time 5-Point Gemological Metrics HUD -- belongs to the tracer:
+        // only shown in Path-traced mode (`live_view_mode == 1`). Solid mode's
+        // flat-shaded raster has no brilliance/fire/scintillation/windowing/
+        // extinction samples to report. Its own row under the actions (it is about
+        // 450px wide), so neither squeezes the other. When it is the whole width and
+        // no wider, it clips.
+        if ViewportModel.live_view_mode == 1: HorizontalLayout {
+            alignment: start;
 
-                    hud_touch := TouchArea {
-                        clicked => { ViewportModel.copy_metrics(); }
-                    }
-                    Tooltip { text: @markdown("Click to copy brilliance, fire, scintillation, windowing and extinction."); }
+            Rectangle {
+                min-width: 0px;
+                clip: true;
+                background: #0f172aee;
+                border-radius: Theme.radius-sm;
+                border-width: 1px;
+                border-color: Theme.border-medium;
+
+                hud_touch := TouchArea {
+                    clicked => { ViewportModel.copy_metrics(); }
+                }
+                Tooltip { text: @markdown("Click to copy brilliance, fire, scintillation, windowing and extinction."); }
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    padding-top: 6px;
+                    padding-bottom: 6px;
+                    spacing: 12px;
 
                     HorizontalLayout {
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        padding-top: 6px;
-                        padding-bottom: 6px;
-                        spacing: 12px;
+                        spacing: 4px;
+                        Text { text: "Brilliance:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                        Text { text: Math.round(ViewportModel.brilliance_pct) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-emerald; }
+                    }
 
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text { text: "Brilliance:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
-                            Text { text: Math.round(ViewportModel.brilliance_pct) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-emerald; }
-                        }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text { text: "Fire:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                        Text { text: Math.round(ViewportModel.fire_index * 100.0) / 100.0; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+                    }
 
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text { text: "Fire:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
-                            Text { text: Math.round(ViewportModel.fire_index * 100.0) / 100.0; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
-                        }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text { text: "Scintillation:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                        Text { text: Math.round(ViewportModel.scintillation_pct) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-purple; }
+                    }
 
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text { text: "Scintillation:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
-                            Text { text: Math.round(ViewportModel.scintillation_pct) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-purple; }
-                        }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text { text: "Windowing:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                        Text { text: Math.round(ViewportModel.windowing_pct) + "%"; font-size: 11px; font-weight: 700; color: ViewportModel.windowing_pct > 10.0 ? Theme.accent-ruby : Theme.text-secondary; }
+                    }
 
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text { text: "Windowing:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
-                            Text { text: Math.round(ViewportModel.windowing_pct) + "%"; font-size: 11px; font-weight: 700; color: ViewportModel.windowing_pct > 10.0 ? Theme.accent-ruby : Theme.text-secondary; }
-                        }
-
-                        HorizontalLayout {
-                            spacing: 4px;
-                            Text { text: "Extinction:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
-                            Text { text: Math.round(ViewportModel.extinction_pct) + "%"; font-size: 11px; font-weight: 700; color: ViewportModel.extinction_pct > 12.0 ? Theme.accent-amber : Theme.text-secondary; }
-                        }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        Text { text: "Extinction:"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                        Text { text: Math.round(ViewportModel.extinction_pct) + "%"; font-size: 11px; font-weight: 700; color: ViewportModel.extinction_pct > 12.0 ? Theme.accent-amber : Theme.text-secondary; }
                     }
                 }
             }
@@ -325,7 +409,7 @@ export component GemViewportView inherits Rectangle {
 
         // --- BOTTOM INTERACTION HINT BADGES ---
         HorizontalLayout {
-            spacing: 8px;
+            spacing: 6px;
             alignment: center;
 
             Rectangle {
@@ -364,7 +448,9 @@ export component GemViewportView inherits Rectangle {
                 }
             }
 
-            Rectangle {
+            // The HUD tip, dropped on a narrow viewport so the row keeps the three
+            // gesture badges whole.
+            if root.width >= 760px: Rectangle {
                 background: #1e293bdd;
                 border-radius: Theme.radius-sm;
                 border-width: 1px;
@@ -394,26 +480,17 @@ export component GemViewportView inherits Rectangle {
     // `y` pushed down from its old `48px` by the new mode-toggle pill row above the
     // toolbar (28px tall, plus the 8px `VerticalLayout` spacing now separating it from
     // the toolbar) -- otherwise this card would open underneath/overlapping that row.
+    // In Path-traced mode the metrics HUD row (about 26px + the 8px layout spacing)
+    // sits under the toolbar too, so the card drops below it.
     if SettingsModel.is_open: SettingsDialog {
         x: 12px;
-        y: 84px;
+        y: 84px + (ViewportModel.live_view_mode == 1 ? 36px : 0px);
         z: 200;
         available_height: root.height;
     }
 
-    // --- MODAL GEM MATERIAL EDITOR DIALOG ---
-    if ViewportModel.material_editor_open: MaterialEditorDialog {
-        width: 100%;
-        height: 100%;
-        z: 300;
-    }
-
-    // --- MODAL PERFORMANCE GRAPH DIALOG ---
-    if TiltModel.dialog_open: PerformanceGraphDialog {
-        width: 100%;
-        height: 100%;
-        z: 350;
-    }
+    // The gem material editor and the tilt-performance chart are mounted at window size
+    // in `GlobalDialogsOverlay` (`components/app/global_dialogs.slint`), not here.
 
     // --- MODAL HIGH-RESOLUTION EXPORT DIALOG ---
     if ExportModel.is_open: ExportDialog {

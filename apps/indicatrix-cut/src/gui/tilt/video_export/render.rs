@@ -134,7 +134,8 @@ mod tests {
     /// isolates just the render+tonemap step.
     #[test]
     fn render_frame_rgba_produces_a_full_opaque_buffer() {
-        let scene = SceneSnapshot::capture(&Mutex::new(RenderContext::default()));
+        let scene = SceneSnapshot::capture(&Mutex::new(RenderContext::default()))
+            .expect("Diamond resolves");
         let config = VideoComputeConfig {
             remote: RemoteSelection::local_only(),
             local_compute: LocalComputeTarget::Cpu,
@@ -168,7 +169,8 @@ mod tests {
 
     #[test]
     fn render_frame_rgba_accepts_wide_gamut_color_spaces_too() {
-        let scene = SceneSnapshot::capture(&Mutex::new(RenderContext::default()));
+        let scene = SceneSnapshot::capture(&Mutex::new(RenderContext::default()))
+            .expect("Diamond resolves");
         let config = VideoComputeConfig {
             remote: RemoteSelection::local_only(),
             local_compute: LocalComputeTarget::Cpu,
@@ -205,7 +207,8 @@ mod tests {
     /// exactly ONCE, not once per frame, proving the probe itself was not repeated.
     #[test]
     fn a_no_worker_configured_note_is_surfaced_once_not_once_per_frame() {
-        let scene = SceneSnapshot::capture(&Mutex::new(RenderContext::default()));
+        let scene = SceneSnapshot::capture(&Mutex::new(RenderContext::default()))
+            .expect("Diamond resolves");
         let config = VideoComputeConfig {
             remote: RemoteSelection {
                 compute_target: crate::bridge::export_thread::ComputeTarget::Both,
@@ -253,7 +256,8 @@ mod tests {
     /// final-picture note and the full-data "rendering locally" note each appear once.
     #[test]
     fn a_failing_final_picture_falls_back_to_full_data_once_per_sweep() {
-        let scene = SceneSnapshot::capture(&Mutex::new(RenderContext::default()));
+        let scene = SceneSnapshot::capture(&Mutex::new(RenderContext::default()))
+            .expect("Diamond resolves");
         let config = VideoComputeConfig {
             remote: RemoteSelection {
                 compute_target: crate::bridge::export_thread::ComputeTarget::Both,
@@ -266,6 +270,7 @@ mod tests {
                     ..crate::settings::WorkerSettings::default()
                 }),
                 transfer: crate::settings::ExportTransfer::FinalPicture,
+                contribute_local: false,
             },
             local_compute: LocalComputeTarget::Cpu,
         };

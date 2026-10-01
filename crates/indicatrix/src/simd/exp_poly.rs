@@ -18,10 +18,20 @@ const EXP_P5: f32 = 5.000_000_3e-1;
 const EXP_HI: f32 = 88.028_75;
 const EXP_LO: f32 = -87.336_54;
 
+/// Scalar twin of `_mm256_max_ps(_mm256_min_ps(x, HI), LO)`: both intrinsics return
+/// their second operand when either input is NaN, so a NaN lane becomes `HI`
+/// (then survives the max), and `+-inf` land on `HI`/`LO`. `f32::clamp` would
+/// instead propagate the NaN and break bit-identity with the vector path.
+fn clamp_like_avx2(x: f32) -> f32 {
+    let upper = if x < EXP_HI { x } else { EXP_HI };
+    if upper > EXP_LO { upper } else { EXP_LO }
+}
+
 /// One lane of the polynomial exponential; the scalar fallback and the
-/// reference the vector path is tested bit-identical against.
+/// reference the vector path is tested bit-identical against, including for
+/// NaN and infinite inputs (see [`clamp_like_avx2`]).
 fn exp_lane(x: f32) -> f32 {
-    let x = x.clamp(EXP_LO, EXP_HI);
+    let x = clamp_like_avx2(x);
     let n = x.mul_add(EXP_LOG2E, 0.5).floor();
     let x = n.mul_add(-EXP_C1, x);
     let x = n.mul_add(-EXP_C2, x);
@@ -97,7 +107,8 @@ fn exp_f32x8_avx2(lanes: [f32; 8]) -> [f32; 8] {
 /// (AVX-512 machines use the 8-lane AVX2 body; 8 lanes fill one `ymm`), but
 /// **not** bit-identical to `f32::exp` -- accuracy is a few ULP (see the
 /// module docs and this function's unit tests). Inputs outside
-/// `[-87.34, 88.03]` are clamped.
+/// `[-87.34, 88.03]` are clamped; a NaN lane is treated as above the range and
+/// returns the clamped-high result (`exp(88.03)`), at every dispatch level.
 #[must_use]
 pub fn exp_f32x8(x: [f32; 8]) -> [f32; 8] {
     match simd_level() {
@@ -157,5 +168,40 @@ mod tests {
             worst_rel < 5e-7,
             "exp8 worst relative error {worst_rel} exceeds 5e-7"
         );
+    }
+
+    /// NaN and infinite inputs must give the same bits at every dispatch level:
+    /// NaN clamps to the high end (as `_mm256_min_ps`/`_mm256_max_ps` do), and
+    /// `+-inf` clamp to the range ends.
+    #[test]
+    fn exp8_nan_and_infinite_inputs_are_level_identical() {
+        let lanes = [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            -f32::NAN,
+            f32::MAX,
+            f32::MIN,
+            0.0,
+            1.0,
+        ];
+        let got = exp_f32x8(lanes);
+        let scalar = exp_f32x8_scalar(lanes);
+        for lane in 0..8 {
+            assert_eq!(
+                got[lane].to_bits(),
+                scalar[lane].to_bits(),
+                "lane {lane}, input {}",
+                lanes[lane]
+            );
+        }
+        let high = exp_lane(EXP_HI).to_bits();
+        let low = exp_lane(EXP_LO).to_bits();
+        assert_eq!(got[0].to_bits(), high, "NaN clamps high");
+        assert_eq!(got[1].to_bits(), high, "+inf clamps high");
+        assert_eq!(got[2].to_bits(), low, "-inf clamps low");
+        assert_eq!(got[3].to_bits(), high, "negative NaN clamps high");
+        assert_eq!(got[4].to_bits(), high, "f32::MAX clamps high");
+        assert_eq!(got[5].to_bits(), low, "f32::MIN clamps low");
     }
 }

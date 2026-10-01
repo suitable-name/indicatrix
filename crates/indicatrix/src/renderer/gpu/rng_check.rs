@@ -41,6 +41,7 @@ const SHADER_SRC: &str = include_str!("../shaders/rng_equivalence.wgsl");
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RngRecord {
+    /// Seed.
     pub seed: u32,
     /// `hash_u32(pixel ^ PIXEL_JITTER_X_ROTATION_STREAM)`, Tier 1 (pure integer).
     pub rot_jx_hash: u32,
@@ -56,9 +57,13 @@ pub struct RngRecord {
     pub jy: f32,
     /// Stratified hero-wavelength draw fed to `wrapped_hero_wavelengths`. Tier 2.
     pub hero_rand: f32,
+    /// Lambdas.
     pub lambdas: [f32; 8],
+    /// Fresnel draws.
     pub fresnel_draws: [u32; 4],
+    /// Rr draws.
     pub rr_draws: [u32; 4],
+    /// Biref draws.
     pub biref_draws: [u32; 4],
     /// Tier 1 integer draw for the o<->e (uniaxial) / mode-A<->mode-B (biaxial)
     /// re-coupling decision -- see `optics::raytracer::apply_internal_mode_coupling`.
@@ -153,10 +158,15 @@ pub fn cpu_record(pixel: u32, sample: u32) -> RngRecord {
 /// to diagnose without re-running anything.
 #[derive(Debug, Clone)]
 pub struct RngMismatch {
+    /// Index of the pixel.
     pub pixel: u32,
+    /// Index of the sample within the pixel.
     pub sample: u32,
+    /// Field.
     pub field: &'static str,
+    /// Value produced by the CPU reference.
     pub cpu: String,
+    /// Value produced by the GPU shader.
     pub gpu: String,
 }
 
@@ -164,6 +174,7 @@ pub struct RngMismatch {
 /// from the same GPU dispatch and CPU comparison loop in [`run`].
 #[derive(Debug, Clone)]
 pub struct RngCheckResult {
+    /// Total records.
     pub total_records: usize,
     /// Tier 1: pure-integer fields, zero tolerance.
     pub mismatches: Vec<RngMismatch>,
@@ -249,30 +260,44 @@ pub const FLOAT_ABS_FLOOR: f32 = 1e-4;
 /// and `0` otherwise.
 #[derive(Debug, Clone, Copy)]
 pub struct FloatUlpArgmax {
+    /// Index of the pixel.
     pub pixel: u32,
+    /// Index of the sample within the pixel.
     pub sample: u32,
+    /// Field.
     pub field: &'static str,
+    /// Channel.
     pub channel: usize,
+    /// Value produced by the CPU reference.
     pub cpu: f32,
+    /// Value produced by the GPU shader.
     pub gpu: f32,
+    /// Distance between the CPU and GPU values in units in the last place.
     pub ulp: u32,
 }
 
+/// Outcome of the float ulp check.
 #[derive(Debug, Clone, Copy)]
 pub struct FloatUlpResult {
+    /// Maximum tolerated ULP distance.
     pub budget: u32,
     /// Max ULP among comparisons NOT exempted by [`FLOAT_ABS_FLOOR`] -- what
     /// [`Self::passed`] checks against `budget`.
     pub max_ulp: u32,
     /// Max ULP among ALL comparisons, including exempted ones -- purely informational.
     pub max_raw_ulp: u32,
+    /// Comparison with the largest ULP distance.
     pub argmax: Option<FloatUlpArgmax>,
+    /// Number of comparisons that exceeded the budget.
     pub over_budget_count: usize,
+    /// Number of comparisons exempted by the absolute floor.
     pub exempted_count: usize,
+    /// Total values compared.
     pub total_values_compared: usize,
 }
 
 impl FloatUlpResult {
+    /// Whether every compared value stayed within its budget.
     #[must_use]
     pub const fn passed(&self) -> bool {
         self.over_budget_count == 0

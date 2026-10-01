@@ -2,27 +2,43 @@
 
 `app.slint` declares `MainWindow` and wires up the top-level layout (tabs,
 menu bar, keyboard shortcuts, dialog overlays). It owns only window-level
-state that has nowhere more specific to live: `active_tab`/`render_view_tab`,
-`live_render_detached`, the toast, and `open_user_manual`.
+state that has nowhere more specific to live:
+
+- the window title's design name (`loaded_design_name`);
+- the tab selection (`active_tab`/`render_view_tab` and their `*_changed` callbacks);
+- File > Open Recent (`recent_native_files`, `open_recent_native_file`);
+- the window-close unsaved-changes guard (`close_confirm_open`,
+  `close_confirm_save`, `close_confirm_discard`);
+- the toast (`toast_message`, `toast_type`, `toast_visible`, `toast_generation`);
+- `open_user_manual`.
 
 Everything else -- every property and callback a dialog or panel needs -- is
-declared on a per-feature `export global` in `ui/models/*.slint`:
+declared on a per-feature `export global`. Almost all of them live in
+`ui/models/*.slint`; two live elsewhere, noted in the table. A global is
+instantiated once per top-level window (`MainWindow`, the compare window, the
+rough-planner window), so Rust reaches each window's instance through that
+window's own handle.
 
 | Global | File | Owns |
 | --- | --- | --- |
 | `ActivityModel` | `models/activity.slint` | The one list of running long actions (auto-solve, Deep Solve, Optimize, exports, ...) |
 | `BatchModel` | `models/batch.slint` | Preview-batch and tilt-batch dialogs |
+| `CompareModel` | `models/compare.slint` | The visual before/after compare window, and the comparison pane embedded in the Retarget dialog (separate instances per window) |
 | `EditorModel` | `models/editor.slint` | The Edit tab: tiers, solve, optimize, deep solve, new-design/gear-remap dialogs |
 | `ExportModel` | `models/export.slint` | The render-export dialog, including its "Transfer" choice |
 | `GuideModel` | `models/guide.slint` | The worked-example guide panel: steps, navigation, control locks |
 | `LibraryModel` | `models/library.slint` | The catalogue/diagram list, filters, metadata editor |
+| `ManipulateModel` | `models/manipulate.slint` | The Solid viewport's angle/depth/index drag handles, their hint line, the Snap pill and the Slice tool (mode, rubber-band line, provisional tier buttons) |
 | `RemoteWorkerModel` | `models/remote_worker.slint` | The one remote endpoint ("Remote Coordinator" form), "served by", library switch and mirroring |
 | `RetargetModel` | `models/retarget.slint` | The "Retarget for material" dialog |
+| `RoughPlanModel` | `models/rough_plan.slint` | The Rough Planner window (Library > Plan Rough...): inputs, results, saved plans |
 | `SettingsModel` | `models/settings.slint` | The render-quality settings panel, including Live Compute / Live Transfer |
 | `ShortcutsModel` | `models/shortcuts.slint` | The keyboard-shortcuts overlay |
 | `SolidPreviewModel` | `models/solid_preview.slint` | The Edit tab's solid-inspection viewport |
 | `TemplateGalleryModel` | `models/templates.slint` | The New Design dialog's template gallery |
+| `Theme` | `theme.slint` | The colour palette and other design tokens; read from `.slint` only, not exported to Rust |
 | `TiltModel`, `TiltVideoExportModel` | `models/tilt.slint` | Tilt performance graphs; the tilt-video export section |
+| `UndoRedoLabels` | `components/editor_command_bar.slint` | The Undo/Redo wording shown by the command bar and the Edit menu (declared beside the command bar because both import it from there) |
 | `ViewportModel` | `models/viewport.slint` | The 3D gem viewport's camera/lighting/material controls |
 
 A `.slint` component reads/writes a global directly (`EditorModel.solve()`,

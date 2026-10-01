@@ -87,6 +87,24 @@ pub fn run(args: &RenderArgs) -> Result<(), String> {
 
     validate::validate_scene(&scene)?;
 
+    // An HDR scene names its map only by content hash + declared dimensions (see
+    // `indicatrix_net::scene::HdrEnvironment`); resolving the actual bytes only ever
+    // happens over the network (`NEED_ASSET`/`ASSET`, `crate::assets::fetch`). `render`
+    // is a standalone, no-network CLI with no way to supply them, so tracing an HDR
+    // scene here used to panic deep inside `render_core` (`assets::decoded::resolved_hdr_map`)
+    // instead of failing cleanly at the top.
+    if let Some(hdr) = scene.hdr() {
+        return Err(format!(
+            "scene {} is lit by an HDR environment map (hash {}, {}x{}), but `render` has no \
+             way to supply its bytes -- that only happens over the network via `serve`/`join`; \
+             a --scene file for `render` must use the studio rig",
+            args.scene.display(),
+            indicatrix_net::messages::hash_hex(&hdr.content_hash),
+            hdr.width,
+            hdr.height
+        ));
+    }
+
     let gpu = match args.compute_mode {
         ComputeMode::OnlyCpu => GpuBackend::disabled(),
         ComputeMode::Hybrid | ComputeMode::OnlyGpu => GpuBackend::acquire(),
@@ -214,6 +232,58 @@ mod tests {
             compute_mode: ComputeMode::OnlyCpu,
         };
         assert!(run(&args).is_err());
+    }
+
+    /// `render` refuses an HDR scene with a clear error instead of panicking deep
+    /// inside the tracer: the CLI has no network path to fetch the map's bytes.
+    #[test]
+    fn run_rejects_an_hdr_scene_clearly() {
+        let dir = std::env::temp_dir().join(format!(
+            "indicatrix-worker-render-hdr-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let mut scene = SceneState {
+            width: 8,
+            height: 8,
+            yaw: 0.4,
+            pitch: 0.3,
+            distance: 3.0,
+            light_yaw: 0.85,
+            light_pitch: 0.95,
+            exposure: 1.0,
+            max_bounces: 4,
+            lighting_preset: LightingPreset::Daylight,
+            material: GemMaterial::diamond(),
+            planes: StandardGemCuts::standard_round_brilliant(),
+            girdle_frosted: false,
+            backdrop: 0.0,
+            environment: indicatrix_net::scene::SceneEnvironment::Studio,
+        };
+        scene.environment =
+            indicatrix_net::scene::SceneEnvironment::Hdr(indicatrix_net::scene::HdrEnvironment {
+                content_hash: [0u8; 32],
+                width: 512,
+                height: 256,
+            });
+        let scene_path = dir.join("scene.json");
+        std::fs::write(&scene_path, serde_json::to_string(&scene).unwrap()).unwrap();
+
+        let args = RenderArgs {
+            scene: scene_path,
+            out: dir.join("never.png"),
+            width: 8,
+            height: 8,
+            samples: 4,
+            threads: 1,
+            compute_mode: ComputeMode::OnlyCpu,
+        };
+        let err = run(&args).unwrap_err();
+        assert!(err.contains("HDR"), "{err}");
+        assert!(err.contains("no way to supply"), "{err}");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

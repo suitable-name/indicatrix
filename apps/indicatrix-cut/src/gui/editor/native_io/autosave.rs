@@ -3,13 +3,14 @@
 //! solves. [`find_leftover_autosave`] is this group's own startup-recovery check.
 
 use super::{
-    atomic_write::temp_sibling,
+    atomic_write::{temp_sibling, write_synced},
     save_helpers::{custom_material_snapshot_for_save, snapshot_custom_materials},
 };
 use crate::{
     EditorModel, MainWindow,
     bridge::render_thread::RenderContext,
     gui::{editor::state::EditorState, show_toast},
+    settings::SettingsPersister,
 };
 use indicatrix_cut_core::native::{SaveExtras, save_native_only_toml};
 use indicatrix_vault::db::sqlite::Database;
@@ -21,6 +22,7 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+use tracing::warn;
 
 /// How often the autosave timer checks [`EditorState::is_dirty`] and, if `true`,
 /// writes a recovery snapshot. Two minutes:
@@ -39,6 +41,24 @@ thread_local! {
     /// own reasoning for using a `thread_local!` here: Slint's event loop is
     /// single-threaded, so this is sound without any real synchronization.
     static AUTOSAVE_TIMER: RefCell<Option<slint::Timer>> = const { RefCell::new(None) };
+
+    /// The recovery file the most recent autosave tick dispatched a write to, until a
+    /// save takes it ([`take_last_autosave_path`]). A thread-local for the same reason
+    /// [`AUTOSAVE_TIMER`] is: only UI-thread callbacks read or write it.
+    static LAST_AUTOSAVE_PATH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+}
+
+/// Takes the path of the recovery file the last autosave tick wrote, if any tick has
+/// run since the previous take.
+///
+/// A landed save deletes this file (via the listener [`setup_autosave_timer`]
+/// registers), not just [`autosave_path`] of its own file name: the autosave is named
+/// after the design's name AT THE TIME of the tick (`untitled.indicatrix.autosave.toml`
+/// for a design never saved), which is not the name the save gives it. Deleting only the
+/// file named after the new name left the untitled one behind, and the "Recover unsaved
+/// work?" prompt came back on every start.
+fn take_last_autosave_path() -> Option<PathBuf> {
+    LAST_AUTOSAVE_PATH.with(|cell| cell.borrow_mut().take())
 }
 
 /// Starts the autosave timer -- bundled into [`setup_save_native_callback`] (called
@@ -84,6 +104,13 @@ pub(super) fn setup_autosave_timer(
         });
     });
     AUTOSAVE_TIMER.with(|cell| *cell.borrow_mut() = Some(timer));
+    // A landed save makes the recovery file it stood in for obsolete, whatever name the
+    // design was autosaved under -- see `take_last_autosave_path`.
+    super::on_save_completed(|_ui, _state| {
+        if let Some(stale) = take_last_autosave_path() {
+            let _ = std::fs::remove_file(stale);
+        }
+    });
 }
 
 /// One autosave timer tick: writes a recovery snapshot iff [`EditorState::is_dirty`]
@@ -149,6 +176,9 @@ fn run_autosave_tick(
         return;
     };
     let path = autosave_path(asc_filename.as_deref());
+    // Remembered so the save that eventually lands can delete THIS file even though the
+    // design may have a different name by then -- see `take_last_autosave_path`.
+    LAST_AUTOSAVE_PATH.with(|cell| *cell.borrow_mut() = Some(path.clone()));
     let ui_weak = ui.as_weak();
     std::thread::spawn(move || {
         let result = write_autosave(&path, &native_toml);
@@ -204,6 +234,25 @@ pub(super) fn autosave_path(asc_filename: Option<&str>) -> PathBuf {
 /// successful-save cleanup, just above).
 #[must_use]
 pub(in crate::gui::editor) fn find_leftover_autosave() -> Option<PathBuf> {
+    // Lists every leftover, not just the newest, so the newest can be picked out
+    // here while the "Delete" action on the startup prompt
+    // (`delete_leftover_autosave`) still removes only the ONE file actually
+    // offered -- see that function's own doc comment (owner decision 4.5).
+    find_all_leftover_autosaves()
+        .into_iter()
+        .max_by_key(|path| std::fs::metadata(path).and_then(|m| m.modified()).ok())
+}
+
+/// Every `*.indicatrix.autosave.toml` file currently on disk, in
+/// [`find_leftover_autosave`]'s own directory -- that function's own list, minus
+/// the "keep only the newest" reduction. An older leftover from a DIFFERENT
+/// design than the one just offered is neither opened nor removed by this
+/// crate today (owner decision 4.5): it simply sits there until its own design
+/// is reopened and saved again (which deletes it, see
+/// [`finish_save_native_success`]'s own doc comment) or a cutter clears it by
+/// hand. Exposed only to [`find_leftover_autosave`] itself; nothing outside
+/// this module needs the full list.
+fn find_all_leftover_autosaves() -> Vec<PathBuf> {
     let dir = crate::settings::store::default_settings_path()
         .parent()
         .map_or_else(std::env::temp_dir, std::path::Path::to_path_buf);
@@ -217,12 +266,27 @@ pub(in crate::gui::editor) fn find_leftover_autosave() -> Option<PathBuf> {
                 .and_then(|n| n.to_str())
                 .is_some_and(|n| n.ends_with(".indicatrix.autosave.toml"))
         })
-        .max_by_key(|path| std::fs::metadata(path).and_then(|m| m.modified()).ok())
+        .collect()
+}
+
+/// The startup-restore prompt's "Delete" action (owner decision 4.5): removes
+/// exactly the one leftover autosave file that was actually OFFERED (never any
+/// other leftover [`find_all_leftover_autosaves`] may also have found -- an
+/// older leftover from a different design is left untouched, see that
+/// function's own doc comment). Errors are swallowed: there is nothing left to
+/// toast into once the startup prompt itself is already gone, and a failed
+/// delete only means the same file may be offered again next launch, never
+/// that any design data is lost.
+pub(in crate::gui::editor) fn delete_leftover_autosave(path: &Path) {
+    let _ = std::fs::remove_file(path);
 }
 
 /// Writes `native_toml` to `path` via the same stage-then-rename discipline
 /// [`write_pair_atomically`] uses, so a crash mid-autosave-write can never leave a
-/// half-written, corrupt recovery file behind either.
+/// half-written, corrupt recovery file behind either. The staged file is flushed to
+/// disk before the rename publishes it: without that, a power loss right after the
+/// rename can leave the recovery file present but empty, which is exactly the moment
+/// the file exists for.
 ///
 /// # Errors
 ///
@@ -232,7 +296,7 @@ pub(super) fn write_autosave(path: &Path, native_toml: &str) -> Result<(), Strin
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     let tmp = temp_sibling(path);
-    std::fs::write(&tmp, native_toml).map_err(|e| e.to_string())?;
+    write_synced(&tmp, native_toml).map_err(|e| e.to_string())?;
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -246,25 +310,27 @@ pub(super) fn write_autosave(path: &Path, native_toml: &str) -> Result<(), Strin
 /// through [`commit_loaded_native`]) -- never for [`open_plain_asc`]'s bare-`.asc`
 /// path, which has no native file to name.
 ///
-/// Reads/writes the settings file directly via [`crate::settings::store`] rather
-/// than through the debounced [`crate::settings::SettingsPersister`]: this module has
-/// no handle to it (`gui::editor::setup_editor_callbacks` doesn't thread one in, and
-/// adding one would be a `gui::editor::mod`/`gui::mod` change). This is a real, if
-/// narrow, race as a result: a settings change still
-/// inside the persister's ~600ms debounce window when this runs writes its own
-/// (older, recent-files-less) in-memory snapshot over this one the next time it
-/// flushes, silently dropping the just-recorded entry. Accepted rather than leaving
-/// the whole feature unwired -- the consequence is losing one recent-files entry
-/// occasionally, never any design data, and the entry reappears next save/open
-/// anyway.
+/// The entry goes through the application's [`SettingsPersister`] (the handle
+/// installed by `gui::main_window`, see [`SettingsPersister::install_for_this_thread`]),
+/// never straight into the settings file: the persister's in-memory snapshot is what
+/// every close path flushes over the file, so an entry written around it would be
+/// erased on exit. With no persister installed (only possible before the main window
+/// is built) nothing is recorded.
 pub(super) fn record_recent_native_file(ui: &MainWindow, native_path_display: &str) {
-    let settings_path = crate::settings::store::default_settings_path();
-    let mut file = crate::settings::store::load_or_default(&settings_path);
-    file.settings
-        .record_recent_native_file(native_path_display.to_string());
-    let _ = crate::settings::store::save(&settings_path, &file);
-    ui.set_recent_native_files(ModelRc::new(VecModel::from(
+    let Some(persister) = SettingsPersister::installed_for_this_thread() else {
+        warn!(
+            "No settings persister is installed; not recording {native_path_display} as a recent file"
+        );
+        return;
+    };
+    persister.update(|file| {
         file.settings
+            .record_recent_native_file(native_path_display.to_string());
+    });
+    ui.set_recent_native_files(ModelRc::new(VecModel::from(
+        persister
+            .snapshot()
+            .settings
             .recent_native_files
             .into_iter()
             .map(SharedString::from)

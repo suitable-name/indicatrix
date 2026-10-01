@@ -10,62 +10,64 @@ use super::{
 };
 use glam::Vec3;
 use std::{
-    sync::{Arc, Mutex, PoisonError},
-    time::{Duration, Instant},
+    sync::{Arc, Condvar, Mutex, PoisonError},
+    time::Duration,
 };
 
+mod pins;
 mod replan;
 
 struct FakeSink {
     calls: Mutex<Vec<(bool, String)>>,
+    /// Signalled by every [`PreviewSink::apply`], so a test blocks on the frame it
+    /// expects instead of sleeping and polling.
+    arrived: Condvar,
 }
 
 impl FakeSink {
     fn new() -> Arc<Self> {
         Arc::new(Self {
             calls: Mutex::new(Vec::new()),
+            arrived: Condvar::new(),
         })
     }
 
-    fn calls(&self) -> Vec<(bool, String)> {
-        self.calls
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .clone()
+    /// Blocks until `ready` holds for the frames received so far and returns them;
+    /// panics naming `what` if that does not happen within `timeout`.
+    fn wait_until(
+        &self,
+        what: &str,
+        timeout: Duration,
+        ready: impl Fn(&[(bool, String)]) -> bool,
+    ) -> Vec<(bool, String)> {
+        let (guard, result) = self
+            .arrived
+            .wait_timeout_while(
+                self.calls.lock().unwrap_or_else(PoisonError::into_inner),
+                timeout,
+                |calls| !ready(calls),
+            )
+            .unwrap_or_else(PoisonError::into_inner);
+        assert!(
+            !result.timed_out(),
+            "timed out after {timeout:?} waiting for {what}; frames received: {:?}",
+            *guard
+        );
+        guard.clone()
     }
 }
 
 impl PreviewSink for FakeSink {
     fn apply(&self, frame: PreviewFrame) {
-        self.calls
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push((frame.has_solid, frame.status));
+        let mut calls = self.calls.lock().unwrap_or_else(PoisonError::into_inner);
+        calls.push((frame.has_solid, frame.status));
+        drop(calls);
+        self.arrived.notify_all();
     }
 }
 
-/// Polls `f` until it stops changing for a short stability window, or panics
-/// after `timeout` -- the worker thread runs asynchronously, so there is no
-/// single event to block on.
-fn wait_for_settled<T: PartialEq + Clone>(mut f: impl FnMut() -> T, timeout: Duration) -> T {
-    let deadline = Instant::now() + timeout;
-    let mut last = f();
-    let mut stable_polls = 0u32;
-    loop {
-        std::thread::sleep(Duration::from_millis(15));
-        let current = f();
-        if current == last {
-            stable_polls += 1;
-            if stable_polls >= 4 {
-                return current;
-            }
-        } else {
-            stable_polls = 0;
-            last = current;
-        }
-        assert!(Instant::now() < deadline, "worker thread never settled");
-    }
-}
+/// Upper bound on how long a worker may take to deliver the awaited frame.
+const DEADLINE: Duration = Duration::from_secs(5);
 
 fn box_planes(y_half: f32) -> Vec<(Vec3, f32)> {
     vec![
@@ -94,9 +96,9 @@ fn a_single_request_eventually_reaches_the_sink() {
     let state = SolidPreviewState::new(sink.clone());
     state.request_redraw(box_planes(0.6), CAMERA, (16, 16), 0);
 
-    let calls = wait_for_settled(|| sink.calls().len(), Duration::from_secs(5));
-    assert_eq!(calls, 1);
-    assert!(sink.calls()[0].0, "a closed box must report has_solid");
+    let calls = sink.wait_until("the single frame", DEADLINE, |c| !c.is_empty());
+    assert_eq!(calls.len(), 1);
+    assert!(calls[0].0, "a closed box must report has_solid");
 }
 
 #[test]
@@ -111,12 +113,15 @@ fn coalesces_a_burst_of_requests_to_the_latest() {
     }
     state.request_redraw(box_planes(0.6), CAMERA, (16, 16), 0);
 
-    let final_len = wait_for_settled(|| sink.calls().len(), Duration::from_secs(5));
+    // The closed request was submitted last, so its frame is the last one delivered.
+    let calls = sink.wait_until("the closed frame", DEADLINE, |c| {
+        c.last().is_some_and(|(has_solid, _)| *has_solid)
+    });
     assert!(
-        final_len < 10,
-        "expected coalescing to avoid one render per request, got {final_len}"
+        calls.len() < 10,
+        "expected coalescing to avoid one render per request, got {}",
+        calls.len()
     );
-    let calls = sink.calls();
     let (has_solid, _status) = calls.last().expect("at least one call must have landed");
     assert!(
         *has_solid,
@@ -130,8 +135,7 @@ fn a_non_closed_request_reports_has_solid_false_with_a_reason() {
     let state = SolidPreviewState::new(sink.clone());
     state.request_redraw(unbounded_planes(), CAMERA, (16, 16), 0);
 
-    wait_for_settled(|| sink.calls().len(), Duration::from_secs(5));
-    let calls = sink.calls();
+    let calls = sink.wait_until("the unbounded frame", DEADLINE, |c| !c.is_empty());
     let (has_solid, status) = calls.last().unwrap();
     assert!(!has_solid);
     assert!(status.contains("Unbounded"), "got: {status}");
@@ -144,13 +148,12 @@ fn an_unbounded_request_after_a_closed_one_keeps_showing_the_last_solid() {
     let sink = FakeSink::new();
     let state = SolidPreviewState::new(sink.clone());
     state.request_redraw(box_planes(0.6), CAMERA, (16, 16), 0);
-    wait_for_settled(|| sink.calls().len(), Duration::from_secs(5));
-    assert!(sink.calls().last().unwrap().0, "the first frame must close");
+    let first = sink.wait_until("the first frame", DEADLINE, |c| !c.is_empty());
+    assert!(first.last().unwrap().0, "the first frame must close");
 
     state.request_redraw(unbounded_planes(), CAMERA, (16, 16), 0);
-    let final_len = wait_for_settled(|| sink.calls().len(), Duration::from_secs(5));
-    assert!(final_len >= 2);
-    let (has_solid, status) = sink.calls().last().unwrap().clone();
+    let calls = sink.wait_until("the second frame", DEADLINE, |c| c.len() >= 2);
+    let (has_solid, status) = calls.last().unwrap().clone();
     assert!(
         has_solid,
         "a held-over closed solid must still be shown, not blanked"
@@ -176,6 +179,8 @@ fn facet_overlay_update_reuses_the_last_context_and_applies_to_both_styles() {
         hovered: Some(3),
         selected_facet: Some(5),
         multi_selected: vec![1, 2],
+        provisional: vec![4],
+        moved: vec![6],
     };
     let mut mesh_cache = MeshCache::default();
     let (planes, camera, size, view_mode, style, ..) = resolve_request_state(
@@ -195,6 +200,8 @@ fn facet_overlay_update_reuses_the_last_context_and_applies_to_both_styles() {
     assert_eq!(style.hovered, overlay.hovered);
     assert_eq!(style.selected_facet, overlay.selected_facet);
     assert_eq!(style.multi_selected, overlay.multi_selected);
+    assert_eq!(style.provisional, overlay.provisional);
+    assert_eq!(style.moved, overlay.moved);
     assert_eq!(
         memory.diagram.style.hovered, overlay.hovered,
         "the diagram's own style must agree, so switching to Diagram mode \

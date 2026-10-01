@@ -3,7 +3,7 @@
 
 use super::{OPTIMIZE_ACTIVITY_ID, RunProvenance, optimize_outcome::handle_optimize_outcome};
 use crate::{
-    EditorModel, MainWindow, OptimizeResultRow,
+    EditorModel, MainWindow, OptimizeResultRow, ViewportModel,
     bridge::render_thread::RenderContext,
     gui::{
         editor::{
@@ -15,18 +15,19 @@ use crate::{
         show_toast,
     },
 };
-use indicatrix::{
-    geometry::meet_solver::{MeetConstraint, SolvedTier},
-    optics::materials::GemMaterial,
-};
+use indicatrix::optics::{LightingPreset, materials::GemMaterial};
 use indicatrix_cut_core::{
-    Design, MaterialSelection, ObjectiveWeights, OptimizeConfig, OptimizeOutcome,
-    free_tier_indices, optimize::SearchStage,
+    Design, MaterialSelection, ObjectiveWeights, OptimizeConfig, OptimizeOutcome, free_tier_indices,
+};
+// The RI defaulting, the "only selected tiers" pinning and the start status line moved to
+// `indicatrix_editor::optimize_view` (shared with the web Optimize tab); imported at
+// their old names, which this module's tests exercise through `super::*`.
+use indicatrix_editor::optimize_view::{
+    default_optimize_material_ri, optimize_start_status, pin_non_selected_free_tiers,
 };
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::{
     cell::RefCell,
-    collections::BTreeSet,
     rc::Rc,
     sync::{
         Arc, Mutex,
@@ -162,6 +163,9 @@ fn prepare_optimize_run(
         weights,
         seed,
         max_evaluations,
+        lighting: LightingPreset::from_index(
+            ui.global::<ViewportModel>().get_selected_lighting_index(),
+        ),
         ..OptimizeConfig::default()
     };
     if !ui.global::<EditorModel>().get_optimize_polish_enabled() {
@@ -347,32 +351,6 @@ fn begin_tier_optimize_run(
     st.optimize = Some(handle);
 }
 
-/// The material-RI-defaulting half of [`setup_optimize_callback`]'s doc comment,
-/// pulled out to keep that callback under clippy's function-length lint. Mutates
-/// `selection` in place (its own field, no cross-tier state) and returns the
-/// defaulted RI only when a default was actually applied, so the caller can fold
-/// it into the initial status line via [`optimize_start_status`].
-///
-/// This reads `design.effective_refractive_index_with(custom)`
-/// -- catalogue-aware, so a design on a CUSTOM material defaults to that material's
-/// own real `n_D` -- rather than the built-ins-only
-/// `Design::effective_refractive_index()`, which silently falls through to the
-/// legacy schedule RI for any design naming a custom catalogue material and would
-/// score the optimizer's objective against a material the design was never
-/// actually set to.
-fn default_optimize_material_ri(
-    design: &indicatrix_cut_core::Design,
-    selection: &mut indicatrix_cut_core::MaterialSelection,
-    custom: &[GemMaterial],
-) -> Option<f64> {
-    if selection.name.is_some() || selection.refractive_index_override.is_some() {
-        return None;
-    }
-    let n_d = design.effective_refractive_index_with(custom);
-    selection.refractive_index_override = Some(n_d);
-    Some(n_d)
-}
-
 /// The design [`begin_tier_optimize_run`] actually hands to `optimize_design` --
 /// `st.design` unchanged, or (when multi-selection is active)
 /// [`pin_non_selected_free_tiers`]'s restricted clone. Pulled out purely to keep
@@ -397,7 +375,10 @@ fn optimize_target_design(
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
         })
-        .filter(|solved| solved.len() == st.design.tiers.len())
+        // the shared cache is now generation-tagged -- only the masts
+        // themselves matter here.
+        .filter(|(_, solved)| solved.len() == st.design.tiers.len())
+        .map(|(_, solved)| solved)
     else {
         show_toast(
             ui,
@@ -413,94 +394,23 @@ fn optimize_target_design(
     ))
 }
 
-/// A clone of `design` where every FREE tier
-/// (`indicatrix_cut_core::free_tier_indices`) NOT in `keep_free` is pinned to a
-/// [`MeetConstraint::ScaleReference`] at its own CURRENT solved mast -- so
-/// `optimize_design`, which only ever moves a tier `free_tier_indices` names,
-/// cannot touch it. Every tier already in `keep_free`, and every tier that was
-/// already pinned, is left exactly as it was.
-///
-/// Never removes or reorders a tier, so the returned design's `AngleChange::index`
-/// values from a search run against it stay valid against the CALLER's own
-/// original design (and `EditorState::apply_optimize_outcome`'s tier lookup) with
-/// no translation needed.
-///
-/// Takes `solved` from the caller (the cached last solve for this exact design)
-/// rather than calling [`Design::solve`] itself, so [`setup_optimize_callback`]
-/// never blocks the UI thread on a synchronous solve here. `solved` must have one
-/// entry per `design.tiers` in the same order (a mismatch is treated the same as
-/// "nothing to pin" for the tiers past the shorter length, via [`Vec::get`] --
-/// never a panic).
-fn pin_non_selected_free_tiers(
-    design: &Design,
-    solved: &[SolvedTier],
-    keep_free: &BTreeSet<usize>,
-) -> Design {
-    let mut restricted = design.clone();
-    for index in free_tier_indices(design) {
-        if keep_free.contains(&index) {
-            continue;
-        }
-        let Some(mast) = solved.get(index).map(|s| s.mast) else {
-            continue;
-        };
-        if let Some(tier) = restricted.tiers.get_mut(index) {
-            tier.constraint = MeetConstraint::ScaleReference(mast);
-        }
-    }
-    restricted
-}
-
-/// The initial "Optimizing..." status line [`setup_optimize_callback`] sets before
-/// the search's first progress tick arrives, naming the defaulted RI (see
-/// [`default_optimize_material_ri`]) when one was applied so the assumption is
-/// visible from the very first frame, not just in hindsight.
-fn optimize_start_status(defaulted_ri: Option<f64>) -> String {
-    defaulted_ri.map_or_else(
-        || "Optimizing... 0 evaluations, 0.0s elapsed".to_string(),
-        |n_d| {
-            format!(
-                "Optimizing (no material set -- scored for n_d={n_d:.4})... 0 \
-                 evaluations, 0.0s elapsed"
-            )
-        },
-    )
-}
-
-/// The running "Optimizing..." status line for each progress tick, naming
-/// [`optimize_solve::OptimizeSolveProgress::stage`] explicitly instead of always
-/// showing an evaluation fraction: the two full-fidelity scorings that bracket
-/// every run report zero-progress ticks of their own, which would otherwise leave
-/// the counter frozen for over a second each, reading as a hang rather than real
-/// (if invisible-to-the-counter) work. The coordinate and polish stages instead
-/// show `progress.max_evaluations` (a single combined figure, the coordinate cap
-/// plus the polish stage's own) so the polish stage's evaluations climbing does
-/// not read as sailing past the run's own stated budget.
+/// The running "Optimizing..." status line for each progress tick -- the wording lives in
+/// `indicatrix_editor::optimize_view::optimize_progress_status` (shared with the web
+/// Optimize tab); this only unpacks the desktop's progress struct.
 fn optimize_progress_status(progress: &optimize_solve::OptimizeSolveProgress) -> String {
-    let elapsed = progress.elapsed.as_secs_f32();
-    match progress.stage {
-        SearchStage::BaselineFull => {
-            format!(
-                "Optimizing... scoring the starting point at full fidelity, {elapsed:.1}s elapsed"
-            )
-        }
-        SearchStage::Coordinate => format!(
-            "Optimizing... {} of ~{} evaluations, {elapsed:.1}s elapsed",
-            progress.evaluations, progress.max_evaluations
-        ),
-        SearchStage::Polish => format!(
-            "Optimizing (polish)... {} of ~{} evaluations, {elapsed:.1}s elapsed",
-            progress.evaluations, progress.max_evaluations
-        ),
-        SearchStage::FinalFull => {
-            format!("Optimizing... scoring the result at full fidelity, {elapsed:.1}s elapsed")
-        }
-    }
+    indicatrix_editor::optimize_view::optimize_progress_status(
+        progress.stage,
+        progress.evaluations,
+        progress.max_evaluations,
+        progress.elapsed.as_secs_f32(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indicatrix::geometry::meet_solver::MeetConstraint;
+    use std::collections::BTreeSet;
 
     // --- default_optimize_material_ri (must resolve a CUSTOM catalogue
     // material's own RI, not just a built-in's) ---
@@ -517,6 +427,7 @@ mod tests {
             name: Some("Diamond".to_string()),
             specific_gravity_override: None,
             refractive_index_override: None,
+            body_colour_override: None,
         };
         assert_eq!(
             default_optimize_material_ri(&design, &mut selection, &[]),
@@ -535,7 +446,7 @@ mod tests {
         assert_eq!(selection.refractive_index_override, Some(1.62));
     }
 
-    /// The actual bug this finding closes: a design naming a CUSTOM catalogue
+    /// Regression guard: a design naming a CUSTOM catalogue
     /// material (not one of the built-ins `Design::effective_refractive_index`
     /// alone can resolve) must default to THAT material's own RI, not fall through
     /// to the legacy schedule value -- the optimizer would otherwise score against

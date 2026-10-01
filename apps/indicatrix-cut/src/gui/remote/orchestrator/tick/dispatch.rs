@@ -24,7 +24,7 @@ use crate::{
     },
     settings::{LiveComputeTarget, RemoteEndpoint, WorkerSettings},
 };
-use indicatrix::optics::raytracer::Camera;
+use indicatrix::optics::raytracer::{Camera, DEFAULT_FOV_DEG};
 use indicatrix_net::SceneState;
 use slint::{ComponentHandle, Weak};
 use std::{
@@ -77,7 +77,14 @@ pub(super) fn start_remote_render(
         lock(state).display_only_refused,
     );
     let combining = matches!(live_compute_target, LiveComputeTarget::Both) && !display_only;
-    let snapshot = SceneSnapshot::capture(render_ctx);
+    // Refuses (see `SceneSnapshot::capture`'s own doc comment) rather than dispatching
+    // the wrong stone to a remote worker when the design's material does not resolve --
+    // the render loop's own suspended branch (`render_thread::mod`) is what surfaces the
+    // refusal to the user; here it is enough to skip this dispatch and let the next
+    // settle retry once the material resolves again.
+    let Ok(snapshot) = SceneSnapshot::capture(render_ctx) else {
+        return;
+    };
     let scene = scene_state_from_snapshot(&snapshot, width, height);
 
     // Kick off the guide-buffer prepass NOW, at dispatch time, rather than waiting for
@@ -100,7 +107,12 @@ pub(super) fn start_remote_render(
             snapshot.distance,
             &snapshot.active_planes,
         );
-        let guide_camera = Camera::new(snapshot.yaw, snapshot.pitch, snapshot.distance, 42.0);
+        let guide_camera = Camera::new(
+            snapshot.yaw,
+            snapshot.pitch,
+            snapshot.distance,
+            DEFAULT_FOV_DEG,
+        );
         let mut s = lock(state);
         if let Some(previous) = s.pending_guide_gen.take() {
             previous.cancel.store(true, Ordering::Relaxed);

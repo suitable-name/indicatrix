@@ -6,7 +6,11 @@
 use super::fixtures::{fresh_design, tier};
 use crate::edit::{Edit, History};
 use indicatrix::geometry::meet_solver::MeetConstraint;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+/// An arbitrary, non-zero timestamp origin: `apply_coalescing` only ever compares
+/// differences between successive timestamps, so the origin must not matter.
+const ORIGIN: Duration = Duration::from_secs(12_345);
 
 #[test]
 fn apply_coalescing_merges_consecutive_calls_with_the_same_key_into_one_undo_step() {
@@ -16,7 +20,7 @@ fn apply_coalescing_merges_consecutive_calls_with_the_same_key_into_one_undo_ste
         .push(tier("P1", -40.0, MeetConstraint::ScaleReference(0.5), &[]));
     let before = design.clone();
     let mut history = History::new();
-    let t0 = Instant::now();
+    let t0 = ORIGIN;
 
     history
         .apply_coalescing(
@@ -67,7 +71,7 @@ fn apply_coalescing_starts_a_new_undo_step_once_the_window_elapses() {
         .tiers
         .push(tier("P1", -40.0, MeetConstraint::ScaleReference(0.5), &[]));
     let mut history = History::new();
-    let t0 = Instant::now();
+    let t0 = ORIGIN;
 
     history
         .apply_coalescing(
@@ -112,7 +116,7 @@ fn apply_coalescing_with_a_different_key_starts_a_new_undo_step() {
         .tiers
         .push(tier("P2", -35.0, MeetConstraint::ScaleReference(0.6), &[]));
     let mut history = History::new();
-    let t0 = Instant::now();
+    let t0 = ORIGIN;
 
     history
         .apply_coalescing(
@@ -157,7 +161,7 @@ fn an_ordinary_apply_between_two_coalescing_calls_breaks_the_merge() {
         .tiers
         .push(tier("P1", -40.0, MeetConstraint::ScaleReference(0.5), &[]));
     let mut history = History::new();
-    let t0 = Instant::now();
+    let t0 = ORIGIN;
 
     history
         .apply_coalescing(
@@ -214,7 +218,7 @@ fn with_coalesce_window_uses_the_given_window_instead_of_the_default() {
         .tiers
         .push(tier("P1", -40.0, MeetConstraint::ScaleReference(0.5), &[]));
     let mut history = History::with_coalesce_window(Duration::from_millis(50));
-    let t0 = Instant::now();
+    let t0 = ORIGIN;
 
     history
         .apply_coalescing(
@@ -259,7 +263,7 @@ fn end_coalesce_run_stops_the_next_same_key_call_from_merging() {
         .tiers
         .push(tier("P1", -40.0, MeetConstraint::ScaleReference(0.5), &[]));
     let mut history = History::new();
-    let t0 = Instant::now();
+    let t0 = ORIGIN;
 
     history
         .apply_coalescing(
@@ -293,4 +297,42 @@ fn end_coalesce_run_stops_the_next_same_key_call_from_merging() {
         "only the second nudge undoes"
     );
     assert!(history.can_undo());
+}
+
+/// The caller-supplied `Duration` timestamp keeps `Instant`'s semantics at both
+/// edges: a gap of exactly the window still merges (`<=`), and a timestamp EARLIER
+/// than the previous one (a clock that stepped back) counts as zero elapsed time, so
+/// it merges too rather than underflowing.
+#[test]
+fn apply_coalescing_merges_at_exactly_the_window_and_on_a_backward_step() {
+    let mut design = fresh_design();
+    design
+        .tiers
+        .push(tier("P1", -40.0, MeetConstraint::ScaleReference(0.5), &[]));
+    let before = design.clone();
+    let mut history = History::new();
+    let nudges = [
+        (-40.1, ORIGIN),
+        (-40.2, ORIGIN + Duration::from_millis(500)),
+        (-40.3, ORIGIN + Duration::from_millis(400)),
+    ];
+
+    for (angle, now) in nudges {
+        history
+            .apply_coalescing(
+                &mut design,
+                Edit::ModifyTier {
+                    index: 0,
+                    tier: tier("P1", angle, MeetConstraint::ScaleReference(0.5), &[]),
+                },
+                1,
+                now,
+            )
+            .expect("nudge must apply");
+    }
+    assert_eq!(design.tiers[0].angle_deg, -40.3);
+
+    assert!(history.undo(&mut design).unwrap());
+    assert_eq!(design, before, "all three nudges form one undo step");
+    assert!(!history.can_undo());
 }

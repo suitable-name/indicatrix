@@ -1,22 +1,13 @@
 //! GPU-side HDR environment-map data (behind the `gpu` feature).
 //!
-//! Two independent pieces:
-//!
-//! - [`GpuEnvironmentMap`]: **unused scaffolding, pending a GPU port** -- see
-//!   `renderer::pipeline`'s module doc comment for the broader context: the rasterized/
-//!   hybrid preview path this texture upload would feed has never run in this workspace.
-//!   Nothing in `indicatrix` constructs one yet; kept alongside the rest of this module
-//!   for whichever renderer path needs GPU display of an environment.
-//! - [`HdrEnvGpuData`]: the storage-buffer upload
-//!   `spectral_transport.wgsl`'s `transport_main` megakernel actually reads from at
-//!   `env_mode == transport_env_mode::HDR_MAP`. Unlike `GpuEnvironmentMap`'s
-//!   `Rgba32Float` TEXTURE (built for a sampled/filtered raster lookup), the megakernel
-//!   reads texels itself via a plain `array<vec4<f32>>` STORAGE buffer and does its own
-//!   bilinear filtering (`hdr_env_sample_bilinear` in `spectral_transport.wgsl`) to
-//!   mirror [`super::env_map::EnvironmentMap::radiance_at`]'s exact `f32` arithmetic
-//!   order -- `wgpu`'s hardware texture sampler has no such bit-exactness guarantee,
-//!   which is why this is a second, independent upload path rather than a reuse of
-//!   [`GpuEnvironmentMap`]'s texture.
+//! [`HdrEnvGpuData`] is the storage-buffer upload
+//! `spectral_transport.wgsl`'s `transport_main` megakernel reads from at
+//! `env_mode == transport_env_mode::HDR_MAP`. The megakernel reads texels itself via a
+//! plain `array<vec4<f32>>` STORAGE buffer and does its own bilinear filtering
+//! (`hdr_env_sample_bilinear` in `spectral_transport.wgsl`) to mirror
+//! [`super::env_map::EnvironmentMap::radiance_at`]'s exact `f32` arithmetic order --
+//! `wgpu`'s hardware texture sampler has no such bit-exactness guarantee, which is why
+//! the map is uploaded as a storage buffer rather than a sampled texture.
 //!
 //! # `HdrEnvGpuData` bindings
 //!
@@ -288,73 +279,6 @@ impl HdrEnvGpuData {
             dist_func,
             dist_cdf,
             dist_dims,
-        }
-    }
-}
-
-pub struct GpuEnvironmentMap {
-    pub texture: wgpu::Texture,
-    pub view: wgpu::TextureView,
-    pub sampler: wgpu::Sampler,
-}
-
-impl GpuEnvironmentMap {
-    #[must_use]
-    pub fn new(
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        data: &[u8],
-        width: u32,
-        height: u32,
-    ) -> Self {
-        let size = wgpu::Extent3d {
-            width,
-            height,
-            depth_or_array_layers: 1,
-        };
-
-        let texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("Environment Map"),
-            size,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba32Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(width * 16),
-                rows_per_image: Some(height),
-            },
-            size,
-        );
-
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Linear,
-            ..Default::default()
-        });
-
-        Self {
-            texture,
-            view,
-            sampler,
         }
     }
 }

@@ -283,7 +283,7 @@ fn studio_rig_fill_dir(light_yaw: f32, light_pitch: f32) -> vec3<f32> {
 
 fn studio_rig_ring_dir(i: u32, light_yaw: f32, sin_lp: f32) -> vec3<f32> {
     let angle = fma(f32(i), PI * 2.0 / f32(RING_LIGHT_COUNT), light_yaw);
-    return normalize(vec3<f32>(cos(angle) * 0.75, sin_lp * 0.8, sin(angle) * 0.75));
+    return normalize(vec3<f32>(sin(angle) * 0.75, sin_lp * 0.8, cos(angle) * 0.75));
 }
 
 // optics::raytracer::environment -- the lit lighting models (`LightingModel::
@@ -584,16 +584,21 @@ fn white_balance_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 // radiance_at}, plus renderer::env_map_spectrum::rgb_to_spectral_radiance.
 //
 // A SEPARATE port from `shaders/spectral_transport.wgsl`'s own `hdr_direction_to_uv`/
-// `hdr_env_sample_bilinear`/`hdr_env_radiance_at`/`rgb_to_spectral_radiance` -- this file
-// and the production megakernel are two independent WGSL modules with no shared-include
-// mechanism (see this file's own header comment), so the two copies are kept in sync by
-// hand like every other duplicated function here (`blackbody_spectrum`, the CMF table,
-// `d65_relative_spectral_power`). `renderer::gpu::environment_check::run_hdr_env_radiance`
-// exercises THIS copy directly against the CPU, independent of the megakernel's own Tier
-// 3 image comparisons.
+// `hdr_env_sample_bilinear`/`hdr_env_radiance_at`/`asymmetric_gaussian`/
+// `rgb_to_spectral_radiance` -- this file and the production megakernel are two
+// independent WGSL modules with no shared-include mechanism (see this file's own header
+// comment), so the two copies are kept in sync by hand like every other duplicated
+// function here (`blackbody_spectrum`, the CMF table, `d65_relative_spectral_power`).
+// Every copy keeps the megakernel piece's EXACT function name on purpose:
+// `renderer::gpu::shader_validation_tests::same_named_functions_agree_everywhere_they_
+// are_defined` compares same-named bodies across the modules, so a formula change to
+// either side fails that test until it is mirrored (an `hdr_`-prefixed private name
+// would silently opt the copy out of that check).
+// `renderer::gpu::environment_check::run_hdr_env_radiance` exercises THIS copy directly
+// against the CPU, independent of the megakernel's own Tier 3 image comparisons.
 // ---------------------------------------------------------------------------------
 
-fn hdr_asymmetric_gaussian(x: f32, mu: f32, sigma_lo: f32, sigma_hi: f32) -> f32 {
+fn asymmetric_gaussian(x: f32, mu: f32, sigma_lo: f32, sigma_hi: f32) -> f32 {
     var sigma: f32;
     if (x < mu) {
         sigma = sigma_lo;
@@ -604,17 +609,39 @@ fn hdr_asymmetric_gaussian(x: f32, mu: f32, sigma_lo: f32, sigma_hi: f32) -> f32
     return exp(-0.5 * t * t);
 }
 
-fn hdr_rgb_to_spectral_radiance(r: f32, g: f32, b: f32, lambda_nm: f32) -> f32 {
+fn rgb_to_spectral_radiance(r: f32, g: f32, b: f32, lambda_nm: f32) -> f32 {
     let rc = max(r, 0.0);
     let gc = max(g, 0.0);
     let bc = max(b, 0.0);
-    return fma(
-        rc, hdr_asymmetric_gaussian(lambda_nm, 615.0, 45.0, 65.0),
+    // Neutral part min(r, g, b) on the wide bumps; chroma remainder on the narrow bumps.
+    let w = min(min(rc, gc), bc);
+    let cr = rc - w;
+    let cg = gc - w;
+    let cb = bc - w;
+    // 3x3 correction so the wide bump basis reproduces the neutral part under the CMFs.
+    let n_r = fma(0.823989868, w, fma(-0.305067778, w, 0.263915569 * w));
+    let n_g = fma(-0.297157794, w, fma(1.25289488, w, -0.461147606 * w));
+    let n_b = fma(0.0788375437, w, fma(-0.122806296, w, 1.23178256 * w));
+    let neutral = fma(
+        n_r, asymmetric_gaussian(lambda_nm, 615.0, 45.0, 65.0),
         fma(
-            gc, hdr_asymmetric_gaussian(lambda_nm, 545.0, 45.0, 45.0),
-            bc * hdr_asymmetric_gaussian(lambda_nm, 465.0, 40.0, 45.0),
+            n_g, asymmetric_gaussian(lambda_nm, 545.0, 45.0, 45.0),
+            n_b * asymmetric_gaussian(lambda_nm, 465.0, 40.0, 45.0),
         ),
     );
+    // Entrywise-positive 3x3 for the narrow bumps: non-negative chroma gives
+    // non-negative coefficients, so the chroma spectrum is exact.
+    let k_r = fma(1.0995291, cr, fma(0.08711245, cg, 0.01771266 * cb));
+    let k_g = fma(0.007455747, cr, fma(1.3345385, cg, 0.014020192 * cb));
+    let k_b = fma(0.02487475, cr, fma(0.058899768, cg, 1.2609048 * cb));
+    let saturated = fma(
+        k_r, asymmetric_gaussian(lambda_nm, 635.0, 28.0, 39.2),
+        fma(
+            k_g, asymmetric_gaussian(lambda_nm, 540.0, 28.0, 28.0),
+            k_b * asymmetric_gaussian(lambda_nm, 450.0, 25.2, 28.0),
+        ),
+    );
+    return max(0.0, neutral + saturated);
 }
 
 struct HdrEnvDims {
@@ -691,7 +718,7 @@ fn hdr_env_sample_bilinear(u_in: f32, v_in: f32) -> vec3<f32> {
 fn hdr_env_radiance_at(dir: vec3<f32>, lambda_nm: f32) -> f32 {
     let uv = hdr_direction_to_uv(dir);
     let rgb = hdr_env_sample_bilinear(uv.x, uv.y);
-    return hdr_rgb_to_spectral_radiance(rgb.x, rgb.y, rgb.z, lambda_nm);
+    return rgb_to_spectral_radiance(rgb.x, rgb.y, rgb.z, lambda_nm);
 }
 
 @compute @workgroup_size(64)

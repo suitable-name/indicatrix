@@ -45,7 +45,7 @@ impl Database {
         tolerance: f64,
         random_unit: &mut dyn FnMut() -> f64,
     ) -> Result<Option<String>> {
-        if let Some(existing) = self.read_preview_material(entry_id)? {
+        if let Some(existing) = self.get_preview_material(entry_id)? {
             return Ok(Some(existing));
         }
 
@@ -66,10 +66,18 @@ impl Database {
         // Re-read rather than trusting `picked.name`: under the race this method's own
         // doc comment describes, another call may have won the `COALESCE` and this is
         // the only way to report what actually ended up persisted.
-        self.read_preview_material(entry_id)
+        self.get_preview_material(entry_id)
     }
 
-    fn read_preview_material(&self, entry_id: i64) -> Result<Option<String>> {
+    /// `entry_id`'s persisted `preview_material`, without consulting
+    /// [`Self::ensure_preview_material`]'s RNG/candidate machinery at all -- a plain
+    /// read for a caller (e.g. a batch preview scan) that only wants to know what's
+    /// already on file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `SELECT` fails.
+    pub fn get_preview_material(&self, entry_id: i64) -> Result<Option<String>> {
         Ok(self
             .conn
             .query_row(
@@ -83,14 +91,31 @@ impl Database {
     }
 
     /// Records `front_png`/`top_png` (PNG bytes, independently `None` if that view's
-    /// render failed -- see [`crate::model::preview::PreviewImages`]'s doc comment) and
-    /// the unix-seconds timestamp generation was attempted at. Creates `entry_id`'s
-    /// `diagram_previews` row if it doesn't exist yet, or overwrites these three
-    /// columns if it does -- `preview_material`, if already set on an existing row, is
-    /// left completely untouched (this statement's `ON CONFLICT` clause never mentions
+    /// render failed -- see [`crate::model::preview::PreviewImages`]'s doc comment), the
+    /// unix-seconds timestamp generation was attempted at, and `params_fingerprint` (what
+    /// the render was made with; see [`Self::entry_ids_missing_previews`]). Creates
+    /// `entry_id`'s `diagram_previews` row if it doesn't exist yet, or overwrites these
+    /// four columns if it does -- `preview_material`, if already set on an existing row,
+    /// is left completely untouched (this statement's `ON CONFLICT` clause never mentions
     /// it), so calling this after
     /// [`Self::ensure_preview_material`](Database::ensure_preview_material) can never
     /// clobber the material that call picked.
+    ///
+    /// # Compare-and-swap on the design's revision
+    ///
+    /// A render takes seconds with the database lock released, so the design can be
+    /// re-imported, edited or re-synced in between; an unconditional write would then
+    /// store a picture of geometry that no longer exists, after the invalidation that
+    /// should have removed it already ran. `expected_updated_at` is the
+    /// `diagram_entries.updated_at` the caller read together with the record it rendered
+    /// ([`Self::entry_updated_at`]); the write happens only while the row still carries
+    /// exactly that value (`None` matching a `NULL` stamp). The check and the upsert are
+    /// one SQL statement, so nothing can slip between them.
+    ///
+    /// Returns `Ok(true)` when the images were stored, and `Ok(false)` -- nothing written
+    /// -- when the design changed since `expected_updated_at` was read or no longer
+    /// exists. The caller should discard its result: the next scan sees the design as
+    /// missing its previews and renders them from the current geometry.
     ///
     /// # Errors
     ///
@@ -101,19 +126,33 @@ impl Database {
         front_png: Option<&[u8]>,
         top_png: Option<&[u8]>,
         generated_at_unix: i64,
-    ) -> Result<()> {
-        self.conn
+        params_fingerprint: &str,
+        expected_updated_at: Option<i64>,
+    ) -> Result<bool> {
+        let written = self
+            .conn
             .execute(
-                "INSERT INTO diagram_previews (entry_id, preview_front, preview_top, preview_generated_at)
-                 VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO diagram_previews (
+                     entry_id, preview_front, preview_top, preview_generated_at, params_fingerprint
+                 )
+                 SELECT id, ?2, ?3, ?4, ?5 FROM diagram_entries
+                 WHERE id = ?1 AND updated_at IS ?6
                  ON CONFLICT(entry_id) DO UPDATE SET
                     preview_front = excluded.preview_front,
                     preview_top = excluded.preview_top,
-                    preview_generated_at = excluded.preview_generated_at",
-                params![entry_id, front_png, top_png, generated_at_unix],
+                    preview_generated_at = excluded.preview_generated_at,
+                    params_fingerprint = excluded.params_fingerprint",
+                params![
+                    entry_id,
+                    front_png,
+                    top_png,
+                    generated_at_unix,
+                    params_fingerprint,
+                    expected_updated_at
+                ],
             )
             .with_context(|| format!("Failed to save preview images for entry_id: {entry_id}"))?;
-        Ok(())
+        Ok(written > 0)
     }
 
     /// Loads `entry_id`'s cached preview state. A design with no `diagram_previews` row
@@ -147,6 +186,27 @@ impl Database {
         Ok(row.unwrap_or_default())
     }
 
+    /// `entry_id`'s front preview PNG alone: the `preview_front` column without the top
+    /// image, the material or the timestamps. `Ok(None)` when the design has no row or
+    /// no front image. For a caller that lists many designs and needs one thumbnail each,
+    /// where [`Self::get_preview_images`] would read the top blob as well.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `SELECT` fails.
+    pub fn get_front_preview(&self, entry_id: i64) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT preview_front FROM diagram_previews WHERE entry_id = ?1",
+                params![entry_id],
+                |row| row.get::<_, Option<Vec<u8>>>(0),
+            )
+            .optional()
+            .with_context(|| format!("Failed to read the front preview for entry_id: {entry_id}"))?
+            .flatten())
+    }
+
     /// Deletes `entry_id`'s entire `diagram_previews` row (images, generation
     /// timestamp, AND the persisted `preview_material` choice), if one exists.
     ///
@@ -158,6 +218,13 @@ impl Database {
     /// now silently describing a design that no longer exists. Called after a
     /// re-import collision so the next preview-generation pass has a clean slate to
     /// regenerate into, rather than a thumbnail that looks plausible but is wrong.
+    ///
+    /// The design writers (local import, native save, mirror sync) are routed through
+    /// [`Self::save_design`](Database::save_design); that keeps the entry and detail rows
+    /// consistent with each other, but not this table, so whoever replaces a design's
+    /// geometry or renderer-relevant metadata (refractive index, gear, facets) still
+    /// calls this afterwards. A render already in flight is covered separately: its
+    /// [`Self::save_preview_images`] refuses the stale write.
     ///
     /// A missing row is not an error -- deleting nothing (a design that never had
     /// previews generated) is the ordinary, expected outcome for most re-imports.
@@ -174,12 +241,89 @@ impl Database {
             .with_context(|| format!("Failed to delete preview images for entry_id: {entry_id}"))?;
         Ok(())
     }
+
+    /// Every non-ignored `diagram_entries.id` whose cached preview render is missing or
+    /// was made with other parameters than the current ones. Ordered by id for a stable,
+    /// resumable walk.
+    ///
+    /// A design needs a render when `diagram_previews` has no row for it, the row's
+    /// `preview_generated_at` is `NULL`, or the row's `params_fingerprint` differs from
+    /// `current_fingerprint(material)` -- the fingerprint a render made NOW would store,
+    /// given the row's persisted `preview_material` (`None` when it has none). A row
+    /// written before fingerprints existed carries `NULL` there and so counts as
+    /// outdated: it is re-rendered once, then tracked like any other. The caller builds
+    /// the string (renderer build, image size, sample count, bounce cap, lighting,
+    /// material); this crate only compares it, so what goes into it never needs a schema
+    /// change.
+    ///
+    /// Replaces the "load every entry's preview images just to test one timestamp"
+    /// scan a startup batch pass used to run (`gui::batch::preview::scan`): that
+    /// pattern loads both 256x256 PNGs for EVERY entry in the catalogue merely to
+    /// check `generated_at.is_none()` -- measured at 4.4s and 447 MB for one pass over
+    /// the real catalogue's 3,299 entries -- when the same test is answered here by a
+    /// `LEFT JOIN` that never selects a blob column at all.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying query fails.
+    pub fn entry_ids_missing_previews(
+        &self,
+        current_fingerprint: impl Fn(Option<&str>) -> String,
+    ) -> Result<Vec<i64>> {
+        self.outdated_entry_ids(
+            "SELECT de.id, p.preview_generated_at, p.params_fingerprint, p.preview_material
+             FROM diagram_entries de
+             LEFT JOIN diagram_previews p ON p.entry_id = de.id
+             WHERE de.ignored = 0
+             ORDER BY de.id",
+            current_fingerprint,
+        )
+        .context("Failed to read entry ids missing previews")
+    }
+
+    /// Runs `sql` -- one row per design to consider, as `(entry id, generated-at stamp,
+    /// stored fingerprint, persisted material)`, each of the last three `NULL` when the
+    /// cache row is absent -- and returns, in row order, the ids whose cache entry is not
+    /// current: no stamp, or a stored fingerprint other than
+    /// `current_fingerprint(material)`. Shared by
+    /// [`Self::entry_ids_missing_previews`] and
+    /// [`Self::entry_ids_missing_tilt_curves`](Database::entry_ids_missing_tilt_curves),
+    /// which differ only in the cache table they read.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `sql` fails to prepare or run, or a row fails to decode.
+    pub(super) fn outdated_entry_ids(
+        &self,
+        sql: &str,
+        current_fingerprint: impl Fn(Option<&str>) -> String,
+    ) -> Result<Vec<i64>> {
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, Option<i64>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })?;
+        let mut outdated = Vec::new();
+        for row in rows {
+            let (entry_id, generated_at, stored, material) = row?;
+            let current = generated_at.is_some()
+                && stored.as_deref() == Some(current_fingerprint(material.as_deref()).as_str());
+            if !current {
+                outdated.push(entry_id);
+            }
+        }
+        Ok(outdated)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{entry::FacetDiagramEntry, material_match::RiPresetCandidate};
+    use crate::model::{entry::FacetingDiagramEntry, material_match::RiPresetCandidate};
 
     fn temp_db_with_one_entry() -> (Database, i64, std::path::PathBuf) {
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -191,7 +335,7 @@ mod tests {
         let db = Database::new(Some(path.to_str().unwrap())).unwrap();
         let entry_id = db
             .save_diagram_entry(
-                &FacetDiagramEntry {
+                &FacetingDiagramEntry {
                     title: "Preview Test".to_string(),
                     url: "local://preview-test.asc".to_string(),
                     design_id: String::new(),
@@ -202,6 +346,36 @@ mod tests {
         (db, entry_id, path)
     }
 
+    /// The fingerprint every test render is stored with.
+    const FINGERPRINT: &str = "test-fingerprint";
+
+    /// Saves a render made from the design's CURRENT revision, as a render that raced
+    /// with no other writer would.
+    fn save_current(
+        db: &Database,
+        entry_id: i64,
+        front: Option<&[u8]>,
+        top: Option<&[u8]>,
+        generated_at: i64,
+    ) {
+        let revision = db.entry_updated_at(entry_id).unwrap();
+        assert!(
+            db.save_preview_images(entry_id, front, top, generated_at, FINGERPRINT, revision)
+                .unwrap(),
+            "a write at the current revision must be stored"
+        );
+    }
+
+    /// Advances `entry_id`'s revision stamp, as a re-import or metadata edit does.
+    fn bump_revision(db: &Database, entry_id: i64) {
+        db.conn
+            .execute(
+                "UPDATE diagram_entries SET updated_at = COALESCE(updated_at, 0) + 1 WHERE id = ?1",
+                params![entry_id],
+            )
+            .unwrap();
+    }
+
     #[test]
     fn get_preview_images_on_a_design_with_no_row_returns_all_none() {
         let (db, entry_id, path) = temp_db_with_one_entry();
@@ -209,6 +383,23 @@ mod tests {
             db.get_preview_images(entry_id).unwrap(),
             crate::model::preview::PreviewImages::default()
         );
+        drop(db);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn get_front_preview_returns_only_the_front_bytes() {
+        let (db, entry_id, path) = temp_db_with_one_entry();
+        assert_eq!(db.get_front_preview(entry_id).unwrap(), None, "no row yet");
+        assert_eq!(db.get_front_preview(entry_id + 99).unwrap(), None);
+
+        save_current(&db, entry_id, Some(&[1, 2, 3]), Some(&[4, 5]), 7);
+        assert_eq!(db.get_front_preview(entry_id).unwrap(), Some(vec![1, 2, 3]));
+
+        // A row whose front render failed has no front bytes, whatever the top holds.
+        save_current(&db, entry_id, None, Some(&[4, 5]), 8);
+        assert_eq!(db.get_front_preview(entry_id).unwrap(), None);
+
         drop(db);
         std::fs::remove_file(&path).ok();
     }
@@ -295,8 +486,7 @@ mod tests {
 
         let front = vec![1u8, 2, 3, 4];
         let top = vec![5u8, 6, 7, 8];
-        db.save_preview_images(entry_id, Some(&front), Some(&top), 1_700_000_000)
-            .unwrap();
+        save_current(&db, entry_id, Some(&front), Some(&top), 1_700_000_000);
 
         let loaded = db.get_preview_images(entry_id).unwrap();
         assert_eq!(loaded.front, Some(front));
@@ -313,8 +503,7 @@ mod tests {
     fn save_preview_images_allows_one_view_to_be_none_when_its_render_failed() {
         let (db, entry_id, path) = temp_db_with_one_entry();
         let front = vec![9u8, 9, 9];
-        db.save_preview_images(entry_id, Some(&front), None, 1_700_000_001)
-            .unwrap();
+        save_current(&db, entry_id, Some(&front), None, 1_700_000_001);
 
         let loaded = db.get_preview_images(entry_id).unwrap();
         assert_eq!(loaded.front, Some(front));
@@ -322,6 +511,223 @@ mod tests {
         // "attempted" is still recorded even though one view failed -- this is exactly
         // the distinction PreviewImages::generated_at exists to preserve.
         assert_eq!(loaded.generated_at, Some(1_700_000_001));
+
+        drop(db);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn entry_ids_missing_previews_excludes_generated_and_ignored_entries() {
+        let (db, entry_id, path) = temp_db_with_one_entry();
+        // A second entry with a generated preview -- must not appear.
+        let generated_entry = db
+            .save_diagram_entry(
+                &FacetingDiagramEntry {
+                    title: "Has Preview".to_string(),
+                    url: "local://has-preview.asc".to_string(),
+                    design_id: String::new(),
+                },
+                "local-import",
+            )
+            .unwrap();
+        save_current(&db, generated_entry, Some(&[1]), Some(&[2]), 1);
+        // A third, ignored entry with no preview -- must not appear either.
+        let ignored_entry = db
+            .save_diagram_entry(
+                &FacetingDiagramEntry {
+                    title: "Ignored".to_string(),
+                    url: "local://ignored.asc".to_string(),
+                    design_id: String::new(),
+                },
+                "local-import",
+            )
+            .unwrap();
+        db.set_diagram_ignored(ignored_entry, true).unwrap();
+
+        let missing = db
+            .entry_ids_missing_previews(|_| FINGERPRINT.to_string())
+            .unwrap();
+        assert_eq!(missing, vec![entry_id]);
+
+        drop(db);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A render made with other parameters (or before fingerprints existed) is listed
+    /// as missing; one made with the current parameters is not.
+    #[test]
+    fn entry_ids_missing_previews_lists_a_row_whose_fingerprint_differs() {
+        let (db, entry_id, path) = temp_db_with_one_entry();
+        save_current(&db, entry_id, Some(&[1]), Some(&[2]), 1);
+
+        let current = db
+            .entry_ids_missing_previews(|_| FINGERPRINT.to_string())
+            .unwrap();
+        assert!(current.is_empty(), "same parameters: nothing to redo");
+
+        let other_parameters = db
+            .entry_ids_missing_previews(|_| "other-fingerprint".to_string())
+            .unwrap();
+        assert_eq!(other_parameters, vec![entry_id]);
+
+        // A row from before fingerprints existed stores NULL, which never matches.
+        db.conn
+            .execute(
+                "UPDATE diagram_previews SET params_fingerprint = NULL WHERE entry_id = ?1",
+                params![entry_id],
+            )
+            .unwrap();
+        let legacy = db
+            .entry_ids_missing_previews(|_| FINGERPRINT.to_string())
+            .unwrap();
+        assert_eq!(legacy, vec![entry_id]);
+
+        drop(db);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The caller's fingerprint function sees the row's persisted material, so a
+    /// fingerprint that names it can tell two designs with different materials apart.
+    #[test]
+    fn entry_ids_missing_previews_hands_the_persisted_material_to_the_fingerprint_function() {
+        let (db, entry_id, path) = temp_db_with_one_entry();
+        let candidates = [RiPresetCandidate {
+            name: "Sapphire".to_string(),
+            refractive_index: 1.762,
+        }];
+        let mut rng = || -> f64 { panic!("single match, must not be called") };
+        db.ensure_preview_material(entry_id, 1.762, &candidates, 0.01, &mut rng)
+            .unwrap();
+        let revision = db.entry_updated_at(entry_id).unwrap();
+        db.save_preview_images(
+            entry_id,
+            Some(&[1]),
+            Some(&[2]),
+            1,
+            "material=Sapphire",
+            revision,
+        )
+        .unwrap();
+
+        assert_eq!(
+            db.entry_ids_missing_previews(|material| {
+                format!("material={}", material.unwrap_or("none"))
+            })
+            .unwrap(),
+            Vec::<i64>::new()
+        );
+
+        drop(db);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// The refuse path: a render whose design changed while it was being made must not
+    /// overwrite anything.
+    #[test]
+    fn save_preview_images_refuses_a_write_after_the_design_changed() {
+        let (db, entry_id, path) = temp_db_with_one_entry();
+        save_current(&db, entry_id, Some(&[1, 1]), Some(&[2, 2]), 10);
+
+        let read_before_render = db.entry_updated_at(entry_id).unwrap();
+        bump_revision(&db, entry_id);
+        let stored = db
+            .save_preview_images(
+                entry_id,
+                Some(&[9]),
+                Some(&[9]),
+                20,
+                FINGERPRINT,
+                read_before_render,
+            )
+            .unwrap();
+        assert!(!stored, "the stale render must be refused");
+
+        let loaded = db.get_preview_images(entry_id).unwrap();
+        assert_eq!(loaded.front, Some(vec![1, 1]), "the old images stay");
+        assert_eq!(loaded.top, Some(vec![2, 2]));
+        assert_eq!(loaded.generated_at, Some(10));
+
+        // Reading the revision again and rendering afresh is accepted.
+        save_current(&db, entry_id, Some(&[3]), Some(&[4]), 30);
+        assert_eq!(
+            db.get_preview_images(entry_id).unwrap().front,
+            Some(vec![3])
+        );
+
+        drop(db);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// A refused first write leaves no row behind, so the design still counts as
+    /// missing its previews.
+    #[test]
+    fn a_refused_first_write_creates_no_row() {
+        let (db, entry_id, path) = temp_db_with_one_entry();
+        let read_before_render = db.entry_updated_at(entry_id).unwrap();
+        bump_revision(&db, entry_id);
+
+        assert!(
+            !db.save_preview_images(
+                entry_id,
+                Some(&[1]),
+                None,
+                5,
+                FINGERPRINT,
+                read_before_render
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            db.get_preview_images(entry_id).unwrap(),
+            crate::model::preview::PreviewImages::default()
+        );
+        assert_eq!(
+            db.entry_ids_missing_previews(|_| FINGERPRINT.to_string())
+                .unwrap(),
+            vec![entry_id]
+        );
+
+        drop(db);
+        std::fs::remove_file(&path).ok();
+    }
+
+    /// `None` is the legacy "never stamped" revision: it matches a `NULL`
+    /// `updated_at` and nothing else.
+    #[test]
+    fn a_null_revision_matches_only_an_expected_none() {
+        let (db, entry_id, path) = temp_db_with_one_entry();
+        db.conn
+            .execute(
+                "UPDATE diagram_entries SET updated_at = NULL WHERE id = ?1",
+                params![entry_id],
+            )
+            .unwrap();
+        assert_eq!(db.entry_updated_at(entry_id).unwrap(), None);
+
+        assert!(
+            !db.save_preview_images(entry_id, Some(&[1]), None, 1, FINGERPRINT, Some(7))
+                .unwrap()
+        );
+        assert!(
+            db.save_preview_images(entry_id, Some(&[1]), None, 1, FINGERPRINT, None)
+                .unwrap()
+        );
+
+        drop(db);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn save_preview_images_for_a_deleted_entry_writes_nothing() {
+        let (db, entry_id, path) = temp_db_with_one_entry();
+        let revision = db.entry_updated_at(entry_id).unwrap();
+        db.delete_diagram_entry(entry_id).unwrap();
+
+        assert!(
+            !db.save_preview_images(entry_id, Some(&[1]), None, 1, FINGERPRINT, revision)
+                .unwrap()
+        );
+        assert!(db.entry_updated_at(entry_id).is_err());
 
         drop(db);
         std::fs::remove_file(&path).ok();
@@ -338,12 +744,11 @@ mod tests {
         let (db, entry_id, path) = temp_db_with_one_entry();
         // A first import: writes diagram_details for the first time.
         db.save_diagram_detail(
-            &crate::model::detail::FacetDiagramDetail::default(),
+            &crate::model::detail::FacetingDiagramDetail::default(),
             entry_id,
         )
         .unwrap();
-        db.save_preview_images(entry_id, Some(&[1, 2, 3]), Some(&[4, 5, 6]), 42)
-            .unwrap();
+        save_current(&db, entry_id, Some(&[1, 2, 3]), Some(&[4, 5, 6]), 42);
 
         // A "re-sync": save_diagram_detail's own doc comment establishes that a second
         // call for the same entry_id first DELETEs the existing diagram_details row
@@ -352,7 +757,7 @@ mod tests {
         // not be affected by that delete at all, since it is keyed by entry_id
         // (diagram_entries), not by diagram_details' own row id.
         db.save_diagram_detail(
-            &crate::model::detail::FacetDiagramDetail::default(),
+            &crate::model::detail::FacetingDiagramDetail::default(),
             entry_id,
         )
         .unwrap();

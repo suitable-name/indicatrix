@@ -10,12 +10,14 @@
 //!   `save_custom_material` round trip.
 //! - [`detail`][]: `save_diagram_detail`/`update_diagram_metadata`/
 //!   `get_derived_from_title`.
-//! - [`entries`]: cross-source dedup, rename, `updated_at` bump semantics, `url`
+//! - [`entries`]: rename, `updated_at` bump semantics, `url`
 //!   rewrite, delete cascade, and the `ignored` flag.
 //! - [`search`]: the library search/filter surface and attribute-range stats.
 //! - [`performance`]: tilt-performance filtering, including the SQL-narrowing
 //!   soundness property against a brute-force scan.
-//! - [`connection`]: WAL/`checkpoint`/`open_read_only`/`:memory:` connection behaviour.
+//! - [`connection`]: WAL/`open_read_only`/`:memory:` connection behaviour.
+//! - [`planner_exclusions`]: the Rough Planner exclusion mark -- toggling, the sorted
+//!   readers, and its independence from `updated_at`, re-saves, deletes and `ignored`.
 
 mod connection;
 mod detail;
@@ -23,6 +25,8 @@ mod entries;
 mod fixtures;
 mod materials;
 mod migrations;
+mod migrations_blob_order;
 mod performance;
+mod planner_exclusions;
 mod schema_migrations;
 mod search;

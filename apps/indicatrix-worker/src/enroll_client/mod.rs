@@ -17,18 +17,31 @@ use crate::{
 };
 use indicatrix_net::enroll::{ClaimError, EnrollRequest, EnrollResponse};
 use rustls::{ClientConfig, ClientConnection, StreamOwned, pki_types::ServerName};
-use std::{net::TcpStream, path::Path, sync::Arc};
+use std::{
+    net::{TcpStream, ToSocketAddrs},
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
+use zeroize::Zeroize;
 
-/// Splits `addr` (`host:port`) into its host part, for building a TLS [`ServerName`].
-/// Splits on the last `:` so a bracketed IPv6 literal's internal colons are tolerated
-/// (further validated by `ServerName::try_from`).
+/// Connect timeout and per-read/per-write socket timeout of `cert issue-token`: the
+/// exchange is one small request and reply, so a listener that stalls longer is dead.
+const ISSUE_IO_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Cap on the reply `cert issue-token` will read. An `Issued` or `IssueRefused` reply is
+/// a few hundred bytes; nothing legitimate approaches this.
+const MAX_ISSUE_REPLY_LEN: u32 = 64 * 1024;
+
+/// Splits `addr` (`host:port`) into its host part, for building a TLS [`ServerName`],
+/// via [`indicatrix_net::tls::host_for_server_name`] (which strips the brackets of an
+/// IPv6 literal; the result is further validated by `ServerName::try_from`).
 ///
 /// # Errors
 ///
 /// A human-readable message if `addr` has no `:` at all.
 fn host_of<'a>(addr: &'a str, flag: &str) -> Result<&'a str, String> {
-    addr.rsplit_once(':')
-        .map(|(host, _)| host)
+    indicatrix_net::tls::host_for_server_name(addr)
         .ok_or_else(|| format!("{flag} {addr:?} must be host:port"))
 }
 
@@ -120,14 +133,19 @@ pub fn write_bundle(
 /// has that file, so there's no bootstrap problem here the way there is for [`claim`].
 /// Asks it to mint a token for `args.name` and prints the result.
 ///
+/// The request is authorised by the operator secret in `issue.secret` next to `args.ca`
+/// (created by `serve` on first start, readable only by its owner): this command must run
+/// as a user that can read the PKI directory.
+///
 /// The token is printed via `println!`, deliberately not `tracing::info!`: it is a
 /// bearer secret, and a tracing-formatted line is exactly what ends up captured in a
 /// log file or forwarded to an aggregator.
 ///
 /// # Errors
 ///
-/// A human-readable message if `args.ca` can't be loaded, `args.admin_addr` isn't
-/// `host:port`, the connection or TLS handshake fails, the wire exchange fails, or the
+/// A human-readable message if `args.ca` or the `issue.secret` beside it can't be loaded,
+/// `args.admin_addr` isn't `host:port`, the connection or TLS handshake fails, the wire
+/// exchange fails, or the
 /// server refuses to issue a token (not a loopback connection, or too many enrollments
 /// already pending -- see `crate::enroll::EnrollRegistry::issue`).
 pub fn run_issue_token(args: &CertIssueTokenArgs) -> Result<(), String> {
@@ -154,8 +172,9 @@ fn issue_name(args: &CertIssueTokenArgs) -> String {
 ///
 /// # Errors
 ///
-/// A human-readable message if `ca_path` can't be loaded, `admin_addr` isn't
-/// `host:port`, or the connection, TLS handshake, or wire exchange fails.
+/// A human-readable message if `ca_path` or the `issue.secret` in its directory can't be
+/// loaded, `admin_addr` isn't `host:port`, or the connection, TLS handshake, or wire
+/// exchange fails.
 pub(crate) fn issue_token_over_tls(
     ca_path: &Path,
     admin_addr: &str,
@@ -163,6 +182,7 @@ pub(crate) fn issue_token_over_tls(
 ) -> Result<EnrollResponse, String> {
     let ca = indicatrix_net::tls::load_ca(ca_path)
         .map_err(|e| format!("--ca {}: {e}", ca_path.display()))?;
+    let secret = indicatrix_net::enroll::read_operator_secret(&pki::role::pki_dir_of(ca_path))?;
     let client_config = ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS13])
         .with_root_certificates(ca)
         .with_no_client_auth();
@@ -172,7 +192,7 @@ pub(crate) fn issue_token_over_tls(
         format!("--admin-addr {admin_addr:?}: invalid host for TLS verification: {e}")
     })?;
 
-    let tcp = TcpStream::connect(admin_addr)
+    let tcp = connect_with_timeout(admin_addr)
         .map_err(|e| format!("could not connect to {admin_addr}: {e}"))?;
     let conn = ClientConnection::new(Arc::new(client_config), server_name)
         .map_err(|e| format!("failed to start a TLS session: {e}"))?;
@@ -182,11 +202,44 @@ pub(crate) fn issue_token_over_tls(
         .complete_io(&mut stream.sock)
         .map_err(|e| format!("TLS handshake with {admin_addr} failed: {e}"))?;
 
-    let request = EnrollRequest::Issue {
+    // The request's copy of the operator secret is overwritten as soon as it is sent.
+    let mut request = EnrollRequest::IssueAuthorized {
         name: name.to_string(),
+        operator_secret: *secret,
     };
-    indicatrix_net::messages::write_message(&mut stream, &request).map_err(|e| e.to_string())?;
-    indicatrix_net::messages::read_message(&mut stream).map_err(|e| e.to_string())
+    let write_result = indicatrix_net::messages::write_message(&mut stream, &request);
+    if let EnrollRequest::IssueAuthorized {
+        operator_secret, ..
+    } = &mut request
+    {
+        operator_secret.zeroize();
+    }
+    write_result.map_err(|e| e.to_string())?;
+    indicatrix_net::messages::read_message_bounded(&mut stream, MAX_ISSUE_REPLY_LEN)
+        .map_err(|e| e.to_string())
+}
+
+/// Connects to `addr`, trying each resolved address with [`ISSUE_IO_TIMEOUT`], and arms
+/// the same timeout as the socket's read and write deadline so a stalled listener fails
+/// the command instead of hanging it.
+fn connect_with_timeout(addr: &str) -> std::io::Result<TcpStream> {
+    let mut last_error = None;
+    for candidate in addr.to_socket_addrs()? {
+        match TcpStream::connect_timeout(&candidate, ISSUE_IO_TIMEOUT) {
+            Ok(stream) => {
+                stream.set_read_timeout(Some(ISSUE_IO_TIMEOUT))?;
+                stream.set_write_timeout(Some(ISSUE_IO_TIMEOUT))?;
+                return Ok(stream);
+            }
+            Err(e) => last_error = Some(e),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            "the address resolved to nothing",
+        )
+    }))
 }
 
 fn match_issue_response(response: EnrollResponse, name: &str) -> Result<(), String> {
@@ -225,6 +278,11 @@ mod tests {
     fn host_of_splits_on_the_last_colon() {
         assert_eq!(host_of("127.0.0.1:7879", "--addr").unwrap(), "127.0.0.1");
         assert_eq!(host_of("worker.lan:7879", "--addr").unwrap(), "worker.lan");
+    }
+
+    #[test]
+    fn host_of_strips_the_brackets_of_an_ipv6_literal() {
+        assert_eq!(host_of("[::1]:7879", "--addr").unwrap(), "::1");
     }
 
     #[test]
@@ -273,7 +331,6 @@ mod tests {
             &cert_path,
             &key_path,
             Some(allowlist_path.clone()),
-            crate::serve::ConnectionLimiter::new(64),
             indicatrix_net::messages::PeerRole::Viewer,
         )
         .unwrap();

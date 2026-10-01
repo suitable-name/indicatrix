@@ -2,7 +2,7 @@
 //!
 //! Reads real `.asc` files directly out of the user's own `facet_diagrams.sqlite`
 //! catalogue (one per design, deduplicated by `detail_id`, exactly the pattern
-//! `crates/indicatrix/examples/meet_solver_validation.rs` already uses) and reports how
+//! `crates/indicatrix/examples/meet_solver_validation/main.rs` already uses) and reports how
 //! many designs trip each check. See that example's own doc comment for why this
 //! lives in `examples/` and not the test suite: it needs a real, thousands-of-designs
 //! catalogue this repository does not ship, so a `#[test]` cannot depend on it.
@@ -184,7 +184,7 @@ fn run_solve_free_checks(rows: &[AscRow]) {
     println!(
         "Check 3 (gear quantization): {with_fractional_index}/{parsed} designs \
          ({:.2}%) have >=1 fractional index; {fractional_index_tokens}/{total_index_tokens} \
-         index tokens overall ({:.3}%) -- brief's cited corpus figure: ~0.2% of tokens",
+         index tokens overall ({:.3}%) -- expected corpus figure: ~0.2% of tokens",
         pct(with_fractional_index, parsed),
         pct(fractional_index_tokens, total_index_tokens)
     );

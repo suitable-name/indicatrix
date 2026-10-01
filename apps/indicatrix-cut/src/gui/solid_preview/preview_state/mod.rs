@@ -80,16 +80,22 @@
 //! `slint::Weak<MainWindow>` directly, so a fake, synchronous sink can drive this
 //! module's tests with no Slint window (see `tests::FakeSink`).
 
+//!
+//! # The pipeline itself lives in `indicatrix_solid::preview`
+//!
+//! The planner (`build_planned_frame`), the request types, the RENDER worker's
+//! state machine (`WorkerMemory`/`resolve_request_state`) and its draw step
+//! (`render_request`) moved to the shared crate so the web app runs the very same
+//! functions on its main thread; this module keeps the threads, the gates and the
+//! Slint pixel-buffer conversion, and re-exports the moved items at their old
+//! paths. `tests::pins` holds the byte-identity pins recorded before the move.
+
+#[cfg(test)]
+use super::facet_map::FacetMap;
 use super::{
-    diagram2d::{self, DiagramConfig, DiagramStyle, PanelKind},
-    edges_layer::render_edges_layer,
-    facet_map::FacetMap,
-    live_update,
-    mesh_cache::{CachedMesh, MeshCache},
-    raster::{SolidRasterizer, SolidStyle},
-    to_diagram_pixel_buffer, to_pixel_buffer,
+    live_update, mesh_cache::MeshCache, raster::SolidRasterizer, to_diagram_pixel_buffer,
+    to_pixel_buffer,
 };
-use indicatrix::geometry::stone_metrics::SolidMesh;
 
 use crate::bridge::render_thread::RedrawGate;
 
@@ -106,4 +112,6 @@ mod types;
 pub use controller::SolidPreviewState;
 pub use request::ReplanRequest;
 pub use sink::{DEFAULT_MESH_BOUNDING_RADIUS, PreviewFrame, PreviewSink};
-pub use types::{CameraPose, FacetOverlay, PickBuffer, SolidLastSolved, SolidPickState};
+pub use types::{
+    CameraPose, FacetOverlay, FrameGeometry, PickBuffer, SolidLastSolved, SolidPickState,
+};

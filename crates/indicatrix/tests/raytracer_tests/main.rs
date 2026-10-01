@@ -6,6 +6,7 @@ mod absorption_bands;
 mod colorimetry;
 mod dispersion_fire;
 mod fixtures;
+mod furnace_noise_floor;
 mod geometry_optics_basics;
 mod golden_regression;
 mod illuminant_color_shift;

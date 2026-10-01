@@ -90,7 +90,8 @@ pub(super) fn worst_halfspace_violation(
     for &v in vertices {
         for (i, &(n, m)) in planes.iter().enumerate() {
             let violation = n.dot(v) - m;
-            if violation > FIT_EPS && worst.is_none_or(|(_, w)| violation > w) {
+            let eps = FIT_EPS_REL * m.abs();
+            if violation > eps && worst.is_none_or(|(_, w)| violation > w) {
                 worst = Some((i, violation));
             }
         }
@@ -105,11 +106,17 @@ pub(super) fn worst_halfspace_violation(
 /// when at least one axis genuinely exceeds -- see [`Self::exceeds_any`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PreformFit {
+    /// Width of the design, in mast units.
     pub design_width: f64,
+    /// Length of the design, in mast units.
     pub design_length: f64,
+    /// Height of the design, in mast units.
     pub design_height: f64,
+    /// Width of the preform, in mast units.
     pub preform_width: f64,
+    /// Length of the preform, in mast units.
     pub preform_length: f64,
+    /// Height of the preform, in mast units.
     pub preform_height: f64,
     /// The exact, general fit test: `Some((plane index, max violation))` when
     /// some solved-stone vertex sits outside one of the preform's own
@@ -117,36 +124,53 @@ pub struct PreformFit {
     /// output), by how much (model units), else `None`. See
     /// [`worst_halfspace_violation`]'s doc comment for why this can catch a
     /// non-box preform's corner-cutting where the extents comparison alone
-    /// cannot; for a [`crate::preform::PreformShape::Block`] preform it
-    /// always agrees with [`Self::exceeds_width`]/[`Self::exceeds_length`]/
-    /// [`Self::exceeds_height`].
+    /// cannot; for a [`crate::preform::PreformShape::Block`] preform the two
+    /// agree in every PRACTICAL case (both gate on the same
+    /// [`FIT_EPS_REL`]-scaled slack), but not EXACTLY: [`worst_halfspace_violation`]
+    /// scales its slack by each plane's own offset (a `Block` preform's own
+    /// HALF-width/length/height), while [`Self::exceeds_width`]/
+    /// [`Self::exceeds_length`]/[`Self::exceeds_height`] scale theirs by the
+    /// FULL preform extent -- a factor of two apart -- so a violation sized
+    /// squarely between the two scaled slacks can trip one check without the
+    /// other.
     pub outside_halfspace: Option<(usize, f64)>,
 }
 
-/// Absolute slack (model units) below which a design axis is treated as "fits" even
-/// if numerically a hair over the preform's own figure -- absorbs the same
-/// float/measurement noise `stone_metrics`'s own epsilon constants absorb, at a
-/// comparable scale (mast units are of order 1).
-const FIT_EPS: f64 = 1e-7;
+/// Relative slack (a fraction of the design's own preform extent, or of a
+/// half-space plane's own offset) below which a design axis -- or a solved
+/// vertex against a preform half-space -- is treated as "fits" even if
+/// numerically a hair over the preform's own figure.
+///
+/// A FIXED, absolute mast-unit slack (rather than the old `1e-7` `FIT_EPS`)
+/// is the wrong shape for this: [`exceeds_preform`] narrows its facet planes to
+/// `f32` via `GpuFacetPlane` before measuring them (while the preform's own
+/// planes stay `f64`), so the measurement noise this needs to absorb scales
+/// with the DESIGN's own magnitude, not with a fixed mast-unit constant --  a
+/// girdle mast set to EXACTLY the block preform's own half-width could still
+/// measure `2.000000105 > 2.0 + 1e-7`, a false "design exceeds its stated
+/// rough". See `a_design_whose_own_width_exactly_matches_the_preform_is_not_reported_as_exceeding`.
+const FIT_EPS_REL: f64 = 1e-6;
 
 impl PreformFit {
-    /// `true` iff the design's own facet-plane-only width exceeds the preform's.
+    /// `true` iff the design's own facet-plane-only width exceeds the preform's,
+    /// by more than [`FIT_EPS_REL`] of the preform's own width.
     #[must_use]
     pub fn exceeds_width(&self) -> bool {
-        self.design_width > self.preform_width + FIT_EPS
+        self.design_width > FIT_EPS_REL.mul_add(self.preform_width.abs(), self.preform_width)
     }
 
-    /// `true` iff the design's own facet-plane-only length exceeds the preform's.
+    /// `true` iff the design's own facet-plane-only length exceeds the preform's,
+    /// by more than [`FIT_EPS_REL`] of the preform's own length.
     #[must_use]
     pub fn exceeds_length(&self) -> bool {
-        self.design_length > self.preform_length + FIT_EPS
+        self.design_length > FIT_EPS_REL.mul_add(self.preform_length.abs(), self.preform_length)
     }
 
     /// `true` iff the design's own facet-plane-only total height exceeds the
-    /// preform's.
+    /// preform's, by more than [`FIT_EPS_REL`] of the preform's own height.
     #[must_use]
     pub fn exceeds_height(&self) -> bool {
-        self.design_height > self.preform_height + FIT_EPS
+        self.design_height > FIT_EPS_REL.mul_add(self.preform_height.abs(), self.preform_height)
     }
 
     /// `true` iff some solved-stone vertex lies outside one of the preform's

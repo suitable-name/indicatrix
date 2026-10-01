@@ -42,6 +42,7 @@ pub enum PreformShape {
 /// rescaling).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PreformSpec {
+    /// Shape of the rough block.
     pub shape: PreformShape,
     /// Half the rough's width (its shorter horizontal extent, along `x`).
     pub half_width: f64,

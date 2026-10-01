@@ -1,0 +1,160 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { AppModel } from "../models/app_model.slint";
+import { GuideModel } from "../models/guide_model.slint";
+import { TableStyle } from "tier_table_style.slint";
+import { TierTableModel } from "tier_table_model.slint";
+
+// The amber "Stale: design changed" chip with a Recompute action (the desktop's
+// `stale_badge.slint`): shown while the last solve describes an older design.
+component StaleSolveBadge inherits Rectangle {
+    // False while the guided walkthrough locks Solve: Recompute dims and ignores clicks
+    // (the "Stale" text itself is information, not an action).
+    in property <bool> enabled: true;
+    callback recompute();
+    width: badge.preferred-width;
+    height: badge.preferred-height;
+    border-radius: Theme.radius-sm;
+    background: TableStyle.amber-glow;
+    border-width: 1px;
+    border-color: Theme.accent-amber;
+    badge := HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        padding-top: 1px;
+        padding-bottom: 1px;
+        spacing: 6px;
+        Text {
+            text: "Stale: design changed";
+            font-size: 9px;
+            font-weight: 700;
+            color: Theme.accent-amber;
+            vertical-alignment: center;
+        }
+        Rectangle {
+            width: recompute-label.preferred-width;
+            opacity: root.enabled ? 1.0 : 0.4;
+            recompute-touch := TouchArea {
+                enabled: root.enabled;
+                clicked => { root.recompute(); }
+            }
+            if !root.enabled: Tooltip { text: @markdown("\{GuideModel.locked-hint}"); }
+            recompute-label := Text {
+                text: "Recompute";
+                font-size: 9px;
+                font-weight: 700;
+                color: recompute-touch.has-hover ? TableStyle.cyan-hover : Theme.accent-cyan;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// The dock's solve status, modelled on the desktop's `editor_status_strip.slint`: a
+// state dot and word (Solved / Stale / Solving / Failed / Problem), the tier count, the
+// solver's own sentence (which names the tiers behind an "Unbounded" or "Degenerate"
+// result, or the missing anchor), and -- when there are any -- the manufacturability
+// warnings, one line each; a click on a line selects its tier.
+//
+// Problem tints: amber for advisory findings (stale, warnings), ruby for a design that
+// cannot be solved or whose solid does not close.
+export component TierStatus inherits Rectangle {
+    // A short dock (`design_dock.slint`) drops the solver's sentence for an ordinary
+    // "Solved" (the bottom status strip has it) so the tier table keeps its rows; a
+    // failure or problem always keeps its sentence.
+    in property <bool> compact: false;
+
+    background: Theme.bg-input;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    height: content.preferred-height;
+
+    property <string> kind: TierTableModel.status-kind;
+    property <color> tone: root.kind == "solving" || root.kind == "stale" ? Theme.accent-amber
+        : (root.kind == "failed" || root.kind == "problem" ? TableStyle.ruby
+        : (root.kind == "solved" ? Theme.accent-emerald : Theme.text-muted));
+    property <string> label: root.kind == "solving" ? "Solving"
+        : (root.kind == "stale" ? "Stale"
+        : (root.kind == "failed" ? "Cannot be solved"
+        : (root.kind == "problem" ? "Solved, not a closed solid"
+        : (root.kind == "solved" ? "Solved" : ""))));
+
+    content := VerticalLayout {
+        padding: 6px;
+        spacing: 3px;
+
+        HorizontalLayout {
+            spacing: 6px;
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                y: (parent.height - self.height) / 2;
+                border-radius: 4px;
+                background: root.tone;
+            }
+            Text {
+                text: root.label;
+                font-size: 10px;
+                font-weight: 700;
+                color: root.tone;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Text {
+                text: AppModel.tier-count + (AppModel.tier-count == 1 ? " tier" : " tiers");
+                font-size: 10px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+            Rectangle { horizontal-stretch: 1; }
+            if root.kind == "stale": StaleSolveBadge {
+                enabled: GuideModel.allows-solve();
+                recompute => { TierTableModel.solve(); }
+            }
+        }
+
+        if TierTableModel.status-text != "" && !(root.compact && root.kind == "solved"): Text {
+            text: TierTableModel.status-text;
+            font-size: 10px;
+            color: root.kind == "failed" || root.kind == "problem" ? TableStyle.ruby : Theme.text-secondary;
+            wrap: word-wrap;
+        }
+
+        if TierTableModel.warnings.length > 0: Rectangle {
+            height: warn-toggle.preferred-height + 2px;
+            warn-toggle-touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { TierTableModel.warnings-open = !TierTableModel.warnings-open; }
+            }
+            warn-toggle := Text {
+                text: (TierTableModel.warnings-open ? "\u{25BC} " : "\u{25B6} ") + "Manufacturability (" + TierTableModel.warnings.length + ")";
+                font-size: 10px;
+                font-weight: 700;
+                color: Theme.accent-amber;
+            }
+        }
+
+        // Every warning, in full, amber and never a stop: they are advice.
+        if TierTableModel.warnings.length > 0 && TierTableModel.warnings-open: ScrollView {
+            height: min(warn-list.preferred-height, 96px);
+            warn-list := VerticalLayout {
+                spacing: 2px;
+                for w in TierTableModel.warnings: Rectangle {
+                    height: warn-text.preferred-height;
+                    warn-touch := TouchArea {
+                        enabled: w.tier >= 0;
+                        mouse-cursor: w.tier >= 0 ? MouseCursor.pointer : MouseCursor.default;
+                        clicked => { TierTableModel.warning-clicked(w.tier); }
+                    }
+                    warn-text := Text {
+                        text: "- " + w.text;
+                        font-size: 9px;
+                        color: w.tier >= 0 && warn-touch.has-hover ? Theme.accent-cyan : Theme.text-secondary;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+    }
+}

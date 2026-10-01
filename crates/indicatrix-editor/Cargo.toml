@@ -1,0 +1,36 @@
+[package]
+name = "indicatrix-editor"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+authors = { workspace = true }
+description = "GUI-free faceting-design editor logic shared by the desktop editor and the wasm web app: the EditorSession (design, undo/redo with caller-supplied coalescing timestamps, selection, dirty tracking), tier/preform/material form parsing, plain-struct view models, the cutting sheet, Retarget, the guided walkthrough and the solve policy. No GUI toolkit, no threads, no clock, no filesystem."
+license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+documentation = "https://docs.rs/indicatrix-editor"
+keywords = ["gemstone", "faceting", "editor", "wasm"]
+categories = ["gui", "science"]
+publish = { workspace = true }
+
+[dependencies]
+# Meet-solver types (`SolvedTier`, `MeetConstraint`, `Block`), `GemMaterial`,
+# `GpuFacetPlane` and the stone-metrics measurements the view models format.
+indicatrix = { workspace = true }
+# `Design`, `Edit`, `History`, templates, materials, manufacturability, Retarget's
+# angle formulas and the Optimize search -- the model every editor action edits.
+indicatrix-cut-core = { workspace = true }
+# `Vec3` for the `manipulate` module's projection and handle math (the same glam
+# the `Camera` it mirrors uses; the workspace pin, so no version change).
+glam = { workspace = true }
+# `.asc` parsing for `loading::design_from_asc_text`.
+indicatrix-formats = { workspace = true }
+# `diagram2d::render_diagram`, the rasterizer behind the cutting sheet's diagram.
+indicatrix-solid = { workspace = true }
+# PNG encoding of the cutting-sheet diagram (in memory, never a file).
+image = { workspace = true, features = ["png"] }
+# One `warn!` when cutting instructions' masts do not match their tier count.
+tracing = { workspace = true }
+
+[lints]
+workspace = true

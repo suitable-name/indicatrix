@@ -26,6 +26,7 @@ use crate::{
         export_thread::{AccumulationCarry, RemoteSelection, SceneSnapshot},
         render_thread::RenderContext,
     },
+    gui::progress_eta::{EtaEstimator, format_eta},
     settings::LocalComputeTarget,
 };
 use indicatrix::{color::ColorSpace, renderer::gpu_backend::GpuBackend};
@@ -171,7 +172,7 @@ fn run(
     if !request.keep_frames
         && matches!(
             outcome,
-            encode::EncodeOutcome::Mp4(_) | encode::EncodeOutcome::Gif(_)
+            encode::EncodeOutcome::Mp4(_) | encode::EncodeOutcome::Gif { .. }
         )
     {
         for path in &frame_paths {
@@ -210,6 +211,12 @@ fn render_all_frames(
         LocalComputeTarget::CpuGpu | LocalComputeTarget::Gpu => GpuBackend::acquire(),
     };
     let mut carry = AccumulationCarry::default();
+    // The whole sweep's own time-remaining estimator, fed once per completed frame
+    // (`frames_done / frames_total`, below) -- fresh for every call to this
+    // function, since a new run's render rate has nothing to do with a previous
+    // run's. See `gui::progress_eta`'s own module doc comment for why a rolling
+    // regression rather than "seconds since last frame".
+    let mut eta = EtaEstimator::default();
     let config = render::VideoComputeConfig {
         remote: request.remote.clone(),
         local_compute: request.local_compute,
@@ -275,11 +282,14 @@ fn render_all_frames(
         }
         frame_paths.push(path);
 
+        let now = Instant::now();
+        eta.observe(now, (index + 1) as f64 / request.total_frames.max(1) as f64);
         report_progress(
             ui_weak,
             index + 1,
             request.total_frames,
             started.elapsed().as_secs_f32(),
+            format_eta(eta.eta(now)),
             activity_id,
         );
     }
@@ -297,11 +307,17 @@ fn save_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<(), Str
 /// `report_frame_progress` (below) additionally blends in WITHIN-frame sample progress
 /// on every batch tick, so the two together give a bar that moves continuously rather
 /// than jumping once per frame.
+///
+/// `eta_text` is [`render_all_frames`]'s own `EtaEstimator` (fed `frames_done /
+/// frames_total` once per completed frame), already formatted by
+/// `gui::progress_eta::format_eta` -- computed at the call site rather than in here so
+/// this function stays a plain UI-thread setter, matching every other field it writes.
 fn report_progress(
     ui_weak: &slint::Weak<MainWindow>,
     done: usize,
     total: usize,
     last_frame_secs: f32,
+    eta_text: String,
     activity_id: i32,
 ) {
     let ui_weak = ui_weak.clone();
@@ -311,6 +327,7 @@ fn report_progress(
         let fraction = params::export_progress_fraction(done, total);
         model.set_progress(fraction);
         model.set_last_frame_seconds(last_frame_secs);
+        model.set_eta_text(eta_text.into());
         // `ActivityRegistry::progress`/`ActivityList::set_progress` real
         // completion-fraction path -- `TiltVideoExportModel.progress` above
         // already carries the same fraction for this dialog's own bar, this is
@@ -364,6 +381,7 @@ fn report_cancelled(
         model.set_is_exporting(false);
         model.set_has_error(false);
         model.set_status_message("Video export cancelled.".into());
+        model.set_eta_text(String::new().into());
         ui.global::<ActivityModel>()
             .invoke_finish_external(activity_id);
     });
@@ -383,6 +401,7 @@ fn report_failure(
         model.set_is_exporting(false);
         model.set_has_error(true);
         model.set_status_message(message.into());
+        model.set_eta_text(String::new().into());
         ui.global::<ActivityModel>()
             .invoke_finish_external(activity_id);
     });
@@ -398,12 +417,24 @@ fn report_done(
     finish_video_export(render_ctx);
     let message = match outcome {
         encode::EncodeOutcome::Mp4(path) => format!("Exported {}", path.display()),
-        encode::EncodeOutcome::Gif(path) => {
-            format!(
-                "ffmpeg not found on PATH -- exported an animated GIF instead: {}",
-                path.display()
-            )
-        }
+        encode::EncodeOutcome::Gif {
+            path,
+            mp4_failure_reason,
+        } => mp4_failure_reason.as_ref().map_or_else(
+            || {
+                format!(
+                    "ffmpeg not found on PATH -- exported an animated GIF instead: {}",
+                    path.display()
+                )
+            },
+            |reason| {
+                format!(
+                    "ffmpeg could not produce an MP4 ({reason}) -- exported an animated \
+                     GIF instead: {}",
+                    path.display()
+                )
+            },
+        ),
         encode::EncodeOutcome::FramesOnly { readme } => format!(
             "No video muxer available -- left the frame sequence in {} (see {})",
             out_dir.display(),
@@ -417,6 +448,7 @@ fn report_done(
         model.set_has_error(false);
         model.set_progress(1.0);
         model.set_status_message(message.into());
+        model.set_eta_text(String::new().into());
         ui.global::<ActivityModel>()
             .invoke_finish_external(activity_id);
     });
@@ -446,7 +478,8 @@ mod tests {
     /// frame has saved successfully.
     #[test]
     fn a_run_stopped_partway_through_leaves_only_the_frames_already_written_and_no_video() {
-        let scene = SceneSnapshot::capture(&Mutex::new(RenderContext::default()));
+        let scene = SceneSnapshot::capture(&Mutex::new(RenderContext::default()))
+            .expect("Diamond resolves");
         let total_frames = 3;
         let dir =
             std::env::temp_dir().join(format!("tilt_video_cancel_test_{}", std::process::id()));

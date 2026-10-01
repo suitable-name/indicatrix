@@ -287,6 +287,7 @@ fn an_hdr_job_asks_the_viewer_once_and_forwards_the_map_to_each_worker() {
         height: 6,
         color_space: WireColorSpace::Srgb,
         output: FinalOutput::PngRgba8,
+        viewer_samples: 0,
     }));
     let picture = run(&mut client, &final_request, (8, 6), (&bytes, &bytes));
     assert_eq!(picture.done.expect("DONE").stats.samples_done, 2);

@@ -1,0 +1,37 @@
+[package]
+name = "indicatrix-web-compute"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+authors = { workspace = true }
+description = "The Web Worker entry point of the indicatrix browser app: decodes a message, runs indicatrix-web-core's handler, posts the reply. Built by Trunk as a worker next to apps/indicatrix-web."
+license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+documentation = "https://docs.rs/indicatrix-web-compute"
+keywords = ["gemstone", "wasm", "webworker"]
+categories = ["wasm"]
+publish = { workspace = true }
+
+# `cdylib` for wasm-bindgen/Trunk; `rlib` so a native `cargo check`/`clippy` of the
+# workspace type-checks this crate as an ordinary (empty) library, like
+# `apps/indicatrix-web`.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# Everything lives under the wasm32 target section: on a native build this crate is
+# empty (see `src/lib.rs`), so declaring the dependencies here would only make them
+# unused there.
+[dependencies]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+# A Rust panic as a readable `console.error` line instead of "unreachable executed".
+console_error_panic_hook = "0.1.7"
+# The protocol and every handler; this crate only moves bytes.
+indicatrix-web-core = { workspace = true }
+js-sys = "0.3.106"
+wasm-bindgen = "0.2.129"
+web-sys = { version = "0.3.106", default-features = false, features = ["Blob", "DedicatedWorkerGlobalScope", "MessageEvent", "Performance", "Url", "WorkerGlobalScope", "XmlHttpRequest", "console"] }
+
+[lints]
+workspace = true

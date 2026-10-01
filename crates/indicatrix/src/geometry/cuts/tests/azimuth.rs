@@ -10,25 +10,74 @@ use indicatrix_formats::asc::{AscSchedule, AscTier};
 
 use crate::geometry::{cuts::StandardGemCuts, plane::GpuFacetPlane};
 
-/// `index_to_azimuth` with `gear_reference_angle == 0.0` must be bit-for-bit
-/// identical to the plain `2*pi*index/gear_teeth` formula it replaces --
-/// every schedule that never set a reference angle (the default, and
-/// 65.1% of the real corpus, see the function's own doc comment) must
-/// render exactly as it did before this fix.
+/// Asserts `got` is within one unit in the last place of `want` (both non-negative, so
+/// the bit patterns order like the values).
+fn assert_within_one_ulp(got: f32, want: f32, what: &str) {
+    let distance = got.to_bits().abs_diff(want.to_bits());
+    assert!(
+        distance <= 1,
+        "{what}: got {got} ({:#010x}), expected {want} ({:#010x}), {distance} ULP apart",
+        got.to_bits(),
+        want.to_bits()
+    );
+}
+
+/// `index_to_azimuth` maps tooth `index` of a `gear_teeth` wheel to the angle
+/// `2*pi*(index + reference) / gear_teeth`. Expectations are written as exact turn
+/// fractions, not by repeating the formula:
+///
+/// - `(0, 96)` is the zero turn: `0`.
+/// - `(24, 96)` is `24/96 = 1/4` turn: `pi/2`.
+/// - `(48, 96)` is `1/2` turn: `pi`.
+/// - `(1, 8)` is `1/8` turn: `pi/4`.
+///
+/// All reference angles are zero. `pi/2`, `pi` and `pi/4` are the `f32` constants
+/// (exact power-of-two scalings of `f32` pi); the computed value may differ from them
+/// by the rounding of the multiply and divide, hence a 1-ULP tolerance.
 #[test]
-fn index_to_azimuth_zero_reference_angle_is_bit_for_bit_identical_to_the_plain_formula() {
-    for &gear_teeth in &[16.0f32, 32.0, 64.0, 80.0, 96.0, 120.0] {
-        for idx in 0..gear_teeth as i32 {
-            let index = idx as f32;
-            let old = 2.0 * PI * index / gear_teeth;
-            let new = StandardGemCuts::index_to_azimuth(index, gear_teeth, 0.0);
-            assert_eq!(
-                old.to_bits(),
-                new.to_bits(),
-                "index {index}, gear {gear_teeth}: old={old}, new={new}"
-            );
-        }
-    }
+fn index_to_azimuth_zero_reference_angle_gives_exact_turn_fractions() {
+    assert_eq!(StandardGemCuts::index_to_azimuth(0.0, 96.0, 0.0), 0.0);
+    assert_within_one_ulp(
+        StandardGemCuts::index_to_azimuth(24.0, 96.0, 0.0),
+        std::f32::consts::FRAC_PI_2,
+        "24/96 turn",
+    );
+    assert_within_one_ulp(
+        StandardGemCuts::index_to_azimuth(48.0, 96.0, 0.0),
+        PI,
+        "48/96 turn",
+    );
+    assert_within_one_ulp(
+        StandardGemCuts::index_to_azimuth(1.0, 8.0, 0.0),
+        std::f32::consts::FRAC_PI_4,
+        "1/8 turn",
+    );
+}
+
+/// A nonzero reference angle adds to the index before the turn fraction is taken:
+/// index 12 with reference 6 on a 96-tooth wheel is tooth 18, i.e. `18/96 = 3/16` turn,
+/// which is `2*pi*3/16 = 3*pi/8 = 1.178_097_245...` rad (1-ULP tolerance for `f32`
+/// rounding of the literal and of the computation).
+#[test]
+fn index_to_azimuth_nonzero_reference_angle_offsets_the_turn_fraction() {
+    assert_within_one_ulp(
+        StandardGemCuts::index_to_azimuth(12.0, 96.0, 6.0),
+        1.178_097_2,
+        "(12 + 6)/96 turn",
+    );
+}
+
+/// The mapping does not reduce modulo a turn: tooth 96 of a 96-tooth wheel is the full
+/// turn `2*pi` (not `0`), which points in the same direction as tooth 0 (`cos == 1`).
+#[test]
+fn index_to_azimuth_full_turn_is_two_pi() {
+    let full = StandardGemCuts::index_to_azimuth(96.0, 96.0, 0.0);
+    assert_within_one_ulp(full, 2.0 * PI, "96/96 turn");
+    assert!(
+        (full.cos() - 1.0).abs() < 1e-6,
+        "cos of a full turn: {}",
+        full.cos()
+    );
 }
 
 /// A nonzero reference angle is a pure additive offset on the raw index,

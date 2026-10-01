@@ -93,21 +93,22 @@ pub(super) const fn sort_order_from_wire(order: SortOrderWire) -> SortOrder {
 
 /// Handles
 /// [`LibraryRequest::FetchDesignSource`](indicatrix_net::library::LibraryRequest::FetchDesignSource):
-/// finds `entry_id`'s real attached `.asc` file (the same "first attachment whose name
-/// ends in `.asc`" rule the client's own local load path uses,
-/// `gui::editor::loading::design_from_full_record`) and returns its exact text, decoded
-/// as UTF-8 lossily -- matching that same local path so a design loads identically
-/// whether it came from this worker or a local file.
+/// finds `entry_id`'s design-file attachment with the same rule the client's own
+/// local load path uses (`indicatrix_vault::local::design_attachment_position`: the
+/// first `.asc`, else the first `.gem`, else the first `.gcs`) and returns it as
+/// `.asc` text ([`design_source_reply`]) -- matching that same local path so a
+/// design loads identically whether it came from this worker or a local file.
 ///
 /// Three distinct outcomes, matching
 /// [`LibraryRequest::FetchDesign`](indicatrix_net::library::LibraryRequest::FetchDesign)'s
 /// own convention for `NotFound` plus one new case:
 /// - No such `entry_id` at all -> [`LibraryResponse::NotFound`] (same as `FetchDesign`).
-/// - `entry_id` exists but has no `.asc` attachment -> [`LibraryResponse::DesignSourceNotAvailable`]
+/// - `entry_id` exists but has no `.asc`/`.gem`/`.gcs` attachment -> [`LibraryResponse::DesignSourceNotAvailable`]
 ///   (a design with only a reconstructed, placeholder schedule has no real file bytes to
 ///   send -- see that variant's own doc comment).
-/// - A real `.asc` attachment exists -> [`LibraryResponse::DesignSource`] with its name
-///   and text.
+/// - A design-file attachment exists -> [`LibraryResponse::DesignSource`] with its
+///   name (for a `.gem`/`.gcs`, the converted `<stem>.asc`) and `.asc` text, or
+///   [`LibraryResponse::Error`] when a `.gem`/`.gcs` does not read.
 ///
 /// No bespoke size cap here: a `.asc` schedule is always a small text file, and this
 /// reply is bounded the same way [`LibraryResponse::Attachment`] already is, by the
@@ -122,14 +123,13 @@ pub(super) fn design_source(db: &Database, entry_id: i64) -> LibraryResponse {
         }
         Err(e) => return db_error("get_diagram_full_meta", &e),
     };
-    let Some(attachment) = meta
-        .attached_files
-        .iter()
-        .find(|f| f.name.to_lowercase().ends_with(".asc"))
-    else {
-        tracing::debug!("FetchDesignSource: entry {entry_id} has no .asc attachment");
+    let Some((position, kind)) = indicatrix_vault::local::design_attachment_position(
+        meta.attached_files.iter().map(|f| f.name.as_str()),
+    ) else {
+        tracing::debug!("FetchDesignSource: entry {entry_id} has no .asc/.gem/.gcs attachment");
         return LibraryResponse::DesignSourceNotAvailable;
     };
+    let attachment = &meta.attached_files[position];
     match db.get_attachment_content(attachment.id) {
         Ok(Some((name, content))) => {
             tracing::debug!(
@@ -137,11 +137,7 @@ pub(super) fn design_source(db: &Database, entry_id: i64) -> LibraryResponse {
                 attachment.id,
                 content.len()
             );
-            LibraryResponse::DesignSource {
-                entry_id,
-                file_name: name,
-                asc_text: String::from_utf8_lossy(&content).into_owned(),
-            }
+            design_source_reply(entry_id, &name, kind, &content)
         }
         // The metadata query just found this attachment; content going missing here
         // would mean a concurrent delete raced this request -- treat it the same as
@@ -155,6 +151,42 @@ pub(super) fn design_source(db: &Database, entry_id: i64) -> LibraryResponse {
         }
         Err(e) => db_error("get_attachment_content", &e),
     }
+}
+
+/// [`design_source`]'s reply for one design-file attachment's bytes: a `.asc` as
+/// its own decoded text (Windows-1252 aware -- a legacy degree sign must reach the
+/// viewer as `°`, not as U+FFFD), a `.gem`/`.gcs` converted to `.asc` cutting
+/// instructions under `<stem>.asc` (`indicatrix_vault::local::design_file_to_asc_text`,
+/// the same conversion the desktop editor's local record loader uses). The
+/// conversion runs inside `catch_unwind`, so one malformed file is an error reply,
+/// never a dead connection thread; a file that does not read is a
+/// [`LibraryResponse::Error`] carrying the reader's message.
+fn design_source_reply(
+    entry_id: i64,
+    name: &str,
+    kind: indicatrix_vault::local::DesignFileKind,
+    content: &[u8],
+) -> LibraryResponse {
+    let converted = std::panic::catch_unwind(|| {
+        indicatrix_vault::local::design_file_to_asc_text(name, kind, content)
+    });
+    let failure = match converted {
+        Ok(Ok(file)) => {
+            return LibraryResponse::DesignSource {
+                entry_id,
+                file_name: file.asc_file_name,
+                asc_text: file.asc_text,
+            };
+        }
+        Ok(Err(e)) => format!("'{name}' could not be read: {e}"),
+        Err(_) => format!("'{name}' could not be read: internal error"),
+    };
+    tracing::warn!("FetchDesignSource: entry {entry_id}: {failure}");
+    LibraryResponse::Error(ErrorMsg {
+        code: LIBRARY_ERROR_CODE,
+        message: failure,
+        request_id: None,
+    })
 }
 
 /// Handles
@@ -237,5 +269,7 @@ pub(super) fn db_error(op: &str, e: &anyhow::Error) -> LibraryResponse {
     LibraryResponse::Error(ErrorMsg {
         code: LIBRARY_ERROR_CODE,
         message: "internal error serving the design library".to_string(),
+        // The library protocol has no request_id/epoch to be stale against.
+        request_id: None,
     })
 }

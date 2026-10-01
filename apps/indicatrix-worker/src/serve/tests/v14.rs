@@ -195,6 +195,7 @@ fn final_image_and_display_only_are_refused_and_the_connection_stays_usable() {
             height: 4,
             color_space: WireColorSpace::Srgb,
             output: FinalOutput::PngRgba8,
+            viewer_samples: 0,
         })),
     );
     let display_only = RenderRequest {
@@ -236,6 +237,65 @@ fn final_image_and_display_only_are_refused_and_the_connection_stays_usable() {
     }
     let events = read_stream_until_done(&mut out);
     assert!(matches!(events.last().unwrap().0, StreamEvent::Done(d) if d.request_id == 3));
+}
+
+/// v16: a `FinalImageRequest` with `viewer_samples > 0` gets the exact same
+/// `UNSUPPORTED_REQUEST` refusal as one with `viewer_samples == 0` -- a plain worker
+/// refuses every `FinalImageRequest` outright, so it never even inspects the field.
+#[test]
+fn a_final_image_with_viewer_samples_is_refused_unsupported_by_a_plain_worker() {
+    let mut input = Vec::new();
+    write_hello(&mut input, &handshake::local_hello());
+    write(
+        &mut input,
+        &ClientMessage::FinalImageRequest(Box::new(FinalImageRequest {
+            request_id: 5,
+            scene: tiny_scene(),
+            first_sample: 0,
+            samples: 10,
+            width: 4,
+            height: 4,
+            color_space: WireColorSpace::Srgb,
+            output: FinalOutput::PngRgba8,
+            viewer_samples: 4,
+        })),
+    );
+    let mut out = run_scripted(input, &DEFAULT_SERVER_PREFERENCE);
+    let _welcome: Welcome = indicatrix_net::messages::read_message(&mut out).unwrap();
+    let events = read_stream_until_done(&mut out);
+    let [(StreamEvent::Error(err), None)] = events.as_slice() else {
+        panic!("expected one StreamEvent::Error, got {events:?}");
+    };
+    assert_eq!(err.code, error_codes::UNSUPPORTED_REQUEST);
+    assert!(err.message.contains("FinalImageRequest"), "{}", err.message);
+}
+
+/// v16: a `CONTRIBUTION` nobody asked for (a plain worker never reserves one) is
+/// discarded along with its payload frame, and the connection keeps working -- proven
+/// by a `PING` right after it still getting its `PONG`.
+#[test]
+fn a_stray_contribution_is_discarded_between_requests() {
+    let mut input = Vec::new();
+    write_hello(&mut input, &handshake::local_hello());
+    let sum = vec![glam::Vec3::ONE; 16];
+    let mut encoder = indicatrix_net::radiance::PayloadEncoder::new(PayloadEncoding::Raw);
+    indicatrix_net::messages::write_contribution_message(
+        &mut input,
+        99,
+        (0, 4),
+        4,
+        4,
+        &sum,
+        &mut encoder,
+    )
+    .unwrap();
+    write(&mut input, &ClientMessage::Ping { nonce: 0x00C0_FFEE });
+
+    let mut out = run_scripted(input, &DEFAULT_SERVER_PREFERENCE);
+    let _welcome: Welcome = indicatrix_net::messages::read_message(&mut out).unwrap();
+    let (event, payload) = indicatrix_net::messages::read_stream_event(&mut out).unwrap();
+    assert_eq!(event, StreamEvent::Pong { nonce: 0x00C0_FFEE });
+    assert!(payload.is_none());
 }
 
 /// A render worker trying to `join` this server is refused in place of `WELCOME`.

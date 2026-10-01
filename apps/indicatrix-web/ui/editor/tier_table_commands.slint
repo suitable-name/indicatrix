@@ -1,0 +1,144 @@
+import { ComboBox } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { AppModel } from "../models/app_model.slint";
+import { GuideModel } from "../models/guide_model.slint";
+import { TableStyle, ToolButton } from "tier_table_style.slint";
+import { TierTableModel } from "tier_table_model.slint";
+import { InspectorModel } from "inspector_model.slint";
+
+// The dock's command bar, modelled on the desktop's `editor_command_bar.slint` and cut down
+// to three rows that fit a 340px dock:
+//   row 1: Undo, Redo | Solve, the auto-solve budget combo (Off, 150 ms, 300 ms, 1 s, 3 s)
+//   row 2: + Add Tier (the inspector's Tier tab in Add mode), Quick add (the compact
+//          panel below), Delete
+//   row 3: Complete orbit, Mirror
+// Undo / Redo / Solve act on the whole design; Complete orbit, Mirror (the selected tier's
+// index positions mirrored to the other side of the symmetry axis) and Delete act on the
+// selected tier (Delete also on a Ctrl/Shift multi-selection).
+//
+// Each button's tooltip is its hint; Undo and Redo name what they would undo or redo. While
+// the guided walkthrough runs, each control ANDs its `GuideModel.allows-*()` group into its
+// `enabled` (a `locked` ToolButton dims, ignores clicks and explains itself).
+export component CommandBar inherits VerticalLayout {
+    spacing: 4px;
+
+    property <bool> has-selection: TierTableModel.selected-index >= 0;
+    property <bool> solving: TierTableModel.status-kind == "solving";
+
+    HorizontalLayout {
+        spacing: 6px;
+        ToolButton {
+            text: "Undo";
+            enabled: AppModel.can-undo;
+            locked: !GuideModel.allows-history();
+            hint: (TierTableModel.undo-label != "" ? "Undo: " + TierTableModel.undo-label : "Undo the last edit.") + " (Ctrl+Z)";
+            clicked => { AppModel.undo(); }
+        }
+        ToolButton {
+            text: "Redo";
+            enabled: AppModel.can-redo;
+            locked: !GuideModel.allows-history();
+            hint: (TierTableModel.redo-label != "" ? "Redo: " + TierTableModel.redo-label : "Redo the last undone edit.") + " (Ctrl+Y)";
+            clicked => { AppModel.redo(); }
+        }
+        Rectangle { width: 1px; background: Theme.border-subtle; }
+        ToolButton {
+            text: root.solving ? "Solving..." : "Solve";
+            enabled: AppModel.has-design && !root.solving;
+            locked: !GuideModel.allows-solve();
+            // The guided walkthrough outlines this button on its "Solve and check" step.
+            highlighted: GuideModel.highlight-target == "solve_button";
+            // With auto-solve off, a stale design has nothing else that will clear it.
+            active: TierTableModel.auto-solve-budget-ms == 0 && TierTableModel.status-kind == "stale";
+            hint: "Recompute every tier's depth and validate the design. Runs in the solve worker above a few dozen planes.";
+            clicked => { TierTableModel.solve(); }
+        }
+        // After an edit a debounced re-solve runs while this design's own last solve took
+        // less than the budget; Off only marks the design stale (the desktop's five values).
+        // An explicit width: a ComboBox's preferred width does not come from its model.
+        Rectangle {
+            width: auto-label.preferred-width + 4px + 84px;
+            HorizontalLayout {
+                spacing: 4px;
+                auto-label := Text {
+                    text: "Auto:";
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    vertical-alignment: center;
+                }
+                ComboBox {
+                    width: 84px;
+                    enabled: AppModel.has-design && GuideModel.allows-solve();
+                    model: ["Off", "150 ms", "300 ms", "1 s", "3 s"];
+                    current-index: TierTableModel.auto-solve-budget-ms <= 0 ? 0
+                        : TierTableModel.auto-solve-budget-ms == 150 ? 1
+                        : TierTableModel.auto-solve-budget-ms == 300 ? 2
+                        : TierTableModel.auto-solve-budget-ms == 1000 ? 3
+                        : 4;
+                    selected(val) => {
+                        TierTableModel.set-auto-solve-budget-ms(val == "Off" ? 0
+                            : val == "150 ms" ? 150
+                            : val == "300 ms" ? 300
+                            : val == "1 s" ? 1000
+                            : 3000);
+                    }
+                }
+            }
+            Tooltip { text: GuideModel.allows-solve() ? @markdown("Auto-solve: after an edit, re-solve automatically (debounced) once this design's own last solve took less than the selected budget. Off only marks the design stale until you press Solve.") : @markdown("\{GuideModel.locked-hint}"); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+
+    HorizontalLayout {
+        spacing: 6px;
+        ToolButton {
+            text: "+ Add Tier";
+            enabled: AppModel.has-design;
+            locked: !GuideModel.allows-tier-form();
+            accent: Theme.accent-emerald;
+            hint: "Open the inspector's Tier tab in Add mode to author a new tier (inserted after the selected row).";
+            clicked => {
+                InspectorModel.tab = 0;
+                InspectorModel.collapsed = false;
+                InspectorModel.new-tier();
+            }
+        }
+        ToolButton {
+            text: "Quick add";
+            enabled: AppModel.has-design;
+            locked: !GuideModel.allows-tier-form();
+            active: TierTableModel.quick-add-open;
+            accent: Theme.accent-emerald;
+            hint: "Open the compact quick-add panel: the Table / Girdle / Culet presets and a one-line tier form.";
+            clicked => { TierTableModel.quick-add-open = !TierTableModel.quick-add-open; }
+        }
+        ToolButton {
+            text: "Delete";
+            enabled: root.has-selection || TierTableModel.multi-count > 0;
+            locked: !GuideModel.allows-tier-table();
+            accent: TableStyle.ruby;
+            hint: "Remove the selected tier, or every multi-selected tier (Delete).";
+            clicked => { TierTableModel.delete-selected(); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+
+    HorizontalLayout {
+        spacing: 6px;
+        ToolButton {
+            text: "Complete orbit";
+            enabled: root.has-selection;
+            locked: !GuideModel.allows-tier-table();
+            hint: "Fill in the missing symmetric facets of the selected tier's orbit.";
+            clicked => { TierTableModel.complete-orbit-selected(); }
+        }
+        ToolButton {
+            text: "Mirror";
+            enabled: root.has-selection;
+            locked: !GuideModel.allows-tier-table();
+            hint: "Mirror the selected tier's index positions to the other side of the symmetry axis (one Undo step).";
+            clicked => { TierTableModel.mirror-indices-selected(); }
+        }
+        Rectangle { horizontal-stretch: 1; }
+    }
+}

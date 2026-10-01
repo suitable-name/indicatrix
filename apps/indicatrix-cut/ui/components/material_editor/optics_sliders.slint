@@ -11,7 +11,7 @@ export component MaterialOpticsSliders inherits VerticalLayout {
     spacing: 14px;
 
     in-out property <float> ri_val: 2.417;
-    in-out property <float> disp_val: 0.044;
+    in-out property <float> disp_val: 0.0256;
     in-out property <float> sg_val: 0.0;
     in-out property <float> biref_val: 0.000;
 
@@ -44,7 +44,7 @@ export component MaterialOpticsSliders inherits VerticalLayout {
             alignment: space-between;
             Rectangle {
                 height: disp_lbl.preferred-height;
-                Tooltip { text: @markdown("Fire-producing dispersion, typically 0.01-0.044 for gems (diamond is the high end at 0.044)."); }
+                Tooltip { text: @markdown("Fire-producing dispersion, typically 0.005-0.03 (diamond 0.0256, moissanite 0.0635; rutile reaches 0.207)."); }
                 disp_lbl := Text { text: "Dispersion (Fire ΔnF-C):"; font-size: 11px; font-weight: 600; color: Theme.text-secondary; }
             }
             Text { text: Math.round(root.disp_val * 1000.0) / 1000.0; font-size: 11px; font-weight: 700; color: Theme.accent-purple; }
@@ -52,7 +52,7 @@ export component MaterialOpticsSliders inherits VerticalLayout {
 
         Slider {
             minimum: 0.000;
-            maximum: 0.120;
+            maximum: 0.210;
             value <=> root.disp_val;
         }
     }

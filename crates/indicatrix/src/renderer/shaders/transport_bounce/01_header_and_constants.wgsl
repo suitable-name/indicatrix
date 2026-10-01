@@ -149,10 +149,8 @@ const MATERIAL_CLASS_ISOTROPIC: u32 = 1u;
 const MATERIAL_CLASS_UNIAXIAL: u32 = 2u;
 const MATERIAL_CLASS_BIAXIAL: u32 = 3u;
 
-const NUM_CHANNELS: u32 = 8u;
 const SPECTRUM_MIN: f32 = 380.0;
 const SPECTRUM_SPAN: f32 = 400.0;
-const NORM_FACTOR: f32 = (400.0 / 8.0) / 106.856;
 const DIRECTION_MATCH_COS_TOL: f32 = 1.0 - 1e-6;
 const RR_FLOOR: f32 = 0.05;
 // Reflect-vs-transmit SELECTION probability's own clamp bounds -- distinct from

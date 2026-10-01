@@ -1,6 +1,7 @@
 //! Console-report formatting helpers used by `main`: a distribution summary
 //! (mean/median/p90/max), a rank histogram, and small percentage helpers.
 
+/// Prints a percentile summary of the finite values.
 pub fn print_dist(label: &str, vals: &[f64]) {
     let mut v: Vec<f64> = vals.iter().copied().filter(|x| x.is_finite()).collect();
     let inf = vals.len() - v.len();
@@ -21,6 +22,7 @@ pub fn print_dist(label: &str, vals: &[f64]) {
     );
 }
 
+/// Prints a histogram of rank values.
 pub fn print_rank_hist(label: &str, ranks: &[usize]) {
     let n = ranks.len();
     if n == 0 {
@@ -45,6 +47,7 @@ pub fn print_rank_hist(label: &str, ranks: &[usize]) {
     println!();
 }
 
+/// Fraction of values strictly below the threshold.
 pub fn frac_below(vals: &[f64], thresh: f64) -> f64 {
     if vals.is_empty() {
         return 0.0;
@@ -52,6 +55,7 @@ pub fn frac_below(vals: &[f64], thresh: f64) -> f64 {
     vals.iter().filter(|&&v| v < thresh).count() as f64 / vals.len() as f64
 }
 
+/// Percentage of `n` in `total`, zero when `total` is zero.
 pub fn pct(n: usize, total: usize) -> f64 {
     if total == 0 {
         0.0

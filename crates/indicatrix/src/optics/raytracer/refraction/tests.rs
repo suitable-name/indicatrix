@@ -4,15 +4,18 @@
 
 use super::{
     context::{
-        BounceRay, BounceState, ExitEvent, ExitSplitCtx, RayMaterialContext, UniaxialBounceContext,
+        BounceContext, BounceRay, BounceState, ExitEvent, ExitSplitCtx, RayMaterialContext,
+        UniaxialBounceContext,
     },
-    geometry::BounceRefractionGeometry,
+    geometry::{BounceRefractionGeometry, compute_bounce_refraction_geometry},
+    reflect_refract::{RefractSelection, apply_refract_bounce},
     tir::tir_phase_delta,
     uniaxial_entry::entry_eigenmode_selection,
     uniaxial_internal::{
         HeroInternalSolve, apply_uniaxial_internal_reflect_channels,
         apply_uniaxial_internal_transmit_channels,
     },
+    wavelength_cache::build_ray_wavelength_cache,
 };
 use crate::optics::{
     polarization::{MuellerMatrix, StokesVector},
@@ -86,7 +89,7 @@ mod tir_phase_retardation_tests {
 /// ordinary and extraordinary index, across a spread of incidence angles.
 #[cfg(test)]
 mod p2_fresnel_energy_conservation_tests {
-    use crate::optics::materials::GemMaterial;
+    use crate::optics::{materials::GemMaterial, polarization::MuellerMatrix};
 
     #[test]
     fn ordinary_and_extraordinary_indices_each_conserve_energy_at_several_angles() {
@@ -115,6 +118,17 @@ mod p2_fresnel_energy_conservation_tests {
                 // selection-probability clamp there is a firefly-mitigation detail of
                 // the sampling probability, not part of the underlying Fresnel
                 // identity this test checks) and `apply_refract_channel`'s t_s/t_p.
+                // The amplitude coefficients themselves have no shared production
+                // function to call (they are always inlined at each bounce-dispatch
+                // call site) -- what IS shared, and what this test evaluates instead of
+                // re-deriving, is the Mueller-matrix construction that turns them into
+                // an energy fraction: `MuellerMatrix::fresnel_reflection`/
+                // `fresnel_transmission`'s own `[0][0]` ("a") coefficient is exactly
+                // R/T for unpolarized incident light. Reading it back through the real
+                // matrix constructor (rather than recomputing `0.5*(r_p^2+r_s^2)`
+                // inline) means a sign or algebra bug in the production Mueller matrix
+                // itself would fail this test, not just a bug in a hand-rolled copy of
+                // the same formula.
                 let r_s =
                     f32::mul_add(n2, -cos_t, n1 * cos_i) / f32::mul_add(n2, cos_t, n1 * cos_i);
                 let r_p =
@@ -122,15 +136,14 @@ mod p2_fresnel_energy_conservation_tests {
                 let t_s = (2.0 * n1 * cos_i) / f32::mul_add(n2, cos_t, n1 * cos_i);
                 let t_p = (2.0 * n1 * cos_i) / f32::mul_add(n1, cos_t, n2 * cos_i);
 
-                let r_unpol = 0.5 * r_p.mul_add(r_p, r_s * r_s);
-                // Exactly `MuellerMatrix::fresnel_transmission`'s flux-conserving
-                // `factor`/`a` coefficients.
-                let factor = (n2 * cos_t) / (n1 * cos_i).max(1e-6);
-                let t_unpol = 0.5 * f32::mul_add(t_p * t_p, factor, t_s * t_s * factor);
+                let m_r = MuellerMatrix::fresnel_reflection(r_s, r_p);
+                let m_t = MuellerMatrix::fresnel_transmission(n1, n2, cos_i, cos_t, t_s, t_p);
+                let r_unpol = m_r.col(0)[0];
+                let t_unpol = m_t.col(0)[0];
 
                 assert!(
                     (r_unpol + t_unpol - 1.0).abs() < 1e-6,
-                    "R + T should equal 1 at n2={n2}, angle={angle_deg} deg \
+                    "M_R[0][0] + M_T[0][0] should equal 1 at n2={n2}, angle={angle_deg} deg \
                      (R={r_unpol}, T={t_unpol}, R+T={})",
                     r_unpol + t_unpol
                 );
@@ -159,14 +172,18 @@ mod p2_uniaxial_internal_wiring_energy_conservation_tests {
     /// branches are exercised directly and deterministically here, not sampled) across
     /// at least 6 angles x 3 axis orientations x both incident modes.
     ///
-    /// Sweep excludes genuine TIR (this test's `r_branch` is a fixed 0.5, not derived
-    /// from the hero's own reflectance, so every angle here is sub-critical for BOTH
-    /// modes -- the closed-form solver's own TIR-inclusive conservation is already
-    /// covered, at a looser tolerance, by `internal_exit_energy_conservation_holds_
-    /// including_tir`); measured `worst_err` over this sweep is `~3.6e-7`, comfortably
-    /// inside the required `1e-6` target -- asserted at `5e-6` (a >10x margin
-    /// over the measured worst case) rather than the raw measured value, so the test
-    /// does not flake on an unrelated few-ULP shift from an unrelated future change.
+    /// Sweep excludes genuine TIR (every `r_branch` value swept below is a fixed
+    /// stand-in, not derived from the hero's own reflectance, so every angle here is
+    /// sub-critical for BOTH modes -- the closed-form solver's own TIR-inclusive
+    /// conservation is already covered, at a looser tolerance, by
+    /// `internal_exit_energy_conservation_holds_including_tir`); swept across
+    /// `r_branch` in `[0.2, 0.5, 0.83]` (a fixed 0.5 alone cannot distinguish the two
+    /// branches' own `1/r_branch` vs `1/(1-r_branch)` divisions from an accidentally
+    /// swapped pair, since both divide by the same value at 0.5) -- measured
+    /// `worst_err` over this sweep is `~3.6e-7`, comfortably inside the required
+    /// `1e-6` target -- asserted at `5e-6` (a >10x margin over the measured worst
+    /// case) rather than the raw measured value, so the test does not flake on an
+    /// unrelated few-ULP shift from an unrelated future change.
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -183,125 +200,130 @@ mod p2_uniaxial_internal_wiring_energy_conservation_tests {
         let lambdas = [589.3f32; NUM_CHANNELS];
 
         let axes = [Vec3::X, Vec3::Y, Vec3::new(0.4, 0.5, 0.767_2).normalize()];
-        let r_branch = 0.5f32;
         let mut worst = 0.0f32;
-        for &c_axis in &axes {
-            let ctx = RayMaterialContext {
-                material: &zircon,
-                lambdas,
-                hero_idx: 0,
-                c_axis,
-                is_anisotropic: true,
-                enable_internal_mode_coupling: true,
-            };
-            for angle_deg in [5.0f32, 15.0, 25.0, 35.0, 45.0, 55.0, 65.0] {
-                let theta = angle_deg.to_radians();
-                let cos_i = theta.cos();
-                let sin_i = theta.sin();
-                let k_hat = Vec3::new(sin_i, 0.0, cos_i);
-                let normal = Vec3::new(0.0, 0.0, -1.0);
-                if k_hat.cross(c_axis).length_squared() < 1e-4 {
-                    // Degenerate wave-normal-parallel-to-optic-axis case: handled by a
-                    // dedicated exact fallback in `apply_partial_fresnel_bounce`
-                    // itself (this wiring is never reached there) -- see that
-                    // function's own doc comment.
-                    continue;
-                }
-                let frame = UniaxialFrame::build(k_hat, normal, c_axis, cos_i, sin_i);
+        for r_branch in [0.2f32, 0.5, 0.83] {
+            for &c_axis in &axes {
+                let ctx = RayMaterialContext {
+                    material: &zircon,
+                    lambdas,
+                    hero_idx: 0,
+                    c_axis,
+                    is_anisotropic: true,
+                    enable_internal_mode_coupling: true,
+                };
+                for angle_deg in [5.0f32, 15.0, 25.0, 35.0, 45.0, 55.0, 65.0] {
+                    let theta = angle_deg.to_radians();
+                    let cos_i = theta.cos();
+                    let sin_i = theta.sin();
+                    let k_hat = Vec3::new(sin_i, 0.0, cos_i);
+                    let normal = Vec3::new(0.0, 0.0, -1.0);
+                    if k_hat.cross(c_axis).length_squared() < 1e-4 {
+                        // Degenerate wave-normal-parallel-to-optic-axis case: handled by
+                        // a dedicated exact fallback in `apply_partial_fresnel_bounce`
+                        // itself (this wiring is never reached there) -- see that
+                        // function's own doc comment.
+                        continue;
+                    }
+                    let frame = UniaxialFrame::build(k_hat, normal, c_axis, cos_i, sin_i);
 
-                for is_extraordinary in [false, true] {
-                    let n_inc = if is_extraordinary {
-                        let cos_kc = frame.gamma.mul_add(frame.cos_i, frame.alpha * frame.sin_i);
-                        let sin2 = cos_kc.mul_add(-cos_kc, 1.0).max(0.0);
-                        1.0 / (cos_kc * cos_kc / (n_o * n_o) + sin2 / (n_e * n_e)).sqrt()
-                    } else {
-                        n_o
-                    };
-                    let geo = BounceRefractionGeometry {
-                        cos_i,
-                        sin_i,
-                        n1: n_inc,
-                        n2: 1.0,
-                        n1_ch: [n_inc; NUM_CHANNELS],
-                        n2_ch: [1.0; NUM_CHANNELS],
-                        n_o_ch: [n_o; NUM_CHANNELS],
-                        ..BounceRefractionGeometry::default()
-                    };
+                    for is_extraordinary in [false, true] {
+                        let n_inc = if is_extraordinary {
+                            let cos_kc =
+                                frame.gamma.mul_add(frame.cos_i, frame.alpha * frame.sin_i);
+                            let sin2 = cos_kc.mul_add(-cos_kc, 1.0).max(0.0);
+                            1.0 / (cos_kc * cos_kc / (n_o * n_o) + sin2 / (n_e * n_e)).sqrt()
+                        } else {
+                            n_o
+                        };
+                        let geo = BounceRefractionGeometry {
+                            cos_i,
+                            sin_i,
+                            n1: n_inc,
+                            n2: 1.0,
+                            n1_ch: [n_inc; NUM_CHANNELS],
+                            n2_ch: [1.0; NUM_CHANNELS],
+                            n_o_ch: [n_o; NUM_CHANNELS],
+                            ..BounceRefractionGeometry::default()
+                        };
 
-                    // Matches `apply_uniaxial_internal_bounce`'s own hero-channel solve
-                    // (this test's `geo` is uniform across channels, so it is exactly
-                    // what channel `ctx.hero_idx` would compute anyway).
-                    let sol_hero = uniaxial_fresnel::internal_solve(
-                        n_inc,
-                        n_o,
-                        n_e,
-                        c_axis,
-                        &frame,
-                        !is_extraordinary,
-                    );
+                        // Matches `apply_uniaxial_internal_bounce`'s own hero-channel
+                        // solve (this test's `geo` is uniform across channels, so it is
+                        // exactly what channel `ctx.hero_idx` would compute anyway).
+                        let sol_hero = uniaxial_fresnel::internal_solve(
+                            n_inc,
+                            n_o,
+                            n_e,
+                            c_axis,
+                            &frame,
+                            !is_extraordinary,
+                        );
 
-                    let mut stokes_r = [StokesVector::unpolarized(1.0); NUM_CHANNELS];
-                    let mut pdf_r = [1.0f32; NUM_CHANNELS];
-                    let ubctx = UniaxialBounceContext {
-                        ctx: &ctx,
-                        geo: &geo,
-                        frame: &frame,
-                    };
-                    let hero_solve = HeroInternalSolve {
-                        hero: ctx.hero_idx,
-                        is_extraordinary,
-                        sol_hero,
-                        r_branch,
-                    };
-                    let mut state_r = BounceState {
-                        stokes: &mut stokes_r,
-                        path_pdf: &mut pdf_r,
-                    };
-                    apply_uniaxial_internal_reflect_channels(&ubctx, &hero_solve, &mut state_r);
-                    let mut stokes_t = [StokesVector::unpolarized(1.0); NUM_CHANNELS];
-                    let mut pdf_t = [1.0f32; NUM_CHANNELS];
-                    // This test reads only `stokes_t[0]` (the hero channel), whose
-                    // `direction_matches` is trivially true regardless of splitting --
-                    // no real gem geometry/environment is needed, so an empty arena and
-                    // `enabled: false` (the split path is never reached) keep this test
-                    // unaffected by the split-transmission machinery.
-                    let empty_soa = crate::simd::PlanesSoA32::from_normals_d(std::iter::empty(), 0);
-                    let mut split_radiance_t = [0.0f32; NUM_CHANNELS];
-                    let mut exit_ctx = ExitSplitCtx {
-                        plane_soa: &empty_soa,
-                        environment: EnvironmentSource::Studio {
-                            preset: crate::optics::LightingPreset::RingLights,
-                            exposure: 1.0,
-                            light_yaw: 0.0,
-                            light_pitch: 0.85,
-                            backdrop: 0.0,
-                        },
-                        studio_rig: None,
-                        observer: Vec3::ZERO,
-                        split_radiance: &mut split_radiance_t,
-                        enabled: false,
-                        compat: [u8::MAX; NUM_CHANNELS],
-                    };
-                    let mut state_t = BounceState {
-                        stokes: &mut stokes_t,
-                        path_pdf: &mut pdf_t,
-                    };
-                    let mut exit_event_t = ExitEvent {
-                        exit: &mut exit_ctx,
-                        hit_point: Vec3::ZERO,
-                    };
-                    apply_uniaxial_internal_transmit_channels(
-                        &ubctx,
-                        &hero_solve,
-                        BounceRay { k_hat, normal },
-                        &mut state_t,
-                        &mut exit_event_t,
-                    );
+                        let mut stokes_r = [StokesVector::unpolarized(1.0); NUM_CHANNELS];
+                        let mut pdf_r = [1.0f32; NUM_CHANNELS];
+                        let ubctx = UniaxialBounceContext {
+                            ctx: &ctx,
+                            geo: &geo,
+                            frame: &frame,
+                        };
+                        let hero_solve = HeroInternalSolve {
+                            hero: ctx.hero_idx,
+                            is_extraordinary,
+                            sol_hero,
+                            r_branch,
+                        };
+                        let mut state_r = BounceState {
+                            stokes: &mut stokes_r,
+                            path_pdf: &mut pdf_r,
+                        };
+                        apply_uniaxial_internal_reflect_channels(&ubctx, &hero_solve, &mut state_r);
+                        let mut stokes_t = [StokesVector::unpolarized(1.0); NUM_CHANNELS];
+                        let mut pdf_t = [1.0f32; NUM_CHANNELS];
+                        // This test reads only `stokes_t[0]` (the hero channel), whose
+                        // `direction_matches` is trivially true regardless of splitting
+                        // -- no real gem geometry/environment is needed, so an empty
+                        // arena and `enabled: false` (the split path is never reached)
+                        // keep this test unaffected by the split-transmission
+                        // machinery.
+                        let empty_soa =
+                            crate::simd::PlanesSoA32::from_normals_d(std::iter::empty(), 0);
+                        let mut split_radiance_t = [0.0f32; NUM_CHANNELS];
+                        let mut exit_ctx = ExitSplitCtx {
+                            plane_soa: &empty_soa,
+                            environment: EnvironmentSource::Studio {
+                                preset: crate::optics::LightingPreset::RingLights,
+                                exposure: 1.0,
+                                light_yaw: 0.0,
+                                light_pitch: 0.85,
+                                backdrop: 0.0,
+                            },
+                            studio_rig: None,
+                            observer: Vec3::ZERO,
+                            split_radiance: &mut split_radiance_t,
+                            enabled: false,
+                            compat: [u8::MAX; NUM_CHANNELS],
+                            split_mis_weight: 1.0,
+                        };
+                        let mut state_t = BounceState {
+                            stokes: &mut stokes_t,
+                            path_pdf: &mut pdf_t,
+                        };
+                        let mut exit_event_t = ExitEvent {
+                            exit: &mut exit_ctx,
+                            hit_point: Vec3::ZERO,
+                        };
+                        apply_uniaxial_internal_transmit_channels(
+                            &ubctx,
+                            &hero_solve,
+                            BounceRay { k_hat, normal },
+                            &mut state_t,
+                            &mut exit_event_t,
+                        );
 
-                    let reflected = stokes_r[0].i * r_branch;
-                    let transmitted = stokes_t[0].i * (1.0 - r_branch);
-                    let err = (reflected + transmitted - 1.0).abs();
-                    worst = worst.max(err);
+                        let reflected = stokes_r[0].i * r_branch;
+                        let transmitted = stokes_t[0].i * (1.0 - r_branch);
+                        let err = (reflected + transmitted - 1.0).abs();
+                        worst = worst.max(err);
+                    }
                 }
             }
         }
@@ -311,7 +333,7 @@ mod p2_uniaxial_internal_wiring_energy_conservation_tests {
         assert!(
             worst < 5e-6,
             "reflected + transmitted power should equal incident power (1.0) through \
-             the actual CPU wiring, worst_err={worst}"
+             the actual CPU wiring across r_branch in [0.2, 0.5, 0.83], worst_err={worst}"
         );
     }
 }
@@ -385,48 +407,144 @@ mod entry_eigenmode_selection_tests {
 }
 
 /// The two properties `apply_refract_channel`'s entry-eigenmode projection relies
-/// on, checked directly rather than only through a full render (`entry_eigenmode_selection_tests`
-/// pins `p_o`/azimuth at `DoP` 0 and 1; this module exercises intermediate, partially
-/// polarized `DoP` values too, and a non-trivial frame where BOTH `cos_2psi_o` and
-/// `sin_2psi_o` are nonzero, not just the axis-aligned special case):
+/// on -- now checked by actually DRIVING `apply_refract_channel` (via
+/// `apply_refract_bounce`, the only entry point this test module can reach it
+/// through: `apply_refract_channel` itself is private to `reflect_refract.rs`,
+/// visible only within that file) instead of re-deriving its projection formula
+/// inline. `entry_eigenmode_selection` (`entry_eigenmode_selection_tests` above pins
+/// `p_o`/azimuth at `DoP` 0 and 1) is still called directly to produce this test's
+/// own `p_o`/azimuth inputs -- it already IS the real production function, not a
+/// re-implementation of anything -- but the projected Stokes vector and the
+/// mode-dependent transmitted intensity below are now read back from the real
+/// bounce-dispatch call, not rebuilt by hand:
 ///
 /// 1. The projected Stokes vector `apply_refract_channel` builds for whichever mode is
-///    selected (`StokesVector::new(i, +/-i*cos_2psi_o, +/-i*sin_2psi_o, 0.0)`) is fully
-///    linearly polarized -- `Q^2 + U^2 == I^2` exactly (up to float error) and `V == 0`
-///    -- for BOTH the ordinary and the extraordinary projection, at every `DoP` tested.
+///    actually selected is fully linearly polarized -- `Q^2 + U^2 == I^2` (up to float
+///    error) and `V == 0` -- for BOTH the ordinary and the extraordinary projection, at
+///    every `DoP` tested (a non-trivial frame where BOTH `cos_2psi_o` and `sin_2psi_o`
+///    are nonzero, not just the axis-aligned special case already covered above).
 /// 2. The mode-selection draw is an unbiased estimator of the true polarization-weighted
-///    mixture. Concretely: import two DIFFERENT hypothetical per-mode transmittances
-///    `T_o != T_e` (standing in for `apply_refract_channel`'s real mode-dependent Fresnel
-///    `T`), so the "correct" physical answer -- Malus's law's `i*(p_o*T_o + (1-p_o)*T_e)`
-///    -- is a genuinely nontrivial target (not the same value regardless of which mode
-///    is drawn). A Monte Carlo sweep of the ACTUAL selection formula
-///    (`apply_partial_fresnel_bounce`'s `mode_split_rand < (1.0 - p_o)`, driven by the
-///    real `BIREFRINGENT_SPLIT_STREAM` hash) reporting `T_o*i`/`T_e*i` unscaled on each
-///    trial (exactly what `apply_refract_channel` does -- no `1/p` division, see that
-///    function's own doc comment for why none is needed) must converge to that same
-///    target: `E[estimate] == p_o*T_o*i + (1-p_o)*T_e*i` by construction, and the RNG
-///    sweep confirms the real selection probability the hash actually produces matches
-///    `p_o` closely enough for that identity to hold within Monte Carlo noise.
+///    mixture. The per-mode transmittance is now the REAL transmitted intensity read
+///    back from two separate (deterministic, not sampled) `apply_refract_channel`
+///    calls -- one forcing the ordinary mode, one the extraordinary -- rather than a
+///    synthetic stand-in, so this also exercises the real Fresnel-transmission Mueller
+///    matrix `apply_channel_transmission_match` applies. A Monte Carlo sweep of the
+///    ACTUAL selection formula (`apply_partial_fresnel_bounce`'s own
+///    `mode_split_rand < (1.0 - p_o)`, driven by the real `BIREFRINGENT_SPLIT_STREAM`
+///    hash) must converge to `p_o*T_o + (1-p_o)*T_e`.
 #[cfg(test)]
 mod entry_mode_projection_tests {
     use super::*;
+    use crate::optics::materials::GemMaterial;
 
-    /// Builds a non-axis-aligned Stokes frame (`s_hat` NOT equal to the ordinary axis,
-    /// so both `cos_2psi_o` and `sin_2psi_o` come out nonzero) once, shared by every
-    /// `DoP` case below.
-    fn oblique_frame() -> (Vec3, Vec3, Vec3) {
+    /// A non-axis-aligned Stokes frame (`s_hat` NOT equal to the ordinary axis, so both
+    /// `cos_2psi_o` and `sin_2psi_o` come out nonzero) for an air->Zircon entry, shared
+    /// by every `DoP` case below.
+    fn oblique_entry_setup() -> (GemMaterial, Vec3, Vec3, Vec3, Vec3) {
+        let zircon = GemMaterial::by_name("Zircon").expect("Zircon must be a built-in material");
         let c_axis = Vec3::Y;
         let k_hat = Vec3::NEG_Z;
-        // Perpendicular to k_hat (lies in the XY plane, like every other test in this
-        // file's Vec3::NEG_Z-based frames), but NOT aligned with the ordinary axis
-        // (Vec3::X for this (k_hat, c_axis) pair -- see the axis-aligned tests above).
+        let normal = Vec3::Z;
+        // Perpendicular to k_hat (lies in the XY plane), but NOT aligned with the
+        // ordinary axis (Vec3::X for this (k_hat, c_axis) pair -- see the axis-aligned
+        // tests above).
         let current_plane_normal = Vec3::new(0.6, 0.8, 0.0);
-        (c_axis, current_plane_normal, k_hat)
+        (zircon, c_axis, current_plane_normal, k_hat, normal)
+    }
+
+    /// Drives the real `apply_refract_bounce` -> `apply_refract_channel` wiring for one
+    /// air->crystal Zircon entry and returns the hero channel's transmitted Stokes
+    /// vector. `entry_mode_azimuth2`/`use_extraordinary` are threaded straight through
+    /// as `RefractSelection` carries them -- exactly what
+    /// `apply_partial_fresnel_bounce`'s own `resolve_entry_mode_selection` would have
+    /// computed and passed down; supplied directly here so the test can drive both the
+    /// ordinary and extraordinary branch deterministically rather than relying on an
+    /// RNG draw to eventually sample each one. Always takes the transmit branch (this
+    /// helper never draws the reflect/transmit coin flip itself).
+    fn drive_refract_channel(
+        material: &GemMaterial,
+        c_axis: Vec3,
+        k_hat: Vec3,
+        normal: Vec3,
+        stokes_in: StokesVector,
+        use_extraordinary: bool,
+        entry_mode_azimuth2: Option<(f32, f32)>,
+    ) -> StokesVector {
+        let lambdas = [589.3f32; NUM_CHANNELS];
+        let ctx = RayMaterialContext {
+            material,
+            lambdas,
+            hero_idx: 0,
+            c_axis,
+            is_anisotropic: true,
+            enable_internal_mode_coupling: true,
+        };
+        let cache = build_ray_wavelength_cache(&ctx);
+        let geo = compute_bounce_refraction_geometry(&ctx, &cache, normal, k_hat, false, false);
+        let bctx = BounceContext {
+            ctx: &ctx,
+            cache: &cache,
+            geo: &geo,
+        };
+
+        let mut stokes = [stokes_in; NUM_CHANNELS];
+        let mut path_pdf = [1.0f32; NUM_CHANNELS];
+        let mut state = BounceState {
+            stokes: &mut stokes,
+            path_pdf: &mut path_pdf,
+        };
+        // No real gem geometry/environment is needed to read the hero channel's own
+        // projected/transmitted Stokes state, so an empty arena and `enabled: false`
+        // (the split-exit path is never reached) keep this helper unaffected by the
+        // split-transmission machinery -- same rationale as
+        // `p2_uniaxial_internal_wiring_energy_conservation_tests`'s own setup above.
+        let empty_soa = crate::simd::PlanesSoA32::from_normals_d(std::iter::empty(), 0);
+        let mut split_radiance = [0.0f32; NUM_CHANNELS];
+        let mut exit_ctx = ExitSplitCtx {
+            plane_soa: &empty_soa,
+            environment: EnvironmentSource::Studio {
+                preset: crate::optics::LightingPreset::RingLights,
+                exposure: 1.0,
+                light_yaw: 0.0,
+                light_pitch: 0.85,
+                backdrop: 0.0,
+            },
+            studio_rig: None,
+            observer: Vec3::ZERO,
+            split_radiance: &mut split_radiance,
+            enabled: false,
+            compat: [u8::MAX; NUM_CHANNELS],
+            split_mis_weight: 1.0,
+        };
+        let mut exit_event = ExitEvent {
+            exit: &mut exit_ctx,
+            hit_point: Vec3::ZERO,
+        };
+        let selection = RefractSelection {
+            use_extraordinary,
+            entry_mode_azimuth2,
+        };
+        let ray = BounceRay { k_hat, normal };
+        // `r_unpol` only rescales by `1/(1-r_unpol)` -- an overall factor that cancels
+        // in every ratio/energy-fraction comparison this module makes -- so an
+        // arbitrary mid-range value stands in for the real reflect/transmit selection
+        // probability (this helper never draws that coin flip; it always takes the
+        // transmit branch by construction).
+        let _outcome = apply_refract_bounce(
+            &bctx,
+            0.5,
+            ray,
+            false,
+            selection,
+            &mut state,
+            &mut exit_event,
+        );
+        stokes[ctx.hero_idx]
     }
 
     #[test]
-    fn projected_stokes_is_fully_linear_at_several_dop_values() {
-        let (c_axis, current_plane_normal, k_hat) = oblique_frame();
+    fn apply_refract_channel_projects_incident_stokes_onto_the_selected_eigenmode() {
+        let (zircon, c_axis, current_plane_normal, k_hat, normal) = oblique_entry_setup();
         let psi = 25.0f32.to_radians();
         let (cos_2psi, sin_2psi) = ((2.0 * psi).cos(), (2.0 * psi).sin());
 
@@ -434,43 +552,51 @@ mod entry_mode_projection_tests {
             let i = 1.0f32;
             let q = i * dop * cos_2psi;
             let u = i * dop * sin_2psi;
-            let stokes = StokesVector::new(i, q, u, 0.0);
+            let stokes_in = StokesVector::new(i, q, u, 0.0);
             let (_, cos_2psi_o, sin_2psi_o) =
-                entry_eigenmode_selection(c_axis, current_plane_normal, k_hat, stokes)
+                entry_eigenmode_selection(c_axis, current_plane_normal, k_hat, stokes_in)
                     .expect("nonzero DoP with a well-defined frame must select Some");
 
-            for (cos_x, sin_x) in [(cos_2psi_o, sin_2psi_o), (-cos_2psi_o, -sin_2psi_o)] {
-                let projected = StokesVector::new(i, i * cos_x, i * sin_x, 0.0);
-                assert!(
-                    projected.v.abs() < 1e-6,
-                    "projected V must be exactly zero at dop={dop}, got {}",
-                    projected.v
+            for use_extraordinary in [false, true] {
+                let azimuth2 = Some(if use_extraordinary {
+                    (-cos_2psi_o, -sin_2psi_o)
+                } else {
+                    (cos_2psi_o, sin_2psi_o)
+                });
+                let out = drive_refract_channel(
+                    &zircon,
+                    c_axis,
+                    k_hat,
+                    normal,
+                    stokes_in,
+                    use_extraordinary,
+                    azimuth2,
                 );
-                let lin_energy = projected.q.mul_add(projected.q, projected.u * projected.u);
                 assert!(
-                    projected.i.mul_add(-projected.i, lin_energy).abs() < 1e-4,
-                    "projected Stokes vector must be fully linearly polarized (Q^2+U^2 \
-                     == I^2) at dop={dop}: I={}, Q={}, U={}, Q^2+U^2={lin_energy}",
-                    projected.i,
-                    projected.q,
-                    projected.u
+                    out.v.abs() < 1e-6,
+                    "transmitted V must be exactly zero at dop={dop}, \
+                     use_extraordinary={use_extraordinary}, got {}",
+                    out.v
+                );
+                let lin_energy = out.q.mul_add(out.q, out.u * out.u);
+                assert!(
+                    out.i.mul_add(-out.i, lin_energy).abs() < 1e-4,
+                    "transmitted Stokes vector must be fully linearly polarized (Q^2+U^2 \
+                     == I^2) at dop={dop}, use_extraordinary={use_extraordinary}: I={}, \
+                     Q={}, U={}, Q^2+U^2={lin_energy}",
+                    out.i,
+                    out.q,
+                    out.u
                 );
             }
         }
     }
 
     #[test]
-    fn mode_selection_draw_is_an_unbiased_estimator_at_several_dop_values() {
-        // Two deliberately different per-mode "transmittances" -- stand-ins for
-        // `apply_refract_channel`'s real mode-dependent Fresnel T, chosen far enough
-        // apart that a convention bug (e.g. an inverted comparison sense) would show up
-        // as a converged mean far from the analytically correct target, not hidden in
-        // noise.
-        const T_O: f32 = 0.8;
-        const T_E: f32 = 0.35;
+    fn mode_selection_draw_is_an_unbiased_estimator_of_the_real_transmitted_intensity() {
         const TRIALS: u32 = 20_000;
 
-        let (c_axis, current_plane_normal, k_hat) = oblique_frame();
+        let (zircon, c_axis, current_plane_normal, k_hat, normal) = oblique_entry_setup();
         let psi = 25.0f32.to_radians();
         let (cos_2psi, sin_2psi) = ((2.0 * psi).cos(), (2.0 * psi).sin());
 
@@ -478,10 +604,35 @@ mod entry_mode_projection_tests {
             let i = 1.0f32;
             let q = i * dop * cos_2psi;
             let u = i * dop * sin_2psi;
-            let stokes = StokesVector::new(i, q, u, 0.0);
-            let (p_o, ..) = entry_eigenmode_selection(c_axis, current_plane_normal, k_hat, stokes)
-                .expect("nonzero DoP with a well-defined frame must select Some");
-            let target = i * p_o.mul_add(T_O, (1.0 - p_o) * T_E);
+            let stokes_in = StokesVector::new(i, q, u, 0.0);
+            let (p_o, cos_2psi_o, sin_2psi_o) =
+                entry_eigenmode_selection(c_axis, current_plane_normal, k_hat, stokes_in)
+                    .expect("nonzero DoP with a well-defined frame must select Some");
+
+            // The REAL per-mode transmitted intensity, read back from two separate
+            // (deterministic, not sampled) `apply_refract_channel` calls -- one per
+            // mode -- instead of a synthetic stand-in transmittance.
+            let t_o = drive_refract_channel(
+                &zircon,
+                c_axis,
+                k_hat,
+                normal,
+                stokes_in,
+                false,
+                Some((cos_2psi_o, sin_2psi_o)),
+            )
+            .i;
+            let t_e = drive_refract_channel(
+                &zircon,
+                c_axis,
+                k_hat,
+                normal,
+                stokes_in,
+                true,
+                Some((-cos_2psi_o, -sin_2psi_o)),
+            )
+            .i;
+            let target = p_o.mul_add(t_o, (1.0 - p_o) * t_e);
 
             let mut sum = 0.0f64;
             for bounce in 0..TRIALS {
@@ -491,14 +642,14 @@ mod entry_mode_projection_tests {
                     as f32)
                     / 4_294_967_295.0;
                 let use_extraordinary = mode_split_rand < (1.0 - p_o);
-                let estimate = if use_extraordinary { T_E * i } else { T_O * i };
+                let estimate = if use_extraordinary { t_e } else { t_o };
                 sum += f64::from(estimate);
             }
             let mean = (sum / f64::from(TRIALS)) as f32;
             assert!(
                 (mean - target).abs() < 0.01,
-                "mode-selection draw should be an unbiased estimator of the \
-                 polarization-weighted mixture at dop={dop}: p_o={p_o}, target={target}, \
+                "mode-selection draw should be an unbiased estimator of the real \
+                 transmitted-intensity mixture at dop={dop}: p_o={p_o}, target={target}, \
                  Monte Carlo mean={mean} over {TRIALS} trials"
             );
         }

@@ -1,63 +1,202 @@
-use chull::ConvexHull;
-use glam::{DMat3, DVec3, Vec3};
-use std::{collections::HashMap, fmt};
+//! Boundary representation ([`GemPolyhedron`]) of the convex solid bounded by a
+//! list of facet half-space planes.
+//!
+//! # Algorithm
+//!
+//! [`GemPolyhedron::from_planes`] works entirely in the primal plane arrangement,
+//! on the same deterministic walk [`super::stone_metrics`] measures solids with:
+//!
+//! 1. **Validate** every plane: finite normal and offset
+//!    ([`BrepError::NonFinitePlane`]), a unit normal (within `1e-4`,
+//!    [`BrepError::NonUnitNormal`]), and `d < 0` so the origin lies strictly
+//!    inside every half-space ([`BrepError::NonNegativeOffset`]).
+//! 2. **Normalise** every offset by the power of two nearest the largest `|d|`
+//!    (the same `pow2_scale_norm` `stone_metrics` uses), so every tolerance below
+//!    is relative to the design's own size. Output positions are multiplied back
+//!    by that exact power of two, which is a bit-exact operation.
+//! 3. **Reject coincident planes** with a purely relative test on the polar dual
+//!    points `n / -d` ([`BrepError::CoincidentPlanes`]).
+//! 4. **Enumerate** every plane triple `a < b < c` whose intersection satisfies
+//!    every half-space within `stone_metrics`' feasibility slack (`EPS_FEAS`,
+//!    `1e-5` of the normalised scale), in lexicographic order. A feasible,
+//!    well-conditioned vertex that reaches `stone_metrics`' blank box (64 times
+//!    the largest offset) means the planes do not close a solid inside it:
+//!    [`BrepError::UnboundedRegion`], naming the smallest escaping plane. Of the
+//!    feasible triples, only those that are vertices of the exact polytope (within
+//!    `1e-9`, far tighter than the slack; see `INCIDENCE_EPS`) are kept.
+//! 5. **Weld** the triple solutions into vertices: union-find over every pair
+//!    closer than `VERTEX_WELD_EPS_REL` (`1e-4`) times the largest solution radius.
+//!    Connected components do not depend on visiting order. A vertex's incident
+//!    planes are the sorted union of its triples; its position is the solution of
+//!    its best-conditioned triple (largest `|det|`, ties to the lexicographically
+//!    smallest triple), which must reach `MIN_TRIPLE_DET`
+//!    ([`BrepError::IllConditionedTriple`]). Vertices are ordered by incident set.
+//! 6. **Rings**: each plane's facet polygon is the vertices incident to it, sorted
+//!    by angle about their centroid (counter-clockwise seen from outside,
+//!    `total_cmp`, ties by vertex index) and rotated so the smallest vertex index
+//!    comes first. Triangles are fans from that first vertex.
+//! 7. **Validate** the result: every vertex satisfies every plane within twice the
+//!    weld radius ([`BrepError::InfeasibleVertex`]), every edge is shared by
+//!    exactly two facets (the smallest offending edge is reported,
+//!    [`BrepError::NonManifoldEdge`]), Euler's formula holds, and the volume is at
+//!    least `1e-9 * bounding_radius^3` ([`BrepError::DegenerateVolume`]).
+//!
+//! # Determinism
+//!
+//! The output is a pure function of the input planes. There is no hashing and no
+//! randomised iteration (`BTreeMap` and sorted `Vec`s only); all geometry is `f64`
+//! with `total_cmp` ordering; and the triple solves go through `crate::simd`'s
+//! batch kernels, which are bit-identical to the scalar `glam` sequence at every
+//! dispatch level. Two calls with the same planes produce byte-identical vertices,
+//! polygons, triangles, volume and areas, within one process or across processes.
+//!
+//! # Why `chull` was removed (2026-09-28)
+//!
+//! This module used to build the convex hull of the dual points `n / -d` with the
+//! `chull` crate (0.2.4). `chull` iterates randomly seeded `HashSet`s while it builds
+//! the hull, so its facet order and its triangulation of coplanar dual faces changed
+//! on every call: vertex order, the positions of vertices where more than three
+//! planes meet (up to ~3e-6 apart), polygons, triangles, volume and areas all varied
+//! between calls and between runs. It also rejected valid solids whose origin sat
+//! close to one facet (its degeneracy thresholds are absolute), and for dense inputs
+//! (about 500 planes or more) it returned non-convex hulls and flipped between `Ok`
+//! and `Err`. The primal enumeration here has none of these failure modes. Its cost
+//! is `O(P^3)` in the plane count in the worst case, cut down by a conservative
+//! pair prune in the walk (release build: about 0.7 ms for the round brilliant,
+//! 7 ms for the 205-plane crackotto fixture, 0.7 s for a 1000-plane sphere). That is
+//! acceptable because nothing calls `from_planes` on a hot path: the tracer
+//! intersects raw planes and the CAD preview uses `stone_metrics::build_solid_mesh`.
 
-use super::plane::GpuFacetPlane;
+mod helpers;
+
+use glam::{DVec3, Vec3};
+use helpers::{
+    check_conditioning, check_euler, check_feasible, facet_rings, mesh_volume, output_vertices,
+    triangulate_polygons, weld_candidates,
+};
+use std::fmt;
+
+use super::{
+    plane::GpuFacetPlane,
+    stone_metrics::{
+        MIN_TRIPLE_DET, escaping_plane_indices, for_each_feasible_triple, max_abs_offset,
+        pow2_scale_norm,
+    },
+};
 
 /// Everything that can go wrong reconstructing a [`GemPolyhedron`] from half-space
 /// planes in [`GemPolyhedron::from_planes`].
 ///
-/// Every variant's [`Display`](fmt::Display) reproduces, verbatim, the human-readable
-/// message this module used to return as a plain `String`.
+/// Every payload is deterministic: when several planes, vertices or edges fail the
+/// same check, the one reported is the first in input (or vertex) order.
 #[derive(Debug, Clone, PartialEq)]
 pub enum BrepError {
     /// Fewer than 4 planes were supplied -- the minimum to bound a finite solid.
-    TooFewPlanes { count: usize },
-    /// A plane's offset `d` was non-negative (every facet plane must face inward,
-    /// containing the origin, for the dual-space construction to be valid).
-    NonNegativeOffset { index: usize, d: f32 },
-    /// Two input planes are coincident (identical half-spaces after polar inversion).
-    CoincidentPlanes { i: usize, j: usize },
-    /// The dual-space convex hull computation itself (via the `chull` crate) failed.
-    HullComputationFailed { message: String },
-    /// The dual hull's index buffer was not a multiple of 3 (expected all-triangle
-    /// facets).
-    NonTriangularHullFacets { indices_len: usize },
-    /// A dual hull vertex could not be matched to any input plane at all (only
-    /// possible when there are no input planes to match against).
-    NoPlanesToMatch,
-    /// A dual hull vertex did not match any input plane within tolerance.
-    HullVertexUnmatched { distance: f64, tolerance: f64 },
-    /// The origin is not strictly inside the dual convex hull, i.e. the half-space
-    /// schedule does not bound a finite region.
-    UnboundedRegion { signed_distance: f64 },
-    /// Three planes meeting at a dual hull facet are near-parallel enough that the
-    /// 3x3 vertex solve is ill-conditioned.
+    TooFewPlanes {
+        /// Number of planes supplied.
+        count: usize,
+    },
+    /// A plane's normal or offset is NaN or infinite. `GpuFacetPlane`'s fields are
+    /// public (and serde-deserialisable), so planes built without
+    /// [`GpuFacetPlane::new`] are checked here rather than trusted.
+    NonFinitePlane {
+        /// Index of the first non-finite plane in the input.
+        index: usize,
+    },
+    /// A plane's normal is not unit length (within `1e-4`). Every tolerance in the
+    /// reconstruction, including the determinant threshold, assumes unit normals.
+    NonUnitNormal {
+        /// Index of the first such plane in the input.
+        index: usize,
+        /// The normal's length.
+        length: f64,
+    },
+    /// A plane's offset `d` was non-negative (every facet plane must contain the
+    /// origin strictly inside its half-space `n . x + d <= 0`).
+    NonNegativeOffset {
+        /// Index of the first such plane in the input.
+        index: usize,
+        /// The offending offset.
+        d: f32,
+    },
+    /// Two input planes are coincident: their polar dual points `n / -d` agree to
+    /// within a relative `1e-7`.
+    CoincidentPlanes {
+        /// Index of the earlier plane.
+        i: usize,
+        /// Index of the later plane.
+        j: usize,
+    },
+    /// The planes do not close a solid: a feasible, well-conditioned vertex of the
+    /// arrangement reaches the blank box of half-extent 64 times the largest plane
+    /// offset. A missing closing plane (an infinite prism) is the usual cause; a
+    /// bounded but extremely elongated solid is reported the same way.
+    UnboundedRegion {
+        /// The smallest input plane index taking part in an escaping vertex. `None`
+        /// only if every escaping vertex is formed by blank-box planes alone, which
+        /// no input has been observed to produce.
+        plane: Option<usize>,
+    },
+    /// A vertex's best-conditioned plane triple is still too close to singular
+    /// (`|det| < 1e-6` for unit normals) for its position to be trusted.
     IllConditionedTriple {
+        /// Smallest plane index of the triple.
         a: usize,
+        /// Middle plane index of the triple.
         b: usize,
+        /// Largest plane index of the triple.
         c: usize,
+        /// The triple's (signed) normal-matrix determinant.
         det: f64,
     },
-    /// A well-conditioned 3x3 solve nonetheless produced a non-finite vertex.
+    /// A reconstructed vertex lies outside some input plane by more than twice the
+    /// weld radius. Internal consistency gate: every vertex position is a feasible
+    /// triple solution, so this is not expected to fire.
+    InfeasibleVertex {
+        /// Index of the vertex (in the reconstructed vertex order).
+        vertex: usize,
+        /// Index of the violated input plane.
+        plane: usize,
+        /// How far outside the plane the vertex lies, in input units.
+        excess: f64,
+    },
+    /// A vertex position is not finite once scaled back to input units and
+    /// narrowed to `f32` (a solid beyond `f32` range).
     NonFiniteVertex {
+        /// Smallest plane index of the vertex's position triple.
         a: usize,
+        /// Middle plane index of the vertex's position triple.
         b: usize,
+        /// Largest plane index of the vertex's position triple.
         c: usize,
+        /// The vertex in input units, before narrowing.
         vertex: DVec3,
     },
     /// The reconstructed mesh is non-manifold: some edge is not shared by exactly two
-    /// facets.
-    NonManifoldEdge { edge: (u32, u32), count: u32 },
+    /// facets. The smallest such edge is reported.
+    NonManifoldEdge {
+        /// The edge as `(smaller vertex index, larger vertex index)`.
+        edge: (u32, u32),
+        /// How many facets use it.
+        count: u32,
+    },
     /// The reconstructed polyhedron fails Euler's formula (`V - E + F = 2`).
     EulerFormulaFailed {
+        /// Vertex count `V`.
         vertices: usize,
+        /// Edge count `E`.
         edges: usize,
+        /// Facet count `F` (facets with at least 3 vertices).
         faces: usize,
+        /// `V - E + F`.
         euler: i64,
     },
-    /// The reconstructed solid has non-finite or ~zero volume.
-    DegenerateVolume { volume: f32 },
+    /// The reconstructed solid has fewer than 4 vertices, a non-finite volume, or a
+    /// volume below `1e-9 * bounding_radius^3`.
+    DegenerateVolume {
+        /// The volume in input units (`0.0` when there were too few vertices).
+        volume: f64,
+    },
 }
 
 impl fmt::Display for BrepError {
@@ -67,43 +206,41 @@ impl fmt::Display for BrepError {
                 f,
                 "at least 4 half-space planes are required to bound a finite 3D polyhedron (a tetrahedron is the minimum); got {count}"
             ),
+            Self::NonFinitePlane { index } => {
+                write!(f, "plane {index} has a NaN or infinite normal or offset")
+            }
+            Self::NonUnitNormal { index, length } => write!(
+                f,
+                "plane {index} has a normal of length {length} (a unit normal is required)"
+            ),
             Self::NonNegativeOffset { index, d } => write!(
                 f,
                 "Plane {index} offset d ({d}) must be negative to contain origin"
             ),
             Self::CoincidentPlanes { i, j } => write!(
                 f,
-                "planes {i} and {j} are coincident (identical half-spaces after polar inversion); a bounded polyhedron cannot use two duplicate faces"
+                "planes {i} and {j} are coincident (identical half-spaces); a bounded polyhedron cannot use two duplicate faces"
             ),
-            Self::HullComputationFailed { message } => {
-                write!(f, "Dual convex hull computation failed: {message}")
-            }
-            Self::NonTriangularHullFacets { indices_len } => write!(
+            Self::UnboundedRegion { plane } => write!(
                 f,
-                "internal error: dual hull returned {indices_len} indices, not a multiple of 3 (expected all-triangle facets)"
-            ),
-            Self::NoPlanesToMatch => write!(
-                f,
-                "internal error: a dual hull vertex did not match any input plane (no input planes to match against)"
-            ),
-            Self::HullVertexUnmatched {
-                distance,
-                tolerance,
-            } => write!(
-                f,
-                "internal error: a dual hull vertex did not match any input plane within tolerance (nearest distance {distance:.3e}, tolerance {tolerance:.3e})"
-            ),
-            Self::UnboundedRegion { signed_distance } => write!(
-                f,
-                "planes do not bound a finite region: the origin is not strictly inside the dual convex hull (signed facet distance {signed_distance:.3e}); the half-space schedule is unbounded"
+                "planes do not bound a finite region: the solid reaches the blank box (smallest escaping plane {plane:?}); the half-space schedule is unbounded"
             ),
             Self::IllConditionedTriple { a, b, c, det } => write!(
                 f,
-                "planes {a}, {b}, {c} meet at a near-parallel triple (|det| = {det:.3e} < {MIN_TRIPLE_DETERMINANT:e}); the 3x3 facet-intersection solve is ill-conditioned"
+                "planes {a}, {b}, {c} meet at a near-parallel triple (|det| = {:.3e} < {MIN_TRIPLE_DET:e}); the 3x3 facet-intersection solve is ill-conditioned",
+                det.abs()
+            ),
+            Self::InfeasibleVertex {
+                vertex,
+                plane,
+                excess,
+            } => write!(
+                f,
+                "reconstructed vertex {vertex} lies {excess:.3e} outside plane {plane}"
             ),
             Self::NonFiniteVertex { a, b, c, vertex } => write!(
                 f,
-                "planes {a}, {b}, {c} produced a non-finite vertex despite a well-conditioned solve ({vertex:?})"
+                "planes {a}, {b}, {c} produced a vertex outside f32 range ({vertex:?})"
             ),
             Self::NonManifoldEdge { edge, count } => write!(
                 f,
@@ -128,154 +265,185 @@ impl fmt::Display for BrepError {
 
 impl std::error::Error for BrepError {}
 
-/// Minimum `|determinant|` of a facet-normal triple's 3x3 system for the vertex solve
-/// to be considered numerically trustworthy. Facet normals are unit vectors, so
-/// `|det|` ranges from 0 (coplanar/parallel normals) to 1 (mutually orthogonal); below
-/// this threshold the three planes meet at a poorly-determined point and we refuse to
-/// fabricate a vertex from it. The determinant itself is now computed in `f64` (see
-/// [`reconstruct_vertices`]), but the threshold stays a fine absolute value because
-/// facet normals are always unit-length, independent of the polyhedron's physical
-/// scale.
-const MIN_TRIPLE_DETERMINANT: f64 = 1e-6;
+/// How far a plane normal's length may be from 1 before
+/// [`BrepError::NonUnitNormal`]. `GpuFacetPlane::new` normalises in `f32`, which
+/// leaves errors around `1e-7`; this only rejects normals that were never
+/// normalised at all.
+const UNIT_NORMAL_TOLERANCE: f64 = 1e-4;
 
-/// Relative tolerance (in dual space) for treating two input planes as the same
-/// half-space, i.e. their dual points coincide.
+/// Relative distance below which two planes' polar dual points `q = n / m` count as
+/// the same half-space: `|q_i - q_j| < COINCIDENT_PLANE_EPS * max(|q_i|, |q_j|)`.
+/// Purely relative, with no absolute floor, so the verdict does not depend on the
+/// design's scale (the old `max(1.0)` floor called opposite faces of a
+/// cube at scale `1e12` coincident).
+///
+/// A parallel plane farther out than this is well above [`INCIDENCE_EPS`], so it
+/// never touches a vertex and is reported by [`GemPolyhedron::untouched_planes`].
 const COINCIDENT_PLANE_EPS: f64 = 1e-7;
 
-/// Distance-from-origin tolerance (in dual space) used by the primal boundedness
-/// check: the origin must be strictly this far inside every dual hull facet.
-const ORIGIN_INTERIOR_EPS: f64 = 1e-9;
+/// A feasible triple counts as a vertex of the exact polytope (and so contributes
+/// its planes to a vertex's incident set) only if its point violates no plane by
+/// more than this, in the normalised frame, plus its own solve-residual bound
+/// (`SOLVE_RESIDUAL_BOUND / |det|`, see [`SOLVE_RESIDUAL_BOUND`]).
+///
+/// Much tighter than the arrangement walk's `1e-5` feasibility slack on purpose.
+/// That slack is harmless for `stone_metrics`, which only needs positions, but as an
+/// *incidence* test it smears: two nearly parallel planes (angle `a`) both lie within
+/// `1e-5` of each other along a band `1e-5 / a` wide, so a vertex anywhere in that
+/// band "touches" both. On the Shah replica fixture the crown pair 6/7 (0.0064 rad
+/// apart) claimed a vertex 1.1e-3 away on plane 7's side, putting it into plane 6's
+/// ring and breaking manifoldness. Planes stored as `f32` are exact in `f64`, so the
+/// true polytope's vertices solve to about `1e-15`; `1e-9` keeps a wide margin over
+/// that while staying far below any real facet size. Vertices a design means to be
+/// one point but that rounding split apart are all genuine at this tolerance, and
+/// the weld ([`VERTEX_WELD_EPS_REL`]) merges them.
+const INCIDENCE_EPS: f64 = 1e-9;
 
-/// Relative tolerance (in dual space) for matching a `chull`-returned hull vertex back
-/// to the input dual point it came from. See [`map_hull_vertices_to_planes`].
-const HULL_VERTEX_MATCH_EPS_REL: f64 = 1e-9;
+/// Bound on `|residual| * |det|` for one triple solve (about `4e-13` for unit
+/// normals and normalised offsets; `stone_metrics`' walk derives it), so an
+/// ill-conditioned but genuine vertex is not rejected by [`INCIDENCE_EPS`] for its
+/// own rounding.
+const SOLVE_RESIDUAL_BOUND: f64 = 1e-12;
 
-/// Relative distance below which two reconstructed primal vertices are welded into
-/// one, expressed as a fraction of the polyhedron's own scale (see
-/// [`GemPolyhedron::from_planes`], where the absolute weld epsilon is derived as
-/// `VERTEX_WELD_EPS_REL * scale`). A fixed absolute epsilon (the previous
-/// `1e-4` in model units) is meaningless once the caller's model units aren't "close to
-/// 1" -- a stone described in millimeters and one described in meters would want wildly
-/// different absolute welding distances for the same relative precision. See
-/// [`weld_vertices`] for why welding is necessary at all.
-const VERTEX_WELD_EPS_REL: f32 = 1e-4;
+/// Smallest `|det|` a plane triple may have and still be solved and considered.
+/// Lower than `MIN_TRIPLE_DET` on purpose: a vertex whose *best* triple lies in
+/// between is reported as [`BrepError::IllConditionedTriple`] instead of silently
+/// dropped (which would leave a hole in the mesh). Below this floor the solve's
+/// residual (up to about `4e-13 / |det|`) approaches the `1e-5` feasibility slack,
+/// so such triples are skipped exactly like `stone_metrics` skips every triple
+/// below `MIN_TRIPLE_DET`. The floor also sets the arrangement walk's pair-prune
+/// margin (`1e-11 / floor / sin`), so it cannot go much lower without making
+/// the prune ineffective.
+const ENUMERATION_DET_FLOOR: f64 = 1e-8;
 
+/// Weld (meet) tolerance: two triple solutions closer than this fraction of the
+/// largest solution radius are one vertex.
+///
+/// This is a *meet* tolerance, deliberately looser than `stone_metrics`' position
+/// dedup (`VERTEX_DEDUP`, `1e-6` per axis): facets that a design means to meet at
+/// one point but whose offsets were rounded (hand-authored `.asc` masts carry 4-8
+/// digits) produce several solutions a few `1e-5` apart, and they must weld into one
+/// vertex or the mesh grows sliver facets. The consequence is that a genuine edge
+/// shorter than this collapses (the B-rep then has fewer vertices than
+/// `stone_metrics` counts: 215 against 236 on the 205-plane crackotto fixture), and
+/// a facet whose every vertex welds into one or two points is reported by
+/// [`GemPolyhedron::untouched_planes`].
+const VERTEX_WELD_EPS_REL: f64 = 1e-4;
+
+/// Feasibility gate: a reconstructed vertex may violate a plane by at most this many
+/// weld radii (see [`BrepError::InfeasibleVertex`]).
+const FEASIBILITY_GATE_WELDS: f64 = 2.0;
+
+/// Smallest accepted volume, relative to `bounding_radius^3`. Relative, so a cube of
+/// half-extent `1e-6` reconstructs exactly like a unit cube.
+const VOLUME_FLOOR_REL: f64 = 1e-9;
+
+/// [`GemPolyhedron::girdle_outline`] merges projected points closer than this
+/// fraction of the bounding radius (per axis).
+const GIRDLE_DEDUP_REL: f64 = 1e-6;
+
+/// A convex polyhedron reconstructed from half-space planes by
+/// [`GemPolyhedron::from_planes`].
+///
+/// Indexing convention: `facet_planes[i]` and `facet_polygons[i]` describe the same
+/// input plane; polygon and triangle entries index `vertices`. Every field is a pure,
+/// byte-identical function of the input planes (see the module docs).
 #[derive(Debug, Clone)]
 pub struct GemPolyhedron {
+    /// Welded vertices in input units, ordered by their sorted set of incident plane
+    /// indices (lexicographically).
     pub vertices: Vec<Vec3>,
+    /// The input planes, unchanged and in input order.
     pub facet_planes: Vec<GpuFacetPlane>,
-    pub facet_polygons: Vec<Vec<u32>>, // Ordered vertex index loops
-    pub triangle_indices: Vec<u32>,    // Triangulated index buffer
+    /// One ordered vertex loop per input plane: counter-clockwise seen from outside
+    /// the solid, starting at its smallest vertex index. Empty for a plane that
+    /// touches fewer than three vertices (see [`GemPolyhedron::untouched_planes`]).
+    pub facet_polygons: Vec<Vec<u32>>,
+    /// Flat triangle index buffer: every facet polygon fan-triangulated from its
+    /// first vertex, facets in plane order. Outward-facing (counter-clockwise).
+    pub triangle_indices: Vec<u32>,
+    /// Largest distance of any vertex from the origin, in input units.
     pub bounding_radius: f32,
 }
 
+/// One feasible plane-triple intersection from the arrangement walk, in the
+/// normalised frame.
+struct MeetCandidate {
+    /// The triple's plane indices, ascending.
+    planes: [usize; 3],
+    /// The triple's normal-matrix determinant.
+    det: f64,
+    /// The intersection point.
+    v: DVec3,
+}
+
+/// A welded vertex: a connected component of [`MeetCandidate`]s.
+struct WeldedVertex {
+    /// Sorted, deduplicated union of the member triples' planes.
+    incident: Vec<usize>,
+    /// Index (into the candidate list) of the best-conditioned member triple, which
+    /// supplies the vertex position.
+    best: usize,
+}
+
 impl GemPolyhedron {
-    /// Reconstructs exact 3D polyhedron from cutting schedule half-space planes.
+    /// Reconstructs the convex polyhedron bounded by the half-spaces
+    /// `n . x + d <= 0` of `planes`.
     ///
-    /// Implements the polar-duality construction described in the project's rendering
-    /// blueprint (`GEMSTONE_RENDERING_BLUEPRINT.md` section 1.2): each half-space
-    /// plane `n . x + d <= 0` maps to a dual point `n / -d`; the 3D convex hull of the
-    /// dual points (via the `chull` crate) is computed; each triangular facet of that
-    /// dual hull maps back to a primal vertex by solving the 3x3 system formed by the
-    /// three corresponding planes.
+    /// See the module docs for the algorithm and the determinism guarantee: the result
+    /// is byte-identical for identical input, call to call and run to run.
     ///
     /// # Errors
     ///
-    /// Returns an error if:
-    /// - fewer than 4 planes are supplied (the minimum to bound a finite solid, a
-    ///   tetrahedron);
-    /// - any plane's offset `d` is non-negative (every facet plane must face inward,
-    ///   containing the origin, for the dual-space construction to be valid);
-    /// - two planes are coincident (identical half-spaces after polar inversion);
-    /// - the dual-space convex hull computation itself fails (e.g. because the dual
-    ///   points are degenerate -- coplanar or otherwise not in general position);
-    /// - the planes do not bound a finite region: the origin is not strictly interior
-    ///   to the dual convex hull (a necessary and sufficient condition for the primal
-    ///   half-space intersection to be bounded -- see `check_origin_interior` below);
-    /// - three planes that meet at a dual hull facet are near-parallel enough that the
-    ///   3x3 vertex solve is ill-conditioned;
-    /// - the reconstructed mesh fails Euler's formula (`V - E + F = 2`) or has
-    ///   non-finite / ~zero volume, indicating a topological or numerical corruption
-    ///   in the steps above.
+    /// Returns an error if fewer than 4 planes are supplied; a plane is non-finite,
+    /// has a non-unit normal or a non-negative offset; two planes are coincident; the
+    /// planes do not close a solid inside the blank box; a vertex is ill-conditioned
+    /// or (in input units) beyond `f32` range; or the reconstruction fails its own
+    /// feasibility, manifoldness, Euler or volume checks. See [`BrepError`].
     pub fn from_planes(planes: Vec<GpuFacetPlane>) -> Result<Self, BrepError> {
         if planes.len() < 4 {
             return Err(BrepError::TooFewPlanes {
                 count: planes.len(),
             });
         }
+        validate_planes(&planes)?;
+        let (halfspaces, scale) = normalised_halfspaces(&planes);
+        check_coincident(&halfspaces)?;
 
-        let dual_points = dual_points_from_planes(&planes)?;
-
-        // Normalise the dual point cloud to unit magnitude before the hull. `chull`'s own
-        // degeneracy check (`is_degenerate` in `chull::convex`, 0.2.4) compares a Gram
-        // determinant built from the RAW coordinates against a fixed internal threshold;
-        // that determinant scales with a high power of the coordinate magnitude, so a
-        // schedule in large model units (dual points `n / -d` of magnitude 1e-3 for a cube
-        // of half-extent 1000) is reported `Degenerated` no matter what tolerance is
-        // passed here (1e-12..1e-3 all fail; verified against the crate's source and
-        // empirically, C:/temp/mcp2/brep_scale_invariance_diagnosis.md). Uniform scaling
-        // cannot change which points are hull vertices or how they connect, so the hull
-        // is built at unit scale, and EVERY downstream dual-space step stays in that
-        // frame: `map_hull_vertices_to_planes` (relative tolerance with a `max(1.0)`
-        // floor) and `check_origin_interior` (fixed absolute `ORIGIN_INTERIOR_EPS`) are
-        // both scale-invariant only when fed unit-scale coordinates. Nothing primal reads
-        // the dual coordinates; `reconstruct_vertices` solves from the planes themselves.
-        let dual_scale = dual_points
-            .iter()
-            .flatten()
-            .fold(0.0_f64, |m, &v| m.max(v.abs()))
-            .max(f64::MIN_POSITIVE);
-        let dual_points: Vec<Vec<f64>> = dual_points
-            .iter()
-            .map(|p| p.iter().map(|&v| v / dual_scale).collect())
-            .collect();
-
-        // 3D Convex Hull in (unit-scale) Dual Space using `chull`
-        let hull = ConvexHull::try_new(&dual_points, 1e-6f64, None).map_err(|e| {
-            BrepError::HullComputationFailed {
-                message: format!("{e:?}"),
-            }
-        })?;
-
-        let (vertices_flat, indices_flat) = hull.vertices_indices();
-        if indices_flat.len() % 3 != 0 {
-            return Err(BrepError::NonTriangularHullFacets {
-                indices_len: indices_flat.len(),
-            });
+        let candidates = enumerate_candidates(&halfspaces)?;
+        let weld_radius = VERTEX_WELD_EPS_REL * max_length(candidates.iter().map(|c| c.v));
+        let welded = weld_candidates(&candidates, weld_radius);
+        if welded.len() < 4 {
+            return Err(BrepError::DegenerateVolume { volume: 0.0 });
         }
+        check_conditioning(&candidates, &welded)?;
 
-        let hull_vertex_plane_idx = map_hull_vertices_to_planes(&dual_points, &vertices_flat)?;
-        check_origin_interior(&vertices_flat, &indices_flat)?;
-
-        let (raw_vertices, mut unordered_facet_polygons) =
-            reconstruct_vertices(&planes, &indices_flat, &hull_vertex_plane_idx)?;
-        // Absolute weld epsilon, scaled to the polyhedron's own size: a schedule
-        // expressed in millimeters and the same schedule expressed in meters should
-        // weld with the same *relative* precision, not the same absolute distance.
-        let scale = raw_vertices
-            .iter()
-            .map(|v| v.length())
-            .fold(1e-6_f32, f32::max);
-        let weld_eps = VERTEX_WELD_EPS_REL * scale;
-        let vertices = weld_vertices(&raw_vertices, &mut unordered_facet_polygons, weld_eps);
-        let facet_polygons = order_facet_polygons(&planes, &vertices, &unordered_facet_polygons);
+        let positions: Vec<DVec3> = welded.iter().map(|w| candidates[w.best].v).collect();
+        check_feasible(
+            &halfspaces,
+            &positions,
+            FEASIBILITY_GATE_WELDS * weld_radius,
+            scale,
+        )?;
+        let facet_polygons = facet_rings(&halfspaces, &positions, &welded);
+        check_euler(positions.len(), &facet_polygons)?;
         let triangle_indices = triangulate_polygons(&facet_polygons);
 
-        check_euler(&vertices, &facet_polygons)?;
-
-        let volume = mesh_volume(&vertices, &triangle_indices);
-        if !volume.is_finite() || volume < 1e-9 {
-            return Err(BrepError::DegenerateVolume { volume });
+        let radius = max_length(positions.iter().copied());
+        let volume = mesh_volume(&positions, &triangle_indices);
+        if !volume.is_finite() || volume < VOLUME_FLOOR_REL * radius.powi(3) {
+            return Err(BrepError::DegenerateVolume {
+                volume: volume * scale * scale * scale,
+            });
         }
-
-        let max_r = vertices.iter().map(|v| v.length()).fold(0.0f32, f32::max);
+        let vertices = output_vertices(&candidates, &welded, scale)?;
 
         Ok(Self {
             vertices,
             facet_planes: planes,
             facet_polygons,
             triangle_indices,
-            bounding_radius: max_r,
+            bounding_radius: (radius * scale) as f32,
         })
     }
 
@@ -284,7 +452,7 @@ impl GemPolyhedron {
     /// Every input plane should normally be touched by at least one facet; a plane
     /// contributing none means it is redundant with respect to the others -- the
     /// schedule over-constrains the solid. This is real diagnostic information about a
-    /// bad cutting schedule, not a hard geometric error (the returned polyhedron is
+    /// bad cutting instructions, not a hard geometric error (the returned polyhedron is
     /// still perfectly valid), so callers reconstructing from an untrusted schedule
     /// should treat a non-empty result here as a signal to fall back to a known-good
     /// cut rather than trust the reconstruction.
@@ -299,7 +467,8 @@ impl GemPolyhedron {
     }
 
     /// Area of a single facet polygon (indexed the same way as `facet_planes` /
-    /// `facet_polygons`). Returns `0.0` for a plane that contributed no facet (see
+    /// `facet_polygons`), summed in `f64` over the polygon's fan in ring order.
+    /// Returns `0.0` for a plane that contributed no facet (see
     /// [`Self::untouched_planes`]).
     ///
     /// # Panics
@@ -311,14 +480,12 @@ impl GemPolyhedron {
         if poly.len() < 3 {
             return 0.0;
         }
-        let v0 = self.vertices[poly[0] as usize];
-        let mut cross_sum = Vec3::ZERO;
-        for w in 1..poly.len() - 1 {
-            let a = self.vertices[poly[w] as usize] - v0;
-            let b = self.vertices[poly[w + 1] as usize] - v0;
-            cross_sum += a.cross(b);
-        }
-        cross_sum.length() * 0.5
+        let at = |i: u32| self.vertices[i as usize].as_dvec3();
+        let origin = at(poly[0]);
+        let cross_sum = poly.windows(2).skip(1).fold(DVec3::ZERO, |acc, pair| {
+            acc + (at(pair[0]) - origin).cross(at(pair[1]) - origin)
+        });
+        (cross_sum.length() * 0.5) as f32
     }
 
     /// Areas of every facet, indexed the same way as `facet_planes` / `facet_polygons`.
@@ -330,8 +497,8 @@ impl GemPolyhedron {
     }
 
     /// Volume of the reconstructed solid, via the divergence theorem over the
-    /// triangulated mesh. Always non-negative (a physical volume is unsigned, so this
-    /// does not depend on triangle winding).
+    /// triangulated mesh, summed in `f64` in triangle order. Always non-negative (a
+    /// physical volume is unsigned, so this does not depend on triangle winding).
     ///
     /// # Panics
     ///
@@ -339,16 +506,22 @@ impl GemPolyhedron {
     /// `GemPolyhedron` returned by [`Self::from_planes`]).
     #[must_use]
     pub fn volume(&self) -> f32 {
-        mesh_volume(&self.vertices, &self.triangle_indices)
+        let positions: Vec<DVec3> = self.vertices.iter().map(|v| v.as_dvec3()).collect();
+        mesh_volume(&positions, &self.triangle_indices) as f32
     }
 
     /// The girdle outline: the polyhedron's silhouette viewed from directly above
     /// (looking down the Y axis, per this crate's Y-up convention), as an ordered loop
     /// of the actual 3D vertices on that silhouette -- the 2D convex hull of the
-    /// vertices' X-Z projection. This is the widest horizontal cross-section of the
-    /// stone: for a well-formed faceted gem it coincides with the girdle facet
-    /// vertices, making it the natural basis for comparing a reconstruction against a
-    /// published cutting diagram (itself drawn as a top-down outline).
+    /// vertices' X-Z projection, counter-clockwise in `(x, z)`. This is the widest
+    /// horizontal cross-section of the stone: for a well-formed faceted gem it
+    /// coincides with the girdle facet vertices, making it the natural basis for
+    /// comparing a reconstruction against a published cutting diagram (itself drawn
+    /// as a top-down outline).
+    ///
+    /// Projected points closer than `1e-6 * bounding_radius` on both axes count as one
+    /// (the lowest-index vertex among them is kept), so the result does not depend on
+    /// the design's absolute scale.
     ///
     /// # Panics
     ///
@@ -356,595 +529,119 @@ impl GemPolyhedron {
     /// `GemPolyhedron` returned by [`Self::from_planes`]).
     #[must_use]
     pub fn girdle_outline(&self) -> Vec<Vec3> {
-        #[derive(Clone, Copy)]
-        struct Point2 {
-            idx: usize,
-            x: f32,
-            z: f32,
-        }
-
-        fn cross(o: Point2, a: Point2, b: Point2) -> f32 {
-            (a.z - o.z).mul_add(-(b.x - o.x), (a.x - o.x) * (b.z - o.z))
-        }
-
-        let mut pts: Vec<Point2> = self
+        let eps = GIRDLE_DEDUP_REL * f64::from(self.bounding_radius);
+        let mut pts: Vec<(f64, f64, usize)> = self
             .vertices
             .iter()
             .enumerate()
-            .map(|(idx, v)| Point2 {
-                idx,
-                x: v.x,
-                z: v.z,
-            })
+            .map(|(idx, v)| (f64::from(v.x), f64::from(v.z), idx))
             .collect();
         pts.sort_by(|p, q| {
-            p.x.partial_cmp(&q.x)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| p.z.partial_cmp(&q.z).unwrap_or(std::cmp::Ordering::Equal))
+            p.0.total_cmp(&q.0)
+                .then_with(|| p.1.total_cmp(&q.1))
+                .then(p.2.cmp(&q.2))
         });
-        pts.dedup_by(|p, q| (p.x - q.x).abs() < 1e-6 && (p.z - q.z).abs() < 1e-6);
+        pts.dedup_by(|later, kept| {
+            (later.0 - kept.0).abs() <= eps && (later.1 - kept.1).abs() <= eps
+        });
 
         if pts.len() < 3 {
-            return pts.into_iter().map(|p| self.vertices[p.idx]).collect();
+            return pts.into_iter().map(|p| self.vertices[p.2]).collect();
         }
-
-        let mut lower: Vec<Point2> = Vec::new();
-        for &p in &pts {
-            while lower.len() >= 2
-                && cross(lower[lower.len() - 2], lower[lower.len() - 1], p) <= 0.0
-            {
-                lower.pop();
-            }
-            lower.push(p);
-        }
-
-        let mut upper: Vec<Point2> = Vec::new();
-        for &p in pts.iter().rev() {
-            while upper.len() >= 2
-                && cross(upper[upper.len() - 2], upper[upper.len() - 1], p) <= 0.0
-            {
-                upper.pop();
-            }
-            upper.push(p);
-        }
-
+        let mut lower = half_hull(pts.iter().copied());
+        let mut upper = half_hull(pts.iter().rev().copied());
         lower.pop();
         upper.pop();
         lower.extend(upper);
-
-        lower.into_iter().map(|p| self.vertices[p.idx]).collect()
+        lower.into_iter().map(|p| self.vertices[p.2]).collect()
     }
 }
 
-/// Builds the dual points (`n_i / -d_i`) for each plane, after validating that every
-/// `d` is negative (required for the polar-duality construction) and that no two
-/// planes are coincident (identical half-spaces).
-fn dual_points_from_planes(planes: &[GpuFacetPlane]) -> Result<Vec<Vec<f64>>, BrepError> {
-    let mut dual_points: Vec<Vec<f64>> = Vec::with_capacity(planes.len());
-    for (i, p) in planes.iter().enumerate() {
-        if p.d >= 0.0 {
-            return Err(BrepError::NonNegativeOffset { index: i, d: p.d });
+/// One half of Andrew's monotone chain over `(x, z, vertex index)` points visited in
+/// sorted (or reverse-sorted) order: keeps only strict left turns.
+fn half_hull(points: impl Iterator<Item = (f64, f64, usize)>) -> Vec<(f64, f64, usize)> {
+    let turn = |o: (f64, f64, usize), a: (f64, f64, usize), b: (f64, f64, usize)| {
+        (a.1 - o.1).mul_add(-(b.0 - o.0), (a.0 - o.0) * (b.1 - o.1))
+    };
+    let mut chain: Vec<(f64, f64, usize)> = Vec::new();
+    for p in points {
+        while chain.len() >= 2 && turn(chain[chain.len() - 2], chain[chain.len() - 1], p) <= 0.0 {
+            chain.pop();
         }
-        let n = Vec3::from_array(p.normal);
-        let dual_pt = n / (-p.d);
-        dual_points.push(vec![
-            f64::from(dual_pt.x),
-            f64::from(dual_pt.y),
-            f64::from(dual_pt.z),
-        ]);
+        chain.push(p);
     }
+    chain
+}
 
-    for i in 0..dual_points.len() {
-        for j in (i + 1)..dual_points.len() {
-            let dist_sq: f64 = (0..3)
-                .map(|k| (dual_points[i][k] - dual_points[j][k]).powi(2))
-                .sum();
-            let scale = dual_points[i]
-                .iter()
-                .chain(dual_points[j].iter())
-                .fold(1.0f64, |m, &v| m.max(v.abs()));
-            if dist_sq.sqrt() < COINCIDENT_PLANE_EPS * scale {
+/// Rejects non-finite planes, non-unit normals and non-negative offsets, reporting
+/// the first offending plane in input order (each plane is checked for all three
+/// before the next plane is looked at).
+fn validate_planes(planes: &[GpuFacetPlane]) -> Result<(), BrepError> {
+    for (index, p) in planes.iter().enumerate() {
+        if !(p.d.is_finite() && p.normal.iter().all(|c| c.is_finite())) {
+            return Err(BrepError::NonFinitePlane { index });
+        }
+        let length = p.to_halfspace_f64().0.length();
+        if (length - 1.0).abs() > UNIT_NORMAL_TOLERANCE {
+            return Err(BrepError::NonUnitNormal { index, length });
+        }
+        if p.d >= 0.0 {
+            return Err(BrepError::NonNegativeOffset { index, d: p.d });
+        }
+    }
+    Ok(())
+}
+
+/// Converts to `n . x <= m` form and divides every offset by the power of two
+/// nearest the largest one; returns the normalised half-spaces and that power of two.
+fn normalised_halfspaces(planes: &[GpuFacetPlane]) -> (Vec<(DVec3, f64)>, f64) {
+    let raw: Vec<(DVec3, f64)> = planes.iter().map(|p| p.to_halfspace_f64()).collect();
+    let scale = pow2_scale_norm(max_abs_offset(&raw));
+    let halfspaces = raw.iter().map(|&(n, m)| (n, m / scale)).collect();
+    (halfspaces, scale)
+}
+
+/// Reports the lexicographically first coincident pair `(i, j)`; see
+/// [`COINCIDENT_PLANE_EPS`].
+fn check_coincident(halfspaces: &[(DVec3, f64)]) -> Result<(), BrepError> {
+    let duals: Vec<DVec3> = halfspaces.iter().map(|&(n, m)| n / m).collect();
+    for (i, &qi) in duals.iter().enumerate() {
+        for (j, &qj) in duals.iter().enumerate().skip(i + 1) {
+            if (qi - qj).length() < COINCIDENT_PLANE_EPS * qi.length().max(qj.length()) {
                 return Err(BrepError::CoincidentPlanes { i, j });
             }
         }
     }
-
-    Ok(dual_points)
-}
-
-/// Recovers each dual hull vertex's original plane index.
-///
-/// `ConvexHull::try_new` internally calls `remove_unused_points`, which drops every
-/// input point that never became a hull vertex before triangulating. The index buffer
-/// returned by `vertices_indices()` indexes into its own compacted vertex list -- NOT
-/// into `planes`/`dual_points` directly. Relying on that compacted list being an
-/// order- and exact-value-preserving subsequence of `dual_points` (as an earlier
-/// version of this function did, via a two-pointer scan with `!=` comparison) bakes in
-/// an undocumented property of a third-party crate: any future `chull` version that
-/// reorders vertices during triangulation, or rounds coordinates while copying them,
-/// would turn every reconstruction into an opaque "internal error" for the user.
-///
-/// Instead, for each hull vertex we find the input dual point nearest to it by
-/// Euclidean distance (`O(H * P)`, fine since `P` is at most a few hundred planes) and
-/// accept the match only if it falls within [`HULL_VERTEX_MATCH_EPS_REL`] relative to
-/// the point's own scale. Two input planes are already rejected as coincident above
-/// `COINCIDENT_PLANE_EPS` (1e-7 relative) before the hull is even computed, so within
-/// the tighter 1e-9 match tolerance every hull vertex has at most one plausible input
-/// point -- ties are not a practical concern.
-fn map_hull_vertices_to_planes(
-    dual_points: &[Vec<f64>],
-    vertices_flat: &[Vec<f64>],
-) -> Result<Vec<usize>, BrepError> {
-    let mut hull_vertex_plane_idx = Vec::with_capacity(vertices_flat.len());
-    for hv in vertices_flat {
-        let mut best_idx = 0usize;
-        let mut best_dist_sq = f64::INFINITY;
-        for (i, dp) in dual_points.iter().enumerate() {
-            let dist_sq: f64 = (0..3).map(|k| (dp[k] - hv[k]).powi(2)).sum();
-            if dist_sq < best_dist_sq {
-                best_dist_sq = dist_sq;
-                best_idx = i;
-            }
-        }
-
-        if !best_dist_sq.is_finite() {
-            return Err(BrepError::NoPlanesToMatch);
-        }
-
-        let hv_norm = hv.iter().map(|v| v * v).sum::<f64>().sqrt();
-        let tolerance = HULL_VERTEX_MATCH_EPS_REL * hv_norm.max(1.0);
-        let best_dist = best_dist_sq.sqrt();
-        if best_dist > tolerance {
-            return Err(BrepError::HullVertexUnmatched {
-                distance: best_dist,
-                tolerance,
-            });
-        }
-
-        hull_vertex_plane_idx.push(best_idx);
-    }
-    Ok(hull_vertex_plane_idx)
-}
-
-/// Boundedness check: the primal half-space intersection is bounded iff the origin
-/// lies strictly inside the dual convex hull. Every plane already has `d < 0`, so the
-/// origin is a strict interior point of every *individual* half-space -- that alone
-/// does not stop their intersection from being unbounded (e.g. a cube missing one face
-/// is an infinite prism that still contains the origin, but is not a finite solid).
-fn check_origin_interior(
-    vertices_flat: &[Vec<f64>],
-    indices_flat: &[usize],
-) -> Result<(), BrepError> {
-    let mut centroid = [0.0f64; 3];
-    for p in vertices_flat {
-        centroid[0] += p[0];
-        centroid[1] += p[1];
-        centroid[2] += p[2];
-    }
-    let count = vertices_flat.len() as f64;
-    for c in &mut centroid {
-        *c /= count;
-    }
-
-    for tri in indices_flat.as_chunks::<3>().0 {
-        let pa = &vertices_flat[tri[0]];
-        let pb = &vertices_flat[tri[1]];
-        let pc = &vertices_flat[tri[2]];
-        let edge1 = [pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]];
-        let edge2 = [pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]];
-        let mut face_normal = [
-            edge1[2].mul_add(-edge2[1], edge1[1] * edge2[2]),
-            edge1[0].mul_add(-edge2[2], edge1[2] * edge2[0]),
-            edge1[1].mul_add(-edge2[0], edge1[0] * edge2[1]),
-        ];
-        let to_centroid = [
-            centroid[0] - pa[0],
-            centroid[1] - pa[1],
-            centroid[2] - pa[2],
-        ];
-        let dot_centroid = face_normal[2].mul_add(
-            to_centroid[2],
-            face_normal[1].mul_add(to_centroid[1], face_normal[0] * to_centroid[0]),
-        );
-        if dot_centroid > 0.0 {
-            face_normal = [-face_normal[0], -face_normal[1], -face_normal[2]];
-        }
-        let face_normal_len = face_normal[2]
-            .mul_add(
-                face_normal[2],
-                face_normal[1].mul_add(face_normal[1], face_normal[0] * face_normal[0]),
-            )
-            .sqrt();
-        if face_normal_len < 1e-12 {
-            continue; // degenerate dual triangle; the determinant check on the primal side will catch it
-        }
-        let to_origin = [-pa[0], -pa[1], -pa[2]];
-        let side = face_normal[2].mul_add(
-            to_origin[2],
-            face_normal[1].mul_add(to_origin[1], face_normal[0] * to_origin[0]),
-        ) / face_normal_len;
-        if side > -ORIGIN_INTERIOR_EPS {
-            return Err(BrepError::UnboundedRegion {
-                signed_distance: side,
-            });
-        }
-    }
     Ok(())
 }
 
-/// Solves each dual hull triangle's 3x3 system for its primal vertex, returning the
-/// vertex list and, for each input plane, the (unordered) set of vertex indices lying
-/// on it.
-///
-/// The solve itself is done in `f64` (`DMat3`/`DVec3`, via
-/// [`GpuFacetPlane::to_halfspace_f64`]) and only the final vertex is narrowed to `Vec3`
-/// for storage. `f32` gives roughly 7 decimal digits of precision; for a schedule
-/// described in small model units (or one scaled far from unit size) that is not
-/// enough headroom between the precision the inputs carry and the precision the
-/// determinant/inverse computation consumes internally, so a triple that is
-/// well-conditioned in exact arithmetic could previously be misjudged as ill-conditioned
-/// (or worse, solved into a visibly wrong vertex) purely from `f32` rounding in the
-/// solve. `f64` pushes that failure mode far below anything a real cutting schedule
-/// exercises.
-fn reconstruct_vertices(
-    planes: &[GpuFacetPlane],
-    indices_flat: &[usize],
-    hull_vertex_plane_idx: &[usize],
-) -> Result<(Vec<Vec3>, Vec<Vec<u32>>), BrepError> {
-    let mut vertices = Vec::new();
-    let mut facet_polygons = vec![Vec::new(); planes.len()];
-
-    for tri in indices_flat.as_chunks::<3>().0 {
-        let a_idx = hull_vertex_plane_idx[tri[0]];
-        let b_idx = hull_vertex_plane_idx[tri[1]];
-        let c_idx = hull_vertex_plane_idx[tri[2]];
-
-        let (na, ma) = planes[a_idx].to_halfspace_f64();
-        let (nb, mb) = planes[b_idx].to_halfspace_f64();
-        let (nc, mc) = planes[c_idx].to_halfspace_f64();
-
-        let m = DMat3::from_cols(na, nb, nc).transpose();
-
-        let det = m.determinant();
-        if det.abs() < MIN_TRIPLE_DETERMINANT {
-            return Err(BrepError::IllConditionedTriple {
-                a: a_idx,
-                b: b_idx,
-                c: c_idx,
-                det,
-            });
-        }
-
-        let rhs = DVec3::new(ma, mb, mc);
-        let vertex = m.inverse() * rhs;
-
-        if !vertex.is_finite() {
-            return Err(BrepError::NonFiniteVertex {
-                a: a_idx,
-                b: b_idx,
-                c: c_idx,
-                vertex,
-            });
-        }
-
-        let v_idx = vertices.len() as u32;
-        vertices.push(vertex.as_vec3());
-        facet_polygons[a_idx].push(v_idx);
-        facet_polygons[b_idx].push(v_idx);
-        facet_polygons[c_idx].push(v_idx);
-    }
-
-    Ok((vertices, facet_polygons))
-}
-
-/// Welds together reconstructed primal vertices that fall within `eps` of each other,
-/// remapping every `facet_polygons` index accordingly.
-///
-/// This matters whenever more than 3 input planes pass through exactly the same
-/// primal point -- a common occurrence in symmetric cutting schedules (e.g. a round
-/// brilliant's star, kite and girdle facets deliberately meeting at shared special
-/// points). In dual space that shows up as more than 3 dual points lying exactly on a
-/// common plane, i.e. a dual hull facet that is a coplanar N-gon rather than a
-/// triangle. `chull` always triangulates its hull facets (see
-/// `map_hull_vertices_to_planes`), so such an N-gon comes back as a fan of N-2
-/// triangles -- and every one of those triangles, solved independently via its own
-/// 3x3 system, re-derives the *same* primal point. Without welding, each of those
-/// solves produces its own distinct entry in `vertices`, so facets that share that
-/// physical vertex end up referencing different indices for it, which silently
-/// corrupts edge/facet adjacency (the mesh becomes non-manifold even though the
-/// geometry is perfectly valid).
-fn weld_vertices(vertices: &[Vec3], facet_polygons: &mut [Vec<u32>], eps: f32) -> Vec<Vec3> {
-    let mut welded: Vec<Vec3> = Vec::new();
-    let mut remap: Vec<u32> = Vec::with_capacity(vertices.len());
-    for v in vertices {
-        let mut found = None;
-        for (wi, w) in welded.iter().enumerate() {
-            if (*v - *w).length() < eps {
-                found = Some(wi as u32);
-                break;
+/// Every plane triple of the normalised arrangement that is a vertex of the exact
+/// polytope (see [`INCIDENCE_EPS`]), in lexicographic order, or
+/// [`BrepError::UnboundedRegion`] if the arrangement escapes to the blank.
+fn enumerate_candidates(halfspaces: &[(DVec3, f64)]) -> Result<Vec<MeetCandidate>, BrepError> {
+    let real = halfspaces.len();
+    let mut candidates = Vec::new();
+    let closed =
+        for_each_feasible_triple(halfspaces, ENUMERATION_DET_FLOOR, true, |planes, det, v| {
+            // A triple using a blank-box plane is never a vertex of a closed solid (the
+            // walk only lets ill-conditioned ones through, and drops those at the blank).
+            let tolerance = INCIDENCE_EPS + SOLVE_RESIDUAL_BOUND / det.abs();
+            if planes[2] < real && halfspaces.iter().all(|&(n, m)| n.dot(v) - m <= tolerance) {
+                candidates.push(MeetCandidate { planes, det, v });
             }
-        }
-        if let Some(idx) = found {
-            remap.push(idx);
-        } else {
-            remap.push(welded.len() as u32);
-            welded.push(*v);
-        }
-    }
-
-    for poly in facet_polygons.iter_mut() {
-        for idx in poly.iter_mut() {
-            *idx = remap[*idx as usize];
-        }
-        poly.sort_unstable();
-        poly.dedup();
-    }
-
-    welded
-}
-
-/// Sorts each facet's vertex loop into angular (counter-clockwise around the facet
-/// normal) order, so it forms a proper polygon boundary rather than an arbitrary set.
-fn order_facet_polygons(
-    planes: &[GpuFacetPlane],
-    vertices: &[Vec3],
-    unordered: &[Vec<u32>],
-) -> Vec<Vec<u32>> {
-    let mut ordered = Vec::with_capacity(planes.len());
-    for (i, p) in planes.iter().enumerate() {
-        let mut poly_verts = unordered[i].clone();
-        if poly_verts.len() < 3 {
-            ordered.push(Vec::new());
-            continue;
-        }
-
-        let mut center = Vec3::ZERO;
-        for &vi in &poly_verts {
-            center += vertices[vi as usize];
-        }
-        center /= poly_verts.len() as f32;
-
-        let normal = Vec3::from_array(p.normal);
-        let tangent = if normal.z.abs() < 0.999 {
-            normal.cross(Vec3::Z).normalize()
-        } else {
-            normal.cross(Vec3::X).normalize()
-        };
-        let bitangent = normal.cross(tangent).normalize();
-
-        poly_verts.sort_by(|&a, &b| {
-            let va = vertices[a as usize] - center;
-            let vb = vertices[b as usize] - center;
-            let angle_a = va.dot(bitangent).atan2(va.dot(tangent));
-            let angle_b = vb.dot(bitangent).atan2(vb.dot(tangent));
-            angle_a
-                .partial_cmp(&angle_b)
-                .unwrap_or(std::cmp::Ordering::Equal)
         });
-        ordered.push(poly_verts);
-    }
-    ordered
-}
-
-/// Fan-triangulates every facet polygon into the flat index buffer used for rendering.
-fn triangulate_polygons(facet_polygons: &[Vec<u32>]) -> Vec<u32> {
-    let mut triangle_indices = Vec::new();
-    for poly in facet_polygons {
-        if poly.len() < 3 {
-            continue;
-        }
-        for i in 1..(poly.len() - 1) {
-            triangle_indices.push(poly[0]);
-            triangle_indices.push(poly[i]);
-            triangle_indices.push(poly[i + 1]);
-        }
-    }
-    triangle_indices
-}
-
-/// Validity gate: every edge of a closed 2-manifold polyhedron must be shared by
-/// exactly two facets, and Euler's formula `V - E + F = 2` must hold. This is the
-/// single most valuable check on the reconstruction above -- it catches nearly any
-/// topological error in the facet/vertex bookkeeping.
-fn check_euler(vertices: &[Vec3], facet_polygons: &[Vec<u32>]) -> Result<(), BrepError> {
-    let mut edge_counts: HashMap<(u32, u32), u32> = HashMap::new();
-    for poly in facet_polygons {
-        if poly.len() < 3 {
-            continue;
-        }
-        for w in 0..poly.len() {
-            let a = poly[w];
-            let b = poly[(w + 1) % poly.len()];
-            let key = if a < b { (a, b) } else { (b, a) };
-            *edge_counts.entry(key).or_insert(0) += 1;
-        }
-    }
-
-    let mut bad_edge: Option<((u32, u32), u32)> = None;
-    for (&edge, &count) in &edge_counts {
-        if count != 2 {
-            bad_edge = Some((edge, count));
-            break;
-        }
-    }
-    if let Some((edge, count)) = bad_edge {
-        return Err(BrepError::NonManifoldEdge { edge, count });
-    }
-
-    let vertex_count = vertices.len();
-    let face_count = facet_polygons.iter().filter(|p| p.len() >= 3).count();
-    let edge_count = edge_counts.len();
-    let euler = vertex_count as i64 - edge_count as i64 + face_count as i64;
-    if euler != 2 {
-        return Err(BrepError::EulerFormulaFailed {
-            vertices: vertex_count,
-            edges: edge_count,
-            faces: face_count,
-            euler,
+    if closed.is_none() {
+        return Err(BrepError::UnboundedRegion {
+            plane: escaping_plane_indices(halfspaces).first().copied(),
         });
     }
-    Ok(())
+    Ok(candidates)
 }
 
-/// Divergence-theorem volume of a triangulated closed mesh, from the origin. Always
-/// non-negative: a physical volume is unsigned, so this does not depend on triangle
-/// winding.
-fn mesh_volume(vertices: &[Vec3], triangle_indices: &[u32]) -> f32 {
-    triangle_indices
-        .as_chunks::<3>()
-        .0
-        .iter()
-        .map(|tri| {
-            let a = vertices[tri[0] as usize];
-            let b = vertices[tri[1] as usize];
-            let c = vertices[tri[2] as usize];
-            a.dot(b.cross(c))
-        })
-        .sum::<f32>()
-        .abs()
-        / 6.0
+/// Largest length among `points` (`0.0` for none).
+fn max_length(points: impl Iterator<Item = DVec3>) -> f64 {
+    points.map(DVec3::length).fold(0.0, f64::max)
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Six axis-aligned half-space planes bounding a cube of the given half-extent
-    /// centered on the origin. `GpuFacetPlane::new` requires `d < 0`, so `d =
-    /// -half_extent`.
-    fn cube_planes(half_extent: f32) -> Vec<GpuFacetPlane> {
-        vec![
-            GpuFacetPlane::new(Vec3::X, -half_extent),
-            GpuFacetPlane::new(-Vec3::X, -half_extent),
-            GpuFacetPlane::new(Vec3::Y, -half_extent),
-            GpuFacetPlane::new(-Vec3::Y, -half_extent),
-            GpuFacetPlane::new(Vec3::Z, -half_extent),
-            GpuFacetPlane::new(-Vec3::Z, -half_extent),
-        ]
-    }
-
-    // Tests for map_hull_vertices_to_planes's tolerance-based matching.
-
-    #[test]
-    fn map_hull_vertices_to_planes_matches_cube_dual_points() {
-        // A unit cube's six planes (`n . x <= 1` for each axis direction) have dual
-        // points `n / -d = n / 1 = n` -- i.e. the six unit axis vectors themselves.
-        let dual_points: Vec<Vec<f64>> = vec![
-            vec![1.0, 0.0, 0.0],
-            vec![-1.0, 0.0, 0.0],
-            vec![0.0, 1.0, 0.0],
-            vec![0.0, -1.0, 0.0],
-            vec![0.0, 0.0, 1.0],
-            vec![0.0, 0.0, -1.0],
-        ];
-        let hull_vertices = dual_points.clone();
-        let idx = map_hull_vertices_to_planes(&dual_points, &hull_vertices)
-            .expect("cube dual points should all match their own input plane");
-        assert_eq!(idx, vec![0, 1, 2, 3, 4, 5]);
-    }
-
-    #[test]
-    fn map_hull_vertices_to_planes_tolerates_permutation() {
-        let dual_points: Vec<Vec<f64>> = vec![
-            vec![1.0, 0.0, 0.0],
-            vec![-1.0, 0.0, 0.0],
-            vec![0.0, 1.0, 0.0],
-            vec![0.0, -1.0, 0.0],
-            vec![0.0, 0.0, 1.0],
-            vec![0.0, 0.0, -1.0],
-        ];
-        // `chull` gives no guarantee that its compacted hull-vertex list preserves the
-        // input order or exact input values. Simulate both: feed the matcher a
-        // reordered copy of the dual points, each nudged by a tiny rounding error
-        // (well inside the 1e-9 relative match tolerance).
-        let permuted_order = [3usize, 0, 5, 1, 4, 2];
-        let hull_vertices: Vec<Vec<f64>> = permuted_order
-            .iter()
-            .map(|&i| dual_points[i].iter().map(|v| v + 1e-12).collect())
-            .collect();
-
-        let idx = map_hull_vertices_to_planes(&dual_points, &hull_vertices)
-            .expect("permuted, slightly-perturbed dual points should still map within tolerance");
-        assert_eq!(idx, permuted_order.to_vec());
-    }
-
-    #[test]
-    fn map_hull_vertices_to_planes_rejects_vertex_with_no_close_input_point() {
-        let dual_points: Vec<Vec<f64>> = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]];
-        // Far outside the relative tolerance of either input dual point.
-        let hull_vertices: Vec<Vec<f64>> = vec![vec![5.0, 5.0, 5.0]];
-        assert!(map_hull_vertices_to_planes(&dual_points, &hull_vertices).is_err());
-    }
-
-    // Tests for from_planes's f64 vertex solve and relative weld tolerance.
-
-    #[test]
-    fn from_planes_cube_has_expected_topology() {
-        let hull =
-            GemPolyhedron::from_planes(cube_planes(1.0)).expect("unit cube must reconstruct");
-        assert_eq!(hull.vertices.len(), 8);
-        assert_eq!(hull.facet_polygons.len(), 6);
-        assert!(hull.facet_polygons.iter().all(|p| p.len() == 4));
-        assert_eq!(hull.triangle_indices.len(), 36); // 6 faces * 2 triangles * 3 indices
-    }
-
-    #[test]
-    fn from_planes_is_scale_invariant_for_cube_topology() {
-        // A cube scaled 1,000,000x in linear size (1000x and 0.001x here) must produce
-        // the same vertex count, facet count and triangle count as the unit-scale
-        // cube: the f64 vertex solve and the scale-relative weld tolerance should make
-        // topology reconstruction independent of the caller's choice of model units.
-        let unit =
-            GemPolyhedron::from_planes(cube_planes(1.0)).expect("unit-scale cube must reconstruct");
-
-        for &scale in &[1000.0_f32, 0.001_f32] {
-            let scaled = GemPolyhedron::from_planes(cube_planes(scale))
-                .unwrap_or_else(|e| panic!("cube scaled by {scale} must reconstruct: {e}"));
-
-            assert_eq!(
-                scaled.vertices.len(),
-                unit.vertices.len(),
-                "vertex count must be scale-invariant (scale = {scale})"
-            );
-            assert_eq!(
-                scaled.facet_polygons.len(),
-                unit.facet_polygons.len(),
-                "facet count must be scale-invariant (scale = {scale})"
-            );
-            assert_eq!(
-                scaled.triangle_indices.len(),
-                unit.triangle_indices.len(),
-                "triangle count must be scale-invariant (scale = {scale})"
-            );
-
-            let expected_radius = unit.bounding_radius * scale;
-            let rel_err = (scaled.bounding_radius - expected_radius).abs() / expected_radius;
-            assert!(
-                rel_err < 1e-3,
-                "bounding radius should scale linearly (scale = {scale}): got {}, expected ~{expected_radius}",
-                scaled.bounding_radius
-            );
-        }
-    }
-
-    #[test]
-    fn from_planes_round_brilliant_still_reconstructs_with_f64_solve() {
-        // Sanity check on the real, non-trivial cutting schedule (57 facets, many
-        // special points where more than 3 planes meet at once and rely on welding)
-        // rather than just the trivial cube, at its native unit scale -- guards
-        // against the f64 vertex solve or the relative weld tolerance regressing
-        // topology reconstruction for a schedule this crate actually ships.
-        //
-        // A wider scale sweep like the cube test above isn't used here: at very small
-        // scales this schedule's absolute volume approaches the fixed ~1e-9 "degenerate
-        // solid" floor in `from_planes` (a separate, pre-existing constant this task
-        // does not touch), which would make such a test flaky for reasons unrelated to
-        // the vertex-solve/weld-tolerance fix under test.
-        let planes = crate::geometry::cuts::StandardGemCuts::standard_round_brilliant();
-        let hull =
-            GemPolyhedron::from_planes(planes).expect("standard round brilliant must reconstruct");
-        assert_eq!(hull.untouched_planes(), Vec::<usize>::new());
-        check_euler(&hull.vertices, &hull.facet_polygons)
-            .expect("round brilliant topology must satisfy Euler's formula");
-    }
-}
+mod tests;

@@ -17,7 +17,8 @@ impl StandardGemCuts {
     /// to full `f32` precision, rather than each being rounded to four decimals
     /// independently. That distinction matters here: `GemPolyhedron::from_planes`
     /// reconstructs vertices as 3-plane meets and welds ones closer than
-    /// `VERTEX_WELD_EPS` (1e-4); rounding this profile by hand instead can leave several
+    /// `VERTEX_WELD_EPS_REL` (1e-4 of the solid's radius); rounding this profile by
+    /// hand instead can leave several
     /// such intended-coincident points ~1.5e-4 apart -- just outside the weld radius --
     /// which produces a dozen extra sliver vertices (60 instead of the true 48) even
     /// though every plane still contributes a facet and the volume is already correct.

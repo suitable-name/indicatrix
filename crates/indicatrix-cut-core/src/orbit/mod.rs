@@ -101,4 +101,6 @@ mod model;
 #[cfg(test)]
 mod tests;
 
-pub use model::{INDEX_TOLERANCE, OrbitUnit, mirror_indices, orbit_units, rotate_indices};
+pub use model::{
+    INDEX_TOLERANCE, OrbitUnit, expected_orbit, mirror_indices, orbit_units, rotate_indices,
+};

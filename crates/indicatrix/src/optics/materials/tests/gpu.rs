@@ -1,70 +1,128 @@
-//! GPU-routing predicate tests: every built-in must report
-//! `gpu_supported() == true`, independent of `biaxial_delta_beta_alpha`.
+//! GPU material encoding tests: [`GpuGemMaterial::encode`] must place each CPU
+//! material field in the slot the WGSL side reads it from.
 
-use crate::optics::materials::GemMaterial;
+use crate::{
+    optics::{
+        absorption::{AbsorptionBand, AbsorptionTensor, BandShape},
+        dispersion::DispersionModel,
+        materials::GemMaterial,
+    },
+    renderer::buffers::{
+        GpuGemMaterial, MAX_ABSORPTION_BANDS, band_shape, crystal_system, dispersion_model_type,
+        optical_character,
+    },
+};
 use glam::Vec3;
 
-/// GPU routing test: `gpu_supported` must report `true` for EVERY built-in
-/// material, biaxial ones (Alexandrite, Topaz, Tanzanite -- the same set
-/// `only_biaxial_materials_expose_a_biaxial_indicatrix` above pins for
-/// `biaxial_indicatrix`) included -- see `gpu_supported`'s own doc comment for the
-/// eigenvector-conditioning fix and full re-verification that made this safe.
-/// Keeping a single test that tracks the routing predicate's CURRENT contract,
-/// rather than layering an exception list on top, means a future regression
-/// (e.g. reintroducing a biaxial-only gate) shows up here directly.
-#[test]
-fn gpu_supported_is_true_for_every_built_in_material() {
-    let biaxial_names = [
-        "Alexandrite",
-        "Topaz",
-        "Tanzanite",
-        "Chrysoberyl (Yellow)",
-        "Peridot",
-        "Andalusite",
-    ];
-    for material in GemMaterial::all_materials() {
-        assert!(
-            material.gpu_supported(),
-            "{} must be reported gpu_supported() == true",
-            material.name
-        );
-        if biaxial_names.contains(&material.name.as_str()) {
-            assert!(
-                material.biaxial_delta_beta_alpha.is_some(),
-                "{} must actually carry biaxial data for this test to be meaningful",
-                material.name
-            );
-        }
-    }
+/// A uniaxial material with every encoded field set to a value that is distinct from
+/// every other field and from the zero default, so a swapped or dropped slot shows up.
+fn probe_material() -> GemMaterial {
+    let mut material = GemMaterial::by_name("Zircon").expect("Zircon must be a built-in");
+    material.dispersion = DispersionModel::Cauchy {
+        a: 1.5,
+        b: 0.01,
+        c: 0.0,
+    };
+    material.birefringence_delta = 0.05;
+    material.c_axis = Vec3::X;
+    material.absorption = AbsorptionTensor::uniaxial(
+        vec![
+            AbsorptionBand::new(500.0, 10.0, 1.0),
+            AbsorptionBand::new(600.0, 20.0, 2.0),
+        ],
+        vec![
+            AbsorptionBand::new(510.0, 11.0, 1.5),
+            AbsorptionBand::new(610.0, 21.0, 2.5),
+            AbsorptionBand {
+                center_nm: 700.0,
+                width_nm: 300.0,
+                peak: 3.5,
+                shape: BandShape::GaussianEnergy,
+            },
+        ],
+    );
+    material
 }
-/// `gpu_supported` does not depend on `biaxial_delta_beta_alpha` at all (nor on
-/// anything else) -- it is `true` unconditionally: the biaxial eigenvector
-/// conditioning lets Alexandrite/Topaz/Tanzanite pass the same GPU-equivalence
-/// bar every other material already has to. Kept as a dedicated test (rather than
-/// folded into the one above) because this predicate is itself a documented,
-/// load-bearing contract point -- pinning it here is the useful signal a future
-/// regression (e.g. reintroducing a biaxial-only gate) should trip.
+
+/// The ordinary and extraordinary band sets land in their own slot arrays with their own
+/// counts (2 ordinary, 3 extraordinary), in order, with the shape discriminant carried and
+/// every unused slot left at the zero-peak default; the optional third set stays absent.
 #[test]
-fn gpu_supported_no_longer_depends_on_biaxial_delta_beta_alpha() {
-    let mut zircon = GemMaterial::by_name("Zircon").expect("Zircon must be a built-in");
-    assert!(
-        zircon.gpu_supported(),
-        "Zircon (uniaxial) must be GPU-supported"
-    );
+fn encode_places_the_o_and_e_band_sets_in_their_own_slots() {
+    let gpu = GpuGemMaterial::encode(&probe_material());
 
-    zircon.birefringence_delta *= -3.0;
-    zircon.c_axis = Vec3::X;
-    assert!(
-        zircon.gpu_supported(),
-        "changing unrelated uniaxial fields must not affect gpu_supported()"
-    );
+    assert_eq!(gpu.o_ray_band_count, 2);
+    assert_eq!(gpu.e_ray_band_count, 3);
+    assert_eq!(gpu.is_pleochroic, 1);
+    assert_eq!(gpu.has_beta_ray, 0);
+    assert_eq!(gpu.beta_ray_band_count, 0);
 
-    zircon.biaxial_delta_beta_alpha = Some(0.0);
-    assert!(
-        zircon.gpu_supported(),
-        "biaxial_delta_beta_alpha no longer gates GPU support"
+    let o = &gpu.o_ray_bands;
+    assert_eq!(
+        (o[0].center_nm, o[0].width_nm, o[0].peak),
+        (500.0, 10.0, 1.0)
     );
+    assert_eq!(
+        (o[1].center_nm, o[1].width_nm, o[1].peak),
+        (600.0, 20.0, 2.0)
+    );
+    assert_eq!(o[0].shape, band_shape::GAUSSIAN_WAVELENGTH);
+    assert_eq!(o[2].peak, 0.0, "slot past the count is an empty band");
 
-    zircon.biaxial_delta_beta_alpha = None;
-    assert!(zircon.gpu_supported(), "and stays supported once cleared");
+    let e = &gpu.e_ray_bands;
+    assert_eq!(
+        (e[0].center_nm, e[0].width_nm, e[0].peak),
+        (510.0, 11.0, 1.5)
+    );
+    assert_eq!(
+        (e[1].center_nm, e[1].width_nm, e[1].peak),
+        (610.0, 21.0, 2.5)
+    );
+    assert_eq!(
+        (e[2].center_nm, e[2].width_nm, e[2].peak),
+        (700.0, 300.0, 3.5)
+    );
+    assert_eq!(e[2].shape, band_shape::GAUSSIAN_ENERGY);
+    assert_eq!(e[3].peak, 0.0, "slot past the count is an empty band");
+}
+
+/// The dispersion curve, crystal class, optical character and optic axis land in the
+/// discriminant and parameter slots the shader decodes: Cauchy `(a, b, c)` in `param_a`,
+/// the axis and birefringence packed as `[x, y, z, delta]`, tetragonal uniaxial-positive.
+#[test]
+fn encode_places_dispersion_axis_and_class_in_their_slots() {
+    let gpu = GpuGemMaterial::encode(&probe_material());
+
+    assert_eq!(gpu.dispersion.model_type, dispersion_model_type::CAUCHY);
+    assert_eq!(gpu.dispersion.param_a, [1.5, 0.01, 0.0, 0.0]);
+    assert_eq!(
+        gpu.dispersion.c_axis_and_birefringence,
+        [1.0, 0.0, 0.0, 0.05]
+    );
+    assert_eq!(gpu.dispersion.is_anisotropic, 1);
+    assert_eq!(gpu.dispersion.has_biaxial_delta, 0);
+    assert_eq!(gpu.crystal_system, crystal_system::TETRAGONAL);
+    assert_eq!(gpu.optical_character, optical_character::UNIAXIAL_POSITIVE);
+    assert_eq!(gpu.has_extraordinary_dispersion, 0);
+}
+
+/// A band set longer than the GPU capacity is truncated to [`MAX_ABSORPTION_BANDS`]
+/// entries and the stored count never exceeds the array length.
+#[test]
+fn encode_truncates_an_over_long_band_set_to_the_gpu_capacity() {
+    let mut material = probe_material();
+    let too_many: Vec<AbsorptionBand> = (0..MAX_ABSORPTION_BANDS + 2)
+        .map(|i| AbsorptionBand::new((450 + 10 * i) as f32, 5.0, 1.0))
+        .collect();
+    material.absorption = AbsorptionTensor::isotropic(too_many);
+
+    let gpu = GpuGemMaterial::encode(&material);
+
+    assert_eq!(gpu.o_ray_band_count as usize, MAX_ABSORPTION_BANDS);
+    assert_eq!(gpu.e_ray_band_count as usize, MAX_ABSORPTION_BANDS);
+    let last = &gpu.o_ray_bands[MAX_ABSORPTION_BANDS - 1];
+    assert_eq!(
+        last.center_nm,
+        (450 + 10 * (MAX_ABSORPTION_BANDS - 1)) as f32
+    );
 }

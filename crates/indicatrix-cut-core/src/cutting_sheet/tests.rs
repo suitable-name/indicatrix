@@ -42,6 +42,7 @@ fn cutting_sheet_with_resolves_a_custom_materials_own_refractive_index() {
         name: Some("My Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
+        body_colour_override: None,
     };
     let custom = [custom_garnet(1.9)];
     let solved = design
@@ -175,6 +176,7 @@ fn header_carries_a_carat_weight_line_only_once_anchored() {
         name: Some("Diamond".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
+        body_colour_override: None,
     };
     let anchored = design.cutting_sheet(&solved);
     assert!(

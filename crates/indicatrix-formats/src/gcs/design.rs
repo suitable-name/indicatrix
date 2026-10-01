@@ -20,6 +20,9 @@ pub struct GcsDesign {
     pub render: Option<GcsRender>,
     /// Free-text design metadata, when present.
     pub info: Option<GcsInfo>,
+    /// Non-fatal parse diagnostics: unknown elements and attributes (ignored), and
+    /// a `version` newer than 1000. Empty for every corpus file.
+    pub warnings: Vec<String>,
 }
 
 impl GcsDesign {

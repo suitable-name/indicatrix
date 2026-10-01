@@ -176,14 +176,21 @@ pub(in crate::stream_emit) fn emit_tick<S: Write>(
     // image from `FRAME` deltas already received, so a full-scale `PREVIEW` riding
     // alongside a `FRAME` would just double that tick's bandwidth. Only applies under
     // `LiveProgressive`; a downscaled `PREVIEW` is never skipped.
+    //
+    // And skip it when `samples_done` hasn't advanced by [`EmitterAccum::preview_due`]'s
+    // 1%-of-budget threshold since the last one this emitter actually wrote: a
+    // coordinator job's running total (and so `samples_done`) only changes when a chunk
+    // merges, so calling this every cadence tick regardless would otherwise resend a
+    // byte-identical `PREVIEW` between merges.
     if let Some(cfg) = request.stream.preview
         && samples_done > 0
     {
         let full_scale_and_redundant = frame_sent_this_tick
             && cfg.width == request.scene.width
             && cfg.height == request.scene.height;
-        if !full_scale_and_redundant {
+        if !full_scale_and_redundant && emitter.preview_due(samples_done, request.samples) {
             write_preview(stream, request, cfg, emitter, samples_done)?;
+            emitter.record_preview_sent(samples_done);
         }
     }
 
@@ -234,11 +241,12 @@ pub(super) fn emit_final<S: Write>(
 ) -> Result<StreamOutcome, NetError> {
     let request = spec.request;
     let (range, _samples_done) = emitter.swap_and_fold(state);
-    let final_total = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .final_total
-        .take();
+    let (final_total, reclaimed_samples) = {
+        let mut guard = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        (guard.final_total.take(), guard.reclaimed_samples)
+    };
     let dims = (request.scene.width, request.scene.height);
 
     if let Output::FinalImage(color_space) = spec.output {
@@ -257,10 +265,20 @@ pub(super) fn emit_final<S: Write>(
             return Ok(StreamOutcome::Failed(ErrorMsg {
                 code: error_codes::TRACE_PANIC,
                 message,
+                // Left unstamped here; `request.request_id` is available above if a
+                // future change wants to stamp it (the forwarding in
+                // `stream_emit/emitter/mod.rs` already does for `StreamOutcome::Failed`).
+                request_id: None,
             }));
         }
         *emission_count += 1;
-        write_done(stream, request, streaming_start, *emission_count)?;
+        write_done(
+            stream,
+            request,
+            streaming_start,
+            *emission_count,
+            reclaimed_samples,
+        )?;
         return Ok(StreamOutcome::Completed);
     }
 
@@ -308,7 +326,13 @@ pub(super) fn emit_final<S: Write>(
         }
     }
 
-    write_done(stream, request, streaming_start, *emission_count)?;
+    write_done(
+        stream,
+        request,
+        streaming_start,
+        *emission_count,
+        reclaimed_samples,
+    )?;
     Ok(StreamOutcome::Completed)
 }
 
@@ -401,11 +425,13 @@ fn write_done<S: Write>(
     request: &RenderRequest,
     streaming_start: Instant,
     emission_count: u32,
+    reclaimed_samples: u32,
 ) -> Result<(), NetError> {
     let stats = Stats {
         samples_done: request.samples,
         requested_cadence_ms: request.stream.cadence_ms,
         effective_cadence_ms: effective_cadence_ms(streaming_start.elapsed(), emission_count),
+        reclaimed_samples,
     };
     indicatrix_net::messages::write_stream_event(
         stream,

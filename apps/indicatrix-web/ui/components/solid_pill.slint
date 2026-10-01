@@ -1,0 +1,36 @@
+import { Theme } from "theme.slint";
+
+// One toolbar pill of the Solid/Diagram views: the desktop's
+// `solid_viewport/toolbar.slint` pill (28 px, radius-sm, primary when active).
+export component SolidPill inherits Rectangle {
+    in property <string> text;
+    in property <bool> active: false;
+    // The tooltip; empty for a pill whose label says it all.
+    in property <string> hint;
+    // The horizontal padding around the label in total; a phone-width toolbar tightens it
+    // so its rows of pills fit.
+    in property <length> pad: 20px;
+    callback clicked();
+
+    accessible-role: button;
+    accessible-label: root.text;
+    height: 28px;
+    width: label.preferred-width + root.pad;
+    background: root.active ? #3b82f6 : (touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: root.active ? Theme.accent-cyan : Theme.border-subtle;
+
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+    if root.hint != "": Tooltip { text: @markdown("\{root.hint}"); }
+    label := Text {
+        text: root.text;
+        font-size: 12px;
+        font-weight: 600;
+        color: root.active ? #ffffff : Theme.text-secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}

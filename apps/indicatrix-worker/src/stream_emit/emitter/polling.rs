@@ -3,7 +3,7 @@
 //! [`poll_for_client_message`] is the poll itself.
 
 use super::super::{TimeoutCache, TimeoutRead};
-use indicatrix_net::messages::{ClientMessage, NetError, RenderRequest};
+use indicatrix_net::messages::{ClientMessage, ContributionHeader, NetError, RenderRequest};
 use std::{io::Read, time::Duration};
 
 /// What one poll of the socket for a pending [`ClientMessage`] found.
@@ -23,6 +23,11 @@ pub(in crate::stream_emit) enum ClientPoll {
     NextRequest(Box<RenderRequest>),
     /// A `PING` (v14) with this nonce: answer with a `PONG` and keep streaming.
     Ping(u64),
+    /// `-> CONTRIBUTION` (v16): the header has been read, but its payload frame has
+    /// NOT -- the caller (`super::run_stream_loop`) must consume it (into a reserved
+    /// [`super::super::ContributionSlot`], or discard it) before the next poll, or the
+    /// stream desyncs.
+    Contribution(ContributionHeader),
 }
 
 /// What one [`poll_raw_client_message`] found.
@@ -43,7 +48,8 @@ pub enum RawPoll {
 ///
 /// # Errors
 ///
-/// [`NetError`] for a transport error, an oversized frame, or undecodable bytes.
+/// [`NetError`] for a transport error (including a connection that ends inside a frame),
+/// a frame over `MAX_CONTROL_FRAME_LEN`, or undecodable bytes.
 pub fn poll_raw_client_message<S: Read + TimeoutRead>(
     stream: &mut S,
     poll_timeout: Duration,
@@ -72,25 +78,14 @@ pub fn poll_raw_client_message<S: Read + TimeoutRead>(
     timeouts
         .apply(stream, Some(super::super::FRAME_REMAINDER_TIMEOUT))
         .map_err(|e| NetError::Framing(indicatrix_net::framing::FramingError::Io(e)))?;
-    if n < len_bytes.len() {
-        stream
-            .read_exact(&mut len_bytes[n..])
-            .map_err(|e| NetError::Framing(indicatrix_net::framing::FramingError::Io(e)))?;
-    }
-    let len = u32::from_le_bytes(len_bytes);
-    if len > indicatrix_net::framing::MAX_FRAME_LEN {
-        return Err(NetError::Framing(
-            indicatrix_net::framing::FramingError::FrameTooLarge {
-                len,
-                max: indicatrix_net::framing::MAX_FRAME_LEN,
-            },
-        ));
-    }
-    let mut payload = vec![0u8; len as usize];
-    stream
-        .read_exact(&mut payload)
-        .map_err(|e| NetError::Framing(indicatrix_net::framing::FramingError::Io(e)))?;
-    Ok(RawPoll::Message(postcard::from_bytes(&payload)?))
+    let payload = indicatrix_net::framing::read_frame_continuing(
+        stream,
+        &len_bytes[..n],
+        indicatrix_net::framing::MAX_CONTROL_FRAME_LEN,
+    )?;
+    Ok(RawPoll::Message(
+        indicatrix_net::messages::decode_control_frame(&payload)?,
+    ))
 }
 
 /// Attempts to read one pending message frame, tolerating a `WouldBlock`/`TimedOut`/
@@ -173,5 +168,9 @@ pub(in crate::stream_emit) fn poll_for_client_message<S: Read + TimeoutRead>(
             crate::assets::discard_asset(stream, &header)?;
             ClientPoll::Stale
         }
+        // v16: handed to the caller with its payload frame still unread -- only it
+        // knows whether this request reserved a contribution slot (see
+        // `ClientPoll::Contribution`'s own doc comment).
+        ClientMessage::Contribution(header) => ClientPoll::Contribution(header),
     })
 }

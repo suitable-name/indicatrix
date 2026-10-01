@@ -6,6 +6,7 @@ use rusqlite::Connection;
 
 use crate::types::AscRow;
 
+/// Loads every `.asc` attachment row from the database in a stable order.
 pub fn load_asc_rows(conn: &Connection) -> Vec<AscRow> {
     let mut stmt = conn
         .prepare(
@@ -33,6 +34,7 @@ pub fn load_asc_rows(conn: &Connection) -> Vec<AscRow> {
     rows.filter_map(Result::ok).collect()
 }
 
+/// Locates `facet_diagrams.sqlite` relative to the working directory.
 pub fn find_db_path() -> String {
     for candidate in [
         "facet_diagrams.sqlite",

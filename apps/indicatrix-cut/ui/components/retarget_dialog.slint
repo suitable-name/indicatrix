@@ -2,7 +2,9 @@ import { ComboBox, LineEdit, ScrollView, Slider } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { RetargetRowItem } from "../types.slint";
 import { RetargetModel } from "../models/retarget.slint";
+import { CompareModel } from "../models/compare.slint";
 import { StaleBadge } from "stale_badge.slint";
+import { CompareView } from "compare_view.slint";
 
 export { RetargetRowItem }
 
@@ -67,9 +69,12 @@ export component RetargetDialog inherits Rectangle {
         }
     }
 
+    // Sized from `root`, never from its content, so the wide Retarget card (proposal
+    // column plus the embedded comparison pane) cannot raise the window's minimum
+    // size. The Snapshot panel keeps its narrow single-column card.
     Rectangle {
-        width: 560px;
-        height: min(680px, root.height - 40px);
+        width: RetargetModel.compare_open ? 560px : min(root.width - 48px, 1280px);
+        height: RetargetModel.compare_open ? min(680px, root.height - 40px) : min(root.height - 48px, 820px);
         background: Theme.surface-dialog;
         border-radius: Theme.radius-md;
         border-width: 1px;
@@ -158,21 +163,52 @@ export component RetargetDialog inherits Rectangle {
 
             Rectangle { height: 1px; background: Theme.surface-raised; }
 
-            Rectangle {
-                height: 32px;
-                border-radius: Theme.radius-sm;
-                background: compare_done_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
-                border-width: 1px;
-                border-color: Theme.border-dialog;
-                compare_done_touch := TouchArea {
-                    clicked => { RetargetModel.compare_close(); }
+            HorizontalLayout {
+                spacing: 8px;
+
+                // The same snapshot-vs-current comparison, but as rendered stones
+                // in the visual compare window (`gui::editor::compare`) -- view only.
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 32px;
+                    border-radius: Theme.radius-sm;
+                    background: compare_visual_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
+                    border-width: 1px;
+                    border-color: Theme.border-dialog;
+                    compare_visual_touch := TouchArea {
+                        clicked => { CompareModel.open_snapshot(); }
+                    }
+                    Text { text: "Compare visually…"; font-size: 12px; font-weight: 700; color: Theme.text-primary; horizontal-alignment: center; vertical-alignment: center; }
                 }
-                Text { text: "Close"; font-size: 12px; font-weight: 700; color: Theme.text-primary; horizontal-alignment: center; vertical-alignment: center; }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: 32px;
+                    border-radius: Theme.radius-sm;
+                    background: compare_done_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control;
+                    border-width: 1px;
+                    border-color: Theme.border-dialog;
+                    compare_done_touch := TouchArea {
+                        clicked => { RetargetModel.compare_close(); }
+                    }
+                    Text { text: "Close"; font-size: 12px; font-weight: 700; color: Theme.text-primary; horizontal-alignment: center; vertical-alignment: center; }
+                }
             }
         }
 
-        if !RetargetModel.compare_open: VerticalLayout {
+        // Two columns: the proposal controls and table on the left, the live
+        // before/after comparison (`CompareView`, driven by the main window's own
+        // `CompareModel` instance) on the right. The main viewport is paused while
+        // this dialog is open, so the comparison pane is the one place the change
+        // is visible.
+        if !RetargetModel.compare_open: HorizontalLayout {
             padding: 16px;
+            spacing: 16px;
+
+        VerticalLayout {
+            horizontal-stretch: 0;
+            preferred-width: 480px;
+            min-width: 380px;
             spacing: 12px;
 
             // 1. Header
@@ -200,6 +236,17 @@ export component RetargetDialog inherits Rectangle {
 
             Rectangle { height: 1px; background: Theme.surface-raised; }
 
+            // Scrollable body between the fixed header above and the fixed footer
+            // below: the sections need about 555px, so on a short window the
+            // footer's Cancel / Apply would otherwise be clipped.
+            ScrollView {
+                vertical-stretch: 1;
+                content-width: self.visible-width;
+
+                VerticalLayout {
+                    spacing: 12px;
+                    padding-right: 12px;
+
             // 2. Target material picker -- owned by this dialog (see
             // `RetargetModel.target_material_index`'s own doc comment), not the
             // design settings panel's combo.
@@ -220,6 +267,8 @@ export component RetargetDialog inherits Rectangle {
                         border-width: 1px;
                         border-color: Theme.border-dialog;
                         ComboBox {
+                            width: 100%;
+                            height: 100%;
                             model: RetargetModel.material_options;
                             current-index <=> RetargetModel.target_material_index;
                             enabled: !RetargetModel.is_busy;
@@ -234,6 +283,8 @@ export component RetargetDialog inherits Rectangle {
                         border-width: 1px;
                         border-color: Theme.border-dialog;
                         LineEdit {
+                            width: 100%;
+                            height: 100%;
                             text <=> RetargetModel.target_ri_override_text;
                             placeholder-text: "Custom n_D";
                             enabled: !RetargetModel.is_busy;
@@ -323,43 +374,38 @@ export component RetargetDialog inherits Rectangle {
                 }
             }
 
-            // While on, the shared solid viewport shows THIS proposal's own
-            // candidate geometry instead of the live design, so a cutter can see
-            // whether the retargeted pavilion still closes before ever clicking
-            // Apply -- reverted the instant this is switched back off
-            // (`callbacks::retarget_actions::apply_ghost_preview_or_revert`).
+            // The comparison for this proposal lives in the right-hand pane; this
+            // row only pops it out into its own window.
             Rectangle {
                 height: 22px;
-                Tooltip { text: @markdown("Show this proposal's candidate geometry live in the viewport instead of the current design."); }
 
                 HorizontalLayout {
                     spacing: 6px;
+                    Text { text: "Comparison"; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
+
+                    Rectangle { horizontal-stretch: 1; }
+
+                    // Moves the pane's comparison into its own window
+                    // (`gui::editor::compare`) -- its "Keep after" runs this
+                    // dialog's own `apply()`.
                     Rectangle {
-                        width: 14px;
-                        height: 14px;
-                        y: (parent.height - self.height) / 2;
-                        border-radius: 3px;
-                        background: RetargetModel.preview_enabled ? Theme.accent-cyan : transparent;
+                        width: 84px;
+                        height: 22px;
+                        border-radius: Theme.radius-sm;
+                        opacity: root.can_apply ? 1.0 : 0.45;
+                        background: compare_touch.has-hover && root.can_apply ? Theme.surface-control-hover : Theme.surface-control;
                         border-width: 1px;
-                        border-color: RetargetModel.preview_enabled ? Theme.accent-cyan : Theme.border-control;
+                        border-color: Theme.border-dialog;
 
-                        if RetargetModel.preview_enabled: Image {
-                            source: @image-url("../icons/check.svg");
-                            colorize: Theme.text-on-accent;
-                            width: 9px;
-                            height: 9px;
-                            horizontal-alignment: center;
-                            vertical-alignment: center;
+                        Tooltip { text: @markdown("Pop the comparison out into its own window: the current design and the retargeted one side by side, under a split slider, or as a difference overlay, turning together."); }
+
+                        compare_touch := TouchArea {
+                            enabled: root.can_apply;
+                            clicked => { CompareModel.open_retarget(); }
                         }
 
-                        preview_touch := TouchArea {
-                            clicked => {
-                                RetargetModel.preview_enabled = !RetargetModel.preview_enabled;
-                                RetargetModel.proposal_changed();
-                            }
-                        }
+                        Text { text: "Compare…"; font-size: 11px; font-weight: 600; color: Theme.text-primary; horizontal-alignment: center; vertical-alignment: center; }
                     }
-                    Text { text: "Preview in viewport"; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
                 }
             }
 
@@ -396,6 +442,8 @@ export component RetargetDialog inherits Rectangle {
                         border-width: 1px;
                         border-color: Theme.border-dialog;
                         crown_pct_edit := LineEdit {
+                            width: 100%;
+                            height: 100%;
                             enabled: !RetargetModel.is_busy && !RetargetModel.scale_crown_by_ratio;
                             horizontal-alignment: center;
                             // Bare digits, no "%" -- `to-float()` below needs the
@@ -504,6 +552,11 @@ export component RetargetDialog inherits Rectangle {
 
                 ScrollView {
                     vertical-stretch: 1;
+                    // A real height floor/preference (not just stretch): this table now
+                    // sits inside the dialog body's own ScrollView, which owns the
+                    // overflow on a short window.
+                    min-height: 96px;
+                    preferred-height: 240px;
                     VerticalLayout {
                         spacing: 2px;
                         for row in RetargetModel.rows: Rectangle {
@@ -549,6 +602,8 @@ export component RetargetDialog inherits Rectangle {
                 font-weight: 600;
                 color: Theme.accent-cyan;
             }
+                } // end scrolling body layout
+            } // end body ScrollView
 
             Rectangle { height: 1px; background: Theme.surface-raised; }
 
@@ -599,6 +654,16 @@ export component RetargetDialog inherits Rectangle {
                     Text { text: "Apply"; font-size: 12px; font-weight: 700; color: Theme.text-on-accent; horizontal-alignment: center; vertical-alignment: center; }
                 }
             }
+        } // end proposal column
+
+        // The split slider stays a pop-out-window feature; the pane offers side by
+        // side and overlay. Instantiated only while the dialog is open, so it
+        // pushes its image size to the main window's `CompareModel` only then.
+        if RetargetModel.is_open: CompareView {
+            show_split: false;
+            horizontal-stretch: 1;
+            min-width: 320px;
         }
+        } // end two-column layout
     }
 }

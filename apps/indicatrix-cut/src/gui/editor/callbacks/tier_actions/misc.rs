@@ -162,6 +162,11 @@ pub(super) fn adjust_selection_after_remove(ui: &MainWindow, removed_index: i32)
 /// preserve -- an index that no longer names a real tier is simply cleared, with
 /// the same [`bump_form_reset_pulse`] guarantee.
 ///
+/// An in-range survivor needs no pulse from here: the no-solve panel refresh
+/// that ran just before (`view::refresh_editor_panel_stale`) already asked the
+/// form to re-seed from the replayed design, because the selection was in range
+/// against the post-replay tier count at that point.
+///
 /// `pub(super)` since [`super::history`]'s Undo/Redo callbacks use it.
 pub(super) fn clamp_selection_to_tier_count(ui: &MainWindow, tier_count: usize) {
     let selected = ui.global::<EditorModel>().get_selected_tier_index();

@@ -38,7 +38,7 @@ pub(in crate::gui::editor) use optimize_apply::{
 };
 pub(in crate::gui::editor) use panel::{
     girdle_and_ratio_texts_from_solved, preform_mm_texts_from_solved,
-    proportions_texts_from_solved, refresh_editor_panel,
+    proportions_texts_from_solved, push_proportion_verdicts_from_solved, refresh_editor_panel,
 };
 pub(in crate::gui::editor) use panel_stale::{
     configured_optimize_max_evaluations, refresh_editor_panel_stale,
@@ -48,7 +48,7 @@ pub(in crate::gui::editor) use solve_results::{
 };
 pub(in crate::gui::editor) use viewport::{
     ReplanSource, push_has_design, refresh_all, refresh_all_now, scaled_viewport_size,
-    submit_preview_replan, submit_preview_replan_for,
+    submit_preview_replan, submit_preview_replan_chained, submit_preview_replan_for,
 };
 // `push_solved_preview` is the one push function `editor::apply_matching_preview_frame`
 // (this group's other public entry point) also needs -- `push_stale_content` stays

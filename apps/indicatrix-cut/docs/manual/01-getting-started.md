@@ -55,18 +55,17 @@ Below the menu bar, the window is divided into three areas:
   per-design actions), and below it three tabs:
   - **3D Spectral Preview** — the render viewport, described in Chapter 2.
     On the standard build, this tab has its own inner pair of sub-tabs,
-    **Live Render** and **Edit**, plus a **Pop Out** button that moves the
-    render into its own always-on-top window (useful on a second monitor).
+    **Live Render** and **Edit**.
     The Edit sub-tab is the cutting-design editor covered in Chapters 3–8.
-  - **Cutting Schedule** — a plain table of every facet's angle, index, and
+  - **Cutting Instructions** — a plain table of every facet's angle, index, and
     notes, filterable to All Steps / Pavilion / Crown, with a "Copy
     Schedule" button and a click-to-copy on any row.
   - **Files & Downloads** — any original file(s) attached to the design in
     the catalogue (typically the source `.asc`), each with a "Save / Export"
     button and a "Copy URL" button.
 
-If a design has no cutting schedule recorded, the Cutting Schedule tab shows
-"No cutting schedule recorded for this diagram." If it has no attached
+If a design has no cutting instructions recorded, the Cutting Instructions tab shows
+"No cutting instructions recorded for this diagram." If it has no attached
 files, Files & Downloads shows "No files or GemCAD data attached to this
 diagram," and notes that anything you do export lands in `./exports/`
 relative to wherever you launched the program.
@@ -88,8 +87,8 @@ no tiers yet shows its preform with a small "no tiers yet" hint and a
   from the New Design dialog, then the girdle, pavilion, crown and table tier
   by tier. (For the finished stone in one click, pick the dialog's "Standard
   Round Brilliant" template instead.)
-- **Open Recent** lists up to four of your own most-recently-used native
-  files -- the same list File > Open Recent uses.
+- **Open Recent** shows your four most-recently-used native files -- the top
+  of the list File > Open Recent keeps, which holds up to ten.
 - **Import a Folder** points you at the Import button in the top toolbar
   (see "Bringing your own designs in" below); it is not a second Import
   control of its own.
@@ -153,8 +152,31 @@ tell at a glance.
 Click **Import** in the top toolbar to open the import panel. From there you
 can:
 
-- Click **Choose file...** to import one `.asc` file, or
-- Click **Choose folder...** to import every `.asc` file in a folder.
+- Click **Choose file...** to import one `.asc`, `.gem` or `.gcs` file, or
+- Click **Choose folder...** to import every `.asc`, `.gem` and `.gcs` file in
+  a folder.
+
+**GemCAD `.gem` files.** A `.gem` is GemCAD's own binary save file. Import
+decodes its facet geometry (every facet plane, tier, name and cutting note,
+plus the gear, symmetry, refractive index, headings and footnotes) and turns
+it into `.asc` cutting instructions, exactly as if you had exported a `.asc`
+from GemCAD. The design is stored with that generated `.asc` (named after the
+file, e.g. `round.asc` for `round.gem`) *and* the original `.gem`, both
+visible on the Attachments tab. A `.gem` that also carries a CAM preform
+imports without the preform; the summary says so.
+
+**Gem Cut Studio `.gcs` files.** A `.gcs` is converted the same way: one
+tier per Gem Cut Studio tier, with the index gear, refractive index, title,
+author and footers carried over, and the original `.gcs` kept as an
+attachment. Gem Cut Studio stores its designs rescaled to fill its
+workspace, so the mast values in the converted cutting instructions are about
+0.9 of what GemCAD would write for the same design; the shape is identical.
+A hidden or guide tier, a missing refractive index, or anything in the file
+the reader does not recognise is listed in the summary.
+
+A file that cannot be read (a damaged `.gem`, a `.gcs` that is not valid
+XML) is skipped with the reader's own explanation, and the rest of the folder
+still imports.
 
 If you want subfolders included in a folder import, turn on **Include
 subfolders (set this first)** *before* clicking "Choose folder..." — the
@@ -168,6 +190,14 @@ a folder import, the panel shows "file N / M" and a progress bar as each
 file is picked up. When a design's geometry is measured during import (its
 proportions, and a best-guess shape classification), that information fills
 in automatically rather than being left blank.
+
+When the import finishes, a summary popup reports how many files were
+imported, plus any that were skipped (e.g. a read error), any that replaced an
+existing catalogue entry with the same file name, and any `.gem`/`.gcs` file
+that was converted with notes ("Converted with notes: ..."). The popup names at
+most 8 files in each of those lists before switching to "and N more" — the
+complete list always goes to the app's own log, this is only about keeping the
+popup itself from turning into a wall of file names on a large folder import.
 
 ## Settings and where they are stored
 
@@ -187,7 +217,11 @@ You do not need to edit this file by hand — every control that changes it
 has an on-screen equivalent — but if the file is ever missing, unreadable,
 or damaged, the app quietly falls back to its defaults rather than failing
 to start; nothing you do in the app can corrupt your settings file, since
-writes are saved safely (to a temporary file first, then swapped in).
+writes are saved safely (to a temporary file first, then swapped in). A
+damaged (unparseable) file specifically is not just discarded: it is
+renamed aside next to itself first, so it stays on disk to recover by hand
+if you ever need to, instead of being silently overwritten by the next
+save (see [settings.md](../settings.md) for the exact renamed name).
 
 ## Next steps
 

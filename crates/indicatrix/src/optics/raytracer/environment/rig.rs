@@ -7,6 +7,7 @@
 //! the stone, and next-event-estimation sampling/pdf lookups against an `HdrMap`.
 
 use super::{EnvironmentSource, LightingModel, LightingPreset, LightingRigParams};
+use crate::optics::studio_rig::RING_LIGHT_COUNT;
 use glam::Vec3;
 
 /// Looks up channel `lambda_nm`'s spectral radiance, in direction `dir`, for a ray that
@@ -16,8 +17,8 @@ use glam::Vec3;
 ///
 /// Takes the `Studio` variant's [`StudioRig`](crate::optics::studio_rig::StudioRig)
 /// pre-built (`studio_rig`) rather than reconstructing it from `light_yaw`/
-/// `light_pitch` on every call -- `accumulate_miss_radiance` and the exit-split probe
-/// build it once per ray and reuse it across all `NUM_CHANNELS` channels. `observer` is
+/// `light_pitch` on every call -- the trace builds it once per ray and both
+/// `accumulate_miss_radiance` and the exit-split probe borrow it. `observer` is
 /// the unit direction from the stone towards the eye (see
 /// [`sample_studio_environment_observed`](super::sample_studio_environment_observed)).
 /// Both are unused for `HdrMap`.
@@ -53,8 +54,11 @@ pub(in super::super) fn fill_backdrop<const N: usize>(
         EnvironmentSource::Studio {
             preset, backdrop, ..
         } if backdrop > 0.0 => {
+            // The preset's Planck constants are wavelength-independent, so they are
+            // resolved once for the whole channel loop; each value is unchanged.
+            let spectrum = preset.illuminant_spectrum();
             for (out, &lambda_nm) in radiance.iter_mut().zip(lambdas) {
-                *out = backdrop * preset.spectral_power(lambda_nm);
+                *out = backdrop * spectrum.power(lambda_nm);
             }
             true
         }
@@ -161,18 +165,70 @@ fn horizon_blend(d: Vec3) -> f32 {
     smoothstep(-0.05, 0.05, d.y)
 }
 
-fn sample_iso_hemisphere(d: Vec3, spec_power: f32, exposure: f32, observer: Vec3) -> f32 {
-    (horizon_blend(d) * observer_visibility(d, observer)) * (spec_power * exposure)
+/// One direction's lighting with every wavelength-independent factor already evaluated.
+///
+/// Only the illuminant's spectral power differs between the channels that look at the
+/// same direction, so the geometry (normalisation, dot products, `powi`s, smoothsteps) is
+/// built once per direction and [`Self::radiance`] finishes each channel with the same
+/// multiplies and fused multiply-adds, in the same order, the one-shot evaluation used.
+#[derive(Clone, Copy)]
+enum DirectionLighting {
+    /// The analytic studio rig: the backdrop term plus the key, fill and ring intensities
+    /// that passed their thresholds, each already scaled by exposure.
+    Rig {
+        /// Backdrop intensity (multiplied by the spectral power, not fused).
+        bg_val: f32,
+        /// Key softbox intensity, `None` when `d` is not in the key's forward hemisphere.
+        softbox: Option<f32>,
+        /// Fill softbox intensity, `None` when `d` is not in the fill's forward hemisphere.
+        fill: Option<f32>,
+        /// Intensities of the ring emitters whose `dot > 0.96`, in ring order.
+        ring: [f32; RING_LIGHT_COUNT],
+        /// How many leading entries of `ring` are live.
+        ring_len: usize,
+    },
+    /// A lit model: a geometric factor scaled by `spec_power * exposure`.
+    Scaled(f32),
 }
 
-fn sample_light_tent(
+impl DirectionLighting {
+    /// The radiance of this direction under an illuminant of relative power `spec_power`.
+    fn radiance(self, spec_power: f32, exposure: f32) -> f32 {
+        match self {
+            Self::Rig {
+                bg_val,
+                softbox,
+                fill,
+                ring,
+                ring_len,
+            } => {
+                let mut radiance = bg_val * spec_power;
+                if let Some(softbox) = softbox {
+                    radiance = softbox.mul_add(spec_power, radiance);
+                }
+                if let Some(fill) = fill {
+                    radiance = fill.mul_add(spec_power, radiance);
+                }
+                for &intensity in &ring[..ring_len] {
+                    radiance = intensity.mul_add(spec_power, radiance);
+                }
+                radiance
+            }
+            Self::Scaled(factor) => factor * (spec_power * exposure),
+        }
+    }
+}
+
+fn iso_hemisphere_lighting(d: Vec3, observer: Vec3) -> DirectionLighting {
+    DirectionLighting::Scaled(horizon_blend(d) * observer_visibility(d, observer))
+}
+
+fn light_tent_lighting(
     d: Vec3,
-    spec_power: f32,
     spot_mult: f32,
-    exposure: f32,
     rig: &crate::optics::studio_rig::StudioRig,
     observer: Vec3,
-) -> f32 {
+) -> DirectionLighting {
     let horizon = horizon_blend(d);
     // Tent walls: 0.14 at the girdle plane rising to 0.22 at the zenith -- middle grey
     // after the ACES curve, so a facet that sees nothing but the tent is grey, not
@@ -193,16 +249,14 @@ fn sample_light_tent(
         smoothstep(SPARK_OUTER_COS, SPARK_INNER_COS, d.dot(rig.fill_dir)) * (5.0 * spot_mult);
     let above = ((walls + key) + spark) * (horizon * observer_visibility(d, observer));
     let ground = 0.02 * (1.0 - horizon);
-    (above + ground) * (spec_power * exposure)
+    DirectionLighting::Scaled(above + ground)
 }
 
-fn sample_daylight_dome(
+fn daylight_dome_lighting(
     d: Vec3,
-    spec_power: f32,
-    exposure: f32,
     rig: &crate::optics::studio_rig::StudioRig,
     observer: Vec3,
-) -> f32 {
+) -> DirectionLighting {
     let horizon = horizon_blend(d);
     let sun_dot = d.dot(rig.key_dir);
     // A clear sky is brightest at the horizon and around the sun, darkest at the zenith.
@@ -215,55 +269,78 @@ fn sample_daylight_dome(
     let sun = smoothstep(SUN_OUTER_COS, SUN_INNER_COS, sun_dot) * 10.0;
     let above = ((sky + aureole) + sun) * (horizon * observer_visibility(d, observer));
     let ground = 0.04 * (1.0 - horizon);
-    (above + ground) * (spec_power * exposure)
+    DirectionLighting::Scaled(above + ground)
 }
 
-fn sample_studio_rig(
+fn studio_rig_lighting(
     d: Vec3,
-    spec_power: f32,
     spot_mult: f32,
     exposure: f32,
     rig: &crate::optics::studio_rig::StudioRig,
-) -> f32 {
+) -> DirectionLighting {
     // 1. Ambient luxury studio backdrop (pure neutral dark charcoal velvet)
     let bg_val = 0.012f32.mul_add(d.y.mul_add(0.5, 0.5), 0.015).max(0.005) * exposure;
-    let mut radiance = bg_val * spec_power;
 
     // 2. Main Key Softbox Light
     let key_dot = d.dot(rig.key_dir).max(0.0);
-    if key_dot > 0.0 {
-        let softbox = key_dot.powi(28) * 12.0 * spot_mult * exposure;
-        radiance = softbox.mul_add(spec_power, radiance);
-    }
+    let softbox = (key_dot > 0.0).then(|| key_dot.powi(28) * 12.0 * spot_mult * exposure);
 
     // 3. Fill Softbox Light (side reflector offset by 140 deg)
     let fill_dot = d.dot(rig.fill_dir).max(0.0);
-    if fill_dot > 0.0 {
-        let fill = fill_dot.powi(18) * 4.5 * exposure;
-        radiance = fill.mul_add(spec_power, radiance);
-    }
+    let fill = (fill_dot > 0.0).then(|| fill_dot.powi(18) * 4.5 * exposure);
 
     // 4. Circular Ring Scintillation Lights (16 sparkling pinpoint sources rotating with lighting rig)
+    let mut ring = [0.0f32; RING_LIGHT_COUNT];
+    let mut ring_len = 0;
     for ring_dir in rig.ring_dirs {
         let ring_dot = d.dot(ring_dir).max(0.0);
         if ring_dot > 0.96 {
             let spark = (ring_dot - 0.96) / 0.04;
-            let intensity = spark.powi(6) * 22.0 * spot_mult * exposure;
-            radiance = intensity.mul_add(spec_power, radiance);
+            ring[ring_len] = spark.powi(6) * 22.0 * spot_mult * exposure;
+            ring_len += 1;
         }
     }
 
-    radiance
+    DirectionLighting::Rig {
+        bg_val,
+        softbox,
+        fill,
+        ring,
+        ring_len,
+    }
 }
 
+/// Evaluates `lighting_preset`'s wavelength-independent lighting of `dir` once.
+fn direction_lighting(
+    dir: Vec3,
+    lighting_preset: LightingPreset,
+    exposure: f32,
+    rig: &crate::optics::studio_rig::StudioRig,
+    observer: Vec3,
+) -> DirectionLighting {
+    let d = dir.normalize();
+    let LightingRigParams { spot_mult, .. } = lighting_preset.params();
+    match lighting_preset.model() {
+        LightingModel::Studio => studio_rig_lighting(d, spot_mult, exposure, rig),
+        LightingModel::IsoHemisphere => iso_hemisphere_lighting(d, observer),
+        LightingModel::LightTent => light_tent_lighting(d, spot_mult, rig, observer),
+        LightingModel::DaylightDome => daylight_dome_lighting(d, rig, observer),
+    }
+}
+
+/// Radiance along `dir` for a pre-built [`StudioRig`](crate::optics::studio_rig::StudioRig).
+///
 /// The rig-independent body of
 /// [`sample_studio_environment_observed`](super::sample_studio_environment_observed):
 /// identical arithmetic, in the identical order, just reading `key_dir`/`fill_dir`/
 /// `ring_dirs`/`sin_light_pitch` off an already-built `rig` instead of constructing one
 /// from `(light_yaw, light_pitch)` itself. Dispatches on the preset's [`LightingModel`];
 /// the `Studio` arm is the original rig body, untouched.
+///
+/// The entry point for callers that look up many directions under one light pose: build
+/// the [`StudioRig`](crate::optics::studio_rig::StudioRig) once and pass it to every call.
 #[must_use]
-pub(super) fn sample_studio_environment_with_rig(
+pub fn sample_studio_environment_with_rig(
     dir: Vec3,
     lambda_nm: f32,
     lighting_preset: LightingPreset,
@@ -271,17 +348,48 @@ pub(super) fn sample_studio_environment_with_rig(
     rig: &crate::optics::studio_rig::StudioRig,
     observer: Vec3,
 ) -> f32 {
-    let d = dir.normalize();
+    direction_lighting(dir, lighting_preset, exposure, rig, observer)
+        .radiance(lighting_preset.spectral_power(lambda_nm), exposure)
+}
 
-    let LightingRigParams { spot_mult, .. } = lighting_preset.params();
-    let spec_power = lighting_preset.spectral_power(lambda_nm);
+/// [`sample_studio_environment_with_rig`] for every wavelength in `lambdas` looking along
+/// the same `dir`: the direction's geometry and the preset's Planck constants are
+/// evaluated once, then each channel only applies its own spectral power. Element `k` is
+/// bit-identical to `sample_studio_environment_with_rig(dir, lambdas[k], ..)`, since the
+/// hoisted terms never depend on the wavelength.
+#[must_use]
+fn sample_studio_environment_channels<const N: usize>(
+    dir: Vec3,
+    lambdas: &[f32; N],
+    lighting_preset: LightingPreset,
+    exposure: f32,
+    rig: &crate::optics::studio_rig::StudioRig,
+    observer: Vec3,
+) -> [f32; N] {
+    let lighting = direction_lighting(dir, lighting_preset, exposure, rig, observer);
+    let spectrum = lighting_preset.illuminant_spectrum();
+    std::array::from_fn(|k| lighting.radiance(spectrum.power(lambdas[k]), exposure))
+}
 
-    match lighting_preset.model() {
-        LightingModel::Studio => sample_studio_rig(d, spec_power, spot_mult, exposure, rig),
-        LightingModel::IsoHemisphere => sample_iso_hemisphere(d, spec_power, exposure, observer),
-        LightingModel::LightTent => {
-            sample_light_tent(d, spec_power, spot_mult, exposure, rig, observer)
+/// [`sample_environment_channel`] for every wavelength in `lambdas` looking along the same
+/// `dir` -- the escaped-ray lookup, where all channels share the exit direction. Element
+/// `k` is bit-identical to `sample_environment_channel(environment, dir, lambdas[k], ..)`.
+#[inline]
+pub(in super::super) fn sample_environment_channels<const N: usize>(
+    environment: EnvironmentSource<'_>,
+    dir: Vec3,
+    lambdas: &[f32; N],
+    studio_rig: Option<&crate::optics::studio_rig::StudioRig>,
+    observer: Vec3,
+) -> [f32; N] {
+    match environment {
+        EnvironmentSource::Studio {
+            preset, exposure, ..
+        } => {
+            let rig = studio_rig
+                .expect("sample_environment_channels: Studio environment needs a pre-built rig");
+            sample_studio_environment_channels(dir, lambdas, preset, exposure, rig, observer)
         }
-        LightingModel::DaylightDome => sample_daylight_dome(d, spec_power, exposure, rig, observer),
+        EnvironmentSource::HdrMap(map) => std::array::from_fn(|k| map.radiance_at(dir, lambdas[k])),
     }
 }

@@ -52,6 +52,7 @@ fn gate_1_yield_and_carat_weight_match_a_hand_calculation() {
             name: Some("Diamond".to_string()),
             specific_gravity_override: None,
             refractive_index_override: None,
+            body_colour_override: None,
         },
     );
     let solved = design.solve().expect("single anchored tier must solve");
@@ -90,6 +91,7 @@ fn gate_2_volumetric_yield_is_independent_of_specific_gravity() {
             name: Some("Diamond".to_string()),
             specific_gravity_override: None,
             refractive_index_override: None,
+            body_colour_override: None,
         },
     );
     let heavy_override = box_design(
@@ -98,6 +100,7 @@ fn gate_2_volumetric_yield_is_independent_of_specific_gravity() {
             name: None,
             specific_gravity_override: Some(19.3), // arbitrary, e.g. gold-like
             refractive_index_override: None,
+            body_colour_override: None,
         },
     );
 
@@ -248,6 +251,43 @@ fn exceeds_preform_honours_the_preforms_y_offset() {
     assert!(
         !fit.exceeds_width() && !fit.exceeds_length() && !fit.exceeds_height(),
         "a pure vertical shift must not change any extents comparison: {fit:?}"
+    );
+}
+
+/// A design whose own facets-alone width, computed independently via the
+/// tetrahedral half-angle's own trig (not by re-measuring the design and
+/// comparing it against itself), exactly matches the preform's must not be
+/// reported as exceeding it. Before the relative-epsilon fix, `exceeds_preform`'s
+/// own `f32`-narrowing (`GpuFacetPlane`) measurement noise at this design's
+/// scale (~1.67 mast units) could exceed the old FIXED `1e-7` slack, reading a
+/// stone that measures EXACTLY its own preform's width as bigger than it.
+#[test]
+fn a_design_whose_own_width_exactly_matches_the_preform_is_not_reported_as_exceeding() {
+    let schedule = indicatrix_formats::asc::parse_asc(
+        "GemCad 4.41\ng 96 48.0\ny 4 n\nI 1.54\n\
+         H PC 11.020  Octahedron\n\
+         a 54.74 0.68041 0 72 48 24\n\
+         a -54.74 0.68041 0 24 48 72\n",
+    )
+    .expect("fixture must parse");
+
+    // Same trig `gate_4_a_design_larger_than_its_preform_is_flagged`'s own doc
+    // comment works out by hand: at the tetrahedral half-angle 54.74deg, mast
+    // 0.68041's own width/length axis is `2 * mast / sin(angle)`. A generous
+    // depth (4.0) keeps height comfortably inside its own preform, so only the
+    // width/length boundary is under test.
+    let mast = 0.68041_f64;
+    let half_angle_deg = 54.74_f64;
+    let width = 2.0 * mast / half_angle_deg.to_radians().sin();
+
+    let exact_preform = PreformSpec::block(width / 2.0, 1.0, 4.0);
+    let design = Design::from_asc_schedule(exact_preform, &schedule);
+    let solved = design.solve().expect("every tier is pinned, must solve");
+    assert_eq!(
+        exceeds_preform(&design, &solved),
+        None,
+        "a design's own facets-alone width, computed independently from its mast/angle, must \
+         not read as exceeding a preform sized to exactly match it"
     );
 }
 

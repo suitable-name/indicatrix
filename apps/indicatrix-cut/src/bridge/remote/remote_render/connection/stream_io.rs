@@ -5,7 +5,7 @@
 use super::super::types::{RemoteStream, RemoteUpdate, StreamEventFrame};
 use indicatrix_net::{
     client::ApplyOutcome,
-    framing::{self, LEN_PREFIX_BYTES, MAX_FRAME_LEN},
+    framing::{self, LEN_PREFIX_BYTES, MAX_CONTROL_FRAME_LEN, MAX_FRAME_LEN},
     messages::{ErrorMsg, NetError, StreamEvent, error_codes},
 };
 use std::io::Read;
@@ -106,7 +106,8 @@ pub(super) fn worker_error_update(request_id: u32, error: &ErrorMsg) -> RemoteUp
 /// land BEFORE any byte of a new frame arrives, never mid-frame).
 ///
 /// Once a byte is observed, the rest of that frame (the remaining length-prefix bytes,
-/// plus the whole payload) is read under a bounded [`super::FRAME_REMAINDER_TIMEOUT`]
+/// plus the whole payload, capped at `MAX_CONTROL_FRAME_LEN` since this reads an event
+/// header) is read under a bounded [`super::FRAME_REMAINDER_TIMEOUT`]
 /// rather than an unbounded blocking read -- a timeout there is a protocol error
 /// (surfaced as an `Err`, not `Ok(None)`): a frame already in flight never finishing
 /// arriving is itself the anomaly, not "nothing new yet". See
@@ -146,22 +147,8 @@ fn try_read_one_frame(
         .sock
         .set_read_timeout(Some(super::FRAME_REMAINDER_TIMEOUT))
         .map_err(|e| NetError::Framing(framing::FramingError::Io(e)))?;
-    if n < len_bytes.len() {
-        stream
-            .read_exact(&mut len_bytes[n..])
-            .map_err(|e| NetError::Framing(framing::FramingError::Io(e)))?;
-    }
-    let len = u32::from_le_bytes(len_bytes);
-    if len > MAX_FRAME_LEN {
-        return Err(NetError::Framing(framing::FramingError::FrameTooLarge {
-            len,
-            max: MAX_FRAME_LEN,
-        }));
-    }
-    let mut payload = vec![0u8; len as usize];
-    stream
-        .read_exact(&mut payload)
-        .map_err(|e| NetError::Framing(framing::FramingError::Io(e)))?;
+    let payload = framing::read_frame_continuing(stream, &len_bytes[..n], MAX_CONTROL_FRAME_LEN)
+        .map_err(NetError::Framing)?;
     Ok(Some(payload))
 }
 
@@ -180,7 +167,9 @@ pub(super) fn try_read_stream_event(
     let event: StreamEvent = postcard::from_bytes(&header_bytes)?;
     let payload = match event.payload_len() {
         Some(expected) => {
-            let bytes = framing::read_frame(stream).map_err(NetError::Framing)?;
+            // The header already declared the payload's length: never accept more.
+            let bytes = framing::read_frame_bounded(stream, expected.min(MAX_FRAME_LEN))
+                .map_err(NetError::Framing)?;
             if bytes.len() as u32 != expected {
                 return Err(NetError::FramePayloadLenMismatch {
                     declared: expected,

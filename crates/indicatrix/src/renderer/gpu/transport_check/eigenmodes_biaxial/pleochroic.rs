@@ -15,6 +15,7 @@ use crate::{
 
 use super::{biaxial_test_directions, biaxial_test_indicatrices};
 
+/// One input case for the biaxial pleochroic check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BiaxialPleochroicCase {
@@ -81,6 +82,7 @@ fn build_biaxial_pleochroic_cases() -> Vec<BiaxialPleochroicCase> {
     cases
 }
 
+/// Runs the biaxial pleochroic check against the CPU reference.
 #[must_use]
 pub fn run_biaxial_pleochroic(
     ctx: &crate::renderer::gpu::GpuContext,

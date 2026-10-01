@@ -7,7 +7,8 @@ authors = { workspace = true }
 description = "Desktop faceting-design editor: library browsing, spectral 3D rendering, material retargeting, and a solid inspection view."
 license = { workspace = true }
 repository = { workspace = true }
-documentation = { workspace = true }
+homepage = { workspace = true }
+documentation = "https://docs.rs/indicatrix-cut"
 keywords = ["gemstone", "faceting", "gui", "slint", "rendering"]
 categories = ["gui", "graphics", "rendering"]
 publish = { workspace = true }
@@ -44,11 +45,23 @@ indicatrix-net = { workspace = true, features = ["render"] }
 # `SampleCursor` (re-exported from `bridge::sample_cursor`): the disjoint sample-range
 # claim point, shared with the render coordinator's lane pool.
 indicatrix-dispatch = { workspace = true }
-# The editor-core crate -- preform, editable cutting schedule, and undo/redo, see
+# The editor-core crate -- preform, editable cutting instructions, and undo/redo, see
 # `indicatrix-cut-core`'s own module doc comment. A plain, non-optional dependency:
 # an ordinary build always wires up the Edit tab, so nothing gates this crate
 # behind a feature.
 indicatrix-cut-core = { workspace = true }
+# The pure-CPU solid rasterizer and 2D faceting diagram (`raster`, `diagram2d`,
+# `facet_map`, `mesh_cache`, `edges_layer`, `pixel_font`, the pure `live_update`
+# replan planner) -- `gui::solid_preview` re-exports every module here at its old
+# paths and keeps only the Slint-facing/threaded half locally; see that module's
+# own doc comment and `indicatrix-solid`'s README.
+indicatrix-solid = { workspace = true }
+# The GUI-free editor core (`EditorSession`, form parsers, plain-struct view models,
+# cutting sheet, Retarget, guide, solve policy) -- `gui::editor` wraps
+# `EditorSession` in its own `EditorState`, maps the view models to its Slint row
+# types, and re-exports the rest at the old module paths; see
+# `indicatrix-editor`'s README.
+indicatrix-editor = { workspace = true }
 glam = { workspace = true }
 # "gif" added alongside the pre-existing "png" for `gui::tilt::video_export::encode`'s
 # animated-GIF fallback when no `ffmpeg` executable is found on PATH to mux an MP4.
@@ -101,15 +114,11 @@ slint = { workspace = true, features = [
     "accessibility",
     "compat-1-2",
     "system-tray",
-    # The detached Live Render window needs `slint::winit_030::WinitWindowAccessor` to reach
-    # the underlying `winit::window::Window` and call `set_window_level` -- there is no
-    # always-on-top call in Slint's own public `slint::Window` API (it exposes only
-    # `set_position`/`set_size`/`set_fullscreen`/`set_maximized`/`set_minimized`/
-    # `set_rendering_notifier`). This feature is additive on top of `backend-default`
-    # above (it also implies `backend-winit`, already what `backend-default` resolves
-    # to on desktop) -- see `gui::detached_render`'s module doc comment for the actual
-    # call site and its ordering caveat (the accessor only succeeds once the event loop
-    # is running).
+    # `gui::window_sizing` needs `slint::winit_030::WinitWindowAccessor` to reach the
+    # underlying `winit::window::Window` (monitor size for the initial window fit) --
+    # Slint's own public `slint::Window` API does not expose it. This feature is
+    # additive on top of `backend-default` above (it also implies `backend-winit`,
+    # already what `backend-default` resolves to on desktop).
     "unstable-winit-030",
 ] }
 # Settings-persistence-only dependency. Also used by
@@ -141,6 +150,11 @@ gpu = ["indicatrix/gpu"]
 
 [build-dependencies]
 slint-build = { workspace = true }
+# Unconditional on purpose: a `[target.'cfg(windows)'.build-dependencies]` gate follows
+# the platform the build script is evaluated for, so a Windows binary cross-compiled
+# from Linux lost its icon. `build.rs` decides at run time from `CARGO_CFG_TARGET_OS`
+# whether to embed anything; `winresource` compiles on every host.
+winresource = { workspace = true }
 
 [dev-dependencies]
 # Test-only: `bridge::library_mirror`'s tests build a deterministic stand-in for the
@@ -152,6 +166,3 @@ sha2 = { workspace = true }
 
 [lints]
 workspace = true
-
-[target.'cfg(windows)'.build-dependencies]
-winresource = { workspace = true }

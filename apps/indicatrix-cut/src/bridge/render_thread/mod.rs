@@ -1,10 +1,11 @@
 //! The live-viewport render thread: `RenderContext` (the shared, live-mutated render
 //! configuration the GUI writes into), the progressive-accumulation loop that reads a
 //! per-frame snapshot from it, and everything that loop dispatches to -- the CPU
-//! scanline tracer, the GPU backend wrapper, and the gemological metrics cache.
+//! scanline tracer, the GPU backend wrapper, and the gemological metrics worker.
 //!
 //! Split into submodules: [`context`] (the `RenderContext`/`FrameInputs` state, plus
-//! material resolution), [`metrics`] (gemological-metrics cache), [`scanline`] (CPU
+//! material resolution), [`metrics`] (gemological-metrics cache), [`metrics_worker`]
+//! (the thread that evaluates the metrics off this loop), [`scanline`] (CPU
 //! scanline tracer), [`gpu_backend`] (GPU backend wrapper and frame dispatch),
 //! [`denoise`] (denoise + tone-map, pure functions), [`display_thread`] (the dedicated
 //! thread that calls them, off the trace loop -- see its own doc comment for the
@@ -58,6 +59,7 @@ mod gpu_backend;
 mod live_split;
 mod local_preview;
 mod metrics;
+mod metrics_worker;
 mod redraw_gate;
 mod scanline;
 
@@ -76,16 +78,16 @@ use crate::bridge::{
     sample_cursor::LiveEpoch,
 };
 use context::{FrameInputs, resolve_material_and_quality, snapshot_frame_inputs};
-use display_thread::{FrameMetricsSnapshot, spawn_display_thread};
+use display_thread::spawn_display_thread;
 use glam::Vec3;
 use gpu_backend::{
     BackendFrame, FrameOutputs, HybridPacing, ViewportGpu, accumulate_frame_samples,
 };
 use indicatrix::optics::{
     materials::GemMaterial,
-    raytracer::{Camera, EnvironmentSource, FacetFinish},
+    raytracer::{Camera, DEFAULT_FOV_DEG, EnvironmentSource, FacetFinish},
 };
-use metrics::{MetricsCache, compute_or_reuse_metrics};
+use metrics_worker::{MetricsWorker, push_if_fresh};
 use slint::Weak;
 use std::{
     sync::{Arc, Mutex},
@@ -111,24 +113,40 @@ const DENOISE_MIN_INTERVAL: Duration = Duration::from_millis(120);
 /// the 100ms-1s range, so 5s is generous for a healthy display thread.
 const DISPLAY_BUSY_WAIT_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Target length of one loop iteration while the picture is being shown or the camera is
+/// moving (~60 FPS).
+///
+/// # Pacing rule
+///
+/// The loop sleeps only the *remainder* of this interval, measured from the start of the
+/// iteration, and only when the iteration either handled a moving camera or had a display
+/// cycle due (`denoise_due` in the loop body). An iteration that is merely adding samples
+/// to a still picture and has nothing to show does not sleep at all: the GPU is fed the
+/// next chunk immediately instead of idling through readback, hand-off and a fixed sleep.
+/// The idle states keep their own sleeps (converged, waiting on the remote lane,
+/// suspended), so the loop never spins when there is nothing to trace.
+const FRAME_PACE: Duration = Duration::from_millis(16);
+
 use frame_helpers::{
-    AccumulationBuffers, FrameActivityFlags, SuspensionFlags, TraceActivitySink,
+    AccumulationBuffers, FrameActivityFlags, SuspensionFlags, TraceActivitySink, pacing_sleep,
     push_metrics_to_ui, remote_suspends_local, resolve_remote_ownership, should_combine_remote,
     update_accumulation_state,
 };
 
+/// Spawns the live render thread and returns its handle.
 #[expect(
     clippy::too_many_lines,
     reason = "the render worker thread's full loop (resize/dirty handling, sampling, \
               progressive accumulation, UI callbacks); splitting it apart risks changing \
               GUI render-thread behaviour verifiable only by launching the app"
 )]
-pub fn spawn_render_thread<T, F, M, S>(
+pub fn spawn_render_thread<T, F, M, S, R>(
     ui_weak: Weak<T>,
     ctx: Arc<Mutex<RenderContext>>,
     update_image: F,
     update_metrics: M,
     update_gpu_status: S,
+    update_trace_refusal: R,
 ) where
     // `TraceActivitySink` lets this function stay generic over `T`.
     T: TraceActivitySink + 'static,
@@ -140,6 +158,10 @@ pub fn spawn_render_thread<T, F, M, S>(
     // Callback to push GPU status messages to the UI. `slint::SharedString` must
     // outlive the `upgrade_in_event_loop` closure.
     S: Fn(&T, slint::SharedString) + Send + 'static + Clone,
+    // Callback to push `RenderContext::material_unresolved`'s cutter-facing reason (or
+    // an empty string once resolved) to `ViewportModel.trace_refusal` -- see this
+    // function's own `last_trace_refusal` doc comment for when it fires.
+    R: Fn(&T, slint::SharedString) + Send + 'static + Clone,
 {
     thread::spawn(move || {
         let mut last_width = 0;
@@ -165,13 +187,24 @@ pub fn spawn_render_thread<T, F, M, S>(
         // `DENOISE_MIN_INTERVAL`. `None` forces an immediate send (first frame, or any
         // `dirty`/dimension-change reset).
         let mut last_denoise_at: Option<Instant> = None;
-        let mut metrics_cache: Option<MetricsCache> = None;
+        // Evaluates the gemological metrics and angular profile on its own thread: this
+        // loop only queues a request when the inputs change and shows the last published
+        // values meanwhile (see `metrics_worker`).
+        let mut metrics_worker = MetricsWorker::spawn();
+        // Version of the published metrics most recently sent to the UI by any path, so
+        // the idle paths push a newly published evaluation exactly once.
+        let mut pushed_metrics_version: u64 = 0;
         // Acquired once, off the frame loop: adapter acquisition and shader compilation
         // are worth doing exactly once. Declines on a machine with no usable GPU,
         // which is not an error -- see `ViewportGpu`.
         let mut gpu_backend = ViewportGpu::acquire();
         // Last GPU status message pushed to UI, cached to avoid redundant writes.
         let mut last_gpu_status: Option<String> = None;
+        // Last material-refusal reason pushed to `ViewportModel.trace_refusal`, cached
+        // to avoid redundant writes -- same convention as `last_gpu_status`. `None`
+        // means "not yet pushed anything", so the very first frame (whether or not it
+        // starts refused) always sends its real state once.
+        let mut last_trace_refusal: Option<String> = None;
         let mut hybrid_pacing = HybridPacing::new();
         // Recomputed only when the active design's geometry actually changes.
         let mut girdle_cache = GirdleFinishCache::new();
@@ -189,6 +222,7 @@ pub fn spawn_render_thread<T, F, M, S>(
         let mut prev_remote_active = false;
 
         loop {
+            let iteration_start = Instant::now();
             let FrameInputs {
                 width,
                 height,
@@ -217,6 +251,7 @@ pub fn spawn_render_thread<T, F, M, S>(
                 paused,
                 tab_visible,
                 denoise_enabled,
+                redisplay_requested,
                 remote_active: remote_active_snapshot,
                 live_epoch: live_epoch_snapshot,
                 export_active,
@@ -361,16 +396,31 @@ pub fn spawn_render_thread<T, F, M, S>(
                 export_active,
                 material_unresolved: material_unresolved.is_some(),
             };
+
+            // Pushed unconditionally (not only in the suspended branch below) so the
+            // banner clears the instant the design resolves again, on the very frame
+            // tracing resumes -- not one suspended-branch iteration later. Compared as
+            // `&str` so an unchanged refusal (or an unchanged healthy `None`) costs one
+            // comparison, not a clone, on every iteration -- same convention as
+            // `last_gpu_status` just above.
+            if material_unresolved.as_deref() != last_trace_refusal.as_deref() {
+                last_trace_refusal.clone_from(&material_unresolved);
+                let text: slint::SharedString = last_trace_refusal.as_deref().unwrap_or("").into();
+                let update_trace_refusal = update_trace_refusal.clone();
+                let _ = ui_weak_metrics_only.upgrade_in_event_loop(move |ui| {
+                    update_trace_refusal(&ui, text);
+                });
+            }
+
             if suspension.tracing_suspended() {
                 // An invisible tab alone (the Edit tab's default
                 // Solid view mode) must not also freeze the gemological HUD/tilt-dialog
                 // metrics while the cutter keeps editing -- only a hard suspend does
-                // (see `SuspensionFlags::metrics_suspended`). `compute_or_reuse_metrics`
-                // is a cache hit whenever planes/material/pose haven't moved since the
-                // last frame that computed them, so this costs nothing extra in the
-                // common case. Pushed directly via `push_metrics_to_ui`, bypassing
-                // `display` entirely, so nothing pays for a denoise+tonemap cycle for an
-                // image nobody can see.
+                // (see `SuspensionFlags::metrics_suspended`). The worker request is a
+                // no-op whenever planes/material/pose haven't moved since the last one,
+                // so this costs nothing extra in the common case. Pushed directly via
+                // `push_metrics_to_ui`, bypassing `display` entirely, so nothing pays for
+                // a denoise+tonemap cycle for an image nobody can see.
                 if !suspension.metrics_suspended() {
                     let (current_mat, _spp) = resolve_material_and_quality(
                         &MaterialSources {
@@ -389,26 +439,19 @@ pub fn spawn_render_thread<T, F, M, S>(
                         &active_planes,
                         &mut stone_width_cache,
                     );
-                    let (metrics, graph_brilliance, graph_extinction, graph_windowing) =
-                        compute_or_reuse_metrics(
-                            &mut metrics_cache,
-                            &active_planes,
-                            &current_mat,
-                            yaw,
-                            pitch,
-                            light_yaw,
-                            light_pitch,
-                        );
+                    metrics_worker.request(
+                        &active_planes,
+                        &current_mat,
+                        [yaw, pitch, light_yaw, light_pitch],
+                        lighting_preset,
+                        env_map.as_ref(),
+                    );
+                    let (version, evaluated) = metrics_worker.latest();
+                    pushed_metrics_version = version;
                     push_metrics_to_ui(
                         &ui_weak_metrics_only,
                         &update_metrics_metrics_only,
-                        FrameMetricsSnapshot {
-                            metrics,
-                            graph_brilliance,
-                            graph_extinction,
-                            graph_windowing,
-                            cam_pitch_deg: pitch.to_degrees(),
-                        },
+                        evaluated.snapshot(pitch.to_degrees()),
                     );
                 }
                 thread::sleep(std::time::Duration::from_millis(100));
@@ -433,6 +476,22 @@ pub fn spawn_render_thread<T, F, M, S>(
                 &mut stone_width_cache,
             );
 
+            // Optical metrics: analytical raytracing from the camera PoV accounting for
+            // light direction. Expensive (single-threaded, twenty evaluations after a
+            // light/cut/material change), and dependent only on (active_planes,
+            // current_mat, yaw, pitch, light_yaw, light_pitch, lighting_preset, env_map),
+            // so it runs on the metrics worker: this only queues a request when one of
+            // those moved, and the frame shows the last published values until the
+            // debounced evaluation lands.
+            metrics_worker.request(
+                &active_planes,
+                &current_mat,
+                [yaw, pitch, light_yaw, light_pitch],
+                lighting_preset,
+                env_map.as_ref(),
+            );
+            let cam_pitch_deg = pitch.to_degrees();
+
             // Enough samples accumulated in still mode: sleep to conserve power.
             // Combined against remote's contribution too (`0` whenever not combining) --
             // once local plus remote reach the target, further local tracing is wasted.
@@ -450,7 +509,22 @@ pub fn spawn_render_thread<T, F, M, S>(
             let remote_advanced =
                 live_epoch.is_some() && remote_samples_done_now > last_displayed_remote_samples;
             let local_converged = accum_samples + remote_samples_done_now >= target_samples;
-            if local_converged && !dirty && !remote_advanced {
+            // `redisplay_requested` (the denoise toggle) is treated exactly like
+            // `remote_advanced` here -- see `RenderContext::redisplay_requested`'s own
+            // doc comment: it must fall through to a display cycle below even though
+            // nothing new was traced, rather than taking this early sleep and never
+            // re-tonemapping the already-converged buffer at all.
+            if local_converged && !dirty && !remote_advanced && !redisplay_requested {
+                // No display cycle will carry a metrics evaluation that finished after
+                // the converged picture was shown, so send it on its own.
+                push_if_fresh(
+                    &metrics_worker,
+                    &mut pushed_metrics_version,
+                    !display.busy(),
+                    &ui_weak_metrics_only,
+                    &update_metrics_metrics_only,
+                    cam_pitch_deg,
+                );
                 thread::sleep(std::time::Duration::from_millis(60));
                 continue;
             }
@@ -463,9 +537,21 @@ pub fn spawn_render_thread<T, F, M, S>(
             } else {
                 live_split::local_frame_claim(live_epoch.as_deref(), accum_samples, spp)
             };
-            if local_claim.is_none() && !remote_advanced && !accumulation_reset {
+            if local_claim.is_none()
+                && !remote_advanced
+                && !redisplay_requested
+                && !accumulation_reset
+            {
                 // Waiting on the remote chunk that holds the last unclaimed indices --
                 // nothing new to trace or show yet.
+                push_if_fresh(
+                    &metrics_worker,
+                    &mut pushed_metrics_version,
+                    !display.busy(),
+                    &ui_weak_metrics_only,
+                    &update_metrics_metrics_only,
+                    cam_pitch_deg,
+                );
                 thread::sleep(std::time::Duration::from_millis(16));
                 continue;
             }
@@ -473,23 +559,7 @@ pub fn spawn_render_thread<T, F, M, S>(
                 accum_samples += count;
             }
 
-            // Optical metrics: analytical raytracing from the camera PoV accounting for
-            // light direction. Expensive (single-threaded); result depends only on
-            // (active_planes, current_mat, yaw, pitch, light_yaw, light_pitch), which
-            // don't change between accumulation samples, so recompute only when they do.
-            let (metrics, graph_brilliance, graph_extinction, graph_windowing) =
-                compute_or_reuse_metrics(
-                    &mut metrics_cache,
-                    &active_planes,
-                    &current_mat,
-                    yaw,
-                    pitch,
-                    light_yaw,
-                    light_pitch,
-                );
-            let cam_pitch_deg = pitch.to_degrees();
-
-            let camera = Camera::new(yaw, pitch, distance, 42.0);
+            let camera = Camera::new(yaw, pitch, distance, DEFAULT_FOV_DEG);
 
             let current_sample_count = accum_samples;
 
@@ -646,6 +716,7 @@ pub fn spawn_render_thread<T, F, M, S>(
                             (&combined_scratch, current_sample_count + done)
                         });
 
+                    let (metrics_version, evaluated) = metrics_worker.latest();
                     let mut work = display.reclaim();
                     work.fill(
                         display.current_generation(),
@@ -659,13 +730,7 @@ pub fn spawn_render_thread<T, F, M, S>(
                             first_hit_normal: &first_hit_normal,
                             first_hit_facet_id: &first_hit_facet_id,
                         },
-                        FrameMetricsSnapshot {
-                            metrics,
-                            graph_brilliance,
-                            graph_extinction,
-                            graph_windowing,
-                            cam_pitch_deg,
-                        },
+                        evaluated.snapshot(cam_pitch_deg),
                         // `push_frame_to_ui`'s own activity start/finish reads
                         // these straight off this cycle's already-computed
                         // `camera_moving`/`converged_now` -- see
@@ -676,12 +741,21 @@ pub fn spawn_render_thread<T, F, M, S>(
                         },
                     );
                     display.send(work);
+                    pushed_metrics_version = metrics_version;
                     last_denoise_at = Some(Instant::now());
                 }
             }
 
-            // Target smooth interactive framerate ~30-60 FPS
-            thread::sleep(std::time::Duration::from_millis(16));
+            // Pacing -- see `FRAME_PACE`: top up to the frame interval only while the
+            // camera moves or a display cycle was due; otherwise go straight to the next
+            // chunk.
+            if let Some(rest) = pacing_sleep(
+                camera_moving || denoise_due,
+                iteration_start.elapsed(),
+                FRAME_PACE,
+            ) {
+                thread::sleep(rest);
+            }
         }
     });
 }

@@ -77,7 +77,7 @@ export component CuttingTableView inherits Rectangle {
             }
 
             Button {
-                text: "Copy Schedule";
+                text: "Copy Instructions";
                 icon: @image-url("../icons/clipboard.svg");
                 colorize-icon: true;
                 clicked => { root.copy_table(); }
@@ -112,7 +112,7 @@ export component CuttingTableView inherits Rectangle {
             vertical-stretch: 1;
 
             Image { source: @image-url("../icons/ruler.svg"); colorize: Theme.text-muted; width: 32px; height: 32px; horizontal-alignment: center; }
-            Text { text: "No cutting schedule recorded for this diagram"; font-size: 13px; color: Theme.text-muted; horizontal-alignment: center; }
+            Text { text: "No cutting instructions recorded for this diagram"; font-size: 13px; color: Theme.text-muted; horizontal-alignment: center; }
         }
 
         if root.angles.length > 0: ScrollView {

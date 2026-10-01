@@ -19,6 +19,7 @@ use super::{SHADER_SRC, UlpAccumulator, UlpCheckResult};
 // Compared against calling the REAL CPU function directly.
 // ---------------------------------------------------------------------------------
 
+/// One input case for the hg phase check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct HgPhaseCase {
@@ -179,6 +180,7 @@ fn cpu_hg_phase(c: &HgPhaseCase) -> f32 {
     henyey_greenstein_phase(c.cos_theta, c.g)
 }
 
+/// Runs the hg phase check against the CPU reference.
 #[must_use]
 pub fn run_hg_phase(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<HgPhaseCase> {
     let cases = build_hg_phase_cases();
@@ -244,6 +246,7 @@ pub fn run_hg_phase(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<Hg
 // Compared against calling the REAL CPU function directly.
 // ---------------------------------------------------------------------------------
 
+/// One input case for the hg sample check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct HgSampleCase {
@@ -329,6 +332,7 @@ fn cpu_hg_sample(c: &HgSampleCase) -> [f32; 3] {
     sample_henyey_greenstein_direction(c.u1, c.u2, c.g, Vec3::from_array(c.forward)).to_array()
 }
 
+/// Runs the hg sample check against the CPU reference.
 #[must_use]
 pub fn run_hg_sample(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<HgSampleCase> {
     let cases = build_hg_sample_cases();
@@ -389,6 +393,7 @@ pub fn run_hg_sample(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<H
 // 1-5) this pins.
 // ---------------------------------------------------------------------------------
 
+/// One input case for the scatter or extinguish check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ScatterOrExtinguishCase {
@@ -528,6 +533,7 @@ fn cpu_scatter_or_extinguish(
     (scattered, t_free, new_dir, stokes_out, path_pdf)
 }
 
+/// Runs the scatter or extinguish check against the CPU reference.
 #[must_use]
 pub fn run_scatter_or_extinguish(
     ctx: &crate::renderer::gpu::GpuContext,

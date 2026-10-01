@@ -1,0 +1,120 @@
+// The state behind the Design dock's tier table, command bar and status panel
+// (`src/editor/table.rs` pushes into it and wires its callbacks). Named in
+// `app.slint`'s export block, which is what makes each of these a Rust type.
+
+// One tier-table row: field for field `indicatrix_editor::view_model::TierRow` (the
+// desktop's `EditorTierItem`), so the Rust side maps it with a plain copy.
+export struct TierRowData {
+    // The tier's position in the design.
+    index: int,
+    // Two decimals / full precision (what the inline editor is seeded from).
+    angle-deg: string,
+    angle-full: string,
+    name: string,
+    indices: string,
+    indices-full: string,
+    // 0 meet existing, 1 meet named, 2 scale reference, 3/4/5 depth / girdle / table target.
+    constraint-kind: int,
+    constraint-text: string,
+    mast: string,
+    mast-mm: string,
+    mast-full: string,
+    strategy: string,
+    strategy-is-uncertain: bool,
+    strategy-detail: string,
+    needs-anchor: bool,
+    imported-meet-text: string,
+    orbit-status: string,
+    orbit-incomplete: bool,
+    is-detached: bool,
+    // "Crown" / "Pavilion" / "Girdle".
+    block: string,
+    margin-text: string,
+    // 0 safe, 1 marginal, 2 windows, -1 nothing to show.
+    risk-level: int,
+    meet-partners-text: string,
+    warning-text: string,
+    multi-selected: bool,
+    proposed-angle: string,
+}
+
+// One manufacturability warning and the tier it is about (-1: none).
+export struct WarningLine {
+    tier: int,
+    text: string,
+}
+
+export global TierTableModel {
+    // -- Pushed by `editor::table` ------------------------------------------------------
+    in property <[TierRowData]> rows;
+    // The selected tier (`WebApp::selected_tier`), -1 for none; also the keyboard cursor.
+    in property <int> selected-index: -1;
+    // Size of the Ctrl/Shift multi-selection (`EditorSession::multi_selected`).
+    in property <int> multi-count: 0;
+    // "none", "solving", "solved", "stale", "failed" or "problem" (solved, but the solid
+    // does not close or is unbounded).
+    in property <string> status-kind: "none";
+    in property <string> status-text: "";
+    in property <string> status-detail: "";
+    in property <[WarningLine]> warnings;
+    in property <string> undo-label: "";
+    in property <string> redo-label: "";
+    // The quick-add form's last error, "" when the last add went through.
+    in property <string> quick-add-error: "";
+
+    // -- Local UI state ------------------------------------------------------------------
+    // The auto-solve budget in ms (`WebApp::auto_solve_budget_ms`): after an edit the design
+    // is re-solved automatically while its own last solve took less than this; 0 is off.
+    // Pushed from Rust; the command bar's combo (Off, 150 ms, 300 ms, 1 s, 3 s) sets it.
+    in property <int> auto-solve-budget-ms: 300;
+    in-out property <string> filter-text: "";
+    // The "Select" checkbox column for multi-select without a modifier key.
+    in-out property <bool> select-mode: false;
+    in-out property <bool> quick-add-open: false;
+    in-out property <bool> steps-open: false;
+    in-out property <bool> warnings-open: false;
+
+    // -- Selection -------------------------------------------------------------------------
+    callback select-tier(int);
+    callback toggle-multi(int);
+    callback select-range(int);
+    callback clear-multi();
+    callback warning-clicked(int);
+
+    // -- Row actions -----------------------------------------------------------------------
+    callback commit-angle(int, string);
+    // (row, delta in degrees)
+    callback nudge(int, float);
+    callback remove-tier(int);
+    callback duplicate-tier(int);
+    // (row, -1 up / +1 down)
+    callback move-tier(int, int);
+    callback toggle-detach(int);
+    callback complete-orbit(int);
+    callback mirror-indices(int);
+    callback adopt(int);
+    callback pin(int);
+    // (row, true: flip to Crown / false: flip to Pavilion) for a facet at 0 degrees.
+    callback flip-block(int, bool);
+    callback add-anchor(int);
+
+    // -- Table / command bar actions ---------------------------------------------------------
+    callback solve();
+    callback set-auto-solve-budget-ms(int);
+    callback delete-selected();
+    callback complete-orbit-selected();
+    callback mirror-indices-selected();
+    callback adopt-all();
+    callback adopt-selected();
+    callback remove-multi();
+    // (name prefix, start angle, step angle, count, indices, anchor)
+    callback generate-steps(string, string, string, int, string, string);
+    // (row, name suffix)
+    callback mirror-to-other-block(int, string);
+    // (angle, meets kind 0/1/2, meets text, name, indices)
+    callback add-tier(string, int, string, string, string);
+    // (preset: 0 Table, 1 Girdle, 2 Culet)
+    callback add-preset(int);
+    // Whether a row matches the filter box (Slint has no substring test).
+    pure callback matches-filter(string, string) -> bool;
+}

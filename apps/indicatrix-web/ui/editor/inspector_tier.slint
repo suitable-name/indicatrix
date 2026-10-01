@@ -1,0 +1,470 @@
+import { Button, ComboBox, LineEdit, ScrollView } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { AppModel } from "../models/app_model.slint";
+import { GuideModel } from "../models/guide_model.slint";
+import { InspectorModel } from "inspector_model.slint";
+import { CriticalAngleBar, FieldLabel, InfoLine, Divider } from "inspector_widgets.slint";
+
+// A red border around a field when the last save's error names it.
+component FieldFrame inherits Rectangle {
+    in property <bool> invalid: false;
+    border-width: root.invalid ? 1px : 0px;
+    border-color: Theme.danger;
+    border-radius: Theme.radius-sm;
+    @children
+}
+
+// The Tier tab's per-tier add / edit form (modelled on the desktop's
+// `editor_inspector/tier_form_tab.slint`). The scratch fields and the dirty tracking live
+// in `InspectorModel`; nothing commits until Save Tier / Add Tier. The button row is
+// pinned outside the scroll view by `Inspector`.
+export component TierFormTab inherits VerticalLayout {
+    // Up / Down step the angle text by 0.1 (Shift 1, Ctrl 0.01), purely as local text:
+    // this form is a staging area.
+    function stepped-angle-text(current: string, shift: bool, ctrl: bool, sign: float) -> string {
+        if shift {
+            return (current.to-float() + sign * 1.0).to-fixed(2);
+        } else if ctrl {
+            return (current.to-float() + sign * 0.01).to-fixed(2);
+        }
+        return (current.to-float() + sign * 0.1).to-fixed(2);
+    }
+    // Retyping a field clears its stale error marker.
+    function clear-field-error(field: string) {
+        if InspectorModel.form-error-field == field {
+            InspectorModel.form-error-field = "";
+            InspectorModel.form-error = "";
+        }
+    }
+
+    property <bool> angle-invalid: Math.abs(InspectorModel.tier-angle.to-float()) > 90
+        || InspectorModel.form-error-field == "angle";
+    property <bool> has-loaded: InspectorModel.loaded-tier-index >= 0;
+    // False while the guided walkthrough locks the tier form: every field and button of
+    // the tab dims and ignores input.
+    property <bool> unlocked: GuideModel.allows-tier-form();
+    // A request from Rust to put the cursor in the Angle field ("+ Add Tier"); the scale
+    // value field answers the same request from its own `init` / `changed` (it only exists
+    // while Meets is not "Unspecified vertex").
+    property <int> focus-tick: InspectorModel.focus-serial;
+
+    changed focus-tick => {
+        if InspectorModel.focus-pending && InspectorModel.focus-target == "angle" {
+            InspectorModel.focus-pending = false;
+            angle-edit.focus();
+        }
+    }
+    init => {
+        if InspectorModel.focus-pending && InspectorModel.focus-target == "angle" {
+            InspectorModel.focus-pending = false;
+            angle-edit.focus();
+        }
+    }
+
+    spacing: 8px;
+
+    Text {
+        text: InspectorModel.loaded-tier-index < 0
+            ? "Add Tier"
+            : "Edit Tier #" + (InspectorModel.loaded-tier-index + 1) + (InspectorModel.tier-name == "" ? "" : " -- " + InspectorModel.tier-name);
+        font-size: 12px;
+        font-weight: 700;
+        color: Theme.text-primary;
+        wrap: word-wrap;
+    }
+
+    if InspectorModel.anchor-hint: Rectangle {
+        background: Theme.bg-input;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.accent-cyan;
+        VerticalLayout {
+            padding: 6px;
+            InfoLine {
+                text: "This design has no anchor: somewhere in each block one tier must state an exact depth, or the solver has a shape but no size. Use the Girdle facet preset below, or set a tier's Meets to \"Exact scale value\".";
+            }
+        }
+    }
+
+    // The selection moved on while the form held an unsaved draft: say so for as long as
+    // the mismatch lasts.
+    if InspectorModel.show-dirty-warning: Rectangle {
+        background: Theme.bg-input;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.accent-amber;
+        VerticalLayout {
+            padding: 6px;
+            spacing: 4px;
+            Text {
+                text: "\u{26A0} You have unsaved changes to "
+                    + (InspectorModel.loaded-tier-index < 0 ? "the new tier draft" : "Tier #" + (InspectorModel.loaded-tier-index + 1))
+                    + ". The selection has moved on, but this form still shows your draft.";
+                font-size: 10px;
+                font-weight: 700;
+                color: Theme.accent-amber;
+                wrap: word-wrap;
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                Button {
+                    text: "Keep Draft";
+                    clicked => { InspectorModel.keep-draft(); }
+                }
+                Button {
+                    text: InspectorModel.pending-load-index < 0
+                        ? "Discard Draft, Start New"
+                        : "Discard Draft, Load #" + (InspectorModel.pending-load-index + 1);
+                    clicked => { InspectorModel.discard-draft(); }
+                }
+            }
+        }
+    }
+
+    FieldLabel {
+        text: "Angle (deg)" + (InspectorModel.tier-angle.to-float() < 0
+            ? "  -- pavilion"
+            : (InspectorModel.tier-angle.to-float() > 0 ? "  -- crown" : ""));
+    }
+    FieldFrame {
+        invalid: root.angle-invalid;
+        angle-edit := LineEdit {
+            enabled: root.unlocked;
+            text <=> InspectorModel.tier-angle;
+            accepted => { InspectorModel.save-tier(); }
+            changed has-focus => { AppModel.text-focus = self.has-focus; }
+            edited => {
+                InspectorModel.angle-edited();
+                root.clear-field-error("angle");
+            }
+            key-pressed(event) => {
+                if event.text == Key.UpArrow {
+                    InspectorModel.tier-angle = root.stepped-angle-text(InspectorModel.tier-angle, event.modifiers.shift, event.modifiers.control, 1.0);
+                    InspectorModel.angle-edited();
+                    root.clear-field-error("angle");
+                    return accept;
+                } else if event.text == Key.DownArrow {
+                    InspectorModel.tier-angle = root.stepped-angle-text(InspectorModel.tier-angle, event.modifiers.shift, event.modifiers.control, -1.0);
+                    InspectorModel.angle-edited();
+                    root.clear-field-error("angle");
+                    return accept;
+                }
+                reject
+            }
+        }
+    }
+    CriticalAngleBar {
+        margin-text: InspectorModel.angle-margin-text;
+        level: InspectorModel.angle-margin-level;
+        is-estimate: InspectorModel.angle-margin-is-estimate;
+    }
+    if InspectorModel.tier-angle.to-float() > 90 || InspectorModel.tier-angle.to-float() < -90: Text {
+        text: "Exceeds 90\u{b0} -- angles are measured from the girdle plane.";
+        font-size: 9px;
+        color: Theme.danger;
+        wrap: word-wrap;
+    }
+    // A girdle facet is a 90 degree tier pinned at the model's half-width of 1.
+    Button {
+        text: "Girdle facet preset (90\u{b0}, scale = 1)";
+        enabled: root.unlocked;
+        clicked => {
+            InspectorModel.tier-angle = "90";
+            InspectorModel.tier-constraint-kind = 2;
+            InspectorModel.tier-constraint-text = "1";
+            root.clear-field-error("angle");
+            root.clear-field-error("constraint");
+            InspectorModel.angle-edited();
+        }
+    }
+
+    FieldLabel { text: "Meets"; }
+    ComboBox {
+        model: [
+            "Unspecified vertex",
+            "Named facet(s)",
+            "Exact scale value",
+            "Cut to depth (mm)",
+            "Girdle thickness (mm)",
+            "Table width (mm)",
+        ];
+        enabled: root.unlocked;
+        current-index <=> InspectorModel.tier-constraint-kind;
+        selected => { root.clear-field-error("constraint"); }
+    }
+    if InspectorModel.tier-constraint-kind == 1: FieldLabel { text: "Facet names (comma-separated)"; }
+    if InspectorModel.tier-constraint-kind == 2: InfoLine {
+        text: "Scale value: a plane offset along this facet's normal, in model units (girdle half-width = 1) -- not a caliper dimension.";
+    }
+    if InspectorModel.tier-constraint-kind == 3: InfoLine {
+        text: "Depth: this facet's plane offset in mm, converted through the design's girdle diameter (set one in the Preform tab).";
+    }
+    if InspectorModel.tier-constraint-kind == 4: InfoLine {
+        text: "Girdle thickness: this tier's mast is searched until the solved girdle thickness matches this value in mm (needs a girdle diameter; costs several solves).";
+    }
+    if InspectorModel.tier-constraint-kind == 5: InfoLine {
+        text: "Table width: this tier's mast is searched until the table facet's width matches this value in mm (needs a girdle diameter; costs several solves).";
+    }
+    if InspectorModel.tier-constraint-kind != 0: FieldFrame {
+        invalid: InspectorModel.form-error-field == "constraint";
+        HorizontalLayout {
+            spacing: 4px;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> InspectorModel.tier-constraint-text;
+                accepted => { InspectorModel.save-tier(); }
+                changed has-focus => { AppModel.text-focus = self.has-focus; }
+                edited => { root.clear-field-error("constraint"); }
+                // "Add Anchor" asks for the cursor here; this field exists only while Meets
+                // is not "Unspecified vertex", so it answers on its way in as well as when
+                // the request arrives while it is already showing.
+                property <int> focus-tick: InspectorModel.focus-serial;
+                changed focus-tick => {
+                    if InspectorModel.focus-pending && InspectorModel.focus-target == "constraint" {
+                        InspectorModel.focus-pending = false;
+                        self.focus();
+                    }
+                }
+                init => {
+                    if InspectorModel.focus-pending && InspectorModel.focus-target == "constraint" {
+                        InspectorModel.focus-pending = false;
+                        self.focus();
+                    }
+                }
+            }
+            if InspectorModel.tier-constraint-kind >= 3: Text {
+                text: "mm";
+                font-size: 10px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    FieldLabel { text: "Name"; }
+    FieldFrame {
+        invalid: InspectorModel.form-error-field == "name";
+        LineEdit {
+            enabled: root.unlocked;
+            text <=> InspectorModel.tier-name;
+            accepted => { InspectorModel.save-tier(); }
+            changed has-focus => { AppModel.text-focus = self.has-focus; }
+            edited => { root.clear-field-error("name"); }
+        }
+    }
+
+    FieldLabel { text: "Indices (comma-separated; start:step:stop or N xM shorthand)"; }
+    FieldFrame {
+        invalid: InspectorModel.form-error-field == "indices";
+        LineEdit {
+            enabled: root.unlocked;
+            text <=> InspectorModel.tier-indices;
+            accepted => { InspectorModel.save-tier(); }
+            changed has-focus => { AppModel.text-focus = self.has-focus; }
+            edited => { root.clear-field-error("indices"); }
+        }
+    }
+
+    // Per-facet editing: one chip per facet, with detach and remove, plus add / rotate /
+    // mirror. Only for a saved tier.
+    if root.has-loaded: VerticalLayout {
+        spacing: 4px;
+        FieldLabel { text: "Facets"; }
+        ScrollView {
+            height: 56px;
+            HorizontalLayout {
+                spacing: 4px;
+                for chip in InspectorModel.chips: Rectangle {
+                    width: 46px;
+                    height: 40px;
+                    background: chip.detached ? Theme.bg-input : Theme.bg-card-hover;
+                    border-radius: Theme.radius-sm;
+                    border-width: chip.detached ? 1px : 0px;
+                    border-color: Theme.text-muted;
+                    VerticalLayout {
+                        padding: 3px;
+                        spacing: 2px;
+                        Text {
+                            text: chip.label;
+                            font-size: 10px;
+                            font-weight: 600;
+                            color: chip.detached ? Theme.text-muted : Theme.text-primary;
+                            horizontal-alignment: center;
+                        }
+                        HorizontalLayout {
+                            spacing: 2px;
+                            Rectangle {
+                                height: 16px;
+                                Text {
+                                    // (The web build's font has no scissors, cross or curl glyphs.)
+                                    text: chip.detached ? "\u{21A9}" : "\u{2192}";
+                                    font-size: 9px;
+                                    color: detach-touch.has-hover ? Theme.accent-cyan : Theme.text-secondary;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                detach-touch := TouchArea {
+                                    enabled: root.unlocked;
+                                    clicked => { InspectorModel.facet-toggle-detach(chip.position); }
+                                }
+                            }
+                            Rectangle {
+                                height: 16px;
+                                Text {
+                                    text: "\u{00D7}";
+                                    font-size: 11px;
+                                    color: remove-touch.has-hover ? Theme.danger : Theme.text-secondary;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                remove-touch := TouchArea {
+                                    enabled: root.unlocked;
+                                    clicked => { InspectorModel.facet-remove(chip.position); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        FieldLabel { text: "\u{2192} detaches a facet from its orbit, \u{00D7} removes it (a complete orbit unit goes with it)."; wrap: word-wrap; }
+        HorizontalLayout {
+            spacing: 4px;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> InspectorModel.new-facet-position;
+                placeholder-text: "position";
+                width: 70px;
+                changed has-focus => { AppModel.text-focus = self.has-focus; }
+                accepted => { InspectorModel.facet-add(); }
+            }
+            Button {
+                text: "+ Add";
+                enabled: root.unlocked;
+                clicked => { InspectorModel.facet-add(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> InspectorModel.rotate-by-text;
+                width: 44px;
+                changed has-focus => { AppModel.text-focus = self.has-focus; }
+            }
+            Button {
+                text: "Rotate <";
+                enabled: root.unlocked;
+                clicked => { InspectorModel.rotate(1); }
+            }
+            Button {
+                text: "Rotate >";
+                enabled: root.unlocked;
+                clicked => { InspectorModel.rotate(-1); }
+            }
+            Button {
+                text: "Mirror";
+                enabled: root.unlocked;
+                clicked => { InspectorModel.mirror(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        FieldLabel { text: "Cheater offset (deg) -- blank clears it"; }
+        HorizontalLayout {
+            spacing: 4px;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> InspectorModel.cheater-text;
+                width: 80px;
+                placeholder-text: "none";
+                accepted => { InspectorModel.apply-cheater(); }
+                changed has-focus => { AppModel.text-focus = self.has-focus; }
+            }
+            Button {
+                text: "Set";
+                enabled: root.unlocked;
+                clicked => { InspectorModel.apply-cheater(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        FieldLabel { text: "Note for this tier -- blank clears it"; }
+        HorizontalLayout {
+            spacing: 4px;
+            LineEdit {
+                enabled: root.unlocked;
+                text <=> InspectorModel.note-text;
+                placeholder-text: "none";
+                accepted => { InspectorModel.apply-note(); }
+                changed has-focus => { AppModel.text-focus = self.has-focus; }
+            }
+            Button {
+                text: "Set";
+                enabled: root.unlocked;
+                clicked => { InspectorModel.apply-note(); }
+            }
+        }
+    }
+
+    if InspectorModel.form-error != "": Text {
+        text: InspectorModel.form-error;
+        font-size: 10px;
+        font-weight: 700;
+        color: Theme.danger;
+        wrap: word-wrap;
+    }
+
+    // The read-only "Solved" section for a saved tier.
+    if InspectorModel.solved.visible: VerticalLayout {
+        spacing: 4px;
+        Divider {}
+        Text { text: "Solved"; font-size: 11px; font-weight: 700; color: Theme.text-primary; }
+        HorizontalLayout {
+            spacing: 12px;
+            InfoLine { text: "Mast: " + InspectorModel.solved.mast; }
+            InfoLine { text: "Block: " + InspectorModel.solved.block; }
+        }
+        Text {
+            text: "Strategy: " + InspectorModel.solved.strategy;
+            font-size: 10px;
+            font-weight: InspectorModel.solved.strategy-uncertain ? 700 : 400;
+            color: InspectorModel.solved.strategy-uncertain ? Theme.accent-amber : Theme.text-secondary;
+            wrap: word-wrap;
+        }
+        if InspectorModel.solved.strategy-detail != "": Text {
+            text: InspectorModel.solved.strategy-detail;
+            font-size: 9px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+        if InspectorModel.solved.margin-text != "": Text {
+            text: "Margin over critical angle: " + InspectorModel.solved.margin-text;
+            font-size: 10px;
+            font-weight: InspectorModel.solved.risk-level >= 1 ? 700 : 400;
+            color: InspectorModel.solved.risk-level == 2 ? Theme.danger : (InspectorModel.solved.risk-level == 1 ? Theme.accent-amber : Theme.accent-emerald);
+            wrap: word-wrap;
+        }
+        if InspectorModel.solved.orbit-status != "": Text {
+            text: "Orbit: " + InspectorModel.solved.orbit-status;
+            font-size: 10px;
+            color: InspectorModel.solved.orbit-incomplete ? Theme.accent-amber : Theme.accent-emerald;
+            wrap: word-wrap;
+        }
+        if InspectorModel.solved.meet-partners != "": InfoLine { text: InspectorModel.solved.meet-partners; }
+        if InspectorModel.solved.imported-meet != "": Text {
+            text: "File says this tier " + InspectorModel.solved.imported-meet + " -- use Adopt in the table to switch to it.";
+            font-size: 10px;
+            color: Theme.accent-cyan;
+            wrap: word-wrap;
+        }
+        if InspectorModel.solved.warning != "": Text {
+            text: "\u{26A0} " + InspectorModel.solved.warning;
+            font-size: 10px;
+            font-weight: 700;
+            color: Theme.accent-amber;
+            wrap: word-wrap;
+        }
+    }
+}

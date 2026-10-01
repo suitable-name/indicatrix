@@ -215,7 +215,10 @@ impl WavefrontPipelines {
 /// sum over all of them. `WavefrontRayBuffers::pending_light_mis_dir` (binding 34,
 /// `wavefront_transport.wgsl`'s light-MIS interior-direction hand-off), added alongside
 /// `pending_light_mis`, is `tuples` elements of `[f32; 4]` -- 16 bytes/tuple, well under
-/// this constant -- so it does not change the cap.
+/// this constant -- so it does not change the cap. `WavefrontRayBuffers::nee_xyz`
+/// (binding 35, the running Henyey-Greenstein scattering-point NEE total), added
+/// alongside it, is the same shape -- another 16 bytes/tuple, still well under this
+/// constant.
 pub const WAVEFRONT_STOKES_BYTES_PER_TUPLE: usize = 8 * 16;
 
 /// The pure arithmetic [`super::GpuFrameRenderer::cap_byte_budget_for_wavefront`]
@@ -260,7 +263,7 @@ pub const fn wavefront_generate_bindings<'a>(
     params_buf: &'a wgpu::Buffer,
     wf_params_buf: &'a wgpu::Buffer,
     rays: &'a WavefrontRayBuffers,
-) -> [(u32, &'a wgpu::Buffer); 18] {
+) -> [(u32, &'a wgpu::Buffer); 19] {
     [
         (0, camera),
         (1, params_buf),
@@ -280,6 +283,7 @@ pub const fn wavefront_generate_bindings<'a>(
         (28, &rays.seed),
         (29, &rays.active_in),
         (34, &rays.pending_light_mis_dir),
+        (35, &rays.nee_xyz),
     ]
 }
 
@@ -309,6 +313,7 @@ pub struct WavefrontRoundBindGroups {
               same reasoning ChunkFrameState/TransportDispatchArgs/TurnSetup already \
               document elsewhere in this module tree"
 )]
+/// Builds the wavefront round bind groups for the check.
 pub fn build_wavefront_round_bind_groups(
     device: &wgpu::Device,
     pipelines: &WavefrontPipelines,
@@ -415,6 +420,7 @@ fn wavefront_bounce_bind_group(
             (28, &rays.seed, None),
             (29, &rays.active_in, None),
             (34, &rays.pending_light_mis_dir, None),
+            (35, &rays.nee_xyz, None),
         ],
     )
 }
@@ -469,7 +475,13 @@ fn wavefront_compact_scatter_bind_group(
 /// buffers (via `transport_finalize_ray`) plus its own per-ray scratch, but none of
 /// `camera`/`material`/`planes`/`facet_finishes`/HDR environment (a survivor's own
 /// physics already ran inside `wavefront_bounce`; finalizing just integrates and
-/// writes out what it already accumulated).
+/// writes out what it already accumulated). Includes `rays.nee_xyz` (binding 35):
+/// unlike `rays.pending_light_mis_dir` (binding 34, an interior-only hand-off this
+/// entry point never reads), `wavefront_finalize_survivors` reads `ray_nee_xyz`
+/// directly to fold a surviving ray's accumulated NEE total into its final output
+/// (`wavefront_transport.wgsl`'s own `nee_xyz` local there) -- so it must be bound
+/// here too, or the implicit pipeline layout `wgpu` derives for this entry point
+/// leaves this bind group short one entry.
 fn wavefront_finalize_bind_group(
     device: &wgpu::Device,
     pipelines: &WavefrontPipelines,
@@ -497,6 +509,7 @@ fn wavefront_finalize_bind_group(
             (25, &rays.compat),
             (27, &rays.lambdas),
             (29, &rays.active_in),
+            (35, &rays.nee_xyz),
         ],
     )
 }

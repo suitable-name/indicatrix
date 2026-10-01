@@ -17,6 +17,12 @@ export struct DiagramItem {
     // see `gui::library::search::is_local_url`. `diagram_list.slint` renders this as a
     // "Mine" badge next to the shape/Ignored badges.
     is_local: bool,
+    // Whether the Rough Planner leaves this design out of its candidate set. Read from
+    // the library's own side table (`Database::planner_excluded_among`), independent of
+    // `ignored` above: an excluded design stays listed and fully usable everywhere
+    // else. `diagram_list.slint` flips the context-menu wording and shows a "not
+    // planned" marker from it. Always `false` for a remote-browsed row.
+    planner_excluded: bool,
     // Tag names attached to this design, alphabetical.
     // Filled in bulk by `gui::library::search` via `Database::tags_by_entry`
     // rather than one query per row -- the catalogue is ~3187 rows.
@@ -64,13 +70,15 @@ export struct AngleItem {
     angle: string,
     index_val: string,
     notes: string,
-    // Which side of the girdle this facet cuts: -1 pavilion, 1 crown, 0 neither (a
-    // girdle facet, a table, or a catalogue row whose angle text does not parse).
-    // A real field rather than something the markup derives from the formatted
-    // `angle` string: reading the sign back out of that text breaks as soon as the
-    // display format changes and cannot tell a girdle facet from a crown one. The
-    // editor fills it from the solver's own block classification, the same source
-    // the tier table's block column uses.
+    // Which side of the girdle this facet cuts: -1 pavilion, 1 crown (the table
+    // row counts as crown), 0 neither (a girdle row, or a catalogue row the rule
+    // cannot place). Filled by Rust (`gui::library::detail::shared::sides_from_rows`)
+    // from the catalogue row's facet label first (digits / `P<n>` = pavilion,
+    // letters / `C<n>` = crown, `G` or an exact 90 degree angle = girdle, `T` or
+    // an index of "Table" = table), with row position only as a last resort. A
+    // real field rather than something the markup derives from the formatted
+    // `angle` string: the catalogue's angle text is unsigned, so the sign alone
+    // cannot tell a crown row from a pavilion one.
     side: int,
 }
 
@@ -127,8 +135,23 @@ export struct IndexChipItem {
 export struct EditorTierItem {
     index: int,
     angle_deg: string,
+    // The same angle unrounded (plain `{}` `Display` of the `f64`, like
+    // `mast_full` below) -- `angle_deg` is display-rounded to 2 decimals
+    // (`format_angle_cell`), so seeding an editable field from it and saving
+    // right back without changing anything is not actually a no-op: the
+    // rounded text parses to a different value than the tier's real angle,
+    // which spends an undo step and can even reclassify a tier at a near-zero
+    // angle (see `EditorInspector.apply_load`/`TierAngleCell`'s own seeding
+    // for where this is used instead of `angle_deg`).
+    angle_full: string,
     name: string,
     indices: string,
+    // The same indices unrounded, comma-and-space-joined like `indices` above
+    // (plain `{}` `Display` per value) -- `indices` rounds a fractional
+    // position (a gear "x7" shorthand, say) to 2 decimals, which is exactly
+    // the same lossy-reseed problem `angle_full` documents, just for the
+    // Indices field.
+    indices_full: string,
     constraint_kind: int,
     constraint_text: string,
     mast: string,

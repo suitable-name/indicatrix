@@ -263,8 +263,8 @@ fn a_meet_reference_to_an_earlier_tier_is_not_flagged() {
 /// tier to `ScaleReference` (see that method's own doc comment) --
 /// meaning `check_cut_order` must find nothing to flag immediately after
 /// import, even when the original file's `G`-field text named a later
-/// facet. This is expected, not a check bug: the corpus brief notes this
-/// check "fires rarely at first" for exactly this reason, until the user
+/// facet. This is expected, not a check bug: this
+/// check fires rarely at first for exactly this reason, until the user
 /// adopts a real `MeetNamed` constraint via `imported_meet`.
 #[test]
 fn a_freshly_imported_design_has_nothing_to_flag_for_cut_order() {

@@ -1,4 +1,4 @@
-//! Finding G7 (next-event estimation) checks: the balance heuristic, `Dist1D`
+//! Next-event estimation checks: the balance heuristic, `Dist1D`
 //! bucket lookup, `Dist2D` sampling/pdf, NEE through a frosted exterior facet, NEE
 //! HG-scatter sampling, and the scattering/frosted furnace-anchor NEE-equality
 //! checks.

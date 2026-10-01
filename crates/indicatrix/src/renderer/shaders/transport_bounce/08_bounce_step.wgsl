@@ -40,6 +40,12 @@ fn transport_bounce_step(
     have_prev_plane_normal: ptr<function, bool>,
     split_radiance: ptr<function, array<f32, 8>>,
     compat: ptr<function, array<u32, 8>>,
+    // The running total of every Henyey-Greenstein scattering-point NEE deposit
+    // so far, each already integrated to XYZ at ITS OWN moment's `path_pdf`/`compat` --
+    // see `nee_contribution_hg_scatter`'s own doc comment. Summed into the final XYZ by
+    // `transport_finalize_ray`, unconditionally, mirroring
+    // `trace_spectral_ray_inner`'s identical `nee_xyz` accumulator on the CPU side.
+    nee_xyz: ptr<function, vec3<f32>>,
     path_escaped: ptr<function, bool>,
     pending_light_mis: ptr<function, f32>,
     // The interior direction `pending_light_mis`'s phase pdf was evaluated
@@ -88,10 +94,6 @@ fn transport_bounce_step(
         // skips this block entirely, matching the CPU's default-off bit-identity
         // guarantee.
         if ((*inside_gem) && material.scattering_sigma_s > 0.0) {
-            var s_axis = vec3<f32>(0.0, 0.0, 0.0);
-            if ((*have_prev_plane_normal)) {
-                s_axis = (*prev_plane_normal);
-            }
             // P1 (assigned-mode absorption): mirrors the absorption block's
             // `is_anisotropic`/`is_biaxial` branching below -- `try_scatter_step` feeds
             // the same `channel_absorption_alphas_assigned` the absorption block uses.
@@ -115,21 +117,16 @@ fn transport_bounce_step(
                     }
                 }
             } else {
-                // Isotropic-by-symmetry material: keeps the OLD DOP-blended call,
-                // unchanged, using the real Stokes vector still available here (unlike
-                // the CPU port, which has no Stokes parameter left on its own
-                // assigned-mode driver at all -- see
-                // optics::raytracer::absorption::channel_absorption_alphas_assigned's
-                // own doc comment for why). For an isotropic tensor (alpha_o == alpha_e,
-                // every cubic built-in) quadratic_form is direction-independent, so this
-                // is numerically a no-op relative to the CPU's new direct-midpoint
-                // formula -- kept as-is here purely to avoid touching an
-                // already-verified code path for no observable benefit.
+                // Isotropic-by-symmetry material: the plain midpoint of the two
+                // eigenmode quadratic forms, independent of the Stokes state, exactly as
+                // optics::raytracer::absorption::channel_absorption_alphas_assigned
+                // computes it. A dichroic tensor on an isotropic material therefore gets
+                // the same unpolarized average on both sides.
                 let eigen_a = ordinary_eigen_polarization((*current_k), c_axis);
                 let eigen_b = extraordinary_eigen_polarization((*current_k), c_axis);
                 for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
-                    alphas[k] = pleochroic_channel_alpha(
-                        alpha_o_hoisted[k], alpha_e_hoisted[k], c_axis, s_axis, (*current_k), eigen_a, eigen_b, (*stokes)[k],
+                    alphas[k] = isotropic_channel_alpha(
+                        alpha_o_hoisted[k], alpha_e_hoisted[k], c_axis, eigen_a, eigen_b,
                     );
                 }
             }
@@ -143,7 +140,8 @@ fn transport_bounce_step(
                 if (params.env_mode == 2u) {
                     nee_contribution_hg_scatter(
                         lambdas, n_o_hero_seed, scatter_point, old_dir,
-                        material.scattering_g, seed0, bounce, stokes, radiance, alphas,
+                        material.scattering_g, seed0, bounce, stokes, path_pdf, compat,
+                        nee_xyz, alphas,
                     );
                     (*pending_light_mis) = henyey_greenstein_phase(dot(sc.new_dir, old_dir), material.scattering_g);
                     (*pending_light_mis_dir) = sc.new_dir;
@@ -232,9 +230,9 @@ fn transport_bounce_step(
                 // eigenmode this path was assigned to at its most recent air->crystal
                 // entry -- computed fresh from the CURRENT wave normal
                 // (`wave_dir_at_bounce`) every bounce, not read off `(*stokes)[k]`'s
-                // (possibly azimuth-drifted) Stokes state. The isotropic branch keeps
-                // the OLD DOP-blended call unchanged -- see the scatter block's own
-                // comment above for why.
+                // (possibly azimuth-drifted) Stokes state. The isotropic branch is the
+                // Stokes-independent eigenmode midpoint -- see the scatter block's own
+                // comment above.
                 var alphas_interior: array<f32, 8>;
                 if (is_anisotropic) {
                     for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
@@ -255,8 +253,8 @@ fn transport_bounce_step(
                     let eigen_a = ordinary_eigen_polarization(wave_dir_at_bounce, c_axis);
                     let eigen_b = extraordinary_eigen_polarization(wave_dir_at_bounce, c_axis);
                     for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
-                        alphas_interior[k] = pleochroic_channel_alpha(
-                            alpha_o_hoisted[k], alpha_e_hoisted[k], c_axis, current_plane_normal, wave_dir_at_bounce, eigen_a, eigen_b, (*stokes)[k],
+                        alphas_interior[k] = isotropic_channel_alpha(
+                            alpha_o_hoisted[k], alpha_e_hoisted[k], c_axis, eigen_a, eigen_b,
                         );
                     }
                 }
@@ -341,16 +339,16 @@ fn transport_bounce_step(
         let uframe = uniaxial_frame_build(wave_dir_at_bounce, normal, c_axis, cos_i, sin_i);
         let uinc_frame = entry_incidence_frame(1.0, uframe);
         // Mirrors `BounceRefractionGeometry::uniaxial_frame`'s `Some` condition
-        // exactly -- `apply_tir_bounce`'s CPU uniaxial branch gates on exactly this,
-        // with no further degenerate-axis check, so this flag mirrors it bit-for-bit
-        // including that narrow gap.
+        // exactly -- the plain uniaxial-vs-biaxial-vs-isotropic material classification,
+        // with no degenerate-axis check of its own (see `uniaxial_nondegenerate` below
+        // for that).
         let uniaxial_active = is_anisotropic && !is_biaxial;
         // Degenerate wave-normal-parallel-to-optic-axis limit -- mirrors
-        // `apply_partial_fresnel_bounce`'s identical cross-product-length guard, where
-        // falling through to the existing scalar-at-`n_o` machinery is exact at this
-        // limit, not an approximation. Used only by the entry/general-internal dispatch
-        // arms below; `apply_tir_bounce`'s CPU uniaxial branch has no equivalent guard
-        // (a pre-existing narrow gap this port deliberately mirrors on both sides).
+        // `apply_partial_fresnel_bounce`'s identical cross-product-length guard AND
+        // `apply_tir_bounce`'s own identical guard on its uniaxial branch
+        // (`refraction/tir.rs`): falling through to the existing scalar-at-`n_o`
+        // machinery is exact at this limit, not an approximation, on every dispatch
+        // arm below, including the forced-TIR one.
         let uniaxial_nondegenerate = uniaxial_active
             && dot(cross(wave_dir_at_bounce, c_axis), cross(wave_dir_at_bounce, c_axis)) > 1e-6;
 
@@ -573,11 +571,21 @@ fn transport_bounce_step(
             // TIR is always an internal reflection (`n1 > n2` for the hero
             // channel implies `(*inside_gem)`, exactly as on the CPU side).
             if (is_anisotropic) {
-                // No stokes/path_pdf scaling -- relabeling, not a split; see
-                // internal_mode_coupling_draw's doc comment.
+                // `has_exact_p_o` must be `uniaxial_nondegenerate`, NOT the plain
+                // `uniaxial_active` -- `tir_exact_p_o` only holds a genuinely solved
+                // value when the `uniaxial_nondegenerate` branch above ran; at the
+                // degenerate wave-normal-parallel-to-optic-axis limit it is still its
+                // unset default (`0.5`), and claiming that as an "exact" p_o here would
+                // skip `internal_mode_coupling_draw`'s own polarization-weighted
+                // `entry_eigenmode_selection` heuristic -- exactly mirroring
+                // `optics::raytracer::refraction::apply_tir_bounce`'s `exact_p_o: None`
+                // return at this same limit (`transport::bounce`'s
+                // `apply_internal_mode_coupling` call site consumes that `None` via
+                // the identical heuristic). No stokes/path_pdf scaling either way --
+                // relabeling, not a split; see internal_mode_coupling_draw's doc comment.
                 (*is_extraordinary) = internal_mode_coupling_draw(
                     c_axis, is_biaxial, current_plane_normal, k_prime,
-                    (*stokes)[0].x, (*stokes)[0].y, (*stokes)[0].z, uniaxial_active, tir_exact_p_o, seed0, bounce,
+                    (*stokes)[0].x, (*stokes)[0].y, (*stokes)[0].z, uniaxial_nondegenerate, tir_exact_p_o, seed0, bounce,
                 );
             }
         } else if (uniaxial_nondegenerate) {
@@ -728,7 +736,10 @@ fn transport_bounce_step(
                             sol = internal_solve(n_medium_ch[k], n_o_hoisted[k], n_e_raw_ch[k], c_axis, uframe, !(*is_extraordinary));
                         }
                         let flux_inc_k = max(sol.flux_inc, 1e-12);
-                        let r_total_k = min((cplx_norm_sqr(sol.r_e) * sol.flux_re + cplx_norm_sqr(sol.r_o) * sol.flux_ro) / flux_inc_k, 1.0);
+                        // `fma` to match `apply_uniaxial_internal_reflect_channels`'s
+                        // `sol.r_e.norm_sqr().mul_add(sol.flux_re, sol.r_o.norm_sqr() * sol.flux_ro)`
+                        // bit-for-bit (1 ULP per uniaxial internal reflection otherwise).
+                        let r_total_k = min(fma(cplx_norm_sqr(sol.r_e), sol.flux_re, cplx_norm_sqr(sol.r_o) * sol.flux_ro) / flux_inc_k, 1.0);
                         (*stokes)[k] = (*stokes)[k] * (r_total_k / internal_r_branch);
                         (*path_pdf)[k] = (*path_pdf)[k] * clamp(r_total_k, 1e-4, 1.0 - 1e-4);
                     }
@@ -745,6 +756,18 @@ fn transport_bounce_step(
                     let sin2_t_dir_i = min(eta_dir_i * eta_dir_i * fma(-cos_i, cos_i, 1.0), 1.0);
                     let cos_t_dir_i = sqrt(max(1.0 - sin2_t_dir_i, 0.0));
                     let hero_refr_dir_i = normalize(eta_dir_i * wave_dir_at_bounce + fma(eta_dir_i, cos_i, -cos_t_dir_i) * normal);
+
+                    // This uniaxial internal branch is reached only while `(*inside_gem)`
+                    // was already true (see the header comment at this `else`'s own
+                    // opening brace above), so this transmit sub-branch is always a
+                    // genuine transmit-out -- mirrors `dispatch_bounce`'s CPU-side
+                    // `exit.split_mis_weight` assignment exactly (same balance heuristic,
+                    // same `dist2d_pdf` at the carried INTERIOR direction).
+                    var split_mis_weight_i: f32 = 1.0;
+                    if (phase_pdf_this_check > 0.0 && params.env_mode == 2u) {
+                        let light_pdf_i = dist2d_pdf(phase_dir_this_check);
+                        split_mis_weight_i = balance_heuristic(phase_pdf_this_check, light_pdf_i);
+                    }
 
                     // this IS the uniaxial exact EXIT event (crystal -> air) --
                     // mismatch resolves its own split (point 1) and keeps `path_pdf`
@@ -793,6 +816,7 @@ fn transport_bounce_step(
                                 try_split_exit_channel(
                                     split_radiance, hit_point, k, (*lambdas)[k], refr_wave_dir_k,
                                     et_mm.transmitted.x, studio_key_dir, studio_fill_dir, studio_sin_lp, observer,
+                                    split_mis_weight_i,
                                 );
                             }
                             continue;
@@ -1013,6 +1037,17 @@ fn transport_bounce_step(
                 // this loop). Interior (entry) mismatches instead narrow `compat`,
                 // never split -- see this file's own header comment.
                 let is_exit_event = (*inside_gem);
+                // Mirrors `dispatch_bounce`'s CPU-side `exit.split_mis_weight`
+                // assignment exactly: `is_exit_event` (this bounce's PRE-flip
+                // `inside_gem`) is precisely `pre_bounce_inside_gem`, and this whole
+                // per-channel loop's split branch is reachable only from the
+                // hero-driven transmit dispatch, so computing the weight from it here,
+                // before any per-channel work, is exact rather than an approximation.
+                var split_mis_weight: f32 = 1.0;
+                if (is_exit_event && phase_pdf_this_check > 0.0 && params.env_mode == 2u) {
+                    let light_pdf = dist2d_pdf(phase_dir_this_check);
+                    split_mis_weight = balance_heuristic(phase_pdf_this_check, light_pdf);
+                }
                 var scalar_dirs: array<vec3<f32>, 8>;
                 var scalar_dirs_valid: array<bool, 8>;
                 var scalar_hero_match: array<bool, 8>;
@@ -1046,7 +1081,7 @@ fn transport_bounce_step(
                     let refr_wave_dir_k = normalize(
                         ratio_k * wave_dir_at_bounce + fma(ratio_k, cos_i, -cos_t_k) * normal,
                     );
-                    // Fix G (Part 2) / the direction-match identity trap: channel k's own
+                    // The direction-match identity trap: channel k's own
                     // walk-off, using k's own per-channel indices, compared against the
                     // STORED `final_refr_dir` above -- never a second recomputation of
                     // the hero's own direction (which would be a few ULP different and
@@ -1118,6 +1153,7 @@ fn transport_bounce_step(
                             try_split_exit_channel(
                                 split_radiance, hit_point, k, (*lambdas)[k], refr_wave_dir_k,
                                 ct.transmitted.x, studio_key_dir, studio_fill_dir, studio_sin_lp, observer,
+                                split_mis_weight,
                             );
                         }
                     }
@@ -1158,7 +1194,7 @@ fn transport_bounce_step(
             if (rr_rand > q) {
                 return BOUNCE_STATUS_TERMINATE;
             }
-            // (Bias A fix): `split_radiance` rides along on the same `1/q` survival
+            // `split_radiance` rides along on the same `1/q` survival
             // rescale as `stokes` -- see `apply_russian_roulette`'s CPU-side doc comment.
             for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
                 (*stokes)[k] = (*stokes)[k] * (1.0 / q);

@@ -17,8 +17,8 @@ use indicatrix::geometry::meet_solver::MeetConstraint;
 pub struct ConstraintTier {
     /// Signed angle from the girdle plane, in degrees -- the same `GemCAD`
     /// convention [`indicatrix_formats::asc::AscTier::angle_deg`] documents (negative is
-    /// pavilion, non-negative is crown; an unsigned `0.0` inherits the previous
-    /// tier's side).
+    /// pavilion, positive is crown; a zero angle is the table unless it is a
+    /// sign-negative `-0.0`, the culet -- file order never decides the side).
     pub angle_deg: f64,
     /// Facet name(s), joined with `/` when a tier folds more than one -- exactly
     /// [`indicatrix_formats::asc::AscTier::name`]'s own convention; see
@@ -129,7 +129,12 @@ impl ConstraintTier {
             .collect()
     }
 
-    /// Builds `count` tiers forming a step-cut ladder: angle stepping by
+    /// The most tiers one [`Self::step_series`] call builds; a larger `count` is
+    /// cut down to this, so no caller can ask for millions of tiers by accident.
+    pub const MAX_STEP_SERIES: usize = 64;
+
+    /// Builds `count` tiers (at most [`Self::MAX_STEP_SERIES`]) forming a step-cut
+    /// ladder: angle stepping by
     /// `angle_step_deg` from `start_angle_deg`, all sharing `indices`, each
     /// named `"<name_prefix><n>"` (1-based). The first tier's constraint is
     /// `first_constraint` (typically a [`MeetConstraint::ScaleReference`]
@@ -138,6 +143,10 @@ impl ConstraintTier {
     /// meet); every later tier meets the one immediately above it via
     /// [`MeetConstraint::MeetExisting`], the plain nested-nudge case a real
     /// step-cut schedule authors under.
+    ///
+    /// The names are only unique among themselves: this constructor sees no
+    /// design, so a caller appending the tiers to one renames any that collide
+    /// with a tier already there.
     ///
     /// Returns bare [`ConstraintTier`]s, not [`crate::edit::Edit`]s -- an
     /// editor turns them into one batched sequence of
@@ -153,7 +162,7 @@ impl ConstraintTier {
         indices: &[f64],
         first_constraint: &MeetConstraint,
     ) -> Vec<Self> {
-        (0..count)
+        (0..count.min(Self::MAX_STEP_SERIES))
             .map(|n| {
                 let angle_deg = angle_step_deg.mul_add(n as f64, start_angle_deg);
                 let constraint = if n == 0 {
@@ -280,10 +289,15 @@ impl ConstraintTier {
 /// (recorded masts) -- see the module docs.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ScheduleMeta {
+    /// `GemCad` version string from the schedule header.
     pub gemcad_version: String,
+    /// Number of teeth on the index gear.
     pub gear_teeth: i32,
+    /// Reference angle of the index gear, in degrees.
     pub gear_reference_angle: f64,
+    /// Rotational symmetry order of the schedule.
     pub symmetry_order: u32,
+    /// Whether the schedule carries mirror symmetry.
     pub mirror: bool,
     /// The legacy `.asc` `I` line's refractive index, as last imported or
     /// exported. [`super::Design::effective_refractive_index`] is the value
@@ -304,7 +318,9 @@ pub struct ScheduleMeta {
     /// rarely matters since `effective_refractive_index` would already have
     /// preferred the material/override over this field anyway.
     pub refractive_index: f64,
+    /// Free-text header lines of the schedule.
     pub headers: Vec<String>,
+    /// Free-text footnote lines of the schedule.
     pub footnotes: Vec<String>,
 }
 
@@ -323,7 +339,11 @@ impl ScheduleMeta {
     #[must_use]
     pub fn standard_round_brilliant() -> Self {
         Self {
-            gemcad_version: "GemCad 5.0".to_string(),
+            // Just the version number: `indicatrix_formats::asc::to_asc_string`
+            // already writes the literal `"GemCad "` prefix itself
+            // (`writeln!(out, "GemCad {}", schedule.gemcad_version)`), so storing
+            // the prefix here too doubled it on export ("GemCad GemCad 5.0").
+            gemcad_version: "5.0".to_string(),
             gear_teeth: 96,
             gear_reference_angle: 0.0,
             symmetry_order: 8,
@@ -431,6 +451,26 @@ mod tests {
         for tier in &tiers {
             assert_eq!(tier.indices, indices);
         }
+    }
+
+    /// A `count` past [`ConstraintTier::MAX_STEP_SERIES`] is cut down to it
+    /// rather than allocating whatever was asked for.
+    #[test]
+    fn step_series_never_builds_more_than_the_cap() {
+        let tiers = ConstraintTier::step_series(
+            "S",
+            10.0,
+            0.5,
+            usize::MAX,
+            &[0.0],
+            &MeetConstraint::MeetExisting,
+        );
+        assert_eq!(tiers.len(), ConstraintTier::MAX_STEP_SERIES);
+        assert_eq!(
+            tiers.last().map(|tier| tier.name.as_str()),
+            Some("S64"),
+            "the ladder is the first 64 rungs, numbered from 1"
+        );
     }
 
     /// `mirrored_to_other_block` must negate the angle and keep everything

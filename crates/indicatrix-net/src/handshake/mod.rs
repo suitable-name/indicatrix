@@ -1,5 +1,7 @@
-//! Build-compatibility verification: the part of the handshake that refuses to pair a
-//! viewer and a worker running different `indicatrix` physics.
+//! Build-compatibility verification.
+//!
+//! The part of the handshake that refuses to pair a viewer and a worker running
+//! different `indicatrix` physics.
 //!
 //! # Why this check exists, and why it can't be skipped
 //!
@@ -28,6 +30,17 @@
 //! sides could establish their own source hash; when either side's is unknown, that's
 //! logged at `warn!` and pairing proceeds on `build_hash` alone, since an unknown source
 //! hash is not itself evidence of a physics mismatch.
+//!
+//! # This is an accident detector, not a security control
+//!
+//! `build_hash`/`source_hash` are self-reported values a peer states in its own
+//! `HELLO`/`WELCOME` -- nothing here signs or independently verifies them. A hostile
+//! peer can trivially claim whatever hash it likes and pass this check while running
+//! entirely different physics; [`verify_compatible`] only catches an HONEST peer running
+//! a different, unintentionally-mismatched build (the release-process-promise gap the
+//! module doc comment above describes). Mutual TLS plus the fingerprint allowlist (see
+//! `apps/indicatrix-worker`'s `serve::tls` module) is the actual trust boundary; this
+//! check runs strictly AFTER that, over an already-authenticated connection.
 //!
 //! # Refusal is the only outcome for a KNOWN disagreement
 //!
@@ -180,14 +193,35 @@ pub fn decode_hello(bytes: &[u8]) -> Result<Hello, HelloReadError> {
     Ok(postcard::from_bytes::<Hello>(bytes).map_err(crate::messages::NetError::from)?)
 }
 
+/// The cap [`read_hello`] enforces on the `HELLO` frame's length prefix.
+///
+/// Comfortably larger than any real `Hello` (a `RenderCapability` and a handful of
+/// encoding flags, nowhere near 64 KiB) but far short of
+/// [`crate::framing::MAX_FRAME_LEN`] (512 MiB).
+///
+/// `HELLO` is the first thing read off ANY connection, including one that hasn't
+/// authenticated yet (the enrollment listener has no client-certificate check at all;
+/// even the render listener's `check_auth` lets a certificate of the wrong role through
+/// to this read -- see `apps/indicatrix-worker`'s `serve::tls` module doc comment).
+/// A hostile or merely buggy peer's 4-byte length prefix must never be able to
+/// commit this process to a `vec![0u8; 512 * 1024 * 1024]` allocation before a single
+/// content byte has arrived.
+pub const MAX_HELLO_LEN: u32 = 64 * 1024;
+
 /// Reads one frame and decodes it with [`decode_hello`] -- what a server calls instead of
 /// a plain `read_message::<Hello>`.
 ///
+/// Uses [`crate::framing::read_frame_bounded`] with [`MAX_HELLO_LEN`], not the 512 MiB
+/// [`crate::framing::read_frame`] default: the caller may not have authenticated
+/// the peer at all yet.
+///
 /// # Errors
 ///
-/// See [`decode_hello`]; framing errors surface as [`HelloReadError::Net`].
+/// See [`decode_hello`]; framing errors (including an oversized length prefix) surface as
+/// [`HelloReadError::Net`].
 pub fn read_hello<R: std::io::Read>(reader: &mut R) -> Result<Hello, HelloReadError> {
-    let bytes = crate::framing::read_frame(reader).map_err(crate::messages::NetError::from)?;
+    let bytes = crate::framing::read_frame_bounded(reader, MAX_HELLO_LEN)
+        .map_err(crate::messages::NetError::from)?;
     decode_hello(&bytes)
 }
 
@@ -349,13 +383,16 @@ mod tests {
 
     /// The real current/previous pairing, not the generic `1` vs `2` the test above
     /// uses: a peer still advertising the previous [`crate::messages::PROTOCOL_VERSION`]
-    /// (`13`) is refused against this build's `14`, exercising [`verify_compatible`] --
-    /// the same function [`crate::client::handshake::handshake`] calls -- with the exact
-    /// values a real mismatched deploy would produce.
+    /// is refused against this build's, exercising [`verify_compatible`] -- the same
+    /// function [`crate::client::handshake::handshake`] calls -- with the exact values a
+    /// real mismatched deploy would produce.
     #[test]
     fn a_peer_advertising_the_previous_protocol_version_is_refused() {
         let current = crate::messages::PROTOCOL_VERSION;
-        assert_eq!(current, 14, "update the 13 below if this constant moves");
+        assert_eq!(
+            current, 17,
+            "update this pinned value if PROTOCOL_VERSION moves again"
+        );
         let local = hello(current, [1; 8]);
         let remote = hello(current - 1, [1; 8]);
         assert_eq!(
@@ -458,8 +495,9 @@ mod tests {
             }
         );
         let message = incompatible.to_string();
+        let local = format!("v{}", crate::messages::PROTOCOL_VERSION);
         assert!(
-            message.contains("v14") && message.contains("v13"),
+            message.contains(&local) && message.contains("v13"),
             "{message}"
         );
     }
@@ -484,6 +522,27 @@ mod tests {
             Err(HelloReadError::Net(_))
         ));
         assert!(matches!(decode_hello(&[]), Err(HelloReadError::Net(_))));
+    }
+
+    /// A hostile length prefix declaring 512 MiB must be refused from the 4-byte
+    /// prefix alone, before `read_hello` ever attempts to allocate that much -- proven
+    /// here by a reader with no actual payload bytes behind the prefix at all (a
+    /// pre-allocation would try to read them and this test would hang/error on the
+    /// reader instead of `read_hello` reporting the frame as too large immediately).
+    #[test]
+    fn read_hello_rejects_a_512_mib_prefix_without_allocating() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(512u32 * 1024 * 1024).to_le_bytes());
+        let mut cursor = std::io::Cursor::new(buf);
+        let err = read_hello(&mut cursor).unwrap_err();
+        let HelloReadError::Net(crate::messages::NetError::Framing(
+            crate::framing::FramingError::FrameTooLarge { len, max },
+        )) = err
+        else {
+            panic!("expected a bounded FrameTooLarge refusal, got {err:?}");
+        };
+        assert_eq!(len, 512 * 1024 * 1024);
+        assert_eq!(max, MAX_HELLO_LEN);
     }
 
     #[test]

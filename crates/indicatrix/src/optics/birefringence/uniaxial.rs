@@ -5,13 +5,19 @@
 use super::helpers::stable_orthonormal_basis;
 use glam::Vec3;
 
+/// A uniaxial material's birefringence: the ordinary/extraordinary index difference
+/// and the crystal's optic (c) axis direction.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BirefringenceParams {
+    /// Extraordinary minus ordinary index.
     pub delta_n: f32,
+    /// Optic (c) axis direction.
     pub c_axis: [f32; 3],
 }
 
 impl BirefringenceParams {
+    /// Builds from a delta and a (not-necessarily-normalized) axis, normalizing
+    /// `c_axis` first (the zero vector normalizes to zero).
     #[must_use]
     pub fn new(delta_n: f32, c_axis: Vec3) -> Self {
         let norm_c = c_axis.normalize_or_zero();
@@ -21,6 +27,7 @@ impl BirefringenceParams {
         }
     }
 
+    /// [`Self::c_axis`] as a [`Vec3`].
     #[must_use]
     pub const fn c_axis_vec3(&self) -> Vec3 {
         Vec3::from_array(self.c_axis)

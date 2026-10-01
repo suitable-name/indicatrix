@@ -7,6 +7,8 @@
 
 use std::fmt;
 
+pub use super::custom_material::CustomMaterialSnapshot;
+
 /// This module's own schema version.
 ///
 /// Bumped only for a change `serde(default)` on a newly added field can't handle (see
@@ -115,9 +117,13 @@ pub enum NativePreformShape {
 /// fresh design's preform spec is [`PreformTable::new`]'s.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PreformTable {
+    /// Shape category of the stone.
     pub shape: NativePreformShape,
+    /// Half the preform width.
     pub half_width: f64,
+    /// Preform length divided by its width.
     pub length_over_width: f64,
+    /// Preform depth.
     pub depth: f64,
     /// How far the preform's own vertical span is shifted from centred, mirroring
     /// `indicatrix_cut_core::design::Design::preform_y_offset` one-to-one.
@@ -167,73 +173,16 @@ impl PreformTable {
     }
 }
 
-/// The `[material.custom]` snapshot for a design's custom catalogue material.
-///
-/// Everything needed to reconstruct that material if its name does not resolve on
-/// the machine that opens the file -- without it, a native file referencing a
-/// custom material by name only falls back to Diamond elsewhere.
-///
-/// Sharing a `.indicatrix.toml` + `.asc` pair naming a custom material (or simply
-/// reinstalling and losing the local database row) would otherwise silently
-/// resolve that name to Diamond, with no warning. Every field here is a plain
-/// primitive, not
-/// `indicatrix`'s own `GemMaterial` type: this crate has no dependency on
-/// `indicatrix` at all (see the module doc comment's "only pulls in what it
-/// needs" rule), so building this snapshot from a real `GemMaterial` -- and
-/// registering it back as a session-local custom material when the name fails to
-/// resolve -- is `indicatrix-cut-core`'s job, same split as every other table
-/// here. `crystal_system`/`optical_character` are carried as their `Debug`-style
-/// names (e.g. `"Trigonal"`, `"UniaxialNegative"`) purely for a human reading the
-/// raw TOML; `GemMaterial::new_custom` re-derives both from the sign of
-/// `birefringence_delta` on load; and `specific_gravity` is `None` when the
-/// material carried no SG at save time.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct CustomMaterialSnapshot {
-    pub mean_ri: f64,
-    pub dispersion_delta: f64,
-    pub birefringence_delta: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub specific_gravity: Option<f64>,
-    pub crystal_system: String,
-    pub optical_character: String,
-    /// See [`PreformTable::unknown`]'s doc comment.
-    #[serde(flatten, default)]
-    pub unknown: toml::Table,
-}
-
-impl CustomMaterialSnapshot {
-    /// Builds a fresh snapshot with no unknown/future fields carried over -- see
-    /// [`PreformTable::new`]'s own doc comment for why this lives here rather than
-    /// in `indicatrix-cut-core`.
-    #[must_use]
-    pub fn new(
-        mean_ri: f64,
-        dispersion_delta: f64,
-        birefringence_delta: f64,
-        specific_gravity: Option<f64>,
-        crystal_system: impl Into<String>,
-        optical_character: impl Into<String>,
-    ) -> Self {
-        Self {
-            mean_ri,
-            dispersion_delta,
-            birefringence_delta,
-            specific_gravity,
-            crystal_system: crystal_system.into(),
-            optical_character: optical_character.into(),
-            unknown: toml::Table::new(),
-        }
-    }
-}
-
 /// The `[material]` table: a TOML mirror of the editor's own material selection.
 ///
 /// Building one from -- or reading one back into -- an actual material selection is
 /// `indicatrix-cut-core`'s job, same as [`PreformTable`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MaterialTable {
+    /// Display name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Specific gravity overriding the material default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub specific_gravity_override: Option<f64>,
     /// `#[serde(default)]` so a file written before this field existed loads with
@@ -246,6 +195,18 @@ pub struct MaterialTable {
     /// grows one at all.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub custom: Option<CustomMaterialSnapshot>,
+    /// The design's per-design body colour, `body_colour_override = [r, g, b]`: the
+    /// absorption-RGB triple the editor applies on top of `name`'s own material
+    /// (`None` = the material's own colour). `#[serde(default)]` so a file written
+    /// before this field existed loads with `None`, and omitted when unset so a
+    /// design with no override never grows the key at all.
+    ///
+    /// Stored as `f64` (TOML's only float) even though the editor's triple is `f32`:
+    /// `indicatrix-cut-core`'s converter writes each component's shortest
+    /// round-trip decimal, so the file reads `[0.2, 0.4, 2.8]` rather than
+    /// `[0.20000000298023224, ...]`, and loads back to the identical `f32` bits.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body_colour_override: Option<[f64; 3]>,
     /// See [`PreformTable::unknown`]'s doc comment.
     #[serde(flatten, default)]
     pub unknown: toml::Table,
@@ -266,6 +227,7 @@ impl MaterialTable {
             specific_gravity_override,
             refractive_index_override,
             custom: None,
+            body_colour_override: None,
             unknown: toml::Table::new(),
         }
     }
@@ -274,6 +236,13 @@ impl MaterialTable {
     #[must_use]
     pub fn with_custom(mut self, custom: Option<CustomMaterialSnapshot>) -> Self {
         self.custom = custom;
+        self
+    }
+
+    /// Attaches [`Self::body_colour_override`] -- see that field's own doc comment.
+    #[must_use]
+    pub const fn with_body_colour_override(mut self, rgb: Option<[f64; 3]>) -> Self {
+        self.body_colour_override = rgb;
         self
     }
 }
@@ -334,6 +303,7 @@ impl SourceTable {
 /// support conversation) to read, not to be replayed.
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct HistoryTable {
+    /// Entry names in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub entries: Vec<String>,
     /// See [`PreformTable::unknown`]'s doc comment.
@@ -380,8 +350,11 @@ impl HistoryTable {
 /// all).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TierTable {
+    /// Display name.
     pub name: String,
+    /// Meet-point constraint.
     pub constraint: NativeMeetConstraint,
+    /// Detached parameter values.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub detached: Vec<f64>,
     /// Mirrors `indicatrix_cut_core::design::ConstraintTier::angle_deg`. `#[serde(default)]`
@@ -534,6 +507,7 @@ impl TierTable {
 /// fingerprint, and why each field is (or is not) here.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct NativeDesignFile {
+    /// Version of the file format.
     #[serde(default = "default_format_version")]
     pub format_version: u32,
     /// The paired `.asc`'s own bare file name (e.g. `"design.asc"`), never a full
@@ -545,13 +519,16 @@ pub struct NativeDesignFile {
     /// `.asc`'s raw bytes as of this file's last save. See "The fingerprint" section
     /// of the module doc comment.
     pub asc_sha256: String,
+    /// Preform description.
     pub preform: PreformTable,
     /// Mirrors the editor's own girdle-diameter-in-mm field directly (already an
     /// `Option<f64>` there, so no separate table needed the way `preform`/`material`
     /// get one).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub girdle_diameter_mm: Option<f64>,
+    /// Material description.
     pub material: MaterialTable,
+    /// Tiers of the design in cutting order.
     pub tiers: Vec<TierTable>,
     /// `true` iff `design` did not currently solve when this file was saved (see
     /// `indicatrix_cut_core::native::save_paired`'s own doc comment): `tiers` here then
@@ -561,7 +538,9 @@ pub struct NativeDesignFile {
     /// instruction, and must never be shown to a cutter as one. A loader is expected
     /// to rebuild its design entirely from `tiers` when this is `true`, ignoring the
     /// paired `.asc`'s own tier list (its `angle_deg`/`gear`/`symmetry`/`refractive_index`
-    /// header fields are still real, only its per-tier masts are not).
+    /// header fields are still real, only its per-tier masts are not). This document
+    /// stores no gear of its own: the gear is read from the paired `.asc`, where
+    /// [`crate::asc::parse_asc`] bounds it by [`crate::asc::AscParseError::MAX_GEAR_TEETH`].
     /// `#[serde(default)]` so a file saved before this field existed loads as `false`
     /// (never a draft) -- the only meaning an absent flag could have, since a draft
     /// save did not exist yet either.

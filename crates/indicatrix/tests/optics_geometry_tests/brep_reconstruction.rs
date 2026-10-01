@@ -18,24 +18,17 @@ use crate::fixtures::assert_euler_formula;
 // ---------------------------------------------------------------------------
 // B-Rep reconstruction (`geometry::brep::GemPolyhedron::from_planes`).
 //
-// `from_planes` implements the dual-space convex hull construction described in
-// GEMSTONE_RENDERING_BLUEPRINT.md section 1.2. It was fully written but never called
-// from anywhere, and contained an unresolved indexing bug: `chull`'s
-// `vertices_indices()` compacts and renumbers its returned point list to just the
-// points that became hull vertices (dropping the rest), so the returned triangle
-// indices index into that *compacted* list, not into the original `planes` array --
-// but the code used them to index `planes` directly, silently pairing each
-// reconstructed vertex with the wrong facet planes whenever any input plane was
-// redundant (a very common case: see the emerald_cut() test below). A second,
-// related defect: whenever more than 3 planes meet at exactly the same point (common
-// in symmetric cuts, e.g. round-brilliant girdle/kite/star junctions), the dual hull
-// has a coplanar N-gon facet that `chull` triangulates into several triangles, each
-// independently re-solving to the *same* primal point -- producing duplicate vertex
-// entries that break edge/facet adjacency unless welded back together.
+// `from_planes` used to build the dual-space convex hull (GEMSTONE_RENDERING_BLUEPRINT.md
+// section 1.2) with the `chull` crate. Since 2026-09-28 it enumerates the primal plane
+// arrangement instead (the same deterministic walk `stone_metrics` uses), welds triple
+// solutions where more than 3 planes meet (common in symmetric cuts, e.g.
+// round-brilliant girdle/kite/star junctions) into one vertex, and orders every facet
+// ring canonically, so its output is byte-identical call to call.
 //
-// These tests exercise both fixes (via Euler's formula, the single most valuable
-// topological check, plus exact counts for a hand-verifiable cube) and the new
-// degenerate-input handling.
+// These tests check the result via Euler's formula (the single most valuable
+// topological check), exact counts for a hand-verifiable cube, the degenerate-input
+// handling, and the `reconstruct_validated_brep` fallbacks. The determinism, scale and
+// validation unit tests live next to the code in `src/geometry/brep/tests.rs`.
 // ---------------------------------------------------------------------------
 
 /// A cube built from six axis-aligned half-space planes, trivially checkable by hand:
@@ -162,16 +155,17 @@ fn brep_emerald_cut_reconstructs_valid_closed_solid_with_all_planes_touched() {
     // girdle-adjacent tier and its neighbor on the crease ring, or the facets converging
     // on a girdle corner) do so to full f32 precision. Before that, the same profile
     // pasted in as 4-decimal-rounded literals left several such intended-coincident
-    // points ~1.5e-4 apart -- just outside `VERTEX_WELD_EPS` (1e-4) -- which welded
-    // incompletely and reconstructed 60 vertices instead of 48 (same 34/34-touched,
-    // same ~1.8307 volume, so neither of those alone would have caught it).
+    // points ~1.5e-4 apart -- just outside the weld radius (`VERTEX_WELD_EPS_REL`,
+    // 1e-4 of the solid's radius) -- which welded incompletely and reconstructed 60
+    // vertices instead of 48 (same 34/34-touched, same ~1.8307 volume, so neither of
+    // those alone would have caught it).
     assert_eq!(
         hull.vertices.len(),
         48,
         "emerald_cut() should reconstruct to exactly 48 vertices; a higher count here \
-         (e.g. 60) means intended-coincident meet points drifted outside VERTEX_WELD_EPS \
-         again, most likely because a tier offset went back to being a rounded literal \
-         instead of being derived from the shared profile"
+         (e.g. 60) means intended-coincident meet points drifted outside the weld radius \
+         (VERTEX_WELD_EPS_REL) again, most likely because a tier offset went back to \
+         being a rounded literal instead of being derived from the shared profile"
     );
     let volume = hull.volume();
     assert!(
@@ -236,9 +230,12 @@ fn brep_rejects_unbounded_region() {
     planes.remove(4); // the (0,0,1) face
     let err = GemPolyhedron::from_planes(planes)
         .expect_err("5 planes open on one side cannot bound a finite solid");
-    assert!(
-        matches!(err, BrepError::UnboundedRegion { .. }),
-        "expected UnboundedRegion, got: {err:?}"
+    // The escaping vertices are the four side planes meeting the blank box's +Z
+    // face; the smallest of them is +X, index 0.
+    assert_eq!(
+        err,
+        BrepError::UnboundedRegion { plane: Some(0) },
+        "expected UnboundedRegion naming plane 0, got: {err:?}"
     );
     let text = err.to_string();
     assert!(
@@ -249,26 +246,29 @@ fn brep_rejects_unbounded_region() {
 
 #[test]
 fn brep_rejects_ill_conditioned_near_parallel_triple() {
-    // Replace the cube's +X face with a plane tilted only 0.00005 degrees off the +Y
-    // face's own normal. The box still closes up comfortably (the origin stays safely
-    // interior, well clear of the separate unbounded-region check), but the two
-    // nearly-parallel faces now meet the +Z/-Z faces at vertices whose 3x3
-    // intersection solve is numerically ill-conditioned -- this tilt was picked
-    // empirically as reliably below `MIN_TRIPLE_DETERMINANT`'s threshold (a coarser
-    // tilt, e.g. 0.01 degrees, is still well-conditioned enough to reconstruct
-    // successfully; a slightly finer one than this still errors, but via the separate
-    // non-manifold/Euler check instead, because welding starts landing inconsistently
-    // right at the edge of the ill-conditioned regime -- either way, this is exactly
-    // the "return a descriptive error rather than a malformed mesh" contract).
+    // Add a seventh plane tilted 5e-7 rad off the +Y face about the Z axis, through
+    // the +Y face's centre line x = 0: `5e-7 x + y <= 1`. The solid stays the bounded
+    // unit cube (the new plane shaves at most 5e-7 off the +Y face), and the planes are
+    // not coincident (their dual points differ by 5e-7 relative, above the 1e-7
+    // coincidence threshold). But the new plane meets +Y and +/-Z at (0, 1, +/-1) with
+    // |det| = 5e-7, below the 1e-6 conditioning threshold, and no better-conditioned
+    // triple meets there: the vertex position cannot be trusted, so the
+    // reconstruction must return a descriptive error rather than a malformed mesh.
+    //
+    // (The earlier version of this test replaced +X with a plane tilted 0.00005 degrees
+    // off +Y. That solid is not "closed comfortably": it is about 2e6 long, and the
+    // arrangement enumeration now reports it as an `UnboundedRegion`, which it is at
+    // the blank box's 64x-the-largest-offset reach.)
     let mut planes = axis_aligned_cube_planes();
-    let tilt = 0.00005f32.to_radians();
-    planes[0] = GpuFacetPlane::new(Vec3::new(tilt.sin(), tilt.cos(), 0.0), -1.0);
+    planes.push(GpuFacetPlane::new(Vec3::new(5e-7, 1.0, 0.0), -1.0));
     let err = GemPolyhedron::from_planes(planes).expect_err(
         "a near-parallel facet triple must be rejected rather than produce a malformed mesh",
     );
+    // Vertices are ordered by incident set, so the first ill-conditioned one is the
+    // (+Y, +Z, new) vertex; the payload is the same on every call.
     assert!(
-        matches!(err, BrepError::IllConditionedTriple { .. }),
-        "expected IllConditionedTriple, got: {err:?}"
+        matches!(err, BrepError::IllConditionedTriple { a: 2, b: 4, c: 6, det } if det.abs() < 1e-6),
+        "expected IllConditionedTriple {{ a: 2, b: 4, c: 6 }}, got: {err:?}"
     );
     let text = err.to_string();
     assert!(

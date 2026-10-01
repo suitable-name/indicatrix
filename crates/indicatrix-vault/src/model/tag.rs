@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 /// One tag, as stored in the `tags` table.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Tag {
+    /// Database identifier.
     pub id: i64,
+    /// Display name.
     pub name: String,
 }

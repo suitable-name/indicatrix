@@ -1,0 +1,299 @@
+import { Slider, ComboBox, Switch, SpinBox, Button, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { AppModel } from "../models/app_model.slint";
+import { RenderModel } from "render_model.slint";
+
+// A section caption.
+component Caption inherits Text {
+    font-size: 10px;
+    font-weight: 700;
+    color: Theme.text-muted;
+}
+
+// A label with its current value on the right.
+component ValueRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    in property <bool> active: true;
+    spacing: 6px;
+    Text {
+        text: root.label;
+        font-size: 11px;
+        font-weight: 600;
+        color: root.active ? Theme.text-secondary : Theme.text-muted;
+        overflow: elide;
+        horizontal-stretch: 1;
+    }
+    Text {
+        text: root.value;
+        font-size: 11px;
+        font-weight: 700;
+        color: root.active ? Theme.accent-cyan : Theme.text-muted;
+    }
+}
+
+// Three-way pill choice (the desktop's backdrop picker).
+component Pills inherits HorizontalLayout {
+    in property <[string]> labels;
+    in-out property <int> selected;
+    callback chosen(int);
+    spacing: 4px;
+    for label[i] in root.labels: Rectangle {
+        horizontal-stretch: 1;
+        height: 24px;
+        border-radius: Theme.radius-sm;
+        background: root.selected == i ? Theme.accent-cyan : (touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+        border-width: 1px;
+        border-color: root.selected == i ? Theme.accent-cyan : Theme.border-medium;
+        touch := TouchArea {
+            clicked => {
+                root.selected = i;
+                root.chosen(i);
+            }
+        }
+        Text {
+            text: label;
+            font-size: 11px;
+            font-weight: 600;
+            color: root.selected == i ? Theme.bg-darkest : Theme.text-secondary;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// The render settings, a compact version of the desktop's settings dialog: lighting
+// (the preset combo shares `AppModel.lighting-index` with the header, so the two
+// stay in sync), exposure, light direction, backdrop, HDR, quality (bounces, target
+// samples, denoise), and the material controls. Every control writes its
+// `RenderModel` property and calls `RenderModel.settings-edited()`; Rust reads them
+// all back (`src/render/panel.rs`).
+export component RenderSettingsPanel inherits Rectangle {
+    background: Theme.bg-card;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-medium;
+    drop-shadow-blur: 16px;
+    drop-shadow-color: Theme.toast-shadow;
+    clip: true;
+
+    ScrollView {
+        width: 100%;
+        height: 100%;
+        VerticalLayout {
+            padding: 10px;
+            spacing: 6px;
+
+            HorizontalLayout {
+                Text {
+                    text: "Render settings";
+                    font-size: 12px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    horizontal-stretch: 1;
+                    vertical-alignment: center;
+                }
+                Rectangle {
+                    width: 20px;
+                    height: 20px;
+                    border-radius: Theme.radius-sm;
+                    background: close.has-hover ? Theme.overlay-hover : transparent;
+                    accessible-role: button;
+                    accessible-label: "Close the render settings";
+                    close := TouchArea {
+                        clicked => { RenderModel.panel-open = false; }
+                    }
+                    Tooltip { text: @markdown("Close the render settings."); }
+                    Text {
+                        text: "\u{00D7}";
+                        font-size: 15px;
+                        color: Theme.text-secondary;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+
+            Caption { text: "LIGHTING"; }
+            ComboBox {
+                height: 26px;
+                model: AppModel.lighting-options;
+                current-index <=> AppModel.lighting-index;
+                selected(value) => { AppModel.lighting-changed(self.current-index); }
+            }
+            ValueRow {
+                label: "Exposure";
+                value: Math.round(RenderModel.exposure * 100) / 100 + "x";
+            }
+            Slider {
+                minimum: 0.4;
+                maximum: 2.5;
+                step: 0.05;
+                value <=> RenderModel.exposure;
+                changed => { RenderModel.settings-edited(); }
+            }
+            ValueRow {
+                label: "Light azimuth";
+                value: Math.round(RenderModel.light-yaw-deg) + "\u{b0}";
+                active: RenderModel.light-direction-used;
+            }
+            Slider {
+                enabled: RenderModel.light-direction-used;
+                minimum: 0;
+                maximum: 360;
+                value <=> RenderModel.light-yaw-deg;
+                changed => { RenderModel.settings-edited(); }
+            }
+            ValueRow {
+                label: "Light elevation";
+                value: Math.round(RenderModel.light-pitch-deg) + "\u{b0}";
+                active: RenderModel.light-direction-used;
+            }
+            Slider {
+                enabled: RenderModel.light-direction-used;
+                minimum: 10;
+                maximum: 90;
+                value <=> RenderModel.light-pitch-deg;
+                changed => { RenderModel.settings-edited(); }
+            }
+            Text {
+                text: "Backdrop";
+                font-size: 11px;
+                font-weight: 600;
+                color: Theme.text-secondary;
+            }
+            Pills {
+                labels: ["As lit", "Grey", "White"];
+                selected <=> RenderModel.backdrop-index;
+                chosen => { RenderModel.settings-edited(); }
+            }
+            if AppModel.hdr-name != "": Switch {
+                text: "Use HDR: " + AppModel.hdr-name;
+                checked <=> RenderModel.use-hdr;
+                toggled => { RenderModel.settings-edited(); }
+            }
+            Button {
+                text: AppModel.hdr-name != "" ? "Load another HDR..." : "Load HDR environment...";
+                clicked => { RenderModel.load-hdr(); }
+            }
+
+            Caption { text: "QUALITY"; }
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Bounces";
+                    font-size: 11px;
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                SpinBox {
+                    width: 90px;
+                    minimum: 4;
+                    maximum: 24;
+                    value <=> RenderModel.bounces;
+                    edited => { RenderModel.settings-edited(); }
+                }
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Target spp";
+                    font-size: 11px;
+                    color: Theme.text-secondary;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                }
+                SpinBox {
+                    width: 90px;
+                    minimum: 64;
+                    maximum: 1024;
+                    step-size: 64;
+                    value <=> RenderModel.target-spp;
+                    edited => { RenderModel.settings-edited(); }
+                }
+            }
+            Switch {
+                text: "Denoise when settled";
+                checked <=> RenderModel.denoise;
+                toggled => { RenderModel.settings-edited(); }
+            }
+
+            Caption { text: "MATERIAL"; }
+            Switch {
+                text: "Linked to design";
+                checked <=> RenderModel.link-material;
+                toggled => { RenderModel.settings-edited(); }
+            }
+            Switch {
+                text: "Frosted girdle";
+                checked <=> RenderModel.frosted-girdle;
+                toggled => { RenderModel.settings-edited(); }
+            }
+            ValueRow {
+                label: "Inclusion haze";
+                value: RenderModel.inclusion-sigma-s <= 0 ? "Off" : Math.round(RenderModel.inclusion-sigma-s * 100) / 100 + "";
+            }
+            Slider {
+                minimum: 0;
+                maximum: 3;
+                step: 0.05;
+                value <=> RenderModel.inclusion-sigma-s;
+                changed => { RenderModel.settings-edited(); }
+            }
+            ValueRow {
+                label: "Edge rounding";
+                value: RenderModel.edge-rounding <= 0 ? "Off" : Math.round(RenderModel.edge-rounding * 1000) / 1000 + "";
+            }
+            Slider {
+                minimum: 0;
+                maximum: 0.03;
+                step: 0.001;
+                value <=> RenderModel.edge-rounding;
+                changed => { RenderModel.settings-edited(); }
+            }
+            ValueRow {
+                label: RenderModel.link-material ? "Stone size (from the design)" : "Stone size";
+                value: RenderModel.stone-width-mm <= 0 ? "Off" : Math.round(RenderModel.stone-width-mm * 100) / 100 + " mm";
+                active: !RenderModel.link-material;
+            }
+            Slider {
+                enabled: !RenderModel.link-material;
+                minimum: 0;
+                maximum: 20;
+                step: 0.1;
+                value <=> RenderModel.stone-width-mm;
+                changed => { RenderModel.settings-edited(); }
+            }
+            Switch {
+                text: "Crystal axis override";
+                checked <=> RenderModel.c-axis-override;
+                toggled => { RenderModel.settings-edited(); }
+            }
+            ValueRow {
+                label: "Axis tilt";
+                value: Math.round(RenderModel.c-axis-tilt-deg) + "\u{b0}";
+                active: RenderModel.c-axis-override;
+            }
+            Slider {
+                enabled: RenderModel.c-axis-override;
+                minimum: 0;
+                maximum: 90;
+                value <=> RenderModel.c-axis-tilt-deg;
+                changed => { RenderModel.settings-edited(); }
+            }
+            ValueRow {
+                label: "Axis azimuth";
+                value: Math.round(RenderModel.c-axis-azimuth-deg) + "\u{b0}";
+                active: RenderModel.c-axis-override;
+            }
+            Slider {
+                enabled: RenderModel.c-axis-override;
+                minimum: 0;
+                maximum: 360;
+                value <=> RenderModel.c-axis-azimuth-deg;
+                changed => { RenderModel.settings-edited(); }
+            }
+        }
+    }
+}

@@ -21,7 +21,15 @@ fn dispersion_evaluate(model_type: u32, param_a: vec4<f32>, param_b: vec4<f32>, 
         return sqrt(max(n2, 1.0));
     } else {
         let l4 = l2 * l2;
-        return param_a.x + (param_a.y / l2) + (param_a.z / l4);
+        // Floored at 1.0, matching `DispersionModel::Cauchy`'s own `.max(1.0)`
+        // (optics::dispersion, `dispersion.rs:63`) -- an out-of-fit-range
+        // extrapolation (this renderer samples down to 380nm/up to 780nm; most Cauchy
+        // fits are only solved/verified at/near the sodium D line and the F/C
+        // Fraunhofer lines, 486-656nm) must never be allowed to produce a
+        // physically-impossible n < 1 index, exactly like the Sellmeier branches'
+        // `max(n2, 1.0)` above (latent: no shipped Cauchy material's fit coefficients
+        // currently dip below 1.0 anywhere in the visible range).
+        return max(param_a.x + (param_a.y / l2) + (param_a.z / l4), 1.0);
     }
 }
 
@@ -30,18 +38,18 @@ fn dispersion_evaluate(model_type: u32, param_a: vec4<f32>, param_b: vec4<f32>, 
 // curve (`GpuGemMaterial::has_extraordinary_dispersion`/`extraordinary_model_type`/
 // `extraordinary_param_a`/`extraordinary_param_b` -- see `renderer::buffers::
 // GpuGemMaterial`'s own doc comment). A separate function from `dispersion_evaluate`
-// above -- rather than that function reused as-is -- because the CPU's
-// `DispersionModel::evaluate` floors EVERY variant at `n >= 1.0`
-// (`sqrt(max(n2, 1.0))` on both Sellmeier branches, an explicit `.max(1.0)` on the
-// Cauchy branch -- see that function's own doc comment on why an out-of-fit-range
-// extrapolation must never produce a physically-impossible index), while
-// `dispersion_evaluate` -- ported only for the ORDINARY-ray curve, whose Cauchy fits
-// this crate's built-ins only ever evaluate well within their validated range -- has
-// never needed the Cauchy floor and omits it. Every built-in extraordinary-ray curve
-// today (Quartz/Amethyst/Citrine) is Sellmeier3, whose floor `dispersion_evaluate`
-// already applies identically, but this function stays a faithful, complete port of
-// `DispersionModel::evaluate` (Cauchy floor included) rather than one that happens to
-// agree only for the variant currently in use.
+// above -- rather than that function reused as-is -- because it evaluates a distinct
+// curve (extraordinary vs. ordinary), not because the floor differs: the CPU's
+// `DispersionModel::evaluate` floors EVERY variant at `n >= 1.0` (`sqrt(max(n2, 1.0))`
+// on both Sellmeier branches, an explicit `.max(1.0)` on the Cauchy branch -- see that
+// function's own doc comment on why an out-of-fit-range extrapolation must never
+// produce a physically-impossible index), and `dispersion_evaluate` above now applies
+// the identical Cauchy floor (this crate's built-in ordinary-ray Cauchy fits only ever
+// evaluate well within their validated range, but a faithful port matches
+// `DispersionModel::evaluate` unconditionally rather than only for the variant currently
+// in use). Every built-in extraordinary-ray curve today (Quartz/Amethyst/Citrine/Rutile)
+// is Sellmeier3, so this
+// function's own Cauchy floor is here purely for the same complete-port reason.
 fn extraordinary_dispersion_evaluate(model_type: u32, param_a: vec4<f32>, param_b: vec4<f32>, lambda_nm: f32) -> f32 {
     let lambda_um = lambda_nm * 1e-3;
     let l2 = lambda_um * lambda_um;
@@ -155,8 +163,12 @@ fn spectral_absorption(bands: array<AbsorptionBand, 8>, band_count: u32, lambda_
 // `optics::raytracer::apply_frosted_bounce`'s own doc comment for the full derivation
 // -- this WGSL translation must never diverge from it: no per-channel direction, no
 // per-channel `r_unpol_k`, no extra `path_pdf` division (the cosine-weighted-hemisphere
-// pdf already exactly cancels the assumed Lambertian `albedo = 1.0` BRDF/BTDF, folded
-// into the `1.0 / r_unpol` / `1.0 / t_unpol` throughput scale below).
+// pdf already exactly cancels the assumed Lambertian `albedo = 1.0` BRDF/BTDF). The
+// branch is drawn from `FRESNEL_BRANCH_STREAM` with probability `r_unpol` (or
+// `t_unpol`), and `path_pdf[k] *= r_unpol` (or `t_unpol`) below divides by exactly that
+// selection probability -- intensity itself is left unscaled (weight `1`, not
+// `1 / r_unpol`): the branch's energy fraction and its selection probability are the
+// same number and cancel, so no throughput division belongs here.
 // ---------------------------------------------------------------------------------
 
 struct FrostedBasis {
@@ -258,7 +270,7 @@ fn apply_frosted_bounce(
     if (rng_bounce < r_unpol) {
         let new_dir = cosine_weighted_hemisphere(u1, u2, normal);
         for (var k: u32 = 0u; k < 8u; k = k + 1u) {
-            let intensity = max((*stokes)[k].x, 0.0) / r_unpol;
+            let intensity = max((*stokes)[k].x, 0.0);
             (*stokes)[k] = vec4<f32>(intensity, 0.0, 0.0, 0.0);
             (*path_pdf)[k] = (*path_pdf)[k] * r_unpol;
         }
@@ -284,7 +296,7 @@ fn apply_frosted_bounce(
     let t_unpol = 1.0 - r_unpol;
     // No `/ split_pdf` -- see the entering_anisotropic comment above.
     for (var k: u32 = 0u; k < 8u; k = k + 1u) {
-        let intensity = max((*stokes)[k].x, 0.0) / t_unpol;
+        let intensity = max((*stokes)[k].x, 0.0);
         (*stokes)[k] = vec4<f32>(intensity, 0.0, 0.0, 0.0);
         // No `* split_pdf` -- scale-invariant under a uniform per-channel factor, was a
         // pure no-op on the MIS weight; see refraction.rs.

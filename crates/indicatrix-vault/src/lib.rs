@@ -9,11 +9,17 @@
 //!   than this crate itself fills -- columns like `page_url`/`pdf_file` are just
 //!   columns, and an existing `facet_diagrams.sqlite`, however it was populated, keeps
 //!   opening and keeps every value it already holds.
-//! - [`model`]: `FacetDiagramDetail`, `AngleSetting`, `AttachedFile`, search/range
-//!   filters, and cross-source dedup types.
+//! - [`model`]: `FacetingDiagramDetail`, `AngleSetting`, `AttachedFile`, search/range
+//!   filters.
 //! - [`local`]: import/export for the user's own `.asc` files (via `indicatrix_formats::asc`),
 //!   independent of any online source.
 
+/// SQLite storage and schema migrations -- see [`db::sqlite::Database`].
 pub mod db;
+/// Import/export for the user's own `.asc` files, independent of any online source.
+///
+/// See [`local::import_asc`]/[`local::reconstruct_asc_schedule`].
 pub mod local;
+/// Plain data models: `FacetingDiagramDetail`, `AngleSetting`, `AttachedFile`, search/
+/// range filters.
 pub mod model;

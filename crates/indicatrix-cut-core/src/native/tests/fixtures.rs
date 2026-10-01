@@ -43,6 +43,7 @@ pub(super) fn simple_design() -> Design {
         // keeps the "Diamond" selection (real n_D ~2.417) from changing what
         // `to_asc_schedule` exports for an otherwise-untouched design.
         refractive_index_override: Some(1.62),
+        body_colour_override: None,
     };
     design.tiers[1].constraint = MeetConstraint::MeetExisting;
     design.tiers[1].detached = vec![0.0, 2.0];
@@ -66,6 +67,7 @@ pub(super) fn fully_anchored_design() -> Design {
         specific_gravity_override: None,
         // See `simple_design`'s comment on this field.
         refractive_index_override: Some(1.62),
+        body_colour_override: None,
     };
     design
 }

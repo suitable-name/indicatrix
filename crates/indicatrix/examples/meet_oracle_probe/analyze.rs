@@ -15,7 +15,11 @@ use crate::{
     },
 };
 
-#[allow(clippy::too_many_lines)]
+/// Runs the full oracle analysis for one design.
+#[allow(
+    clippy::too_many_lines,
+    reason = "straight-line per-design analysis in a probe; splitting it would scatter the pipeline"
+)]
 pub fn analyze_one(row: &AscRow) -> DesignResult {
     let mut out = DesignResult::default();
     let text = String::from_utf8_lossy(&row.content);
@@ -108,7 +112,10 @@ pub fn analyze_one(row: &AscRow) -> DesignResult {
 
     // Per-tier realizing vertices for the reachability simulation: (position,
     // incident (tier, instance) pairs).
-    #[allow(clippy::type_complexity)]
+    #[allow(
+        clippy::type_complexity,
+        reason = "one-off nested tuple for a local accumulator; a named type adds nothing"
+    )]
     let mut realizing_vertices: Vec<Vec<(DVec3, Vec<(usize, usize)>)>> = vec![Vec::new(); nt];
 
     let mut tier_stats: Vec<TierStats> = Vec::new();

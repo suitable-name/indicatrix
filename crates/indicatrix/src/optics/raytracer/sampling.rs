@@ -80,7 +80,9 @@ pub const fn hash_u32(mut x: u32) -> u32 {
 /// applied to that quantity's own [`radical_inverse_base`] sequence.
 // `pub`: production callers that compute these rotations themselves live outside this crate.
 pub const PIXEL_JITTER_X_ROTATION_STREAM: u32 = 0xA511_E9B3;
+/// Salt for the per-pixel vertical jitter rotation.
 pub const PIXEL_JITTER_Y_ROTATION_STREAM: u32 = 0x63D8_1B23;
+/// Salt for the per-pixel hero-wavelength rotation.
 pub const HERO_WAVELENGTH_ROTATION_STREAM: u32 = 0x1B87_3593;
 
 /// Base-2 van der Corput radical-inverse sequence: `n` with its bits reversed,
@@ -151,8 +153,11 @@ pub fn cranley_patterson_rotate(x: f32, offset: f32) -> f32 {
 /// reused for every sample of that pixel via [`sample_draws`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PixelRotations {
+    /// Rotation applied to the pixel-jitter-X sequence.
     pub jitter_x: f32,
+    /// Rotation applied to the pixel-jitter-Y sequence.
     pub jitter_y: f32,
+    /// Rotation applied to the hero-wavelength sequence.
     pub hero: f32,
 }
 
@@ -172,9 +177,13 @@ pub fn pixel_rotations(pixel: u32) -> PixelRotations {
 /// call.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SampleDraws {
+    /// RNG seed for the per-bounce draws.
     pub seed: u32,
+    /// Stratified pixel-jitter-X value.
     pub jitter_x: f32,
+    /// Stratified pixel-jitter-Y value.
     pub jitter_y: f32,
+    /// Stratified hero-wavelength value.
     pub hero_rand: f32,
 }
 
@@ -296,42 +305,127 @@ mod non_finite_rule_tests {
 mod sample_draws_tests {
     use super::*;
 
-    /// The literal formula, copied verbatim (not calling [`pixel_rotations`]/
-    /// [`sample_draws`]) so this test proves the real functions reproduce it
-    /// bit-for-bit rather than merely agreeing with themselves.
-    fn old_formula(pixel: u32, sample_num: u32) -> (u32, f32, f32, f32) {
-        let seed = hash_u32(pixel.wrapping_mul(0x9e37_79b9) ^ sample_num.wrapping_mul(0x85eb_ca6b));
-        let rot_jx = low_discrepancy_base2(hash_u32(pixel ^ PIXEL_JITTER_X_ROTATION_STREAM));
-        let rot_jy = low_discrepancy_base2(hash_u32(pixel ^ PIXEL_JITTER_Y_ROTATION_STREAM));
-        let rot_hero = low_discrepancy_base2(hash_u32(pixel ^ HERO_WAVELENGTH_ROTATION_STREAM));
-        let jx = cranley_patterson_rotate(low_discrepancy_base2(sample_num), rot_jx) - 0.5;
-        let jy = cranley_patterson_rotate(radical_inverse_base(sample_num, 3), rot_jy) - 0.5;
-        let hero_rand = cranley_patterson_rotate(radical_inverse_base(sample_num, 5), rot_hero);
-        (seed, jx, jy, hero_rand)
-    }
-
-    /// Checked over a few thousand `(pixel, sample_num)` pairs: [`pixel_rotations`] +
-    /// [`sample_draws`] must reproduce [`old_formula`] bit-for-bit, every time --
-    /// every production call site depends on this being an exact drop-in replacement.
+    /// Every draw lies in its documented interval: the two jitters in `[-0.5, 0.5)` and
+    /// the hero value in `[0, 1)`. A Cranley-Patterson rotation of a value in `[0, 1)` by
+    /// an offset in `[0, 1)` is `sum - floor(sum)`, which is below 1 for any `sum < 2`.
     #[test]
-    fn sample_draws_matches_the_literal_old_formula_bit_for_bit() {
-        let mut checked = 0u32;
-        for pixel in 0..4000u32 {
+    fn draws_lie_in_their_unit_intervals() {
+        for pixel in 0..200u32 {
             let rot = pixel_rotations(pixel);
-            for sample_num in 0..3u32 {
-                let (seed, jx, jy, hero) = old_formula(pixel, sample_num);
-                let draws = sample_draws(pixel, sample_num, &rot);
-                assert_eq!(draws.seed, seed, "pixel={pixel} sample={sample_num}");
-                assert_eq!(draws.jitter_x, jx, "pixel={pixel} sample={sample_num}");
-                assert_eq!(draws.jitter_y, jy, "pixel={pixel} sample={sample_num}");
-                assert_eq!(draws.hero_rand, hero, "pixel={pixel} sample={sample_num}");
-                checked += 1;
+            for value in [rot.jitter_x, rot.jitter_y, rot.hero] {
+                assert!(
+                    (0.0..1.0).contains(&value),
+                    "pixel={pixel} rotation={value}"
+                );
+            }
+            for sample_num in 0..64u32 {
+                let d = sample_draws(pixel, sample_num, &rot);
+                assert!(
+                    (-0.5..0.5).contains(&d.jitter_x),
+                    "pixel={pixel} sample={sample_num} jitter_x={}",
+                    d.jitter_x
+                );
+                assert!(
+                    (-0.5..0.5).contains(&d.jitter_y),
+                    "pixel={pixel} sample={sample_num} jitter_y={}",
+                    d.jitter_y
+                );
+                assert!(
+                    (0.0..1.0).contains(&d.hero_rand),
+                    "pixel={pixel} sample={sample_num} hero_rand={}",
+                    d.hero_rand
+                );
             }
         }
+    }
+
+    /// Different `(pixel, sample)` pairs must not share a seed. For a fixed pixel the
+    /// map `sample -> hash(pixel * A ^ sample * B)` is injective (`B` is odd so the
+    /// multiply is a bijection on `u32`, xor with a constant is a bijection, and
+    /// `hash_u32` is a composition of bijections), and likewise for a fixed sample over
+    /// pixels, so every seed below is distinct by construction.
+    #[test]
+    fn distinct_pixel_or_sample_gives_a_distinct_seed() {
+        let mut by_sample = std::collections::HashSet::new();
+        let rot = pixel_rotations(7);
+        for sample_num in 0..512u32 {
+            assert!(
+                by_sample.insert(sample_draws(7, sample_num, &rot).seed),
+                "sample {sample_num} repeated a seed"
+            );
+        }
+        let mut by_pixel = std::collections::HashSet::new();
+        for pixel in 0..512u32 {
+            let rot = pixel_rotations(pixel);
+            assert!(
+                by_pixel.insert(sample_draws(pixel, 3, &rot).seed),
+                "pixel {pixel} repeated a seed"
+            );
+        }
+    }
+
+    /// The same `(pixel, sample)` produces bit-identical draws on every call.
+    #[test]
+    fn draws_are_bit_stable_across_calls() {
+        for pixel in [0u32, 1, 977, 123_456] {
+            for sample_num in [0u32, 1, 2, 31, 4096] {
+                let first = sample_draws(pixel, sample_num, &pixel_rotations(pixel));
+                let second = sample_draws(pixel, sample_num, &pixel_rotations(pixel));
+                assert_eq!(first.seed, second.seed);
+                assert_eq!(first.jitter_x.to_bits(), second.jitter_x.to_bits());
+                assert_eq!(first.jitter_y.to_bits(), second.jitter_y.to_bits());
+                assert_eq!(first.hero_rand.to_bits(), second.hero_rand.to_bits());
+            }
+        }
+    }
+
+    /// Hand-evaluated draws with explicit rotations, so nothing here calls the hash:
+    ///
+    /// - Pixel 0, sample 0: `hash_u32(0 * A ^ 0 * B) = hash_u32(0) = 0` (every step of
+    ///   the hash maps 0 to 0), and every radical inverse of 0 is 0.
+    /// - Sample 1: base 2 gives `bit_reverse(1) / 2^32 = 2^31 / 2^32 = 0.5`; base 3 gives
+    ///   `1/3`; base 5 gives `1/5`.
+    /// - Sample 2: base 2 gives `2^30 / 2^32 = 0.25`; base 3 gives `2/3`; base 5 gives
+    ///   `2/5`.
+    ///
+    /// With rotations `(0.75, 0.0, 0.5)` and sample 1 the jitter-X value is
+    /// `(0.5 + 0.75) - floor(1.25) - 0.5 = -0.25` (exact in `f32`); jitter-Y is
+    /// `1/3 - 0.5`; the hero value is `(0.2 + 0.5) = 0.7`.
+    #[test]
+    fn hand_computed_draws_for_small_sample_indices() {
+        let zero = PixelRotations {
+            jitter_x: 0.0,
+            jitter_y: 0.0,
+            hero: 0.0,
+        };
+        let d0 = sample_draws(0, 0, &zero);
+        assert_eq!(d0.seed, 0);
+        assert_eq!(d0.jitter_x, -0.5);
+        assert_eq!(d0.jitter_y, -0.5);
+        assert_eq!(d0.hero_rand, 0.0);
+
+        let d2 = sample_draws(0, 2, &zero);
+        assert_eq!(d2.jitter_x, -0.25);
         assert!(
-            checked >= 3000,
-            "sanity: should have checked a few thousand pairs"
+            (d2.jitter_y - (2.0 / 3.0 - 0.5)).abs() < 1e-6,
+            "{}",
+            d2.jitter_y
         );
+        assert!((d2.hero_rand - 0.4).abs() < 1e-6, "{}", d2.hero_rand);
+
+        let rotated = PixelRotations {
+            jitter_x: 0.75,
+            jitter_y: 0.0,
+            hero: 0.5,
+        };
+        let d1 = sample_draws(0, 1, &rotated);
+        assert_eq!(d1.jitter_x, -0.25);
+        assert!(
+            (d1.jitter_y - (1.0 / 3.0 - 0.5)).abs() < 1e-6,
+            "{}",
+            d1.jitter_y
+        );
+        assert!((d1.hero_rand - 0.7).abs() < 1e-6, "{}", d1.hero_rand);
     }
 }
 

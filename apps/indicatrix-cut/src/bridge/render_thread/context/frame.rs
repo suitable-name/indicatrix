@@ -62,6 +62,8 @@ pub(in crate::bridge::render_thread) struct FrameInputs {
     pub(in crate::bridge::render_thread) paused: bool,
     pub(in crate::bridge::render_thread) tab_visible: bool,
     pub(in crate::bridge::render_thread) denoise_enabled: bool,
+    /// See [`RenderContext::redisplay_requested`].
+    pub(in crate::bridge::render_thread) redisplay_requested: bool,
     pub(in crate::bridge::render_thread) remote_active: bool,
     /// See [`RenderContext::live_epoch`].
     pub(in crate::bridge::render_thread) live_epoch: Option<Arc<LiveEpoch>>,
@@ -94,6 +96,11 @@ pub(in crate::bridge::render_thread) fn snapshot_frame_inputs(
     let mut ctx = RenderContext::lock(ctx);
     let dirty = ctx.dirty;
     ctx.dirty = false;
+    // Consumed the same way as `dirty` -- read and cleared in this one locked
+    // section, so a request set by a callback between the read and the clear is
+    // never lost. See `RenderContext::redisplay_requested`'s own doc comment.
+    let redisplay_requested = ctx.redisplay_requested;
+    ctx.redisplay_requested = false;
     let scene_generation = ctx.scene_generation();
     FrameInputs {
         width: ctx.width,
@@ -127,6 +134,7 @@ pub(in crate::bridge::render_thread) fn snapshot_frame_inputs(
         paused: ctx.paused,
         tab_visible: ctx.tab_visible,
         denoise_enabled: ctx.denoise_enabled,
+        redisplay_requested,
         remote_active: ctx.remote_active,
         // `Arc::clone`, not a deep copy -- see `live_epoch`'s doc comment.
         live_epoch: ctx.live_epoch.clone(),

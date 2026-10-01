@@ -166,25 +166,13 @@ export component PreformTab inherits VerticalLayout {
         girdle_lbl := Text { text: "Girdle Diameter (mm)"; font-size: 10px; color: Theme.text-muted; }
     }
     LineEdit { enabled: root.unlocked; text <=> EditorModel.girdle_diameter_mm; placeholder-text: "unset"; edited => { root.yield_pending = true; } changed has-focus => { EditorModel.text_focus = self.has-focus; } }
-    // Distinct from `gem_viewport.slint`'s unrelated Render
-    // Material control -- this one is specific gravity only, for
-    // the carat estimate; it never touches the render.
-    Rectangle {
-        height: yield_material_lbl.preferred-height;
-        Tooltip { text: @markdown("Yield Material -- specific gravity for the carat estimate. Does not affect the render."); }
-        yield_material_lbl := Text { text: "Yield Material"; font-size: 10px; color: Theme.text-muted; }
-    }
-    ComboBox {
-        enabled: root.unlocked;
-        // Bound to the same pushed `EditorModel.new_material_options`
-        // that `new_design_dialog.slint` uses -- both are
-        // `MATERIAL_PRESET_NAMES` in the same order, so sharing the
-        // one property (rather than a separate hand-synced literal
-        // here) can never silently drift from the real list.
-        model: EditorModel.new_material_options;
-        current-index <=> EditorModel.material_index;
-        selected => { root.yield_pending = true; }
-    }
+    // The "Yield Material" combo that used to sit here was removed --
+    // its selected index was never actually read (`state::parse_yield_form`'s
+    // own `_material_index` parameter stayed unused, see that function's own
+    // doc comment), so it looked like a working material picker but silently
+    // discarded whatever the cutter chose on "Apply Yield Inputs". The Design
+    // Settings panel's own material combo (`EditorModel.material_combo_index`)
+    // is the one that actually names/changes the design's material.
     Rectangle {
         height: sg_override_lbl.preferred-height;
         Tooltip { text: @markdown("Specific gravity for the carat estimate. Does not affect the render."); }
@@ -198,7 +186,11 @@ export component PreformTab inherits VerticalLayout {
         text: root.yield_pending ? "Apply Yield Inputs *" : "Apply Yield Inputs";
         primary: root.yield_pending;
         clicked => {
-            EditorModel.apply_yield_inputs(EditorModel.girdle_diameter_mm, EditorModel.material_index, EditorModel.specific_gravity_override);
+            // The second argument used to be the (now-removed) Yield Material
+            // combo's own index -- `state::parse_yield_form` never read it
+            // (see the comment on this combo's former location above), so a
+            // literal `0` changes nothing about what this click applies.
+            EditorModel.apply_yield_inputs(EditorModel.girdle_diameter_mm, 0, EditorModel.specific_gravity_override);
             root.yield_pending = false;
         }
     }

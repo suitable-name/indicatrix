@@ -42,7 +42,7 @@ use indicatrix::{
     optics::{
         materials::GemMaterial,
         raytracer::{
-            Camera, add_finite_sample, pixel_rotations, sample_draws,
+            Camera, DEFAULT_FOV_DEG, add_finite_sample, pixel_rotations, sample_draws,
             trace_spectral_ray_with_finish,
         },
     },
@@ -146,7 +146,12 @@ fn render_hover_preview(scene: &HoverPreviewScene<'_>) -> SharedPixelBuffer<Rgba
     let width = PREVIEW_SIZE;
     let height = PREVIEW_SIZE;
     // Same FOV convention as every other one-off `Camera::new` call site in this app.
-    let camera = Camera::new(scene.cam_yaw, scene.cam_pitch, scene.distance, 42.0);
+    let camera = Camera::new(
+        scene.cam_yaw,
+        scene.cam_pitch,
+        scene.distance,
+        DEFAULT_FOV_DEG,
+    );
     let environment = scene
         .lighting_preset
         .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
@@ -272,13 +277,19 @@ pub(in crate::gui) fn setup_tilt_hover_preview_callback(
                     )
                 };
                 // Same override preference as the sweep itself -- see
-                // `tilt_profile`'s own comment.
-                let material = resolve_material_with_override(
+                // `tilt_profile`'s own comment. Refuses (see `resolve_material`'s own
+                // doc comment) rather than rendering the hover preview as Diamond or
+                // as a previous design's material when the current one does not
+                // resolve -- there is nothing honest to preview, so this drops the
+                // request rather than substituting one.
+                let Some(material) = resolve_material_with_override(
                     &GemMaterial::all_materials(),
                     &custom_materials,
                     material_override.as_ref(),
                     &material_name,
-                );
+                ) else {
+                    return;
+                };
                 let (cam_yaw, cam_pitch) = camera_pose_for_hover(axis_index, tilt_deg);
 
                 let buffer = render_hover_preview(&HoverPreviewScene {

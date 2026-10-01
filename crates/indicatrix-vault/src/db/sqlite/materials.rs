@@ -11,13 +11,21 @@ use rusqlite::params;
 /// already holds `&str`s -- forcing an allocation just to call this would be worse than
 /// the extra parameters it replaces.
 pub struct CustomMaterialParams<'a> {
+    /// Material name.
     pub name: &'a str,
+    /// Refractive index.
     pub refractive_index: f32,
+    /// Dispersion value.
     pub dispersion: f32,
+    /// Birefringence value.
     pub birefringence: f32,
+    /// Per-channel absorption coefficients.
     pub absorption_rgb: [f32; 3],
+    /// Crystal system of the material.
     pub crystal_system: Option<&'a str>,
+    /// Optical character of the material.
     pub optical_character: Option<&'a str>,
+    /// Biaxial beta-alpha offset, if any.
     pub biaxial_delta_beta_alpha: Option<f32>,
     /// See `crate::model::material::CustomMaterialRow::per_axis_dispersion_json`'s doc
     /// comment. Borrowed (`&str`) for the same reason every other field here is, per

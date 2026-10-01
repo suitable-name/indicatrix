@@ -159,6 +159,7 @@ fn progress_and_done_are_also_epoch_gated() {
             samples_done: 1,
             requested_cadence_ms: 0,
             effective_cadence_ms: 0,
+            reclaimed_samples: 0,
         },
     });
     assert_eq!(
@@ -173,6 +174,7 @@ fn progress_and_done_are_also_epoch_gated() {
             samples_done: 12,
             requested_cadence_ms: 0,
             effective_cadence_ms: 0,
+            reclaimed_samples: 0,
         },
     });
     assert_eq!(
@@ -182,14 +184,40 @@ fn progress_and_done_are_also_epoch_gated() {
 }
 
 #[test]
-fn worker_error_is_reported_regardless_of_current_epoch() {
+fn worker_error_with_no_request_id_is_reported_regardless_of_current_epoch() {
     let mut acc = Accumulator::new(1, 1);
     // No begin_request call at all -- current epoch is None.
     let event = StreamEvent::Error(ErrorMsg {
         code: 2,
         message: "validation failed".to_string(),
+        request_id: None,
     });
     assert_eq!(acc.apply(&event, None).unwrap(), ApplyOutcome::WorkerError);
+}
+
+/// v15: an `ERROR` naming a `request_id` is epoch-gated exactly like `FRAME`/`DONE` -- a
+/// late error for a request the client has already moved on from must not fail the
+/// wrong (current) request.
+#[test]
+fn worker_error_with_a_stale_request_id_is_dropped_not_reported() {
+    let mut acc = Accumulator::new(1, 1);
+    acc.begin_request(5);
+    let stale = StreamEvent::Error(ErrorMsg {
+        code: 3,
+        message: "internal error while tracing this request".to_string(),
+        request_id: Some(4),
+    });
+    assert_eq!(acc.apply(&stale, None).unwrap(), ApplyOutcome::StaleDropped);
+
+    let current = StreamEvent::Error(ErrorMsg {
+        code: 3,
+        message: "internal error while tracing this request".to_string(),
+        request_id: Some(5),
+    });
+    assert_eq!(
+        acc.apply(&current, None).unwrap(),
+        ApplyOutcome::WorkerError
+    );
 }
 
 #[test]
@@ -262,31 +290,100 @@ fn in_range_frames_are_summed_when_a_range_is_declared() {
     assert!(acc.buffer().iter().all(|v| *v == Vec3::splat(2.0)));
 }
 
-/// Debug builds must fail loudly on an out-of-range FRAME: it means some backend
-/// traced sample indices it was never assigned.
+/// An out-of-range FRAME is refused with an error rather than summed: it means some
+/// backend traced sample indices it was never assigned.
 #[test]
-#[cfg(debug_assertions)]
-#[should_panic(expected = "outside the expected range")]
-fn an_out_of_range_frame_trips_the_debug_assertion() {
+fn an_out_of_range_frame_is_rejected() {
     let mut acc = Accumulator::new(2, 2);
     acc.begin_request_for_range(7, 64, 8);
     let (event, bytes) = ranged_frame_event(7, 70, 4, 4);
-    let _ = acc.apply(&event, Some(&bytes));
-}
-
-/// Release builds must reject an out-of-range FRAME as stale rather than sum it.
-#[test]
-#[cfg(not(debug_assertions))]
-fn an_out_of_range_frame_is_dropped_in_release_builds() {
-    let mut acc = Accumulator::new(2, 2);
-    acc.begin_request_for_range(7, 64, 8);
-    let (event, bytes) = ranged_frame_event(7, 60, 4, 4);
     assert_eq!(
-        acc.apply(&event, Some(&bytes)).unwrap(),
-        ApplyOutcome::StaleDropped
+        acc.apply(&event, Some(&bytes)).unwrap_err(),
+        RadianceError::FrameOutsideRange {
+            first_sample: 70,
+            samples: 4,
+            start: 64,
+            end: 72,
+        }
     );
     assert_eq!(acc.samples_done(), 0);
     assert!(acc.buffer().iter().all(|v| *v == Vec3::ZERO));
+}
+
+/// Two FRAMEs that are each individually contained in the declared range can still
+/// overlap each other, double-counting samples -- containment alone (checked per frame)
+/// cannot see this, since it never compares one frame against another. The CUMULATIVE
+/// check catches it: `[64, 72)` is 8 samples wide; a first FRAME of 5 samples
+/// (`[64, 69)`, itself in range) leaves only 3 samples' worth of the range unaccounted
+/// for, so a second FRAME of 5 more samples (`[67, 72)`, ALSO in range on its own) would
+/// bring the cumulative total to 10 -- over the range's own width -- and is rejected even
+/// though neither frame individually fails containment. Neither `samples_done` nor the
+/// buffer reflects the rejected FRAME.
+#[test]
+fn a_cumulative_overrun_from_two_individually_in_range_frames_is_rejected() {
+    let mut acc = Accumulator::new(2, 2);
+    acc.begin_request_for_range(7, 64, 8);
+    let (first, first_bytes) = ranged_frame_event(7, 64, 5, 4);
+    assert_eq!(
+        acc.apply(&first, Some(&first_bytes)).unwrap(),
+        ApplyOutcome::FrameSummed { samples_done: 5 }
+    );
+    let (second, second_bytes) = ranged_frame_event(7, 67, 5, 4);
+    assert_eq!(
+        acc.apply(&second, Some(&second_bytes)).unwrap_err(),
+        RadianceError::SampleCountOverrun {
+            cumulative: 10,
+            range_len: 8,
+        }
+    );
+    assert_eq!(
+        acc.samples_done(),
+        5,
+        "the rejected FRAME must not be counted"
+    );
+    assert!(
+        acc.buffer().iter().all(|v| *v == Vec3::ONE),
+        "only the first FRAME's sum must land"
+    );
+}
+
+/// A FRAME claiming zero samples but carrying a payload is refused, not summed.
+#[test]
+fn a_zero_sample_frame_with_a_payload_is_rejected() {
+    let mut acc = Accumulator::new(2, 2);
+    acc.begin_request(7);
+    let (event, bytes) = ranged_frame_event(7, 0, 0, 4);
+    assert_eq!(
+        acc.apply(&event, Some(&bytes)).unwrap_err(),
+        RadianceError::ZeroSampleFrame
+    );
+    assert!(acc.buffer().iter().all(|v| *v == Vec3::ZERO));
+}
+
+/// A pixel with a NaN, infinite or negative component is skipped and counted; the frame's
+/// samples still count as done and the other pixels sum normally.
+#[test]
+fn invalid_radiance_pixels_are_skipped_but_the_samples_still_count() {
+    let mut acc = Accumulator::new(2, 2);
+    acc.begin_request(7);
+    let pixels = [
+        Vec3::ONE,
+        Vec3::new(f32::NAN, 1.0, 1.0),
+        Vec3::new(1.0, f32::INFINITY, 1.0),
+        Vec3::new(1.0, 1.0, -1.0),
+    ];
+    let bytes = radiance::encode(&pixels);
+    let header = FrameHeader::for_payload(7, 0, 2, &bytes);
+    assert_eq!(
+        acc.apply(&StreamEvent::Frame(header), Some(&bytes))
+            .unwrap(),
+        ApplyOutcome::FrameSummed { samples_done: 2 }
+    );
+    assert_eq!(acc.dropped_pixels(), 3);
+    assert_eq!(
+        acc.buffer(),
+        &[Vec3::ONE, Vec3::ZERO, Vec3::ZERO, Vec3::ZERO]
+    );
 }
 
 /// Without a declared range, any FRAME range is accepted -- the pre-existing
@@ -528,6 +625,40 @@ fn pong_and_capability_changed_are_never_epoch_gated() {
         acc.apply(&StreamEvent::CapabilityChanged { render: None }, None)
             .unwrap(),
         ApplyOutcome::CapabilityChanged
+    );
+}
+
+/// v16: `DONE.stats` is kept for the epoch it belongs to (e.g. so a caller can read
+/// `reclaimed_samples` after the fact), and cleared the moment the next epoch begins --
+/// exactly like `final_image`.
+#[test]
+fn done_stats_are_kept_for_the_epoch_and_cleared_on_begin_request() {
+    let mut acc = Accumulator::new(1, 1);
+    acc.begin_request(1);
+    assert_eq!(acc.done_stats(), None);
+
+    let stats = Stats {
+        samples_done: 8,
+        requested_cadence_ms: 0,
+        effective_cadence_ms: 0,
+        reclaimed_samples: 3,
+    };
+    let done = StreamEvent::Done(Done {
+        request_id: 1,
+        cancelled: false,
+        stats,
+    });
+    assert_eq!(
+        acc.apply(&done, None).unwrap(),
+        ApplyOutcome::Done { cancelled: false }
+    );
+    assert_eq!(acc.done_stats(), Some(stats));
+
+    acc.begin_request(2);
+    assert_eq!(
+        acc.done_stats(),
+        None,
+        "begin_request must clear the previous epoch's DONE stats"
     );
 }
 

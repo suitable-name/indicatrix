@@ -18,6 +18,7 @@
 
 use super::preview_state::{FacetOverlay, PickBuffer, SolidPreviewState};
 use crate::{EditorModel, MainWindow, SolidPreviewModel};
+use indicatrix_solid::preview::{panel_kind_from_index, view::toggle_enlarged_panel};
 use slint::ComponentHandle;
 use std::{
     cell::RefCell,
@@ -177,6 +178,42 @@ pub fn setup_diagram_hover_and_click_callbacks(
     }
 }
 
+/// Wires `SolidPreviewModel.diagram_double_click`: enlarge the panel under the pointer.
+///
+/// A double-click on a panel enlarges it to fill the view, and a double-click while
+/// a panel is enlarged (or on no panel) goes back to all three -- the same rule as
+/// the web app, through `indicatrix_solid::preview::view::toggle_enlarged_panel`.
+///
+/// `panel_pick` is the last diagram frame's per-pixel panel buffer
+/// (`PreviewFrame::diagram_panel_pick`), read with the same logical-to-physical
+/// scaling as the hover and click callbacks above. Only the property is written
+/// here: `SolidPreviewModel`'s `changed diagram_enlarged_panel` handler raises
+/// `diagram_enlarged_panel_changed`, which `gui::editor` turns into the replan that
+/// redraws the diagram (see `gui::editor::setup::setup_tier_cutoff_callback`), so a pill click, the
+/// Escape key and this double-click all redraw through one path.
+pub fn setup_diagram_double_click_callback(ui: &MainWindow, panel_pick: &DiagramPick) {
+    let panel_pick = Arc::clone(panel_pick);
+    let ui_weak = ui.as_weak();
+    ui.global::<SolidPreviewModel>()
+        .on_diagram_double_click(move |x: f32, y: f32| {
+            let Some(ui) = ui_weak.upgrade() else {
+                return;
+            };
+            let scale = ui.window().scale_factor();
+            let px = (x * scale).max(0.0) as u32;
+            let py = (y * scale).max(0.0) as u32;
+            let clicked = panel_pick
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .as_ref()
+                .and_then(|buffer| buffer.facet_at(px, py))
+                .and_then(|index| panel_kind_from_index(i32::try_from(index).ok()?));
+            let model = ui.global::<SolidPreviewModel>();
+            let next = toggle_enlarged_panel(model.get_diagram_enlarged_panel(), clicked);
+            model.set_diagram_enlarged_panel(next);
+        });
+}
+
 /// The Diagram view's shared pick-buffer/hover-text/facet-tier handles --
 /// bundled (rather than four more parameters) purely to keep
 /// [`handle_diagram_facet_click`] under clippy's argument-count lint.
@@ -221,8 +258,21 @@ fn handle_diagram_facet_click(
         // tier_actions`/`EditorState`.
         let tooth = tooth_at(tooth_pick, px, py);
         if let Some(tooth) = tooth {
+            let tooth = tooth as i32;
             ui.global::<SolidPreviewModel>()
-                .set_diagram_clicked_tooth(tooth as i32);
+                .set_diagram_clicked_tooth(tooth);
+            // Also invoked directly, not left to `editor_tier_table.slint`'s
+            // `tracked_clicked_tooth` mirror alone: that mirror's `changed`
+            // handler is QUEUED and only fires when the property's value
+            // actually differs from what it last saw, so clicking the SAME tooth twice
+            // in a row -- a real, common gesture, e.g. re-confirming a
+            // highlight after looking away -- would otherwise silently do
+            // nothing the second time. `EditorModel.invoke_highlight_tooth`
+            // is an ordinary synchronous call, so calling it here as well
+            // costs nothing on the normal (tooth actually changed) path --
+            // that mirror's own call runs again shortly after, redundantly
+            // but harmlessly recomputing the identical highlight.
+            ui.global::<EditorModel>().invoke_highlight_tooth(tooth);
             return;
         }
         // A click that misses the silhouette AND the wheel clears the
@@ -235,6 +285,15 @@ fn handle_diagram_facet_click(
         // `setup_solid_selected_tier_changed_callback`).
         preview_state.request_facet_overlay(FacetOverlay::default());
         ui.global::<EditorModel>().set_selected_tier_index(-1);
+        // Same direct-invocation reasoning as the tooth-hit branch above,
+        // for the opposite edge: this also resets `diagram_clicked_tooth`
+        // to its own "nothing clicked" default so a LATER re-click on the
+        // very tooth that was highlighted before this miss still raises a
+        // real value change (and so the mirror's own `changed` handler)
+        // instead of silently no-op-ing against a stale, never-reset value.
+        ui.global::<SolidPreviewModel>()
+            .set_diagram_clicked_tooth(-1);
+        ui.global::<EditorModel>().invoke_highlight_tooth(-1);
         // A miss also clears whatever facet was previously identified
         // -- nothing is selected any more, so nothing should keep
         // reading in the tooltip. Mirrors

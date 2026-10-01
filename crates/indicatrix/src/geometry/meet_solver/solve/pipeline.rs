@@ -139,14 +139,24 @@ impl SolveContext<'_> {
         let blocks = &self.blocks;
         let resolved_named = &self.resolved_named;
         let is_anchor = &self.is_anchor;
-        let scale_prior = self.scale_prior;
+        let scale_norm = self.scale_norm;
+        // Every anchor mast (a real `ScaleReference` value or a
+        // repair-search `anchor_values` override, both in the design's real
+        // absolute units) is normalised into the same order-1 neighbourhood
+        // `EPS_FEAS`/`EPS_INCIDENT`/`LEVEL_TOL`/`BLANK_HALF_EXTENT` assume,
+        // before any candidate-vertex geometry runs; `to_solved` undoes this
+        // by multiplying back by `scale_norm` once the pipeline is done (see
+        // `SolveContext::scale_norm`'s doc comment). `scale_norm == 1.0`
+        // whenever the design's own scale already rounds to `2^0`, and
+        // dividing/multiplying by exactly `1.0` is a bit-exact no-op.
+        let scale_prior = self.scale_prior / scale_norm;
         let domination_limit = self.domination_limit;
         let mut mast: Vec<f64> = tiers
             .iter()
             .enumerate()
             .map(|(i, t)| match &t.constraint {
                 MeetConstraint::ScaleReference(v) => {
-                    anchor_values.get(&i).copied().unwrap_or_else(|| v.abs())
+                    anchor_values.get(&i).copied().unwrap_or_else(|| v.abs()) / scale_norm
                 }
                 _ => scale_prior,
             })
@@ -259,7 +269,7 @@ impl SolveContext<'_> {
                     // median rel. err 0.0828 -> 0.0862); building the corner
                     // directly from ref-plane triples under a feasibility slack
                     // measured worse still (0.0897). Same pattern as the
-                    // annihilation-guard finding above: weakening the acceptance
+                    // annihilation guard above: weakening the acceptance
                     // test admits self-consistent wrong corners; both rejected.
                 }
                 let (li, orig) = choice
@@ -458,11 +468,27 @@ impl SolveContext<'_> {
                 blocks_total: n as u32,
             });
 
+            // NaN-propagating fold, not a plain `.fold(0.0, f64::max)`: IEEE 754
+            // `max` returns the *other* (finite) argument when one side is NaN, so
+            // a single non-finite mast among many converged ones would otherwise
+            // be silently dropped from `max_rel_change` and the sweep could
+            // declare convergence with a NaN tier still present. Callers are
+            // expected to have already rejected non-finite input up front (see
+            // `first_non_finite_tier` in `entry.rs`/`verify.rs`), but this fold
+            // does not depend on that: a NaN here makes `max_rel_change` itself
+            // NaN, so the `< 1e-12` convergence test below is false (every
+            // ordered comparison with NaN is), never a false "converged".
             let max_rel_change = mast
                 .iter()
                 .zip(&new_mast)
                 .map(|(&old, &new)| (new - old).abs() / old.abs().max(1e-9))
-                .fold(0.0_f64, f64::max);
+                .fold(0.0_f64, |acc, x| {
+                    if acc.is_nan() || x.is_nan() {
+                        f64::NAN
+                    } else {
+                        acc.max(x)
+                    }
+                });
             mast = new_mast;
             if max_rel_change < 1e-12 {
                 converged = true;

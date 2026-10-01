@@ -1,4 +1,5 @@
-//! `spectral_absorption`, `pleochroic_channel_alpha` (uniaxial: `alpha_beta = None`), and
+//! `spectral_absorption`, `pleochroic_channel_alpha` (uniaxial: `alpha_beta = None`),
+//! `isotropic_channel_alpha` (the isotropic-material eigenmode midpoint), and
 //! P1's `assigned_mode_alpha` (via `assigned_mode_e_field_uniaxial`), the uniaxial
 //! assigned-mode absorption coefficient that replaced `pleochroic_channel_alpha` on the
 //! interior transport path's anisotropic branch. Also P6's `BandShape::GaussianEnergy`,
@@ -25,6 +26,7 @@ use super::{SHADER_SRC, STOKES_SAMPLES, UlpAccumulator, UlpCheckResult};
 // spectral_absorption
 // ---------------------------------------------------------------------------------
 
+/// Absorption band gpu.
 // P6: `shape` selects which domain the band is Gaussian in (0 = GaussianWavelength,
 // 1 = GaussianEnergy) -- mirrors `renderer::buffers::GpuAbsorptionBand` /
 // `renderer/shaders/transport_physics.wgsl`'s production `AbsorptionBand` field-for-
@@ -39,6 +41,7 @@ pub struct AbsorptionBandGpu {
     shape: u32,
 }
 
+/// One input case for the absorption check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct AbsorptionCase {
@@ -148,6 +151,7 @@ fn build_absorption_cases() -> Vec<(
     out
 }
 
+/// Runs the absorption check against the CPU reference.
 #[must_use]
 pub fn run_absorption(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<AbsorptionCase> {
     let with_bands = build_absorption_cases();
@@ -203,6 +207,7 @@ pub fn run_absorption(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
 // pleochroic_channel_alpha
 // ---------------------------------------------------------------------------------
 
+/// One input case for the pleochroic check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct PleochroicCase {
@@ -269,14 +274,18 @@ fn build_pleochroic_cases() -> Vec<PleochroicCase> {
     cases
 }
 
-#[must_use]
-pub fn run_pleochroic(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<PleochroicCase> {
-    let cases = build_pleochroic_cases();
+/// Dispatches the standalone pleochroism kernel `entry_point` over `cases` and reads back
+/// one `f32` per case.
+fn dispatch_pleochroic(
+    ctx: &crate::renderer::gpu::GpuContext,
+    entry_point: &str,
+    cases: &[PleochroicCase],
+) -> Vec<f32> {
     let total = cases.len();
     let in_buf = compute::upload(
         &ctx.device,
         "pleochroic in",
-        &cases,
+        cases,
         wgpu::BufferUsages::STORAGE,
     );
     let out_buf = compute::zeroed_buffer::<f32>(
@@ -285,12 +294,8 @@ pub fn run_pleochroic(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
         total,
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     );
-    let pipeline = compute::create_compute_pipeline(
-        &ctx.device,
-        "pleochroic_main",
-        SHADER_SRC,
-        "pleochroic_main",
-    );
+    let pipeline =
+        compute::create_compute_pipeline(&ctx.device, entry_point, SHADER_SRC, entry_point);
     let bind_group = compute::bind_buffers(
         &ctx.device,
         "pleochroic bind group",
@@ -305,7 +310,21 @@ pub fn run_pleochroic(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
         &bind_group,
         (workgroups, 1, 1),
     );
-    let gpu_out: Vec<f32> = compute::readback(&ctx.device, &ctx.queue, &out_buf, total);
+    compute::readback(&ctx.device, &ctx.queue, &out_buf, total)
+}
+
+/// Checks the pleochroic and isotropic channel-alpha kernels against their CPU twins.
+///
+/// Covers `pleochroic_channel_alpha` (degree-of-polarization blend) and
+/// `isotropic_channel_alpha` (Stokes-independent eigenmode midpoint) over one shared
+/// case bank. The bank includes `alpha_o != alpha_e` tensors,
+/// so the isotropic kernel is exercised on a dichroic tensor where the midpoint and the
+/// polarized blend differ.
+#[must_use]
+pub fn run_pleochroic(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<PleochroicCase> {
+    let cases = build_pleochroic_cases();
+    let gpu_out = dispatch_pleochroic(ctx, "pleochroic_main", &cases);
+    let gpu_isotropic = dispatch_pleochroic(ctx, "isotropic_alpha_main", &cases);
 
     let mut acc = UlpAccumulator::new(
         "pleochroic_channel_alpha",
@@ -313,6 +332,13 @@ pub fn run_pleochroic(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
         PLEOCHROIC_ABS_FLOOR,
     );
     for (idx, case) in cases.iter().enumerate() {
+        let tensor =
+            AbsorptionTensor3::uniaxial(case.alpha_o, case.alpha_e, Vec3::from_array(case.c_axis));
+        let cpu_isotropic = f32::midpoint(
+            tensor.quadratic_form(Vec3::from_array(case.eigen_a)),
+            tensor.quadratic_form(Vec3::from_array(case.eigen_b)),
+        );
+        acc.record(case, "isotropic alpha", cpu_isotropic, gpu_isotropic[idx]);
         let s = StokesVector::new(
             case.stokes[0],
             case.stokes[1],
@@ -343,6 +369,7 @@ pub fn run_pleochroic(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
 // doc comment for why it is still exercised.
 // ---------------------------------------------------------------------------------
 
+/// One input case for the assigned mode alpha uniaxial check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct AssignedModeAlphaUniaxialCase {
@@ -436,6 +463,7 @@ fn build_assigned_mode_alpha_uniaxial_cases() -> Vec<AssignedModeAlphaUniaxialCa
     cases
 }
 
+/// Runs the assigned mode alpha uniaxial check against the CPU reference.
 #[must_use]
 pub fn run_assigned_mode_alpha_uniaxial(
     ctx: &crate::renderer::gpu::GpuContext,

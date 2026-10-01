@@ -1,0 +1,362 @@
+import { Theme } from "../../theme.slint";
+import { RoughPlanModel } from "../../models/rough_plan.slint";
+import { RoughPill } from "fields.slint";
+
+// Toggle button with a small checkbox indicator
+component ViewToggle inherits Rectangle {
+    in property <string> label;
+    in-out property <bool> checked;
+    callback toggled();
+
+    function toggle() {
+        root.checked = !root.checked;
+        root.toggled();
+    }
+
+    height: 20px;
+    border-radius: Theme.radius-sm;
+    background: ta.has-hover ? Theme.surface-control-hover : Theme.surface-control;
+    border-width: toggle_focus.has-focus ? 2px : 1px;
+    border-color: toggle_focus.has-focus ? Theme.accent-cyan-hover
+        : (root.checked ? Theme.accent-cyan : Theme.border-control);
+
+    accessible-role: checkbox;
+    accessible-label: root.label;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.toggle(); }
+
+    // Space and Enter toggle it while it has the keyboard focus.
+    toggle_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.toggle();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    HorizontalLayout {
+        padding-left: 6px;
+        padding-right: 6px;
+        spacing: 4px;
+        alignment: center;
+
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 10px;
+                height: 10px;
+                border-radius: 2px;
+                border-width: 1px;
+                border-color: root.checked ? Theme.accent-cyan : Theme.border-control;
+                background: root.checked ? Theme.accent-cyan : Theme.surface-sunken;
+
+                if root.checked: Rectangle {
+                    width: 4px;
+                    height: 4px;
+                    border-radius: 1px;
+                    background: Theme.text-on-accent;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+
+        Text {
+            text: root.label;
+            font-size: 11px;
+            color: root.checked ? Theme.text-primary : Theme.text-secondary;
+            vertical-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.toggle(); }
+    }
+}
+
+// The display toggles of the view toolbar ("Cut faces" only in model mode).
+component ViewToggles inherits HorizontalLayout {
+    spacing: 6px;
+
+    if RoughPlanModel.view_mode == 0: ViewToggle {
+        label: "Cut faces";
+        checked <=> RoughPlanModel.show_cut_faces;
+        toggled => { RoughPlanModel.view_toggles_changed(); }
+    }
+    // The layers of a result only exist in the result view.
+    if RoughPlanModel.view_mode == 1: ViewToggle {
+        label: "Rough";
+        checked <=> RoughPlanModel.show_rough;
+        toggled => { RoughPlanModel.view_toggles_changed(); }
+    }
+    if RoughPlanModel.view_mode == 1: ViewToggle {
+        label: "Saw";
+        checked <=> RoughPlanModel.show_saw;
+        toggled => { RoughPlanModel.view_toggles_changed(); }
+    }
+    if RoughPlanModel.view_mode == 1: ViewToggle {
+        label: "Stones";
+        checked <=> RoughPlanModel.show_stones;
+        toggled => { RoughPlanModel.view_toggles_changed(); }
+    }
+}
+
+// 3D View for rough model and fit preview
+export component FitView inherits VerticalLayout {
+    // True when the column is too narrow for the presets and the toggles on one
+    // row. The window decides (from its own width), because a size read from this
+    // layout itself would feed back into the layout.
+    in property <bool> narrow: false;
+
+    // The size of the image area, for the window to hand to Rust.
+    out property <length> area_width: view_area.width;
+    out property <length> area_height: view_area.height;
+
+    // Pointer tracking for the view area. `dragging` is true between a left-button
+    // press and the matching release, so `view_drag_end` fires exactly once.
+    property <bool> dragging: false;
+    property <length> last_x: 0px;
+    property <length> last_y: 0px;
+    property <length> press_x: 0px;
+    property <length> press_y: 0px;
+    // Set once the pointer has travelled 3 px from the press point; the click that
+    // follows such a drag is not a click, and a drag that ends in a second press is not a
+    // double-click.
+    property <bool> moved_far: false;
+    // The result the "Result" switch goes back to after "Rough" deselected it.
+    property <int> remembered_result: 0;
+
+    function end_drag() {
+        if root.dragging {
+            root.dragging = false;
+            RoughPlanModel.view_drag_end();
+        }
+    }
+
+    spacing: 0px;
+
+    // View toolbar row above the image (never over it)
+    // The toggles move to a second row when the column is too narrow for both.
+    Rectangle {
+        height: root.narrow ? 60px : 30px;
+        background: Theme.bg-card;
+
+        VerticalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            padding-top: 5px;
+            padding-bottom: 5px;
+            spacing: 5px;
+
+            HorizontalLayout {
+                height: 20px;
+                spacing: 6px;
+
+                // What the view shows: the rough being modelled (this deselects the
+                // result card) or the selected result (the one shown last, or the first).
+                RoughPill {
+                    text: "Rough";
+                    active: RoughPlanModel.view_mode == 0;
+                    clicked => {
+                        if RoughPlanModel.selected_result >= 0 {
+                            root.remembered_result = RoughPlanModel.selected_result;
+                        }
+                        RoughPlanModel.select_result(-1);
+                    }
+                }
+                RoughPill {
+                    text: "Result";
+                    active: RoughPlanModel.view_mode == 1;
+                    enabled: RoughPlanModel.results.length > 0;
+                    clicked => {
+                        RoughPlanModel.select_result(
+                            RoughPlanModel.selected_result >= 0 ? RoughPlanModel.selected_result
+                            : (root.remembered_result < RoughPlanModel.results.length ? root.remembered_result : 0));
+                    }
+                }
+
+                Rectangle { width: 6px; }
+
+                // Camera presets
+                RoughPill {
+                    text: "Front";
+                    clicked => { RoughPlanModel.view_preset(0); }
+                }
+                RoughPill {
+                    text: "Top";
+                    clicked => { RoughPlanModel.view_preset(1); }
+                }
+                RoughPill {
+                    text: "Side";
+                    clicked => { RoughPlanModel.view_preset(2); }
+                }
+                RoughPill {
+                    text: "Reset";
+                    clicked => { RoughPlanModel.view_preset(3); }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                if !root.narrow: ViewToggles {}
+            }
+
+            if root.narrow: HorizontalLayout {
+                height: 20px;
+                alignment: end;
+                ViewToggles {}
+            }
+        }
+    }
+
+    Rectangle {
+        height: 1px;
+        background: Theme.border-subtle;
+    }
+
+    // Viewport image area with TouchArea interaction
+    view_area := Rectangle {
+        vertical-stretch: 1;
+        background: Theme.bg-input;
+        clip: true;
+
+        changed width => {
+            RoughPlanModel.view_resized(self.width, self.height);
+        }
+        changed height => {
+            RoughPlanModel.view_resized(self.width, self.height);
+        }
+        // Also pushed once on mount (a fresh element never gets `changed` for its own
+        // first size). That push can run before Rust has registered `view_resized`, so the
+        // window also exposes the area's size (`area_width`) for Rust to read when the
+        // window is shown. A zero size is ignored on the Rust side.
+        init => {
+            RoughPlanModel.view_resized(self.width, self.height);
+        }
+
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: RoughPlanModel.view_image;
+        }
+
+        TouchArea {
+            mouse-cursor: RoughPlanModel.face_from_view_armed ? crosshair : (self.pressed ? grabbing : default);
+
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    root.dragging = true;
+                    root.moved_far = false;
+                    root.last_x = self.mouse-x;
+                    root.last_y = self.mouse-y;
+                    root.press_x = self.mouse-x;
+                    root.press_y = self.mouse-y;
+                    RoughPlanModel.view_drag_begin();
+                } else if ((event.kind == PointerEventKind.up && event.button == PointerEventButton.left) || event.kind == PointerEventKind.cancel) {
+                    root.end_drag();
+                }
+            }
+
+            // A release outside the area may not reach `pointer-event`.
+            changed pressed => {
+                if !self.pressed {
+                    root.end_drag();
+                }
+            }
+
+            // Leaving the area clears the hover readout.
+            changed has-hover => {
+                if !self.has-hover {
+                    RoughPlanModel.view_hover(-1px, -1px);
+                }
+            }
+
+            moved => {
+                if root.dragging {
+                    let step_x = self.mouse-x - root.last_x;
+                    let step_y = self.mouse-y - root.last_y;
+                    root.last_x = self.mouse-x;
+                    root.last_y = self.mouse-y;
+                    let from_press_x = (self.mouse-x - root.press_x) / 1px;
+                    let from_press_y = (self.mouse-y - root.press_y) / 1px;
+                    if from_press_x * from_press_x + from_press_y * from_press_y >= 9 {
+                        root.moved_far = true;
+                    }
+                    RoughPlanModel.view_orbit(step_x, step_y);
+                } else if !self.pressed {
+                    RoughPlanModel.view_hover(self.mouse-x, self.mouse-y);
+                }
+            }
+
+            scroll-event(event) => {
+                RoughPlanModel.view_zoom(event.delta-y / 1px);
+                return accept;
+            }
+
+            clicked => {
+                if !root.moved_far {
+                    RoughPlanModel.view_click(self.mouse-x, self.mouse-y);
+                }
+            }
+
+            double-clicked => {
+                if !root.moved_far {
+                    RoughPlanModel.view_double_click(self.mouse-x, self.mouse-y);
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        height: 1px;
+        background: Theme.border-subtle;
+    }
+
+    // Bottom hint/tooltip strip below the image
+    Rectangle {
+        height: 24px;
+        background: Theme.bg-card;
+
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            spacing: 8px;
+            alignment: center;
+
+            Text {
+                horizontal-stretch: 1;
+                text: RoughPlanModel.view_busy ? "Building result " + (RoughPlanModel.selected_result + 1) + "..."
+                    : (RoughPlanModel.view_hint != "" ? RoughPlanModel.view_hint
+                        : (RoughPlanModel.view_mode == 0
+                            ? "Drag to orbit, scroll to zoom. Click edges or corners to cut."
+                            : "Drag to orbit, scroll to zoom. Hover stones for details."));
+                font-size: 11px;
+                color: Theme.text-muted;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+
+            if RoughPlanModel.face_from_view_armed: Rectangle {
+                height: 18px;
+                border-radius: Theme.radius-sm;
+                background: Theme.surface-warning;
+                border-width: 1px;
+                border-color: Theme.accent-amber;
+
+                HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    Text {
+                        text: "Face from view: click rough face (Esc to cancel)";
+                        font-size: 10px;
+                        font-weight: 600;
+                        color: Theme.accent-amber;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+}

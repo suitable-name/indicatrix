@@ -51,6 +51,7 @@ pub struct WorkQueue<T> {
 }
 
 impl<T> WorkQueue<T> {
+    /// Builds a queue whose shared pool holds `items` in iteration order.
     pub fn new(items: impl IntoIterator<Item = T>) -> Self {
         Self {
             shared: Mutex::new(items.into_iter().collect()),
@@ -65,6 +66,16 @@ impl<T> WorkQueue<T> {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .pop_front()
+    }
+
+    /// Whether the shared pool has nothing left to claim. The remote lane asks this
+    /// while it waits out a failure, so a sit-out never holds the batch open once the
+    /// local lanes have taken every remaining item.
+    pub fn shared_is_empty(&self) -> bool {
+        self.shared
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty()
     }
 
     /// Claims the next item for the LOCAL lane only: a previously remote-failed item
@@ -137,6 +148,16 @@ mod tests {
         assert_eq!(queue.claim_shared(), Some(2));
         assert_eq!(queue.claim_shared(), Some(3));
         assert_eq!(queue.claim_shared(), None);
+    }
+
+    #[test]
+    fn shared_is_empty_ignores_the_retry_pile() {
+        let queue = WorkQueue::new([1]);
+        assert!(!queue.shared_is_empty());
+        assert_eq!(queue.claim_shared(), Some(1));
+        assert!(queue.shared_is_empty());
+        queue.return_to_local(2);
+        assert!(queue.shared_is_empty(), "retries are local-only");
     }
 
     #[test]

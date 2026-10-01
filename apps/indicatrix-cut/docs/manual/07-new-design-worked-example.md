@@ -24,8 +24,9 @@ While the guide is open:
   right name, angle and indices; the material is applied; the design solves
   to a closed stone; and so on). The status chip reads "Waiting for: ..."
   until then, and "Done" for a moment before the next step. Any route to the
-  goal counts: the tier form, the quick-add buttons, an inline edit, Undo/Redo,
-  or auto-solve finishing first. **Skip step** moves on without it; **Back**
+  goal counts: the tier form, an inline edit, Undo/Redo, or auto-solve
+  finishing first (the toolbar's quick-add buttons do not count for the
+  girdle: quick-add Girdle names the tier "Girdle" and adds no indices). **Skip step** moves on without it; **Back**
   returns to the previous step. The two reading steps -- checking the orbits
   (Step 8) and the closing note -- wait for **Next** (**Finish** on the closing
   note) instead.
@@ -36,7 +37,7 @@ While the guide is open:
   x in its corner unlocks everything.
 - On a wide window's Edit tab the guide sits in its own column beside the tier
   table. Everywhere else -- a narrow window, the Live Render tab, and the
-  catalogue tabs (Cutting Schedule, Files & Downloads) -- it floats near the
+  catalogue tabs (Cutting Instructions, Files & Downloads) -- it floats near the
   window's bottom-right corner instead, so it never disappears mid-walkthrough.
   Drag the floating panel by its header to move it anywhere inside the window;
   it stays where you put it.
@@ -111,7 +112,8 @@ girdle band.
 
 1. Click **+ Add Tier** (the hint over the viewport, the command bar, or the
    tier table's toolbar), which opens the inspector's Tier tab in Add mode.
-   **Angle (deg)**: `90.0`.
+   **Angle (deg)**: `90.0` -- or click **Girdle Facet Preset**, which sets
+   the angle to 90 and also sets Meets.
 2. **Meets**: **Exact scale value**. Type the girdle's half-width, e.g.
    `1.0`. This is the design's mandatory anchor for the girdle block -- see
    Chapter 3's "Anchors and blocks." At 90 degrees the facet's normal points
@@ -121,8 +123,8 @@ girdle band.
 4. **Indices**: `0, 12, 24, 36, 48, 60, 72, 84`.
 5. Click **Add Tier**.
 
-Check the tier table's own C/P/G column (Chapter 3) reads **G** for this
-row before moving on -- that is your confirmation the girdle classified
+Check the tier table's own C/P/G column (the block letter just left of
+ANGLE; Chapter 3) reads **G** for this row before moving on -- that is your confirmation the girdle classified
 the way you intended.
 
 ## Step 3: Pavilion main facets
@@ -205,10 +207,11 @@ compare the tier's Indices field against the intended list.
 
 1. On the inspector's Preform tab (Chapter 4), in its Yield section, set
    **Girdle Diameter (mm)** to a real size (e.g. the girdle half-width you
-   set in Step 2, doubled and converted to millimetres) and pick a **Yield
-   Material** for the carat-weight estimate (this is a separate control
-   from the Design Settings panel's own Material combo -- see Chapter 6's
-   note on the two). Click **Apply Yield Inputs**, then Solve again --
+   set in Step 2, doubled and converted to millimetres). Leave **Specific
+   Gravity Override** blank: the carat-weight estimate then uses the
+   specific gravity of the material you set in Design Settings in Step 6
+   (Diamond). Neither field changes the render. Click **Apply Yield
+   Inputs**, then Solve again --
    Volumetric Yield and Est. Carat Weight show values, and the
    same tab's Proportions group shows table %, crown height, pavilion
    depth, total depth, and length-to-width for this stone. (With auto-solve

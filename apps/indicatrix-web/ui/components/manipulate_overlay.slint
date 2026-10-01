@@ -1,0 +1,290 @@
+import { Theme } from "theme.slint";
+import { ManipulateModel } from "manipulate_model.slint";
+
+// One handle's marker at its tip: a 14px circle (angle), square (depth) or diamond
+// (index) with the handle's letter beside it. The hovered/dragged handle (`active`)
+// is drawn larger and brighter. Purely presentational -- no TouchArea, so every
+// pointer event still reaches `SolidView`'s touch area underneath.
+component HandleMarker inherits Rectangle {
+    in property <length> tip-x;
+    in property <length> tip-y;
+    in property <color> marker-color;
+    in property <string> letter;
+    // 0 circle, 1 square, 2 diamond.
+    in property <int> shape: 0;
+    in property <bool> active: false;
+
+    property <length> marker-size: root.active ? 18px : 14px;
+    property <color> fill: root.active ? root.marker-color.brighter(0.5) : root.marker-color;
+
+    // Centred on the tip.
+    x: root.tip-x - root.marker-size / 2;
+    y: root.tip-y - root.marker-size / 2;
+    width: root.marker-size;
+    height: root.marker-size;
+    background: root.shape == 2 ? transparent : root.fill;
+    border-radius: root.shape == 0 ? root.marker-size / 2 : 2px;
+    border-width: root.shape == 2 ? 0px : 1.5px;
+    border-color: Theme.bg-darkest;
+
+    // The diamond: a closed four-point path through the middle of each side of the
+    // marker's box, so its corners span the same 14px (18px when active) as the
+    // circle and the square.
+    if root.shape == 2: Path {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: self.width / 1px;
+        viewbox-height: self.height / 1px;
+        fill: root.fill;
+        stroke: Theme.bg-darkest;
+        stroke-width: 1.5px;
+        MoveTo {
+            x: root.width / 2px;
+            y: 0;
+        }
+        LineTo {
+            x: root.width / 1px;
+            y: root.height / 2px;
+        }
+        LineTo {
+            x: root.width / 2px;
+            y: root.height / 1px;
+        }
+        LineTo {
+            x: 0;
+            y: root.height / 2px;
+        }
+        Close { }
+    }
+
+    Text {
+        text: root.letter;
+        x: root.width + 3px;
+        y: -10px;
+        font-size: 11px;
+        font-weight: 700;
+        color: root.fill;
+    }
+}
+
+// The Slice tool's rubber band while a line is being drawn: a 2px line from the press to
+// the pointer with an arrow head at the end, and three faint ticks on the side that will
+// be cut away (the right of the drag direction; screen y grows down, so dragging left to
+// right cuts what is below). Slint's `Path` has no dash pattern, so the line is solid.
+// Purely presentational, like `ManipulateOverlay`.
+export component SliceLineOverlay inherits Rectangle {
+    x: 0px;
+    y: 0px;
+    width: 100%;
+    height: 100%;
+
+    property <color> line-color: #4ade80;
+    property <float> x0: ManipulateModel.line-x0 / 1px;
+    property <float> y0: ManipulateModel.line-y0 / 1px;
+    property <float> x1: ManipulateModel.line-x1 / 1px;
+    property <float> y1: ManipulateModel.line-y1 / 1px;
+    property <float> len: Math.max(1.0, Math.sqrt((root.x1 - root.x0) * (root.x1 - root.x0) + (root.y1 - root.y0) * (root.y1 - root.y0)));
+    // The unit drag direction, and its +90 degree rotation (the cut side).
+    property <float> ux: (root.x1 - root.x0) / root.len;
+    property <float> uy: (root.y1 - root.y0) / root.len;
+    property <float> nx: -root.uy;
+    property <float> ny: root.ux;
+
+    Path {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: self.width / 1px;
+        viewbox-height: self.height / 1px;
+        stroke: root.line-color;
+        stroke-width: 2px;
+        MoveTo {
+            x: root.x0;
+            y: root.y0;
+        }
+        LineTo {
+            x: root.x1;
+            y: root.y1;
+        }
+        // The arrow head: two 12px barbs at +-25 degrees behind the end point
+        // (cos 25 = 0.906, sin 25 = 0.423).
+        MoveTo {
+            x: root.x1;
+            y: root.y1;
+        }
+        LineTo {
+            x: root.x1 - 12 * (root.ux * 0.906 - root.uy * 0.423);
+            y: root.y1 - 12 * (root.ux * 0.423 + root.uy * 0.906);
+        }
+        MoveTo {
+            x: root.x1;
+            y: root.y1;
+        }
+        LineTo {
+            x: root.x1 - 12 * (root.ux * 0.906 + root.uy * 0.423);
+            y: root.y1 - 12 * (root.uy * 0.906 - root.ux * 0.423);
+        }
+    }
+
+    // The cut side: three ticks at 25%, 50% and 75% of the line, 16px to its right.
+    Path {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: self.width / 1px;
+        viewbox-height: self.height / 1px;
+        stroke: root.line-color.transparentize(0.55);
+        stroke-width: 2px;
+        MoveTo {
+            x: root.x0 + 0.25 * (root.x1 - root.x0);
+            y: root.y0 + 0.25 * (root.y1 - root.y0);
+        }
+        LineTo {
+            x: root.x0 + 0.25 * (root.x1 - root.x0) + 16 * root.nx;
+            y: root.y0 + 0.25 * (root.y1 - root.y0) + 16 * root.ny;
+        }
+        MoveTo {
+            x: root.x0 + 0.5 * (root.x1 - root.x0);
+            y: root.y0 + 0.5 * (root.y1 - root.y0);
+        }
+        LineTo {
+            x: root.x0 + 0.5 * (root.x1 - root.x0) + 16 * root.nx;
+            y: root.y0 + 0.5 * (root.y1 - root.y0) + 16 * root.ny;
+        }
+        MoveTo {
+            x: root.x0 + 0.75 * (root.x1 - root.x0);
+            y: root.y0 + 0.75 * (root.y1 - root.y0);
+        }
+        LineTo {
+            x: root.x0 + 0.75 * (root.x1 - root.x0) + 16 * root.nx;
+            y: root.y0 + 0.75 * (root.y1 - root.y0) + 16 * root.ny;
+        }
+    }
+}
+
+// The three drag handles of the selected facet, drawn above the view's image: a line
+// from the facet's anchor to each tip, a marker at each tip (A = angle, D = depth,
+// I = index) and a small dot on the anchor. Positions come from `ManipulateModel` in
+// logical view coordinates; the overlay itself never handles pointer input.
+export component ManipulateOverlay inherits Rectangle {
+    // Explicit geometry, like `SolidToolbar`: an overlay positioned by default would
+    // propagate its constraints to the view.
+    x: 0px;
+    y: 0px;
+    width: 100%;
+    height: 100%;
+
+    property <color> angle-color: Theme.accent-cyan;
+    property <color> depth-color: #3b82f6;
+    property <color> index-color: Theme.accent-amber;
+
+    // One stroke per handle. The viewbox equals the element's size so path
+    // coordinates are plain logical pixels.
+    Path {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: self.width / 1px;
+        viewbox-height: self.height / 1px;
+        stroke: root.angle-color;
+        stroke-width: 2px;
+        MoveTo {
+            x: ManipulateModel.anchor-x / 1px;
+            y: ManipulateModel.anchor-y / 1px;
+        }
+        LineTo {
+            x: ManipulateModel.angle-tip-x / 1px;
+            y: ManipulateModel.angle-tip-y / 1px;
+        }
+    }
+    Path {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: self.width / 1px;
+        viewbox-height: self.height / 1px;
+        stroke: root.depth-color;
+        stroke-width: 2px;
+        MoveTo {
+            x: ManipulateModel.anchor-x / 1px;
+            y: ManipulateModel.anchor-y / 1px;
+        }
+        LineTo {
+            x: ManipulateModel.depth-tip-x / 1px;
+            y: ManipulateModel.depth-tip-y / 1px;
+        }
+    }
+    if ManipulateModel.index-visible: Path {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: self.width / 1px;
+        viewbox-height: self.height / 1px;
+        stroke: root.index-color;
+        stroke-width: 2px;
+        MoveTo {
+            x: ManipulateModel.anchor-x / 1px;
+            y: ManipulateModel.anchor-y / 1px;
+        }
+        LineTo {
+            x: ManipulateModel.index-tip-x / 1px;
+            y: ManipulateModel.index-tip-y / 1px;
+        }
+    }
+
+    // The anchor: the facet centroid the handles grow from.
+    Rectangle {
+        x: ManipulateModel.anchor-x - 3px;
+        y: ManipulateModel.anchor-y - 3px;
+        width: 6px;
+        height: 6px;
+        border-radius: 3px;
+        background: Theme.text-primary;
+        border-width: 1px;
+        border-color: Theme.bg-darkest;
+    }
+
+    HandleMarker {
+        tip-x: ManipulateModel.angle-tip-x;
+        tip-y: ManipulateModel.angle-tip-y;
+        marker-color: root.angle-color;
+        letter: "A";
+        shape: 0;
+        active: ManipulateModel.hovered-handle == 0;
+    }
+    HandleMarker {
+        tip-x: ManipulateModel.depth-tip-x;
+        tip-y: ManipulateModel.depth-tip-y;
+        marker-color: root.depth-color;
+        letter: "D";
+        shape: 1;
+        active: ManipulateModel.hovered-handle == 1;
+    }
+    if ManipulateModel.index-visible: HandleMarker {
+        tip-x: ManipulateModel.index-tip-x;
+        tip-y: ManipulateModel.index-tip-y;
+        marker-color: root.index-color;
+        letter: "I";
+        shape: 2;
+        active: ManipulateModel.hovered-handle == 2;
+    }
+}

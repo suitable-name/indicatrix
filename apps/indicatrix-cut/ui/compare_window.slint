@@ -1,0 +1,128 @@
+// The visual before/after compare window for Retarget, Optimize and Snapshot.
+//
+// A separate top-level `Window` (not a `PopupWindow`), created, shown and hidden
+// from Rust -- see `gui::editor::compare`'s module doc comment for the session, the render workers and Keep/Discard/Close.
+// Everything it shows comes from its OWN instance of `CompareModel` (see that
+// global's doc comment for why there are two instances); the comparison itself
+// (switches, images, overlay, status line) is the shared `CompareView`, and the
+// window adds only the header and its Keep/Discard/Close buttons.
+//
+// Sizing: the whole content hangs off an x/y-positioned wrapper, so no layout
+// constraint inside it reaches the window (the window's min AND max come from its
+// content tree otherwise -- see `app.slint`'s sizing notes); the window's own
+// `min-width`/`min-height` are the only limits.
+import { Theme } from "theme.slint";
+import { CompareModel } from "models/compare.slint";
+import { CompareView } from "components/compare_view.slint";
+
+// A footer button; `primary` is the accent-filled "Keep after".
+component FooterButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    in property <bool> active: true;
+    callback clicked();
+
+    height: 30px;
+    width: max(90px, footer_text.preferred-width + 24px);
+    border-radius: Theme.radius-sm;
+    opacity: root.active ? 1.0 : 0.45;
+    background: root.primary
+        ? (footer_touch.has-hover && root.active ? Theme.accent-cyan-hover : Theme.accent-cyan)
+        : (footer_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control);
+    border-width: root.primary ? 0px : 1px;
+    border-color: Theme.border-dialog;
+
+    footer_touch := TouchArea {
+        enabled: root.active;
+        clicked => { root.clicked(); }
+    }
+
+    footer_text := Text {
+        text: root.label;
+        font-size: 12px;
+        font-weight: 700;
+        color: root.primary ? Theme.text-on-accent : Theme.text-primary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+export component CompareWindow inherits Window {
+    title: "Compare — Indicatrix Cut";
+    // See `MainWindow`'s `icon` (app.slint) for why every window sets it.
+    icon: @image-url("../assets/icon.png");
+    preferred-width: 1100px;
+    preferred-height: 640px;
+    min-width: 640px;
+    min-height: 400px;
+    background: Theme.bg-darkest;
+    default-font-family: "Segoe UI";
+
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: root.width;
+        height: root.height;
+
+        VerticalLayout {
+            padding: 12px;
+            spacing: 8px;
+
+            // Header: what is being compared.
+            HorizontalLayout {
+                height: 22px;
+                spacing: 8px;
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: "Before: " + CompareModel.before_label;
+                    font-size: 13px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: "After: " + CompareModel.after_label;
+                    font-size: 13px;
+                    font-weight: 700;
+                    color: Theme.accent-cyan;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+
+            CompareView {
+                vertical-stretch: 1;
+                show_split: true;
+            }
+
+            // The three actions.
+            HorizontalLayout {
+                height: 30px;
+                spacing: 8px;
+                alignment: end;
+
+                FooterButton {
+                    label: "Close";
+                    clicked => { CompareModel.close(); }
+                }
+
+                if CompareModel.show_keep_discard: FooterButton {
+                    label: "Discard";
+                    clicked => { CompareModel.discard(); }
+                }
+
+                if CompareModel.show_keep_discard: FooterButton {
+                    label: "Keep after";
+                    primary: true;
+                    active: CompareModel.can_keep;
+                    clicked => { CompareModel.keep(); }
+                }
+            }
+        }
+    }
+}

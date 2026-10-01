@@ -2,49 +2,82 @@
 //! wrapper the parent module's doc comment describes. [`super::stub::GpuBackend`] is the
 //! signature-compatible stand-in compiled instead when the feature is off.
 
-use std::sync::atomic::AtomicBool;
+use std::{
+    sync::{
+        Mutex, MutexGuard, PoisonError,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
 
 use glam::Vec3;
 
 use super::{
     GpuAccumulate, GpuPipelineKind, GpuSceneRef,
+    recovery::{COOL_DOWN, RecoveryPolicy},
     turnstile::{CHUNKS_PER_TURN, Turnstile},
 };
 use crate::renderer::gpu::{
-    GpuFrameError,
+    GpuFrameError, GpuFrameRenderer,
     frame::{ChunkCursor, ChunkTurnOutcome, TurnRequest, classify_material},
 };
 
+/// The most scratch buffers [`GpuBackend`] keeps between requests. Each is as large as
+/// the biggest frame it served (12 bytes a pixel), so the pool is kept small; requests
+/// beyond it allocate their own and drop it afterwards.
+const MAX_POOLED_SCRATCH: usize = 2;
+
+/// Gpu backend.
 pub struct GpuBackend {
     /// `pub(super)`: `super::tests` reaches this private field directly to poison the
     /// mutex from a test thread -- see that module's own comment on why it lives outside
     /// `renderer::gpu::frame`'s hardware test module.
-    pub(super) renderer: Option<std::sync::Mutex<crate::renderer::gpu::GpuFrameRenderer>>,
+    ///
+    /// `Some` exactly when an adapter was acquired at construction. After a loss the
+    /// renderer INSIDE the mutex is replaced by [`Self::try_recover`]; the mutex itself
+    /// (and so this `Option`) never changes.
+    pub(super) renderer: Option<Mutex<GpuFrameRenderer>>,
     /// FIFO admission for [`Self::try_accumulate_cancellable`]'s per-turn renderer
     /// access -- see the parent module's doc comment ("Concurrency: chunk-level
     /// fairness"). Exists even when `renderer` is `None` (a `disabled()` backend never
     /// consults it, since every call declines before reaching the turnstile) purely so
     /// the struct needs no `Option` around it.
     turnstile: Turnstile,
-    /// Set permanently, once, the first time a dispatch reports
-    /// [`GpuFrameError::DeviceLost`] -- the one decline reason that must never be
-    /// retried, since every future dispatch against the same device fails identically.
+    /// Set the first time a dispatch reports [`GpuFrameError::DeviceLost`] (or finds the
+    /// renderer mutex poisoned), and cleared only by a successful [`Self::try_recover`].
+    /// While set, every call short-circuits to `Declined` without touching the
+    /// renderer: every dispatch against the same device would fail identically.
     /// Both [`Self::try_accumulate_cancellable`] and [`Self::adapter_label`] check this
-    /// first once true. `AtomicBool` rather than `Mutex<bool>`: read and written
-    /// independently of the `renderer` mutex, from any thread sharing one `Arc`.
+    /// first. `AtomicBool` rather than `Mutex<bool>`: read and written independently of
+    /// the `renderer` mutex, from any thread sharing one `Arc`.
     ///
     /// `pub(super)`: `super::tests` reads this directly to confirm a poisoned mutex sets
     /// it.
     pub(super) lost: AtomicBool,
     /// The human-readable reason [`Self::lost`] was last set `true` for -- either the
     /// `why` text from a [`GpuFrameError::DeviceLost`], or a fixed message for the
-    /// poisoned-mutex case. `None` until the first loss. Read by [`Self::last_lost_reason`]
-    /// so a caller doing its OWN self-healing (drop this backend, construct a fresh one
-    /// via [`Self::acquire`]) can log or display WHY, not just that it happened -- see
-    /// `apps::indicatrix_cut::bridge::render_thread::gpu_backend::ViewportGpu` for that
-    /// caller. `Mutex`, not an atomic: the payload is a `String`, and this is set only on
-    /// the cold "just lost the device" path, so lock contention is irrelevant.
-    last_lost_reason: std::sync::Mutex<Option<String>>,
+    /// poisoned-mutex case. `None` until the first loss; kept (not cleared) after a
+    /// recovery so a caller can still log why the previous device went away. Read by
+    /// [`Self::last_lost_reason`]. `Mutex`, not an atomic: the payload is a `String`,
+    /// and this is set only on the cold "just lost the device" path, so lock contention
+    /// is irrelevant.
+    last_lost_reason: Mutex<Option<String>>,
+    /// Cool-down and attempt budget for [`Self::try_recover`] -- see
+    /// [`RecoveryPolicy`]. `pub(super)` so `super::tests` can age a loss without sleeping.
+    pub(super) recovery: Mutex<RecoveryPolicy>,
+    /// `true` while one thread is inside [`Self::reacquire`], so concurrent callers decline
+    /// instead of queueing up behind a slow device acquisition.
+    recovering: AtomicBool,
+    /// Zeroed accumulation buffers reused across requests: every request traces into one
+    /// of these and adds it into the caller's `accum` only when it completes -- see
+    /// [`Self::try_accumulate_cancellable`]. A pool rather than one buffer because turns of
+    /// concurrent requests interleave, each needing its own partial sums.
+    scratch_pool: Mutex<Vec<Vec<Vec3>>>,
+    /// Test seam: the 1-based turn number, counted per request, whose outcome is replaced
+    /// by an injected [`GpuFrameError::DeviceLost`] (`0` = never). Self-clearing once it
+    /// fires.
+    #[cfg(test)]
+    pub(super) fail_on_turn: std::sync::atomic::AtomicUsize,
 }
 
 impl GpuBackend {
@@ -55,22 +88,17 @@ impl GpuBackend {
     /// after which every call declines.
     #[must_use]
     pub fn acquire() -> Self {
-        let renderer = match crate::renderer::gpu::GpuFrameRenderer::new() {
+        let renderer = match GpuFrameRenderer::new() {
             Ok(r) => {
                 tracing::info!(adapter = r.adapter_label(), "GPU render backend active");
-                Some(std::sync::Mutex::new(r))
+                Some(Mutex::new(r))
             }
             Err(e) => {
                 tracing::info!("GPU render backend unavailable, using CPU tracer: {e}");
                 None
             }
         };
-        Self {
-            renderer,
-            turnstile: Turnstile::new(),
-            lost: AtomicBool::new(false),
-            last_lost_reason: std::sync::Mutex::new(None),
-        }
+        Self::with_renderer(renderer)
     }
 
     /// Never acquires an adapter -- every call declines, regardless of what hardware is
@@ -81,51 +109,64 @@ impl GpuBackend {
     /// deterministic as running without it.
     #[must_use]
     pub const fn disabled() -> Self {
+        Self::with_renderer(None)
+    }
+
+    /// The one place a backend's fields are initialised.
+    const fn with_renderer(renderer: Option<Mutex<GpuFrameRenderer>>) -> Self {
         Self {
-            renderer: None,
+            renderer,
             turnstile: Turnstile::new(),
             lost: AtomicBool::new(false),
-            last_lost_reason: std::sync::Mutex::new(None),
+            last_lost_reason: Mutex::new(None),
+            recovery: Mutex::new(RecoveryPolicy::new()),
+            recovering: AtomicBool::new(false),
+            scratch_pool: Mutex::new(Vec::new()),
+            #[cfg(test)]
+            fail_on_turn: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
-    /// Whether this backend has permanently given up on its GPU device -- set once by a
-    /// [`GpuFrameError::DeviceLost`] or a poisoned renderer mutex, never cleared (see
-    /// [`Self::lost`]'s own doc comment). Distinct from an ordinary per-call decline
-    /// (unsupported material/environment, or [`Self::disabled`]/no adapter at all, none
-    /// of which set this): a caller doing self-healing on a `false` return from
+    /// Whether this backend currently has no usable GPU device because one was lost --
+    /// set by a [`GpuFrameError::DeviceLost`] or a poisoned renderer mutex, cleared when
+    /// [`Self::try_recover`] (which the request path calls itself) acquires a fresh
+    /// device. Distinct from an ordinary per-call decline (unsupported
+    /// material/environment, or [`Self::disabled`]/no adapter at all, none of which set
+    /// this): a caller doing self-healing on a `false` return from
     /// [`Self::try_accumulate`] checks this first to decide whether re-acquiring a fresh
     /// backend could possibly help.
     #[must_use]
     pub fn is_lost(&self) -> bool {
-        self.lost.load(std::sync::atomic::Ordering::Relaxed)
+        self.lost.load(Ordering::Relaxed)
     }
 
-    /// The reason [`Self::is_lost`] became `true`, if it has -- the `why` text from a
+    /// The reason of the most recent loss, if there has been one -- the `why` text from a
     /// [`GpuFrameError::DeviceLost`], or a fixed message for the poisoned-mutex case.
     /// `None` both before any loss and for a [`Self::disabled`] backend, which never
-    /// loses a device it never had.
+    /// loses a device it never had. Still returns the last reason after a successful
+    /// recovery.
     #[must_use]
     pub fn last_lost_reason(&self) -> Option<String> {
         self.last_lost_reason
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
 
     /// This backend's adapter and backend label, if one was genuinely acquired.
     ///
     /// `None` whenever [`Self::disabled`] was chosen, acquisition failed, or the device
-    /// was later found to be lost (see [`Self::lost`]) -- a caller must not keep
-    /// claiming a GPU this process already gave up on.
+    /// is currently lost (see [`Self::lost`]) -- a caller must not claim a GPU this
+    /// process has no working handle to. Read-only: it never attempts recovery itself, so
+    /// a caller about to advertise a capability calls [`Self::try_recover`] first.
     #[must_use]
     pub fn adapter_label(&self) -> Option<String> {
-        if self.lost.load(std::sync::atomic::Ordering::Relaxed) {
+        if self.lost.load(Ordering::Relaxed) {
             return None;
         }
         self.renderer.as_ref().map(|m| {
             m.lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .adapter_label()
                 .to_string()
         })
@@ -133,12 +174,13 @@ impl GpuBackend {
 
     /// Selects which kernel this backend's renderer dispatches
     /// every LATER chunk through -- see [`GpuPipelineKind`]'s own doc comment. A no-op
-    /// when this backend never acquired a renderer (see [`Self::disabled`]).
+    /// when this backend never acquired a renderer (see [`Self::disabled`]). The choice
+    /// carries over to a renderer re-acquired after a device loss.
     pub fn set_pipeline_kind(&self, kind: GpuPipelineKind) {
         if let Some(mutex) = &self.renderer {
             mutex
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .unwrap_or_else(PoisonError::into_inner)
                 .set_pipeline_kind(kind);
         }
     }
@@ -165,12 +207,20 @@ impl GpuBackend {
         )
     }
 
-    /// Like [`Self::try_accumulate`], but checks `cancel` between chunks (see
+    /// Like [`Self::try_accumulate`], but checks `cancel` before every chunk (see
     /// `GpuFrameRenderer::accumulate_turn` for exactly when) and can stop early,
     /// reporting which of three things happened via [`GpuAccumulate`] rather than a
     /// `bool`: [`GpuAccumulate::Done`], [`GpuAccumulate::Declined`] (`accum` untouched,
     /// fall back to the CPU for the full `spp`), or [`GpuAccumulate::Cancelled`] (`accum`
-    /// GUARANTEED untouched, nothing left to render).
+    /// untouched, nothing left to render).
+    ///
+    /// `accum` is written ONLY on `Done`. Every turn traces into a zeroed scratch buffer
+    /// of the same length that this backend owns and reuses; the scratch is added into
+    /// `accum` once the last turn reports done, and discarded otherwise. A device loss,
+    /// an uncaptured wgpu error or a cancellation on a LATER turn therefore cannot leave
+    /// the samples of earlier turns behind for the caller's CPU fallback to double count.
+    /// Each pixel belongs to exactly one chunk, so the final add is one `+=` per pixel --
+    /// the same sum a direct accumulation would have produced.
     ///
     /// Drives the renderer in [`CHUNKS_PER_TURN`]-chunk TURNS rather than holding it for
     /// the whole dispatch -- see the parent module's doc comment ("Concurrency:
@@ -178,10 +228,15 @@ impl GpuBackend {
     /// yielding, per-turn scene re-upload, deterministic sample offsets) that makes this
     /// safe to interleave with other callers sharing the same `GpuBackend`.
     ///
-    /// A device reported as permanently lost ([`GpuFrameError::DeviceLost`]) is logged at
-    /// `warn` (an ordinary decline is `debug`) and this backend's [`Self::lost`] flag is
-    /// set so every later call short-circuits to `Declined` without touching the
-    /// renderer again.
+    /// A device reported as lost ([`GpuFrameError::DeviceLost`]) is logged at `warn` (an
+    /// ordinary decline is `debug`) and this backend's [`Self::lost`] flag is set so every
+    /// later call short-circuits to `Declined` without touching the renderer -- until
+    /// [`Self::try_recover`] (called here, at the top of each request, once the cool-down
+    /// has passed) brings a fresh device back.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `accum.len()` is not `scene.width * scene.height`.
     pub fn try_accumulate_cancellable(
         &self,
         scene: &GpuSceneRef<'_>,
@@ -190,7 +245,7 @@ impl GpuBackend {
         accum: &mut [Vec3],
         cancel: &AtomicBool,
     ) -> GpuAccumulate {
-        if self.lost.load(std::sync::atomic::Ordering::Relaxed) {
+        if self.lost.load(Ordering::Acquire) && !self.try_recover() {
             return GpuAccumulate::Declined;
         }
         let Some(mutex) = &self.renderer else {
@@ -212,10 +267,9 @@ impl GpuBackend {
         // scene (and so its material class) never changes across this one request's
         // turns.
         let pipeline_class = classify_material(gpu_scene.material);
-        let mut cursor = ChunkCursor::default();
         // Fixed for the whole request, across however many turns it takes to resume --
-        // only `cursor` (above) and `accum` change turn by turn. See TurnRequest's own
-        // doc comment.
+        // only the cursor and the scratch buffer change turn by turn. See TurnRequest's
+        // own doc comment.
         let request = TurnRequest {
             scene: &gpu_scene,
             pipeline_class,
@@ -224,6 +278,31 @@ impl GpuBackend {
             cancel: Some(cancel),
             max_chunks: CHUNKS_PER_TURN,
         };
+
+        let mut scratch = self.take_scratch(accum.len());
+        let outcome = self.run_turns(mutex, &request, &mut scratch);
+        if outcome == GpuAccumulate::Done {
+            for (total, traced) in accum.iter_mut().zip(&scratch) {
+                *total += *traced;
+            }
+        }
+        self.return_scratch(scratch);
+        outcome
+    }
+
+    /// Runs `request` turn by turn, summing into `scratch` (never the caller's buffer --
+    /// see [`Self::try_accumulate_cancellable`]), until it completes, is cancelled or
+    /// declines. `scratch` holds partial sums after any outcome but `Done`; the caller
+    /// discards it.
+    fn run_turns(
+        &self,
+        mutex: &Mutex<GpuFrameRenderer>,
+        request: &TurnRequest<'_>,
+        scratch: &mut [Vec3],
+    ) -> GpuAccumulate {
+        let mut cursor = ChunkCursor::default();
+        #[cfg(test)]
+        let mut turns_started = 0_usize;
 
         loop {
             // Admission is FIFO across every caller sharing this GpuBackend: a ticket is
@@ -239,7 +318,7 @@ impl GpuBackend {
             // arm below), in which case dispatching into this renderer now would let an
             // already-queued caller submit into a poisoned renderer -- checked here,
             // before `mutex.lock()`, so this waiter declines instead.
-            if self.lost.load(std::sync::atomic::Ordering::Relaxed) {
+            if self.lost.load(Ordering::Acquire) {
                 return GpuAccumulate::Declined;
             }
 
@@ -248,29 +327,28 @@ impl GpuBackend {
             // module's own `on_uncaptured_error`/poisoning defenses, e.g. a bug in wgpu
             // itself) is never silently recovered via `PoisonError::into_inner`, which
             // would hand the next caller a renderer whose state mid-panic is unknown.
-            // Treated the same as `DeviceLost` instead: permanently decline rather than
-            // guess that whatever the panicking call left behind is still safe to
-            // dispatch into.
+            // Treated the same as `DeviceLost` instead: decline until `try_recover`
+            // replaces the renderer wholesale.
             let mut renderer = match mutex.lock() {
                 Ok(guard) => guard,
                 Err(_poisoned) => {
                     tracing::warn!(
-                        "GPU renderer mutex poisoned (a previous turn panicked), permanently \
-                         disabling the GPU backend for the rest of this process"
+                        "GPU renderer mutex poisoned (a previous turn panicked), disabling the \
+                         GPU backend until a fresh device is acquired"
                     );
-                    *self
-                        .last_lost_reason
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) =
-                        Some("GPU renderer mutex poisoned (a previous turn panicked)".to_string());
-                    self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
+                    self.mark_lost("GPU renderer mutex poisoned (a previous turn panicked)".into());
                     return GpuAccumulate::Declined;
                 }
             };
-            let outcome = renderer.accumulate_turn(&request, accum, &mut cursor);
+            let outcome = renderer.accumulate_turn(request, scratch, &mut cursor);
             // Released before `_turn` (below, at end of scope) so a woken waiter's own
             // `mutex.lock()` never has to contend with a guard this turn is done with.
             drop(renderer);
+            #[cfg(test)]
+            let outcome = {
+                turns_started += 1;
+                self.injected_failure(turns_started).map_or(outcome, Err)
+            };
 
             match outcome {
                 Ok(ChunkTurnOutcome::Done) => return GpuAccumulate::Done,
@@ -282,15 +360,11 @@ impl GpuBackend {
                 Ok(ChunkTurnOutcome::MoreWork) => {}
                 Err(GpuFrameError::DeviceLost(why)) => {
                     tracing::warn!(
-                        "GPU device lost ({why}), permanently disabling the GPU backend for \
-                         the rest of this process -- every later call falls back to the CPU \
+                        "GPU device lost ({why}), disabling the GPU backend until a fresh \
+                         device is acquired -- meanwhile every call falls back to the CPU \
                          tracer"
                     );
-                    *self
-                        .last_lost_reason
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(why);
-                    self.lost.store(true, std::sync::atomic::Ordering::Relaxed);
+                    self.mark_lost(why);
                     return GpuAccumulate::Declined;
                 }
                 Err(e) => {
@@ -302,5 +376,123 @@ impl GpuBackend {
                 }
             }
         }
+    }
+
+    /// Records a device loss: remembers `reason`, starts the recovery cool-down, and
+    /// only then raises [`Self::lost`], so a thread that sees the flag also finds the
+    /// cool-down already running.
+    fn mark_lost(&self, reason: String) {
+        *self
+            .last_lost_reason
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(reason);
+        self.policy().record_loss(Instant::now());
+        self.lost.store(true, Ordering::Release);
+    }
+
+    fn policy(&self) -> MutexGuard<'_, RecoveryPolicy> {
+        self.recovery.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Tries to bring a lost GPU back, subject to the recovery policy: at least
+    /// [`COOL_DOWN`] since the loss or the previous attempt, and at most six attempts
+    /// per hour. Returns `true` when the backend is usable on return -- it was never lost,
+    /// another thread already recovered it, or a fresh device was just acquired --
+    /// and `false` when it is still lost (no attempt allowed yet, another thread is
+    /// mid-attempt, or the attempt failed).
+    ///
+    /// [`Self::try_accumulate_cancellable`] calls this itself at the top of every request
+    /// while lost; a caller that must report the backend's state first (a joined worker
+    /// building its `HELLO`) calls it directly. Never blocks behind another recovery: the
+    /// losing thread just declines.
+    #[must_use]
+    pub fn try_recover(&self) -> bool {
+        if !self.lost.load(Ordering::Acquire) {
+            return true;
+        }
+        let Some(slot) = &self.renderer else {
+            return false;
+        };
+        if !self.policy().may_attempt(Instant::now()) {
+            return false;
+        }
+        if self.recovering.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        let recovered = self.reacquire(slot);
+        self.recovering.store(false, Ordering::Release);
+        recovered
+    }
+
+    /// Acquires a fresh renderer and swaps it into `slot`. The slow part (adapter,
+    /// device, megakernel compile) runs before any lock is taken; the swap itself then
+    /// waits for a turnstile turn like a dispatch would, so it never lands inside
+    /// another request's turn. A poisoned mutex is cleared by the swap.
+    fn reacquire(&self, slot: &Mutex<GpuFrameRenderer>) -> bool {
+        if !self.lost.load(Ordering::Acquire) {
+            return true;
+        }
+        self.policy().record_attempt(Instant::now());
+        let reason = self.last_lost_reason().unwrap_or_default();
+        tracing::info!("GPU device was lost ({reason}); trying to acquire a fresh one");
+        let mut fresh = match GpuFrameRenderer::new() {
+            Ok(fresh) => fresh,
+            Err(e) => {
+                tracing::info!(
+                    "GPU re-acquisition failed, staying on the CPU tracer for at least {} s: {e}",
+                    COOL_DOWN.as_secs()
+                );
+                return false;
+            }
+        };
+
+        let ticket = self.turnstile.take_ticket();
+        let _turn = self.turnstile.wait_for_turn(ticket);
+        let mut guard = slot.lock().unwrap_or_else(PoisonError::into_inner);
+        fresh.set_pipeline_kind(guard.pipeline_kind());
+        *guard = fresh;
+        drop(guard);
+        slot.clear_poison();
+        self.policy().record_recovered();
+        self.lost.store(false, Ordering::Release);
+        let adapter = self
+            .adapter_label()
+            .unwrap_or_else(|| "unknown".to_string());
+        tracing::info!(adapter = adapter.as_str(), "GPU render backend recovered");
+        true
+    }
+
+    /// A zeroed buffer of `len` pixels from the pool (or a new one).
+    fn take_scratch(&self, len: usize) -> Vec<Vec3> {
+        let mut buffer = self
+            .scratch_pool
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .pop()
+            .unwrap_or_default();
+        buffer.clear();
+        buffer.resize(len, Vec3::ZERO);
+        buffer
+    }
+
+    /// Hands `buffer` back for the next request, unless the pool is already full.
+    fn return_scratch(&self, buffer: Vec<Vec3>) {
+        let mut pool = self
+            .scratch_pool
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if pool.len() < MAX_POOLED_SCRATCH {
+            pool.push(buffer);
+        }
+    }
+
+    /// The test seam behind [`Self::fail_on_turn`]: an injected loss exactly when `turn`
+    /// is the armed turn number, disarming it.
+    #[cfg(test)]
+    fn injected_failure(&self, turn: usize) -> Option<GpuFrameError> {
+        self.fail_on_turn
+            .compare_exchange(turn, 0, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+            .then(|| GpuFrameError::DeviceLost("injected failure (test seam)".to_string()))
     }
 }

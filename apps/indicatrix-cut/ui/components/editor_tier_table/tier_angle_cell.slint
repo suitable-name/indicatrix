@@ -47,6 +47,15 @@ import { GuideModel } from "../../models/guide.slint";
 // merely equals the target index again would not fire it a second time).
 export component TierAngleCell inherits Rectangle {
     in property <string> value;
+    // The same angle unrounded (`EditorTierItem.angle_full`) -- seeds the
+    // editable `LineEdit` below instead of `value` so opening the cell and
+    // committing without changing anything round-trips bit-exact (`value` is
+    // display-rounded to 2 decimals, which `setup_inline_set_angle_callback`'s
+    // own bit-exact no-op check, `nudge.rs`, would otherwise see as a real
+    // change and spend an undo step on). Defaults to `value` so a caller that
+    // never binds this keeps the old (rounded) seeding rather than an empty
+    // field.
+    in property <string> full_value: root.value;
     // What a pending Optimize outcome would set this tier's angle to
     // (`EditorTierItem::proposed_angle`), or "" when no change is proposed. Shown
     // as a small ghost beside the real angle so a cutter can see the proposal
@@ -155,7 +164,7 @@ export component TierAngleCell inherits Rectangle {
     if root.editing: edit := LineEdit {
         width: 100%;
         height: 100%;
-        text: root.value;
+        text: root.full_value;
         font-size: 11px;
         init => {
             self.select-all();
@@ -167,6 +176,17 @@ export component TierAngleCell inherits Rectangle {
             // triggers must not commit `self.text` a second time.
             root.cancelling = true;
             root.editing = false;
+            // `root.editing = false` above unmounts this whole `if root.editing:`
+            // element on the very next re-evaluation -- with it goes this
+            // `LineEdit`'s OWN `changed has-focus` tracker (a conditional
+            // element's tracker is dropped along with the element, losing its
+            // queued handlers), so that handler's own `EditorModel.text_focus = false`
+            // below never gets a chance to run for this close path (`self.
+            // has-focus` is still `true` right up to the moment of teardown --
+            // Enter does not blur first). Set explicitly here instead, or
+            // `text_focus` sticks `true` forever, silently blocking
+            // `app.slint`'s Ctrl+Z/Ctrl+Y guard.
+            EditorModel.text_focus = false;
             root.closed();
         }
         // Marks the shared "some text field has focus" flag that app.slint's
@@ -186,6 +206,10 @@ export component TierAngleCell inherits Rectangle {
             if event.text == Key.Escape {
                 root.cancelling = true;
                 root.editing = false;
+                // Same reasoning as `accepted` above -- Escape does not blur the
+                // field first either, so this tracker is torn down without ever
+                // seeing `has-focus` go `false`.
+                EditorModel.text_focus = false;
                 root.closed();
                 return accept;
             } else if event.text == Key.UpArrow && root.editable {

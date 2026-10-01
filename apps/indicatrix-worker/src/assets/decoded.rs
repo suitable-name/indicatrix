@@ -87,10 +87,18 @@ pub fn decode_and_register(
         ));
     }
     let map = Arc::new(map);
-    REGISTERED
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .push((expected.content_hash, Arc::downgrade(&map)));
+    let mut registered = REGISTERED.lock().unwrap_or_else(PoisonError::into_inner);
+    // Bounds regrowth for the repeat-decode case (the same hash resolved again after its
+    // earlier `Arc` died and dropped out of `RECENT`) without weakening the "every
+    // address stays reserved forever" guarantee the module doc explains: only entries of
+    // THIS hash that are already dead are dropped, never a live entry and never a dead
+    // entry of some OTHER hash. Since a fresh decode of the same hash is
+    // byte-identical to the one it replaces, letting this one hash's old dead address
+    // become reusable can't be mistaken for a genuinely different map the way pruning
+    // indiscriminately would.
+    registered.retain(|(h, weak)| *h != expected.content_hash || weak.strong_count() > 0);
+    registered.push((expected.content_hash, Arc::downgrade(&map)));
+    drop(registered);
     remember_recent(&expected.content_hash, &map);
     Ok(map)
 }

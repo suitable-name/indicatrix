@@ -33,8 +33,11 @@
 
 use zeroize::Zeroizing;
 
+/// Length in bytes of the CSPRNG bearer secret half of an [`EnrollToken`]'s payload.
 pub const SECRET_LEN: usize = 32;
+/// Length in bytes of the CA-fingerprint half of an [`EnrollToken`]'s payload.
 pub const FINGERPRINT_LEN: usize = 32;
+/// The whole decoded payload's length: [`SECRET_LEN`] followed by [`FINGERPRINT_LEN`].
 pub const PAYLOAD_LEN: usize = SECRET_LEN + FINGERPRINT_LEN;
 
 /// Fixed prefix identifying this as a `indicatrix-worker` enrollment token, format version 1.
@@ -54,10 +57,13 @@ const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
 /// every TLS handshake anyway) and needs no such handling.
 #[derive(Debug)]
 pub struct EnrollToken {
+    /// The fresh CSPRNG bearer secret, zeroized on drop.
     pub secret: Zeroizing<[u8; SECRET_LEN]>,
+    /// The worker's CA certificate fingerprint this token commits to.
     pub ca_fingerprint: crate::tls::Fingerprint,
 }
 
+/// Why [`decode`] could not produce an [`EnrollToken`] from a string.
 #[derive(Debug, PartialEq, Eq)]
 pub enum TokenError {
     /// Missing/wrong `GW1-` prefix -- almost certainly not a `indicatrix-worker` enrollment
@@ -95,11 +101,13 @@ impl std::error::Error for TokenError {}
 /// Base32 string. See the module doc comment for the exact format.
 #[must_use]
 pub fn encode(secret: &[u8; SECRET_LEN], ca_fingerprint: &crate::tls::Fingerprint) -> String {
-    let mut payload = [0u8; PAYLOAD_LEN];
+    // The transient copies of the secret (raw bytes, then their Base32 symbols) are
+    // overwritten when they go out of scope; only the returned token string outlives them.
+    let mut payload = Zeroizing::new([0u8; PAYLOAD_LEN]);
     payload[..SECRET_LEN].copy_from_slice(secret);
     payload[SECRET_LEN..].copy_from_slice(ca_fingerprint);
 
-    let symbols = base32_encode(&payload);
+    let symbols = Zeroizing::new(base32_encode(payload.as_slice()));
 
     let mut out = String::with_capacity(TOKEN_PREFIX.len() + 1 + symbols.len() + symbols.len() / 5);
     out.push_str(TOKEN_PREFIX);
@@ -134,19 +142,22 @@ pub fn decode(s: &str) -> Result<EnrollToken, TokenError> {
     let rest = &trimmed[TOKEN_PREFIX.len()..];
     let rest = rest.strip_prefix('-').unwrap_or(rest);
 
-    let symbols: String = rest
-        .chars()
-        .filter(|c| *c != '-' && !c.is_whitespace())
-        .collect();
+    // Every transient copy of the secret (the cleaned symbols, the decoded payload) is
+    // zeroized on drop, like the returned `EnrollToken::secret`.
+    let symbols: Zeroizing<String> = Zeroizing::new(
+        rest.chars()
+            .filter(|c| *c != '-' && !c.is_whitespace())
+            .collect(),
+    );
     let payload = base32_decode(&symbols)?;
 
-    let mut secret = [0u8; SECRET_LEN];
+    let mut secret = Zeroizing::new([0u8; SECRET_LEN]);
     secret.copy_from_slice(&payload[..SECRET_LEN]);
     let mut ca_fingerprint = [0u8; FINGERPRINT_LEN];
     ca_fingerprint.copy_from_slice(&payload[SECRET_LEN..]);
 
     Ok(EnrollToken {
-        secret: Zeroizing::new(secret),
+        secret,
         ca_fingerprint,
     })
 }
@@ -182,10 +193,10 @@ fn base32_encode(data: &[u8]) -> String {
 /// case-folding and the conventional `O`->`0`, `I`/`L`->`1` misread corrections).
 /// [`TokenError::WrongLength`] if the decoded bit count isn't exactly `PAYLOAD_LEN * 8`,
 /// or the final symbol's padding bits aren't all zero.
-fn base32_decode(symbols: &str) -> Result<Vec<u8>, TokenError> {
+fn base32_decode(symbols: &str) -> Result<Zeroizing<Vec<u8>>, TokenError> {
     let mut acc: u32 = 0;
     let mut acc_bits: u32 = 0;
-    let mut out = Vec::with_capacity(PAYLOAD_LEN + 1);
+    let mut out = Zeroizing::new(Vec::with_capacity(PAYLOAD_LEN + 1));
 
     for c in symbols.chars() {
         let value = crockford_value(c).ok_or(TokenError::InvalidCharacter(c))?;

@@ -43,6 +43,41 @@ comparison against the catalogue's printed proportions (Chapter 8) — a
 snapshot only ever compares the current design against your own earlier
 click of Snapshot Design, never against catalogue data.
 
+## Visual before/after comparison
+
+The tables above tell you which angles move; the **compare window** shows
+you what the stone looks like before and after. Open it with **Compare…**
+next to "Preview in viewport" in the Retarget dialog (once a proposal is
+ready), with **Compare…** next to "Preview" in the Optimize tab (once a
+result is waiting for Apply), or with **Compare visually…** at the bottom
+of the Compare to Snapshot table. It is a separate window you can move and
+resize freely; opening it again replaces whatever it was showing. Both
+sides are solved when it opens, so a large design may read "Solving both
+sides…" for a moment.
+
+Two layouts sit at the top left. **Side by side** shows the two stones next
+to each other; **Split slider** shows one stone with a draggable divider,
+the "before" design to its left and the "after" design to its right, both
+rendered at exactly the same pose and size. Dragging in either image (or
+anywhere in the split view) turns both stones together, the mouse wheel
+zooms both, and a double-click resets them to the front view. **Solid**
+(the default) is the Edit tab's flat grey view and updates instantly;
+**Traced** runs the path tracer at a modest fixed quality in the design's
+own material (for Retarget, the "after" side uses the target material) and
+starts once you stop turning the stone, showing the solid view meanwhile —
+the status line reads "Tracing… 1 of 2" while it works. A side that does
+not solve shows a hatched placeholder and the status line says why.
+
+**Keep after** applies the change exactly as the Retarget dialog's or the
+Optimize tab's own Apply button does (one undo step, same checks), then
+closes the window; it is disabled unless both sides solve, and if the
+proposal changed after you opened the window you get a toast asking you to
+open Compare again instead. **Discard** closes the window without applying
+anything and switches that feature's viewport preview off, leaving the
+proposal or result pending so you can adjust it and compare again.
+**Close** (or the window's own close button) just closes it. A snapshot
+comparison only offers Close.
+
 ## Tilt curves: when a computed result actually persists
 
 The **Compute Tilt Curves** button (and the catalogue-wide batch tool in

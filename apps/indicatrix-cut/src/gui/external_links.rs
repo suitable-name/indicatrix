@@ -1,8 +1,20 @@
-//! Opening the bundled user manual and revealing the Edit tab's last-saved folder,
-//! both through the platform's own file/URL opener.
+//! Opening the bundled user manual, catalogue links and the Edit tab's last-saved
+//! folder through the platform's own file/URL opener.
+//!
+//! Every launch goes through [`open_external_url`] or [`open_local_path`], which hand
+//! the target to the opener as ONE argument of a directly spawned program -- never
+//! through `cmd.exe` or any other shell, where `&`, `|`, `^` and `%` in a link would be
+//! read as shell syntax.
 
 use crate::{EditorModel, MainWindow, gui::show_toast};
 use slint::ComponentHandle;
+use std::{
+    ffi::OsStr,
+    io,
+    path::{Path, PathBuf},
+    process::Command,
+};
+use tracing::{info, warn};
 
 /// Candidate `docs/manual/README.md` locations for [`locate_user_manual`], relative to
 /// a base directory (the running executable's own directory in production; see that
@@ -43,13 +55,11 @@ fn locate_user_manual() -> Option<std::path::PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// Help menu: opens the bundled `docs/manual/README.md` via the same per-platform
-/// `xdg-open`/`cmd /C start`/`open` dispatch
-/// `library::diagram_list::setup_diagram_selection_and_export_callbacks`'s
-/// `on_open_diagram_url` uses for URLs (all three also open a plain file path). The
-/// path itself is resolved at runtime by [`locate_user_manual`] (see its doc comment
-/// for the candidate search order). If none of those candidates exist on disk, this
-/// shows an error toast instead of silently doing nothing.
+/// Help menu: opens the bundled `docs/manual/README.md` through [`open_local_path`].
+/// The path itself is resolved at runtime by [`locate_user_manual`] (see its doc
+/// comment for the candidate search order). If none of those candidates exist on disk,
+/// or the opener cannot be started, this shows an error toast instead of silently doing
+/// nothing.
 pub(super) fn setup_user_manual_callback(ui: &MainWindow) {
     let ui_weak = ui.as_weak();
     ui.on_open_user_manual(move || {
@@ -60,24 +70,118 @@ pub(super) fn setup_user_manual_callback(ui: &MainWindow) {
             show_toast(&ui, "User manual not found", "error");
             return;
         };
-        open_with_os_handler(&manual_path.to_string_lossy());
+        if let Err(message) = open_local_path(&manual_path) {
+            warn!("{message}");
+            show_toast(&ui, &message, "error");
+        }
     });
 }
 
-/// Hands `path` (a file, a folder, or a URL -- all three work on every branch) to
-/// the platform's own opener. Failures are deliberately ignored: there is no
-/// portable way to tell "no handler registered" from "the handler launched and
-/// exited", and every caller here has already put the path on screen, so the
-/// cutter is never left with nothing.
-fn open_with_os_handler(path: &str) {
-    #[cfg(target_os = "linux")]
-    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
+/// Opens `url` in the default browser.
+///
+/// Only `http://` and `https://` links are accepted (see [`validated_url`]): a
+/// catalogue link is data that can come from a remote library, so it must never reach
+/// the opener as a local path, a `file:` URL or anything else the shell would execute.
+///
+/// # Errors
+///
+/// A ready-to-toast message when the link is refused or the opener cannot be started.
+pub(super) fn open_external_url(url: &str) -> Result<(), String> {
+    let launch_url = validated_url(url).inspect_err(|_| {
+        warn!("Refused to open the link {url:?}");
+    })?;
+    info!("Opening URL: {launch_url}");
+    launch(OsStr::new(&launch_url)).map_err(|e| format!("Could not open {launch_url}: {e}"))
+}
+
+/// Opens an existing file or folder with the platform's default handler. Only for
+/// paths this application itself produced (the bundled manual, the folder a design was
+/// saved into), never for text that came from a catalogue or a remote worker -- those
+/// go through [`open_external_url`].
+///
+/// # Errors
+///
+/// A ready-to-toast message when `path` does not exist or the opener cannot be
+/// started.
+pub(super) fn open_local_path(path: &Path) -> Result<(), String> {
+    let path = validated_local_path(path)?;
+    launch(path.as_os_str()).map_err(|e| format!("Could not open {}: {e}", path.display()))
+}
+
+/// Accepts `url` only if it is an `http://` or `https://` address with something after
+/// the scheme and no control characters, and returns the text to hand to the opener:
+/// the same URL with spaces and double quotes percent-encoded, so the single argument
+/// never contains a character the opener's own command-line parsing could treat as
+/// quoting. A `&` (or any other URL character) is legal and stays untouched, because
+/// the URL is never parsed by a shell.
+///
+/// # Errors
+///
+/// A ready-to-toast message naming why the link was refused.
+fn validated_url(url: &str) -> Result<String, String> {
+    let url = url.trim();
+    if url.chars().any(char::is_control) {
+        return Err("Refused to open a link that contains control characters.".to_owned());
+    }
+    let is_web_link = url.split_once("://").is_some_and(|(scheme, rest)| {
+        (scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https"))
+            && !rest.is_empty()
+    });
+    if !is_web_link {
+        return Err("Refused to open a link that is not an http or https address.".to_owned());
+    }
+    Ok(url.replace(' ', "%20").replace('"', "%22"))
+}
+
+/// Accepts `path` only if it exists, and returns it made absolute so a relative name
+/// can never be read as an option by the opener.
+///
+/// # Errors
+///
+/// A ready-to-toast message when `path` does not exist.
+fn validated_local_path(path: &Path) -> Result<PathBuf, String> {
+    if !path.exists() {
+        return Err(format!("{} does not exist.", path.display()));
+    }
+    Ok(std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf()))
+}
+
+/// The opener command for `target`, which is passed as a single argument:
+/// `rundll32 url.dll,FileProtocolHandler` on Windows (the shell's own "open" verb, with
+/// no `cmd.exe` in between), `open` on macOS and `xdg-open` elsewhere.
+fn opener_command(target: &OsStr) -> Command {
     #[cfg(target_os = "windows")]
-    let _ = std::process::Command::new("cmd")
-        .args(["/C", "start", "", path])
-        .spawn();
+    {
+        let mut command = Command::new("rundll32");
+        command.arg("url.dll,FileProtocolHandler").arg(target);
+        command
+    }
     #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(path).spawn();
+    {
+        let mut command = Command::new("open");
+        command.arg(target);
+        command
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    {
+        let mut command = Command::new("xdg-open");
+        command.arg(target);
+        command
+    }
+}
+
+/// Starts the opener for `target` and returns without waiting for it to finish.
+///
+/// Only a failure to start the opener is reported: there is no portable way to tell
+/// "no handler registered" from "the handler launched and exited", and every caller has
+/// already put the target on screen, so the cutter is never left with nothing.
+fn launch(target: &OsStr) -> io::Result<()> {
+    let mut child = opener_command(target).spawn()?;
+    // Reaps the opener when it exits, so it never lingers as a zombie process on Unix.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
 }
 
 /// Reveals whatever the Edit tab last saved or exported, by
@@ -100,13 +204,17 @@ pub(super) fn setup_reveal_last_saved_callback(ui: &MainWindow) {
             }
             let path = std::path::PathBuf::from(saved.as_str());
             let target = path.parent().unwrap_or(&path);
-            open_with_os_handler(&target.to_string_lossy());
+            if let Err(message) = open_local_path(target) {
+                warn!("{message}");
+                show_toast(&ui, &message, "error");
+            }
         });
 }
 
 #[cfg(test)]
 mod tests {
-    use super::user_manual_candidates;
+    use super::{opener_command, user_manual_candidates, validated_local_path, validated_url};
+    use std::{ffi::OsStr, path::Path};
 
     /// The candidate list is built entirely from the given base directory (plus one
     /// fixed dev-only `CARGO_MANIFEST_DIR` fallback) -- no hidden dependence on the
@@ -139,5 +247,116 @@ mod tests {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/manual/README.md")
         );
         assert_eq!(candidates.len(), 4);
+    }
+
+    /// An `&` is ordinary URL syntax (query strings are full of them) and must reach
+    /// the opener untouched -- the fix is never handing the URL to a shell, not
+    /// rejecting or escaping the character.
+    #[test]
+    fn an_http_url_with_shell_metacharacters_is_accepted_verbatim() {
+        for url in [
+            "http://example.com/?a=1&calc",
+            "https://example.com/path?x=1&y=2|3^4%5",
+            "https://example.com/?a&echo%20pwned>%TEMP%\\x",
+        ] {
+            assert_eq!(validated_url(url).as_deref(), Ok(url));
+        }
+    }
+
+    #[test]
+    fn the_scheme_check_ignores_case_and_surrounding_whitespace() {
+        assert_eq!(
+            validated_url("  HTTPS://Example.com/a \n").as_deref(),
+            Ok("HTTPS://Example.com/a")
+        );
+    }
+
+    /// Spaces and double quotes inside a link are percent-encoded so the single
+    /// argument holds no character an opener's own command-line parsing could read as
+    /// quoting.
+    #[test]
+    fn spaces_and_quotes_are_percent_encoded() {
+        assert_eq!(
+            validated_url("http://example.com/a b\"c").as_deref(),
+            Ok("http://example.com/a%20b%22c")
+        );
+    }
+
+    #[test]
+    fn anything_but_an_http_or_https_url_is_refused() {
+        for refused in [
+            "",
+            "   ",
+            "http://",
+            "https://",
+            "example.com",
+            "ftp://example.com/file",
+            "file:///C:/Windows/System32/calc.exe",
+            "javascript:alert(1)",
+            "calc.exe",
+            "C:\\Windows\\System32\\calc.exe",
+            "\\\\server\\share\\tool.exe",
+            "/usr/bin/xterm",
+            "ms-settings:network",
+        ] {
+            assert!(
+                validated_url(refused).is_err(),
+                "{refused:?} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_url_with_control_characters_is_refused() {
+        for refused in [
+            "http://example.com/\nnext",
+            "http://example.com/\r\ncalc",
+            "http://example.com/\0",
+            "http://example.com/\tx",
+            "http://example.com/\u{1b}[0m",
+        ] {
+            assert!(
+                validated_url(refused).is_err(),
+                "{refused:?} must be refused"
+            );
+        }
+    }
+
+    /// The injection this module exists to prevent: the validated URL, `&` and all,
+    /// travels as the final single argument of a directly spawned opener, and no shell
+    /// is involved.
+    #[test]
+    fn the_opener_receives_the_url_as_one_argument_and_no_shell_is_involved() {
+        let url = validated_url("http://x/?a=1&calc|echo pwned>%TEMP%\\x").unwrap();
+        let command = opener_command(OsStr::new(&url));
+
+        let program = Path::new(command.get_program())
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        assert!(
+            !matches!(
+                program.as_str(),
+                "cmd" | "sh" | "bash" | "zsh" | "powershell" | "pwsh"
+            ),
+            "the opener must not be a shell: {program}"
+        );
+        let args: Vec<&OsStr> = command.get_args().collect();
+        assert_eq!(args.last().copied(), Some(OsStr::new(&url)));
+        assert_eq!(
+            args.iter()
+                .filter(|arg| arg.to_string_lossy().contains('&'))
+                .count(),
+            1,
+            "the URL must not be split across arguments"
+        );
+    }
+
+    #[test]
+    fn a_local_path_must_exist() {
+        let here = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let accepted = validated_local_path(here).unwrap();
+        assert!(accepted.is_absolute());
+        assert!(validated_local_path(&here.join("no-such-file-for-the-opener")).is_err());
     }
 }

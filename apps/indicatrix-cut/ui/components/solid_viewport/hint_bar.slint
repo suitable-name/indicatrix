@@ -1,0 +1,110 @@
+import { Theme } from "../../theme.slint";
+import { ManipulateModel } from "../../models/manipulate.slint";
+
+// One small pill in the hint strip. `lit` shows a toggle that is on; `emphasized` is the
+// primary action (Keep). Everything else is a plain button.
+component HintButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> lit: false;
+    in property <bool> emphasized: false;
+    callback clicked();
+
+    height: 18px;
+    background: (root.lit || root.emphasized) ? Theme.primary : (hint_touch.has-hover ? Theme.bg-elevated : Theme.bg-input);
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: (root.lit || root.emphasized) ? Theme.accent-cyan : Theme.border-subtle;
+
+    hint_touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+    Text {
+        text: root.text;
+        font-size: 11px;
+        font-weight: 600;
+        color: (root.lit || root.emphasized) ? Theme.text-on-primary : Theme.text-secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// The one-line strip under the Solid viewport's toolbar row: what the pointer is on
+// or what the gesture in progress does (`ManipulateModel.hint_text`). Styled like
+// the toolbar's status strip. The instantiating site hides it while there is neither
+// text nor a provisional slice. At the right it carries the Slice tool's buttons:
+// Symmetric (whenever Slice mode is on), and Keep, Discard and Flip while a provisional
+// tier exists.
+export component ManipulateHintBar inherits Rectangle {
+    // Explicit geometry, like `SolidViewportToolbar`: keeps this overlay from
+    // propagating its constraints to the viewport (see `app.slint`'s "Sizing notes").
+    // The root only frames the viewport; the strip itself is the child below.
+    x: 0px;
+    y: 0px;
+    width: 100%;
+    height: 100%;
+
+    // Room reserved at the strip's right end for the buttons.
+    property <length> buttons_width: ManipulateModel.provisional_active ? 322px : (ManipulateModel.slice_mode ? 96px : 0px);
+
+    // The toolbar's pill rows' height (`SolidViewportToolbar.top_height`): 28px for one
+    // row, more when the toolbar wraps into several.
+    in property <length> toolbar_height: 28px;
+
+    // Sits just under the toolbar's pill rows (10px padding + rows + 6px gap).
+    Rectangle {
+        x: 10px;
+        y: 16px + root.toolbar_height;
+        width: parent.width - 20px;
+        height: 22px;
+        background: Theme.bg-input;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.border-subtle;
+
+        Text {
+            text: ManipulateModel.hint_text;
+            font-size: 11px;
+            color: Theme.text-primary;
+            vertical-alignment: center;
+            overflow: elide;
+            x: 8px;
+            width: max(0px, parent.width - 16px - root.buttons_width);
+            height: parent.height;
+        }
+
+        HorizontalLayout {
+            x: parent.width - root.buttons_width - 3px;
+            y: 2px;
+            width: root.buttons_width;
+            height: parent.height - 4px;
+            spacing: 6px;
+            alignment: end;
+
+            if ManipulateModel.provisional_active: HintButton {
+                width: 96px;
+                text: ManipulateModel.provisional_label == "" ? "Keep" : "Keep " + ManipulateModel.provisional_label;
+                emphasized: true;
+                clicked => { ManipulateModel.slice_keep(); }
+            }
+            if ManipulateModel.provisional_active: HintButton {
+                width: 66px;
+                text: "Discard";
+                clicked => { ManipulateModel.slice_discard(); }
+            }
+            if ManipulateModel.provisional_active: HintButton {
+                width: 46px;
+                text: "Flip";
+                clicked => { ManipulateModel.slice_flip(); }
+            }
+            if ManipulateModel.slice_mode || ManipulateModel.provisional_active: HintButton {
+                width: 90px;
+                text: "Symmetric";
+                lit: ManipulateModel.slice_symmetric;
+                clicked => {
+                    ManipulateModel.slice_symmetric = !ManipulateModel.slice_symmetric;
+                    ManipulateModel.slice_symmetric_toggled();
+                }
+            }
+        }
+    }
+}

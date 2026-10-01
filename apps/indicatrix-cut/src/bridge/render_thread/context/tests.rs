@@ -246,8 +246,9 @@ fn custom_specific_gravity_is_none_for_an_unrecorded_name() {
 #[test]
 fn no_override_falls_through_to_the_plain_by_name_lookup() {
     let materials = GemMaterial::all_materials();
-    let by_name = resolve_material(&materials, &[], "Diamond");
-    let via_override_fn = resolve_material_with_override(&materials, &[], None, "Diamond");
+    let by_name = resolve_material(&materials, &[], "Diamond").expect("Diamond resolves");
+    let via_override_fn =
+        resolve_material_with_override(&materials, &[], None, "Diamond").expect("Diamond resolves");
     assert_eq!(by_name.name, via_override_fn.name);
     assert_eq!(by_name.dispersion, via_override_fn.dispersion);
 }
@@ -261,9 +262,29 @@ fn an_override_wins_regardless_of_what_material_name_says() {
         &[],
         Some(&quartz),
         "Diamond", // the stale/fallback name a design with no real material carries
-    );
+    )
+    .expect("an explicit override always resolves");
     assert_eq!(resolved.name, quartz.name);
     assert_eq!(resolved.dispersion, quartz.dispersion);
+}
+
+#[test]
+fn an_unrecognized_name_refuses_rather_than_substituting_diamond() {
+    // The whole point of `resolve_material` dropping its old `materials[0]`
+    // fallback -- see that function's own doc comment. A design naming a
+    // deleted custom material, or an unrecognized/typo'd name, must be told
+    // apart from a real, resolved Diamond.
+    let materials = GemMaterial::all_materials();
+    assert_eq!(
+        resolve_material(&materials, &[], "no such stone"),
+        None,
+        "an unrecognized name must refuse, not silently resolve to Diamond"
+    );
+    assert_eq!(
+        resolve_material_with_override(&materials, &[], None, "no such stone"),
+        None,
+        "with no override, the by-name refusal must still propagate"
+    );
 }
 
 // ---- Final-picture live transfer ---------------------------------------------------

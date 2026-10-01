@@ -42,7 +42,7 @@ or an Apply Optimize Result.
 
 ## Some terms first
 
-- **Tier**: one row of the cutting schedule — one facet, or one symmetric
+- **Tier**: one row of the cutting instructions — one facet, or one symmetric
   family of identical facets cut at the same angle and depth.
 - **Index**: the position on the cutting machine's dividing head (its
   "gear") where a facet is cut. A design with a 96-tooth gear has 96
@@ -88,7 +88,7 @@ What happens next depends on the design and where it lives:
   file and builds the tier list from its exact recorded masts. Every tier
   starts pinned to that exact value (an anchor) — see "Pinned vs. free
   tiers" below. You get a toast: `Loaded '<title>' into the editor.`
-- **Local design with no attached file, but a stored cutting-schedule
+- **Local design with no attached file, but a stored cutting-instructions
   table**: the editor reconstructs a schedule from that table, but it has
   no way to recover the original masts, so every mast is filled with a
   placeholder of `0.0`. You get an informational toast: "Loaded a
@@ -96,7 +96,7 @@ What happens next depends on the design and where it lives:
   .asc file was found); adjust masts before exporting." Do not export this
   as-is — solve it and, where needed, add real scale-reference values
   first.
-- **Neither**: "This diagram has no cutting-schedule data to load."
+- **Neither**: "This diagram has no cutting-instructions data to load."
 
 **Loading solves immediately.** As soon as a design loads, the app runs a
 full solve, so the tier list's MAST and SOLVE columns are already filled in
@@ -238,7 +238,7 @@ counts as a pick.
 
 ### The inspector's Schedule tab
 
-Separately from the catalogue's own Cutting Schedule tab (Chapter 1), the
+Separately from the catalogue's own Cutting Instructions tab (Chapter 1), the
 Edit tab's inspector has its own **Schedule** tab: a read-only FACET /
 ANGLE / INDEX table built from this design's own current, solved tier
 list, not the catalogue's stored original. It reads "Not solved -- click

@@ -37,9 +37,9 @@ pub(in crate::bridge::export_thread) use dispatch::{
 };
 pub use final_image::forget_final_picture_refusals;
 pub(in crate::bridge::export_thread) use final_image::{
-    FinalPictureFollowUp, FinalPictureOutcome, TransferPlan, final_picture_follow_up,
-    final_picture_refused, plan_export_transfer, remember_final_picture_refused,
-    run_final_image_request,
+    FinalPictureFollowUp, FinalPictureOutcome, LocalShare, TransferPlan, final_picture_follow_up,
+    final_picture_refused, plan_export_transfer, record_split_rates,
+    remember_final_picture_refused, run_final_image_request, split_rates, viewer_share,
 };
 pub(in crate::bridge::export_thread) use rate::{
     REMOTE_CALIBRATION_SAMPLES, RemoteCalibration, calibrate_remote_rate,

@@ -12,25 +12,12 @@ use indicatrix_net::{
 use rustls::pki_types::ServerName;
 use std::{
     net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream},
-    path::{Path, PathBuf},
+    path::Path,
     sync::Arc,
     thread,
 };
 
-use super::{final_only, read_stream_until_done, tiny_scene};
-
-fn unique_temp_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "indicatrix-worker-mtls-test-{label}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
+use super::{final_only, fixtures::unique_temp_dir, read_stream_until_done, tiny_scene};
 
 fn server_config_from(pki_dir: &Path) -> Arc<rustls::ServerConfig> {
     let ca = indicatrix_net::tls::load_ca(&pki_dir.join(crate::pki::CA_CERT_FILE)).unwrap();
@@ -379,6 +366,7 @@ fn insecure_no_tls_with_a_non_loopback_bind_is_refused() {
         worker_allowlist: None,
         db: None,
         max_connections: crate::cli::DEFAULT_MAX_CONNECTIONS,
+        max_preauth_per_ip: crate::cli::DEFAULT_MAX_PREAUTH_PER_IP,
         interactive_workers: 0,
         pin_interactive_worker: None,
         max_job_memory_mib: crate::cli::DEFAULT_MAX_JOB_MEMORY_MIB,
@@ -412,6 +400,7 @@ fn insecure_no_tls_with_a_loopback_bind_is_accepted() {
         worker_allowlist: None,
         db: None,
         max_connections: crate::cli::DEFAULT_MAX_CONNECTIONS,
+        max_preauth_per_ip: crate::cli::DEFAULT_MAX_PREAUTH_PER_IP,
         interactive_workers: 0,
         pin_interactive_worker: None,
         max_job_memory_mib: crate::cli::DEFAULT_MAX_JOB_MEMORY_MIB,

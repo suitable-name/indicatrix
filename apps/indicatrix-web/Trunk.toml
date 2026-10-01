@@ -26,13 +26,17 @@ dist = "dist"
 # add to. Re-enable by deleting this line if the upstream rewriting is ever identified
 # and switched off.
 no_sri = true
-# WebGPU is a young enough browser API that targeting a lower `wasm-opt` optimization
-# level or an older Wasm feature set buys nothing -- every browser that implements
-# WebGPU at all is recent enough for a plain, un-downleveled `wasm32-unknown-unknown`
-# build. Nothing here overrides Trunk's own defaults for that reason.
+# The wasm-opt level, the wasm features it may assume and the Cargo profiles are set per
+# module on the `<link>`s in `index.html` (page: `s`, Worker: `3`; profiles
+# `indicatrix-web-compute` for dev and `indicatrix-web-release` for `--release`). Nothing
+# else here overrides Trunk's defaults; the app needs a browser with bulk memory, sign
+# extension, reference types and multivalue (Chrome 96, Firefox 100, Safari 15.2 or newer).
 
 [watch]
-watch = ["src", "ui", "Cargo.toml", "build.rs"]
+# The Web Worker (`index.html`'s `data-type="worker"` link) and the compute core it
+# and the app share live in sibling crates; watch them too so `trunk serve` rebuilds
+# on their edits.
+watch = ["src", "ui", "Cargo.toml", "build.rs", "../../crates/indicatrix-web-core/src", "../../crates/indicatrix-web-core/Cargo.toml", "../indicatrix-web-compute/src", "../indicatrix-web-compute/Cargo.toml"]
 
 [serve]
 addresses = ["127.0.0.1"]

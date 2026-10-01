@@ -1,0 +1,370 @@
+//! Tier-list row-builder tests: `tier_items`/`tier_items_stale`, the meet-adoption
+//! resolve-stays-solved regression, `tier_margin_and_risk`, `constraint_kind_and_text`,
+//! `index_chip_items`, and `tier_matches_filter`.
+
+use crate::{
+    EditorSession,
+    view_model::{row_format::*, rows::*, solid_status::*},
+};
+use indicatrix::geometry::meet_solver::{Block, MeetConstraint};
+use indicatrix_cut_core::{ConstraintTier, Design, Edit, TierTarget};
+
+#[test]
+fn tier_items_reflects_position_and_fields_in_order() {
+    let mut state = EditorSession::fresh();
+    state
+        .apply(Edit::AddTier {
+            index: 0,
+            tier: ConstraintTier {
+                angle_deg: -41.0,
+                name: "P1".to_string(),
+                indices: vec![0.0, 24.0],
+                constraint: MeetConstraint::ScaleReference(0.65),
+                imported_meet: None,
+                original_notes: None,
+                detached: Vec::new(),
+            },
+        })
+        .unwrap();
+    let items = tier_items(&state.design, state.design.effective_refractive_index());
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].index, 0);
+    assert_eq!(items[0].angle_deg.as_str(), "-41.00");
+    assert_eq!(items[0].mast.as_str(), "0.6500");
+    assert_eq!(items[0].name.as_str(), "P1");
+    assert_eq!(items[0].indices.as_str(), "0, 24");
+}
+
+/// A complete orbit reads "orbit x4" and is never flagged incomplete; detaching it
+/// must flip [`crate::view_model::TierRow::is_detached`] without changing the orbit shape
+/// shown.
+#[test]
+fn tier_items_reports_orbit_status_and_detached_state() {
+    let mut state = EditorSession::fresh(); // symmetry_order 8, see `EditorSession::fresh`
+    state
+        .apply(Edit::AddTier {
+            index: 0,
+            tier: ConstraintTier {
+                angle_deg: -41.0,
+                name: "P1".to_string(),
+                indices: vec![0.0, 12.0, 24.0, 36.0, 48.0, 60.0, 72.0, 84.0],
+                constraint: MeetConstraint::ScaleReference(0.65),
+                imported_meet: None,
+                original_notes: None,
+                detached: Vec::new(),
+            },
+        })
+        .unwrap();
+    let items = tier_items_stale(&state.design, state.design.effective_refractive_index());
+    assert_eq!(items[0].orbit_status.as_str(), "orbit x8");
+    assert!(!items[0].orbit_incomplete);
+    assert!(!items[0].is_detached);
+
+    let edit = state.design.detach_all_in_tier(0).unwrap();
+    state.apply(edit).unwrap();
+    let items = tier_items_stale(&state.design, state.design.effective_refractive_index());
+    assert!(items[0].is_detached);
+    assert_eq!(
+        items[0].orbit_status.as_str(),
+        "orbit x8",
+        "detaching must not change the reported orbit shape, only is_detached"
+    );
+}
+
+/// The no-solve tier list must still reflect authored fields exactly like
+/// [`tier_items`] does -- only mast/strategy differ, always the fixed "not solved"
+/// placeholder flagged uncertain, regardless of whether the design would actually
+/// solve cleanly. This function must never touch `Design::solve`.
+#[test]
+fn tier_items_stale_reflects_authored_fields_without_solving() {
+    let mut state = EditorSession::fresh();
+    state
+        .apply(Edit::AddTier {
+            index: 0,
+            tier: ConstraintTier {
+                angle_deg: -41.0,
+                name: "P1".to_string(),
+                indices: vec![0.0, 24.0],
+                constraint: MeetConstraint::ScaleReference(0.65),
+                imported_meet: None,
+                original_notes: None,
+                detached: Vec::new(),
+            },
+        })
+        .unwrap();
+    let items = tier_items_stale(&state.design, state.design.effective_refractive_index());
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].index, 0);
+    assert_eq!(items[0].angle_deg.as_str(), "-41.00");
+    assert_eq!(items[0].name.as_str(), "P1");
+    assert_eq!(items[0].indices.as_str(), "0, 24");
+    // Never a real mast, always flagged uncertain, even though this exact tier is a
+    // `ScaleReference` that would solve instantly and exactly.
+    assert_eq!(items[0].mast.as_str(), "-");
+    assert!(items[0].strategy_is_uncertain);
+}
+
+/// Reproduces the "Solve, Adopt, and it says not solved again" bug: build a design
+/// with a real crown anchor and one imported, not-yet-adopted tier pinned to exactly
+/// the mast its real meet constraint would derive, confirm it already solves, then
+/// apply the exact `Edit::SetConstraint` "Adopt" issues, and confirm the design is
+/// STILL solvable -- never falling back to `MissingAnchor` -- converging to the same
+/// mast. The acceptance criterion for `setup_adopt_meet_callback` calling a real
+/// re-solve rather than showing a fixed "Not solved" banner.
+#[test]
+fn adopting_a_suggested_meet_keeps_the_design_solved_at_the_same_mast() {
+    // A proven-solvable crown anchor + `MeetNamed` pair, not a guessed shape.
+    let mut state = EditorSession::fresh();
+    state.design = Design::fresh(
+        indicatrix_cut_core::PreformSpec::block(1.0, 1.0, 2.0),
+        96,
+        4,
+        1.62,
+    );
+
+    // Crown anchor: gives the block something to solve the meet-derived tier
+    // against.
+    state
+        .apply(Edit::AddTier {
+            index: 0,
+            tier: ConstraintTier {
+                angle_deg: 30.0,
+                name: "A".to_string(),
+                indices: vec![0.0, 24.0, 48.0, 72.0],
+                constraint: MeetConstraint::ScaleReference(0.5),
+                imported_meet: None,
+                original_notes: None,
+                detached: Vec::new(),
+            },
+        })
+        .unwrap();
+
+    // What the real meet constraint derives for a same-block, same-index-shape tier
+    // meeting A -- computed once up front so the "pinned" tier below can be pinned to
+    // EXACTLY this, and the post-Adopt assertion has a real number to compare against.
+    let mut derived = state.design.clone();
+    derived.tiers.push(ConstraintTier {
+        angle_deg: 45.0,
+        name: "B".to_string(),
+        indices: vec![0.0, 24.0, 48.0, 72.0],
+        constraint: MeetConstraint::MeetNamed(vec!["A".to_string()]),
+        imported_meet: None,
+        original_notes: None,
+        detached: Vec::new(),
+    });
+    let derived_mast = derived
+        .solve()
+        .expect("A anchors the crown; B must solve against it")[1]
+        .mast;
+
+    // Import policy: B is PINNED to that same real mast, with the file's actual meet
+    // instruction preserved alongside for one-click Adopt.
+    state
+        .apply(Edit::AddTier {
+            index: 1,
+            tier: ConstraintTier {
+                angle_deg: 45.0,
+                name: "B".to_string(),
+                indices: vec![0.0, 24.0, 48.0, 72.0],
+                constraint: MeetConstraint::ScaleReference(derived_mast),
+                imported_meet: Some(MeetConstraint::MeetNamed(vec!["A".to_string()])),
+                original_notes: None,
+                detached: Vec::new(),
+            },
+        })
+        .unwrap();
+
+    // The explicit "Solve" action's own path: already solved, already reporting B's
+    // real (pinned) mast.
+    let items = tier_items(&state.design, state.design.effective_refractive_index());
+    assert_eq!(items[1].mast.as_str(), format!("{derived_mast:.4}"));
+    let (status, is_problem) = status_text_and_is_problem(&state.design);
+    assert!(
+        !is_problem,
+        "pinned design must already read as solved: {status}"
+    );
+
+    // "Adopt" itself: the exact `Edit::SetConstraint` call `setup_adopt_meet_callback`
+    // issues, switching B over to its `imported_meet`.
+    let constraint = state.design.tiers[1].imported_meet.clone().unwrap();
+    state
+        .apply(Edit::SetConstraint {
+            index: 1,
+            constraint,
+        })
+        .expect("adopt must apply");
+
+    // The bug: after Adopt, the design must still solve -- a real "Solve" click must
+    // never report "not solved" against a design that actually does.
+    let (status, is_problem) = status_text_and_is_problem(&state.design);
+    assert!(!is_problem, "adopted design must still solve: {status}");
+    let items = tier_items(&state.design, state.design.effective_refractive_index());
+    assert!(
+        !items[1].strategy_is_uncertain,
+        "the adopted meet must resolve to a real, trusted strategy, not an estimate"
+    );
+    // And it must converge to the SAME mast Adopt was suggesting in the first place --
+    // not silently move the geometry.
+    let adopted_mast = state
+        .design
+        .solve()
+        .expect("the adopted design must still solve")[1]
+        .mast;
+    assert!(
+        (adopted_mast - derived_mast).abs() < 1e-9,
+        "adopting should reproduce the exact same mast the suggestion was showing: \
+         {adopted_mast} vs {derived_mast}"
+    );
+    assert_eq!(
+        items[1].mast.as_str(),
+        format!("{derived_mast:.4}"),
+        "and the row must display that same mast, rounded for the table"
+    );
+}
+
+// --- tier_margin_and_risk ---
+
+#[test]
+fn tier_margin_and_risk_is_not_applicable_for_a_crown_tier_with_no_partner() {
+    // A crown tier with no pavilion partner to estimate against reads
+    // "nothing to show".
+    assert_eq!(
+        tier_margin_and_risk(30.0, Block::Crown, 2.417, None),
+        (String::new(), -1)
+    );
+}
+
+#[test]
+fn tier_margin_and_risk_is_not_applicable_for_a_girdle_tier() {
+    // A girdle tier is classified by BLOCK (magnitude ~90 degrees), not
+    // by `angle == 0.0` -- the old check treated an exact-zero table/culet
+    // tier as girdle and a real +/-90 girdle tier as crown/pavilion, backwards
+    // on both counts. `Block::Girdle` always reads "nothing to show"
+    // regardless of the angle's own value.
+    assert_eq!(
+        tier_margin_and_risk(90.0, Block::Girdle, 2.417, None),
+        (String::new(), -1)
+    );
+}
+
+#[test]
+fn tier_margin_and_risk_classifies_a_comfortably_safe_pavilion_tier() {
+    // Diamond's critical angle is ~24.4 degrees; -40 sits well past it.
+    let (text, risk) = tier_margin_and_risk(-40.0, Block::Pavilion, 2.417, None);
+    assert_eq!(risk, 0);
+    assert!(text.starts_with('+'), "{text}");
+}
+
+#[test]
+fn tier_margin_and_risk_classifies_a_windowing_pavilion_tier() {
+    // -20 is well below diamond's ~24.4 degree critical angle.
+    let (text, risk) = tier_margin_and_risk(-20.0, Block::Pavilion, 2.417, None);
+    assert_eq!(risk, 2);
+    assert!(text.starts_with('-'), "{text}");
+}
+
+#[test]
+fn tier_margin_and_risk_classifies_a_marginal_pavilion_tier() {
+    // A pavilion angle exactly at the critical angle has zero margin -- Marginal,
+    // not Safe or Windows.
+    let n_d = 2.417;
+    let critical = indicatrix_cut_core::critical_angle_deg(n_d);
+    let (_, risk) = tier_margin_and_risk(-critical, Block::Pavilion, n_d, None);
+    assert_eq!(risk, 1);
+}
+
+#[test]
+fn tier_margin_and_risk_classifies_a_crown_tier_as_an_estimate_against_a_pavilion_partner() {
+    // Diamond's critical angle is ~24.4 degrees; a 34-degree crown facet
+    // against a comfortably-safe 41-degree pavilion partner should itself
+    // read Safe, suffixed "(est.)" to mark it as an estimate.
+    let (text, risk) = tier_margin_and_risk(34.0, Block::Crown, 2.417, Some(41.0));
+    assert_eq!(risk, 0);
+    assert!(text.ends_with("(est.)"), "{text}");
+}
+
+// --- constraint_kind_and_text ---
+
+#[test]
+fn constraint_kind_and_text_reads_the_three_plain_constraint_kinds_with_no_target() {
+    assert_eq!(
+        constraint_kind_and_text(&MeetConstraint::MeetExisting, None),
+        (0, String::new())
+    );
+    assert_eq!(
+        constraint_kind_and_text(
+            &MeetConstraint::MeetNamed(vec!["P1".to_string(), "G1".to_string()]),
+            None
+        ),
+        (1, "P1, G1".to_string())
+    );
+    assert_eq!(
+        constraint_kind_and_text(&MeetConstraint::ScaleReference(0.65), None),
+        (2, "0.65".to_string())
+    );
+}
+
+#[test]
+fn constraint_kind_and_text_prefers_a_target_over_the_scale_reference_placeholder() {
+    // `Design::resolved_meet_tier_inputs` always leaves a target-bearing tier's
+    // own `constraint` as a `ScaleReference(0.0)` placeholder -- this must read
+    // back the TARGET (kind 3/4/5), never "kind 2, text '0'".
+    let placeholder = MeetConstraint::ScaleReference(0.0);
+    assert_eq!(
+        constraint_kind_and_text(&placeholder, Some(TierTarget::DepthMm(3.2))),
+        (3, "3.2".to_string())
+    );
+    assert_eq!(
+        constraint_kind_and_text(&placeholder, Some(TierTarget::GirdleThicknessMm(0.25))),
+        (4, "0.25".to_string())
+    );
+    assert_eq!(
+        constraint_kind_and_text(&placeholder, Some(TierTarget::TableWidthMm(4.1))),
+        (5, "4.1".to_string())
+    );
+}
+
+// --- index_chip_items ---
+
+#[test]
+fn index_chip_items_builds_one_chip_per_index_flagging_only_the_detached_ones() {
+    let indices = vec![0.0, 24.0, 48.0, 72.0];
+    let detached = vec![24.0];
+    let chips = index_chip_items(&indices, &detached);
+    assert_eq!(chips.len(), 4);
+    assert_eq!(chips[0].position, 0.0);
+    assert_eq!(chips[0].label.as_str(), "0");
+    assert!(!chips[0].detached);
+    assert_eq!(chips[1].position, 24.0);
+    assert!(chips[1].detached);
+    assert!(!chips[2].detached);
+    assert!(!chips[3].detached);
+}
+
+#[test]
+fn index_chip_items_formats_a_fractional_position_with_two_decimals() {
+    let chips = index_chip_items(&[12.5], &[]);
+    assert_eq!(chips[0].label.as_str(), "12.50");
+}
+
+#[test]
+fn index_chip_items_is_empty_for_an_empty_tier() {
+    assert_eq!(index_chip_items(&[], &[]).len(), 0);
+}
+
+// --- tier_matches_filter ---
+
+#[test]
+fn tier_matches_filter_is_case_insensitive_and_matches_a_substring_anywhere() {
+    assert!(tier_matches_filter("Girdle Facet G1", "girdle"));
+    assert!(tier_matches_filter("Girdle Facet G1", "FACET"));
+    assert!(tier_matches_filter("Girdle Facet G1", "g1"));
+    assert!(!tier_matches_filter("Girdle Facet G1", "pavilion"));
+}
+
+#[test]
+fn tier_matches_filter_treats_a_blank_or_whitespace_only_filter_as_matching_everything() {
+    assert!(tier_matches_filter("anything", ""));
+    assert!(tier_matches_filter("anything", "   "));
+    assert!(tier_matches_filter("", ""));
+}

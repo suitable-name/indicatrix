@@ -76,10 +76,12 @@ pub struct DeepSolveHandle {
     handle: super::solve_service::SolveHandle,
     /// Keeps this run's dedicated [`SolveService`] (and its one worker thread)
     /// alive for as long as anything could still call [`Self::cancel`] -- see the
-    /// module doc comment, "Why this needs its own thread". The worker parks
-    /// forever on its empty mailbox once this one-shot request completes; dropping
-    /// this field (with the handle) simply lets that parked thread be reclaimed
-    /// like any other -- there is nothing left for it to do either way.
+    /// module doc comment, "Why this needs its own thread". Dropping this field
+    /// (with the handle) now runs [`SolveService`]'s own `Drop` impl, which signals
+    /// the worker to exit its mailbox wait for real -- it does not merely
+    /// let the still-parked thread "be reclaimed like any other" the way an
+    /// ordinary drop would, since nothing else was ever asked to stop that thread
+    /// otherwise; see `SolveService::drop`'s own doc comment.
     _service: SolveService,
 }
 
@@ -395,9 +397,13 @@ fn outcome_for(result: Result<VerifiedSolve, SolveError>) -> DeepSolveOutcome {
         // before this run started. Reported the same as a real cancellation
         // (nothing to show) rather than adding a third `DeepSolveOutcome` variant
         // for a case this module's one call site cannot reach.
-        Err(SolveError::Cancelled | SolveError::TooManyPlanes { .. }) => {
-            DeepSolveOutcome::Cancelled
-        }
+        // `NonFiniteInput` is unreachable here for the same reason: the ordinary
+        // "Solve" already rejected any NaN/inf tier before Deep Solve was offered.
+        Err(
+            SolveError::Cancelled
+            | SolveError::TooManyPlanes { .. }
+            | SolveError::NonFiniteInput { .. },
+        ) => DeepSolveOutcome::Cancelled,
     }
 }
 

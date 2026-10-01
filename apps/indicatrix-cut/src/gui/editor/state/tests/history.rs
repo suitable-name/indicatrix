@@ -56,10 +56,11 @@ fn fresh_from_spec_round_trips_gear_symmetry_mirror_and_material() {
             name: Some("Quartz".to_string()),
             specific_gravity_override: None,
             refractive_index_override: Some(1.55),
+            body_colour_override: None,
         },
         preform: indicatrix_cut_core::PreformSpec::cylinder(80, 1.4, 1.0, 1.3),
     };
-    let state = EditorState::fresh_from_spec(spec);
+    let state = EditorState::fresh_from_template(spec, 0);
     assert_eq!(state.design.meta.gear_teeth, 80);
     assert_eq!(state.design.meta.symmetry_order, 5);
     assert!(!state.design.meta.mirror);
@@ -99,6 +100,7 @@ fn set_material_edit_leaves_every_tier_untouched_but_bumps_generation() {
                 name: Some("Quartz".to_string()),
                 specific_gravity_override: None,
                 refractive_index_override: None,
+                body_colour_override: None,
             },
         })
         .unwrap();
@@ -226,12 +228,10 @@ fn multi_selected_is_pruned_when_a_tier_it_names_is_removed() {
 
 #[test]
 fn inline_set_angle_rejection_leaves_the_design_and_history_untouched() {
-    // Mirrors `callbacks::tier_actions::setup_inline_set_angle_callback`'s own
-    // control flow at the state level: parse first, and only call
-    // `EditorState::apply` on `Ok`. Proves garbage input never reaches `apply` at
-    // all, so `History` (and `design`) are left completely untouched -- not merely
-    // "no visible effect" -- exactly what that callback relies on to make an
-    // invalid inline edit a safe no-op.
+    // Drives the very function the inline angle cell's callback calls
+    // (`set_tier_angle_from_text`) with text that cannot be an angle: it must report
+    // `Err` (which the callback shows as an error toast) and leave the design, the
+    // undo history and the generation counter exactly as they were.
     let mut state = EditorState::fresh();
     state
         .apply(Edit::AddTier {
@@ -239,16 +239,36 @@ fn inline_set_angle_rejection_leaves_the_design_and_history_untouched() {
             tier: pavilion_tier("P1", -40.0),
         })
         .unwrap();
-    let history_before = state.history.clone();
-    let design_before = state.design.clone();
 
-    let parsed = crate::gui::editor::loading::parse_angle_only("not-a-number");
-    assert!(parsed.is_err());
-    // The real callback's `Err` arm only shows a toast -- it never calls
-    // `EditorState::apply`, which this test enforces simply by not calling it here
-    // either, then checking nothing moved regardless.
-    assert_eq!(state.history, history_before);
-    assert_eq!(state.design, design_before);
+    for bad in [
+        "not-a-number",
+        "",
+        "NaN",
+        "inf",
+        "-inf",
+        "1e999",
+        "90.01",
+        "-410",
+    ] {
+        let history_before = state.history.clone();
+        let design_before = state.design.clone();
+        let generation_before = state.generation.load(std::sync::atomic::Ordering::Relaxed);
+
+        let outcome = state.set_tier_angle_from_text(0, bad);
+
+        assert!(
+            outcome.is_err(),
+            "{bad:?} must be rejected, got {:?}",
+            outcome.map(|_| ())
+        );
+        assert_eq!(state.history, history_before, "{bad:?} touched the history");
+        assert_eq!(state.design, design_before, "{bad:?} touched the design");
+        assert_eq!(
+            state.generation.load(std::sync::atomic::Ordering::Relaxed),
+            generation_before,
+            "{bad:?} bumped the generation"
+        );
+    }
 }
 
 #[test]

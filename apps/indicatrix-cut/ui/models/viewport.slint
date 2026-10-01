@@ -16,7 +16,7 @@ export global ViewportModel {
     // local to `GemViewportView` for the same reason as `render_paused` below --
     // reading a global survives that view being conditionally destroyed/recreated
     // across tab switches. Gates the tracer itself, not just what's displayed: see
-    // `gui::render::detached_render::render_is_visible`.
+    // `gui::render::render_visibility::render_is_visible`.
     in-out property <int> live_view_mode: 1;
     // Persists `live_view_mode` through the debounced settings writer -- same pattern
     // as `SolidPreviewModel.view_mode_changed`.
@@ -70,6 +70,16 @@ export global ViewportModel {
     // pill, in Path-traced mode only -- Solid mode never touches the tracer at all.
     in property <string> gpu_status_text: "";
 
+    // Why the currently active design cannot be traced honestly, as a cutter-facing
+    // message -- empty while tracing is valid. Set by the render thread's own
+    // `last_trace_refusal` push (`bridge::render_thread::mod`'s frame loop, mirroring
+    // `gpu_status_text` just above) straight from `RenderContext::material_unresolved`.
+    // `gem_viewport.slint` shows this as a banner and blanks/dims the image while it
+    // is set, rather than letting the viewport go on showing a stale frame (or, before
+    // this existed, silently tracing the wrong stone as Diamond) with nothing on
+    // screen saying why.
+    in property <string> trace_refusal: "";
+
     // This list is what actually reaches the ComboBox. ORDER is load-bearing: must
     // match `LightingPreset::ALL` (`Daylight`, `Incandescent`, `RingLights`,
     // `DarkSpotlight`, `IsoHemisphere`, `LightTent`, `DaylightDome`) exactly, since
@@ -86,6 +96,15 @@ export global ViewportModel {
 
     callback camera_orbit(float, float);
     callback camera_zoom(float);
+    // Mouse-button edges of an orbit or light drag in EITHER viewport.
+    // `camera_drag_begin` fires on the press that
+    // starts a drag (never for a handle or slice drag); `camera_drag_end` on the
+    // matching `up`/`cancel`, when Slint's own `pressed` drops, or when the drag area
+    // is disabled mid-drag. Rust mirrors them into `RenderContext::camera_drag_held`,
+    // which keeps the preview-then-settle machinery in its low-resolution preview
+    // until release. Idempotent: a stray extra `end` is harmless.
+    callback camera_drag_begin();
+    callback camera_drag_end();
     callback light_move(float, float);
     callback light_pos_changed(float, float);
     callback reset_camera();
@@ -152,10 +171,21 @@ export global ViewportModel {
     // defaults would let Save silently overwrite a real custom material's optics).
     in property <bool> selected_custom_material_valid: false;
     in property <float> selected_custom_material_ri: 2.417;
-    in property <float> selected_custom_material_dispersion: 0.044;
+    in property <float> selected_custom_material_dispersion: 0.0256;
     in property <float> selected_custom_material_birefringence: 0.000;
     in property <float> selected_custom_material_specific_gravity: 0.0;
     in property <int> selected_custom_material_crystal_system_idx: 0;
     in property <int> selected_custom_material_optical_character_idx: 0;
     in property <float> selected_custom_material_biaxial_delta_beta_alpha: 0.0;
+    // The Body Color & Transmission swatch (`MaterialColorPresets.selected_color_preset`,
+    // `material_editor/color_presets.slint`) the selected custom material's
+    // `absorption_rgb` matches, 0-8 -- or 9 ("Custom (keep)") when it matches none of
+    // the nine fixed presets exactly. `material_editor_dialog.slint`'s `init` assigns
+    // this into `selected_color_preset` (and its own re-save baseline) alongside the
+    // other `selected_custom_material_*` fields above, so reopening a coloured custom
+    // material shows its real swatch (or "Custom (keep)") instead of always
+    // defaulting to "Clear" -- see `gui::optics::custom_materials::
+    // color_index_for_absorption_rgb`'s own doc comment for why that default used to
+    // silently flatten a re-saved coloured material to colourless.
+    in property <int> selected_custom_material_color_idx: 0;
 }

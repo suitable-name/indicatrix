@@ -52,6 +52,7 @@ pub fn serve_tilt<S: Read + Write + TimeoutRead>(
             &TiltCurvesResponse::Error(ErrorMsg {
                 code: error_codes::VALIDATION_FAILED,
                 message,
+                request_id: Some(request.request_id),
             }),
         );
     }
@@ -64,6 +65,7 @@ pub fn serve_tilt<S: Read + Write + TimeoutRead>(
                     "no idle joined worker to compute the tilt curves on, and this coordinator \
                           has no own render lane (--render)"
                         .to_string(),
+                request_id: Some(request.request_id),
             }),
         );
     };
@@ -139,6 +141,7 @@ fn forward<S: Read + Write + TimeoutRead>(
             TiltCurvesResponse::Error(ErrorMsg {
                 code: error_codes::ALL_WORKERS_LOST,
                 message: format!("the joined worker computing the tilt curves was lost ({why})"),
+                request_id: Some(request.request_id),
             })
         }
     };
@@ -166,6 +169,7 @@ fn relabel(response: TiltCurvesResponse, request_id: u32, worker_id: u32) -> Til
                 "joined worker #{worker_id} could not compute the tilt curves (worker error code {})",
                 e.code
             ),
+            request_id: Some(request_id),
         }),
     }
 }

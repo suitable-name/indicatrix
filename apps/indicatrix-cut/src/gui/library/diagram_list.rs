@@ -8,9 +8,13 @@ use crate::{
     LibraryModel, MainWindow, PerformanceFilterRow, ViewportModel,
     bridge::{library::source::LibrarySource, render_thread::RenderContext},
     gui::{
+        external_links::open_external_url,
         library::{
             detail::{export_diagram_file_via_source, load_diagram_detail_via_source},
-            search::{refresh_diagram_list, refresh_diagram_list_via_source},
+            search::{
+                refresh_diagram_list, refresh_diagram_list_via_source,
+                refresh_diagram_list_via_source_debounced,
+            },
         },
         render::camera_lighting::resubmit_live_solid,
         show_toast,
@@ -20,7 +24,7 @@ use crate::{
 use indicatrix_vault::{db::sqlite::Database, model::filter::AttributeRanges};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::sync::{Arc, Mutex};
-use tracing::{info, warn};
+use tracing::warn;
 
 /// Clears the search box, shape/gear dropdown selections, tag chip filter and
 /// just-imported restriction back to their defaults -- shared by every
@@ -40,6 +44,7 @@ pub(in crate::gui) fn reset_search_and_filter_ui_inputs(ui: &MainWindow) {
     model.set_selected_gear_index(0);
     model.set_active_tag_filter_name(SharedString::new());
     model.set_recent_import_filter(ModelRc::new(VecModel::from(Vec::<i32>::new())));
+    model.set_id_filter_label(SharedString::new());
 }
 
 /// Loads the shape/gear filter dropdown options and the initial diagram list from
@@ -53,31 +58,37 @@ pub(in crate::gui) fn load_filter_options_and_initial_list(
     // (`remote::setup_library_source_callbacks`'s `idx < 0` branch), where the box/
     // dropdowns/chip may still show whatever the just-left remote session had.
     reset_search_and_filter_ui_inputs(ui);
-    {
-        let db_guard = db.lock().unwrap();
+    // Both queries run, and the lock is released, BEFORE either result touches the
+    // UI -- a poisoned lock's `unwrap_or_else(PoisonError::into_inner)` (this crate's
+    // existing pattern for a `Mutex` no caller can meaningfully "fix" by not
+    // recovering it) is not enough on its own if the guard is still held while a
+    // Slint property set runs, since a panic in a signal handler reached from that
+    // set would then poison the lock while it's already borrowed.
+    let (shape_opts, gear_opts) = {
+        let db_guard = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut shape_opts = vec!["All Shapes".to_string()];
         if let Ok(shapes) = db_guard.get_unique_shapes() {
             shape_opts.extend(shapes);
         }
-        let shape_model: Vec<SharedString> = shape_opts
-            .into_iter()
-            .map(std::convert::Into::into)
-            .collect();
-        ui.global::<LibraryModel>()
-            .set_shape_options(ModelRc::new(VecModel::from(shape_model)));
-
         let mut gear_opts = vec!["All Gears".to_string()];
         if let Ok(gears) = db_guard.get_unique_gears() {
             gear_opts.extend(gears);
         }
         drop(db_guard);
-        let gear_model: Vec<SharedString> = gear_opts
-            .into_iter()
-            .map(std::convert::Into::into)
-            .collect();
-        ui.global::<LibraryModel>()
-            .set_gear_options(ModelRc::new(VecModel::from(gear_model)));
-    }
+        (shape_opts, gear_opts)
+    };
+    let shape_model: Vec<SharedString> = shape_opts
+        .into_iter()
+        .map(std::convert::Into::into)
+        .collect();
+    ui.global::<LibraryModel>()
+        .set_shape_options(ModelRc::new(VecModel::from(shape_model)));
+    let gear_model: Vec<SharedString> = gear_opts
+        .into_iter()
+        .map(std::convert::Into::into)
+        .collect();
+    ui.global::<LibraryModel>()
+        .set_gear_options(ModelRc::new(VecModel::from(gear_model)));
 
     sync_range_bounds_to_ui(ui, db);
     sync_tag_vocabulary_to_ui(ui, db);
@@ -86,7 +97,10 @@ pub(in crate::gui) fn load_filter_options_and_initial_list(
     // A failed `get_total_count` is handled explicitly rather than swallowed into a
     // plain `0`, which would read back as "the library is empty" rather than "the
     // count query failed" -- indistinguishable from a genuinely empty database.
-    let total_count_result = db.lock().unwrap().get_total_count();
+    let total_count_result = db
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_total_count();
     match total_count_result {
         Ok(total_count) => {
             ui.global::<LibraryModel>().set_status_message(
@@ -318,8 +332,9 @@ pub fn apply_attribute_range_bounds_preserving_filters(ui: &MainWindow, ranges: 
 /// an already-empty model) when no batch view is active, so every handler can call
 /// it unconditionally rather than checking first.
 fn clear_recent_import_filter(ui: &MainWindow) {
-    ui.global::<LibraryModel>()
-        .set_recent_import_filter(ModelRc::new(VecModel::from(Vec::<i32>::new())));
+    let model = ui.global::<LibraryModel>();
+    model.set_recent_import_filter(ModelRc::new(VecModel::from(Vec::<i32>::new())));
+    model.set_id_filter_label("".into());
 }
 
 pub(in crate::gui) fn setup_search_and_filter_callbacks(
@@ -347,7 +362,7 @@ pub(in crate::gui) fn setup_search_and_filter_callbacks(
                     .row_data(gear_idx)
                     .unwrap_or_default();
 
-                refresh_diagram_list_via_source(
+                refresh_diagram_list_via_source_debounced(
                     &ui,
                     &db_search,
                     &source_search,
@@ -539,15 +554,13 @@ pub(in crate::gui) fn setup_diagram_selection_and_export_callbacks(
                     i64::from(id),
                     &preview_state_select,
                 );
-                // Live Render tab, Solid mode: `load_diagram_detail_via_source`'s LOCAL
-                // branch already wrote fresh planes into `render_ctx` synchronously,
-                // above -- redraw the solid immediately rather than leaving the
-                // previous design on screen until the next camera drag. The REMOTE
-                // branch is async and resubmits itself once its own planes land (see
-                // `gui::library::detail::apply_design_record_to_ui`); this call still
-                // fires for it too, but against whatever planes were already active
-                // (typically the previously selected design), and is simply
-                // superseded a moment later by that async resubmit -- harmless, since
+                // Live Render tab, Solid mode: redraw the solid right away rather than
+                // leaving the previous design on screen. Both branches resolve their
+                // planes asynchronously (the LOCAL one on a worker thread, guarded by a
+                // load generation so a superseded click is dropped) and redraw again
+                // once their own planes land; this call draws whatever planes were
+                // already active (typically the previously selected design) and is
+                // simply superseded a moment later -- harmless, since
                 // `SolidPreviewState` coalesces to the LAST submitted request.
                 if ui.get_render_view_tab() == 0
                     && ui.global::<ViewportModel>().get_live_view_mode() == 0
@@ -560,18 +573,17 @@ pub(in crate::gui) fn setup_diagram_selection_and_export_callbacks(
             }
         });
 
+    // The link is catalogue data (a remote library can supply it), so it only ever
+    // goes through `open_external_url`: http/https only, handed to the opener as a
+    // single argument and never through a shell.
+    let ui_weak_url = ui.as_weak();
     ui.global::<LibraryModel>()
         .on_open_diagram_url(move |url: SharedString| {
-            let url_str = url.to_string();
-            info!("Opening URL: {}", url_str);
-            #[cfg(target_os = "linux")]
-            let _ = std::process::Command::new("xdg-open").arg(&url_str).spawn();
-            #[cfg(target_os = "windows")]
-            let _ = std::process::Command::new("cmd")
-                .args(["/C", "start", &url_str])
-                .spawn();
-            #[cfg(target_os = "macos")]
-            let _ = std::process::Command::new("open").arg(&url_str).spawn();
+            if let Err(message) = open_external_url(&url)
+                && let Some(ui) = ui_weak_url.upgrade()
+            {
+                show_toast(&ui, &message, "error");
+            }
         });
 
     let db_export = Arc::clone(db);
@@ -634,7 +646,7 @@ pub(in crate::gui) fn setup_regenerate_filtered_set_callbacks(
             else {
                 return;
             };
-            crate::gui::batch::preview::offer_batch_confirmation(&ui, &ids);
+            crate::gui::batch::regenerate_all::offer_preview_regeneration(&ui, &ids);
         });
 
     let db_tilt = Arc::clone(db);
@@ -648,7 +660,7 @@ pub(in crate::gui) fn setup_regenerate_filtered_set_callbacks(
             let Some(ids) = resolve_filtered_set_or_toast(&ui, &db_tilt, &source_tilt) else {
                 return;
             };
-            crate::gui::batch::tilt::offer_batch_confirmation(&ui, &ids);
+            crate::gui::batch::regenerate_all::offer_tilt_regeneration(&ui, &ids);
         });
 }
 
@@ -656,7 +668,7 @@ pub(in crate::gui) fn setup_regenerate_filtered_set_callbacks(
 /// remote-source guard, the actual [`super::search::current_filtered_entry_ids`]
 /// query, and the "nothing matched"/query-failure toasts -- pulled out so neither
 /// handler duplicates this five-way branch.
-fn resolve_filtered_set_or_toast(
+pub(in crate::gui) fn resolve_filtered_set_or_toast(
     ui: &MainWindow,
     db: &Arc<Mutex<Database>>,
     source: &Arc<Mutex<LibrarySource>>,

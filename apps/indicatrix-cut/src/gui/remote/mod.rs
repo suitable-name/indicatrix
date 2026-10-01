@@ -26,7 +26,7 @@ mod orchestrator;
 mod worker_callbacks;
 mod worker_settings;
 
-pub use orchestrator::setup_remote_rendering;
+pub use orchestrator::{RemoteOrchestratorHandle, setup_remote_rendering};
 pub use worker_callbacks::setup_worker_callbacks;
 pub use worker_settings::refresh_remote_ui;
 

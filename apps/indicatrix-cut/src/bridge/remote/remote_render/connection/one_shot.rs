@@ -14,6 +14,7 @@ use crate::settings::WorkerSettings;
 use indicatrix_net::{
     client::{Accumulator, ApplyOutcome},
     messages::{FinalImageRequest, FinalOutput, RenderCapability, RenderRequest, StreamEvent},
+    radiance::PayloadEncoder,
 };
 use std::{
     sync::{
@@ -98,6 +99,7 @@ impl OneShotRequest {
                     height: request.scene.height,
                     color_space: request.color_space.into(),
                     output: FinalOutput::PngRgba8,
+                    viewer_samples: request.viewer_samples,
                 };
                 indicatrix_net::client::send_final_image_request(stream, &final_request)?;
             }
@@ -165,6 +167,20 @@ fn spawn(
     RemoteRenderHandle(HandleKind::OneShot(tx))
 }
 
+/// Fails with [`RemoteError::CancelUnacknowledged`] once a `CANCEL` written at
+/// `cancel_sent_at` has gone unanswered for [`super::CANCEL_ACK_TIMEOUT`]. Called on
+/// every loop pass -- idle polls and non-terminal events alike -- because a heartbeating
+/// worker keeps producing the latter and would otherwise never let the silence clock fire.
+fn ensure_cancel_acknowledged(cancel_sent_at: Option<Instant>) -> Result<(), RemoteError> {
+    let now = Instant::now();
+    if super::cancel_ack_overdue(cancel_sent_at, now, super::CANCEL_ACK_TIMEOUT) {
+        let waited =
+            cancel_sent_at.map_or(Duration::ZERO, |sent| now.saturating_duration_since(sent));
+        return Err(RemoteError::CancelUnacknowledged(waited));
+    }
+    Ok(())
+}
+
 /// The one-shot body, with the liveness deadline threaded in as a parameter -- see
 /// [`super::LIVENESS_TIMEOUT`]'s own doc comment for why.
 fn run(
@@ -211,10 +227,39 @@ fn run(
     // `liveness_deadline`. See `FIRST_EVENT_TIMEOUT`'s own doc comment for why the wait
     // for the very first tick needs more slack than every wait after it.
     let mut seen_first_event = false;
+    // When the first `CANCEL` went out; a repeated cancel keeps the original stamp so the
+    // acknowledgement window never restarts.
+    let mut cancel_sent_at: Option<Instant> = None;
     loop {
         match commands.try_recv() {
             Ok(RemoteCommand::Cancel) => {
                 indicatrix_net::client::send_cancel(&mut stream, request_id)?;
+                cancel_sent_at.get_or_insert_with(Instant::now);
+            }
+            // v16: the viewer's own reserved-tail sum, ready to upload as one
+            // `CONTRIBUTION` -- only meaningful for a `FinalImageRequest`; a plain
+            // `RenderRequest` never gets a `RemoteRenderHandle::contribute` call in the
+            // first place (nothing constructs one for it), so this is a defensive no-op
+            // there rather than an error.
+            Ok(RemoteCommand::Contribute(sum)) => {
+                if let OneShotRequest::FinalImage(final_request) = request {
+                    let first = final_request.first_sample + final_request.samples
+                        - final_request.viewer_samples;
+                    let mut encoder = PayloadEncoder::new(welcome.payload_encoding);
+                    indicatrix_net::client::send_contribution(
+                        &mut stream,
+                        request_id,
+                        (first, final_request.viewer_samples),
+                        final_request.scene.width,
+                        final_request.scene.height,
+                        &sum,
+                        &mut encoder,
+                    )?;
+                    // Same reset as the `NEED_ASSET` upload above: a large upload can
+                    // legitimately take a while, and the server sends nothing back while
+                    // it reads it.
+                    last_event = Instant::now();
+                }
             }
             Err(TryRecvError::Empty | TryRecvError::Disconnected) => {
                 // `Disconnected` means the handle was dropped -- nobody can ever
@@ -235,6 +280,7 @@ fn run(
             if last_event.elapsed() > deadline {
                 return Err(RemoteError::WorkerSilent(last_event.elapsed()));
             }
+            ensure_cancel_acknowledged(cancel_sent_at)?;
             continue;
         };
         last_event = Instant::now();
@@ -266,5 +312,6 @@ fn run(
         if is_terminal {
             return Ok(());
         }
+        ensure_cancel_acknowledged(cancel_sent_at)?;
     }
 }

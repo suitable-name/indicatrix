@@ -5,7 +5,6 @@ use super::{
     new_design::install_new_design,
     solid_picking::letterbox_margin,
     tier_form::tier_form_error_field,
-    tier_generation::{next_free_block_name, split_duplicate_suffix, unique_duplicate_name},
     viewport_material::{parse_printed_proportions_field, parse_printed_proportions_form},
 };
 use crate::gui::editor::{loading::parse_new_design_form, state::EditorState};
@@ -43,94 +42,10 @@ fn ri_override_for_material_pick_does_nothing_for_a_non_built_in_name() {
     );
 }
 
-// --- next_free_block_name  ---
+// `next_free_block_name` and its tests moved to `indicatrix_editor::loading::naming`.
 
-#[test]
-fn next_free_block_name_starts_at_1_for_a_crown_angle() {
-    assert_eq!(next_free_block_name(45.0, &[]), "C1");
-}
-
-#[test]
-fn next_free_block_name_uses_p_for_a_negative_angle() {
-    assert_eq!(next_free_block_name(-40.0, &[]), "P1");
-}
-
-#[test]
-fn next_free_block_name_treats_non_negative_zero_as_crown() {
-    assert_eq!(next_free_block_name(0.0, &[]), "C1");
-}
-
-#[test]
-fn next_free_block_name_skips_names_already_in_use() {
-    let existing = vec!["C1".to_string(), "C2".to_string()];
-    assert_eq!(next_free_block_name(45.0, &existing), "C3");
-}
-
-#[test]
-fn next_free_block_name_collision_check_is_case_insensitive() {
-    let existing = vec!["c1".to_string()];
-    assert_eq!(next_free_block_name(45.0, &existing), "C2");
-}
-
-// --- unique_duplicate_name / split_duplicate_suffix ---
-#[test]
-fn unique_duplicate_name_starts_at_2_when_nothing_collides() {
-    assert_eq!(unique_duplicate_name("P1", &[]), "P1 (2)");
-}
-
-#[test]
-fn unique_duplicate_name_skips_names_already_in_use() {
-    let existing = vec!["P1".to_string(), "P1 (2)".to_string(), "P1 (3)".to_string()];
-    assert_eq!(unique_duplicate_name("P1", &existing), "P1 (4)");
-}
-
-#[test]
-fn unique_duplicate_name_collision_check_is_case_insensitive() {
-    let existing = vec!["p1 (2)".to_string()];
-    assert_eq!(unique_duplicate_name("P1", &existing), "P1 (3)");
-}
-
-#[test]
-fn unique_duplicate_name_counts_up_instead_of_nesting() {
-    // Duplicating a tier already named "P1 (2)" must produce "P1 (3)", not
-    // "P1 (2) (2)" -- see `split_duplicate_suffix`'s own doc comment. The
-    // empty `existing_names` is the point: this has to hold on the
-    // function's own terms, not only because the real caller passes a list
-    // that contains the source tier (which would make "P1 (2)" collide).
-    assert_eq!(unique_duplicate_name("P1 (2)", &[]), "P1 (3)");
-}
-
-#[test]
-fn unique_duplicate_name_continues_from_a_high_source_number() {
-    assert_eq!(unique_duplicate_name("P1 (9)", &[]), "P1 (10)");
-}
-
-#[test]
-fn unique_duplicate_name_treats_an_unreadable_suffix_as_part_of_the_name() {
-    // Not reachable by duplicating, but a cutter can type any name they
-    // like -- this must still produce something, never loop or panic.
-    let huge = format!("P1 ({})", u128::from(u32::MAX) + 1);
-    assert_eq!(unique_duplicate_name(&huge, &[]), format!("{huge} (2)"));
-}
-
-#[test]
-fn unique_duplicate_name_falls_back_to_tier_for_an_unnamed_source() {
-    assert_eq!(unique_duplicate_name("", &[]), "Tier (2)");
-}
-
-#[test]
-fn split_duplicate_suffix_reads_a_trailing_parenthesized_number() {
-    assert_eq!(split_duplicate_suffix("P1 (2)"), ("P1", Some(2)));
-    assert_eq!(split_duplicate_suffix("P1 (12)"), ("P1", Some(12)));
-}
-
-#[test]
-fn split_duplicate_suffix_leaves_unrelated_text_alone() {
-    assert_eq!(split_duplicate_suffix("P1"), ("P1", None));
-    assert_eq!(split_duplicate_suffix("P1 (a)"), ("P1 (a)", None));
-    assert_eq!(split_duplicate_suffix("P1 (2"), ("P1 (2", None));
-    assert_eq!(split_duplicate_suffix("P1/P2 (2)"), ("P1/P2", Some(2)));
-}
+// `unique_duplicate_name` / `split_duplicate_suffix` and their tests moved to
+// `indicatrix_editor::loading::naming`.
 
 // --- parse_printed_proportions_form/_field  ---
 

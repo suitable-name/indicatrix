@@ -147,6 +147,11 @@ impl<'a> MeetNameResolver<'a> {
     #[must_use]
     pub fn new(tiers: &'a [MeetTierInput]) -> Self {
         let blocks = classify_blocks(tiers);
+        // 85 degrees is a naming heuristic, not a geometric girdle test: it picks
+        // the tier that bare tokens like "G" resolve to, and accepts steep
+        // near-girdle tiers that `classify_blocks`' exact-horizontal threshold
+        // (`|cos theta| <= 1e-6`) and `girdle::GIRDLE_NORMAL_Y_EPSILON` (1e-3 on
+        // `f32` normals) would both classify as crown or pavilion.
         let girdle_tier = tiers
             .iter()
             .position(|t| t.angle_deg.abs() >= 85.0)

@@ -32,6 +32,8 @@ thread_local! {
             hovered: None,
             selected_facet: None,
             multi_selected: Vec::new(),
+            provisional: Vec::new(),
+            moved: Vec::new(),
         })
     };
 }
@@ -40,7 +42,7 @@ thread_local! {
 /// whole to `preview_state` -- the one place every overlay-touching callback below
 /// goes through, so the merge-then-resubmit sequence is never duplicated or done
 /// slightly differently at two call sites.
-pub(super) fn resubmit_facet_overlay(
+pub(in crate::gui::editor) fn resubmit_facet_overlay(
     preview_state: &SolidPreviewState,
     mutate: impl FnOnce(&mut FacetOverlay),
 ) {
@@ -49,7 +51,24 @@ pub(super) fn resubmit_facet_overlay(
         mutate(&mut overlay);
         overlay.clone()
     });
+    // The two outlines a replan would otherwise wipe are also handed to the worker's
+    // draw step directly (`SolidPreviewState::set_outlines`).
+    preview_state.set_outlines(&overlay.provisional, &overlay.moved);
     preview_state.request_facet_overlay(overlay);
+}
+
+/// Makes `facet` the hovered facet via [`resubmit_facet_overlay`], unless it already is
+/// -- compared against the cached overlay, which holds what the worker last received
+/// from this module. A pointer moving within one facet, or across the background
+/// beside it, changes nothing on screen, so it must not re-raster the whole solid.
+pub(in crate::gui::editor) fn set_hovered_facet(
+    preview_state: &SolidPreviewState,
+    facet: Option<u32>,
+) {
+    if FACET_OVERLAY.with(|cell| cell.borrow().hovered) == facet {
+        return;
+    }
+    resubmit_facet_overlay(preview_state, |overlay| overlay.hovered = facet);
 }
 
 /// Builds a [`FacetMap`] from `design` and the last-solved mast cache, but only
@@ -70,7 +89,10 @@ pub(super) fn facet_map_from_aligned_solve(design: &Design) -> FacetMap {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
         })
-        .filter(|solved| solved.len() == design.tiers.len())
+        // the shared cache is now generation-tagged
+        // (`(u64, Vec<SolvedTier>)`) -- only the masts themselves matter here.
+        .filter(|(_, solved)| solved.len() == design.tiers.len())
+        .map(|(_, solved)| solved)
         .unwrap_or_default();
     FacetMap::from_design(design, &solved)
 }

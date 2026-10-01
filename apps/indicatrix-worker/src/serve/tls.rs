@@ -21,6 +21,7 @@ use std::{
     net::{SocketAddr, TcpStream},
     path::PathBuf,
     sync::Arc,
+    time::Instant,
 };
 
 /// How [`accept_tls`] decides whether a client whose certificate chains to the
@@ -195,12 +196,21 @@ pub fn accept_tls(
     // naming the actual reason (expired, clock skew, wrong CA, no matching SAN).
     //
     // `stream` carries `serve::HANDSHAKE_TIMEOUT` (applied by the accept loop before
-    // calling this function), so a client that connects and never completes the
-    // handshake -- a slowloris attempt, not a real protocol failure -- surfaces here as
-    // an `io::Error` of kind `WouldBlock`/`TimedOut` rather than hanging forever. Logged
+    // calling this function) as a per-read idle timeout, but `complete_io` runs its own
+    // internal read/write loop this function doesn't otherwise get to intervene in --
+    // F-06a's fix wraps the socket in `DeadlineSocket` with a fresh
+    // `Instant::now() + HANDSHAKE_TIMEOUT` deadline so a client that keeps the handshake
+    // alive by trickling bytes (never idle long enough to trip the per-read timeout) is
+    // still cut off once this budget elapses, not just one that goes fully silent.
+    // Surfaces here as an `io::Error` of kind `WouldBlock`/`TimedOut` either way. Logged
     // at `debug`, not `warn`: a timeout is an expected, routine outcome of exposing a
     // socket to the network at all.
-    if let Err(e) = tls_stream.conn.complete_io(&mut tls_stream.sock) {
+    let deadline = Instant::now() + super::HANDSHAKE_TIMEOUT;
+    let handshake_result = {
+        let mut io = super::DeadlineSocket::new(&tls_stream.sock, deadline);
+        tls_stream.conn.complete_io(&mut io)
+    };
+    if let Err(e) = handshake_result {
         if matches!(
             e.kind(),
             std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
@@ -253,7 +263,21 @@ fn check_auth(stream: &TlsStream, auth: &Auth) -> Result<PeerRole, String> {
         .map_err(|e| format!("rejecting client certificate {fingerprint_hex}: {e}"))?;
 
     if role != auth.role {
-        // Refused at HELLO with ROLE_REFUSED (see the module doc comment).
+        // Refused at HELLO with ROLE_REFUSED (see the module doc comment). NOT checked
+        // against the OTHER role's allowlist here: `Auth` only carries this listener's
+        // own role and allowlist path, and threading the sibling port's allowlist
+        // through would widen `Auth`'s public shape (breaking every existing
+        // `Auth { role, allowlist }` construction, including in this crate's own
+        // integration tests) for a residual risk that F-06a/F-06c's OTHER two fixes
+        // already bound: this connection still spends at most `HANDSHAKE_TIMEOUT`
+        // (a real deadline, not an idle one -- see `socket::HANDSHAKE_TIMEOUT`) reaching
+        // `HELLO`, which now reads at most 64 KiB (`read_and_check_hello` uses
+        // `read_frame_bounded`, not the 512 MiB default), so an arbitrary CA-signed
+        // certificate of the wrong role can occupy one real connection slot for a bounded
+        // ~20s and a bounded allocation, never an unbounded hold.
+        // A future change willing to widen `Auth` (and update its
+        // construction sites) could check the other role's allowlist here instead and
+        // refuse a certificate that's on NEITHER list before ever taking a slot.
         return Ok(role);
     }
     let Some(path) = &auth.allowlist else {

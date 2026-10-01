@@ -9,6 +9,7 @@ use super::{
     proposal_view::{
         RetargetView, push_retarget_view, push_target_error, push_target_readout, retarget_view,
     },
+    sync_embedded_comparison,
 };
 use crate::{
     MainWindow, RetargetModel,
@@ -22,6 +23,7 @@ use crate::{
             state::{EditorState, design_material_options},
             view,
         },
+        render::render_visibility::recompute_tab_visible,
         solid_preview::preview_state::SolidPreviewState,
     },
 };
@@ -107,10 +109,10 @@ pub(in crate::gui::editor) fn setup_retarget_open_callback(
         ui.global::<RetargetModel>().set_is_busy(false);
         ui.global::<RetargetModel>().set_optimize_evaluations(0);
         ui.global::<RetargetModel>().set_optimize_max_evaluations(0);
-        // Each session starts with the preview off -- a
-        // previous session's choice is not assumed to still be wanted, and the
-        // viewport must show the real design (not a stale ghost) the instant this
-        // dialog reopens, before any proposal has even been rebuilt.
+        // The viewport ghost preview is never used while the dialog is open (the
+        // viewport is paused behind the modal and the embedded comparison pane shows
+        // the proposal), so it is forced off: a previous session's value must not
+        // put a stale ghost into the shared viewport.
         ui.global::<RetargetModel>().set_preview_enabled(false);
 
         let options = {
@@ -145,13 +147,21 @@ pub(in crate::gui::editor) fn setup_retarget_open_callback(
             CrownShift::default(),
             RetargetMode::Shift,
         );
+        let solved = proposal.is_some();
         if let Some(proposal) = proposal {
             stale::stamp(ResultKind::Retarget, generation);
             st.pending_retarget = Some((proposal, generation));
         } else {
             st.pending_retarget = None;
         }
+        // Released before the embedded comparison's own handler runs: it reads the
+        // editor state to build the before/after pair.
+        drop(st);
         ui.global::<RetargetModel>().set_is_open(true);
+        // The modal hides the main viewport, so pause it for as long as the dialog
+        // is open; the embedded comparison pane is the live view instead.
+        recompute_tab_visible(&ui, &render_ctx);
+        sync_embedded_comparison(&ui, solved);
     });
 }
 
@@ -298,6 +308,9 @@ pub(super) fn cancel_optimize_run(ui: &MainWindow) {
             solve_error: String::new(),
         },
     );
+    // No proposal is held any more, so the comparison pane must not keep showing
+    // the one it had.
+    sync_embedded_comparison(ui, false);
 }
 
 /// [`setup_retarget_proposal_changed_callback`]'s Shift-mode body, run once per
@@ -306,6 +319,10 @@ pub(super) fn cancel_optimize_run(ui: &MainWindow) {
 /// `scale_crown_by_ratio` fresh (exactly as the original per-tick call did), so a
 /// coalesced burst always rebuilds against the LATEST slider position, not
 /// whatever it was when the first tick of the burst posted.
+///
+/// Never solves: the ghost overlay's candidate is queued on the ghost preview's
+/// background worker ([`view::submit_design_ghost_preview`]), so a slider drag stays
+/// responsive however slow the candidate is to solve.
 fn apply_retarget_shift_intent(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -321,6 +338,10 @@ fn apply_retarget_shift_intent(
     ui.global::<RetargetModel>().set_is_busy(false);
     let generation = st.generation.load(AtomicOrdering::Relaxed);
     let proposal = rebuild_and_push(ui, render_ctx, &st.design, crown, RetargetMode::Shift);
+    // `true`: the ghost is queued and draws when its solve lands (a later tick
+    // supersedes it), so the real design is not replanned over it. `false`: no ghost
+    // is wanted, and the replan puts the real design back, which also drops a ghost
+    // still being solved.
     if !apply_ghost_preview_or_revert(ui, render_ctx, preview_state, &st.design, proposal.as_ref())
     {
         view::submit_preview_replan(
@@ -336,6 +357,7 @@ fn apply_retarget_shift_intent(
     // Same stamping as the Optimize
     // completion path (`optimize_run::finish_optimize_run`) -- see
     // `stale::ResultKind::Retarget`'s own doc comment.
+    let solved = proposal.is_some();
     if let Some(proposal) = proposal {
         stale::stamp(ResultKind::Retarget, generation);
         st.pending_retarget = Some((proposal, generation));
@@ -343,4 +365,7 @@ fn apply_retarget_shift_intent(
         stale::clear(ResultKind::Retarget);
         st.pending_retarget = None;
     }
+    // Released first: the embedded comparison's handler reads the editor state.
+    drop(st);
+    sync_embedded_comparison(ui, solved);
 }

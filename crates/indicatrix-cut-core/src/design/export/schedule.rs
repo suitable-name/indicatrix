@@ -9,7 +9,7 @@ use indicatrix::{
     geometry::meet_solver::{MeetConstraint, SolvedTier},
     optics::materials::GemMaterial,
 };
-use indicatrix_formats::asc::{AscSchedule, AscTier};
+use indicatrix_formats::asc::{AscLineEnding, AscSchedule, AscTier};
 
 impl Design {
     /// Builds a real [`AscSchedule`] from this design's current state: every
@@ -152,6 +152,9 @@ impl Design {
                 mast: solved.mast,
                 name: tier.name.clone(),
                 indices: tier.indices.clone(),
+                // A design keeps only the folded tier name; the writer puts it
+                // after the first index, GemCAD's default label placement.
+                index_names: Vec::new(),
                 notes: constraint_notes(tier),
             })
             .collect();
@@ -167,7 +170,70 @@ impl Design {
             headers: self.meta.headers.clone(),
             footnotes: self.meta.footnotes.clone(),
             tiers,
+            warnings: Vec::new(),
+            // `GemCAD`'s own line ending; see `AscLineEnding`'s doc comment.
+            line_ending: AscLineEnding::default(),
         })
+    }
+
+    /// [`Self::to_asc_schedule_from_solved_with`], but also bakes every tier's
+    /// authored [`Self::cheater_offsets_deg`] into that tier's own exported
+    /// `indices` -- see [`Self::cheater_offsets_deg`]'s own doc comment for why:
+    /// `.asc`/`GemCAD` have no field for a cheater/azimuth angle at all, so the
+    /// only way an authored offset survives opening this exact `.asc` file in
+    /// software that has never heard of this crate's own native sidecar is to
+    /// fold it into the one thing `.asc` DOES carry per facet -- its index-wheel
+    /// position. The shift is `offset_deg / 360 * gear_teeth` (the fraction of a
+    /// full index-wheel rotation `offset_deg` covers, in the same tooth-position
+    /// units [`indicatrix_formats::asc::AscTier::indices`] already uses), added to
+    /// every index and rounded to 3 decimals. A positive offset therefore moves the
+    /// facet toward higher index numbers (azimuth `phi + offset`), the one sign
+    /// convention `design::export::planes::apply_cheater_offsets` documents and
+    /// applies to the rendered geometry. A tier without indices (a single facet
+    /// with no azimuth of its own) has nothing to shift, so its offset appears only
+    /// in the geometry and the native sidecar, not in the exported `.asc`.
+    ///
+    /// Only [`crate::native::save_paired`] (the real file-writing path) should
+    /// call this. [`Self::planes_from_solved`]/[`Self::planes_through_tier`] --
+    /// and every OTHER `to_asc_schedule*`/`try_to_asc_schedule*` entry point in
+    /// this module -- build the same kind of schedule for rendering/measurement
+    /// via [`Self::to_asc_schedule_from_solved`] (deliberately NOT this method)
+    /// and apply the offset as a real plane rotation instead
+    /// (`design::export::planes::apply_cheater_offsets`, which rotates the plane
+    /// NORMAL directly rather than the index-wheel position that produced it);
+    /// baking the offset into indices there too would rotate every one of those
+    /// consumers TWICE.
+    ///
+    /// # Panics
+    ///
+    /// Same alignment contract as [`Self::to_asc_schedule_from_solved`].
+    #[must_use]
+    pub fn to_asc_schedule_from_solved_with_cheater_offsets(
+        &self,
+        solved: &[SolvedTier],
+        custom: &[GemMaterial],
+    ) -> AscSchedule {
+        let mut schedule = self.to_asc_schedule_from_solved_with(solved, custom);
+        self.bake_cheater_offsets_into_indices(&mut schedule);
+        schedule
+    }
+
+    /// [`Self::to_asc_schedule_from_solved_with_cheater_offsets`]'s own mutation
+    /// half -- see that method's doc comment.
+    fn bake_cheater_offsets_into_indices(&self, schedule: &mut AscSchedule) {
+        if self.cheater_offsets_deg.is_empty() {
+            return;
+        }
+        let gear_teeth = f64::from(self.meta.gear_teeth_abs());
+        for (index, tier) in schedule.tiers.iter_mut().enumerate() {
+            let Some(offset_deg) = self.cheater_offset_deg(index).filter(|&deg| deg != 0.0) else {
+                continue;
+            };
+            let shift = offset_deg / 360.0 * gear_teeth;
+            for idx in &mut tier.indices {
+                *idx = ((*idx + shift) * 1000.0).round() / 1000.0;
+            }
+        }
     }
 }
 

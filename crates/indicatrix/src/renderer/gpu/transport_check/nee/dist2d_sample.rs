@@ -13,6 +13,7 @@ use crate::renderer::{
 
 use super::synthetic_test_map;
 
+/// One input case for the dist2d sample check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Dist2dSampleCase {

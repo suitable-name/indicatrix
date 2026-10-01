@@ -24,8 +24,9 @@ pub use filters::{
 };
 pub(in crate::gui) use remote_search::refresh_diagram_list_remote;
 
-use crate::{MainWindow, bridge::library::source::LibrarySource};
+use crate::{LibraryModel, MainWindow, bridge::library::source::LibrarySource};
 use indicatrix_vault::db::sqlite::Database;
+use slint::{ComponentHandle, Model, SharedString};
 use std::sync::{Arc, Mutex};
 
 /// Dispatches to [`refresh_diagram_list`] or a background remote search.
@@ -52,4 +53,65 @@ pub fn refresh_diagram_list_via_source(
             refresh_diagram_list_remote(ui, worker, search, shape_filter, gear_filter);
         }
     }
+}
+
+/// [`refresh_diagram_list_via_source`] for a keystroke in the search box.
+///
+/// The search runs once the typing pauses (see [`dispatch::debounce_text_refresh`]), not
+/// once per character. The shape and gear dropdown texts are the ones showing when the
+/// key was pressed.
+///
+/// The deferred search is dropped, not run, when the box or either dropdown no longer
+/// shows what this call was given: a programmatic reset or a dropdown change in the
+/// meantime has already refreshed with the current values. A refresh that runs sooner
+/// for any other reason supersedes it too (see `refresh_diagram_list`).
+pub fn refresh_diagram_list_via_source_debounced(
+    ui: &MainWindow,
+    db_mutex: &Arc<Mutex<Database>>,
+    source: &Arc<Mutex<LibrarySource>>,
+    search: &str,
+    shape_filter: &str,
+    gear_filter: &str,
+) {
+    let ui_weak = ui.as_weak();
+    let db_mutex = Arc::clone(db_mutex);
+    let source = Arc::clone(source);
+    let search = search.to_string();
+    let shape_filter = shape_filter.to_string();
+    let gear_filter = gear_filter.to_string();
+    dispatch::debounce_text_refresh(move || {
+        let Some(ui) = ui_weak.upgrade() else {
+            return;
+        };
+        let (shown_shape, shown_gear) = selected_shape_and_gear(&ui);
+        if ui.global::<LibraryModel>().get_search_text().as_str() != search
+            || shown_shape.as_str() != shape_filter
+            || shown_gear.as_str() != gear_filter
+        {
+            return;
+        }
+        refresh_diagram_list_via_source(
+            &ui,
+            &db_mutex,
+            &source,
+            &search,
+            &shape_filter,
+            &gear_filter,
+        );
+    });
+}
+
+/// The shape and gear dropdown texts `ui` currently shows selected (empty for an index
+/// outside the option lists).
+fn selected_shape_and_gear(ui: &MainWindow) -> (SharedString, SharedString) {
+    let library = ui.global::<LibraryModel>();
+    let shape = library
+        .get_shape_options()
+        .row_data(library.get_selected_shape_index() as usize)
+        .unwrap_or_default();
+    let gear = library
+        .get_gear_options()
+        .row_data(library.get_selected_gear_index() as usize)
+        .unwrap_or_default();
+    (shape, gear)
 }

@@ -9,6 +9,15 @@
 //! `RenderContext::camera_moving` from this same `HandoffMachine` instance's state
 //! every tick, so both features share one definition of "settled".
 //!
+//! Every tick also checks whether the live remote lane is currently ALLOWED to
+//! transmit at all (`tick::poll::live_remote_allowed`: the tab showing it is visible,
+//! live rendering isn't paused, and no high-resolution export/batch job is running) and
+//! suspends it the instant that turns false (`tick::poll::suspend_live_remote`),
+//! independently of the settle/redispatch decisions above -- a Pause or an export
+//! starting must stop the worker from transmitting immediately, not merely stop this
+//! orchestrator from starting a NEW epoch. See [`tick`]'s own doc comment for the
+//! suspend/resume mechanics.
+//!
 //! Split into the two off-thread background generations the orchestrator keeps
 //! running ([`generation`]), turning a remote accumulator's running sum into a
 //! displayed, denoised image ([`compositing`]), and the orchestrator's own state plus
@@ -19,4 +28,4 @@ mod compositing;
 mod generation;
 mod tick;
 
-pub use tick::setup_remote_rendering;
+pub use tick::{RemoteOrchestratorHandle, setup_remote_rendering};

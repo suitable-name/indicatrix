@@ -1,0 +1,194 @@
+import { Theme } from "../../theme.slint";
+import { RoughPlanModel, RoughPlanStoneGroup, RoughMetric } from "../../models/rough_plan.slint";
+import { RoughPill } from "fields.slint";
+
+// One design group row inside a result card: colour swatch, thumbnail, title with
+// its count, a short status chip, the Exclude pill, and a label/value metric list.
+// The design name is its own link to the design in the library; a click anywhere
+// else on the row selects the group. The Exclude pill asks Rust to leave the design
+// out of (or take it back into) the planner's candidates; the group's `excluded`
+// flag is Rust's display copy of that mark. The link to all the designs of the
+// result is on the card.
+export component DesignGroupRow inherits Rectangle {
+    in property <RoughPlanStoneGroup> group;
+    in property <bool> is_selected;
+    in property <bool> show_thumbnails: true;
+    callback clicked();
+
+    property <bool> link_ok: root.group.linkable && RoughPlanModel.links_enabled;
+    // The chip is short ("changed"); the wording the library check produced goes on
+    // the line under the name.
+    property <string> chip_text: root.group.status == "design deleted" ? "deleted"
+        : (root.group.status == "design changed since saved" ? "changed"
+        : (root.group.status == "matched by title" ? "by title" : root.group.status));
+    property <color> status_color: root.group.status_level == 3 ? Theme.danger
+        : (root.group.status_level == 2 ? Theme.accent-amber : Theme.accent-cyan);
+
+    background: root.is_selected ? Theme.surface-selected : (row_touch.has-hover || name_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control);
+    border-radius: Theme.radius-sm;
+    border-width: row_focus.has-focus ? 2px : 1px;
+    border-color: row_focus.has-focus ? Theme.accent-cyan
+        : (root.is_selected ? Theme.border-accent : Theme.border-subtle);
+
+    accessible-role: list-item;
+    accessible-label: root.group.count + " \u{00D7} " + root.group.name;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.is_selected;
+    accessible-action-default => { root.clicked(); }
+
+    row_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    // Declared before the name link, so the link sits on top of it.
+    row_touch := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    VerticalLayout {
+        padding: 6px;
+        spacing: 4px;
+
+        // Top line: swatch, thumbnail, count x title, status chip
+        HorizontalLayout {
+            spacing: 6px;
+
+            // Palette colour swatch
+            VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 2px;
+                    background: root.group.swatch;
+                }
+            }
+
+            // Optional design thumbnail (wrapped in VerticalLayout for center alignment)
+            if root.group.has_thumbnail && root.show_thumbnails: VerticalLayout {
+                alignment: center;
+                Image {
+                    width: 20px;
+                    height: 20px;
+                    source: root.group.thumbnail;
+                }
+            }
+
+            // Count x Title: the title is a link to the design in the library
+            Rectangle {
+                horizontal-stretch: 1;
+                min-width: 60px;
+                min-height: 18px;
+
+                Text {
+                    width: parent.width;
+                    text: root.group.count + " \u{00D7} " + root.group.name;
+                    font-size: 11px;
+                    font-weight: 700;
+                    color: root.is_selected ? Theme.text-primary
+                        : (root.link_ok
+                            ? (name_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan)
+                            : Theme.text-secondary);
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+
+                name_touch := TouchArea {
+                    enabled: root.link_ok;
+                    mouse-cursor: root.link_ok ? pointer : default;
+                    clicked => { RoughPlanModel.select_design(root.group.entry_id); }
+                }
+            }
+
+            // Status chip (if present)
+            if root.group.status != "": VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    height: 18px;
+                    border-radius: Theme.radius-sm;
+                    background: root.group.status_level == 3 ? Theme.danger-surface
+                        : (root.group.status_level == 2 ? Theme.surface-warning : Theme.surface-info);
+                    border-width: 1px;
+                    border-color: root.group.status_level == 3 ? Theme.danger-border
+                        : (root.group.status_level == 2 ? Theme.accent-amber : Theme.accent-cyan);
+
+                    HorizontalLayout {
+                        padding-left: 5px;
+                        padding-right: 5px;
+                        Text {
+                            text: root.chip_text;
+                            font-size: 11px;
+                            font-weight: 600;
+                            color: root.status_color;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+
+            // Exclude from (or take back into) the planner's candidate designs. The pill
+            // keeps its own clicks; it is as wide as its text and no wider.
+            VerticalLayout {
+                alignment: center;
+                RoughPill {
+                    text: root.group.excluded ? "Excluded" : "Exclude";
+                    active: root.group.excluded;
+                    enabled: root.link_ok && !RoughPlanModel.running;
+                    accessible-label: root.group.excluded
+                        ? "Include " + root.group.name + " in planning"
+                        : "Exclude " + root.group.name + " from planning";
+                    clicked => { RoughPlanModel.toggle_exclude(root.group.entry_id); }
+                }
+            }
+        }
+
+        // What the library check found, in full
+        if root.group.status != "": Text {
+            text: root.group.status;
+            font-size: 11px;
+            color: root.status_color;
+            overflow: elide;
+        }
+
+        // Detail line (dimensions and weight)
+        if root.group.detail != "": Text {
+            text: root.group.detail;
+            font-size: 11px;
+            color: Theme.text-muted;
+            overflow: elide;
+        }
+
+        // Metrics: two columns, labels left, values right-aligned and wrapping
+        if root.group.metrics.length > 0: VerticalLayout {
+            spacing: 2px;
+
+            for metric in root.group.metrics: HorizontalLayout {
+                spacing: 8px;
+                Text {
+                    width: 68px;
+                    text: metric.label;
+                    font-size: 11px;
+                    color: Theme.text-muted;
+                    vertical-alignment: top;
+                }
+                Text {
+                    horizontal-stretch: 1;
+                    text: metric.value;
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: Theme.text-secondary;
+                    horizontal-alignment: right;
+                    vertical-alignment: top;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

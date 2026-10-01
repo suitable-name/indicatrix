@@ -26,6 +26,7 @@ use crate::{
 
 use super::{biaxial_test_directions, biaxial_test_indicatrices};
 
+/// One input case for the assigned mode alpha biaxial check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct AssignedModeAlphaBiaxialCase {
@@ -118,7 +119,7 @@ pub struct AssignedModeAlphaBiaxialCase {
 /// still tight enough to catch a genuine future regression, e.g. an accidental sign
 /// flip or wrong-axis bug, which would land far outside this range) rather than a tight
 /// value like this file's ordinary `48`, which would fail loudly on this case: the
-/// `f64`-verified finding above shows BOTH sides
+/// `f64`-verified result above shows BOTH sides
 /// are already close to (and roughly symmetric around) the true answer, so a tight
 /// budget would be catching residual hardware precision, not a bug.
 const ASSIGNED_MODE_ALPHA_BIAXIAL_ULP_BUDGET: u32 = 1200;
@@ -164,6 +165,7 @@ fn build_assigned_mode_alpha_biaxial_cases() -> Vec<AssignedModeAlphaBiaxialCase
     cases
 }
 
+/// Runs the assigned mode alpha biaxial check against the CPU reference.
 #[must_use]
 pub fn run_assigned_mode_alpha_biaxial(
     ctx: &crate::renderer::gpu::GpuContext,

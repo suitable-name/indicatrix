@@ -41,11 +41,10 @@
 //! If the thread cannot be started or dies, [`DisplayUpdate::Plain`] asks the emitter for
 //! the plain tone-mapped running average instead -- a display frame is never withheld.
 
-use crate::render_core::VIEWER_FOV_DEG;
 use glam::Vec3;
 use indicatrix::{
     geometry::plane::GpuFacetPlane,
-    optics::raytracer::Camera,
+    optics::raytracer::{Camera, DEFAULT_FOV_DEG},
     renderer::{
         denoise::AtrousDenoiser,
         frame_denoise::{DenoiseScratch, FirstHitSnapshot, denoise_and_tonemap_frame},
@@ -274,7 +273,7 @@ fn run(
     jobs: &mpsc::Receiver<Job>,
     pictures: &mpsc::Sender<DisplayPicture>,
 ) {
-    let camera = Camera::new(inputs.yaw, inputs.pitch, inputs.distance, VIEWER_FOV_DEG);
+    let camera = Camera::new(inputs.yaw, inputs.pitch, inputs.distance, DEFAULT_FOV_DEG);
     let Some(guides) = generate_guide_buffers_cancellable(
         inputs.width,
         inputs.height,
@@ -355,7 +354,7 @@ mod tests {
     /// The viewer's own pipeline on the same scene: `generate_guide_buffers` at the
     /// viewer's fov, then `denoise_and_tonemap_frame`.
     fn reference(scene: &SceneState, samples: u32, total: &[Vec3]) -> Vec<u8> {
-        let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, 42.0);
+        let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, DEFAULT_FOV_DEG);
         let guides = generate_guide_buffers(scene.width, scene.height, &camera, &scene.planes);
         denoise_and_tonemap_frame(
             FirstHitSnapshot {

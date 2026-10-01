@@ -16,9 +16,10 @@ use crate::{
     bridge::render_thread::RenderContext,
     gui::{
         editor::{
-            guide, loading,
+            guide,
             state::{
-                EditorState, parse_design_material_form, tiers_incomplete_under_proposed_symmetry,
+                EditorState, body_colour_from_index, parse_design_material_form,
+                tiers_incomplete_under_proposed_symmetry,
             },
             view::{SolidLastSolved, refresh_editor_panel_stale, submit_preview_replan},
         },
@@ -27,34 +28,18 @@ use crate::{
     },
 };
 
-/// Whether a plain material
-/// pick (`picked_name`, with no typed RI override of its own) should pin
-/// [`MaterialSelection::refractive_index_override`] to the design's legacy
-/// exported RI (`legacy_ri`, i.e. `meta.refractive_index` -- the schedule's own
-/// `I` line) so the pick does not silently rewrite it. Returns `None` (pick
-/// stays unpinned, the newly resolved material's own `n_D` wins) whenever
-/// `previous_material_name` is `Some`: once a design already has a NAMED
-/// material, that material's own `n_D` (or an explicit typed override) is the
-/// design's RI story from then on, and pinning the OUTGOING material's RI onto
-/// the incoming one would be exactly the bug this guard exists to prevent --
-/// see [`loading::ri_override_to_preserve`] for the tolerance check itself.
-///
-/// `pub(super)` since [`super::tests`] exercises this directly.
-pub(super) fn ri_override_for_material_pick(
-    picked_name: Option<&str>,
-    previous_material_name: Option<&str>,
-    legacy_ri: f64,
-) -> Option<f64> {
-    if previous_material_name.is_some() {
-        return None;
-    }
-    loading::ri_override_to_preserve(picked_name?, legacy_ri)
-}
+// The RI-preservation rule for a plain material pick moved to `indicatrix_editor::loading`
+// (shared with the web design settings); re-exported at its old path, which
+// `super::tests` exercises.
+pub(super) use indicatrix_editor::loading::ri_override_for_material_pick;
 
-/// The design settings panel's material combo + RI override field -- applies
-/// [`Edit::SetMaterial`] via [`parse_design_material_form`], reading the combo's
+/// The design settings panel's material combo + RI override field + Colour combo --
+/// applies [`Edit::SetMaterial`] via [`parse_design_material_form`], reading the combo's
 /// current option list from `editor_material_combo_options` (pushed fresh every
-/// refresh, so this always parses against the SAME list the user actually saw).
+/// refresh, so this always parses against the SAME list the user actually saw). The
+/// Colour combo is authoritative: its index becomes the selection's
+/// `body_colour_override` through [`body_colour_from_index`] (`0` = the material's
+/// own colour).
 pub(in crate::gui::editor) fn setup_apply_design_material_callback(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -68,7 +53,7 @@ pub(in crate::gui::editor) fn setup_apply_design_material_callback(
     let solid_last_solved = Arc::clone(solid_last_solved);
     let ui_weak = ui.as_weak();
     ui.global::<EditorModel>().on_apply_design_material(
-        move |combo_index: i32, ri_override_text: SharedString| {
+        move |combo_index: i32, ri_override_text: SharedString, body_colour_index: i32| {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
@@ -85,7 +70,9 @@ pub(in crate::gui::editor) fn setup_apply_design_material_callback(
                 &options,
                 &st.design.material,
             ) {
-                Ok(mut material) => {
+                Ok(material) => {
+                    let mut material =
+                        material.with_body_colour(body_colour_from_index(body_colour_index));
                     // A plain material
                     // pick (no typed RI override -- that path is left alone, it
                     // is an explicit choice) must not silently change what the
@@ -103,6 +90,17 @@ pub(in crate::gui::editor) fn setup_apply_design_material_callback(
                         Ok(()) => {
                             // A material change never moves a tier's own mast.
                             refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::new());
+                            // a Load Selected suggestion banner
+                            // ("Set material to X (RI Y)?") left unanswered describes
+                            // the material the design HAD at load time -- an explicit
+                            // material pick through this combo (a different path than
+                            // the banner's own accept/dismiss) must not leave that
+                            // stale offer sitting there to later overwrite this pick
+                            // if clicked.
+                            ui.global::<EditorModel>()
+                                .set_material_suggestion_name("".into());
+                            ui.global::<EditorModel>()
+                                .set_material_suggestion_text("".into());
                             // The guide's "Pick a real material" step completes here.
                             guide::check_progress(&ui, &st);
                             submit_preview_replan(
@@ -158,6 +156,14 @@ pub(in crate::gui::editor) fn setup_material_guess_set_callback(
                 Ok(()) => {
                     // A material name change never moves a tier's own mast.
                     refresh_editor_panel_stale(&ui, &render_ctx, &st, &BTreeSet::new());
+                    // same reasoning as `setup_apply_design_material_callback`'s
+                    // matching clear -- this is a second path that sets the design's
+                    // material directly, so a stale Load Selected suggestion banner
+                    // must not survive it either.
+                    ui.global::<EditorModel>()
+                        .set_material_suggestion_name("".into());
+                    ui.global::<EditorModel>()
+                        .set_material_suggestion_text("".into());
                     submit_preview_replan(
                         &ui,
                         &render_ctx,

@@ -15,11 +15,15 @@ pub use args::{
 };
 pub use parse::parse;
 
+/// Default listen address of `serve`.
 pub const DEFAULT_BIND: &str = "127.0.0.1:7878";
 
 /// `serve --max-connections`'s default -- see [`ServeArgs::max_connections`]'s doc
 /// comment and `serve::ConnectionLimiter`.
 pub const DEFAULT_MAX_CONNECTIONS: usize = 64;
+
+/// `serve --max-preauth-per-ip`'s default -- see [`ServeArgs::max_preauth_per_ip`].
+pub const DEFAULT_MAX_PREAUTH_PER_IP: usize = 8;
 
 /// `serve --max-job-memory-mib`'s default: 2 GiB of in-flight coordinator job buffers
 /// (see [`ServeArgs::max_job_memory_mib`]).
@@ -33,8 +37,14 @@ pub const WORKER_PORT_OFFSET: u16 = 2;
 /// `join --cert-dir`'s default, relative to the working directory.
 pub const DEFAULT_JOIN_CERT_DIR: &str = "worker-cert";
 
-/// `join --slots`'s default: one connection, one request stream at a time.
-pub const DEFAULT_JOIN_SLOTS: usize = 1;
+/// `join --slots`'s default: two connections.
+///
+/// A second chunk is already in flight when the first one's transfer/decode gap would
+/// otherwise leave this worker idling in the coordinator's `Epoch::claim` between
+/// chunks -- measured as an underused fast remote worker (e.g. an A100) behind a much
+/// slower coordinator lane. Was `1` before this was measured; bump further only for a
+/// CPU-only machine juggling many small chunks (see `USAGE_JOIN`).
+pub const DEFAULT_JOIN_SLOTS: usize = 2;
 
 /// The most `join --slots` accepted -- a sanity bound, not a tuning knob.
 pub const MAX_JOIN_SLOTS: usize = 64;
@@ -127,7 +137,7 @@ pub const USAGE_SERVE: &str = "indicatrix-worker serve -- the coordinator: serve
 joining workers, and (with --render) render requests itself
 
 USAGE:
-    indicatrix-worker serve  [--bind <host:port>] [--allow-remote] [--db <path>] [--max-connections <n>]
+    indicatrix-worker serve  [--bind <host:port>] [--allow-remote] [--db <path>] [--max-connections <n>] [--max-preauth-per-ip <n>]
                          [--render] [--threads <n>] [--only-gpu | --only-cpu]
                          --ca <ca.pem> --cert <server.pem> --key <server.key> [--allowlist <path>] [--trust-any-client-cert]
                          [--enroll-bind <host:port>] [--no-enroll]
@@ -207,6 +217,12 @@ USAGE:
     --max-connections <n>     Most connections handled at once (default 64), counted
                                separately for viewers and for joined workers. A connection
                                past the cap gets a definitive error reply. At least 1.
+    --max-preauth-per-ip <n>  Most viewer-port connections one source IP address may have
+                               open that have not finished authenticating (default 8).
+                               A connection counts only until its TLS handshake and
+                               allowlist check succeed; after that it counts against
+                               --max-connections alone. Over-cap connections are closed
+                               at once and logged. At least 1.
 
     RENDERING OVER JOINED WORKERS (worker builds): an export-type request (Batch) is
     split into chunks over every idle joined worker whose pixel cap accepts it plus the
@@ -225,7 +241,12 @@ USAGE:
                                Otherwise the fastest-idle-worker rule applies (logged).
     --max-job-memory-mib <n>  Cap on the buffers of all in-flight multi-lane jobs
                                (default 2048). Each job is charged width x height x 48
-                               bytes; a job past the cap is refused, not queued.
+                               bytes, plus width x height x 36 bytes for every lane
+                               (the joined workers and the own lane), plus its HDR map
+                               and any viewer contribution; a job whose lanes do not all
+                               fit runs on fewer, and one past the cap even with a single
+                               lane is refused, not queued. A maximum-size 8K job needs
+                               about 2700 MiB with one lane.
 
     HDR ENVIRONMENT MAPS (worker builds): a scene lit by an HDR map names it by hash.
     With --render or a worker port the coordinator keeps a bounded on-disk cache
@@ -258,9 +279,11 @@ USAGE:
                                worker` on the coordinator host) before joining.
     --enroll-addr <host:port> The coordinator's WORKER enrollment listener (default: the
                                coordinator host, one port above the worker port -- 7881).
-    --slots <k>               Parallel connections (default 1), each serving one request
-                               stream at a time. With one GPU, k > 1 mainly helps
-                               CPU-only machines. At most 64.
+    --slots <k>               Parallel connections (default 2), each serving one request
+                               stream at a time. A second slot keeps a chunk in flight
+                               while another one's transfer/decode gap would otherwise
+                               idle a fast worker; higher k mainly helps CPU-only
+                               machines juggling many small chunks. At most 64.
     --threads <n>             CPU tracer threads (default: all cores).
     --only-gpu                GPU only (rejected without the gpu feature). Mutually
                                exclusive with --only-cpu.
@@ -372,9 +395,15 @@ USAGE:
     nothing is added to either allowlist, until the token is claimed (`indicatrix-worker
     cert claim --help`, or `indicatrix-worker join --help`'s --token for a worker).
 
+    A loopback connection alone does not authorise issuing: the request also presents the
+    operator secret in `issue.secret`, which `serve` creates in the PKI directory (the
+    directory holding --ca) on its first start, readable only by its owner. This command
+    reads that file, so run it as the user who can read the PKI directory, on the
+    coordinator host. A `serve` that predates the operator secret must be updated first.
+
     --ca <path>           The CA certificate to verify the enrollment listener against --
                            ordinary verification, not pinned, since the operator already
-                           has this file.
+                           has this file. `issue.secret` is read from the same directory.
     --admin-addr <addr>   The running coordinator's enrollment listener address: the
                            viewer one (default port 7879) for --role viewer, the worker
                            one (default port 7881) for --role worker.

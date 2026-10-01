@@ -125,6 +125,8 @@ pub fn facet_plane_boundaries(schedule: &indicatrix_formats::asc::AscSchedule) -
                 headers: Vec::new(),
                 footnotes: Vec::new(),
                 tiers: schedule.tiers[..=i].to_vec(),
+                warnings: Vec::new(),
+                line_ending: schedule.line_ending,
             };
             indicatrix::geometry::cuts::StandardGemCuts::from_asc_schedule(&prefix).len()
         })

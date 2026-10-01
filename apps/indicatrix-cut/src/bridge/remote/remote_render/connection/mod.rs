@@ -186,6 +186,20 @@ const fn liveness_deadline(seen_first_event: bool, liveness_timeout: Duration) -
     }
 }
 
+/// How long a one-shot connection waits, after writing `CANCEL`, for the worker to end
+/// the request (`DONE`/`ERROR`) or close the stream before giving up on it. Unlike
+/// [`LIVENESS_TIMEOUT`] this is a wall-clock bound from the moment the cancel was sent:
+/// a coordinator whose tracer is wedged keeps heartbeating `PROGRESS`, which resets the
+/// silence clock forever, so only a deadline that heartbeats cannot move ends the wait.
+const CANCEL_ACK_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Whether a `CANCEL` written at `cancel_sent_at` has gone unanswered for longer than
+/// `timeout` as of `now`. `None` (no cancel sent) is never overdue. Pure, with both
+/// instants and the timeout passed in, so it is unit-testable without a socket or sleeping.
+fn cancel_ack_overdue(cancel_sent_at: Option<Instant>, now: Instant, timeout: Duration) -> bool {
+    cancel_sent_at.is_some_and(|sent| now.saturating_duration_since(sent) > timeout)
+}
+
 /// Checks whether `current` (if any) has gone longer than `timeout` since `last_event`
 /// and, if so, delivers [`RemoteUpdate::Failed`] to it and returns `true` -- telling
 /// [`persistent::run_connection`]'s caller to drop `stream`/`welcome` too, so the next

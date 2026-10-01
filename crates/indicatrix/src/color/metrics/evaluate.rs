@@ -5,6 +5,8 @@
 use super::{
     camera::camera_view_basis,
     classify::{ApertureSampleContext, RayClassification, classify_aperture_sample},
+    fan::{FanGeometry, GRID_DISC_RADIUS_SQ},
+    lighting::ExitLighting,
     scintillation::{
         TemporalPoseContext, cell_temporal_variance, combine_scintillation_pct,
         spatial_scintillation_pct, temporal_scintillation_pct,
@@ -13,7 +15,10 @@ use super::{
 };
 use crate::{
     geometry::plane::GpuFacetPlane,
-    optics::{materials::GemMaterial, raytracer::build_plane_soa},
+    optics::{
+        materials::GemMaterial,
+        raytracer::{EnvironmentSource, build_plane_soa},
+    },
 };
 
 /// Degrees-of-angular-separation -> display-scale multiplier for `fire_index`.
@@ -26,11 +31,13 @@ use crate::{
 /// This constant rescales it into a range comparable to the old closed-form `fire_index`
 /// values (which topped out around 80 for diamond); it is a *display* scale, not a fit.
 ///
-/// Calibrated at 275 (Diamond, standard round brilliant, yaw 0.0/pitch 0.45/light
-/// 0.85-0.95, post F/C-bifurcation-gate weighted-mean separation ~0.0716 deg) to land
-/// `fire_index` ~= 19.7; every built-in material on both cuts stays comfortably under
-/// 100 at this scale. This scale, together with the bifurcation gate, fixes the
-/// emerald-cut Fire ordering -- see `evaluate_gem_optical_metrics`'s doc comment.
+/// Chosen at 275 so a Diamond standard round brilliant at yaw 0.0/pitch 0.45 (weighted-mean
+/// separation ~0.0716 deg after the F/C bifurcation gate) read `fire_index` ~= 19.7, under
+/// the earlier cone-based illumination test and a fixed 0.8-unit fan. It has not been
+/// re-derived for the radiance-based illumination test and girdle-scaled fan described in
+/// the module docs, so absolute values are comparable between stones measured by the
+/// same build, not with older readings. For the emerald-cut Fire ordering this scale was
+/// chosen with, see `evaluate_gem_optical_metrics`'s doc comment.
 const FIRE_DEGREES_TO_DISPLAY_SCALE: f32 = 275.0;
 
 /// Aggregate accumulators threaded through `evaluate_gem_optical_metrics`'s main grid
@@ -123,11 +130,11 @@ struct GridEvalSetup<'a> {
 /// once, unconditionally, with no accumulator or loop state involved.
 fn build_grid_eval_setup<'a>(
     plane_soa: &'a crate::simd::PlanesSoA32,
+    fan: FanGeometry,
     material: &GemMaterial,
     cam_yaw: f32,
     cam_pitch: f32,
-    light_yaw: f32,
-    light_pitch: f32,
+    environment: EnvironmentSource<'a>,
 ) -> GridEvalSetup<'a> {
     let nd = material.dispersion.evaluate(589.3).max(1.1);
     // Clamped defensively like `nd` above so `trace_wavelength`'s entry refraction
@@ -140,15 +147,9 @@ fn build_grid_eval_setup<'a>(
     // Matches the real render camera's frame exactly (see `camera_view_basis`).
     let (cam_forward, cam_right, cam_up) = camera_view_basis(cam_yaw, cam_pitch);
 
-    // Key/Fill Light Direction from the shared `StudioRig` -- the same construction
-    // `sample_studio_environment` uses to light the image these metrics describe, so
-    // the two can never silently drift apart. `rig.ring_dirs` is not consulted: the
-    // ring/annulus test below is a deliberately coarser approximation that only needs
-    // `sin_light_pitch` (see `ray_is_visibly_returned`).
-    let rig = crate::optics::studio_rig::StudioRig::new(light_yaw, light_pitch);
-    let key_dir = rig.key_dir;
-    let fill_dir = rig.fill_dir;
-    let sin_lp = rig.sin_light_pitch;
+    // The illumination is read from the same radiance the tracer lights the image with
+    // (see `ExitLighting`), so the metrics describe the scene on screen.
+    let lighting = ExitLighting::new(environment);
 
     // 5-point angular sub-aperture bundle (standard GIA 0° to 6° observer eye cone)
     let aperture_samples = [
@@ -166,9 +167,8 @@ fn build_grid_eval_setup<'a>(
         nd,
         cam_yaw,
         cam_pitch,
-        key_dir,
-        fill_dir,
-        sin_lp,
+        fan,
+        lighting: lighting.clone(),
     };
 
     // Shared context for the per-aperture-sample classification (see
@@ -181,9 +181,8 @@ fn build_grid_eval_setup<'a>(
         cam_forward,
         cam_right,
         cam_up,
-        key_dir,
-        fill_dir,
-        sin_lp,
+        fan,
+        lighting,
     };
 
     GridEvalSetup {
@@ -197,12 +196,13 @@ fn build_grid_eval_setup<'a>(
 /// Evaluates true GIA / AGSL optical gemological metrics by firing an analytical grid
 /// of rays with viewing aperture cone from the observer's **Point of View (`PoV`)**.
 ///
-/// Rays are fired from (`cam_yaw`, `cam_pitch`) through the 3D cutting schedule facet
+/// Rays are fired from (`cam_yaw`, `cam_pitch`) through the 3D cutting instructions' facet
 /// geometry, dynamically accounting for:
 /// 1. Gemstone refractive index n(λ) from Sellmeier / Cauchy equations
 /// 2. Snell's law refraction at inclined crown & girdle facet entry points
 /// 3. Total Internal Reflection (TIR) vs bottom leakage (Windowing) on pavilion facets
-/// 4. Light source illumination alignment (`light_yaw`, `light_pitch`) vs head-shadow extinction
+/// 4. The scene's illumination (`environment`: the radiance the tracer lights the image
+///    with, relative to its ambient level) vs head-shadow extinction
 /// 5. Fire: the angular separation between the F-line and C-line images of each ray that
 ///    is actually visibly returned (same illumination test as brilliance), so a
 ///    high-leakage cut with a few stray near-critical-angle rays cannot outscore a
@@ -236,8 +236,7 @@ pub fn evaluate_gem_optical_metrics(
     material: &GemMaterial,
     cam_yaw: f32,
     cam_pitch: f32,
-    light_yaw: f32,
-    light_pitch: f32,
+    environment: EnvironmentSource<'_>,
 ) -> GemOpticalMetrics {
     if planes.is_empty() {
         // No facet geometry to trace: fall back to neutral placeholder values rather
@@ -259,21 +258,17 @@ pub fn evaluate_gem_optical_metrics(
     // SIMD slab arena, built once per evaluation: every ray this function fires (grid,
     // sub-aperture, temporal sub-poses, F/C lines) intersects the same solid.
     let plane_soa = build_plane_soa(planes);
-    let setup = build_grid_eval_setup(
-        &plane_soa,
-        material,
-        cam_yaw,
-        cam_pitch,
-        light_yaw,
-        light_pitch,
-    );
+    // The fan is scaled to the stone once per evaluation (the measurement itself is
+    // reused while the design is unchanged -- see `FanGeometry`).
+    let fan = FanGeometry::for_planes(planes);
+    let setup = build_grid_eval_setup(&plane_soa, fan, material, cam_yaw, cam_pitch, environment);
 
     for ix in 0..setup.grid_size {
         for iz in 0..setup.grid_size {
             let u = ((ix as f32 + 0.5) / (setup.grid_size as f32)).mul_add(2.0, -1.0);
             let v = ((iz as f32 + 0.5) / (setup.grid_size as f32)).mul_add(2.0, -1.0);
-            if v.mul_add(v, u * u) > 0.70 {
-                continue; // Stay within gem perimeter
+            if v.mul_add(v, u * u) > GRID_DISC_RADIUS_SQ {
+                continue; // Stay within the fan's disc
             }
 
             // Per-cell counters for the Scintillation spatial-contrast measurement:

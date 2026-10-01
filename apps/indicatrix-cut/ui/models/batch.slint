@@ -12,6 +12,9 @@ export global BatchModel {
     in property <bool> preview_remote_active: false;
     in property <bool> preview_done: false;
     in property <string> preview_summary: "";
+    // The confirm step offers to REGENERATE designs that may already have previews
+    // (Library menu, filter panel) rather than to fill in missing ones.
+    in property <bool> preview_offer_regenerate: false;
 
     callback preview_cancel();
     callback preview_close();
@@ -31,7 +34,17 @@ export global BatchModel {
     in property <bool> tilt_remote_active: false;
     in property <bool> tilt_done: false;
     in property <string> tilt_summary: "";
+    // Same as `preview_offer_regenerate`, for the tilt confirm step.
+    in property <bool> tilt_offer_regenerate: false;
+    // The dialog is showing the Edit tab's single-design sweep ("Tilt Curves" on the
+    // command bar) rather than a catalogue batch: one bar driven by
+    // `tilt_single_fraction`, `tilt_single_stage` above it, and Cancel goes to
+    // `tilt_single_cancel`.
+    in property <bool> tilt_single: false;
+    in property <float> tilt_single_fraction: 0.0;
+    in property <string> tilt_single_stage: "";
 
+    callback tilt_single_cancel();
     callback tilt_cancel();
     callback tilt_close();
     callback tilt_dismiss_offer();

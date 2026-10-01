@@ -41,7 +41,7 @@
 // P6 exit-event spectral splitting: the CPU-side physics
 // (`compute_channel_transmission`/`compute_uniaxial_exit_transmission` in
 // `optics::raytracer::refraction`) is ported here -- see the two functions of the same
-// name further down this file (~line 1965) -- and wired into `spectral_transport.wgsl`'s
+// name further down this file -- and wired into `spectral_transport.wgsl`'s
 // megakernel and verified by `renderer::gpu::transport_check::p6_exit_splitting`'s Tier 2
 // checks.
 
@@ -275,6 +275,22 @@ fn pleochroic_channel_alpha(
     let alpha_unpolarized = 0.5 * (quadratic_form(alpha_o, alpha_e, a1, a2, c, eigen_a) + quadratic_form(alpha_o, alpha_e, a1, a2, c, eigen_b));
     let p = clamp(degree_of_polarization(s), 0.0, 1.0);
     return fma(p, alpha_polarized - alpha_unpolarized, alpha_unpolarized);
+}
+
+// optics::raytracer::absorption::channel_absorption_alphas_assigned's isotropic branch:
+// the plain midpoint of the two eigenmode quadratic forms, with no dependence on the
+// Stokes state (the unpolarized limit of `pleochroic_channel_alpha`).
+fn isotropic_channel_alpha(
+    alpha_o: f32,
+    alpha_e: f32,
+    c_axis: vec3<f32>,
+    eigen_a: vec3<f32>,
+    eigen_b: vec3<f32>,
+) -> f32 {
+    let c = normalize_or_zero(c_axis);
+    let a1 = stable_orthonormal_basis_t(c);
+    let a2 = cross(c, a1);
+    return 0.5 * (quadratic_form(alpha_o, alpha_e, a1, a2, c, eigen_a) + quadratic_form(alpha_o, alpha_e, a1, a2, c, eigen_b));
 }
 
 // ---------------------------------------------------------------------------------

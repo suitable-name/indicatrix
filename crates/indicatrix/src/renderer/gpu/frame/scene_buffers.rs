@@ -408,6 +408,12 @@ pub struct WavefrontRayBuffers {
     /// Allocated/reset exactly like `pending_light_mis`, just `[f32; 4]` instead of
     /// `f32` (`.w` unused, matching `origin`/`dir`/`k`/`prev_plane_normal` above).
     pub(super) pending_light_mis_dir: wgpu::Buffer,
+    /// `ray_nee_xyz` (binding 35) -- see that WGSL binding's own doc comment
+    /// (`wavefront_transport.wgsl`) for what it holds (the running total of every
+    /// Henyey-Greenstein scattering-point NEE deposit for this ray so far, each already
+    /// integrated to XYZ). Allocated/reset exactly like `pending_light_mis_dir`, same
+    /// `[f32; 4]` shape (`.w` unused).
+    pub(super) nee_xyz: wgpu::Buffer,
     pub(super) lambdas: wgpu::Buffer,
     pub(super) seed: wgpu::Buffer,
     /// `active_ray_indices` (binding 29): the CURRENT bounce round's live ray indices.
@@ -478,6 +484,12 @@ impl WavefrontRayBuffers {
             pending_light_mis_dir: compute::zeroed_buffer::<[f32; 4]>(
                 device,
                 "wf ray_pending_light_mis_dir",
+                tuples,
+                storage_rw,
+            ),
+            nee_xyz: compute::zeroed_buffer::<[f32; 4]>(
+                device,
+                "wf ray_nee_xyz",
                 tuples,
                 storage_rw,
             ),

@@ -30,15 +30,15 @@ export component TiltVideoExportSection inherits Rectangle {
     property <[int]> video_fps_choices: [24, 30, 60];
 
     border-radius: Theme.radius-md;
-    background: #0f172a;
+    background: Theme.surface-sunken;
     border-width: 1px;
-    border-color: #1e293b;
+    border-color: Theme.surface-raised;
     clip: true;
 
     VerticalLayout {
         Rectangle {
             height: 36px;
-            background: video_header_touch.has-hover ? #1e293b : transparent;
+            background: video_header_touch.has-hover ? Theme.surface-raised : transparent;
 
             video_header_touch := TouchArea {
                 clicked => { root.video_export_expanded = !root.video_export_expanded; }
@@ -51,13 +51,27 @@ export component TiltVideoExportSection inherits Rectangle {
 
                 HorizontalLayout {
                     spacing: 8px;
-                    Text {
-                        text: root.video_export_expanded ? "▾" : "▸";
-                        font-size: 12px;
-                        color: Theme.text-secondary;
-                        vertical-alignment: center;
+                    // Chevron drawn as a `Path` (the `section_header.slint` idiom):
+                    // the UI font has no "▸"/"▾" glyph and showed an empty box.
+                    VerticalLayout {
+                        alignment: center;
+                        Path {
+                            width: 8px;
+                            height: 8px;
+                            viewbox-width: 8;
+                            viewbox-height: 8;
+                            stroke: Theme.text-secondary;
+                            stroke-width: 1.5px;
+                            commands: root.video_export_expanded
+                                ? "M 1.5 2.5 L 4 6.5 L 6.5 2.5"
+                                : "M 2 1.5 L 6 4 L 2 6.5";
+                        }
                     }
-                    Image { source: @image-url("../../icons/save.svg"); colorize: Theme.text-primary; width: 13px; height: 13px; vertical-alignment: center; }
+                    // Wrapped so the fixed-size icon is centred in the 36px row.
+                    VerticalLayout {
+                        alignment: center;
+                        Image { source: @image-url("../../icons/save.svg"); colorize: Theme.text-primary; width: 13px; height: 13px; }
+                    }
                     Text { text: "Export Tilt Video"; font-size: 12px; font-weight: 700; color: Theme.text-primary; vertical-alignment: center; }
                 }
 
@@ -114,7 +128,7 @@ export component TiltVideoExportSection inherits Rectangle {
                             background: #131b2e;
                             border-radius: Theme.radius-sm;
                             border-width: 1px;
-                            border-color: #334155;
+                            border-color: Theme.border-dialog;
                             LineEdit {
                                 width: 100%;
                                 height: 100%;
@@ -131,7 +145,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         border-radius: Theme.radius-sm;
                         background: Math.abs(TiltVideoExportModel.step_deg - chip) < 0.001 ? Theme.accent-cyan : #131b2e;
                         border-width: 1px;
-                        border-color: Math.abs(TiltVideoExportModel.step_deg - chip) < 0.001 ? Theme.accent-cyan : #334155;
+                        border-color: Math.abs(TiltVideoExportModel.step_deg - chip) < 0.001 ? Theme.accent-cyan : Theme.border-dialog;
 
                         TouchArea { clicked => { TiltVideoExportModel.step_deg = chip; } }
 
@@ -143,7 +157,7 @@ export component TiltVideoExportSection inherits Rectangle {
                                 text: "" + chip;
                                 font-size: 10px;
                                 font-weight: 600;
-                                color: Math.abs(TiltVideoExportModel.step_deg - chip) < 0.001 ? #0f172a : Theme.text-secondary;
+                                color: Math.abs(TiltVideoExportModel.step_deg - chip) < 0.001 ? Theme.text-on-accent : Theme.text-secondary;
                             }
                         }
                     }
@@ -161,7 +175,7 @@ export component TiltVideoExportSection inherits Rectangle {
                 }
             }
 
-            Rectangle { height: 1px; background: #1e293b; }
+            Rectangle { height: 1px; background: Theme.surface-raised; }
 
             // Frame rate
             VerticalLayout {
@@ -175,7 +189,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         border-radius: Theme.radius-sm;
                         background: TiltVideoExportModel.fps_index == idx ? Theme.accent-cyan : #131b2e;
                         border-width: 1px;
-                        border-color: TiltVideoExportModel.fps_index == idx ? Theme.accent-cyan : #334155;
+                        border-color: TiltVideoExportModel.fps_index == idx ? Theme.accent-cyan : Theme.border-dialog;
 
                         TouchArea { clicked => { TiltVideoExportModel.fps_index = idx; } }
 
@@ -183,7 +197,7 @@ export component TiltVideoExportSection inherits Rectangle {
                             text: label;
                             font-size: 10px;
                             font-weight: 600;
-                            color: TiltVideoExportModel.fps_index == idx ? #0f172a : Theme.text-secondary;
+                            color: TiltVideoExportModel.fps_index == idx ? Theme.text-on-accent : Theme.text-secondary;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -191,7 +205,7 @@ export component TiltVideoExportSection inherits Rectangle {
                 }
             }
 
-            Rectangle { height: 1px; background: #1e293b; }
+            Rectangle { height: 1px; background: Theme.surface-raised; }
 
             // Resolution -- square and 16:9 presets,
             // plus Custom (clamped to [128, 8192] per axis in Rust).
@@ -221,7 +235,7 @@ export component TiltVideoExportSection inherits Rectangle {
                 }
             }
 
-            Rectangle { height: 1px; background: #1e293b; }
+            Rectangle { height: 1px; background: Theme.surface-raised; }
 
             // Quality -- same shape as the still-image export dialog's own
             // controls (power-of-two sample slider, bounce ladder, colour
@@ -246,7 +260,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         border-radius: Theme.radius-sm;
                         background: TiltVideoExportModel.selected_bounce_index == idx ? Theme.accent-cyan : #131b2e;
                         border-width: 1px;
-                        border-color: TiltVideoExportModel.selected_bounce_index == idx ? Theme.accent-cyan : #334155;
+                        border-color: TiltVideoExportModel.selected_bounce_index == idx ? Theme.accent-cyan : Theme.border-dialog;
 
                         TouchArea { clicked => { TiltVideoExportModel.selected_bounce_index = idx; } }
 
@@ -254,7 +268,7 @@ export component TiltVideoExportSection inherits Rectangle {
                             text: label;
                             font-size: 10px;
                             font-weight: 600;
-                            color: TiltVideoExportModel.selected_bounce_index == idx ? #0f172a : Theme.text-secondary;
+                            color: TiltVideoExportModel.selected_bounce_index == idx ? Theme.text-on-accent : Theme.text-secondary;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -270,7 +284,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         border-radius: Theme.radius-sm;
                         background: TiltVideoExportModel.selected_color_space_index == idx ? Theme.accent-cyan : #131b2e;
                         border-width: 1px;
-                        border-color: TiltVideoExportModel.selected_color_space_index == idx ? Theme.accent-cyan : #334155;
+                        border-color: TiltVideoExportModel.selected_color_space_index == idx ? Theme.accent-cyan : Theme.border-dialog;
 
                         TouchArea { clicked => { TiltVideoExportModel.selected_color_space_index = idx; } }
 
@@ -278,7 +292,7 @@ export component TiltVideoExportSection inherits Rectangle {
                             text: label;
                             font-size: 10px;
                             font-weight: 600;
-                            color: TiltVideoExportModel.selected_color_space_index == idx ? #0f172a : Theme.text-secondary;
+                            color: TiltVideoExportModel.selected_color_space_index == idx ? Theme.text-on-accent : Theme.text-secondary;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -297,7 +311,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         border-radius: Theme.radius-sm;
                         background: TiltVideoExportModel.transfer_index == idx ? Theme.accent-cyan : #131b2e;
                         border-width: 1px;
-                        border-color: TiltVideoExportModel.transfer_index == idx ? Theme.accent-cyan : #334155;
+                        border-color: TiltVideoExportModel.transfer_index == idx ? Theme.accent-cyan : Theme.border-dialog;
 
                         TouchArea { clicked => { TiltVideoExportModel.transfer_index = idx; } }
 
@@ -305,7 +319,7 @@ export component TiltVideoExportSection inherits Rectangle {
                             text: label;
                             font-size: 10px;
                             font-weight: 600;
-                            color: TiltVideoExportModel.transfer_index == idx ? #0f172a : Theme.text-secondary;
+                            color: TiltVideoExportModel.transfer_index == idx ? Theme.text-on-accent : Theme.text-secondary;
                             horizontal-alignment: center;
                             vertical-alignment: center;
                         }
@@ -319,7 +333,7 @@ export component TiltVideoExportSection inherits Rectangle {
                 }
             }
 
-            Rectangle { height: 1px; background: #1e293b; }
+            Rectangle { height: 1px; background: Theme.surface-raised; }
 
             // Output -- shares the still-image export's own remembered
             // folder (`ExportModel.directory`); its OWN filename template,
@@ -340,7 +354,7 @@ export component TiltVideoExportSection inherits Rectangle {
                     background: #131b2e;
                     border-radius: Theme.radius-sm;
                     border-width: 1px;
-                    border-color: #334155;
+                    border-color: Theme.border-dialog;
                     LineEdit {
                         width: 100%;
                         height: 100%;
@@ -362,7 +376,7 @@ export component TiltVideoExportSection inherits Rectangle {
                 }
             }
 
-            Rectangle { height: 1px; background: #1e293b; }
+            Rectangle { height: 1px; background: Theme.surface-raised; }
 
             // Overlay -- which tilt-performance values (if any) get drawn
             // into every frame; the display type (numbers-only / short
@@ -378,7 +392,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         width: 36px;
                         height: 20px;
                         border-radius: 10px;
-                        background: TiltVideoExportModel.show_values ? Theme.accent-cyan : #334155;
+                        background: TiltVideoExportModel.show_values ? Theme.accent-cyan : Theme.border-dialog;
 
                         TouchArea { clicked => { TiltVideoExportModel.show_values = !TiltVideoExportModel.show_values; } }
 
@@ -402,7 +416,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         border-radius: Theme.radius-sm;
                         background: TiltVideoExportModel.metric_brilliance ? #0284c733 : #131b2e;
                         border-width: 1px;
-                        border-color: TiltVideoExportModel.metric_brilliance ? Theme.accent-cyan : #334155;
+                        border-color: TiltVideoExportModel.metric_brilliance ? Theme.accent-cyan : Theme.border-dialog;
                         TouchArea { clicked => { TiltVideoExportModel.metric_brilliance = !TiltVideoExportModel.metric_brilliance; } }
                         HorizontalLayout {
                             padding-left: 6px; padding-right: 6px; alignment: center;
@@ -414,7 +428,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         border-radius: Theme.radius-sm;
                         background: TiltVideoExportModel.metric_windowing ? #d9770633 : #131b2e;
                         border-width: 1px;
-                        border-color: TiltVideoExportModel.metric_windowing ? Theme.accent-amber : #334155;
+                        border-color: TiltVideoExportModel.metric_windowing ? Theme.accent-amber : Theme.border-dialog;
                         TouchArea { clicked => { TiltVideoExportModel.metric_windowing = !TiltVideoExportModel.metric_windowing; } }
                         HorizontalLayout {
                             padding-left: 6px; padding-right: 6px; alignment: center;
@@ -426,7 +440,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         border-radius: Theme.radius-sm;
                         background: TiltVideoExportModel.metric_extinction ? #b91c1c33 : #131b2e;
                         border-width: 1px;
-                        border-color: TiltVideoExportModel.metric_extinction ? #ef4444 : #334155;
+                        border-color: TiltVideoExportModel.metric_extinction ? #ef4444 : Theme.border-dialog;
                         TouchArea { clicked => { TiltVideoExportModel.metric_extinction = !TiltVideoExportModel.metric_extinction; } }
                         HorizontalLayout {
                             padding-left: 6px; padding-right: 6px; alignment: center;
@@ -438,7 +452,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         border-radius: Theme.radius-sm;
                         background: TiltVideoExportModel.metric_tilt_brilliance ? #a855f733 : #131b2e;
                         border-width: 1px;
-                        border-color: TiltVideoExportModel.metric_tilt_brilliance ? Theme.accent-purple : #334155;
+                        border-color: TiltVideoExportModel.metric_tilt_brilliance ? Theme.accent-purple : Theme.border-dialog;
                         TouchArea { clicked => { TiltVideoExportModel.metric_tilt_brilliance = !TiltVideoExportModel.metric_tilt_brilliance; } }
                         HorizontalLayout {
                             padding-left: 6px; padding-right: 6px; alignment: center;
@@ -450,7 +464,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         border-radius: Theme.radius-sm;
                         background: TiltVideoExportModel.metric_angle ? #33415577 : #131b2e;
                         border-width: 1px;
-                        border-color: TiltVideoExportModel.metric_angle ? Theme.text-primary : #334155;
+                        border-color: TiltVideoExportModel.metric_angle ? Theme.text-primary : Theme.border-dialog;
                         TouchArea { clicked => { TiltVideoExportModel.metric_angle = !TiltVideoExportModel.metric_angle; } }
                         HorizontalLayout {
                             padding-left: 6px; padding-right: 6px; alignment: center;
@@ -466,7 +480,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         width: 36px;
                         height: 20px;
                         border-radius: 10px;
-                        background: TiltVideoExportModel.keep_frames ? Theme.accent-cyan : #334155;
+                        background: TiltVideoExportModel.keep_frames ? Theme.accent-cyan : Theme.border-dialog;
 
                         TouchArea { clicked => { TiltVideoExportModel.keep_frames = !TiltVideoExportModel.keep_frames; } }
 
@@ -515,12 +529,18 @@ export component TiltVideoExportSection inherits Rectangle {
                     Text { text: "Frame " + TiltVideoExportModel.current_frame + " / " + TiltVideoExportModel.total_frames; font-size: 11px; color: Theme.text-secondary; }
                     Text { text: Math.round(TiltVideoExportModel.progress * 100) + "%"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
                 }
+                if TiltVideoExportModel.eta_text != "": Text {
+                    text: TiltVideoExportModel.eta_text;
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    horizontal-alignment: right;
+                }
                 Rectangle {
                     height: 8px;
                     border-radius: 4px;
                     background: #131b2e;
                     border-width: 1px;
-                    border-color: #334155;
+                    border-color: Theme.border-dialog;
                     clip: true;
                     Rectangle {
                         x: 0;
@@ -536,7 +556,7 @@ export component TiltVideoExportSection inherits Rectangle {
             if TiltVideoExportModel.status_message != "": Text {
                 text: TiltVideoExportModel.status_message;
                 font-size: 10px;
-                color: TiltVideoExportModel.has_error ? #f87171 : Theme.accent-emerald;
+                color: TiltVideoExportModel.has_error ? Theme.danger : Theme.accent-emerald;
                 wrap: word-wrap;
             }
 
@@ -547,20 +567,20 @@ export component TiltVideoExportSection inherits Rectangle {
                     horizontal-stretch: 1;
                     height: 30px;
                     border-radius: Theme.radius-sm;
-                    background: video_cancel_touch.has-hover ? #450a0a : #1f1111;
+                    background: video_cancel_touch.has-hover ? Theme.danger-surface-hover : Theme.danger-surface;
                     border-width: 1px;
-                    border-color: #7f1d1d;
+                    border-color: Theme.danger-border;
 
                     video_cancel_touch := TouchArea { clicked => { TiltVideoExportModel.cancel_video_export(); } }
 
-                    Text { text: "Cancel"; font-size: 11px; font-weight: 600; color: #f87171; horizontal-alignment: center; vertical-alignment: center; }
+                    Text { text: "Cancel"; font-size: 11px; font-weight: 600; color: Theme.danger; horizontal-alignment: center; vertical-alignment: center; }
                 }
 
                 if !TiltVideoExportModel.is_exporting: Rectangle {
                     horizontal-stretch: 1;
                     height: 30px;
                     border-radius: Theme.radius-sm;
-                    background: video_start_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
+                    background: video_start_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
 
                     video_start_touch := TouchArea {
                         clicked => {
@@ -576,7 +596,7 @@ export component TiltVideoExportSection inherits Rectangle {
                         text: video_content.needs_confirmation ? "Review " + video_content.computed_frame_count + " Frames" : "Start Video Export";
                         font-size: 11px;
                         font-weight: 700;
-                        color: #0f172a;
+                        color: Theme.text-on-accent;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }

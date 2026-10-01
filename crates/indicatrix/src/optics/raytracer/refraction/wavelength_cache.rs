@@ -2,7 +2,7 @@
 
 use super::{
     context::{RayMaterialContext, RayWavelengthCache},
-    geometry::per_channel_uniaxial_indices,
+    geometry::per_channel_ordinary_indices,
 };
 use crate::optics::{
     birefringence::{AbsorptionTensor3, BiaxialIndicatrix},
@@ -15,12 +15,11 @@ pub(in crate::optics::raytracer) fn build_ray_wavelength_cache(
 ) -> RayWavelengthCache {
     let material = ctx.material;
 
-    // `n_o_ch` never depends on `theta_c` (only the discarded `n_eff_ch` half does), so
-    // the `0.0` argument here is an arbitrary placeholder; the real per-bounce
-    // `n_eff_ch` is computed fresh every bounce by
-    // `per_channel_effective_extraordinary_indices` from this cached `n_o_ch`.
-    let (n_o_ch, _n_eff_ch_unused_theta_c_independent_half) =
-        per_channel_uniaxial_indices(ctx, 0.0);
+    // `n_o_ch` never depends on `theta_c`; the effective-extraordinary half is
+    // `theta_c`-dependent, so it is computed fresh every bounce by
+    // `per_channel_effective_extraordinary_indices` from this cached `n_o_ch` and is
+    // not evaluated here at all.
+    let n_o_ch = per_channel_ordinary_indices(ctx);
 
     let biaxial_ch: [Option<BiaxialIndicatrix>; NUM_CHANNELS] =
         std::array::from_fn(|k| material.biaxial_indicatrix(ctx.lambdas[k]));

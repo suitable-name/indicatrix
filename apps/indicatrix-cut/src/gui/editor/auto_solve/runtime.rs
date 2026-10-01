@@ -46,7 +46,7 @@ pub(super) struct Runtime {
     /// [`Self::solid_last_solved`] are -- lets `dispatch::dispatch_background_solve`/
     /// `dispatch::apply_background_solve_result`/`dispatch::cancel_in_flight_solve`
     /// register/finish the background-solve activity without a new parameter on any
-    /// of their own fixed call sites (`mod.rs`'s `setup_solve_cancel_callback`, and
+    /// of their own fixed call sites (`gui::editor::setup::setup_solve_cancel_callback`, and
     /// every `callbacks::*` module that calls `dispatch::dispatch_background_solve`
     /// indirectly via `super::super::view::refresh_all`).
     pub(super) activity: Option<Rc<ActivityRegistry>>,
@@ -154,6 +154,16 @@ impl Runtime {
 /// [`Runtime::solve_in_flight`] -- see that field's own doc comment.
 pub(super) struct PendingDispatch {
     pub(super) design: Design,
+    /// the value `generation` held at the MOMENT this dispatch was queued
+    /// (captured once, by the caller, in `dispatch::queue_or_claim_solve_slot`),
+    /// not a value re-read from the live `Arc` later when this gets replayed --
+    /// `generation` is the SAME shared counter `EditorState` keeps bumping, so
+    /// reading it again at replay time would silently pick up every edit that
+    /// landed while this request sat queued and hand `design` back as if it were
+    /// current. `apply::apply_background_solve_result`'s own `generation.load(..)
+    /// != started_generation` check is what this pairs with once the replay's
+    /// own completion arrives.
+    pub(super) started_generation: u64,
     pub(super) generation: Arc<AtomicU64>,
     pub(super) multi_selected: BTreeSet<usize>,
 }

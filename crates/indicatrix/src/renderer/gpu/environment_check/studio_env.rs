@@ -10,6 +10,7 @@ use crate::{
 
 use super::{SHADER_SRC, UlpAccumulator, UlpCheckResult, fibonacci_sphere};
 
+/// One input case for the studio env check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct StudioEnvCase {
@@ -68,6 +69,7 @@ pub const STUDIO_ENV_ULP_BUDGET: u32 = 8192;
 /// negative-control run.
 pub const STUDIO_ENV_ABS_FLOOR: f32 = 1e-4;
 
+/// Builds the studio env cases for the check.
 #[must_use]
 pub fn build_studio_env_cases() -> Vec<StudioEnvCase> {
     let mut cases = Vec::new();
@@ -263,11 +265,6 @@ pub fn run_studio_env(ctx: &crate::renderer::gpu::GpuContext) -> UlpCheckResult<
 }
 
 fn preset_for_case(case: &StudioEnvCase) -> LightingPreset {
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "model is a small non-negative integer"
-    )]
     let model_id = case.model as u32;
     match model_id {
         1 => LightingPreset::IsoHemisphere,

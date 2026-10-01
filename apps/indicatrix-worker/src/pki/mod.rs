@@ -81,11 +81,17 @@ pub use role::{
     worker_label_of_certificate,
 };
 
+/// File name of the CA certificate.
 pub const CA_CERT_FILE: &str = "ca.pem";
+/// File name of the CA private key.
 pub const CA_KEY_FILE: &str = "ca.key";
+/// File name of the server certificate.
 pub const SERVER_CERT_FILE: &str = "server.pem";
+/// File name of the server private key.
 pub const SERVER_KEY_FILE: &str = "server.key";
+/// File name of the client certificate.
 pub const CLIENT_CERT_FILE: &str = "client.pem";
+/// File name of the client private key.
 pub const CLIENT_KEY_FILE: &str = "client.key";
 
 const CA_LIFETIME_DAYS: i64 = 365 * 10;

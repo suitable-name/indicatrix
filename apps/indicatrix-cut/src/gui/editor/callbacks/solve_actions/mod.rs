@@ -154,6 +154,16 @@ pub(in crate::gui::editor) fn clear_analysis_results(ui: &MainWindow) {
             activity.finish(id);
         }
     }
+    // a Deep Solve/Optimize run abandoned by a New/Load Selected/Open
+    // Native replacement is cancelled by `EditorState::replace_wholesale`
+    // (real, checkpoint-based cancellation -- see that method's own doc
+    // comment) right before every one of this function's own call sites, but
+    // that method has no `MainWindow` handle to reset the busy flags with.
+    // Without this, either flag stayed stuck at `true` -- and its own Deep
+    // Solve/Optimize button stayed disabled -- until the abandoned run's own
+    // completion handler eventually reset it, which could be minutes away.
+    ui.global::<EditorModel>().set_deep_solve_running(false);
+    ui.global::<EditorModel>().set_optimize_running(false);
     ui.global::<EditorModel>().set_deep_solve_status("".into());
     ui.global::<EditorModel>()
         .set_deep_solve_status_is_problem(false);

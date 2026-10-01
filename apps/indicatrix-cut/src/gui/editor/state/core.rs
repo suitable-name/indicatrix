@@ -1,25 +1,27 @@
-//! [`EditorState`] itself: its fields, construction (`fresh`/`fresh_from_spec`),
+//! [`EditorState`] itself: its fields, construction (`fresh`/`fresh_from_template`),
 //! wholesale replacement, and the pending-action/pending-remap payload types its
 //! fields hold.
 
 use crate::{
     gui::editor::{deep_solve, optimize_solve, retarget},
-    settings,
+    settings::SettingsPersister,
 };
-use indicatrix_cut_core::{Design, FreshDesignSpec, History, OptimizeOutcome, RemapRounding};
+use indicatrix_cut_core::{FreshDesignSpec, OptimizeOutcome, RemapRounding};
+use indicatrix_editor::{EditorSession, material::MaterialComboCache, scratch::PushedScratch};
 use std::{
     cell::RefCell,
-    collections::BTreeSet,
+    ops::{Deref, DerefMut},
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering as AtomicOrdering},
     },
 };
+use tracing::warn;
 
-/// The gear combo's fixed pill choices, before the combo's own trailing "Custom"
-/// entry -- shared by the design settings panel's gear control and the new-design
-/// dialog (`super::loading::parse_new_design_form`) so both present the same list.
-pub(super) const GEAR_PRESETS: [i32; 6] = [96, 80, 77, 72, 64, 120];
+/// The coalescing window every `EditorState`-owned `History` is built with -- see
+/// [`indicatrix_editor::session::ANGLE_NUDGE_COALESCE_WINDOW`], re-exported here at
+/// its old path.
+pub(in crate::gui::editor) use indicatrix_editor::session::ANGLE_NUDGE_COALESCE_WINDOW;
 
 /// The `AppSettings::suppressed_confirmations` key the anchor explainer card's
 /// "Don't show again" persists.
@@ -37,26 +39,36 @@ thread_local! {
         const { std::cell::Cell::new(false) };
 }
 
-/// Whether the anchor explainer's "Don't show again" has been persisted.
-/// Duplicated in miniature from `native_io::confirm_is_suppressed`'s own
-/// `AppSettings::is_confirm_suppressed` pattern -- that function is private to
-/// `native_io.rs`, which does not expose a public accessor for it, so it is
-/// not callable from here.
+/// Whether the anchor explainer's "Don't show again" has been recorded, read from the
+/// application's [`SettingsPersister`] (see [`SettingsPersister::install_for_this_thread`])
+/// so a choice made earlier in this session counts. With no persister installed
+/// nothing is suppressed.
+///
+/// The same pattern as `native_io::confirm`'s write-confirm suppressions, which live
+/// in a private module and so cannot be called from here.
 fn anchor_explainer_is_suppressed() -> bool {
-    let settings_path = settings::store::default_settings_path();
-    settings::store::load_or_default(&settings_path)
-        .settings
-        .is_confirm_suppressed(ANCHOR_EXPLAINER_SUPPRESS_KEY)
+    SettingsPersister::installed_for_this_thread().is_some_and(|persister| {
+        persister
+            .snapshot()
+            .settings
+            .is_confirm_suppressed(ANCHOR_EXPLAINER_SUPPRESS_KEY)
+    })
 }
 
-/// Persists the anchor explainer's "Don't show again" -- the write half of
-/// [`anchor_explainer_is_suppressed`]'s pattern.
+/// Records the anchor explainer's "Don't show again" -- the write half of
+/// [`anchor_explainer_is_suppressed`]. Goes through the [`SettingsPersister`], never
+/// straight into the settings file: the persister's in-memory snapshot is what every
+/// close path flushes over the file, so a choice written around it would be erased on
+/// exit.
 pub(in crate::gui::editor) fn anchor_explainer_suppress_permanently() {
-    let settings_path = settings::store::default_settings_path();
-    let mut file = settings::store::load_or_default(&settings_path);
-    file.settings
-        .suppress_confirm(ANCHOR_EXPLAINER_SUPPRESS_KEY);
-    let _ = settings::store::save(&settings_path, &file);
+    let Some(persister) = SettingsPersister::installed_for_this_thread() else {
+        warn!("No settings persister is installed; not suppressing the anchor explainer");
+        return;
+    };
+    persister.update(|file| {
+        file.settings
+            .suppress_confirm(ANCHOR_EXPLAINER_SUPPRESS_KEY);
+    });
 }
 
 /// Whether the anchor explainer card should open NOW, given
@@ -82,18 +94,6 @@ pub(in crate::gui::editor) fn should_open_anchor_explainer(
     ANCHOR_EXPLAINER_DECIDED_THIS_SESSION.with(|decided| decided.set(true));
     !anchor_explainer_is_suppressed()
 }
-
-/// The coalescing window every [`EditorState`]-owned
-/// [`History`] is built with (via [`History::with_coalesce_window`]) instead of
-/// [`History::new`]'s crate-wide 500ms default -- long enough that a
-/// deliberate, unhurried scroll-wheel angle nudge (ticks slower than 500ms
-/// apart) still merges into one undo step. `setup_inline_set_angle_callback`
-/// (`callbacks::tier_actions`) explicitly ends a run early with
-/// [`History::end_coalesce_run`] on a bit-identical no-op commit, so widening
-/// this window does not also widen how long a genuinely finished interaction
-/// keeps merging in the (rarer) case that boundary catches.
-pub(in crate::gui::editor) const ANGLE_NUDGE_COALESCE_WINDOW: std::time::Duration =
-    std::time::Duration::from_millis(1500);
 
 /// A gear-change the design settings panel has previewed but not yet confirmed --
 /// `setup_gear_apply_callback` fills this in and
@@ -124,7 +124,7 @@ pub(in crate::gui::editor) struct PendingGearRemap {
 /// for. `LoadSelected`/`OpenNative` carry nothing: both re-read their own inputs
 /// (the library selection, a freshly-shown native-file picker) fresh at resume time,
 /// which is exactly what running them again from scratch means.
-pub(in crate::gui::editor) enum PendingUnsavedAction {
+pub(in crate::gui) enum PendingUnsavedAction {
     /// Resume by building this spec into a fresh design -- see
     /// `gui::editor::callbacks::tier_actions::do_new_design_create`.
     ///
@@ -144,9 +144,54 @@ pub(in crate::gui::editor) enum PendingUnsavedAction {
     OpenNative,
 }
 
-/// The editor's live state: a design plus the undo/redo history over it. See this
-/// group's `mod.rs` doc comment for why [`Self::apply`]/[`Self::undo`]/[`Self::redo`]
-/// are the only three functions allowed to touch both fields at once.
+/// What to do once the Save this guard just triggered actually lands -- set by
+/// [`EditorState::after_save`]'s two writers (`gui::window_close`'s close-confirm
+/// "Save" and [`PendingUnsavedAction`]'s own "Save" resolution,
+/// `callbacks::tier_actions::lifecycle::setup_unsaved_guard_dispatch`) right before
+/// each calls `EditorModel.save_native`. Both guards used to check
+/// `EditorState::is_dirty`/`EditorModel.is_dirty` SYNCHRONOUSLY right after that
+/// call returned, as if the save had already finished -- but Save Native is
+/// asynchronous end to end (the design is resolved and the file written on a
+/// spawned thread, `native_io::save`'s own `write_native_save`), so that check
+/// always read the state from BEFORE the save even started, never its outcome.
+/// This field lets the save's own real completion
+/// (`native_io::save_finish::finish_save_native_success`, the one place that
+/// actually knows the write landed) run the guarded action instead, via
+/// `native_io::notify_save_completed`'s listener mechanism -- see that function's
+/// own doc comment for why a listener registry, not a parameter threaded through
+/// the whole write path.
+///
+/// Cleared (never left dangling) on every path that does NOT end in a completed
+/// save: the Save-As picker's own cancel (`native_io::save::save_native_via_dialog`),
+/// the write-confirm dialog's Cancel (`native_io::confirm::
+/// setup_write_confirm_dialog_callbacks`), and the background write's own `Err`
+/// toast path (`native_io::save::write_native_save`) -- a stale `Some` left behind
+/// by any of those would otherwise make some LATER, unrelated successful save
+/// spuriously close the window or resume a stale pending action.
+///
+/// Declared `pub(in crate::gui)`, not the narrower `pub(in crate::gui::editor)`
+/// every other type here uses: `gui::window_close` is a SIBLING of `gui::editor`,
+/// not a descendant, and needs to name this type directly (see
+/// `native_io`'s own re-export of it).
+pub(in crate::gui) enum AfterSave {
+    /// `gui::window_close`'s close-confirm guard: hide the window once the save
+    /// actually lands, instead of the old synchronous `is_dirty` check that raced
+    /// the save's own background write thread.
+    CloseWindow,
+    /// The New/Load Selected/Open Native unsaved-changes guard: resume this
+    /// action once the save actually lands.
+    Resume(PendingUnsavedAction),
+}
+
+/// The editor's live state: the shared [`EditorSession`] (design, undo/redo history,
+/// multi-selection, generation/saved-generation -- every design/history mutation
+/// goes through it, so the desktop and the web app edit identically) plus the
+/// desktop-only bookkeeping around it (Deep Solve/Optimize handles, the paired
+/// `.asc`, the catalogue row, the unsaved-changes guard). Derefs to the session, so
+/// `state.design`/`state.history`/`state.multi_selected`/`state.generation` read
+/// straight through. See this group's `mod.rs` doc comment for why
+/// [`Self::apply`]/[`Self::undo`]/[`Self::redo`] (all routed through the session)
+/// are the only functions allowed to touch design and history at once.
 ///
 /// Shared via `Rc<RefCell<..>>`, not this crate's usual `Arc<Mutex<..>>`: every
 /// callback that touches this state is a Slint callback, which only ever runs on the
@@ -154,9 +199,12 @@ pub(in crate::gui::editor) enum PendingUnsavedAction {
 /// every frame and genuinely needs a lock for. A real lock here would buy no
 /// correctness while inviting clippy's `significant_drop_tightening` lint on every
 /// callback holding the guard across a `refresh_all` call.
-pub(in crate::gui::editor) struct EditorState {
-    pub(in crate::gui::editor) design: Design,
-    pub(in crate::gui::editor) history: History,
+pub(in crate::gui) struct EditorState {
+    /// The design, its history, the multi-selection and the generation counters --
+    /// see [`EditorSession`]'s own field docs (`generation` is an `Arc<AtomicU64>`
+    /// so a Deep Solve/Optimize completion handler on a worker thread can notice the
+    /// design changed without capturing this non-`Send` state).
+    pub(in crate::gui::editor) session: EditorSession,
     /// This design's printed proportions (`Vol/W^3`, `L/W`, `C/W`, `P/W`, `H/W`), when
     /// loaded from a catalogue entry that has them -- Deep Solve's external
     /// verification targets. `None` for a brand-new design or one loaded with those
@@ -164,17 +212,11 @@ pub(in crate::gui::editor) struct EditorState {
     /// against an unmeasurable target.
     pub(in crate::gui::editor) printed_proportions:
         Option<indicatrix::geometry::stone_metrics::ExternalProportions>,
-    /// Bumped by every successful [`Self::apply`]/[`Self::undo`]/[`Self::redo`].
-    /// `Arc<AtomicU64>` so `setup_deep_solve_callback` can clone the counter into a
-    /// background thread: a deep solve's completion handler uses it to notice the
-    /// design changed mid-search without capturing this non-`Send`
-    /// `Rc<RefCell<EditorState>>`-wrapped state directly.
-    pub(in crate::gui::editor) generation: Arc<AtomicU64>,
     /// Bumped ONLY by [`Self::replace_wholesale`] -- i.e. exactly when New / Load
     /// Selected / Open Native swap in a different design, never by an ordinary
     /// edit.
     ///
-    /// [`Self::generation`] cannot answer this on its own: it counts edits AND
+    /// `generation` cannot answer this on its own: it counts edits AND
     /// replacements alike, so a background Deep Solve/Optimize comparing against it
     /// learns only "something changed", not whether its result still describes the
     /// design on screen. The two cases want opposite handling. After an edit, a
@@ -193,32 +235,13 @@ pub(in crate::gui::editor) struct EditorState {
     /// bump. Handing back a new `Arc` here would silently defeat the check for
     /// precisely the runs it exists to catch.
     pub(in crate::gui::editor) design_epoch: Arc<AtomicU64>,
-    /// [`Self::generation`]'s value as of the last successful save (`native_io::
-    /// setup_save_native_callback`) OR the moment this particular design was
-    /// loaded/created (`fresh`/`fresh_from_spec`/a "Load Selected"/"Open Native"
-    /// replacement all start a design at `saved_generation == 0`, matching a brand
-    /// new `generation`) -- see [`Self::is_dirty`], the comparison this exists for.
-    ///
-    /// Compared against the live `generation` counter rather than against `History`'s
-    /// own state directly: `History` (`indicatrix_cut_core::edit::History`) exposes no
-    /// position/length accessor at all (only `can_undo`/`can_redo`/`peek_undo`/
-    /// `peek_redo`), so there is no more precise "how far in" signal to read from
-    /// outside that crate. `generation` itself only moves through
-    /// [`Self::apply`]/[`Self::apply_coalescing`]/[`Self::undo`]/[`Self::redo`]/
-    /// [`Self::apply_optimize_outcome`] -- every one of them a real edit (or, for
-    /// undo/redo, an edit-equivalent content change) -- never merely by a solve
-    /// (`Design::solve`/`status`/`measure` never touch it), so this is an honest
-    /// "has anything changed since the last save" signal for the overwhelming
-    /// majority of sessions. Its one known blind spot: undoing back to exactly the
-    /// content that was on disk still reads as dirty, since `generation` counts
-    /// every step taken rather than net content equality -- accepted rather than
-    /// chasing a `Design: PartialEq` snapshot comparison instead, which would need
-    /// re-cloning and re-comparing the whole `Design` on every refresh just to
-    /// close that one edge case.
-    pub(in crate::gui::editor) saved_generation: u64,
     /// See [`PendingUnsavedAction`]. `None` whenever the Save/Discard/Cancel dialog
     /// is closed (the common state).
     pub(in crate::gui::editor) pending_unsaved_action: Option<PendingUnsavedAction>,
+    /// See [`AfterSave`]. `None` whenever no Save is currently running on this
+    /// design's behalf of a close/replace guard (the common state) -- an ordinary
+    /// Save Native click (with no guard behind it) never touches this field at all.
+    pub(in crate::gui) after_save: Option<AfterSave>,
     /// The in-flight Deep Solve's handle, so `setup_deep_solve_cancel_callback` can
     /// reach it -- `None` when none has ever run. Whether one is CURRENTLY running is
     /// tracked by the `editor_deep_solve_running` Slint property, not by this being
@@ -288,19 +311,6 @@ pub(in crate::gui::editor) struct EditorState {
     /// completes on a background thread. Cleared by `setup_retarget_apply_callback`
     /// (after applying) and `setup_retarget_close_callback` (on cancel).
     pub(in crate::gui::editor) pending_retarget: Option<(retarget::RetargetProposal, u64)>,
-    /// The tier-list row indices currently Ctrl+click-toggled into a multi-select
-    /// group, for the angle-nudge batch (`setup_nudge_angle_callback`): nudging any
-    /// ONE of these while at least two are selected moves all of them together, as
-    /// one undoable [`Edit::RetargetAngles`] (see that variant's own doc comment --
-    /// this reuses it as-is rather than adding a new `Edit::Batch`, since it's
-    /// already exactly "several tiers' angle changes, one undo step, exact per-tier
-    /// inverse"). Purely a transient UI selection, never itself part of `Design` or
-    /// `History`: [`Self::apply`]/[`Self::undo`]/[`Self::redo`] prune it back to
-    /// valid indices after every edit (see their own bodies) rather than leaving a
-    /// stale index that outlived the tier it once named. Cleared to empty by
-    /// `EditorState::fresh`/`fresh_from_spec`/a catalogue load, matching every other
-    /// per-design transient field here.
-    pub(in crate::gui::editor) multi_selected: BTreeSet<usize>,
     /// Snapshot of every design-derived value the design-settings/preform/yield
     /// scratch fields mirror, as of the last time `view::refresh_design_settings`/
     /// the preform+yield push in `view::refresh_editor_panel`/`view::
@@ -315,13 +325,13 @@ pub(in crate::gui::editor) struct EditorState {
     /// because most of their own callers only hold an immutable borrow -- can
     /// update it without every one of those callers needing to start passing a
     /// mutable borrow through instead.
-    pub(in crate::gui::editor) last_pushed_scratch: RefCell<super::history::PushedScratch>,
+    pub(in crate::gui::editor) last_pushed_scratch: RefCell<PushedScratch>,
     /// Cache for [`design_material_options`]'s result -- see
     /// [`Self::material_combo_options`], the method that reads/fills it. Same
     /// `RefCell`-through-`&self` discipline as `last_pushed_scratch` just above, and
     /// the same reason: `view::refresh_design_settings` only ever receives
     /// `&EditorState`.
-    pub(in crate::gui::editor) material_combo_cache: RefCell<super::material::MaterialComboCache>,
+    pub(in crate::gui::editor) material_combo_cache: RefCell<MaterialComboCache>,
     /// Whether this is a REAL design -- created (New Design, any template), loaded
     /// (Load Selected) or opened (Open Native/Open Recent/the startup restore) --
     /// rather than [`Self::fresh`]'s startup placeholder. Mirrored into
@@ -333,57 +343,37 @@ pub(in crate::gui::editor) struct EditorState {
 impl EditorState {
     /// A brand-new design: a generously sized cylindrical preform and an empty
     /// schedule, matching the "New" button's job -- start from something that already
-    /// renders as a real, closed stone rather than an empty viewport. Used as the
-    /// startup placeholder, so [`Self::has_design`] is `false` here.
+    /// renders as a real, closed stone rather than an empty viewport (see
+    /// [`EditorSession::fresh`], whose history uses the longer
+    /// [`ANGLE_NUDGE_COALESCE_WINDOW`] so an unhurried scroll-wheel nudge still merges
+    /// into one undo step; `setup_inline_set_angle_callback`'s no-op branch ends a run
+    /// explicitly). Used as the startup placeholder, so [`Self::has_design`] is
+    /// `false` here.
     pub(in crate::gui::editor) fn fresh() -> Self {
-        let preform = indicatrix_cut_core::PreformSpec::cylinder(96, 1.5, 1.0, 1.5);
-        Self {
-            design: Design::fresh(preform, 96, 8, 1.54),
-            // A longer, per-instance coalescing window
-            // (`History::with_coalesce_window`, not the crate-wide 500ms
-            // `History::new()` default) so a deliberate, unhurried scroll-wheel
-            // angle nudge (ticks slower than 500ms apart) still merges into one
-            // undo step instead of costing one Ctrl+Z per tick. See
-            // `setup_inline_set_angle_callback`'s no-op branch (`callbacks::
-            // tier_actions`) for this history's own explicit `end_coalesce_run`
-            // boundary.
-            history: History::with_coalesce_window(ANGLE_NUDGE_COALESCE_WINDOW),
-            printed_proportions: None,
-            generation: Arc::new(AtomicU64::new(0)),
-            design_epoch: Arc::new(AtomicU64::new(0)),
-            saved_generation: 0,
-            pending_unsaved_action: None,
-            deep_solve: None,
-            optimize: None,
-            pending_optimize: Arc::new(Mutex::new(None)),
-            deep_solve_result_generation: None,
-            asc_filename: None,
-            original_asc_text: None,
-            pending_gear_remap: None,
-            pending_retarget: None,
-            multi_selected: BTreeSet::new(),
-            source_entry_id: None,
-            used_placeholder: false,
-            last_pushed_scratch: RefCell::new(super::history::PushedScratch::default()),
-            material_combo_cache: RefCell::new(super::material::MaterialComboCache::default()),
-            // The startup placeholder is not a design the user asked for.
-            has_design: false,
-        }
+        // The startup placeholder is not a design the user asked for.
+        Self::wrapping(EditorSession::fresh(), false)
     }
 
     /// A brand-new design from the New Design dialog's full [`FreshDesignSpec`]
-    /// (preform, gear, symmetry, mirror, starting material). Otherwise identical to
-    /// [`Self::fresh`]: empty `History`, no printed proportions, no pending work.
-    pub(in crate::gui::editor) fn fresh_from_spec(spec: FreshDesignSpec) -> Self {
+    /// (preform, gear, symmetry, mirror, starting material), seeded with template
+    /// `template_index`'s starting tiers (`0` is "Empty") -- see
+    /// [`EditorSession::from_template`]. Otherwise identical to [`Self::fresh`]:
+    /// empty `History`, no printed proportions, no pending work.
+    pub(in crate::gui::editor) fn fresh_from_template(
+        spec: FreshDesignSpec,
+        template_index: i32,
+    ) -> Self {
+        Self::wrapping(EditorSession::from_template(spec, template_index), true)
+    }
+
+    /// `session` with every desktop-only field at its "nothing pending" default.
+    fn wrapping(session: EditorSession, has_design: bool) -> Self {
         Self {
-            design: Design::fresh_from_spec(spec),
-            // See `Self::fresh`'s matching comment on the coalescing window.
-            history: History::with_coalesce_window(ANGLE_NUDGE_COALESCE_WINDOW),
+            session,
             printed_proportions: None,
-            generation: Arc::new(AtomicU64::new(0)),
             design_epoch: Arc::new(AtomicU64::new(0)),
-            saved_generation: 0,
             pending_unsaved_action: None,
+            after_save: None,
             deep_solve: None,
             optimize: None,
             pending_optimize: Arc::new(Mutex::new(None)),
@@ -392,12 +382,11 @@ impl EditorState {
             original_asc_text: None,
             pending_gear_remap: None,
             pending_retarget: None,
-            multi_selected: BTreeSet::new(),
             source_entry_id: None,
             used_placeholder: false,
-            last_pushed_scratch: RefCell::new(super::history::PushedScratch::default()),
-            material_combo_cache: RefCell::new(super::material::MaterialComboCache::default()),
-            has_design: true,
+            last_pushed_scratch: RefCell::new(PushedScratch::default()),
+            material_combo_cache: RefCell::new(MaterialComboCache::default()),
+            has_design,
         }
     }
 
@@ -405,7 +394,7 @@ impl EditorState {
     /// Selected`/`Open Native` state -- while keeping THIS state's own
     /// `generation` counter alive and bumping it, instead of letting
     /// `replacement` bring its own fresh `Arc::new(AtomicU64::new(0))` (as its
-    /// constructor -- [`Self::fresh`]/[`Self::fresh_from_spec`], or a hand-built
+    /// constructor -- [`Self::fresh`]/[`Self::fresh_from_template`], or a hand-built
     /// literal -- otherwise would).
     ///
     /// Reusing (and bumping) the SAME `Arc` across the replacement, instead of
@@ -422,9 +411,33 @@ impl EditorState {
     /// happened to write, so `is_dirty` is `false` right away, matching a freshly
     /// loaded/created design's actual state.
     pub(in crate::gui::editor) fn replace_wholesale(&mut self, mut replacement: Self) {
-        replacement.generation = Arc::clone(&self.generation);
-        let now = replacement.generation.fetch_add(1, AtomicOrdering::Relaxed) + 1;
-        replacement.saved_generation = now;
+        // Cancels any Deep Solve/Optimize run still in flight for the design
+        // being replaced: dropping the OLD `self.deep_solve`/
+        // `self.optimize` handle below (via `*self = replacement`) alone does
+        // NOT stop the search -- neither handle cancels itself on drop, so an
+        // abandoned run kept burning CPU on its own worker thread for as long
+        // as it took to finish (up to several minutes for Deep Solve, see
+        // `deep_solve`'s own module doc comment) with no way for the cutter to
+        // start a fresh one against the NEW design in the meantime. Calling
+        // the real, checkpoint-based `cancel()` here -- the same one the
+        // Deep-Solve-Cancel/Optimize-Cancel buttons call -- stops the search
+        // itself within roughly the same single-digit-millisecond to
+        // few-second latency those buttons document, and lets the abandoned
+        // run's own completion handler (which already checks
+        // `design_epoch`/`RunProvenance::design_replaced`) arrive promptly
+        // instead of stalling behind a long-running search that had no reason
+        // to keep going. This only stops the WORK; the caller-visible
+        // `editor_deep_solve_running`/`editor_optimize_running` busy flags are
+        // a separate `EditorState` has no handle to, reset by
+        // `callbacks::solve_actions::clear_analysis_results` at every one of
+        // this method's own call sites instead.
+        if let Some(handle) = self.deep_solve.take() {
+            handle.cancel();
+        }
+        if let Some(handle) = self.optimize.take() {
+            handle.cancel();
+        }
+        replacement.session.continue_generation_from(&self.session);
         // Carried and bumped exactly like `generation` directly above, and for the
         // same reason -- see [`Self::design_epoch`]'s own doc comment for what the
         // second counter buys that `generation` alone cannot. Bumping it HERE, in
@@ -436,5 +449,19 @@ impl EditorState {
             .design_epoch
             .fetch_add(1, AtomicOrdering::Relaxed);
         *self = replacement;
+    }
+}
+
+impl Deref for EditorState {
+    type Target = EditorSession;
+
+    fn deref(&self) -> &EditorSession {
+        &self.session
+    }
+}
+
+impl DerefMut for EditorState {
+    fn deref_mut(&mut self) -> &mut EditorSession {
+        &mut self.session
     }
 }

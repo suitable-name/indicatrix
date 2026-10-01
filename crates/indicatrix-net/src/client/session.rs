@@ -1,5 +1,7 @@
-//! Wires the write side (`RenderRequest`/`CANCEL`) and the read side (the
-//! [`StreamEvent`] reply stream, driven through an [`Accumulator`]) together.
+//! Wires the write and read sides of one render session together.
+//!
+//! The write side (`RenderRequest`/`CANCEL`) and the read side (the [`StreamEvent`]
+//! reply stream, driven through an [`Accumulator`]).
 //!
 //! # Why this is two independent halves, not one call
 //!
@@ -104,6 +106,34 @@ pub fn send_asset<W: Write>(writer: &mut W, bytes: &[u8]) -> Result<(), ClientEr
     Ok(())
 }
 
+/// Sends a `CONTRIBUTION` (v16): the viewer's own share of a `FinalImageRequest`'s
+/// reserved tail, `sum` being the float-XYZ radiance sum of exactly `range.1` samples
+/// starting at `range.0`.
+///
+/// `range` is `(first_sample, samples)` -- the same shape
+/// `FinalImageRequest::reserved_range` returns -- collapsed into one parameter to keep
+/// this function's arity under clippy's default limit.
+///
+/// A thin wrapper over `crate::messages::write_contribution_message`. `render`-feature
+/// only, like the variant itself.
+///
+/// # Errors
+///
+/// Returns [`ClientError::Net`] if writing fails.
+#[cfg(feature = "render")]
+pub fn send_contribution<W: Write>(
+    writer: &mut W,
+    request_id: u32,
+    range: (u32, u32),
+    width: u32,
+    height: u32,
+    sum: &[glam::Vec3],
+    encoder: &mut crate::radiance::PayloadEncoder,
+) -> Result<(), ClientError> {
+    messages::write_contribution_message(writer, request_id, range, width, height, sum, encoder)?;
+    Ok(())
+}
+
 /// Sends a `TILT_CURVES` request -- the client's `-> TiltCurvesRequest(...)`.
 ///
 /// Wraps `request` in the tagged [`ClientMessage::TiltCurvesRequest`] envelope, the way
@@ -145,7 +175,7 @@ pub fn send_tilt_curves_request<W: Write>(
 pub fn recv_tilt_curves_response<R: Read>(
     reader: &mut R,
 ) -> Result<crate::messages::TiltCurvesResponse, ClientError> {
-    Ok(messages::read_message(reader)?)
+    Ok(messages::read_control_message(reader)?)
 }
 
 /// Sends a [`crate::library::LibraryRequest`] -- the client's `-> Library(...)`.
@@ -305,8 +335,9 @@ fn to_update(event: &StreamEvent, outcome: ApplyOutcome) -> SessionUpdate {
 /// Every [`StreamEvent`] read is applied via [`Accumulator::apply`] and reported to
 /// `on_update`.
 ///
-/// Returns `Ok(())` on a clean EOF -- the normal way this loop ends, treating "peer
-/// closed the connection" as done, not a failure. There is deliberately no other way to
+/// Returns `Ok(())` on a clean EOF at a frame boundary -- the normal way this loop ends,
+/// treating "peer closed the connection" as done, not a failure. A connection that ends
+/// inside a frame is an error ([`crate::framing::FramingError::TruncatedFrame`]). There is deliberately no other way to
 /// stop this loop from the inside: a blocking read can't notice an out-of-band "please
 /// stop" short of the connection closing, so a caller that wants to stop early shuts
 /// down the underlying stream from another thread (e.g. `TcpStream::shutdown`), which
@@ -315,7 +346,8 @@ fn to_update(event: &StreamEvent, outcome: ApplyOutcome) -> SessionUpdate {
 ///
 /// # Errors
 ///
-/// Returns [`ClientError::Net`] for a transport-level failure other than a clean EOF,
+/// Returns [`ClientError::Net`] for a transport-level failure other than a clean EOF
+/// between frames,
 /// or [`ClientError::Radiance`] if a `FRAME`/`PREVIEW` payload fails to decode.
 pub fn run_client_session<R: Read>(
     reader: &mut R,
@@ -467,6 +499,7 @@ mod tests {
             TiltCurvesResponse::Error(ErrorMsg {
                 code: 2,
                 message: "scene.planes must not be empty".to_string(),
+                request_id: None,
             }),
         ] {
             let mut buf = Vec::new();
@@ -532,6 +565,7 @@ mod tests {
                     samples_done: 2,
                     requested_cadence_ms: 50,
                     effective_cadence_ms: 0,
+                    reclaimed_samples: 0,
                 },
             }),
             None,
@@ -552,6 +586,7 @@ mod tests {
                     samples_done: 4,
                     requested_cadence_ms: 50,
                     effective_cadence_ms: 20,
+                    reclaimed_samples: 0,
                 },
             }),
             None,
@@ -580,7 +615,8 @@ mod tests {
                     stats: Stats {
                         samples_done: 4,
                         requested_cadence_ms: 50,
-                        effective_cadence_ms: 20
+                        effective_cadence_ms: 20,
+                        reclaimed_samples: 0
                     }
                 },
             ]
@@ -619,6 +655,7 @@ mod tests {
             &StreamEvent::Error(ErrorMsg {
                 code: 3,
                 message: "internal error while tracing this request".to_string(),
+                request_id: None,
             }),
             None,
         )
@@ -641,6 +678,7 @@ mod tests {
                 SessionUpdate::WorkerError(ErrorMsg {
                     code: 3,
                     message: "internal error while tracing this request".to_string(),
+                    request_id: None,
                 }),
             ]
         );

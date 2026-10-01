@@ -144,6 +144,20 @@ struct WavefrontParams {
 // `GpuPipelineKind`'s default) carries this same state in a per-invocation local
 // variable instead (see `spectral_transport.wgsl`'s own `pending_light_mis_dir`).
 @group(0) @binding(34) var<storage, read_write> ray_pending_light_mis_dir: array<vec4<f32>>;
+// The running total of every Henyey-Greenstein scattering-point NEE deposit for this ray
+// so far, each already integrated to XYZ at ITS OWN moment's `path_pdf`/`compat` -- see
+// `transport_bounce_step`'s matching `nee_xyz` parameter and `nee_contribution_hg_scatter`'s
+// own doc comment (`shaders/transport_bounce/06_nee_sampling.wgsl`).
+// `vec4` (not `vec3`) for the same storage-buffer-alignment reason
+// `ray_pending_light_mis_dir` above already uses; `.w` is always `0.0` and unread.
+//
+// The Rust side is `WavefrontRayBuffers::nee_xyz` (`renderer::gpu::frame::scene_buffers`), zeroed
+// alongside `pending_light_mis_dir` and bound at binding 35 in `wavefront_generate`'s and
+// `wavefront_bounce`'s bind groups (`renderer::gpu::frame::bind_groups`). The megakernel
+// path (`spectral_transport.wgsl`, `GpuPipelineKind`'s default) needs no such buffer --
+// its whole ray lives in one dispatch, so `nee_xyz` is a plain per-invocation local
+// variable there instead, exactly like `pending_light_mis_dir`'s own precedent.
+@group(0) @binding(35) var<storage, read_write> ray_nee_xyz: array<vec4<f32>>;
 
 const RAY_FLAG_INSIDE_GEM: u32 = 0x1u;
 const RAY_FLAG_IS_EXTRAORDINARY: u32 = 0x2u;
@@ -185,6 +199,7 @@ fn wavefront_generate(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     ray_pending_light_mis[idx] = 0.0;
     ray_pending_light_mis_dir[idx] = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    ray_nee_xyz[idx] = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     ray_seed[idx] = gen.seed0;
 
     // Identity permutation: every ray starts alive, in ascending `ray_idx` order --
@@ -263,6 +278,7 @@ fn wavefront_bounce(
     }
     var pending_light_mis = ray_pending_light_mis[ray_idx];
     var pending_light_mis_dir = ray_pending_light_mis_dir[ray_idx].xyz;
+    var nee_xyz = ray_nee_xyz[ray_idx].xyz;
 
     // One bounce of the SAME shared body `transport_main`'s loop calls -- see
     // `transport_bounce_step`'s own doc comment (`shaders/transport_bounce.wgsl`).
@@ -273,14 +289,14 @@ fn wavefront_bounce(
         rc.studio_key_dir, rc.studio_fill_dir, rc.studio_sin_lp, observer,
         &stokes, &radiance, &path_pdf, &current_origin, &current_dir, &current_k,
         &inside_gem, &is_extraordinary, &prev_plane_normal, &have_prev_plane_normal,
-        &split_radiance, &compat, &path_escaped, &pending_light_mis, &pending_light_mis_dir,
+        &split_radiance, &compat, &nee_xyz, &path_escaped, &pending_light_mis, &pending_light_mis_dir,
     );
 
     if (status == BOUNCE_STATUS_TERMINATE) {
         // Mirrors `transport_main`'s own unconditional tail call at the natural end of
         // its bounce loop -- writes `out_xyz`/the debug buffers at `ray_idx`, the same
         // slot the megakernel would have used for this (pixel, sample) tuple.
-        transport_finalize_ray(ray_idx, lambdas, &radiance, split_radiance, path_pdf, compat, path_escaped);
+        transport_finalize_ray(ray_idx, lambdas, &radiance, split_radiance, path_pdf, compat, path_escaped, nee_xyz);
         ray_flags[ray_idx] = flags & ~RAY_FLAG_ALIVE;
         return;
     }
@@ -313,6 +329,7 @@ fn wavefront_bounce(
     }
     ray_pending_light_mis[ray_idx] = pending_light_mis;
     ray_pending_light_mis_dir[ray_idx] = vec4<f32>(pending_light_mis_dir, 0.0);
+    ray_nee_xyz[ray_idx] = vec4<f32>(nee_xyz, 0.0);
 }
 
 // ---------------------------------------------------------------------------------
@@ -421,7 +438,8 @@ fn wavefront_finalize_survivors(@builtin(global_invocation_id) gid: vec3<u32>) {
         lambdas[k] = ray_lambdas[ray_idx * 8u + k];
     }
     let path_escaped = (ray_flags[ray_idx] & RAY_FLAG_PATH_ESCAPED) != 0u;
+    let nee_xyz = ray_nee_xyz[ray_idx].xyz;
 
-    transport_finalize_ray(ray_idx, lambdas, &radiance, split_radiance, path_pdf, compat, path_escaped);
+    transport_finalize_ray(ray_idx, lambdas, &radiance, split_radiance, path_pdf, compat, path_escaped, nee_xyz);
     ray_flags[ray_idx] = ray_flags[ray_idx] & ~RAY_FLAG_ALIVE;
 }

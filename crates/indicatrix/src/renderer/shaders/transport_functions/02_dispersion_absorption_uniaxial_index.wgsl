@@ -96,6 +96,21 @@ fn pleochroic_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     );
 }
 
+// Isotropic-material absorption: the midpoint of the two eigenmode quadratic forms
+// (optics::raytracer::absorption::channel_absorption_alphas_assigned's isotropic branch).
+// Shares `PleochroicCase` and its bindings; the Stokes inputs are ignored.
+@compute @workgroup_size(64)
+fn isotropic_alpha_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if (idx >= arrayLength(&pleochroic_cases)) {
+        return;
+    }
+    let cs = pleochroic_cases[idx];
+    pleochroic_out[idx] = isotropic_channel_alpha(
+        cs.alpha_o, cs.alpha_e, cs.c_axis, cs.eigen_a, cs.eigen_b,
+    );
+}
+
 // ---------------------------------------------------------------------------------
 // optics::birefringence::{BirefringenceParams::ordinary_eigen_polarization,
 // BirefringenceParams::extraordinary_eigen_polarization}

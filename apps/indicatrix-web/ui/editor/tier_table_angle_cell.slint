@@ -1,0 +1,163 @@
+import { LineEdit } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { AppModel } from "../models/app_model.slint";
+import { GuideModel } from "../models/guide_model.slint";
+
+// One tier row's angle cell, ported from the desktop's `tier_angle_cell.slint`:
+// click-to-edit rather than always a `LineEdit`. A plain `Text` normally (so the row's
+// click-to-select / Ctrl+click behaviour around it is unaffected), with a small
+// `TouchArea` that
+//   - fires `select()` on a single click (clicking the angle selects the row),
+//   - opens an editable `LineEdit` on a DOUBLE click (or `focus-pulse` for F2), and
+//   - nudges the value by 0.1 degrees on a wheel tick while already editing, or with
+//     Ctrl held; otherwise the wheel is left to scroll the table.
+//
+// Commit: Enter (`accepted`) or focus loss both call `commit` with the field's text and
+// close edit mode. Escape closes edit mode WITHOUT committing. `cancelling` stops the
+// focus-loss handler from committing the value Escape just threw away, and Enter's
+// own teardown from committing twice. Every close path fires `closed()` so the table's
+// `FocusScope` can take keyboard focus back. While the field has focus
+// `AppModel.text-focus` is set so the global shortcuts (Ctrl+Z/Y) stay with the field.
+// Up / Down step the field's value in the design by 0.1 degrees (Shift 1, Ctrl 0.01) via
+// `nudge`, like the desktop.
+export component TierAngleCell inherits Rectangle {
+    in property <string> value;
+    // The angle unrounded: seeds the editor so opening the cell and committing without a
+    // change round-trips bit for bit (`value` is rounded to two decimals).
+    in property <string> full-value: root.value;
+    // What a pending Optimize outcome would set the angle to, "" when none.
+    in property <string> proposed: "";
+    in property <int> index;
+    in property <int> focus-target: -1;
+    in property <int> focus-pulse: 0;
+    // False while the guided walkthrough locks the tier table: the value can still be
+    // clicked (to select the row) but not edited or nudged.
+    in property <bool> editable: true;
+    // A plain click on the value: the row selects itself.
+    callback picked();
+    callback commit(string);
+    // (row, delta in degrees)
+    callback nudge(int, float);
+    callback closed();
+
+    // The TouchArea covers the whole column and steals hover from the row under it, so
+    // the row ORs this into its own hover background.
+    out property <bool> hovered: area.has-hover;
+
+    height: 100%;
+    property <bool> editing: false;
+    property <int> seen-pulse: 0;
+    property <bool> cancelling: false;
+
+    changed focus-pulse => {
+        if root.focus-target == root.index && root.focus-pulse != root.seen-pulse {
+            root.seen-pulse = root.focus-pulse;
+            if root.editable {
+                root.cancelling = false;
+                root.editing = true;
+            }
+        }
+    }
+
+    function step(shift: bool, ctrl: bool, sign: float) {
+        if shift {
+            root.nudge(root.index, sign * 1.0);
+        } else if ctrl {
+            root.nudge(root.index, sign * 0.01);
+        } else {
+            root.nudge(root.index, sign * 0.1);
+        }
+    }
+
+    Tooltip { text: root.editable ? @markdown("Click to select this row, double-click to edit. Scroll while editing, or Ctrl+Scroll any time, to nudge 0.1 degrees.") : @markdown("\{GuideModel.locked-hint}"); }
+
+    area := TouchArea {
+        clicked => { root.picked(); }
+        double-clicked => {
+            if root.editable {
+                root.cancelling = false;
+                root.editing = true;
+            }
+        }
+        scroll-event(event) => {
+            if root.editable && event.delta-y != 0 && (root.editing || event.modifiers.control) {
+                root.nudge(root.index, event.delta-y > 0 ? 0.1 : -0.1);
+                return accept;
+            }
+            reject
+        }
+    }
+
+    if !root.editing: HorizontalLayout {
+        spacing: 2px;
+        Text {
+            text: root.value;
+            font-size: 11px;
+            font-weight: 600;
+            color: Theme.accent-amber;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        if root.proposed != "": Text {
+            text: "\u{2192} " + root.proposed;
+            font-size: 9px;
+            font-weight: 600;
+            color: Theme.accent-emerald;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        if root.hovered: Text {
+            text: "\u{2026}";
+            font-size: 9px;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+        }
+    }
+
+    if root.editing: LineEdit {
+        width: 100%;
+        height: 100%;
+        text: root.full-value;
+        font-size: 11px;
+        init => {
+            self.select-all();
+            self.focus();
+        }
+        accepted => {
+            root.commit(self.text);
+            root.cancelling = true;
+            root.editing = false;
+            // The element is unmounted on the next re-evaluation, taking its own
+            // `changed has-focus` tracker with it, so the flag must be cleared here.
+            AppModel.text-focus = false;
+            root.closed();
+        }
+        changed has-focus => {
+            AppModel.text-focus = self.has-focus;
+            if !self.has-focus {
+                if !root.cancelling {
+                    root.commit(self.text);
+                }
+                root.cancelling = false;
+                root.editing = false;
+                root.closed();
+            }
+        }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                root.cancelling = true;
+                root.editing = false;
+                AppModel.text-focus = false;
+                root.closed();
+                return accept;
+            } else if event.text == Key.UpArrow {
+                root.step(event.modifiers.shift, event.modifiers.control, 1.0);
+                return accept;
+            } else if event.text == Key.DownArrow {
+                root.step(event.modifiers.shift, event.modifiers.control, -1.0);
+                return accept;
+            }
+            reject
+        }
+    }
+}

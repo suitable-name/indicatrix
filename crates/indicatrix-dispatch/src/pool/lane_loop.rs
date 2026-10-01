@@ -1,7 +1,7 @@
 //! One lane's claim / trace / merge / settle loop for a [`super::LanePool`] run.
 
 use super::{PoolEvent, epoch::Epoch};
-use crate::{ChunkResult, RateModel, SampleRange, WorkerLane};
+use crate::{ChunkResult, MergeError, RateModel, SampleRange, WorkerLane};
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
     sync::{Mutex, PoisonError},
@@ -16,6 +16,10 @@ struct Traced {
     rate: Option<f64>,
     error: Option<String>,
     elapsed: Duration,
+    /// Set when the merger refused to park the chunk because its parked-bytes budget is
+    /// exhausted: the merge frontier this attempt started from. The lane is healthy, so
+    /// this is not a failure; the chunk is retried once the frontier has advanced.
+    deferred_at: Option<u32>,
 }
 
 /// What a lane does after a failed chunk.
@@ -38,13 +42,11 @@ pub(super) fn run_lane(
     let mut chunks = 0u32;
     let mut samples = 0u32;
     loop {
-        let want = rate
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .chunk_samples(&epoch.config.policy);
-        let Some(range) = epoch.claim(want) else {
+        let want = epoch.want(rate);
+        let Some(claim) = epoch.claim(want) else {
             break;
         };
+        let range = claim.range();
         let traced = trace_chunk(epoch, index, lane, range);
         if traced.done > 0 {
             chunks += 1;
@@ -60,9 +62,15 @@ pub(super) fn run_lane(
                 traced.rate,
             );
         }
-        epoch.settle(range, traced.done);
+        claim.settle(traced.done);
         if traced.done == range.samples {
             failures = 0;
+            continue;
+        }
+        if let Some(seen) = traced.deferred_at {
+            // A full parked budget is back-pressure from a slow frontier chunk, not a
+            // lane fault: wait for the frontier to move, then trace the chunk again.
+            epoch.wait_for_frontier(seen);
             continue;
         }
         if epoch.cancel.is_cancelled() {
@@ -83,8 +91,9 @@ pub(super) fn run_lane(
 }
 
 /// Traces `range` on `lane`, validates the result and merges its prefix. A panic in
-/// the lane, an over-long `done`, or a buffer the merger refuses all count as a
-/// chunk with nothing traced.
+/// the lane or in the merge, an over-long `done`, or a buffer the merger refuses all
+/// count as a chunk with nothing traced; a full parked budget is a deferral instead (see
+/// [`Traced::deferred_at`]).
 fn trace_chunk(
     epoch: &Epoch<'_>,
     index: usize,
@@ -102,6 +111,7 @@ fn trace_chunk(
         rate: None,
         error: Some(error),
         elapsed,
+        deferred_at: None,
     };
     let ChunkResult {
         sum,
@@ -121,6 +131,7 @@ fn trace_chunk(
             rate: None,
             error,
             elapsed,
+            deferred_at: None,
         };
     }
     if sum.len() != epoch.pixels {
@@ -130,8 +141,12 @@ fn trace_chunk(
             epoch.pixels
         ));
     }
-    match epoch.merger.add(range.first_sample, done, sum) {
-        Ok(total_done) => {
+    let frontier = epoch.merger.frontier();
+    let added = catch_unwind(AssertUnwindSafe(|| {
+        epoch.merger.add(range.first_sample, done, sum)
+    }));
+    match added {
+        Ok(Ok(total_done)) => {
             epoch.emit(PoolEvent::ChunkMerged {
                 lane: index,
                 range,
@@ -144,9 +159,18 @@ fn trace_chunk(
                 rate,
                 error,
                 elapsed,
+                deferred_at: None,
             }
         }
-        Err(refused) => discarded(format!("chunk discarded: {refused}")),
+        Ok(Err(refused @ MergeError::ParkedBudgetExceeded { .. })) => Traced {
+            done: 0,
+            rate: None,
+            error: Some(format!("chunk deferred: {refused}")),
+            elapsed,
+            deferred_at: Some(frontier),
+        },
+        Ok(Err(refused)) => discarded(format!("chunk discarded: {refused}")),
+        Err(_) => discarded("merging a chunk panicked; result discarded".to_owned()),
     }
 }
 

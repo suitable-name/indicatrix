@@ -28,13 +28,21 @@ pub enum SortOrderWire {
 /// internal representation -- `indicatrix-worker` maps between them (`from_range_wire`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct RangeFilterWire {
+    /// Lower bound on refractive index.
     pub ri_min: Option<f64>,
+    /// Upper bound on refractive index.
     pub ri_max: Option<f64>,
+    /// Lower bound on the length-to-width ratio.
     pub lw_min: Option<f64>,
+    /// Upper bound on the length-to-width ratio.
     pub lw_max: Option<f64>,
+    /// Lower bound on volume.
     pub volume_min: Option<f64>,
+    /// Upper bound on volume.
     pub volume_max: Option<f64>,
+    /// Lower bound on facet count.
     pub facets_min: Option<i64>,
+    /// Upper bound on facet count.
     pub facets_max: Option<i64>,
     /// Wire counterpart of `indicatrix_vault::model::filter::RangeFilter::ri_tolerance`
     /// -- `(centre, tolerance)`.
@@ -74,17 +82,25 @@ pub enum PerformanceAggregateWire {
 /// `from_range_wire` validates it via `PerformanceFilter::new`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct PerformanceFilterWire {
+    /// Which performance metric is ranked.
     pub metric: PerformanceMetricWire,
+    /// Which side of the metric is bounded.
     pub bound: PerformanceBoundWire,
+    /// Tilt radius in degrees the metric is evaluated over.
     pub tilt_radius_deg: f32,
+    /// How the metric is aggregated over the tilt range.
     pub aggregate: PerformanceAggregateWire,
 }
 
 /// Wire counterpart of `indicatrix_vault::model::filter::AttributeRanges`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct AttributeRangesWire {
+    /// Observed (min, max) refractive index.
     pub ri: (f64, f64),
+    /// Observed (min, max) length-to-width ratio.
     pub lw_ratio: (f64, f64),
+    /// Observed (min, max) volume.
     pub volume: (f64, f64),
+    /// Observed (min, max) facet count.
     pub facets: (i64, i64),
 }

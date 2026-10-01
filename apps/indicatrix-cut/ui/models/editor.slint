@@ -20,6 +20,25 @@ export global EditorModel {
     // EditorView watches this to re-seed/clear EditorInspector's form.
     in-out property <int> form_reset_pulse: 0;
 
+    // Bumped by the Rust no-solve panel refresh (`gui::editor::view::panel_stale::
+    // sync_tier_form_with_design`) whenever the design changed since the previous
+    // refresh and the selected tier is still in range -- an edit that left the
+    // selected tier selected (a handle drag, nudge, pin, adopt, facet edit, gear
+    // remap, retarget/optimize apply, symmetry change, in-range Undo/Redo), unlike
+    // `form_reset_pulse` above, which is for a selection that New/Load/Remove or an
+    // out-of-range Undo/Redo cleared outright. `EditorView` watches this to re-seed
+    // (not blank) `EditorInspector`'s form from whatever the edit left the selected
+    // tier holding, so a form left open across such an edit does not keep showing
+    // pre-edit values for Save Tier to write back.
+    // `form_reseed_tier_count_changed` is set alongside it, just before, every
+    // time -- read by the same watcher (a pulse carries no payload of its own).
+    in-out property <int> form_reseed_pulse: 0;
+    // Whether the edit that is about to bump `form_reseed_pulse` changed the tier
+    // COUNT (a structural `AddTier`/`RemoveTier`, or its Undo/Redo) rather than just
+    // some tiers' data in place -- see `EditorInspector.reseed_after_external_
+    // change`'s own doc comment for what this changes about a dirty form.
+    in-out property <bool> form_reseed_tier_count_changed: false;
+
     // Bumped by app.slint's Ctrl+F arm to focus the tier filter box. A pulse
     // (monotonically increasing counter) rather than a direct call because both
     // `EditorView` instantiations sit inside `if` branches, and an element id
@@ -38,6 +57,10 @@ export global EditorModel {
     in property <bool> startup_restore_is_autosave: false;
     callback startup_restore_accept();
     callback startup_restore_dismiss();
+    // Removes the offered autosave file from disk and dismisses the prompt --
+    // never offered for an ordinary recent file (only a leftover autosave is
+    // ever safe to delete outright; see `startup_restore_is_autosave`).
+    callback startup_restore_delete();
 
     in property <[EditorTierItem]> tiers: [];
 
@@ -87,8 +110,13 @@ export global EditorModel {
     callback apply_preform_y_offset(string);
 
     in-out property <string> girdle_diameter_mm: "";
-    in-out property <int> material_index: 0;
     in-out property <string> specific_gravity_override: "";
+    // `apply_yield_inputs`'s middle `int` argument used to be this
+    // model's own (now-removed) `material_index` property, bound to a Yield-
+    // tab combo whose selection `state::parse_yield_form` never actually read
+    // -- `preform_tab.slint`'s Apply button now passes a literal `0` instead,
+    // so this callback's signature stays unchanged for its one Rust handler
+    // (`callbacks::tier_actions::design_forms::setup_apply_yield_inputs_callback`).
     callback apply_yield_inputs(string, int, string);
 
     in property <string> volumetric_yield_text: "";
@@ -105,7 +133,18 @@ export global EditorModel {
     // the "Eff. RI" chip.
     in property <string> ri_source_text: "";
     in property <string> critical_angle_text: "";
-    callback apply_design_material(int, string);
+    // Body-colour variant of the design's material: "Material default" (index 0,
+    // no override) then the fixed presets, pushed from Rust
+    // (`indicatrix_editor::material::body_colour_options`); index `i >= 1` is
+    // preset `i - 1`.
+    in property <[string]> body_colour_options: ["Material default"];
+    in-out property <int> body_colour_index: 0;
+    // The linked viewport's material name with its colour (`Sapphire (Yellow)`),
+    // empty while the design has no colour override or the viewport is unlinked.
+    // Shown beside the Live Render tab's Render Material dropdown.
+    in property <string> body_colour_readout: "";
+    // (material combo index, RI override text, body colour combo index).
+    callback apply_design_material(int, string, int);
 
     // Inferred material shown as a guess, never a fact. Imported `.asc` files
     // carry only refractive index, so unnamed designs show a nearest-n_D guess
@@ -194,6 +233,9 @@ export global EditorModel {
     // between the current selection anchor and this index, inclusive.
     callback select_tier_range(int);
     callback export_asc();
+    // The same edited schedule as an experimental Gem Cut Studio `.gcs` file
+    // (`gui::editor::native_io::export::setup_export_asc_callback`).
+    callback export_gcs();
     // Printable cutting sequence as self-contained HTML with embedded diagram.
     callback export_cutting_sheet();
     // 2D diagram alone as PNG, sharing the cut sheet's rendering path.

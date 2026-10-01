@@ -120,7 +120,7 @@
 //! change in per-run cost.
 //!
 //! Measured figures, not modeled estimates: [`solve_meet_points_verified`]'s
-//! own corpus probe (see that function's doc comment, Report C) ran a mean of
+//! own corpus probe (see that function's doc comment) ran a mean of
 //! 68.4 pipeline runs per design over the full 2,881-design corpus (fixed
 //! anchors) in about 29 minutes at 16 threads -- averaging on the order of
 //! **~0.1 s per pipeline run** across the corpus's real, heavily
@@ -212,11 +212,15 @@ pub use verify::{
 /// `.asc` masts sit close to 1.0, so this never masquerades as a real facet; it only
 /// keeps the candidate-vertex feasibility test well-defined before the arrangement
 /// closes up.
-const BLANK_HALF_EXTENT: f64 = 64.0;
+///
+/// Shared with [`super::stone_metrics`], which re-exports it so both arrangement
+/// walks use one definition.
+pub(crate) const BLANK_HALF_EXTENT: f64 = 64.0;
 
 /// Feasibility slack: a candidate vertex may poke this far (absolute; masts are ~1)
-/// beyond a plane before that plane's tier counts as violated.
-const EPS_FEAS: f64 = 1e-5;
+/// beyond a plane before that plane's tier counts as violated. Shared with
+/// [`super::stone_metrics`].
+pub(crate) const EPS_FEAS: f64 = 1e-5;
 
 /// A plane within this absolute distance of a vertex counts as passing through it
 /// (used to test incidence with named meet references).
@@ -227,8 +231,8 @@ const EPS_INCIDENT: f64 = 1e-4;
 const LEVEL_TOL: f64 = 1e-5;
 
 /// Minimum `|determinant|` for a triple of unit plane normals to define a candidate
-/// vertex.
-const MIN_TRIPLE_DET: f64 = 1e-6;
+/// vertex. Shared with [`super::stone_metrics`] and [`super::brep`].
+pub(crate) const MIN_TRIPLE_DET: f64 = 1e-6;
 
 /// Designs with more facet planes than this are not solved (the candidate
 /// enumeration is cubic in the plane count). No design in the 2,881-design corpus
@@ -310,6 +314,44 @@ pub enum SolveError {
         /// The cap it exceeded ([`MAX_PLANES`]).
         max: usize,
     },
+    /// Tier `tier` (file order) carries a non-finite (NaN or infinite) `field`.
+    ///
+    /// Checked up front, before any candidate-vertex geometry runs: a non-finite
+    /// input doesn't fail loudly on its own downstream (a NaN determinant fails
+    /// every `<`/`>` comparison, so a naive threshold check silently treats it as
+    /// "not degenerate" and a NaN or infinite mast can otherwise report a
+    /// plausible-looking `Closed` solid with a facet silently missing). The
+    /// `.asc` parser separately rejects `nan`/`inf` tokens in its own format, but
+    /// this solver does not rely on that -- a caller building [`MeetTierInput`]
+    /// from any other source gets the same guarantee.
+    NonFiniteInput {
+        /// Index (file order) of the first tier found with a non-finite value.
+        tier: usize,
+        /// Which field on that tier was non-finite.
+        field: NonFiniteField,
+    },
+}
+
+/// Which field of a [`MeetTierInput`] was found non-finite by
+/// [`SolveError::NonFiniteInput`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NonFiniteField {
+    /// [`MeetTierInput::angle_deg`].
+    AngleDeg,
+    /// One of [`MeetTierInput::indices`].
+    Index,
+    /// The mast in a [`MeetConstraint::ScaleReference`].
+    Mast,
+}
+
+impl std::fmt::Display for NonFiniteField {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::AngleDeg => "angle_deg",
+            Self::Index => "an index",
+            Self::Mast => "a ScaleReference mast",
+        })
+    }
 }
 
 impl std::fmt::Display for SolveError {
@@ -321,11 +363,48 @@ impl std::fmt::Display for SolveError {
                 "design has {planes} facet-plane instances, above the {max}-plane cap for \
                  candidate-vertex enumeration"
             ),
+            Self::NonFiniteInput { tier, field } => write!(
+                f,
+                "tier {tier} has a non-finite (NaN or infinite) value in {field}"
+            ),
         }
     }
 }
 
 impl std::error::Error for SolveError {}
+
+/// Scans `tiers` in file order for the first non-finite `angle_deg`, index, or
+/// `ScaleReference` mast, returning it as a [`SolveError::NonFiniteInput`].
+///
+/// Shared by [`solve_meet_points_with`] and [`solve_meet_points_verified_with`]
+/// -- both must reject a non-finite input before any candidate-vertex geometry
+/// runs on it (see [`SolveError::NonFiniteInput`]'s doc comment for why a
+/// downstream check alone is not enough).
+pub(super) fn first_non_finite_tier(tiers: &[MeetTierInput]) -> Option<SolveError> {
+    for (i, t) in tiers.iter().enumerate() {
+        if !t.angle_deg.is_finite() {
+            return Some(SolveError::NonFiniteInput {
+                tier: i,
+                field: NonFiniteField::AngleDeg,
+            });
+        }
+        if t.indices.iter().any(|idx| !idx.is_finite()) {
+            return Some(SolveError::NonFiniteInput {
+                tier: i,
+                field: NonFiniteField::Index,
+            });
+        }
+        if let MeetConstraint::ScaleReference(v) = &t.constraint
+            && !v.is_finite()
+        {
+            return Some(SolveError::NonFiniteInput {
+                tier: i,
+                field: NonFiniteField::Mast,
+            });
+        }
+    }
+    None
+}
 
 /// Cancellation and progress-reporting hooks for a `_with` solve entry point.
 ///
@@ -410,13 +489,17 @@ const DEFAULT_PLAUSIBLE_SCALE: f64 = 1.0;
 #[derive(Debug, Clone)]
 pub struct MeetTierInput {
     /// Signed angle from the girdle plane, in degrees (`GemCAD` convention:
-    /// negative is pavilion, non-negative is crown). An unsigned `0.0` inherits
-    /// the previous tier's side, per
-    /// [`super::cuts::StandardGemCuts::from_asc_schedule`]'s convention.
+    /// negative is pavilion, positive is crown). A zero angle is the table, unless
+    /// it is a sign-negative zero (the culet) -- see
+    /// [`crate::geometry::plane::tier_is_crown_side`].
     pub angle_deg: f64,
     /// Index-wheel positions this tier's facet occurs at. Empty means a single
-    /// facet at azimuth 0 (e.g. an unlisted table/culet).
+    /// facet with no azimuth of its own (e.g. an unlisted table/culet); its normal
+    /// is placed in the `+Z` direction, `(0, +-cos(theta), sin(theta))`, rather than
+    /// at index 0 (which would be `+X`). Table and culet angles make `sin(theta)`
+    /// zero, so there the azimuth is immaterial.
     pub indices: Vec<f64>,
+    /// The constraint this tier's mast is solved against.
     pub constraint: MeetConstraint,
     /// Every name this tier is known by in the source schedule (e.g. `["P1"]`, or
     /// `["c", "d"]` for a tier folded from more than one named group). Used only
@@ -504,7 +587,9 @@ pub enum SolveStrategy {
 /// One tier's solved result.
 #[derive(Debug, Clone)]
 pub struct SolvedTier {
+    /// The solved mast height.
     pub mast: f64,
+    /// Which solve strategy produced `mast`.
     pub strategy: SolveStrategy,
     /// Free-form prose naming how `mast` was actually obtained -- e.g. "given
     /// (scale reference)", "vertex incidence", or which candidate vertex level

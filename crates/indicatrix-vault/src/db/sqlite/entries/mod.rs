@@ -1,6 +1,5 @@
-//! `diagram_entries` CRUD: creating/upserting an entry and cross-source duplicate
-//! detection live here; the rest of the table's operations are split into sibling
-//! modules by concern:
+//! `diagram_entries` CRUD: creating/upserting an entry lives here; the rest of the
+//! table's operations are split into sibling modules by concern:
 //!
 //! - [`detail`]: saving a design's full detail row (and its angle-setting/attached-file
 //!   children) in one transaction.
@@ -10,38 +9,48 @@
 //!   design (rename, hand-corrected metadata, provenance, ignore, delete).
 
 use super::Database;
-use crate::model::{
-    dedup::{CrossSourceDuplicate, normalize_for_dedup},
-    entry::FacetDiagramEntry,
-};
+use crate::model::{detail::FacetingDiagramDetail, entry::FacetingDiagramEntry};
 use anyhow::{Context, Result};
-use rusqlite::params;
+use rusqlite::{Connection, OptionalExtension, params};
 use tracing::debug;
 
 mod detail;
 mod edit;
 mod read;
 
-/// `(id, source_id, title, designer_info)` row from
-/// [`Database::find_cross_source_duplicates`]'s candidate query, pre-normalisation.
-/// Named to avoid tripping `clippy::type_complexity`.
-type DuplicateCandidateRow = (i64, String, String, Option<String>);
-
 impl Database {
     /// Saves a diagram entry from `source_id` (see `crate::source::DiagramSource::id`).
     /// If `url` already exists, updates its title/`design_id`/`source_id` instead.
     /// Returns the inserted or updated row's ID. Dedupes only *within* `url` --
     /// different sources describing the same physical design under different URLs
-    /// each get their own row; see [`Self::find_cross_source_duplicates`] for the
-    /// cross-source check (surfaces, never merges).
+    /// each get their own row.
+    ///
+    /// The upsert does not distinguish "the same design again" from "a different design
+    /// that happens to share the url": a second design saved under a taken url lands on
+    /// the first one's row, and a following [`Self::save_diagram_detail`] replaces that
+    /// row's detail, angle table and attachments. A caller that must not do that asks
+    /// [`Self::diagram_entry_for_url`] first and declines to write on a hit it does not
+    /// own. Prefer [`Self::save_design`] when a detail is saved alongside.
     ///
     /// # Errors
     ///
     /// Returns an error if the `INSERT`, `UPDATE`, or follow-up ID `SELECT` fails.
-    pub fn save_diagram_entry(&self, entry: &FacetDiagramEntry, source_id: &str) -> Result<i64> {
+    pub fn save_diagram_entry(&self, entry: &FacetingDiagramEntry, source_id: &str) -> Result<i64> {
+        Self::save_diagram_entry_conn(&self.conn, entry, source_id)
+    }
+
+    /// [`Self::save_diagram_entry`]'s body, taking `conn: &Connection` rather than
+    /// `&self` so [`Self::save_design`] can run it against an in-progress
+    /// [`rusqlite::Transaction`] (which derefs to `&Connection`) instead of always
+    /// opening/committing its own.
+    fn save_diagram_entry_conn(
+        conn: &Connection,
+        entry: &FacetingDiagramEntry,
+        source_id: &str,
+    ) -> Result<i64> {
         let now = unix_now();
         // `INSERT OR IGNORE` won't update on conflict, so update is handled explicitly below.
-        let mut stmt_insert = self.conn.prepare_cached(
+        let mut stmt_insert = conn.prepare_cached(
             "INSERT OR IGNORE INTO diagram_entries (title, url, design_id, source_id, created_at, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )?;
@@ -60,7 +69,7 @@ impl Database {
             ))?;
 
         if changes > 0 {
-            let id = self.conn.last_insert_rowid();
+            let id = conn.last_insert_rowid();
             debug!(
                 "Inserted new diagram entry '{}' (URL: {}, source: {}) with ID: {}",
                 entry.title, entry.url, source_id, id
@@ -73,8 +82,8 @@ impl Database {
             );
             // `created_at` is deliberately left untouched -- this branch is a re-sync
             // of an existing row, not a new design.
-            let mut stmt_update = self.conn.prepare_cached(
-                "UPDATE diagram_entries SET title = ?1, design_id = ?2, source_id = ?3, updated_at = ?4 WHERE url = ?5",
+            let mut stmt_update = conn.prepare_cached(
+                "UPDATE diagram_entries SET title = ?1, design_id = ?2, source_id = ?3, updated_at = MAX(?4, COALESCE(updated_at, 0) + 1) WHERE url = ?5",
             )?;
             stmt_update
                 .execute(params![
@@ -89,9 +98,8 @@ impl Database {
                     entry.url
                 ))?;
 
-            let mut stmt_select = self
-                .conn
-                .prepare_cached("SELECT id FROM diagram_entries WHERE url = ?1")?;
+            let mut stmt_select =
+                conn.prepare_cached("SELECT id FROM diagram_entries WHERE url = ?1")?;
             let id: i64 = stmt_select
                 .query_row(params![entry.url], |row| row.get(0))
                 .context(format!(
@@ -106,74 +114,85 @@ impl Database {
         }
     }
 
-    /// Looks for entries already in the catalogue, synced from a source *other than*
-    /// `new_source_id`, whose normalised title (and, when both sides have one,
-    /// normalised designer) matches `title`/`designer_info`, and whose facet count
-    /// matches `facets` when both are known. See `crate::model::dedup`'s module doc
-    /// for why this only detects and surfaces candidates -- never merges or alters.
-    /// A missing designer on either side is not a mismatch (favors an extra manual
-    /// review over a silently unflagged duplicate); when both sides have one, they
-    /// must match. SQL narrows first by `source_id != new_source_id` (and facet
-    /// count, when known) so the comparison loop below only scans a small set.
+    /// Saves `entry` and `detail` together in ONE transaction: either both land, or
+    /// neither does. Exactly [`Self::save_diagram_entry`] followed by
+    /// [`Self::save_diagram_detail`], except that a failure partway through cannot
+    /// leave an entry row with no matching detail row behind -- a gap seen on the real
+    /// catalogue itself (an import that saves the entry, then fails or is killed before
+    /// saving detail, leaves an entry with no detail row to this day). An entry without
+    /// a detail row reads as "not yet imported" to the import collision check, and as a
+    /// half-saved design the mirror's local-row guard then skips forever.
+    /// `save_diagram_entry`/`save_diagram_detail` themselves are left as their own
+    /// public, separately-committing methods -- existing callers that intentionally
+    /// save an entry without a detail yet (or vice versa) keep working unchanged; this
+    /// is for a caller that has both in hand at once and wants the atomicity. The
+    /// catalogue's three writers (Save Native's write-back, the mirror sync and the
+    /// `.asc` import) all go through it.
+    ///
+    /// Returns the entry's id (new or existing, same meaning as
+    /// [`Self::save_diagram_entry`]'s own return value).
     ///
     /// # Errors
     ///
-    /// Returns an error if the underlying query fails.
-    pub fn find_cross_source_duplicates(
+    /// Returns an error, with nothing committed, if starting/committing the
+    /// transaction or either underlying save fails.
+    pub fn save_design(
         &self,
-        new_source_id: &str,
-        title: &str,
-        designer_info: Option<&str>,
-        facets: Option<i64>,
-    ) -> Result<Vec<CrossSourceDuplicate>> {
-        let normalized_title = normalize_for_dedup(title);
-        if normalized_title.is_empty() {
-            return Ok(Vec::new());
-        }
-        let normalized_designer = designer_info.map(normalize_for_dedup);
+        entry: &FacetingDiagramEntry,
+        detail: &FacetingDiagramDetail,
+        source_id: &str,
+    ) -> Result<i64> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .context("Failed to start save_design transaction")?;
+        let entry_id = Self::save_diagram_entry_conn(&tx, entry, source_id)?;
+        Self::save_diagram_detail_tx(&tx, detail, entry_id)?;
+        tx.commit()
+            .context("Failed to commit save_design transaction")?;
+        Ok(entry_id)
+    }
 
-        let mut sql = String::from(
-            "SELECT de.id, de.source_id, de.title, dd.designer_info
-             FROM diagram_entries de
-             LEFT JOIN diagram_details dd ON de.id = dd.entry_id
-             WHERE de.source_id != ?1",
-        );
-        let mut sql_params: Vec<Box<dyn rusqlite::ToSql>> =
-            vec![Box::new(new_source_id.to_string())];
-        if let Some(f) = facets {
-            sql.push_str(" AND dd.facets = ?2");
-            sql_params.push(Box::new(f));
-        }
+    /// Looks up `diagram_entries.id` for `url`, or `None` if no row has it yet.
+    ///
+    /// A plain existence check with no side effect -- unlike [`Self::save_diagram_entry`],
+    /// this never inserts or updates a row. Exists so a caller that must decide WHETHER
+    /// to save (e.g. `apps/indicatrix-cut`'s mirror sync, guarding against overwriting a
+    /// hand-imported local row that happens to share a remote design's `url` -- see
+    /// `crate::model::mirror`'s module doc comment) can ask "does this row already
+    /// exist" without the upsert-and-report-id shape `save_diagram_entry` always commits
+    /// to.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `SELECT` fails.
+    pub fn diagram_entry_id_for_url(&self, url: &str) -> Result<Option<i64>> {
+        self.conn
+            .query_row(
+                "SELECT id FROM diagram_entries WHERE url = ?1",
+                params![url],
+                |row| row.get(0),
+            )
+            .optional()
+            .context(format!("Failed to look up diagram entry id for url: {url}"))
+    }
 
-        let mut stmt = self.conn.prepare(&sql)?;
-        let bound: Vec<&dyn rusqlite::ToSql> =
-            sql_params.iter().map(std::convert::AsRef::as_ref).collect();
-        let rows: Vec<DuplicateCandidateRow> = stmt
-            .query_map(bound.as_slice(), |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-
-        let mut matches = Vec::new();
-        for (existing_entry_id, existing_source_id, existing_title, existing_designer_info) in rows
-        {
-            if normalize_for_dedup(&existing_title) != normalized_title {
-                continue;
-            }
-            if let (Some(want), Some(have)) =
-                (&normalized_designer, existing_designer_info.as_deref())
-                && normalize_for_dedup(have) != *want
-            {
-                continue;
-            }
-            matches.push(CrossSourceDuplicate {
-                existing_entry_id,
-                existing_source_id,
-                existing_title,
-                existing_designer_info,
-            });
-        }
-        Ok(matches)
+    /// [`Self::diagram_entry_id_for_url`] plus the row's title: `(id, title)` of the
+    /// entry that owns `url`, or `None` if no row has it. For a caller that declines to
+    /// write over a row it does not own and wants to name that row to the user.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `SELECT` fails.
+    pub fn diagram_entry_for_url(&self, url: &str) -> Result<Option<(i64, String)>> {
+        self.conn
+            .query_row(
+                "SELECT id, title FROM diagram_entries WHERE url = ?1",
+                params![url],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .context(format!("Failed to look up diagram entry for url: {url}"))
     }
 }
 

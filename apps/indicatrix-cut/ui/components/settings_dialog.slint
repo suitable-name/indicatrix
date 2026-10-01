@@ -44,8 +44,15 @@ export component SettingsDialog inherits Rectangle {
         ? "Girdle width in millimetres for scale-accurate rendering. Currently set from the linked design's own girdle diameter -- turn off \"Linked to design\" to set this manually."
         : "Girdle width in millimetres for scale-accurate rendering.";
 
+    // `SettingsModel` used to carry its own `close()` callback here too,
+    // invoked with no Rust `on_close` ever registered for it (dead wiring --
+    // `is_open` below is the whole close contract, and `open_performance_
+    // graph` right below already closes this dialog by setting `is_open`
+    // alone, with no matching `close()` call, which was the tell). Deleted
+    // along with that callback rather than adding a handler that would only
+    // duplicate the assignment already right here.
     callback close();
-    close => { SettingsModel.is_open = false; SettingsModel.close(); }
+    close => { SettingsModel.is_open = false; }
 
     // Goes through `TiltModel.toggle_dialog()` -- the SAME shared
     // open/close + stale-cached-curve check `gem_viewport.slint`'s/`solid_viewport.slint`'s
@@ -66,6 +73,7 @@ export component SettingsDialog inherits Rectangle {
         SettingsModel.local_preview_scale_index = 0;
         SettingsModel.live_compute_target_index = 2;
         SettingsModel.live_transfer_index = 0;
+        SettingsModel.contribute_to_final_picture = true;
         SettingsModel.local_compute_target_index = 1;
         SettingsModel.bounce_index = 2;
         SettingsModel.exposure_val = 1.0;
@@ -86,6 +94,7 @@ export component SettingsDialog inherits Rectangle {
         SettingsModel.local_preview_scale_changed(0);
         SettingsModel.live_compute_target_changed(2);
         SettingsModel.live_transfer_changed(0);
+        SettingsModel.contribute_to_final_picture_changed(true);
         SettingsModel.local_compute_target_changed(1);
         SettingsModel.bounces_changed(12);
         SettingsModel.exposure_changed(1.0);
@@ -113,10 +122,10 @@ export component SettingsDialog inherits Rectangle {
     // working: short content is unaffected, tall content is clamped and scrollable.
     property <length> height_cap: root.available_height * 0.85;
     height: content.preferred-height < root.height_cap ? content.preferred-height : root.height_cap;
-    background: #111827ee;
+    background: Theme.popup-surface;
     border-radius: Theme.radius-md;
     border-width: 1px;
-    border-color: #334155;
+    border-color: Theme.border-dialog;
     drop-shadow-blur: 24px;
     drop-shadow-color: #000000ee;
     drop-shadow-offset-y: 6px;
@@ -145,7 +154,7 @@ export component SettingsDialog inherits Rectangle {
                 width: 24px;
                 height: 24px;
                 border-radius: 12px;
-                background: close_btn.has-hover ? #1e293b : transparent;
+                background: close_btn.has-hover ? Theme.surface-raised : transparent;
 
                 close_btn := TouchArea {
                     clicked => { root.close(); }
@@ -295,7 +304,7 @@ export component SettingsDialog inherits Rectangle {
                     width: 36px;
                     height: 20px;
                     border-radius: 10px;
-                    background: SettingsModel.girdle_frosted ? Theme.accent-cyan : #334155;
+                    background: SettingsModel.girdle_frosted ? Theme.accent-cyan : Theme.border-dialog;
 
                     TouchArea {
                         clicked => {
@@ -420,9 +429,9 @@ export component SettingsDialog inherits Rectangle {
                     horizontal-stretch: 1;
                     height: 28px;
                     border-radius: Theme.radius-sm;
-                    background: SettingsModel.backdrop_index == i ? Theme.accent-cyan : (backdrop_touch.has-hover ? #1e293b : #0f172a);
+                    background: SettingsModel.backdrop_index == i ? Theme.accent-cyan : (backdrop_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken);
                     border-width: 1px;
-                    border-color: SettingsModel.backdrop_index == i ? Theme.accent-cyan : #334155;
+                    border-color: SettingsModel.backdrop_index == i ? Theme.accent-cyan : Theme.border-dialog;
 
                     backdrop_touch := TouchArea {
                         clicked => {
@@ -434,7 +443,7 @@ export component SettingsDialog inherits Rectangle {
                         text: label;
                         font-size: 11px;
                         font-weight: 600;
-                        color: SettingsModel.backdrop_index == i ? #0f172a : Theme.text-secondary;
+                        color: SettingsModel.backdrop_index == i ? Theme.text-on-accent : Theme.text-secondary;
                         horizontal-alignment: center;
                         vertical-alignment: center;
                     }
@@ -511,9 +520,9 @@ export component SettingsDialog inherits Rectangle {
                 width: 130px;
                 height: 30px;
                 border-radius: Theme.radius-sm;
-                background: rst_touch.has-hover ? #1e293b : #0f172a;
+                background: rst_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken;
                 border-width: 1px;
-                border-color: #334155;
+                border-color: Theme.border-dialog;
 
                 rst_touch := TouchArea {
                     clicked => { root.confirming_reset = true; }
@@ -546,15 +555,15 @@ export component SettingsDialog inherits Rectangle {
                             root.reset_defaults();
                         }
                     }
-                    Text { text: "Confirm"; font-size: 11px; font-weight: 700; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                    Text { text: "Confirm"; font-size: 11px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
                 }
                 Rectangle {
                     width: 60px;
                     height: 30px;
                     border-radius: Theme.radius-sm;
-                    background: cancel_reset_touch.has-hover ? #1e293b : #0f172a;
+                    background: cancel_reset_touch.has-hover ? Theme.surface-raised : Theme.surface-sunken;
                     border-width: 1px;
-                    border-color: #334155;
+                    border-color: Theme.border-dialog;
                     cancel_reset_touch := TouchArea {
                         clicked => { root.confirming_reset = false; }
                     }
@@ -566,13 +575,13 @@ export component SettingsDialog inherits Rectangle {
                 horizontal-stretch: 1;
                 height: 30px;
                 border-radius: Theme.radius-sm;
-                background: done_touch.has-hover ? #7dd3fc : Theme.accent-cyan;
+                background: done_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan;
 
                 done_touch := TouchArea {
                     clicked => { root.close(); }
                 }
 
-                Text { text: "Done"; font-size: 12px; font-weight: 700; color: #0f172a; horizontal-alignment: center; vertical-alignment: center; }
+                Text { text: "Done"; font-size: 12px; font-weight: 700; color: Theme.text-on-accent; horizontal-alignment: center; vertical-alignment: center; }
             }
         }
     }

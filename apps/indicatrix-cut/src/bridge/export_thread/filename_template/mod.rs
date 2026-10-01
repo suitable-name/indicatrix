@@ -55,9 +55,13 @@ pub struct TemplateContext {
     /// `DiagramDetailData::ri` (`{ri}`), already formatted as this app displays it
     /// elsewhere -- not re-formatted here.
     pub ri: String,
+    /// Image width in pixels.
     pub width: u32,
+    /// Image height in pixels.
     pub height: u32,
+    /// Samples per pixel.
     pub spp: u32,
+    /// Maximum number of ray bounces per path.
     pub bounces: u32,
     /// The export's colour-space label (`{colorspace}`) -- e.g. "sRGB", "Display P3".
     pub colorspace: String,
@@ -71,8 +75,11 @@ pub struct TemplateContext {
     /// radians at the call site: a filename is a human-facing surface, and nobody
     /// reads radians off one.
     pub yaw_deg: f32,
+    /// Camera pitch in degrees.
     pub pitch_deg: f32,
+    /// Camera distance from the stone.
     pub distance: f32,
+    /// Exposure multiplier applied when tone-mapping.
     pub exposure: f32,
 }
 
@@ -285,7 +292,7 @@ pub fn resolve_export_path(export_dir: &Path, template: &str, ctx: &TemplateCont
 /// public-domain `civil_from_days` algorithm
 /// (<http://howardhinnant.github.io/date_algorithms.html>), pinned by this function's
 /// tests against several known dates including the 1970 epoch and a Feb-29 leap day.
-const fn civil_from_unix_seconds(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
+pub const fn civil_from_unix_seconds(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
     let days = secs.div_euclid(86_400);
     let time_of_day = secs.rem_euclid(86_400);
     let hour = (time_of_day / 3600) as u32;

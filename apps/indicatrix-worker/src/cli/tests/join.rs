@@ -15,7 +15,7 @@ fn parses_join_with_a_positional_coordinator_and_defaults() {
         Command::Join(JoinArgs {
             coordinator: "coord.lan:7880".to_string(),
             cert_dir: PathBuf::from(DEFAULT_JOIN_CERT_DIR),
-            slots: 1,
+            slots: 2,
             threads: 0,
             compute_mode: ComputeMode::Hybrid,
             token: None,

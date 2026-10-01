@@ -17,13 +17,19 @@ use glam::{Mat3, Vec3};
 /// all three equal.
 #[derive(Debug, Clone, Copy)]
 pub struct BiaxialIndicatrix {
+    /// Smallest principal refractive index.
     pub n_alpha: f32,
+    /// Intermediate principal refractive index.
     pub n_beta: f32,
+    /// Largest principal refractive index.
     pub n_gamma: f32,
+    /// Columns are the principal axes for alpha, beta and gamma.
     pub axes: Mat3,
 }
 
 impl BiaxialIndicatrix {
+    /// Builds an indicatrix from its three principal indices and axis frame directly,
+    /// with no ordering or orthonormality check on `axes`.
     #[must_use]
     pub const fn new(n_alpha: f32, n_beta: f32, n_gamma: f32, axes: Mat3) -> Self {
         Self {

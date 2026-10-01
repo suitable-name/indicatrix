@@ -5,89 +5,17 @@ use super::{dispatch::dispatch_background_solve, runtime::RUNTIME};
 use crate::{
     EditorModel, MainWindow, bridge::render_thread::RenderContext, gui::editor::state::EditorState,
 };
+use indicatrix_editor::solve_policy::AUTO_SOLVE_DEBOUNCE;
 use slint::ComponentHandle;
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::Ordering},
     time::Duration,
 };
 
-/// Solve cost is driven by plane count, not tier count -- a
-/// wide-orbit round-brilliant tier emits many planes at once (the corpus's largest
-/// measured design is 103 tiers but 210 planes, `mod.rs`'s own baseline), so a small
-/// tier count can still be an expensive, UI-thread-blocking solve.
-///
-/// A rough estimate, not a re-measurement of this crate's own corpus: roughly double
-/// a 16-tier reference point at the corpus's own ~2 planes-per-tier ratio, kept
-/// comfortably under the 210-plane/5.9s worst case.
-const SYNC_SOLVE_PLANE_LIMIT: usize = 32;
-
-/// Once a design has a real measured solve time, that measurement
-/// is a far better signal than any plane-count estimate -- a design that solved in
-/// under this long most recently is still fine to solve again synchronously,
-/// regardless of how many planes it has.
-const SYNC_SOLVE_TIME_LIMIT: Duration = Duration::from_millis(500);
-
-/// Whether a solve for a design with `plane_count` planes should still run
-/// synchronously on the UI thread (the "New"/Load/explicit-Solve fast path,
-/// `super::super::view::refresh_all`'s sync branch) rather than through
-/// `super::dispatch::dispatch_background_solve`, which handles a plane-count cutoff
-/// instead of a tier-count one. Prefers this design's own last REAL measured solve
-/// time (see [`last_solve`]) when one exists, since a real measurement beats
-/// any estimate; falls back to `plane_count` only for a design that has never
-/// solved yet (a fresh "New" design, most commonly).
-///
-/// Pure and unit tested directly, mirroring [`should_schedule_auto_solve`]'s own
-/// "measurement first, otherwise estimate" shape -- `last_solve` is a parameter
-/// here (rather than read from `Runtime` internally) for exactly the same
-/// testability reason that function documents on itself.
-#[must_use]
-pub(in crate::gui::editor) fn should_solve_synchronously(
-    plane_count: usize,
-    last_solve: Option<Duration>,
-) -> bool {
-    last_solve.map_or(plane_count <= SYNC_SOLVE_PLANE_LIMIT, |last| {
-        last <= SYNC_SOLVE_TIME_LIMIT
-    })
-}
-
-/// Debounce delay between an edit landing and an eligible auto-solve actually
-/// dispatching -- short enough that a burst of keystrokes (typing an angle, say) only
-/// ever triggers the LAST one, long enough that it reads as "just happened," not
-/// "laggy."
-const AUTO_SOLVE_DEBOUNCE: Duration = Duration::from_millis(150);
-
-/// Whether an edit that just landed should schedule a debounced auto-solve --
-/// `budget` `0` disables auto-solve outright (today's stale-marker-only behaviour);
-/// otherwise, a design with no measurement YET (`last_solve: None` -- nothing has
-/// solved since the last New/Load) is scheduled optimistically: a fresh design's
-/// schedule starts empty and solves near-instantly, so refusing to try would only
-/// delay that design's very first auto-solve for no reason. Once a real measurement
-/// exists, it alone decides.
-///
-/// Pure and unit tested directly -- the one genuinely decision-shaped piece of logic
-/// in this module.
-pub(super) const fn should_schedule_auto_solve(
-    last_solve: Option<Duration>,
-    budget: Duration,
-) -> bool {
-    if budget.is_zero() {
-        return false;
-    }
-    match last_solve {
-        Some(last) => last.as_millis() < budget.as_millis(),
-        None => true,
-    }
-}
-
-/// The banner text shown while auto-solve is disabled FOR THIS DESIGN specifically
-/// (as opposed to the user having set the budget to `0` outright) -- this design's own
-/// last measured solve already exceeds the configured budget.
-pub(super) fn auto_solve_off_note(last_solve: Duration) -> String {
-    format!(
-        "Auto-solve off for this design: last solve took {:.1}s.",
-        last_solve.as_secs_f32()
-    )
-}
+// The pure policy -- the synchronous-solve cutoffs, auto-solve eligibility and its
+// "off for this design" note -- lives in `indicatrix_editor::solve_policy`, shared
+// with the web app; re-exported here at its old paths.
+pub(super) use indicatrix_editor::solve_policy::{auto_solve_off_note, should_schedule_auto_solve};
 
 /// Records a just-completed solve's wall time (background or synchronous) as this
 /// design's new estimate for [`should_schedule_auto_solve`]'s next decision.
@@ -98,7 +26,7 @@ pub(in crate::gui::editor) fn record_solve_duration(elapsed: Duration) {
 /// The currently loaded design's last REAL measured solve time, if any -- the
 /// production counterpart to the `#[cfg(test)]`-only
 /// [`last_measured_solve_duration`] below, exposed so `super::super::view::refresh_all`
-/// can pass a real measurement to [`should_solve_synchronously`] for every caller that
+/// can pass a real measurement to `should_solve_synchronously_for` for every caller that
 /// is NOT replacing `EditorState` wholesale (an explicit Solve/Adopt/Optimize Apply/etc.
 /// on the design already loaded) instead of unconditionally wiping it via
 /// [`reset_for_new_design`] first, which made that rule unreachable on exactly
@@ -170,7 +98,19 @@ pub(super) fn last_measured_solve_duration() -> Option<Duration> {
 ///
 /// Safe to call at any time: bumping `current_seq`/dropping `debounce`/`idle_replan`
 /// with no solve in flight is a no-op beyond the wasted counter tick.
-pub(in crate::gui::editor) fn reset_for_new_design() {
+///
+/// `generation` is the just-replaced `EditorState`'s OWN generation counter
+/// value (already bumped by `EditorState::replace_wholesale` before this is
+/// called -- see `view::viewport::refresh_all`'s own call site) --
+/// bumps the shared `SolidPreviewState`'s generation floor to it (when the
+/// solid-preview handle has been stashed via `runtime::init`), so a `PlanJob`
+/// still queued or in flight for the OLD design cannot have the PLAN worker
+/// solve and hand back a frame for a design this reset has already moved
+/// past -- see `SolidPreviewState::bump_generation_floor`'s own doc comment.
+pub(in crate::gui::editor) fn reset_for_new_design(generation: u64) {
+    if let Some(preview_state) = super::runtime::preview_state() {
+        preview_state.bump_generation_floor(generation);
+    }
     RUNTIME.with(|cell| {
         let mut rt = cell.borrow_mut();
         rt.last_solve = None;
@@ -227,6 +167,13 @@ pub(in crate::gui::editor) fn on_edit(
                 .set_status_text(auto_solve_off_note(last).into());
             ui.global::<EditorModel>().set_status_is_problem(true);
         }
+        // a `PendingDispatch` queued behind an in-flight solve named an
+        // OLDER design as of the click that queued it -- once auto-solve is no
+        // longer eligible for THIS edit (any reason: a zero budget, or this
+        // design's own measured cost now exceeding it), that queued replay must
+        // not fire either once the in-flight solve completes. The next edit
+        // that IS eligible queues a fresh one from the then-current design.
+        RUNTIME.with(|cell| cell.borrow_mut().pending_dispatch = None);
         return;
     }
 
@@ -234,6 +181,11 @@ pub(in crate::gui::editor) fn on_edit(
     let render_ctx = Arc::clone(render_ctx);
     let design = state.design.clone();
     let generation = Arc::clone(&state.generation);
+    // Captured HERE, the same moment `design` itself is snapshotted -- see
+    // `dispatch_background_solve`'s own doc comment for why the eventual
+    // worker/replay must use this captured value rather than reloading
+    // `generation` live.
+    let started_generation = generation.load(Ordering::Relaxed);
     let multi_selected = state.multi_selected.clone();
     let timer = slint::Timer::default();
     timer.start(
@@ -247,6 +199,7 @@ pub(in crate::gui::editor) fn on_edit(
                     design.clone(),
                     &generation,
                     multi_selected.clone(),
+                    started_generation,
                 );
             }
         },

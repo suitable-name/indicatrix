@@ -150,6 +150,7 @@ mod tests {
         ctx.tab_visible = false;
         ctx.paused = true;
         ctx.dirty = true;
+        ctx.camera_drag_held = true;
         assert_eq!(ctx.scene_generation(), first);
     }
 

@@ -9,24 +9,24 @@ use std::path::Path;
 
 /// Divides `sums` by `total_samples` and tone-maps the result to RGBA bytes.
 ///
-/// Uses the same `xyz_to_srgb_gamma` the viewer uses every frame, so a `render` output
-/// matches the live viewport for the same scene and sample count. `sums` is expected to
-/// be what [`crate::render_core::trace_samples`] returns.
+/// A thin wrapper around `indicatrix::renderer::tonemap::tonemap_accumulation` at
+/// `ColorSpace::Srgb` -- the GUI export's own final conversion, which itself calls the
+/// same `xyz_to_srgb_gamma` the live viewport uses every frame -- so a `render` output
+/// matches both, byte for byte, rather than keeping a second copy of this conversion
+/// that could quietly drift from either. `sums` is expected to be what
+/// [`crate::render_core::trace_samples`] returns.
 ///
 /// The one place in this crate that turns a sum into an average -- see
 /// `render_core::trace_samples`'s doc comment for why radiance stays summed elsewhere.
 #[must_use]
 pub fn tonemap_to_rgba(width: u32, height: u32, total_samples: u32, sums: &[Vec3]) -> Vec<u8> {
-    let mut bytes = vec![0u8; width as usize * height as usize * 4];
-    let inv_samples = 1.0 / total_samples.max(1) as f32;
-    for (i, xyz) in sums.iter().enumerate() {
-        let rgba = indicatrix::optics::raytracer::xyz_to_srgb_gamma(*xyz * inv_samples);
-        bytes[i * 4] = rgba[0];
-        bytes[i * 4 + 1] = rgba[1];
-        bytes[i * 4 + 2] = rgba[2];
-        bytes[i * 4 + 3] = rgba[3];
-    }
-    bytes
+    indicatrix::renderer::tonemap::tonemap_accumulation(
+        width,
+        height,
+        total_samples.max(1),
+        sums,
+        indicatrix::color::ColorSpace::Srgb,
+    )
 }
 
 /// Writes `rgba` (as produced by [`tonemap_to_rgba`]) to `out_path` as a PNG, creating

@@ -12,6 +12,7 @@ use crate::{
 
 use super::{biaxial_test_directions, biaxial_test_indicatrices};
 
+/// One input case for the biaxial mode poynting check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BiaxialModePoyntingCase {
@@ -49,6 +50,7 @@ fn build_biaxial_mode_poynting_cases() -> Vec<BiaxialModePoyntingCase> {
     cases
 }
 
+/// Runs the biaxial mode poynting check against the CPU reference.
 #[must_use]
 pub fn run_biaxial_mode_poynting(
     ctx: &crate::renderer::gpu::GpuContext,

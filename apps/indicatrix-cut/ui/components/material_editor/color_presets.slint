@@ -88,9 +88,9 @@ export component MaterialColorPresets inherits VerticalLayout {
         // 7: Teal / Zircon
         Rectangle {
             width: 40px; height: 26px; border-radius: Theme.radius-sm;
-            background: #0f766e;
+            background: #0891b2;
             border-width: root.selected_color_preset == 7 ? 2px : 1px;
-            border-color: root.selected_color_preset == 7 ? Theme.accent-cyan : #0d9488;
+            border-color: root.selected_color_preset == 7 ? Theme.accent-cyan : #06b6d4;
             TouchArea { clicked => { root.selected_color_preset = 7; } }
             Text { text: "Teal"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
         }
@@ -98,11 +98,28 @@ export component MaterialColorPresets inherits VerticalLayout {
         // 8: Amber Topaz
         Rectangle {
             width: 40px; height: 26px; border-radius: Theme.radius-sm;
-            background: #9a3412;
+            background: #d97706;
             border-width: root.selected_color_preset == 8 ? 2px : 1px;
-            border-color: root.selected_color_preset == 8 ? Theme.accent-cyan : #c2410c;
+            border-color: root.selected_color_preset == 8 ? Theme.accent-cyan : #f59e0b;
             TouchArea { clicked => { root.selected_color_preset = 8; } }
             Text { text: "Amber"; font-size: 9px; font-weight: 700; color: Theme.text-on-primary; horizontal-alignment: center; vertical-alignment: center; }
+        }
+
+        // 9: "Custom (keep)" -- selected by `ViewportModel.
+        // selected_custom_material_color_idx` (never by a click here reachable through
+        // the eight swatches above) whenever a reopened custom material's saved colour
+        // matches none of the eight fixed presets exactly. A hatch pattern stands in
+        // for a swatch: there is no single RGB to preview, since the whole point is
+        // that this material's real colour isn't one of the fixed eight. Clicking it
+        // is still a legitimate choice (re-selecting "keep" after having picked a
+        // preset by mistake), not just a display-only state.
+        Rectangle {
+            width: 40px; height: 26px; border-radius: Theme.radius-sm;
+            background: #94a3b822;
+            border-width: root.selected_color_preset == 9 ? 2px : 1px;
+            border-color: root.selected_color_preset == 9 ? Theme.accent-cyan : Theme.border-control;
+            TouchArea { clicked => { root.selected_color_preset = 9; } }
+            Text { text: "Keep"; font-size: 9px; font-weight: 700; color: root.selected_color_preset == 9 ? Theme.text-on-accent : Theme.text-secondary; horizontal-alignment: center; vertical-alignment: center; }
         }
     }
 }

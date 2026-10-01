@@ -172,6 +172,36 @@ fn oversize_dimensions_are_refused_before_allocating() {
     );
 }
 
+/// The exact boundary of check 1 (the module doc comment's ordered list) --
+/// `16 * 2_796_202 * 12 == 536_870_784`, one `raw_len`-worth (768 bytes) under
+/// `framing::MAX_FRAME_LEN` (`536_870_912`). At this size the dimensions themselves pass,
+/// so a deliberately wrong `raw_len` (`0`) reaches check 2 instead
+/// (`RawLenMismatch`), never `TooLarge`.
+#[test]
+fn dimensions_exactly_at_the_max_frame_len_boundary_reach_the_raw_len_check() {
+    let err = decode_payload(RAW, 0, &[], 16, 2_796_202).unwrap_err();
+    assert!(
+        matches!(err, RadianceError::RawLenMismatch { .. }),
+        "{err:?}"
+    );
+}
+
+/// One pixel row past that boundary -- `16 * 2_796_203 * 12 == 536_870_976`,
+/// exceeding `MAX_FRAME_LEN` by 64 bytes -- is `TooLarge`, even with a `raw_len` that
+/// (falsely) matches those dimensions exactly, proving check 1 runs before check 2 ever
+/// looks at `raw_len` at all.
+#[test]
+fn one_row_past_the_max_frame_len_boundary_is_too_large() {
+    let err = decode_payload(RAW, 16 * 2_796_203 * 12, &[], 16, 2_796_203).unwrap_err();
+    assert_eq!(
+        err,
+        RadianceError::TooLarge {
+            width: 16,
+            height: 2_796_203
+        }
+    );
+}
+
 /// Expansion bomb: a tiny payload that inflates to 64x the declared `raw_len` fails to
 /// decode -- the output buffer is exactly `raw_len`, never grown.
 #[cfg(feature = "compression")]

@@ -6,6 +6,8 @@ use glam::DVec3;
 
 use super::{
     EPS_FACE,
+    measure::max_abs_offset,
+    pow2_scale_norm,
     types::{SolidMesh, SolidStatus},
     vertices::{
         SolidVertex, dedup_origin_indices, dedup_planes, escaping_plane_indices, feasible_vertices,
@@ -34,10 +36,21 @@ use super::{
 /// `k`-gon, each spanning one ring edge and the centroid, so no triangle's
 /// area can exceed roughly `1/k` of the face's -- bounded regardless of how
 /// thin the polygon is.
+///
+/// Internally normalises every plane offset by [`pow2_scale_norm`] of
+/// the arrangement's own representative scale before running any of the
+/// vertex-arrangement geometry below (the same absolute, order-1-tuned
+/// epsilons [`measure_solid`](super::measure_solid) shares), then scales
+/// every returned position and volume figure back up by the same factor --
+/// see that function's doc comment for the full reasoning (identical here).
+/// A design whose own scale already rounds to `2^0` builds a bit-identical
+/// mesh to before this normalisation existed.
 #[must_use]
 pub fn build_solid_mesh(planes: &[(DVec3, f64)]) -> SolidStatus {
     let deduped = dedup_planes(planes);
     let origin = dedup_origin_indices(planes, &deduped);
+    let scale = pow2_scale_norm(max_abs_offset(&deduped));
+    let deduped: Vec<(DVec3, f64)> = deduped.iter().map(|&(n, m)| (n, m / scale)).collect();
 
     let Some(verts) = feasible_vertices(&deduped) else {
         let mut escaping: Vec<usize> = escaping_plane_indices(&deduped)
@@ -62,7 +75,7 @@ pub fn build_solid_mesh(planes: &[(DVec3, f64)]) -> SolidStatus {
     if !(volume.is_finite() && volume > 0.0) {
         return SolidStatus::Degenerate {
             vertex_count: verts.len(),
-            volume: volume.is_finite().then_some(volume),
+            volume: volume.is_finite().then_some(volume * scale * scale * scale),
         };
     }
 
@@ -76,12 +89,15 @@ pub fn build_solid_mesh(planes: &[(DVec3, f64)]) -> SolidStatus {
 
         // Centroid vertex first, then the ring in angular order -- see this
         // function's doc comment for why the fan pivots on the centroid
-        // rather than `ring[0]`.
-        mesh.positions.push(centroid);
+        // rather than `ring[0]`. Positions are scaled back to `planes`' own
+        // real mast units here, at the point they enter the returned mesh --
+        // `ring` itself (pushed into `mesh.rings` below) gets the same
+        // treatment so a caller never observes the internal normalised scale.
+        mesh.positions.push(centroid * scale);
         mesh.normals.push(normal);
         mesh.facet_id.push(facet_idx);
         for &v in &ring {
-            mesh.positions.push(v);
+            mesh.positions.push(v * scale);
             mesh.normals.push(normal);
             mesh.facet_id.push(facet_idx);
         }
@@ -94,7 +110,8 @@ pub fn build_solid_mesh(planes: &[(DVec3, f64)]) -> SolidStatus {
             mesh.indices.push(a);
             mesh.indices.push(b);
         }
-        mesh.rings.push((facet_idx, ring));
+        let scaled_ring: Vec<DVec3> = ring.iter().map(|&v| v * scale).collect();
+        mesh.rings.push((facet_idx, scaled_ring));
     }
 
     SolidStatus::Closed(mesh)

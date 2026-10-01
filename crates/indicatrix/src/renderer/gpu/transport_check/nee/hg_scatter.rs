@@ -1,4 +1,6 @@
-//! Tier 2 check for `nee_contribution_hg_scatter`.
+//! Tier 2 check for `nee_contribution_hg_scatter`: the comparison is on the XYZ the
+//! scattering event folds into `nee_xyz`, i.e. the per-channel deposit integrated with the
+//! spectral-MIS family weights of the `path_pdf`/`compat` in force at that event.
 
 use glam::Vec3;
 
@@ -7,7 +9,7 @@ use crate::{
     optics::{
         polarization::StokesVector,
         raytracer::{
-            EnvironmentSource, FacetFinish, build_plane_soa,
+            EnvironmentSource, FacetFinish, build_plane_soa, integrate_channels_to_xyz_families,
             scattering::{NeeContext, nee_contribution_hg_scatter},
         },
     },
@@ -22,6 +24,7 @@ use crate::{
 
 use super::synthetic_test_map;
 
+/// One input case for the nee hg scatter check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct NeeHgScatterCase {
@@ -51,10 +54,14 @@ pub struct NeeHgScatterCase {
     alphas: [f32; 8],
     lambdas: [f32; 8],
     stokes: [[f32; 4]; 8],
-    radiance_in: [f32; 8],
+    /// Per-channel path density at the scattering event (`try_scatter_step`'s `path_pdf`).
+    path_pdf: [f32; 8],
+    /// Per-channel MIS family bitmasks at the scattering event (`try_scatter_step`'s
+    /// `compat`, widened to `u32` for the GPU).
+    compat: [u32; 8],
 }
 
-const _: () = assert!(size_of::<NeeHgScatterCase>() == 288);
+const _: () = assert!(size_of::<NeeHgScatterCase>() == 320);
 
 const NEE_HG_ULP_BUDGET: u32 = 64;
 const NEE_HG_ABS_FLOOR: f32 = 1e-4;
@@ -84,10 +91,24 @@ fn build_nee_hg_cases() -> Vec<NeeHgScatterCase> {
             0.01,
         ]
     });
-    let radiance_in: [f32; 8] = std::array::from_fn(|k| 0.05 * (k as f32));
+    // Spectral-MIS inputs: uniform densities, a ramp, and an uneven set, each paired
+    // with either the full family or a +-1 neighbour band per channel, so the family
+    // weights differ from 1 and from each other.
+    let path_pdf_sets: [[f32; 8]; 3] = [
+        [1.0; 8],
+        std::array::from_fn(|k| (k as f32).mul_add(0.11, 0.3)),
+        [0.5, 0.2, 1.0, 0.05, 0.7, 0.3, 0.9, 0.15],
+    ];
+    let compat_sets: [[u32; 8]; 2] = [
+        [0xFF; 8],
+        std::array::from_fn(|k| {
+            (0..8usize)
+                .filter(|j| j.abs_diff(k) <= 1)
+                .fold(0, |m, j| m | (1 << j))
+        }),
+    ];
 
-    // Findings 2b/2d: the medium-transmittance and frosted-exit-skip inputs the old
-    // twin never modeled. Cycled by case index (not cross-producted with the six axes
+    // The medium-transmittance and frosted-exit-skip inputs. Cycled by case index (not cross-producted with the six axes
     // above) so the case count stays the same order of magnitude while still covering
     // lossless/unit-scale/polished alongside real absorbing, scattering and frosted
     // combinations.
@@ -113,6 +134,8 @@ fn build_nee_hg_cases() -> Vec<NeeHgScatterCase> {
                             // Every seventh case exercises the frosted-exit
                             // skip; the rest stay polished.
                             let frosted_exit = u32::from(i.is_multiple_of(7));
+                            let path_pdf = path_pdf_sets[(i / 7) % path_pdf_sets.len()];
+                            let compat = compat_sets[(i / 5) % compat_sets.len()];
                             cases.push(NeeHgScatterCase {
                                 scatter_point: p.to_array(),
                                 n_inside_hero: n_hero,
@@ -129,7 +152,8 @@ fn build_nee_hg_cases() -> Vec<NeeHgScatterCase> {
                                 alphas,
                                 lambdas,
                                 stokes,
-                                radiance_in,
+                                path_pdf,
+                                compat,
                             });
                             i += 1;
                         }
@@ -175,7 +199,7 @@ pub fn run_nee_hg_scatter(
     let out_buf = compute::zeroed_buffer::<f32>(
         &ctx.device,
         "nee hg out",
-        total * 8,
+        total * 3,
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     );
     let pipeline = compute::create_compute_pipeline(
@@ -207,7 +231,7 @@ pub fn run_nee_hg_scatter(
         &bind_group,
         (workgroups, 1, 1),
     );
-    let gpu_out: Vec<f32> = compute::readback(&ctx.device, &ctx.queue, &out_buf, total * 8);
+    let gpu_out: Vec<f32> = compute::readback(&ctx.device, &ctx.queue, &out_buf, total * 3);
 
     let plane_soa = build_plane_soa(&cube_planes);
     let nee_ctx = NeeContext {
@@ -221,8 +245,10 @@ pub fn run_nee_hg_scatter(
     acc.finish()
 }
 
-/// Runs the real CPU [`nee_contribution_hg_scatter`] for every case and records each
-/// channel's CPU-vs-GPU comparison into `acc`. Split out of [`run_nee_hg_scatter`] to
+/// Runs the real CPU [`nee_contribution_hg_scatter`] for every case, integrates its
+/// deposit to XYZ exactly as `try_scatter_step` does (hero channel 0, the case's
+/// `path_pdf` and `compat`), and records each XYZ component's CPU-vs-GPU comparison into
+/// `acc`. Split out of [`run_nee_hg_scatter`] to
 /// keep that function under the house line-count limit.
 fn accumulate_nee_hg_cpu_results(
     cases: &[NeeHgScatterCase],
@@ -237,7 +263,7 @@ fn accumulate_nee_hg_cpu_results(
     // WGSL twin's own skip (see `NeeHgScatterCase::frosted_exit`'s doc comment).
     let all_frosted = [FacetFinish::Frosted; 6];
     for (idx, case) in cases.iter().enumerate() {
-        let mut cpu_rad = case.radiance_in;
+        let mut cpu_deposit = [0.0f32; 8];
         let stokes_cpu: [StokesVector; 8] = std::array::from_fn(|k| {
             StokesVector::new(
                 case.stokes[k][0],
@@ -261,15 +287,29 @@ fn accumulate_nee_hg_cpu_results(
             case.rng_seed,
             case.bounce,
             &stokes_cpu,
-            &mut cpu_rad,
+            &mut cpu_deposit,
             &case.alphas,
             case.sigma_s,
             case.absorption_path_scale,
             facet_finishes,
         );
-        let base = idx * 8;
-        for k in 0..8 {
-            acc.record(case, "rad", cpu_rad[k], gpu_out[base + k]);
+        let compat: [u8; 8] = std::array::from_fn(|k| {
+            u8::try_from(case.compat[k]).expect("family masks cover eight channels")
+        });
+        let cpu_xyz = integrate_channels_to_xyz_families(
+            &cpu_deposit,
+            &case.lambdas,
+            &case.path_pdf,
+            0,
+            compat,
+        );
+        let base = idx * 3;
+        for (offset, component, cpu) in [
+            (0, "x", cpu_xyz.x),
+            (1, "y", cpu_xyz.y),
+            (2, "z", cpu_xyz.z),
+        ] {
+            acc.record(case, component, cpu, gpu_out[base + offset]);
         }
     }
 }

@@ -2,7 +2,7 @@
 
 use crate::cli::{
     Command, ComputeMode, DEFAULT_BIND, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_JOB_MEMORY_MIB,
-    ServeArgs, parse,
+    DEFAULT_MAX_PREAUTH_PER_IP, ServeArgs, parse,
 };
 use std::path::PathBuf;
 
@@ -27,6 +27,7 @@ fn default_serve_args() -> ServeArgs {
         worker_allowlist: None,
         db: None,
         max_connections: DEFAULT_MAX_CONNECTIONS,
+        max_preauth_per_ip: DEFAULT_MAX_PREAUTH_PER_IP,
         interactive_workers: 0,
         pin_interactive_worker: None,
         max_job_memory_mib: DEFAULT_MAX_JOB_MEMORY_MIB,
@@ -285,6 +286,34 @@ fn serve_rejects_a_zero_max_connections() {
 fn serve_rejects_a_non_numeric_max_connections_value() {
     let argv = ["serve", "--max-connections", "lots"].map(String::from);
     assert!(parse(&argv).is_err());
+}
+
+#[test]
+fn parses_serve_max_preauth_per_ip_flag() {
+    let argv = ["serve", "--max-preauth-per-ip", "3"].map(String::from);
+    assert_eq!(
+        parse(&argv).unwrap(),
+        Command::Serve(Box::new(ServeArgs {
+            max_preauth_per_ip: 3,
+            ..default_serve_args()
+        }))
+    );
+}
+
+#[test]
+fn serve_max_preauth_per_ip_defaults_to_8_when_not_given() {
+    let argv = ["serve".to_string()];
+    let Command::Serve(args) = parse(&argv).unwrap() else {
+        panic!("expected Serve")
+    };
+    assert_eq!(args.max_preauth_per_ip, 8);
+}
+
+#[test]
+fn serve_rejects_a_zero_max_preauth_per_ip() {
+    let argv = ["serve", "--max-preauth-per-ip", "0"].map(String::from);
+    let err = parse(&argv).unwrap_err();
+    assert!(err.contains("--max-preauth-per-ip"), "{err}");
 }
 
 #[test]

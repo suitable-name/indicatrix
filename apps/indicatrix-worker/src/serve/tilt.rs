@@ -66,15 +66,16 @@ pub enum CancelPoll {
 /// first byte is read with a raw, timeout-tolerant `read()` rather than `read_exact`
 /// (whose docs leave it unspecified how many bytes land on an error), since a timeout
 /// must never land mid-message. Once a byte is seen, the rest of that message is read
-/// under a bounded timeout (`FRAME_REMAINDER_TIMEOUT`) where a timeout IS a protocol
-/// error. The first byte's timeout tolerance goes through
+/// (bounded by `MAX_CONTROL_FRAME_LEN`) under a bounded timeout
+/// (`FRAME_REMAINDER_TIMEOUT`) where a timeout IS a protocol error. The first byte's timeout tolerance goes through
 /// [`crate::stream_emit::is_stream_timeout`] since a TLS stream's timeout can surface as
 /// `WriteZero` even from a read.
 ///
 /// Anything besides a matching `CANCEL` -- a stale `CANCEL`, or any other pipelined
 /// `ClientMessage` -- is logged and dropped as [`CancelPoll::Pending`]: `TILT_CURVES`
 /// supports no pipelining, and the connection's next ordinary read picks it up once this
-/// reply has gone out.
+/// reply has gone out. A dropped `ASSET` or `CONTRIBUTION` has its payload frame consumed
+/// too, so the stream stays in sync.
 ///
 /// # Errors
 ///
@@ -106,29 +107,27 @@ pub fn poll_for_cancel<S: Read + TimeoutRead>(
     stream
         .set_read_timeout(Some(crate::stream_emit::FRAME_REMAINDER_TIMEOUT))
         .map_err(|e| NetError::Framing(indicatrix_net::framing::FramingError::Io(e)))?;
-    if n < len_bytes.len() {
-        stream
-            .read_exact(&mut len_bytes[n..])
-            .map_err(|e| NetError::Framing(indicatrix_net::framing::FramingError::Io(e)))?;
-    }
-    let len = u32::from_le_bytes(len_bytes);
-    if len > indicatrix_net::framing::MAX_FRAME_LEN {
-        return Err(NetError::Framing(
-            indicatrix_net::framing::FramingError::FrameTooLarge {
-                len,
-                max: indicatrix_net::framing::MAX_FRAME_LEN,
-            },
-        ));
-    }
-    let mut payload = vec![0u8; len as usize];
-    stream
-        .read_exact(&mut payload)
-        .map_err(|e| NetError::Framing(indicatrix_net::framing::FramingError::Io(e)))?;
+    let payload = indicatrix_net::framing::read_frame_continuing(
+        stream,
+        &len_bytes[..n],
+        indicatrix_net::framing::MAX_CONTROL_FRAME_LEN,
+    )?;
 
-    let msg: indicatrix_net::messages::ClientMessage = postcard::from_bytes(&payload)?;
+    let msg: indicatrix_net::messages::ClientMessage =
+        indicatrix_net::messages::decode_control_frame(&payload)?;
     Ok(match msg {
         indicatrix_net::messages::ClientMessage::Cancel(c) if c.request_id == request_id => {
             CancelPoll::Cancelled
+        }
+        // An unrequested payload-carrying message: its payload frame follows and must be
+        // consumed, or it would be misread as the next message.
+        indicatrix_net::messages::ClientMessage::Asset(header) => {
+            crate::assets::discard_asset(stream, &header)?;
+            CancelPoll::Pending
+        }
+        indicatrix_net::messages::ClientMessage::Contribution(header) => {
+            indicatrix_net::messages::discard_contribution_payload(stream, &header)?;
+            CancelPoll::Pending
         }
         other => {
             tracing::debug!(
@@ -203,6 +202,7 @@ fn handle_tilt_curves_request_inner<S: Read + Write + TimeoutRead>(
             &TiltCurvesResponse::Error(ErrorMsg {
                 code: super::connection::VALIDATION_FAILED_CODE,
                 message,
+                request_id: Some(request.request_id),
             }),
         );
     }
@@ -217,6 +217,12 @@ fn handle_tilt_curves_request_inner<S: Read + Write + TimeoutRead>(
 
     let mut axes: Vec<AxisTiltCurves> = Vec::with_capacity(TILT_CURVE_AXIS_COUNT);
     let scene = &request.scene;
+    // The curves are scored under the scene's own lighting preset and light pose, the
+    // radiance the same scene renders with (the stone's optics never see the exposure).
+    let environment =
+        scene
+            .lighting_preset
+            .studio(scene.exposure, scene.light_yaw, scene.light_pitch);
 
     for (axis_index, &azimuth_deg) in indicatrix::color::metrics::PROFILE_AZIMUTHS_DEG
         .iter()
@@ -245,8 +251,7 @@ fn handle_tilt_curves_request_inner<S: Read + Write + TimeoutRead>(
                 &scene.planes,
                 &scene.material,
                 azimuth_deg,
-                scene.light_yaw,
-                scene.light_pitch,
+                environment,
             )
         }));
 
@@ -267,6 +272,7 @@ fn handle_tilt_curves_request_inner<S: Read + Write + TimeoutRead>(
                 &TiltCurvesResponse::Error(ErrorMsg {
                     code: super::connection::TRACE_PANIC_CODE,
                     message: "internal error while computing tilt-performance curves".to_string(),
+                    request_id: Some(request.request_id),
                 }),
             );
         }
@@ -389,7 +395,7 @@ mod tests {
 
         let response = read_response(&duplex.out);
         match response {
-            TiltCurvesResponse::Error(ErrorMsg { code, message }) => {
+            TiltCurvesResponse::Error(ErrorMsg { code, message, .. }) => {
                 assert_eq!(code, super::super::connection::VALIDATION_FAILED_CODE);
                 assert!(message.contains("planes"), "{message}");
             }

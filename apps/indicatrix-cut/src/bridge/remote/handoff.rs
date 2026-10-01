@@ -2,8 +2,11 @@
 //!
 //! While the user manipulates the gem's orientation, the viewport renders locally at
 //! low spp, exactly as it always has (`render_thread`'s ordinary progressive
-//! accumulation). Once the orientation settles (a short debounce with no further
-//! movement), the drag-time local preview is discarded -- never summed into anything --
+//! accumulation). Once the orientation settles (no mouse button held for an orbit or
+//! light drag -- `RenderContext::camera_drag_held` -- and a short debounce, 250 ms, with
+//! no further movement since the last change or the button release; the orchestrator's
+//! `poll::POSE_SETTLE_DEBOUNCE`), the drag-time local
+//! preview is discarded -- never summed into anything --
 //! and a new image epoch starts that a configured remote worker contributes to:
 //!
 //! - `LiveComputeTarget::Both` (the default): local tracing KEEPS contributing to the
@@ -100,7 +103,9 @@ pub enum HandoffEvent {
     /// and -- if a remote attempt was in flight -- the trigger that interrupts it.
     OrientationChanged,
     /// The settle debounce elapsed with no further `OrientationChanged` since the last
-    /// one. `worker_available` is decided by the caller at the moment the timer fires
+    /// one (and, for a drag, since the mouse button was released -- the orchestrator
+    /// never fires this while `RenderContext::camera_drag_held` holds).
+    /// `worker_available` is decided by the caller at the moment the timer fires
     /// (a worker is configured AND was reachable last time this session checked) --
     /// this machine has no I/O of its own to determine that itself.
     SettleElapsed { worker_available: bool },
@@ -186,11 +191,13 @@ impl HandoffMachine {
         }
     }
 
+    /// Current handoff state.
     #[must_use]
     pub const fn state(self) -> HandoffState {
         self.state
     }
 
+    /// Which source produced the image being shown.
     #[must_use]
     pub const fn served_by(self) -> ImageSource {
         self.served_by

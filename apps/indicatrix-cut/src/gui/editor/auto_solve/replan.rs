@@ -8,44 +8,19 @@ use crate::{
     bridge::render_thread::RenderContext,
     gui::editor::view::{ReplanSource, submit_preview_replan_for},
 };
-use indicatrix::geometry::{GpuFacetPlane, meet_solver::SolvedTier};
 use indicatrix_cut_core::Design;
+use indicatrix_editor::solve_policy::IDLE_REPLAN_DEBOUNCE;
 use slint::ComponentHandle;
 use std::{
     collections::BTreeSet,
     sync::{Arc, Mutex},
-    time::Duration,
 };
 
-/// How long a "one edit behind" preview frame waits for a
-/// FOLLOW-UP edit before concluding the solid-preview worker has gone idle and
-/// resubmitting a full replan of its own -- see
-/// [`schedule_idle_replan_if_stale`]. Longer than `super::scheduling`'s own
-/// `AUTO_SOLVE_DEBOUNCE`: this is specifically waiting for the EDIT stream itself to
-/// quiet down (not just one keystroke's own burst), so firing on the same short
-/// window would often race a still-typing cutter's next nudge.
-const IDLE_REPLAN_DEBOUNCE: Duration = Duration::from_millis(400);
-
-/// `super::super::state::design_to_gpu_planes`'s counterpart for a caller that
-/// already has an up-to-date `solved` mast list on hand -- built from
-/// [`Design::planes_from_solved`] instead of a second internal [`Design::solve`].
-/// `state::mod.rs` is a file this module does not own, so this one small conversion
-/// lives here instead; it mirrors `design_to_gpu_planes`'s own sign-flip convention
-/// exactly (see this crate's `mod.rs` doc comment, "Feeding the viewport").
-///
-/// `pub(super)` (not just private) since `view::refresh_viewport` also needs this,
-/// so that call site solves the design exactly once instead of a second,
-/// independent `Design::solve()`.
-pub(in crate::gui::editor) fn design_to_gpu_planes_from_solved(
-    design: &Design,
-    solved: &[SolvedTier],
-) -> Vec<GpuFacetPlane> {
-    design
-        .planes_from_solved(solved)
-        .into_iter()
-        .map(|(normal, offset)| GpuFacetPlane::new(normal.as_vec3(), -offset as f32))
-        .collect()
-}
+// The solved-masts-to-viewport-planes conversion lives in
+// `indicatrix_editor::solve_policy` (shared with the web app); re-exported here at
+// its old path. `IDLE_REPLAN_DEBOUNCE` is how long a "one edit behind" frame waits
+// for a follow-up edit before [`schedule_idle_replan_if_stale`] fires.
+pub(in crate::gui::editor) use indicatrix_editor::solve_policy::design_to_gpu_planes_from_solved;
 
 /// Records `design`/`multi_selected` alongside the `generation` they were
 /// snapshotted at. Called by `view::submit_preview_replan` on every replan, with

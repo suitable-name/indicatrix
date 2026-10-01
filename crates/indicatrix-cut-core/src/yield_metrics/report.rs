@@ -221,6 +221,7 @@ mod yield_report_with_tests {
             name: Some("Diamond".to_string()),
             specific_gravity_override: None,
             refractive_index_override: None,
+            body_colour_override: None,
         });
         let solved = design.solve().expect("single anchored tier must solve");
         let plain = design.yield_report(&solved);
@@ -242,6 +243,7 @@ mod yield_report_with_tests {
             name: Some("My Garnet".to_string()),
             specific_gravity_override: None,
             refractive_index_override: None,
+            body_colour_override: None,
         });
         let solved = design.solve().expect("single anchored tier must solve");
 
@@ -273,6 +275,7 @@ mod yield_report_with_tests {
             name: Some("My Garnet".to_string()),
             specific_gravity_override: Some(4.10),
             refractive_index_override: None,
+            body_colour_override: None,
         });
         let solved = design.solve().expect("single anchored tier must solve");
         let report = design.yield_report_with(&solved, &CustomOnlyLookup);

@@ -1,14 +1,13 @@
+/// A refractive-index-vs-wavelength dispersion curve, in one of two closed forms.
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum DispersionModel {
-    Sellmeier1 {
-        b1: f32,
-        c1: f32,
-    },
-    Sellmeier3 {
-        b: [f32; 3],
-        c: [f32; 3],
-    },
+    /// A single-term Sellmeier equation: `n^2 = 1 + b1*lambda^2/(lambda^2 - c1)`
+    /// (`lambda` in micrometers).
+    Sellmeier1 { b1: f32, c1: f32 },
+    /// A three-term Sellmeier equation, summing three [`Self::Sellmeier1`]-shaped
+    /// terms.
+    Sellmeier3 { b: [f32; 3], c: [f32; 3] },
     /// A 2- or 3-parameter Cauchy fit, `n(lambda) = a + b/lambda^2 + c/lambda^4`
     /// (`lambda` in micrometers). Every Cauchy fit in `materials::GemMaterial::
     /// all_materials` is a VISIBLE-RANGE-ONLY approximation, solved from a mean index
@@ -22,11 +21,7 @@ pub enum DispersionModel {
     /// every_builtin_dispersion_curve_stays_physical_at_the_sampled_band_edges` for the
     /// regression pinning `n >= 1.0` and finite at exactly those two edges for every
     /// built-in material.
-    Cauchy {
-        a: f32,
-        b: f32,
-        c: f32,
-    },
+    Cauchy { a: f32, b: f32, c: f32 },
 }
 
 impl DispersionModel {

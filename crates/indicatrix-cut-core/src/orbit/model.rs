@@ -179,13 +179,19 @@ pub fn orbit_units(indices: &[f64], meta: &ScheduleMeta) -> Vec<OrbitUnit> {
         .collect()
 }
 
-/// Every index-wheel position `position`'s orbit *should* occupy under
-/// `symmetry_order`/`mirror`/`gear_teeth_abs`, independent of what any
+/// Every index-wheel position `position`'s orbit *should* occupy.
+///
+/// Computed under `symmetry_order`/`mirror`/`gear_teeth_abs`, independent of what any
 /// tier's `indices` currently holds -- used by
 /// [`crate::design::Design::add_orbit_member`] to expand one requested
 /// position into its whole clean orbit before it is ever written into a
-/// tier.
-pub(super) fn expected_orbit(
+/// tier, and by the editor's slice tool to give a new facet its whole
+/// symmetric orbit.
+///
+/// Sorted ascending, deduplicated on the ring; `symmetry_order == 0` or
+/// `gear_teeth_abs == 0` (no usable symmetry) returns `[position]` unchanged.
+#[must_use]
+pub fn expected_orbit(
     position: f64,
     symmetry_order: u32,
     mirror: bool,
@@ -219,12 +225,14 @@ pub(super) fn expected_orbit(
     // land at opposite ends of the sorted `Vec`, not next to each other,
     // even though `ring_distance` (and the geometry) call them the same
     // tooth. Fold that last pair in separately.
-    if positions.len() > 1 {
-        let first = positions[0];
-        let last = *positions.last().expect("len > 1 checked above");
-        if ring_distance(first, last, gear) < INDEX_TOLERANCE {
-            positions.pop();
+    let wraps = match (positions.first(), positions.last()) {
+        (Some(&first), Some(&last)) if positions.len() > 1 => {
+            ring_distance(first, last, gear) < INDEX_TOLERANCE
         }
+        _ => false,
+    };
+    if wraps {
+        positions.pop();
     }
     positions
 }

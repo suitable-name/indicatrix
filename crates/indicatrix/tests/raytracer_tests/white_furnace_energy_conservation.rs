@@ -8,15 +8,12 @@ use indicatrix::{
     geometry::cuts::StandardGemCuts,
     optics::{
         materials::GemMaterial,
-        raytracer::{
-            Camera, EnvironmentSource, cie_1931_cmf, hash_u32, trace_spectral_ray,
-            trace_spectral_ray_with_finish,
-        },
+        raytracer::{EnvironmentSource, trace_spectral_ray, trace_spectral_ray_with_finish},
     },
-    renderer::env_map::{EnvironmentMap, rgb_to_spectral_radiance},
+    renderer::env_map::EnvironmentMap,
 };
 
-use crate::fixtures::bruted_girdle_finishes;
+use crate::fixtures::{bruted_girdle_finishes, furnace_mean_xyz, uniform_furnace_target};
 
 /// CPU-side regression test for TWO energy-conservation bugs at once: a colourless,
 /// non-dispersive, BIREFRINGENT (uniaxial) gem immersed in a spatially UNIFORM
@@ -41,31 +38,26 @@ use crate::fixtures::bruted_girdle_finishes;
 /// and finiteness checks are kept as an independent, more direct guard against
 /// internal-coupling regressions specifically.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "a bounce-cap sweep with three energy-conservation checks per cap plus a \
-              cross-cap drift check; splitting the sweep from its assertions risks \
-              exactly the kind of accidental gap this test exists to catch"
-)]
 fn birefringent_white_furnace_energy_conservation_holds() {
     const L0: f32 = 2.5;
     const SAMPLES_PER_PIXEL: u32 = 64;
-    const GRID: usize = 12;
-    // How far the low-cap and high-cap means are allowed to drift apart, relative to
-    // the low-cap mean -- generous headroom above ordinary sampling noise at this
-    // budget, but utterly dwarfed by what the original bug produced (each additional
-    // internal bounce multiplied brightness by another 2x, so cap=64 vs. cap=12 would
-    // have differed by many, many orders of magnitude, not a few percent).
-    const CROSS_CAP_TOLERANCE: f32 = 0.15;
-    // How far each bounce cap's mean is allowed to sit from the analytic target --
-    // comparable to this file's other furnace anchors at a similar CPU-only sample
-    // budget (`edge_rounding_white_furnace_energy_conservation_holds`'s 0.06,
-    // `lossless_scattering_white_furnace_energy_conservation_holds`'s 0.08), generous
-    // headroom above the ordinary sampling noise actually measured here (rel_err
-    // typically well under 0.02, see the printed diagnostic below), but nowhere close
+    // How far each higher-cap mean may drift from the lowest-cap (12) mean, per XYZ
+    // component and relative to that low-cap component (`drift` below). Measured on
+    // 2026-10-01 by `furnace_noise_floor` (sixteen seeds at this sample budget): the
+    // drift is the truncation loss of cap 12, 1.3 percent (paths still inside the gem
+    // at the cap are dropped with their energy; at cap 256 the loss is gone), plus
+    // sampling noise of about 0.1 percent; five standard deviations of headroom give
+    // 0.02. An unbounded regression would blow straight through it (were every
+    // anisotropic internal bounce to multiply brightness by another 2x, cap=64 vs.
+    // cap=12 would differ by many, many orders of magnitude, not a percent).
+    const CROSS_CAP_TOLERANCE: f32 = 0.02;
+    // How far each bounce cap's mean is allowed to sit from the analytic target. The
+    // same measurement: 1.3 percent truncation loss at cap 12 (nothing at 64 and 256)
+    // plus about 0.1 percent noise, five standard deviations of headroom. Nowhere close
     // to the ~0.48-0.50 an unguarded entry-split regression (see the decision record
-    // above) would produce.
-    const ANALYTIC_TOLERANCE: f32 = 0.05;
+    // above) would produce, and tight enough that a branch mis-weighted by a few
+    // percent fails.
+    const ANALYTIC_TOLERANCE: f32 = 0.02;
     // A generous but finite ceiling on plausible brightness -- comfortably above the
     // analytic target, but many, many orders of magnitude below anything the original
     // per-bounce-doubling bug produced by max_bounces=64 (`examples/bounce_cost.rs`'s
@@ -102,44 +94,25 @@ fn birefringent_white_furnace_energy_conservation_holds() {
     // Analytic target: the same quadrature every other furnace test in this file uses --
     // now asserted against directly (see this test's doc comment for why a direct
     // assertion needs the entry-split path).
-    let mut target = Vec3::ZERO;
-    for step in 0..=(780 - 380) {
-        let lambda = 380.0f32 + step as f32;
-        let spec = rgb_to_spectral_radiance([L0, L0, L0], lambda);
-        target += cie_1931_cmf(lambda) * spec;
-    }
-    target /= 106.856;
+    let target = uniform_furnace_target(L0);
 
-    let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
     let mut means: Vec<(u32, Vec3)> = Vec::with_capacity(BOUNCE_CAPS.len());
     for &max_bounces in &BOUNCE_CAPS {
-        let mut sum = Vec3::ZERO;
-        let mut count = 0u32;
-        for iy in 0..GRID {
-            for ix in 0..GRID {
-                let ray =
-                    camera.generate_ray(ix as f32, iy as f32, GRID as f32, GRID as f32, 0.5, 0.5);
-                for s in 0..SAMPLES_PER_PIXEL {
-                    let pixel_id = (iy as u32) * (GRID as u32) + (ix as u32);
-                    let seed = hash_u32(pixel_id ^ hash_u32(s ^ 0x4257_4946));
-                    // trace_spectral_ray always runs with internal mode coupling
-                    // enabled (the same as every real production call site) -- see
-                    // that function's own doc comment.
-                    sum += trace_spectral_ray(
-                        ray,
-                        &planes,
-                        &material,
-                        max_bounces,
-                        EnvironmentSource::HdrMap(&env_map),
-                        seed,
-                        (hash_u32(seed) as f32) / 4_294_967_295.0,
-                        None,
-                    );
-                    count += 1;
-                }
-            }
-        }
-        let mean = sum / count as f32;
+        // trace_spectral_ray always runs with internal mode coupling
+        // enabled (the same as every real production call site) -- see
+        // that function's own doc comment.
+        let (mean, count) = furnace_mean_xyz(SAMPLES_PER_PIXEL, 0x4257_4946, |ray, seed, hero| {
+            trace_spectral_ray(
+                ray,
+                &planes,
+                &material,
+                max_bounces,
+                EnvironmentSource::HdrMap(&env_map),
+                seed,
+                hero,
+                None,
+            )
+        });
         let rel_err = |v: f32, t: f32| (v - t).abs() / t.abs().max(1e-6);
         let (ex, ey, ez) = (
             rel_err(mean.x, target.x),
@@ -213,8 +186,10 @@ fn birefringent_white_furnace_energy_conservation_holds() {
 fn frosted_girdle_birefringent_white_furnace_energy_conservation_holds() {
     const L0: f32 = 2.5;
     const SAMPLES_PER_PIXEL: u32 = 64;
-    const GRID: usize = 12;
-    const ANALYTIC_TOLERANCE: f32 = 0.05;
+    // Measured on 2026-10-01 by `furnace_noise_floor` at this sample budget: 1.65
+    // percent truncation loss at cap 12 (nothing at cap 256) plus about 0.15 percent
+    // noise; five standard deviations of headroom.
+    const ANALYTIC_TOLERANCE: f32 = 0.025;
 
     let planes = StandardGemCuts::standard_round_brilliant();
     let finishes = bruted_girdle_finishes(planes.len());
@@ -234,40 +209,22 @@ fn frosted_girdle_birefringent_white_furnace_energy_conservation_holds() {
     );
     let env_map = EnvironmentMap::uniform(1, 1, [L0, L0, L0]);
 
-    let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
-    let mut sum = Vec3::ZERO;
-    let mut count = 0u32;
-    for iy in 0..GRID {
-        for ix in 0..GRID {
-            let ray = camera.generate_ray(ix as f32, iy as f32, GRID as f32, GRID as f32, 0.5, 0.5);
-            for s in 0..SAMPLES_PER_PIXEL {
-                let pixel_id = (iy as u32) * (GRID as u32) + (ix as u32);
-                let seed = hash_u32(pixel_id ^ hash_u32(s ^ 0x4652_4247));
-                sum += trace_spectral_ray_with_finish(
-                    ray,
-                    &planes,
-                    &finishes,
-                    &material,
-                    12,
-                    EnvironmentSource::HdrMap(&env_map),
-                    seed,
-                    (hash_u32(seed) as f32) / 4_294_967_295.0,
-                    None,
-                );
-                count += 1;
-            }
-        }
-    }
-    let mean = sum / count as f32;
+    let (mean, count) = furnace_mean_xyz(SAMPLES_PER_PIXEL, 0x4652_4247, |ray, seed, hero| {
+        trace_spectral_ray_with_finish(
+            ray,
+            &planes,
+            &finishes,
+            &material,
+            12,
+            EnvironmentSource::HdrMap(&env_map),
+            seed,
+            hero,
+            None,
+        )
+    });
 
     // Analytic target: same quadrature every other furnace test in this file uses.
-    let mut target = Vec3::ZERO;
-    for step in 0..=(780 - 380) {
-        let lambda = 380.0f32 + step as f32;
-        let spec = rgb_to_spectral_radiance([L0, L0, L0], lambda);
-        target += cie_1931_cmf(lambda) * spec;
-    }
-    target /= 106.856;
+    let target = uniform_furnace_target(L0);
 
     let rel_err = |v: f32, t: f32| (v - t).abs() / t.abs().max(1e-6);
     let (ex, ey, ez) = (

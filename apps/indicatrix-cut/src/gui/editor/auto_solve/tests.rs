@@ -2,16 +2,20 @@
 //! design/generation stash, and the cancellable-solve latency guarantee.
 
 use super::{
-    dispatch::{cancel_in_flight_solve, is_current, solve_cancellably, solving_banner},
+    dispatch::{
+        cancel_in_flight_solve, is_current, queue_or_claim_solve_slot, solve_cancellably,
+        solving_banner,
+    },
     replan::{stash_current_design, take_matching_design},
     runtime::{PendingDispatch, RUNTIME},
     scheduling::{
         auto_solve_off_note, last_measured_solve_duration, last_solve, record_solve_duration,
-        reset_for_new_design, should_schedule_auto_solve, should_solve_synchronously,
+        reset_for_new_design, should_schedule_auto_solve,
     },
 };
 use indicatrix::geometry::meet_solver::SolveError;
 use indicatrix_cut_core::{Design, DesignSolveError};
+use indicatrix_editor::solve_policy::should_solve_synchronously;
 use std::{
     collections::BTreeSet,
     sync::{
@@ -91,14 +95,14 @@ fn a_real_slow_measurement_loses_even_with_few_planes() {
 
 #[test]
 fn last_measured_solve_duration_reflects_record_solve_duration() {
-    reset_for_new_design();
+    reset_for_new_design(0);
     assert_eq!(last_measured_solve_duration(), None);
     record_solve_duration(Duration::from_millis(77));
     assert_eq!(
         last_measured_solve_duration(),
         Some(Duration::from_millis(77))
     );
-    reset_for_new_design();
+    reset_for_new_design(0);
     assert_eq!(last_measured_solve_duration(), None);
 }
 
@@ -107,7 +111,7 @@ fn last_solve_is_the_production_counterpart_of_last_measured_solve_duration() {
     // `view::refresh_all` reads this getter for
     // every non-wholesale caller -- it must agree with the test-only window
     // onto the same `Runtime` field at every point in the same sequence.
-    reset_for_new_design();
+    reset_for_new_design(0);
     assert_eq!(last_solve(), None);
     record_solve_duration(Duration::from_millis(123));
     assert_eq!(last_solve(), Some(Duration::from_millis(123)));
@@ -162,6 +166,7 @@ fn cancel_in_flight_solve_drops_a_queued_pending_dispatch() {
     RUNTIME.with(|cell| {
         cell.borrow_mut().pending_dispatch = Some(PendingDispatch {
             design: fixture_design(),
+            started_generation: 0,
             generation: Arc::new(AtomicU64::new(0)),
             multi_selected: BTreeSet::new(),
         });
@@ -174,6 +179,56 @@ fn cancel_in_flight_solve_drops_a_queued_pending_dispatch() {
              cancelled solve, not replay it once the in-flight worker \
              eventually frees the slot"
         );
+    });
+}
+
+#[test]
+fn queue_or_claim_solve_slot_captures_started_generation_at_queue_time_not_live() {
+    // Replay-after-edit: a `PendingDispatch` queued behind an in-flight
+    // solve must replay its OWN `started_generation` once that solve
+    // completes -- not whatever `generation` has moved on to by the time it is
+    // replayed, or an edit that landed while the queued dispatch was still
+    // waiting would get silently applied as though it belonged to the
+    // replay's own (older) design snapshot.
+    RUNTIME.with(|cell| {
+        let mut rt = cell.borrow_mut();
+        rt.solve_in_flight = true;
+        rt.pending_dispatch = None;
+    });
+    let generation = Arc::new(AtomicU64::new(5));
+    let cancel = Arc::new(AtomicBool::new(false));
+    let design = fixture_design();
+    let multi_selected = BTreeSet::new();
+
+    let queued = queue_or_claim_solve_slot(&design, &generation, 5, &multi_selected, &cancel);
+    assert!(
+        queued,
+        "a solve already in flight must queue, not claim the slot"
+    );
+
+    // An edit lands after this dispatch queued but before it is replayed.
+    generation.store(99, Ordering::Relaxed);
+
+    RUNTIME.with(|cell| {
+        let pending_generation = cell
+            .borrow()
+            .pending_dispatch
+            .as_ref()
+            .map(|p| p.started_generation);
+        assert_eq!(
+            pending_generation,
+            Some(5),
+            "the queued dispatch must keep the generation it was snapshotted \
+             at, not read the live counter after a later edit moved it on"
+        );
+    });
+
+    // Leave `RUNTIME` as other tests on this pooled thread expect.
+    RUNTIME.with(|cell| {
+        let mut rt = cell.borrow_mut();
+        rt.solve_in_flight = false;
+        rt.pending_dispatch = None;
+        rt.current_cancel = None;
     });
 }
 
@@ -194,7 +249,7 @@ fn cancel_in_flight_solve_drops_the_pending_debounce() {
 #[test]
 fn reset_for_new_design_drops_the_idle_replan_timer() {
     RUNTIME.with(|cell| cell.borrow_mut().idle_replan = Some(slint::Timer::default()));
-    reset_for_new_design();
+    reset_for_new_design(0);
     RUNTIME.with(|cell| {
         assert!(
             cell.borrow().idle_replan.is_none(),
@@ -220,7 +275,7 @@ fn cancel_in_flight_solve_drops_the_idle_replan_timer() {
 
 #[test]
 fn cancel_in_flight_solve_leaves_the_measurement_and_design_stash_untouched() {
-    reset_for_new_design();
+    reset_for_new_design(0);
     record_solve_duration(Duration::from_millis(250));
     stash_current_design(3, Arc::new(fixture_design()), BTreeSet::new());
     cancel_in_flight_solve();
@@ -245,7 +300,7 @@ fn record_solve_duration_is_visible_to_the_next_schedule_decision() {
     record_solve_duration(Duration::from_millis(42));
     let last = RUNTIME.with(|cell| cell.borrow().last_solve);
     assert_eq!(last, Some(Duration::from_millis(42)));
-    reset_for_new_design();
+    reset_for_new_design(0);
     let last = RUNTIME.with(|cell| cell.borrow().last_solve);
     assert_eq!(last, None);
 }
@@ -282,7 +337,7 @@ fn take_matching_design_returns_none_when_nothing_stashed() {
     // `reset_for_new_design` (not just letting the field default) since this
     // module's `RUNTIME` is a `thread_local!` a prior test on the same pooled
     // test thread may have already stashed into.
-    reset_for_new_design();
+    reset_for_new_design(0);
     assert!(take_matching_design(1).is_none());
 }
 

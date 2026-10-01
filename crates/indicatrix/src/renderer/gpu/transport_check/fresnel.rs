@@ -10,6 +10,7 @@ use super::{STOKES_SAMPLES, StokesCaseBankConfig, UlpCheckResult, run_stokes_cas
 // fresnel_reflection
 // ---------------------------------------------------------------------------------
 
+/// One input case for the fresnel reflection check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct FresnelReflectionCase {
@@ -77,6 +78,7 @@ fn cpu_fresnel_reflection(c: &FresnelReflectionCase) -> [f32; 4] {
     s.apply_matrix(&m).to_vec4().to_array()
 }
 
+/// Runs the fresnel reflection check against the CPU reference.
 #[must_use]
 pub fn run_fresnel_reflection(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -96,6 +98,7 @@ pub fn run_fresnel_reflection(
 // fresnel_transmission
 // ---------------------------------------------------------------------------------
 
+/// One input case for the fresnel transmission check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct FresnelTransmissionCase {
@@ -170,6 +173,7 @@ fn cpu_fresnel_transmission(c: &FresnelTransmissionCase) -> [f32; 4] {
     s.apply_matrix(&m).to_vec4().to_array()
 }
 
+/// Runs the fresnel transmission check against the CPU reference.
 #[must_use]
 pub fn run_fresnel_transmission(
     ctx: &crate::renderer::gpu::GpuContext,

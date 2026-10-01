@@ -22,6 +22,7 @@ mod query;
 mod stats;
 mod types;
 
+pub(in crate::db::sqlite) use predicate::register_fold_function;
 #[cfg(test)]
 pub(super) use stats::percentile_of_sorted;
 pub use types::{DisplayFilters, SEARCH_RESULT_CAP, SortOrder};

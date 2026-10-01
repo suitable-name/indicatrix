@@ -40,7 +40,7 @@ The Tier tab has these fields:
     the three real-world **targets** — see "Targets: cut to depth, girdle
     thickness, table width," below.
 - **Name** — the facet's name, referenced by other tiers' "Named facet(s)"
-  field and shown in the tier list and cutting schedule.
+  field and shown in the tier list and cutting instructions.
 - **Indices (comma-separated)** — which index position(s) on the gear this
   tier occupies. A single value for one facet, several for a symmetric
   family (e.g. `0, 12, 24, 36, 48, 60, 72, 84` for an 8-fold family on a
@@ -62,6 +62,11 @@ way — Chapter 3 — to load it here). The save button at the bottom of the
 tab reads **Add Tier** in the first case and **Save Tier** in the second; a
 **New** button next to it clears the form back to add-mode without
 touching the tier list.
+
+A new tier can also be started without the form: the Solid viewport's
+**Slice** mode lets you draw a line across the stone and adds the tier it
+defines, snapped to the index wheel, in one undo step (Chapter 13, "Slicing a
+new facet with the mouse").
 
 **Saving does not re-solve.** Clicking Save Tier (or Add Tier, or Remove,
 or Apply Preform, or Undo/Redo) updates the tier list's editable columns
@@ -155,9 +160,9 @@ any one selected tier — they describe the whole design:
   shown at all when there is nothing to judge yet (the design does not
   currently solve/close).
 - **Yield** — the effective-RI readout and its source, Girdle Diameter
-  (mm), a Yield Material and Specific Gravity Override for the carat
-  estimate (a separate control from Design Settings' own Material combo —
-  Chapter 6), an **Apply Yield Inputs** button, and the resulting
+  (mm), a Specific Gravity Override for the carat estimate (blank uses the
+  specific gravity of the material set in Design Settings — Chapter 6), an
+  **Apply Yield Inputs** button, and the resulting
   Volumetric Yield, Est. Carat Weight, and Specific Gravity Used, each
   blank until the next Solve.
 
@@ -213,6 +218,10 @@ Nudging the same tier repeatedly in quick succession (within about half a
 second between keystrokes/scroll ticks) collapses into a single undo step,
 so pressing Undo once after a burst of nudges reverts the whole burst, not
 just the last step.
+
+You can also change a tier's angle by dragging a handle on its facet in the
+Solid viewport, with snapping and live feedback; see Chapter 13, "Dragging a
+facet: the angle, depth and index handles".
 
 ## Duplicating a tier
 

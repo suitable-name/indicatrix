@@ -88,6 +88,16 @@
 //! alone, uncontended, exactly as `run_chunk_equivalence` already proves for the
 //! non-interleaved chunk-vs-chunk-count case.
 //!
+//! ## `accum` is written only on `Done`
+//!
+//! Turns run against a backend-owned scratch buffer (zeroed per request, pooled across
+//! requests), and [`GpuBackend::try_accumulate_cancellable`] adds it into the caller's
+//! `accum` once the last turn completes. A decline or cancellation after some turns
+//! already ran (a device lost mid-request, an uncaptured wgpu error caught at the end of a
+//! turn, a cancel between turns) discards the scratch instead, so a caller that falls back
+//! to the CPU for the full `spp` never double counts the samples the GPU had finished.
+//! Cost: one zero-fill and one add pass over the frame per request.
+//!
 //! ## Desktop viewport and export: no contention to be fair about
 //!
 //! `apps/indicatrix-cut`'s live viewport (`ViewportGpu`, in
@@ -107,6 +117,21 @@
 //! one `Arc<GpuBackend>` to every connection's own thread) is simply the OTHER caller
 //! that shares one backend across threads, not the only one.
 //!
+//! # Device loss and recovery
+//!
+//! A [`GpuFrameError::DeviceLost`](super::gpu::GpuFrameError::DeviceLost) (or a renderer
+//! mutex poisoned by a panic) is a decline like any other for the request that hits it,
+//! and additionally marks the backend lost: [`GpuBackend::is_lost`] turns `true`,
+//! [`GpuBackend::adapter_label`] returns `None`, and every call declines without touching
+//! the renderer. It is not permanent. Once 30 s have passed since the loss (or since the
+//! previous failed attempt), the next request re-acquires an adapter and compiles a fresh
+//! renderer; on success the lost flag clears and the GPU serves again, with the pipeline
+//! kind carried over. At most 6 attempts start in any hour, so a device that keeps
+//! failing is left alone (the policy lives in [`recovery`]). Only a backend that HAD a
+//! renderer can recover: one that found no adapter at start-up stays declining, as does
+//! [`GpuBackend::disabled`]. A caller that advertises the backend (a worker's `HELLO`)
+//! calls [`GpuBackend::try_recover`] first so it reports the current state.
+//!
 //! # Module layout
 //!
 //! [`turnstile`] is the FIFO ticket lock ([`turnstile::Turnstile`]/its RAII turn guard)
@@ -125,6 +150,8 @@ use crate::{
 
 #[cfg(feature = "gpu")]
 mod backend;
+#[cfg(feature = "gpu")]
+mod recovery;
 #[cfg(not(feature = "gpu"))]
 mod stub;
 #[cfg(all(test, feature = "gpu"))]
@@ -143,16 +170,23 @@ pub use stub::GpuBackend;
 /// free of `#[cfg]`; the non-`gpu` stand-in just ignores the whole bundle.
 #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
 pub struct GpuSceneRef<'a> {
+    /// Camera the frame is rendered from.
     pub camera: &'a Camera,
+    /// Width.
     pub width: u32,
+    /// Height.
     pub height: u32,
+    /// Facet planes of the stone.
     pub planes: &'a [GpuFacetPlane],
     /// Per-plane surface finish, indexed in step with `planes`. `&[]` means every facet
     /// is polished -- see `GpuFrameScene::facet_finishes` on how a shorter slice is
     /// padded.
     pub facet_finishes: &'a [FacetFinish],
+    /// Gem material.
     pub material: &'a GemMaterial,
+    /// Maximum number of internal bounces per path.
     pub max_bounces: u32,
+    /// Lighting environment.
     pub environment: EnvironmentSource<'a>,
 }
 
@@ -167,17 +201,20 @@ pub struct GpuSceneRef<'a> {
 pub enum GpuAccumulate {
     /// Every requested sample was traced and added into `accum`.
     Done,
-    /// The GPU declined this dispatch before tracing anything -- same meaning as
+    /// The GPU did not produce this request -- same meaning as
     /// [`GpuBackend::try_accumulate`] returning `false`: `accum` untouched, fall back to
     /// the CPU tracer for the FULL `spp`. See the module doc's "Declining is normal"
-    /// section; also covers a permanently lost device (see `GpuFrameError::DeviceLost`
-    /// and the `lost` field on the `gpu`-gated `GpuBackend`).
+    /// section; also covers a lost device (see `GpuFrameError::DeviceLost`, the `lost`
+    /// field on the `gpu`-gated `GpuBackend`, and the module doc's "Device loss and
+    /// recovery" section). The guarantee holds however late the decline happens: a
+    /// failure on the last turn of a many-turn request leaves `accum` exactly as it was
+    /// passed in.
     Declined,
     /// `cancel` was observed set before every sample was traced.
     ///
-    /// `accum` is GUARANTEED untouched (drain-then-discard, see
-    /// `AccumulateOutcome::Cancelled`). Either fall back to the CPU for the full `spp`,
-    /// or simply stop, exactly as if this call had never been made.
+    /// `accum` is untouched, however many turns had already run. Either fall back to the
+    /// CPU for the full `spp`, or simply stop, exactly as if this call had never been
+    /// made.
     Cancelled,
 }
 
@@ -201,7 +238,9 @@ pub enum GpuAccumulate {
 /// measuring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GpuPipelineKind {
+    /// One monolithic kernel traces each path to completion.
     #[default]
     Megakernel,
+    /// Separate kernels advance all paths one bounce at a time.
     Wavefront,
 }

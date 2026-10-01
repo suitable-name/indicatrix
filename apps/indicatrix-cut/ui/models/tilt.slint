@@ -160,6 +160,10 @@ export global TiltVideoExportModel {
     in property <float> progress: 0.0; // 0.0..=1.0
     in property <int> current_frame: 0;
     in property <int> total_frames: 0;
+    // A short "about N s/min/h left" reading alongside `progress`'s percentage --
+    // `""` while there isn't yet enough history for an estimate (see
+    // `gui::progress_eta::EtaEstimator`), never a raw seconds count.
+    in property <string> eta_text: "";
     in property <string> status_message: "";
     in property <bool> has_error: false;
 

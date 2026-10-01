@@ -1,0 +1,100 @@
+// State for the Solid view's direct-manipulation tools (`SolidView`): the three drag
+// handles (angle, depth, index) on the selected facet, the hint line under the
+// toolbar, the Snap pill and the Slice tool. The web counterpart of the desktop's
+// `ManipulateModel` (`apps/indicatrix-cut/ui/models/manipulate.slint`); Rust reaches it
+// through `ui.global::<ManipulateModel>()` (`src/views/manip/`), and the math behind it
+// is `indicatrix_editor::manipulate`. Named in `app.slint`'s export block, which is what
+// makes it a Rust type.
+//
+// Every position here is in the view's LOGICAL coordinates (the same space the pointer
+// events use): Rust converts from the raster's pick frame through the `image-fit:
+// contain` placement (`indicatrix_solid::preview::view::ContainFit`).
+export global ManipulateModel {
+    // Whether the handle overlay is drawn and can be grabbed. Hidden by Rust when
+    // nothing is selected, the view is the Diagram, the design is not solved, or the
+    // selected tier's centroid is off screen.
+    in property <bool> handles-visible: false;
+    // `false` for a tier with no index-wheel positions: turning nothing is
+    // meaningless, so its index handle is neither drawn nor grabbable.
+    in property <bool> index-visible: true;
+    // The selected facet's centroid, where the three handles fan out from.
+    in property <length> anchor-x;
+    in property <length> anchor-y;
+    // The tip of each handle.
+    in property <length> angle-tip-x;
+    in property <length> angle-tip-y;
+    in property <length> depth-tip-x;
+    in property <length> depth-tip-y;
+    in property <length> index-tip-x;
+    in property <length> index-tip-y;
+    // The handle to draw bright and large: -1 none, 0 angle, 1 depth, 2 index. Rust
+    // keeps it on the dragged handle for the whole drag.
+    in property <int> hovered-handle: -1;
+    // True from a granted `drag-begin` until `drag-end`/`drag-cancel`. Rust writes it;
+    // `solid.slint` reads it right after calling `drag-begin` to learn whether the
+    // press grabbed a handle or was refused, and in the Escape handler.
+    in-out property <bool> dragging: false;
+    // The one-line hint under the toolbar; empty hides the strip.
+    in property <string> hint-text: "";
+    // The toolbar's Snap pill: true turns angle and depth snapping off (the index
+    // handle always moves in whole teeth). Not persisted.
+    in-out property <bool> snap-off: false;
+
+    // Which handle tip, if any, lies under the pointer: -1 none, 0 angle, 1 depth,
+    // 2 index.
+    callback handle-hit-test(length, length) -> int;
+    // The pointer moved with no drag in progress: light the handle under it and show
+    // what dragging it does.
+    callback handle-hover(length, length);
+    // A left press landed on handle `kind`. Rust sets `dragging` when it grants the
+    // drag and leaves it false when it refuses (with an explanation in `hint-text`).
+    callback drag-begin(int, length, length);
+    // The pointer moved during a drag; the last argument is whether Shift is held
+    // (fine snapping).
+    callback drag-move(length, length, bool);
+    // The button was released: keep the drag as one undo step.
+    callback drag-end();
+    // Escape (or a cancelled pointer): restore the design as it was at `drag-begin`.
+    callback drag-cancel();
+    // The Snap pill was toggled (`snap-off` already holds its new value).
+    callback snap-toggled();
+
+    // -- Slice mode: cut a new facet with a mouse line -------------------------------
+    // Lit while the Slice pill (or the S key) has the tool on. While it is on, a left
+    // drag draws a line instead of orbiting, and the only handles shown are the
+    // provisional tier's. Slint writes it (pill, S, Escape); Rust also clears it (Keep).
+    in-out property <bool> slice-mode: false;
+    // The rubber band while a line is being drawn (start -> end).
+    in property <bool> slice-line-visible: false;
+    in property <length> line-x0;
+    in property <length> line-y0;
+    in property <length> line-x1;
+    in property <length> line-y1;
+    // True while a provisional (not yet kept) slice tier exists: the hint bar then
+    // offers Keep, Discard and Flip, and facet clicks select nothing.
+    in property <bool> provisional-active: false;
+    // The provisional tier's name ("C3"), for the Keep button.
+    in property <string> provisional-label: "";
+    // Whether a new facet gets the whole symmetric orbit of the snapped index (the
+    // default) or a single index.
+    in-out property <bool> slice-symmetric: true;
+
+    // The Slice pill or S was used (`slice-mode` already holds its new value).
+    callback slice-toggled();
+    // A left press while `slice-mode` is on, and not on a handle, starts a line here.
+    callback slice-begin(length, length);
+    // The pointer moved while drawing the line.
+    callback slice-move(length, length);
+    // The release: snap the plane to the gear and show the provisional tier.
+    callback slice-end(length, length);
+    // Escape (or a cancelled pointer) while drawing: drop the line, change nothing.
+    callback slice-cancel();
+    // Cut the other side of the same line.
+    callback slice-flip();
+    // Commit the provisional tier as ONE undoable step.
+    callback slice-keep();
+    // Drop the provisional tier.
+    callback slice-discard();
+    // The Symmetric pill was toggled (`slice-symmetric` already holds its new value).
+    callback slice-symmetric-toggled();
+}

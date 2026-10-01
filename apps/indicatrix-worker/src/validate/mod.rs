@@ -26,7 +26,10 @@ pub const MAX_PIXELS: u32 = 7680 * 4320;
 /// [`render_cmd::MAX_CLI_SAMPLES`](crate::render_cmd::MAX_CLI_SAMPLES). Without this
 /// cap, a malicious or buggy `RenderRequest` could make a worker spend unbounded CPU
 /// time before ever replying -- a denial-of-service vector, not a memory one.
-pub const MAX_SAMPLES_PER_REQUEST: u32 = 65_536;
+///
+/// The one definition lives in `indicatrix_dispatch`, where the coordinator sizes its
+/// chunks against it.
+pub use indicatrix_dispatch::DEFAULT_MAX_CHUNK_SAMPLES as MAX_SAMPLES_PER_REQUEST;
 
 /// Hard cap on `SceneState::max_bounces`.
 ///
@@ -50,7 +53,16 @@ pub const MAX_BOUNCES: u32 = 128;
 /// catching a Sellmeier/Cauchy fit gone to NaN, negative, or many orders of magnitude
 /// off, before it reaches `trace_spectral_ray`.
 pub const MIN_PLAUSIBLE_RI: f32 = 1.0;
+/// Largest refractive index accepted as plausible.
 pub const MAX_PLAUSIBLE_RI: f32 = 6.0;
+
+/// Hard cap on `scene.planes.len()`.
+///
+/// A plausible cut has well under a thousand facets; without this cap, an unsolved
+/// design's raw preform planes, or an attacker- or fat-finger-supplied scene, could
+/// send enough planes to make `build_plane_soa` and the GPU encoding path spend
+/// unbounded time and memory before ever tracing a sample.
+pub const MAX_PLANES: usize = 4096;
 
 /// Validates a fully-resolved [`SceneState`].
 ///
@@ -94,6 +106,12 @@ pub fn validate_scene(scene: &SceneState) -> Result<(), String> {
 
     if scene.planes.is_empty() {
         return Err("scene.planes must not be empty".to_string());
+    }
+    if scene.planes.len() > MAX_PLANES {
+        return Err(format!(
+            "scene.planes has {} facet(s), exceeding the maximum of {MAX_PLANES}",
+            scene.planes.len()
+        ));
     }
     for (i, plane) in scene.planes.iter().enumerate() {
         let normal = Vec3::from_array(plane.normal);
@@ -241,9 +259,18 @@ pub fn validate_request(scene: &SceneState, first_sample: u32, samples: u32) -> 
             "samples per request must be <= {MAX_SAMPLES_PER_REQUEST} (got {samples})"
         ));
     }
-    if first_sample.checked_add(samples).is_none() {
+    // Beyond plain overflow: `first_sample + samples` must also leave headroom below
+    // `u32::MAX` for at least one more `MAX_SAMPLES_PER_REQUEST`-sized chunk -- other
+    // absolute-sample-index arithmetic downstream (chunk end bounds, a coordinator's
+    // own accounting) adds a further chunk's worth without re-checking this request's
+    // own bound, and must never wrap doing so.
+    if first_sample
+        .checked_add(samples)
+        .is_none_or(|end| end > u32::MAX - MAX_SAMPLES_PER_REQUEST)
+    {
         return Err(format!(
-            "first_sample + samples overflows u32 (first_sample={first_sample}, samples={samples})"
+            "first_sample + samples must not overflow u32 and must leave headroom below \
+             u32::MAX for chunking (first_sample={first_sample}, samples={samples})"
         ));
     }
     Ok(())
@@ -516,6 +543,34 @@ mod tests {
     fn validate_request_rejects_first_sample_plus_samples_overflow() {
         let scene = valid_scene();
         assert!(validate_request(&scene, u32::MAX - 10, 100).is_err());
+    }
+
+    /// A request that doesn't literally overflow `u32` but leaves no headroom for a
+    /// further `MAX_SAMPLES_PER_REQUEST`-sized chunk below `u32::MAX` is still
+    /// rejected.
+    #[test]
+    fn validate_request_rejects_a_request_leaving_no_chunking_headroom() {
+        let scene = valid_scene();
+        let end_too_close = u32::MAX - MAX_SAMPLES_PER_REQUEST + 1;
+        assert!(validate_request(&scene, end_too_close - 16, 16).is_err());
+        // Exactly at the headroom boundary is still fine.
+        let end_at_boundary = u32::MAX - MAX_SAMPLES_PER_REQUEST;
+        assert!(validate_request(&scene, end_at_boundary - 16, 16).is_ok());
+    }
+
+    #[test]
+    fn rejects_too_many_planes() {
+        let mut scene = valid_scene();
+        scene.planes = vec![scene.planes[0]; MAX_PLANES + 1];
+        let err = validate_scene(&scene).unwrap_err();
+        assert!(err.contains("exceeding the maximum"), "{err}");
+    }
+
+    #[test]
+    fn accepts_planes_up_to_the_cap() {
+        let mut scene = valid_scene();
+        scene.planes = vec![scene.planes[0]; MAX_PLANES];
+        assert!(validate_scene(&scene).is_ok());
     }
 
     #[test]

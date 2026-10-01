@@ -10,6 +10,12 @@ use std::{
 
 use indicatrix::geometry::meet_solver::MeetConstraint;
 use indicatrix_cut_core::{Edit, TierTarget};
+// The error-field classification and the non-integral-index warning moved to
+// `indicatrix_editor::loading` (shared with the web inspector) -- see
+// `report_tier_form_error`'s doc comment for what the field strings mean. Re-exported at
+// their old path (`super::tests` exercises the classification directly).
+use indicatrix_editor::loading::non_integral_index_warning;
+pub(super) use indicatrix_editor::loading::tier_form_error_field;
 use slint::{ComponentHandle, SharedString};
 
 use super::{nudge::tier_nudge_label, tier_generation::next_free_block_name};
@@ -35,13 +41,7 @@ use crate::{
 /// other_tier_names` so `parse_tier_form` can reject name collisions. `excluded_index
 /// < 0` (a brand-new tier) excludes nothing, since there is no existing row to exempt.
 fn other_tier_names_excluding(st: &EditorState, excluded_index: i32) -> Vec<String> {
-    st.design
-        .tiers
-        .iter()
-        .enumerate()
-        .filter(|&(i, _)| excluded_index < 0 || i != excluded_index as usize)
-        .flat_map(|(_, tier)| tier.names().into_iter().map(str::to_string))
-        .collect()
+    indicatrix_editor::tier_save::other_tier_names_excluding(&st.design, excluded_index)
 }
 
 /// [`setup_save_tier_callback`]'s successful-`AddTier` label, looked up while
@@ -64,37 +64,6 @@ fn select_and_announce_added_tier(ui: &MainWindow, dirty_index: usize, label: Op
         .set_selected_tier_index(dirty_index as i32);
     if let Some(label) = label {
         show_toast(ui, &format!("Added {label}"), "info");
-    }
-}
-
-/// [`setup_save_tier_callback`]'s edit + dirty-index pair: a new tier
-/// (`index < 0`) inserts right after the currently selected row instead of
-/// always appending -- an out-of-range (or no) selection falls back to the
-/// previous append-at-end behavior -- while an existing tier (`index >= 0`)
-/// simply modifies itself in place.
-fn tier_save_edit(
-    ui: &MainWindow,
-    st: &EditorState,
-    index: i32,
-    tier: indicatrix_cut_core::ConstraintTier,
-) -> (usize, Edit) {
-    if index < 0 {
-        let append_index = st.design.tiers.len();
-        let insert_after_selected =
-            usize::try_from(ui.global::<EditorModel>().get_selected_tier_index())
-                .ok()
-                .filter(|&i| i < append_index)
-                .map_or(append_index, |i| i + 1);
-        (
-            insert_after_selected,
-            Edit::AddTier {
-                index: insert_after_selected,
-                tier,
-            },
-        )
-    } else {
-        let index = index as usize;
-        (index, Edit::ModifyTier { index, tier })
     }
 }
 
@@ -142,23 +111,10 @@ fn tier_save_edit_with_target(
     tier: indicatrix_cut_core::ConstraintTier,
     target: Option<TierTarget>,
 ) -> (usize, Edit) {
-    let had_target = usize::try_from(index)
-        .ok()
-        .and_then(|i| st.design.tier_target(i))
-        .is_some();
-    let (dirty_index, edit) = tier_save_edit(ui, st, index, tier);
-    let edit = if target.is_some() || had_target {
-        Edit::Batch(vec![
-            edit,
-            Edit::SetTierTarget {
-                index: dirty_index,
-                target,
-            },
-        ])
-    } else {
-        edit
-    };
-    (dirty_index, edit)
+    let selected = usize::try_from(ui.global::<EditorModel>().get_selected_tier_index()).ok();
+    indicatrix_editor::tier_save::tier_save_edit_with_target(
+        &st.design, index, tier, target, selected,
+    )
 }
 
 /// [`setup_save_tier_callback`]'s preamble: the current row's carried-through
@@ -327,7 +283,8 @@ pub(in crate::gui::editor) fn setup_save_tier_callback(
                     // A brand-new tier saved with a blank Name
                     // field would otherwise stay unnamed and un-meetable (
                     // `ConstraintTier::names()` returns nothing for an empty name) --
-                    // auto-name it here, matching what Duplicate already does for
+                    // auto-name it here (`G<n>` at 90 degrees, else `P<n>`/`C<n>`
+                    // by the angle's sign), matching what Duplicate already does for
                     // its own copies. Only for a fresh `AddTier` (`index < 0`): an
                     // existing tier's name was either already set or the cutter just
                     // deliberately blanked it, neither of which this should override.
@@ -361,6 +318,14 @@ pub(in crate::gui::editor) fn setup_save_tier_callback(
                             &format!("No facet named '{bad_name}' -- check the Meets field."),
                             "constraint",
                         );
+                        return;
+                    }
+                    // Blanking the name of a tier other tiers meet by name would leave
+                    // their references dangling: refuse, at the Name field.
+                    if let Some(message) = indicatrix_editor::tier_save::unnaming_blocked_message(
+                        &st.design, index, &name,
+                    ) {
+                        report_tier_form_error(&ui, &message, "name");
                         return;
                     }
                     let (dirty_index, edit) =
@@ -410,64 +375,4 @@ fn report_tier_form_error(ui: &MainWindow, message: &str, field: &str) {
     model.set_tier_form_error(message.into());
     model.set_tier_form_error_field(field.into());
     show_toast(ui, message, "error");
-}
-
-/// Classifies a [`loading::parse_tier_form`] error message into which tier-form
-/// field it concerns -- see [`report_tier_form_error`]'s own doc comment for what
-/// each returned string means. Matched on the exact wording `loading.rs`'s own
-/// error branches build (reads the rendered text rather than a structured
-/// variant, since `loading::parse_tier_form` returns a plain `String`); a message this
-/// does not recognize classifies as `""`, the same "general/unclassified" bucket
-/// an apply-time (post-parse) failure falls into.
-///
-/// `pub(super)` since [`super::tests`] exercises this classification directly.
-pub(super) fn tier_form_error_field(message: &str) -> &'static str {
-    if message.starts_with("Angle") {
-        "angle"
-    } else if message.starts_with("Another tier is already named") {
-        "name"
-    } else if message.starts_with("Index '") {
-        "indices"
-    } else if message.starts_with("\"Meet named\"")
-        || message.starts_with("Scale reference")
-        || message.starts_with("No facet named")
-        || message.starts_with("Unknown constraint kind")
-        // `loading::parse_tier_target`'s own three target labels --
-        // same "constraint" bucket as `Scale reference`'s wording, since these
-        // are all failures of the same Meets-combo numeric field.
-        || message.starts_with("Depth")
-        || message.starts_with("Girdle thickness")
-        || message.starts_with("Table width")
-    {
-        "constraint"
-    } else {
-        ""
-    }
-}
-
-/// `loading::parse_tier_form` deliberately ACCEPTS a
-/// non-integral index-wheel position (real `.asc` files carry a small but
-/// real fraction of these -- see that function's own doc comment) rather
-/// than rejecting it, since a hand-typed fraction is sometimes exactly what
-/// was meant. Without this warning a cutter gets no signal at all when it was
-/// NOT meant -- a stray extra digit ("12.5" for "12") would only ever surface
-/// later as an obscure solver oddity. Called from [`setup_save_tier_callback`] after a
-/// successful parse, alongside the toast, rather than inside `parse_tier_form`
-/// itself, so a save is never blocked by this -- only flagged. `1e-3`
-/// matches `indicatrix_cut_core`'s own `orbit::model::INDEX_TOLERANCE` order of
-/// magnitude for "close enough to call it a whole tooth".
-fn non_integral_index_warning(indices: &[f64]) -> Option<String> {
-    let mut fractional: Vec<String> = indices
-        .iter()
-        .filter(|v| (**v - v.round()).abs() > 1e-3)
-        .map(|v| format!("{v:.3}"))
-        .collect();
-    fractional.dedup();
-    if fractional.is_empty() {
-        return None;
-    }
-    Some(format!(
-        "Note: non-integral index position(s) {} -- check this was intentional.",
-        fractional.join(", ")
-    ))
 }

@@ -97,22 +97,12 @@ fn solve_one_impl(
     let mut bootstrapped: Vec<bool> = vec![false; tiers.len()];
     {
         // Side per tier (crown = +1, pavilion = -1, girdle = 0), mirroring the
-        // solver's normal-y classification (unsigned-zero angles inherit the
-        // previous tier's side).
-        let mut last_crown = true;
+        // solver's normal-y classification (the shared sign-of-angle rule, where a
+        // sign-negative zero is the culet).
         let side: Vec<i8> = tiers
             .iter()
             .map(|t| {
-                let crown = if t.angle_deg == 0.0 {
-                    if t.angle_deg.is_sign_negative() {
-                        false
-                    } else {
-                        last_crown
-                    }
-                } else {
-                    t.angle_deg > 0.0
-                };
-                last_crown = crown;
+                let crown = indicatrix::geometry::plane::tier_is_crown_side(t.angle_deg);
                 let y = if crown {
                     t.angle_deg.abs().to_radians().cos()
                 } else {

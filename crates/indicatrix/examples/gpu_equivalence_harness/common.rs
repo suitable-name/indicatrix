@@ -6,6 +6,8 @@
 
 use indicatrix::renderer::gpu::{GpuContext, estimator_check, layout_check, transport_check};
 
+use crate::summary::{UlpComparison, UlpTier, record_image, record_ulp};
+
 /// Common shape of a single struct-layout GPU echo check, used to build the
 /// `[(&str, LayoutCheckFn); N]` tables in [`crate::phase0_1_geometry_environment`]'s
 /// and [`crate::phase2_transport`]'s layout-check reporters.
@@ -19,6 +21,16 @@ pub fn report_transport_ulp_check<Case: Clone + std::fmt::Debug>(
     result: &transport_check::UlpCheckResult<Case>,
 ) -> bool {
     print!("[Tier 2] {label} ... ");
+    record_ulp(&UlpComparison {
+        tier: UlpTier::Tier2,
+        label,
+        comparisons: result.total_comparisons,
+        max_genuine_ulp: result.max_ulp,
+        max_raw_ulp: result.max_raw_ulp,
+        exempted: result.exempted_count,
+        budget: Some(result.budget),
+        passed: result.passed(),
+    });
     if result.passed() {
         println!(
             "PASS ({} comparisons, max genuine ULP = {}, max raw ULP = {}, {} exempted near-zero)",
@@ -58,6 +70,7 @@ pub fn report_image_comparison_material(
         result.width, result.height
     );
     let passed = result.passed();
+    record_image(label, result, passed);
     println!("{}", if passed { "PASS" } else { "FAIL" });
     println!(
         "  {} pixels, {} CPU samples/pixel, {} GPU samples/pixel (disjoint ranges)",

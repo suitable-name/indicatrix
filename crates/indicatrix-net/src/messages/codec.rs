@@ -19,6 +19,9 @@ pub enum NetError {
         declared: u32,
         actual: usize,
     },
+    /// A payload-carrying `StreamEvent` was handed no payload, or another variant was
+    /// handed one; writing it would desynchronise the stream.
+    PayloadPresenceMismatch,
 }
 
 impl std::fmt::Display for NetError {
@@ -32,6 +35,10 @@ impl std::fmt::Display for NetError {
                     "FRAME header declared payload_len={declared} but the payload frame carried {actual} bytes"
                 )
             }
+            Self::PayloadPresenceMismatch => write!(
+                f,
+                "a payload-carrying stream event needs a payload and every other variant must not have one"
+            ),
         }
     }
 }
@@ -103,12 +110,49 @@ pub fn read_message_bounded<R: std::io::Read, T: DeserializeOwned>(
     Ok(msg)
 }
 
+/// Reads one control message bounded by [`framing::MAX_CONTROL_FRAME_LEN`].
+///
+/// A control message is a `ClientMessage`, `StreamEvent` header, handshake or enrollment
+/// message. Every such message is far smaller; only the raw payload frames that follow a
+/// header are large, and those carry their own bounds.
+///
+/// # Errors
+///
+/// As [`read_message_bounded`].
+pub fn read_control_message<R: std::io::Read, T: DeserializeOwned>(
+    reader: &mut R,
+) -> Result<T, NetError> {
+    read_message_bounded(reader, framing::MAX_CONTROL_FRAME_LEN)
+}
+
+/// Decodes the bytes of a control frame a caller read itself (for example with
+/// [`framing::read_frame_continuing`]) as `T`.
+///
+/// # Errors
+///
+/// [`NetError::Postcard`] if the bytes don't decode as `T`.
+pub fn decode_control_frame<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, NetError> {
+    Ok(postcard::from_bytes(bytes)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         super::{PROTOCOL_VERSION, hello::Hello},
         *,
     };
+
+    #[test]
+    fn read_control_message_refuses_a_frame_over_one_mebibyte() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(framing::MAX_CONTROL_FRAME_LEN + 1).to_le_bytes());
+        let mut reader = std::io::Cursor::new(buf);
+        let err = read_control_message::<_, Hello>(&mut reader).unwrap_err();
+        assert!(matches!(
+            err,
+            NetError::Framing(FramingError::FrameTooLarge { .. })
+        ));
+    }
 
     /// A `Read` that only ever hands back 2 bytes per call, regardless of the caller's
     /// buffer size -- forces `read_message` to exercise `read_exact`'s partial-read

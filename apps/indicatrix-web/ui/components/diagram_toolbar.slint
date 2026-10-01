@@ -1,0 +1,103 @@
+import { Theme } from "theme.slint";
+import { SolidModel } from "solid_model.slint";
+import { SolidPill } from "solid_pill.slint";
+
+// The Crown / Pavilion / Profile enlarge pills (click the enlarged one again for all
+// three panels).
+component PanelPills inherits HorizontalLayout {
+    spacing: 8px;
+    SolidPill {
+        text: "Crown";
+        hint: "Enlarge the crown panel; click again for all three.";
+        active: SolidModel.enlarged-panel == 0;
+        clicked => {
+            SolidModel.enlarged-panel = SolidModel.enlarged-panel == 0 ? -1 : 0;
+            SolidModel.options-changed();
+        }
+    }
+    SolidPill {
+        text: "Pavilion";
+        hint: "Enlarge the pavilion panel; click again for all three.";
+        active: SolidModel.enlarged-panel == 1;
+        clicked => {
+            SolidModel.enlarged-panel = SolidModel.enlarged-panel == 1 ? -1 : 1;
+            SolidModel.options-changed();
+        }
+    }
+    SolidPill {
+        text: "Profile";
+        hint: "Enlarge the profile panel; click again for all three.";
+        active: SolidModel.enlarged-panel == 2;
+        clicked => {
+            SolidModel.enlarged-panel = SolidModel.enlarged-panel == 2 ? -1 : 2;
+            SolidModel.options-changed();
+        }
+    }
+}
+
+// The Diagram tab's overlay toolbar, modelled on the desktop's
+// `solid_viewport/toolbar.slint` in its Diagram view mode: "Reset View" (zoom and
+// pan), the Crown/Pavilion/Profile enlarge pills, and the status line. The four pills
+// take about 370px, so a narrower view wraps the enlarge pills under "Reset View".
+export component DiagramToolbar inherits VerticalLayout {
+    x: 0px;
+    y: 0px;
+    width: 100%;
+    height: 100%;
+    padding: 10px;
+    alignment: space-between;
+
+    in-out property <float> zoom: 1.0;
+    in-out property <length> pan-x: 0px;
+    in-out property <length> pan-y: 0px;
+
+    // The pill rows' height, for the timing readout that goes under them.
+    out property <length> top-height: root.wide ? 28px : 62px;
+
+    property <bool> wide: root.width >= 400px;
+
+    property <string> status-text: SolidModel.stale
+        ? (SolidModel.has-diagram ? "Preview one edit behind -- updating." : "Not solved -- click Solve to refresh.")
+        : SolidModel.status;
+
+    VerticalLayout {
+        spacing: 6px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            SolidPill {
+                text: "Reset View";
+                hint: "Back to zoom 1x, centred (the wheel zooms, a drag pans).";
+                clicked => {
+                    root.zoom = 1.0;
+                    root.pan-x = 0px;
+                    root.pan-y = 0px;
+                }
+            }
+            if root.wide: PanelPills {}
+            Rectangle { horizontal-stretch: 1; }
+        }
+        if !root.wide: HorizontalLayout {
+            spacing: 8px;
+            PanelPills {}
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+
+    if root.status-text != "": Rectangle {
+        height: 22px;
+        background: Theme.bg-input;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.border-subtle;
+        Text {
+            x: 8px;
+            width: parent.width - 16px;
+            text: root.status-text;
+            font-size: 11px;
+            color: Theme.text-secondary;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+}

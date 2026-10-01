@@ -191,13 +191,27 @@ pub(super) fn temp_db() -> (Arc<Mutex<Database>>, std::path::PathBuf) {
     (Arc::new(Mutex::new(db)), path)
 }
 
+/// [`design_record_at`] at revision `0`.
 pub(super) fn design_record(
     entry_id: i64,
     title: &str,
     url: &str,
     extra_field: &str,
 ) -> DesignRecord {
-    let mut record = DesignRecord {
+    design_record_at(entry_id, title, url, extra_field, 0)
+}
+
+/// A record at `revision`: its `version` is the revision token of `url` at that
+/// revision, the same value a summary from [`design_summary_at`] at the same revision
+/// carries as `design_version` -- as the real worker stamps both from one stamp.
+pub(super) fn design_record_at(
+    entry_id: i64,
+    title: &str,
+    url: &str,
+    extra_field: &str,
+    revision: u32,
+) -> DesignRecord {
+    DesignRecord {
         entry_id,
         title: title.to_string(),
         url: url.to_string(),
@@ -228,6 +242,14 @@ pub(super) fn design_record(
         symmetry_order: None,
         mirror_symmetry: None,
         designer: None,
+        // Stand-ins for a design with no citation/attachment/shape-category metadata
+        // on file yet -- these four fields (added alongside `PROTOCOL_VERSION` v15)
+        // aren't what any test in this module exercises either; see the comment on
+        // the ratio/symmetry fields just above.
+        source_citation: None,
+        pdf_file: None,
+        gem_file: None,
+        shape_category: None,
         angle_settings: vec![indicatrix_net::library::AngleSettingWire {
             order_index: 0,
             facet: "P1".to_string(),
@@ -236,17 +258,30 @@ pub(super) fn design_record(
             notes: String::new(),
         }],
         attachments: Vec::new(),
-        version: [0u8; 32],
-    };
-    record.version = content_hash(&[title.as_bytes(), url.as_bytes(), extra_field.as_bytes()]);
-    record
+        version: revision_token(url, revision),
+    }
 }
 
+/// [`design_summary_at`] at revision `0`.
 pub(super) fn design_summary(
     entry_id: i64,
     title: &str,
     url: &str,
     extra_field: &str,
+) -> DesignSummary {
+    design_summary_at(entry_id, title, url, extra_field, 0)
+}
+
+/// A summary whose `version` hashes only the fields a search row carries (here title,
+/// url and `extra_field`) and whose `design_version` is the revision token at `revision`
+/// -- so two summaries differing only in `revision` have equal `version`s, like a remote
+/// edit that leaves the search fields alone.
+pub(super) fn design_summary_at(
+    entry_id: i64,
+    title: &str,
+    url: &str,
+    extra_field: &str,
+    revision: u32,
 ) -> DesignSummary {
     DesignSummary {
         entry_id,
@@ -263,14 +298,20 @@ pub(super) fn design_summary(
         competition_diagram: None,
         ignored: false,
         version: content_hash(&[title.as_bytes(), url.as_bytes(), extra_field.as_bytes()]),
+        design_version: revision_token(url, revision),
     }
 }
 
+/// A trivial, deterministic stand-in for the worker's revision token of `url` at
+/// `revision`; nonzero for every input, like the real one.
+fn revision_token(url: &str, revision: u32) -> [u8; 32] {
+    content_hash(&[b"revision", url.as_bytes(), &revision.to_le_bytes()])
+}
+
 /// A trivial, deterministic stand-in for the real server-side SHA-256 hash (see
-/// `apps/indicatrix-worker/src/serve/library/mod.rs::hash_summary`/`hash_record`) --
-/// this module never computes or checks the hash's own algorithm, only compares two
-/// hashes for equality, so any deterministic function of the "content" a test cares
-/// about is sufficient.
+/// `apps/indicatrix-worker/src/serve/library/version_hash.rs`) -- this module never
+/// computes or checks the hash's own algorithm, only compares two hashes for equality, so
+/// any deterministic function of the "content" a test cares about is sufficient.
 fn content_hash(parts: &[&[u8]]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();

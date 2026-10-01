@@ -5,7 +5,10 @@ use indicatrix::renderer::gpu::{
     GpuContext, estimator_check, shading_normal_check, transport_check,
 };
 
-use crate::common::{report_image_comparison_material, report_transport_ulp_check};
+use crate::{
+    common::{report_image_comparison_material, report_transport_ulp_check},
+    summary::{UlpComparison, UlpTier, record_ulp},
+};
 
 // ---------------------------------------------------------------------------------
 // GPU port: frosted (bruted) girdle finish.
@@ -130,6 +133,16 @@ fn report_shading_normal_check(ctx: &GpuContext) -> bool {
     print!("[Tier 2] shading_normal_near_edge ... ");
     let result = shading_normal_check::run(ctx);
     let passed = result.passed();
+    record_ulp(&UlpComparison {
+        tier: UlpTier::Tier2,
+        label: "shading_normal_near_edge",
+        comparisons: result.total * 3,
+        max_genuine_ulp: result.max_genuine_ulp,
+        max_raw_ulp: result.max_raw_ulp,
+        exempted: result.exempted_near_zero,
+        budget: None,
+        passed,
+    });
     println!(
         "{} ({} cases x 3 components, max genuine ULP = {}, max raw ULP = {}, {} exempted \
          near-zero, {} over budget)",

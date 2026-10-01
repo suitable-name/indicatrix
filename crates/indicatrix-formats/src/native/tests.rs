@@ -247,6 +247,54 @@ fn material_table_custom_snapshot_round_trips_through_toml_text() {
     assert_eq!(parsed.material.custom, Some(snapshot));
 }
 
+/// A body colour attached via [`CustomMaterialSnapshot::with_body_colour`] must
+/// survive a TOML text round trip with the identical `f32` bits, written as the
+/// shortest decimal of each component (`0.2`, not `0.20000000298023224`).
+#[test]
+fn custom_snapshot_body_colour_round_trips_through_toml_text() {
+    let mut native = sample_file();
+    let colour = [0.2_f32, 0.6, 1.8];
+    let snapshot = CustomMaterialSnapshot::new(
+        1.62,
+        0.017,
+        -0.021,
+        Some(3.06),
+        "Trigonal",
+        "UniaxialNegative",
+    )
+    .with_body_colour(Some(colour));
+    native.material = native.material.with_custom(Some(snapshot.clone()));
+    let text = to_toml_string(&native).expect("must serialize");
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(compact.contains("absorption_rgb=[0.2,0.6,1.8"), "{text}");
+    let parsed = from_toml_str(&text).expect("must parse its own output");
+    let custom = parsed.material.custom.expect("custom snapshot loads back");
+    assert_eq!(custom, snapshot);
+    let got = custom.body_colour().expect("body colour loads back");
+    assert_eq!(got.map(f32::to_bits), colour.map(f32::to_bits));
+}
+
+/// A custom snapshot with no body colour must not write an `absorption_rgb` key,
+/// and must load back as colourless.
+#[test]
+fn custom_snapshot_without_body_colour_writes_no_absorption_rgb_key() {
+    let mut native = sample_file();
+    let snapshot = CustomMaterialSnapshot::new(
+        1.62,
+        0.017,
+        -0.021,
+        Some(3.06),
+        "Trigonal",
+        "UniaxialNegative",
+    );
+    native.material = native.material.with_custom(Some(snapshot));
+    let text = to_toml_string(&native).expect("must serialize");
+    assert!(!text.contains("absorption_rgb"), "{text}");
+    let parsed = from_toml_str(&text).expect("must parse");
+    let custom = parsed.material.custom.expect("custom snapshot loads back");
+    assert_eq!(custom.body_colour(), None);
+}
+
 /// A material with no custom snapshot must not even write a `[material.custom]`
 /// table, and must still load back as `None`.
 #[test]
@@ -256,6 +304,46 @@ fn material_table_with_no_custom_snapshot_omits_the_table() {
     assert!(!text.contains("[material.custom]"));
     let parsed = from_toml_str(&text).expect("must parse");
     assert_eq!(parsed.material.custom, None);
+}
+
+// --- `MaterialTable::body_colour_override` round-trips through TOML text ---
+
+/// A body-colour override attached via [`MaterialTable::with_body_colour_override`]
+/// must survive a serialize/parse round trip bit for bit, written as a plain
+/// `body_colour_override = [r, g, b]` array under `[material]`.
+#[test]
+fn material_table_body_colour_override_round_trips_through_toml_text() {
+    let mut native = sample_file();
+    // `f64` on the wire (TOML's only float); `indicatrix-cut-core` converts the
+    // editor's `f32` triple to these shortest-decimal values -- see its
+    // `native::convert::body_colour_to_table`.
+    let yellow = [0.2f64, 0.4, 2.8];
+    native.material = native.material.with_body_colour_override(Some(yellow));
+    let text = to_toml_string(&native).expect("must serialize");
+    // The TOML writer spreads the array over several lines with a trailing comma;
+    // compare with all whitespace removed so only the digits matter.
+    let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        compact.contains("body_colour_override=[0.2,0.4,2.8"),
+        "{text}"
+    );
+    let parsed = from_toml_str(&text).expect("must parse its own output");
+    let got = parsed
+        .material
+        .body_colour_override
+        .expect("must load back");
+    assert_eq!(got.map(f64::to_bits), yellow.map(f64::to_bits));
+    assert_eq!(parsed, native);
+}
+
+/// No override: the key is not written at all, and a file without it (every file
+/// written before the field existed) loads back as `None`.
+#[test]
+fn material_table_without_a_body_colour_override_omits_the_key_and_loads_as_none() {
+    let text = to_toml_string(&sample_file()).expect("must serialize");
+    assert!(!text.contains("body_colour_override"));
+    let parsed = from_toml_str(&text).expect("must parse");
+    assert_eq!(parsed.material.body_colour_override, None);
 }
 
 // --- `NativeDesignFile::history` round-trips through TOML text ---
@@ -285,6 +373,69 @@ fn history_table_round_trips_through_toml_text() {
 fn an_empty_history_table_is_not_attached_at_all() {
     let native = sample_file().with_history(HistoryTable::new(Vec::new()));
     assert!(native.history.is_none());
+}
+
+// --- Every `NativeMeetConstraint` variant round-trips through TOML text with
+// exact `f64` equality ---
+
+/// Every [`NativeMeetConstraint`] variant must survive a serialize/parse round trip
+/// as an EXACT `f64`, not just approximately equal.
+///
+/// In particular [`NativeMeetConstraint::ScaleReference`]'s `mast`, TOML's only
+/// lossy-prone field here, must come back bit-for-bit identical, and
+/// [`NativeMeetConstraint::MeetNamed`]'s name list must come back in the same order
+/// with no name altered.
+#[test]
+fn every_native_meet_constraint_variant_round_trips_through_toml_text_exactly() {
+    let mast = 0.123_456_789_012_345;
+    let native = NativeDesignFile::new(
+        "design.asc",
+        sha256_hex(b"asc bytes"),
+        PreformTable::new(NativePreformShape::Block, 1.0, 1.0, 2.0),
+        Some(6.5),
+        MaterialTable::new(Some("Diamond".to_string()), None, Some(1.62)),
+        vec![
+            TierTable::new("Existing", NativeMeetConstraint::MeetExisting, vec![]),
+            TierTable::new(
+                "Named",
+                NativeMeetConstraint::MeetNamed {
+                    names: vec!["Crown Main".to_string(), "Star".to_string()],
+                },
+                vec![],
+            ),
+            TierTable::new(
+                "Scaled",
+                NativeMeetConstraint::ScaleReference { mast },
+                vec![],
+            ),
+        ],
+    );
+    let text = to_toml_string(&native).expect("must serialize");
+    let parsed = from_toml_str(&text).expect("must parse its own output");
+
+    assert_eq!(
+        parsed.tiers[0].constraint,
+        NativeMeetConstraint::MeetExisting
+    );
+    assert_eq!(
+        parsed.tiers[1].constraint,
+        NativeMeetConstraint::MeetNamed {
+            names: vec!["Crown Main".to_string(), "Star".to_string()],
+        }
+    );
+    match &parsed.tiers[2].constraint {
+        NativeMeetConstraint::ScaleReference { mast: parsed_mast } => {
+            assert_eq!(
+                parsed_mast.to_bits(),
+                mast.to_bits(),
+                "mast must survive the round trip bit-for-bit, got {parsed_mast} vs {mast}"
+            );
+        }
+        other => panic!("expected ScaleReference, got {other:?}"),
+    }
+    // The whole struct, not just the constraint field -- confirms nothing else on
+    // the tier was disturbed by exercising every variant in one document.
+    assert_eq!(native, parsed);
 }
 
 // --- Stable tier ids, authoring-level tier targets, and the authored

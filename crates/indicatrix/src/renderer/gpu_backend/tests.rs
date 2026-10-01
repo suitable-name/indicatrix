@@ -3,15 +3,27 @@
 //! in this module tree that actually dispatches. Gated on `feature = "gpu"` only because
 //! `Turnstile` itself is (see that type's own `#[cfg]`), not because these tests need
 //! hardware.
+//!
+//! The tests that do need an adapter skip with a printed note when none is present, unless
+//! the environment variable `INDICATRIX_REQUIRE_GPU` is `1` -- then a missing adapter fails
+//! them, so a CI machine that is supposed to have a GPU cannot silently stop testing it.
 
 use std::{
-    sync::{Mutex, atomic::AtomicBool},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     thread,
+    time::{Duration, Instant},
 };
 
 use glam::Vec3;
 
-use super::{GpuAccumulate, GpuBackend, GpuSceneRef, turnstile::Turnstile};
+use super::{
+    GpuAccumulate, GpuBackend, GpuSceneRef,
+    recovery::{COOL_DOWN, MAX_ATTEMPTS_PER_WINDOW, RecoveryPolicy, WINDOW},
+    turnstile::Turnstile,
+};
 use crate::{
     geometry::cuts::StandardGemCuts,
     optics::{
@@ -19,6 +31,30 @@ use crate::{
         raytracer::{Camera, LightingPreset},
     },
 };
+
+/// Whether `INDICATRIX_REQUIRE_GPU=1` demands that hardware tests find an adapter.
+fn gpu_required() -> bool {
+    std::env::var("INDICATRIX_REQUIRE_GPU").is_ok_and(|value| value == "1")
+}
+
+/// A backend with a real renderer, or `None` (the caller returns, skipping its test) on
+/// a machine with no adapter.
+///
+/// # Panics
+///
+/// If no adapter could be acquired while `INDICATRIX_REQUIRE_GPU=1`.
+fn acquire_or_skip(test: &str) -> Option<GpuBackend> {
+    let backend = GpuBackend::acquire();
+    if backend.renderer.is_some() {
+        return Some(backend);
+    }
+    assert!(
+        !gpu_required(),
+        "{test}: INDICATRIX_REQUIRE_GPU=1 but no GPU adapter could be acquired"
+    );
+    println!("skipping {test}: no GPU adapter");
+    None
+}
 
 /// The fairness property [`Turnstile`] exists for: three threads holding tickets
 /// `t0 < t1 < t2`, asked to wait for their turn in REVERSE ticket order (`t2` and
@@ -127,11 +163,13 @@ fn turnstile_releases_on_an_early_return_out_of_the_turn_scope() {
 /// test module.
 #[test]
 fn poisoned_renderer_mutex_declines_and_sets_lost() {
-    let backend = GpuBackend::acquire();
-    let Some(mutex) = &backend.renderer else {
-        println!("skipping poisoned_renderer_mutex_declines_and_sets_lost: no GPU adapter");
+    let Some(backend) = acquire_or_skip("poisoned_renderer_mutex_declines_and_sets_lost") else {
         return;
     };
+    let mutex = backend
+        .renderer
+        .as_ref()
+        .expect("acquire_or_skip only returns a backend with a renderer");
 
     // Lock the renderer mutex on a scoped thread that panics while still holding the
     // guard -- the standard way to poison a `std::sync::Mutex` from a test. `.join()`
@@ -176,7 +214,7 @@ fn poisoned_renderer_mutex_declines_and_sets_lost() {
     );
     assert!(
         backend.lost.load(std::sync::atomic::Ordering::Relaxed),
-        "a poisoned renderer mutex must permanently set `lost`, like DeviceLost does"
+        "a poisoned renderer mutex must set `lost`, like DeviceLost does"
     );
 
     // A SECOND call must also decline, via the `self.lost` fast path this time
@@ -202,14 +240,11 @@ fn poisoned_renderer_mutex_declines_and_sets_lost() {
 /// extra churn is what trips the poisoning this bug report describes.
 #[test]
 fn viewport_frames_with_camera_changes_never_poison_the_backend() {
-    let backend = GpuBackend::acquire();
-    if backend.renderer.is_none() {
-        println!(
-            "skipping viewport_frames_with_camera_changes_never_poison_the_backend: no \
-             GPU adapter"
-        );
+    let Some(backend) =
+        acquire_or_skip("viewport_frames_with_camera_changes_never_poison_the_backend")
+    else {
         return;
-    }
+    };
     let planes = StandardGemCuts::standard_round_brilliant();
     let material = GemMaterial::by_name("Spinel").expect("Spinel is a built-in cubic material");
     let environment = LightingPreset::Daylight.studio(1.0, 0.4, 0.35);
@@ -224,15 +259,7 @@ fn viewport_frames_with_camera_changes_never_poison_the_backend() {
     let mut accum = vec![Vec3::ZERO; (width * height) as usize];
 
     for frame in 0..12u32 {
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "frame index is tiny; precision loss is not a concern in this test"
-        )]
         let yaw = (frame as f32).mul_add(0.29, 0.1);
-        #[allow(
-            clippy::cast_precision_loss,
-            reason = "frame index is tiny; precision loss is not a concern in this test"
-        )]
         let pitch = (frame as f32).mul_add(0.13, 0.2).clamp(-1.4, 1.4);
         let camera = Camera::new(yaw, pitch, 5.0, 18.0);
         let scene = GpuSceneRef {
@@ -259,4 +286,209 @@ fn viewport_frames_with_camera_changes_never_poison_the_backend() {
         accum.iter().any(|v| v.length_squared() > 0.0),
         "a lit studio-rig scene traced over 12 frames must leave SOME nonzero radiance"
     );
+}
+
+/// A scene description both the failure-injection tests share: a lit round brilliant at
+/// `width` x `height`, with a cheap bounce budget.
+const fn spinel_scene<'a>(
+    camera: &'a Camera,
+    planes: &'a [crate::geometry::GpuFacetPlane],
+    material: &'a GemMaterial,
+    width: u32,
+    height: u32,
+) -> GpuSceneRef<'a> {
+    GpuSceneRef {
+        camera,
+        width,
+        height,
+        planes,
+        facet_finishes: &[],
+        material,
+        max_bounces: 2,
+        environment: LightingPreset::Daylight.studio(1.0, 0.4, 0.35),
+    }
+}
+
+/// A device lost on a LATER turn must not leave the earlier turns' samples in the
+/// caller's buffer: the worker's CPU fallback re-traces the whole range into the same
+/// buffer, so leftovers would be double counted.
+///
+/// 1024 x 768 at 4 spp is 3.1 million (pixel, sample) tuples; the first, uncalibrated
+/// chunks are capped at one million tuples each, so a two-chunk turn cannot finish the
+/// frame and the request needs at least a second turn, the one the failure is injected
+/// into.
+#[test]
+fn a_failure_on_a_later_turn_leaves_accum_untouched() {
+    let Some(backend) = acquire_or_skip("a_failure_on_a_later_turn_leaves_accum_untouched") else {
+        return;
+    };
+    let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
+    let planes = StandardGemCuts::standard_round_brilliant();
+    let material = GemMaterial::by_name("Spinel").expect("Spinel is a built-in cubic material");
+    let (width, height) = (1024u32, 768u32);
+    let scene = spinel_scene(&camera, &planes, &material, width, height);
+    let mut accum = vec![Vec3::ZERO; (width * height) as usize];
+    let never_cancel = AtomicBool::new(false);
+
+    backend.fail_on_turn.store(2, Ordering::Relaxed);
+    let outcome = backend.try_accumulate_cancellable(&scene, 0, 4, &mut accum, &never_cancel);
+
+    assert_eq!(
+        backend.fail_on_turn.load(Ordering::Relaxed),
+        0,
+        "the request finished before its second turn, so nothing was injected -- enlarge \
+         the frame (outcome {outcome:?})"
+    );
+    assert_eq!(outcome, GpuAccumulate::Declined);
+    assert!(
+        accum.iter().all(|pixel| *pixel == Vec3::ZERO),
+        "a decline on the second turn left the first turn's samples in accum"
+    );
+    assert!(
+        backend.is_lost(),
+        "an injected DeviceLost marks the backend lost"
+    );
+}
+
+/// After a loss the backend declines through the cool-down, then re-acquires a device on
+/// the next request and renders again. The loss is aged by rewriting the policy's
+/// timestamp instead of sleeping for 30 s.
+#[test]
+fn a_lost_backend_recovers_after_the_cool_down_and_renders_again() {
+    let Some(backend) =
+        acquire_or_skip("a_lost_backend_recovers_after_the_cool_down_and_renders_again")
+    else {
+        return;
+    };
+    let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
+    let planes = StandardGemCuts::standard_round_brilliant();
+    let material = GemMaterial::by_name("Spinel").expect("Spinel is a built-in cubic material");
+    let scene = spinel_scene(&camera, &planes, &material, 64, 64);
+    let mut accum = vec![Vec3::ZERO; 64 * 64];
+    let never_cancel = AtomicBool::new(false);
+
+    backend.fail_on_turn.store(1, Ordering::Relaxed);
+    assert_eq!(
+        backend.try_accumulate_cancellable(&scene, 0, 1, &mut accum, &never_cancel),
+        GpuAccumulate::Declined
+    );
+    assert!(backend.is_lost());
+    assert!(
+        backend.adapter_label().is_none(),
+        "a lost backend must not claim an adapter"
+    );
+
+    assert_eq!(
+        backend.try_accumulate_cancellable(&scene, 0, 1, &mut accum, &never_cancel),
+        GpuAccumulate::Declined,
+        "inside the cool-down the backend must keep declining"
+    );
+    assert!(backend.is_lost());
+
+    let Some(aged) = Instant::now().checked_sub(COOL_DOWN * 2) else {
+        println!("skipping the recovery half: the monotonic clock is younger than the cool-down");
+        return;
+    };
+    backend
+        .recovery
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .record_loss(aged);
+
+    assert_eq!(
+        backend.try_accumulate_cancellable(&scene, 0, 1, &mut accum, &never_cancel),
+        GpuAccumulate::Done,
+        "after the cool-down the next request must re-acquire the device and render"
+    );
+    assert!(!backend.is_lost());
+    assert!(backend.adapter_label().is_some());
+    assert!(
+        accum.iter().any(|pixel| pixel.length_squared() > 0.0),
+        "the recovered render must have produced radiance"
+    );
+}
+
+/// A backend that never had a renderer has nothing to lose or recover, and declines
+/// without touching `accum`.
+#[test]
+fn a_disabled_backend_declines_and_is_never_lost() {
+    let backend = GpuBackend::disabled();
+    let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
+    let planes = StandardGemCuts::standard_round_brilliant();
+    let material = GemMaterial::by_name("Spinel").expect("Spinel is a built-in cubic material");
+    let scene = spinel_scene(&camera, &planes, &material, 8, 8);
+    let mut accum = vec![Vec3::ZERO; 64];
+    let never_cancel = AtomicBool::new(false);
+
+    assert_eq!(
+        backend.try_accumulate_cancellable(&scene, 0, 1, &mut accum, &never_cancel),
+        GpuAccumulate::Declined
+    );
+    assert!(accum.iter().all(|pixel| *pixel == Vec3::ZERO));
+    assert!(!backend.is_lost());
+    assert!(
+        backend.try_recover(),
+        "nothing is lost, so nothing to recover"
+    );
+    assert!(backend.adapter_label().is_none());
+}
+
+/// Nothing may be attempted before the cool-down has run out, and nothing at all without
+/// a recorded loss.
+#[test]
+fn recovery_waits_out_the_cool_down() {
+    let start = Instant::now();
+    let mut policy = RecoveryPolicy::new();
+    assert!(!policy.may_attempt(start), "no loss on record");
+
+    policy.record_loss(start);
+    assert!(!policy.may_attempt(start + COOL_DOWN.saturating_sub(Duration::from_secs(1))));
+    assert!(policy.may_attempt(start + COOL_DOWN));
+
+    policy.record_recovered();
+    assert!(
+        !policy.may_attempt(start + COOL_DOWN * 10),
+        "a recovered device has no pending attempt"
+    );
+}
+
+/// A failed attempt is followed by another full cool-down, measured from the attempt.
+#[test]
+fn a_failed_attempt_restarts_the_cool_down() {
+    let start = Instant::now();
+    let mut policy = RecoveryPolicy::new();
+    policy.record_loss(start);
+    let attempt = start + COOL_DOWN;
+    assert!(policy.may_attempt(attempt));
+    policy.record_attempt(attempt);
+
+    assert!(!policy.may_attempt(attempt + COOL_DOWN.saturating_sub(Duration::from_secs(1))));
+    assert!(policy.may_attempt(attempt + COOL_DOWN));
+}
+
+/// At most [`MAX_ATTEMPTS_PER_WINDOW`] attempts start in any one [`WINDOW`]; the oldest
+/// ages out exactly one window after it began.
+#[test]
+fn at_most_six_attempts_start_per_hour() {
+    assert_eq!(MAX_ATTEMPTS_PER_WINDOW, 6);
+    assert_eq!(WINDOW, Duration::from_hours(1));
+    let start = Instant::now();
+    let mut policy = RecoveryPolicy::new();
+    policy.record_loss(start);
+
+    let mut now = start;
+    for _ in 0..MAX_ATTEMPTS_PER_WINDOW {
+        now += COOL_DOWN;
+        assert!(policy.may_attempt(now));
+        policy.record_attempt(now);
+    }
+    now += COOL_DOWN;
+    assert!(
+        !policy.may_attempt(now),
+        "a seventh attempt inside the hour must be refused even after the cool-down"
+    );
+
+    let first_attempt = start + COOL_DOWN;
+    assert!(!policy.may_attempt(first_attempt + WINDOW.saturating_sub(Duration::from_secs(1))));
+    assert!(policy.may_attempt(first_attempt + WINDOW));
 }

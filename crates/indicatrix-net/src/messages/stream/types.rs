@@ -233,7 +233,7 @@ pub struct Cancel {
 ///
 /// See the module doc comment for why variant ORDER here is load-bearing across
 /// differently-`cfg`-feature-flagged builds: every variant after `Library` is
-/// `render`-gated and appended in order (indices 2, 3, 4, 5, 6).
+/// `render`-gated and appended in order (indices 2, 3, 4, 5, 6, 7).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum ClientMessage {
     /// `-> CANCEL` for one request.
@@ -276,6 +276,11 @@ pub enum ClientMessage {
     /// (index 6), like every render-side variant.
     #[cfg(feature = "render")]
     Asset(crate::messages::asset::AssetHeader),
+    /// `-> CONTRIBUTION` (v16): the viewer's own share of a `FinalImageRequest`'s
+    /// reserved tail -- this header, then one raw payload frame (see
+    /// [`crate::messages::contribution`]). `render`-feature only (index 7).
+    #[cfg(feature = "render")]
+    Contribution(crate::messages::contribution::ContributionHeader),
 }
 
 /// Delivery statistics reported on [`Done`].
@@ -295,6 +300,11 @@ pub struct Stats {
     /// couldn't sustain the requested cadence (deltas coalesced under backpressure); `0`
     /// if this request never emitted more than once.
     pub effective_cadence_ms: u32,
+    /// v16: samples of a `FinalImageRequest`'s viewer-reserved range this server
+    /// rendered ITSELF because the `CONTRIBUTION` did not arrive in time (or was
+    /// invalid). `0` otherwise, and for every `RENDER`.
+    #[serde(default)]
+    pub reclaimed_samples: u32,
 }
 
 /// `<- DONE`: the terminal message for a `RENDER` request, exactly once.
@@ -314,12 +324,34 @@ pub struct Done {
 
 /// `<- ERROR`: a worker's rejection of a request (or `HELLO`), with a machine-readable
 /// `code` (see [`crate::messages::error_codes`]) and a human-readable `message`.
+///
+/// # `request_id` (v15)
+///
+/// `Some(id)` when this refusal or failure concerns one specific request -- everything
+/// from `serve::connection::requests`'s `VALIDATION_FAILED`/`TRACE_PANIC` refusals
+/// through the emitter's own `StreamOutcome::Failed` -- so [`crate::client::accumulate::Accumulator::apply`]
+/// can drop it exactly like any other stale `FRAME`/`PREVIEW`/`DONE` when it arrives for
+/// an epoch the client has already moved on from (see that module's doc comment: a
+/// `CANCEL` can be in flight past a worker that's already mid-batch). `None` for a
+/// refusal that precedes any request at all -- a `HELLO`-phase `BUILD_MISMATCH`/
+/// `ROLE_REFUSED`, [`super::super::connection::refuse_for_capacity`]'s
+/// `CONNECTION_LIMIT_REACHED`, or a `LibraryRequest` failure (the library protocol has no
+/// epoch to be stale against) -- which is never epoch-gated and always reported.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorMsg {
     /// One of [`crate::messages::error_codes`].
     pub code: u32,
     /// Human-readable detail.
     pub message: String,
+    /// The request this error concerns, when it concerns exactly one -- see the struct
+    /// doc comment. New in [`crate::messages::PROTOCOL_VERSION`] v15 (this field did not
+    /// exist on the wire before); `#[serde(default)]` is cosmetic here, not a
+    /// cross-version compatibility mechanism -- `postcard` decodes struct fields
+    /// positionally, so a v14 peer's two-field `ErrorMsg` is never handed to a v15
+    /// decoder in the first place: the `HELLO` gate already refuses a
+    /// `protocol_version` mismatch before any message shaped by it crosses the wire.
+    #[serde(default)]
+    pub request_id: Option<u32>,
 }
 
 /// Every reply a worker sends after the handshake, tagged so a reader always knows which
@@ -342,12 +374,14 @@ pub enum StreamEvent {
     Preview(PreviewHeader),
     /// Doubles as this stream's liveness heartbeat: emitted every cadence tick
     /// regardless of real progress, and the client treats any event (this one included)
-    /// as proof of life, dropping the connection after 8s of receiving nothing. See
-    /// [`crate::messages::PROTOCOL_VERSION`]'s v7 history entry.
+    /// as proof of life, dropping the connection after 8s of receiving nothing. See the
+    /// heartbeat note on [`crate::messages::PROTOCOL_VERSION`].
     Progress(Progress),
     /// The terminal event of a request, exactly once.
     Done(Done),
-    /// A rejection or failure; carries no `request_id` (see [`ErrorMsg`]).
+    /// A rejection or failure. Epoch-gated exactly like `Frame`/`Preview`/`Done` when it
+    /// carries a `request_id` (v15, see [`ErrorMsg`]); a connection-level refusal with no
+    /// `request_id` (e.g. a `HELLO`-phase refusal) is never gated and always reported.
     Error(ErrorMsg),
     /// `<- PONG` (v14): the answer to `ClientMessage::Ping`, echoing its `nonce`. Not
     /// tied to any request; never epoch-gated.
@@ -400,8 +434,9 @@ impl StreamEvent {
         }
     }
 
-    /// The `request_id` this event belongs to, or `None` for the request-less events
-    /// (`Error`, `Pong`, `CapabilityChanged`, `NeedAsset`).
+    /// The `request_id` this event belongs to, or `None` for a request-less event
+    /// (`Pong`, `CapabilityChanged`, `NeedAsset`, or an `Error` that doesn't concern one
+    /// specific request -- see [`ErrorMsg`]'s doc comment).
     #[must_use]
     pub const fn request_id(&self) -> Option<u32> {
         match self {
@@ -411,10 +446,8 @@ impl StreamEvent {
             Self::Done(d) => Some(d.request_id),
             Self::DisplayFrame(h) => Some(h.request_id),
             Self::FinalImage(h) => Some(h.request_id),
-            Self::Error(_)
-            | Self::Pong { .. }
-            | Self::CapabilityChanged { .. }
-            | Self::NeedAsset { .. } => None,
+            Self::Error(e) => e.request_id,
+            Self::Pong { .. } | Self::CapabilityChanged { .. } | Self::NeedAsset { .. } => None,
         }
     }
 }

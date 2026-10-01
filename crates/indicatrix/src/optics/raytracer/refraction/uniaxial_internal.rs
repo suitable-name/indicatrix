@@ -2,6 +2,8 @@
 //! uniaxial->isotropic exit transmission -- via `uniaxial_fresnel::internal_solve`.
 
 use super::{
+    DIRECTION_MATCH_COS_TOL, R_UNPOL_PDF_MAX, R_UNPOL_PDF_MIN, R_UNPOL_SELECT_MAX,
+    R_UNPOL_SELECT_MIN,
     context::{BounceRay, BounceState, ExitEvent, RngDraw, UniaxialBounceContext},
     exit_split::try_split_exit_channel,
 };
@@ -67,9 +69,6 @@ pub(super) fn apply_uniaxial_internal_bounce(
     state: &mut BounceState<'_>,
     exit_event: &mut ExitEvent<'_, '_>,
 ) -> (Vec3, Vec3, bool, Option<bool>, Option<f32>) {
-    const R_UNPOL_SELECT_MIN: f32 = 0.02;
-    const R_UNPOL_SELECT_MAX: f32 = 0.98;
-
     let (ctx, geo, frame) = (ubctx.ctx, ubctx.geo, ubctx.frame);
     let BounceRay { k_hat, normal } = ray;
     let RngDraw { rng_seed, bounce } = rng;
@@ -185,7 +184,7 @@ pub(super) fn apply_uniaxial_internal_reflect_channels(
             / flux_inc)
             .min(1.0);
         stokes[k] = stokes[k].scale(r_total_k / r_branch);
-        path_pdf[k] *= r_total_k.clamp(1e-4, 1.0 - 1e-4);
+        path_pdf[k] *= r_total_k.clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX);
     }
 }
 
@@ -236,8 +235,6 @@ pub(super) fn apply_uniaxial_internal_transmit_channels(
     state: &mut BounceState<'_>,
     exit_event: &mut ExitEvent<'_, '_>,
 ) {
-    const DIRECTION_MATCH_COS_TOL: f32 = 1.0 - 1e-6;
-
     let (ctx, geo, frame) = (ubctx.ctx, ubctx.geo, ubctx.frame);
     let c_axis = ctx.c_axis;
     let &HeroInternalSolve {
@@ -312,7 +309,7 @@ pub(super) fn apply_uniaxial_internal_transmit_channels(
             if exit.enabled {
                 let (transmitted, i_unit) =
                     compute_uniaxial_exit_transmission(sol, r_branch, original_stokes_i);
-                let t_unpol_k = i_unit.clamp(1e-4, 1.0 - 1e-4);
+                let t_unpol_k = i_unit.clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX);
                 path_pdf[k] = prefix_path_pdf_k * t_unpol_k;
                 if original_stokes_i > 0.0 {
                     try_split_exit_channel(
@@ -334,7 +331,7 @@ pub(super) fn apply_uniaxial_internal_transmit_channels(
         let (transmitted, i_unit) =
             compute_uniaxial_exit_transmission(sol, r_branch, original_stokes_i);
         stokes[k] = transmitted;
-        let t_unpol_k = i_unit.clamp(1e-4, 1.0 - 1e-4);
+        let t_unpol_k = i_unit.clamp(R_UNPOL_PDF_MIN, R_UNPOL_PDF_MAX);
         path_pdf[k] *= t_unpol_k;
     }
 }

@@ -1,17 +1,17 @@
-//! Reader for Gem Cut Studio's `.gcs` design format.
+//! Reader and (experimental) writer for Gem Cut Studio's `.gcs` design format.
 //!
 //! Gem Cut Studio ("GCS") is a Windows faceting-design application distinct from
 //! `GemCAD`; this module is not produced, endorsed, or affiliated with Gem Cut
 //! Studio or its author (see the crate-level docs for the full affiliation note).
-//! It exists for the same reason [`crate::asc`] exists: some real-world designs in
-//! the wild are only ever published as a `.gcs` file, with no `.asc` counterpart,
-//! and reading one shouldn't require Gem Cut Studio itself.
+//! Some real-world designs are only ever published as a `.gcs` file, and reading one
+//! shouldn't require Gem Cut Studio itself.
 //!
-//! # Format (reverse-engineered from a real-world corpus of 59 `.gcs` files, 56 of
-//! which have a sibling `.asc` for the same design -- see "Verification" below)
+//! # Format
 //!
-//! A `.gcs` file is plain-text XML (no prolog, no external DTD, no namespaces) with
-//! one attribute-only root wrapping a flat, non-recursive element tree:
+//! GCS publishes the format: Gem Cut Studio User's Manual v1.1.0, pp. 58-61, "The
+//! .GCS file format", an annotated example that marks required versus optional
+//! fields. Page numbers below refer to that manual. A `.gcs` file is plain XML with
+//! one root wrapping a flat element tree:
 //!
 //! ```text
 //! <GemCutStudio version="1000">
@@ -31,116 +31,77 @@
 //! </GemCutStudio>
 //! ```
 //!
-//! Unlike [`crate::asc`]'s `.asc` (a cutting *schedule*: angle, mast, and index
-//! positions the cutter still has to solve into a shape), a `.gcs` file is a
-//! *solved* design: every `<tier>` already carries its facets as closed polygons
-//! (`<facet>` children, each a list of real `<vertex>` points) on a stone
-//! normalized so its own reference plane sits at radius 1. That difference in kind
-//! -- schedule vs. solved geometry -- is exactly why `depth` and `.asc`'s `mast` are
-//! **not interchangeable** even though both nominally mean "how far this facet
-//! plane sits from center"; see "What does not carry over" below.
+//! Required (p.58-59): the root (its `version` "is checked to be less than or equal
+//! to app version"), `index gear`, `tier angle`, and per facet enough to recover
+//! the plane. Everything else is optional, and [`parse_gcs`] treats it so: the
+//! `<index>` UI state defaults, a missing facet normal is derived from the tier
+//! angle and `index_angle`, a missing `index_angle` from the normal, and a missing
+//! tier `depth` from the vertices. The tokenizer accepts XML comments (the manual's
+//! own example is full of them), an `<?xml ...?>` declaration, single-quoted
+//! attributes and numeric character references. Unknown elements and attributes are
+//! kept out of the model and listed in [`GcsDesign::warnings`].
 //!
-//! ## What is confirmed, and how
+//! Encoding: undeclared; GCS 1.1 writes Windows-1252 (corpus file id 2213 holds a
+//! raw `0xBA`). Read files with [`parse_gcs_bytes`].
 //!
-//! Every field below was checked against the 56 real `.gcs`/`.asc` sibling pairs in
-//! the corpus (`facet_diagrams.sqlite`'s `attached_files` table, joined on
-//! `detail_id`), using [`crate::asc::parse_asc`] on the `.asc` side as ground
-//! truth. 44 of the 56 pairs (79%) matched on every check below with zero
-//! discrepancy; the remaining 12 are understood corpus-data edge cases, not
-//! parser gaps (see "Known discrepancies").
+//! # Conventions, measured on a 59-file corpus (56 with an `.asc` sibling)
 //!
-//! - **`<index gear>`** matches `.asc`'s `g` line tooth count exactly (as a
-//!   magnitude -- `.asc` occasionally signs it for handedness, `.gcs` never does).
-//! - **[`GcsTier::angle_deg`]** uses a *different convention* from
-//!   [`crate::asc::AscTier::angle_deg`], but a fully verified one: `.gcs` measures
-//!   a single continuous polar angle from the crown apex/table-normal direction
-//!   (`0`) through the girdle plane (`90`, vertical) to the culet direction
-//!   (`180`), rather than `.asc`'s signed "negative = pavilion, non-negative =
-//!   crown" split. For every crown tier (`.asc` angle `>= 0`) the two values are
-//!   *identical*; for every pavilion tier (`.asc` angle `< 0`) `.gcs`'s angle
-//!   equals `180.0 + asc_angle` to within float32 rounding (`.gcs` stores its
-//!   trigonometric fields at `f32` precision even though the XML prints them as
-//!   `f64`-width decimals -- hence the "give or take a few times `1e-5`" residue
-//!   seen when cross-checking). [`GcsTier::to_signed_asc_angle`] applies this
-//!   verified transform.
-//! - **`<facet index_angle>`** matches `.asc`'s tooth-number indices exactly once
-//!   converted to degrees: `index_angle = (tooth % gear) / gear * 360`. Checked
-//!   facet-by-facet (not just tier-by-tier) across all 44 clean-passing pairs.
-//! - **`<render refractive_index>`** matches `.asc`'s `I` line in every pair where
-//!   the two files actually describe the same material (see "Known
-//!   discrepancies" for the three that do not).
-//! - Total facet-plane count (summed across every tier) matches `.asc`'s summed
-//!   index count exactly in every clean-passing pair.
+//! - **Angle** ([`GcsTier::angle_deg`]): a polar angle, `0` table, `90` girdle
+//!   ("always included in pav", p.58), above 90 pavilion, `180` flat culet.
+//!   [`GcsTier::to_signed_asc_angle`] maps it to `.asc`'s signed angle (girdle
+//!   `-90`, culet `-0`). Values carry `f32` residue (`126.38999938964842`).
+//! - **Frame**: GCS rescales every design so `max(|x|,|y|) = 1` and centres its
+//!   z-range on 0 (59/59 files, exactly), "re-scaled after each operation to fill
+//!   the workspace" (p.10). The manual's frame comment ("negative X is front (index
+//!   0)", p.59) is contradicted by its own example, which puts index 0 at `-y`.
+//! - **Depth** ([`GcsTier::depth`]): the `.asc` mast in that normalised frame,
+//!   `depth = n·v` for the tier's vertices (≤ 3e-5 over 17,828 vertices). Against a
+//!   `GemCAD` `.asc` sibling, `depth = s·|mast| - s·z0·nz` with `s` ≈ 0.90 and `z0`
+//!   the `.asc` frame's z-centre: residual ≤ 2e-3 in 34 of 56 pairs, ≤ 9e-3 in 53. The
+//!   one `.gem`/`.gcs` pair (Orb) gives `depth = 0.9·d_gem` exactly. The manual's own
+//!   example is inconsistent here: its depths do not match its vertices.
+//! - **Index** ([`GcsFacet::index_angle_deg`]): the tooth in absolute degrees,
+//!   `tooth / gear · 360`. The winding is side-dependent ("pav vs crown has opposite
+//!   index ordering", p.59): with `phi = atan2(ny, nx)`, crown facets have
+//!   `index_angle = 90° + phi` and pavilion and girdle facets `270° - phi` (4,836 of
+//!   4,836 non-flat facets). [`side_rule_index_angle`] and [`GcsFacet::index`]
+//!   implement it. A flat facet (table, culet) carries an arbitrary value. The
+//!   corpus has no chiral design, so the rule is verified on labels and normals only.
+//! - **`<index base/symmetry/mirror>`** are UI state (p.58: "NOT the values for
+//!   symmetry/mirror as would be printed in a faceting diagram"): base index,
+//!   the symmetry of the tier being cut, and the ± mirror offset in index steps
+//!   (pp.36-44). They do not describe the design.
+//! - **`frosting`** (tier, p.9 and the p.58 example): `0` clear, `0.5` frosted as GCS
+//!   1.1 writes it; kept in [`GcsTier::frosting`] and, per third-party writers, per
+//!   facet in [`GcsFacet::frosting`].
 //!
-//! ## What does not carry over
+//! # Conversion and writing
 //!
-//! - **[`GcsTier::depth`] is not `.asc`'s `mast`.** Comparing matched tiers within
-//!   a single real design (`attached_files` id 1124, detail 553, "Octabar-X") shows
-//!   `depth / mast` ranging smoothly from `0.90` (at the girdle, angle 90) up
-//!   through `1.18` (at the table, angle 0) -- not a constant, and not a simple
-//!   trig function of the tier's own angle either (the pavilion tiers of the same
-//!   file give a completely different, non-overlapping ratio curve from the crown
-//!   tiers). This module does not guess at a conversion. Reconciling the two
-//!   requires the same full meet-point geometry solve `.asc`'s own mast values are
-//!   solved from -- exactly the job of `indicatrix::geometry::meet_solver`, not
-//!   this crate.
-//! - **`<index base>`** is carried through as-is (presumably analogous to `.asc`'s
-//!   `g` line reference-angle field) but every sample in the corpus has `base="0"`,
-//!   so this module has no real, non-zero example to verify that analogy against.
-//!   Treat it as unconfirmed.
-//! - **`<index symmetry>` and `<index mirror>` do not reliably mirror `.asc`'s `y`
-//!   line.** Cross-checking all 56 pairs: `symmetry` sometimes matches `.asc`'s
-//!   symmetry order exactly, but is very often `1` even when the design's real
-//!   rotational symmetry (per its own `.asc`) is 4, 8, or 16 -- `.gcs` appears to
-//!   fully unroll the facet list (no compression via the index/symmetry mechanism)
-//!   for many designs and not others, and this module could not determine the
-//!   rule that decides which. `mirror` is stranger still: real corpus values
-//!   include `0`, `1`, `2`, `3`, `4`, and `5`, which rules out a simple boolean
-//!   matching `.asc`'s `y`/`n` mirror flag. Both fields are kept as raw integers
-//!   ([`GcsIndex::symmetry`], [`GcsIndex::mirror`]) with no derived
-//!   `is_mirrored()`-style helper, specifically so callers don't inherit a
-//!   boolean assumption this module cannot back up.
-//!
-//! ## Known discrepancies (12 of 56 pairs)
-//!
-//! - **Flat, single-facet tiers (the table, and occasionally the culet) have an
-//!   arbitrary `index_angle`.** A tier spanning the entire top or bottom of the
-//!   stone has only one facet and no real azimuthal position, so `.gcs` appears to
-//!   just pick something (observed: `0`, `11.25`, `22.5`, `45` across different
-//!   files) rather than echo the design's own tooth number for that facet. 7 of
-//!   the 12 discrepant pairs are exactly this.
-//! - **A few "cut corner" shapes (2 of 56) merge tiers differently than this
-//!   module's `.asc`-side grouping expects** when the design has more than one
-//!   facet sharing an angle+mast at the `.asc` level; the exact grouping rule
-//!   `.gcs` uses there was not pinned down.
-//! - **3 of 56 pairs have a genuine refractive-index mismatch** between the
-//!   `.gcs` and its catalogued `.asc` sibling (e.g. 1.76 vs. 1.54) -- almost
-//!   certainly two different material variants of the same design filed under one
-//!   catalog entry, not a parsing issue.
-//!
-//! None of these were "fixed" by loosening a check; they are reported here so a
-//! caller knows exactly which 21% of real files might disagree with an `.asc`
-//! sibling and why.
-//!
-//! # What this module does not attempt
-//!
-//! There is no `.gcs` *writer*: nothing downstream in this workspace produces
-//! `.gcs` files (the editor's own save format is `.indicatrix.toml`, see
-//! [`crate::native`], and its export path targets `.asc`), so a serializer would
-//! have no real caller and no way to be verified against anything.
+//! [`gcs_to_asc_schedule`] turns a design into `.asc` cutting instructions (masts
+//! stay in the normalised frame). [`to_gcs_string`] writes cutting instructions as
+//! a `.gcs` file (experimental): it solves the facet polygons as the faces of the
+//! convex polytope of the schedule's planes, applies GCS's normalisation and the
+//! side-dependent `index_angle`, and writes CRLF ASCII with `version="1000"`.
+//! Parsing its output and converting back reproduces every tier's angle, depth,
+//! index set and name.
 
+mod convert;
 mod design;
 mod error;
 mod metadata;
 mod parse;
+mod polytope;
 mod tier;
 mod tokenize;
+mod write;
 
 #[cfg(test)]
 mod tests;
 
+pub use convert::gcs_to_asc_schedule;
 pub use design::GcsDesign;
 pub use error::GcsParseError;
 pub use metadata::{GcsColor, GcsIndex, GcsInfo, GcsRender};
-pub use parse::parse_gcs;
-pub use tier::{GcsFacet, GcsTier, GcsVertex};
+pub use parse::{parse_gcs, parse_gcs_bytes};
+pub use tier::{GcsFacet, GcsTier, GcsVertex, normal_from_index_angle, side_rule_index_angle};
+pub use write::{GcsWriteError, to_gcs_string};

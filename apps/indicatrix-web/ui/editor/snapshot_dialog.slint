@@ -1,0 +1,126 @@
+import { Button, ScrollView } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+
+// One row of the comparison (`indicatrix_editor::snapshot::DiffRowView`).
+export struct DiffRow {
+    tier-index: int,
+    name: string,
+    old-angle: string,
+    new-angle: string,
+    mast-delta: string,
+    status-label: string,
+    status-color: color,
+}
+
+// "Snapshot design" / "Compare to snapshot" (modelled on the desktop's snapshot compare
+// mode of `retarget_dialog.slint`): the snapshot taken earlier against the design now,
+// tier position by tier position. Pushed by `src/editor/snapshot`.
+export global SnapshotModel {
+    // A snapshot has been taken this session (kept until the page is reloaded).
+    in property <bool> has-snapshot: false;
+    // The label of the snapshot, shown in the menu.
+    in property <string> snapshot-label: "";
+    in-out property <bool> compare-open: false;
+    in property <string> compare-label: "";
+    in property <[DiffRow]> rows: [];
+    // Counts for the summary line.
+    in property <string> summary: "";
+
+    callback take();
+    callback compare();
+    callback close();
+}
+
+// The comparison table; mounted by `app.slint` while `SnapshotModel.compare-open`.
+export component SnapshotDialog inherits Rectangle {
+    background: Theme.overlay-backdrop;
+
+    TouchArea {
+        clicked => { SnapshotModel.close(); }
+    }
+
+    FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                SnapshotModel.close();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    Rectangle {
+        width: min(560px, root.width - 32px);
+        height: min(520px, root.height - 32px);
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        background: Theme.bg-card;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-medium;
+        drop-shadow-blur: 20px;
+        drop-shadow-color: Theme.toast-shadow;
+        clip: true;
+
+        TouchArea {}
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+
+            Text {
+                text: "Compare to snapshot";
+                font-size: 14px;
+                font-weight: 700;
+                color: Theme.text-primary;
+            }
+            Text {
+                text: SnapshotModel.compare-label;
+                font-size: 10px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+            Text {
+                text: SnapshotModel.summary;
+                font-size: 10px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+                Text { width: 28px; text: "#"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                Text { horizontal-stretch: 1; text: "NAME"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                Text { width: 66px; text: "SNAPSHOT"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                Text { width: 66px; text: "NOW"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                Text { width: 62px; text: "MAST \u{394}"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                Text { width: 64px; text: "STATUS"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+            }
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    spacing: 2px;
+                    for row in SnapshotModel.rows: HorizontalLayout {
+                        spacing: 6px;
+                        Text { width: 28px; text: "" + (row.tier-index + 1); font-size: 10px; color: Theme.text-secondary; }
+                        Text { horizontal-stretch: 1; text: row.name; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                        Text { width: 66px; text: row.old-angle; font-size: 10px; color: Theme.text-muted; }
+                        Text { width: 66px; text: row.new-angle; font-size: 10px; font-weight: 600; color: Theme.text-primary; }
+                        Text { width: 62px; text: row.mast-delta; font-size: 10px; color: Theme.text-secondary; }
+                        Text { width: 64px; text: row.status-label; font-size: 10px; font-weight: 700; color: row.status-color; }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                alignment: end;
+                Button {
+                    text: "Close";
+                    primary: true;
+                    clicked => { SnapshotModel.close(); }
+                }
+            }
+        }
+    }
+}

@@ -10,7 +10,10 @@ use super::{live_compute_target_from_index, worker_settings::from_worker_item};
 use crate::{
     MainWindow, RemoteWorkerModel, SettingsModel, WorkerItem,
     bridge::{export_thread, remote::remote_render, render_thread::RenderContext},
-    gui::{remote::refresh_remote_ui, show_toast},
+    gui::{
+        remote::{RemoteOrchestratorHandle, refresh_remote_ui},
+        show_toast,
+    },
     settings::{LiveTransfer, SettingsPersister, WorkerSettings},
 };
 use slint::ComponentHandle;
@@ -20,17 +23,21 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 /// Wires the "Remote coordinator" form's save/remove, "Test connection", and the
 /// global denoise-toggle callbacks. Split out of `setup_remote_rendering` purely to
-/// keep that function shorter.
+/// keep that function shorter. `orchestrator` is the handle `setup_remote_rendering`
+/// itself returns -- see `setup_denoise_toggle_callback`'s own doc comment for why the
+/// denoise toggle needs it.
 pub fn setup_worker_callbacks(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
     settings_store: &Arc<SettingsPersister>,
+    orchestrator: &RemoteOrchestratorHandle,
 ) {
     setup_save_remote_callback(ui, settings_store);
     setup_remove_remote_callback(ui, settings_store);
-    setup_denoise_toggle_callback(ui, render_ctx, settings_store);
+    setup_denoise_toggle_callback(ui, render_ctx, settings_store, orchestrator);
     setup_live_compute_target_callback(ui, render_ctx, settings_store);
     setup_live_transfer_callback(ui, render_ctx, settings_store);
+    setup_contribute_to_final_picture_callback(ui, settings_store);
     setup_claim_token_callback(ui);
     setup_test_worker_connection_callback(ui);
     setup_cert_dir_picker_callback(ui);
@@ -105,6 +112,24 @@ fn setup_live_transfer_callback(
         });
 }
 
+/// Wires the settings dialog's "Final-picture exports: this machine renders a share
+/// too" switch (v16). Unlike [`setup_live_transfer_callback`]/
+/// [`setup_live_compute_target_callback`] just above, this only PERSISTS the choice --
+/// no `RenderContext` field to keep in step, because an export reads the settings
+/// snapshot fresh every time it dispatches (`gui::render::render_export::wiring`,
+/// `gui::tilt::video_export`), unlike the live viewport's own settled epoch, which a
+/// live-affecting setting must actively release.
+fn setup_contribute_to_final_picture_callback(
+    ui: &MainWindow,
+    settings_store: &Arc<SettingsPersister>,
+) {
+    let settings_store = settings_store.clone();
+    ui.global::<SettingsModel>()
+        .on_contribute_to_final_picture_changed(move |on: bool| {
+            settings_store.update(|s| s.settings.contribute_to_final_picture = on);
+        });
+}
+
 /// Wires the global denoise toggle. Split out of `setup_worker_callbacks` purely to
 /// keep that function under clippy's function-length lint -- same reasoning as
 /// `setup_live_compute_target_callback` below.
@@ -112,22 +137,39 @@ fn setup_denoise_toggle_callback(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
     settings_store: &Arc<SettingsPersister>,
+    orchestrator: &RemoteOrchestratorHandle,
 ) {
     let settings_store_denoise = settings_store.clone();
     let render_ctx_denoise = render_ctx.clone();
+    let orchestrator_denoise = orchestrator.clone();
+    let ui_weak_denoise = ui.as_weak();
     ui.global::<RemoteWorkerModel>()
         .on_denoise_toggled(move |enabled: bool| {
             // Live-updates `RenderContext` (governs the render loop immediately, both the
-            // local readback in `render_thread` and the remote merged-accumulation
-            // readback in `gui::remote::render_merged_frame`) in addition to persisting
-            // the choice -- the same two-step pattern every other live render setting in
-            // this module uses (see e.g. `on_target_samples_changed`/`on_bounces_changed`
-            // in `gui::mod`), rather than only taking effect after the next app restart.
-            render_ctx_denoise
+            // local readback in `render_thread`'s own frame loop and the remote
+            // merged-accumulation readback in `orchestrator::tick::update::
+            // redraw_from_epoch`) in addition to persisting the choice -- the same
+            // two-step pattern every other live render setting in this module uses (see
+            // e.g. `on_target_samples_changed`/`on_bounces_changed` in `gui::mod`),
+            // rather than only taking effect after the next app restart.
+            let mut ctx = render_ctx_denoise
                 .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .denoise_enabled = enabled;
+                .unwrap_or_else(PoisonError::into_inner);
+            ctx.denoise_enabled = enabled;
+            // One-shot re-tonemap request for the `Both`/local-only render loop --
+            // see `RenderContext::redisplay_requested`'s own doc comment for why this
+            // is needed at all (accumulation may have already converged, so nothing
+            // would otherwise ever read `denoise_enabled` again).
+            ctx.redisplay_requested = true;
+            drop(ctx);
             settings_store_denoise.update(|s| s.settings.denoise_enabled = enabled);
+            // `RemoteOnly` suspends the render thread's loop entirely, so
+            // `redisplay_requested` above has no frame-loop iteration to be read back
+            // on -- force the orchestrator's own display path instead. A no-op in
+            // every other live-compute-target (`request_redisplay`'s own doc comment).
+            if let Some(ui) = ui_weak_denoise.upgrade() {
+                orchestrator_denoise.request_redisplay(&ui, &render_ctx_denoise);
+            }
         });
 }
 
@@ -210,6 +252,20 @@ fn setup_cert_dir_picker_callback(ui: &MainWindow) {
             let Some(ui) = ui_weak.upgrade() else {
                 return;
             };
+            // Cleared before the dialog even opens, not just left for the
+            // completion closure below to overwrite: picking the SAME folder
+            // this field already holds `picked_cert_dir` from a previous pick
+            // would otherwise be a same-value write, and `RemoteWorkerDialog`'s
+            // own `changed picked_cert_dir` handler (`remote_worker_dialog.
+            // slint`) -- like every Slint `changed` handler -- never fires for
+            // one of those,
+            // silently dropping a genuine re-pick of the same folder. Clearing
+            // it here first guarantees the picker's own completion below is
+            // always a real `"" -> <folder>` transition, and "" is already
+            // documented (that handler's own comment) as never copied into
+            // `form_cert_dir`, so a cancelled picker leaves nothing to notice.
+            ui.global::<RemoteWorkerModel>()
+                .set_picked_cert_dir("".into());
             let starting_dir = crate::gui::starting_dir_from_picker_field(current.as_str());
             let request = PickerRequest {
                 kind: PickerKind::PickFolder,

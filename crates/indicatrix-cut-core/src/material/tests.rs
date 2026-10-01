@@ -54,6 +54,7 @@ fn preset_alone_uses_its_representative_figure() {
         name: Some("Diamond".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
+        body_colour_override: None,
     };
     assert_eq!(m.effective_specific_gravity(), Some(3.52));
 }
@@ -66,6 +67,7 @@ fn override_wins_over_a_known_preset() {
         name: Some("Diamond".to_string()),
         specific_gravity_override: Some(3.515),
         refractive_index_override: None,
+        body_colour_override: None,
     };
     assert_eq!(m.effective_specific_gravity(), Some(3.515));
 }
@@ -77,6 +79,7 @@ fn override_alone_works_for_a_species_with_no_preset() {
         name: Some("Garnet".to_string()),
         specific_gravity_override: Some(3.90),
         refractive_index_override: None,
+        body_colour_override: None,
     };
     assert_eq!(m.effective_specific_gravity(), Some(3.90));
 }
@@ -93,6 +96,7 @@ fn with_specific_gravity_override_replaces_only_that_field() {
         name: Some("Diamond".to_string()),
         specific_gravity_override: Some(3.50),
         refractive_index_override: Some(2.42),
+        body_colour_override: None,
     };
     let updated = original.with_specific_gravity_override(Some(3.55));
     assert_eq!(updated.specific_gravity_override, Some(3.55));
@@ -111,6 +115,7 @@ fn with_specific_gravity_override_can_clear_the_override() {
         name: Some("Quartz".to_string()),
         specific_gravity_override: Some(2.70),
         refractive_index_override: Some(1.55),
+        body_colour_override: None,
     };
     let updated = original.with_specific_gravity_override(None);
     assert_eq!(updated.specific_gravity_override, None);
@@ -126,6 +131,7 @@ fn resolve_a_known_preset_returns_that_material_and_its_own_n_d() {
         name: Some("Quartz".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
+        body_colour_override: None,
     };
     let resolved = m.resolve(&BuiltinMaterials);
     assert_eq!(
@@ -157,6 +163,7 @@ fn resolve_with_an_unrecognized_name_falls_back_to_diamond() {
         name: Some("Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
+        body_colour_override: None,
     };
     let resolved = m.resolve(&BuiltinMaterials);
     assert_eq!(resolved.gem.name, GemMaterial::diamond().name);
@@ -169,6 +176,7 @@ fn resolve_refractive_index_override_wins_over_the_resolved_material() {
         name: Some("Diamond".to_string()),
         specific_gravity_override: None,
         refractive_index_override: Some(1.70),
+        body_colour_override: None,
     };
     let resolved = m.resolve(&BuiltinMaterials);
     assert!((resolved.n_d - 1.70).abs() < 1e-12);
@@ -216,6 +224,7 @@ fn effective_specific_gravity_with_matches_built_ins_only_path() {
         name: Some("Quartz".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
+        body_colour_override: None,
     };
     assert_eq!(
         m.effective_specific_gravity_with(&BuiltinMaterials),
@@ -230,6 +239,7 @@ fn effective_specific_gravity_with_override_wins_over_the_catalogue() {
         name: Some("Diamond".to_string()),
         specific_gravity_override: Some(3.515),
         refractive_index_override: None,
+        body_colour_override: None,
     };
     assert_eq!(
         m.effective_specific_gravity_with(&BuiltinMaterials),
@@ -254,6 +264,7 @@ fn effective_specific_gravity_with_resolves_a_custom_material_the_built_in_table
         name: Some("My Garnet".to_string()),
         specific_gravity_override: None,
         refractive_index_override: None,
+        body_colour_override: None,
     };
     assert_eq!(m.effective_specific_gravity(), None);
     assert_eq!(
@@ -353,4 +364,78 @@ fn catalogue_build_with_sg_resolves_a_custom_materials_specific_gravity() {
     let sg_entries = [("my garnet".to_string(), 3.90)];
     let catalogue = MaterialCatalogue::build_with_sg(&[custom], &sg_entries);
     assert_eq!(catalogue.find("My Garnet").unwrap().sg, Some(3.90));
+}
+
+// --- body-colour override ---
+
+#[test]
+fn with_body_colour_sets_only_the_override_and_none_clears_it() {
+    let base = MaterialSelection {
+        name: Some("Sapphire".to_string()),
+        specific_gravity_override: Some(4.0),
+        refractive_index_override: Some(1.77),
+        body_colour_override: None,
+    };
+    assert!(!base.has_body_colour_override());
+    let yellow = base.clone().with_body_colour(Some([0.2, 0.4, 2.8]));
+    assert!(yellow.has_body_colour_override());
+    assert_eq!(yellow.name, base.name);
+    assert_eq!(
+        yellow.specific_gravity_override,
+        base.specific_gravity_override
+    );
+    assert_eq!(
+        yellow.refractive_index_override,
+        base.refractive_index_override
+    );
+    assert_eq!(yellow.body_colour_label(), Some("Yellow"));
+    assert_eq!(yellow.with_body_colour(None), base);
+    assert_eq!(MaterialSelection::none().body_colour_label(), None);
+    assert_eq!(
+        MaterialSelection::none()
+            .with_body_colour(Some([0.5, 0.5, 0.5]))
+            .body_colour_label(),
+        Some("custom colour")
+    );
+}
+
+/// `apply_overrides` with nothing set returns the material untouched; with a colour
+/// set only the absorption changes (name, and so every lookup keyed by it, stays).
+#[test]
+fn apply_overrides_changes_only_the_absorption_for_a_colour() {
+    let sapphire = GemMaterial::sapphire();
+    let plain = MaterialSelection {
+        name: Some("Sapphire".to_string()),
+        ..MaterialSelection::none()
+    };
+    assert_eq!(plain.apply_overrides(sapphire.clone()), sapphire);
+
+    let rgb = [0.2f32, 0.4, 2.8];
+    let coloured = plain
+        .with_body_colour(Some(rgb))
+        .apply_overrides(sapphire.clone());
+    assert_eq!(coloured, sapphire.clone().with_body_colour(rgb));
+    assert_eq!(coloured.name, sapphire.name);
+    assert_eq!(coloured.dispersion, sapphire.dispersion);
+    assert_ne!(coloured.absorption, sapphire.absorption);
+}
+
+/// The hand-written `Debug` prints exactly the pre-colour field list when no colour
+/// is set (the desktop's identity pins hash these dumps), and names the colour when
+/// one is.
+#[test]
+fn debug_omits_an_unset_body_colour_and_prints_a_set_one() {
+    let plain = MaterialSelection {
+        name: Some("Quartz".to_string()),
+        specific_gravity_override: None,
+        refractive_index_override: Some(1.55),
+        body_colour_override: None,
+    };
+    assert_eq!(
+        format!("{plain:?}"),
+        "MaterialSelection { name: Some(\"Quartz\"), specific_gravity_override: None, \
+         refractive_index_override: Some(1.55) }"
+    );
+    let coloured = plain.with_body_colour(Some([0.2, 0.4, 2.8]));
+    assert!(format!("{coloured:?}").contains("body_colour_override: [0.2, 0.4, 2.8]"));
 }

@@ -55,27 +55,43 @@ const SHADER_SRC: &str = include_str!("../../shaders/environment.wgsl");
 /// report rather than silently vanishing.
 #[derive(Debug, Clone)]
 pub struct UlpCheckResult<Case: Clone> {
+    /// Short name of the check.
     pub label: &'static str,
+    /// Total number of compared values.
     pub total_comparisons: usize,
+    /// Maximum tolerated ULP distance.
     pub budget: u32,
+    /// Absolute magnitude below which differences are exempt from the ULP budget.
     pub abs_floor: f32,
+    /// Largest ULP distance among non-exempt comparisons.
     pub max_ulp: u32,
+    /// Largest ULP distance including exempt comparisons.
     pub max_raw_ulp: u32,
+    /// Number of comparisons that exceeded the budget.
     pub over_budget_count: usize,
+    /// Number of comparisons exempted by the absolute floor.
     pub exempted_count: usize,
+    /// Comparison with the largest ULP distance.
     pub argmax: Option<UlpArgmax<Case>>,
 }
 
+/// The comparison with the largest error in the ulp check.
 #[derive(Debug, Clone)]
 pub struct UlpArgmax<Case: Clone> {
+    /// Input case that produced this result.
     pub case: Case,
+    /// Name of the compared output component.
     pub component: &'static str,
+    /// Value produced by the CPU reference.
     pub cpu: f32,
+    /// Value produced by the GPU shader.
     pub gpu: f32,
+    /// Distance between the CPU and GPU values in units in the last place.
     pub ulp: u32,
 }
 
 impl<Case: Clone> UlpCheckResult<Case> {
+    /// Whether every compared value stayed within its budget.
     #[must_use]
     pub const fn passed(&self) -> bool {
         self.over_budget_count == 0

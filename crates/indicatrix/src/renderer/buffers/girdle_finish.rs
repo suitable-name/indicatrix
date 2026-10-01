@@ -7,8 +7,11 @@
 
 use crate::optics::raytracer::FacetFinish;
 
+/// The `facet_finish` submodule.
 pub mod facet_finish {
+    /// Identifier for polished.
     pub const POLISHED: u32 = 0;
+    /// Identifier for frosted.
     pub const FROSTED: u32 = 1;
 }
 

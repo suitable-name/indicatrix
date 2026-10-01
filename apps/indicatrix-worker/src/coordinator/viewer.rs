@@ -5,13 +5,13 @@
 use super::{Capacity, ViewerSession, viewer_render_capability};
 use crate::stream_emit::{FRAME_REMAINDER_TIMEOUT, TimeoutRead, is_stream_timeout};
 use indicatrix_net::{
-    framing::{FramingError, LEN_PREFIX_BYTES, MAX_FRAME_LEN},
+    framing::{FramingError, IDLE_READ_TIMEOUT, LEN_PREFIX_BYTES, MAX_CONTROL_FRAME_LEN},
     messages::{ClientMessage, NetError, RenderCapability, StreamEvent},
 };
 use std::{
     io::{Read, Write},
     sync::{Arc, mpsc},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// How often an idle viewer connection looks for capacity changes.
@@ -80,15 +80,18 @@ impl CapabilityWatch {
 }
 
 /// Reads the viewer's next message, sending capability changes while it waits (see
-/// [`CapabilityWatch::flush`]). `Ok(None)` on a clean close.
+/// [`CapabilityWatch::flush`]). `Ok(None)` on a clean close at a message boundary.
 ///
 /// The first byte is awaited with a short, timeout-tolerant read so a timeout can only
-/// land before a message starts; the rest is read under [`FRAME_REMAINDER_TIMEOUT`].
-/// The read timeout is back to blocking when this returns.
+/// land before a message starts; the rest is read under [`FRAME_REMAINDER_TIMEOUT`], and
+/// is bounded by [`MAX_CONTROL_FRAME_LEN`]. The read timeout is back to blocking when
+/// this returns.
 ///
 /// # Errors
 ///
-/// [`NetError`] for a transport or decoding failure.
+/// [`NetError`] for a transport or decoding failure, including a connection that ends
+/// inside a frame. A viewer that sends nothing for [`IDLE_READ_TIMEOUT`] yields a
+/// `TimedOut` I/O error, which the caller treats as an idle close.
 pub fn read_message_watching<S: Read + Write + TimeoutRead>(
     stream: &mut S,
     watch: &mut CapabilityWatch,
@@ -104,9 +107,16 @@ fn read_watching<S: Read + Write + TimeoutRead>(
 ) -> Result<Option<ClientMessage>, NetError> {
     let io = |e: std::io::Error| NetError::Framing(FramingError::Io(e));
     stream.set_read_timeout(Some(IDLE_POLL)).map_err(io)?;
+    let waiting_since = Instant::now();
     let mut len_bytes = [0u8; LEN_PREFIX_BYTES];
     let first = loop {
         watch.flush(stream)?;
+        if waiting_since.elapsed() >= IDLE_READ_TIMEOUT {
+            return Err(io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "idle timeout: the viewer sent no message",
+            )));
+        }
         match stream.read(&mut len_bytes) {
             Ok(0) => return Ok(None),
             Ok(n) => break n,
@@ -118,15 +128,12 @@ fn read_watching<S: Read + Write + TimeoutRead>(
     stream
         .set_read_timeout(Some(FRAME_REMAINDER_TIMEOUT))
         .map_err(io)?;
-    stream.read_exact(&mut len_bytes[first..]).map_err(io)?;
-    let len = u32::from_le_bytes(len_bytes);
-    if len > MAX_FRAME_LEN {
-        return Err(NetError::Framing(FramingError::FrameTooLarge {
-            len,
-            max: MAX_FRAME_LEN,
-        }));
-    }
-    let mut payload = vec![0u8; len as usize];
-    stream.read_exact(&mut payload).map_err(io)?;
-    Ok(Some(postcard::from_bytes(&payload)?))
+    let payload = indicatrix_net::framing::read_frame_continuing(
+        stream,
+        &len_bytes[..first],
+        MAX_CONTROL_FRAME_LEN,
+    )?;
+    Ok(Some(indicatrix_net::messages::decode_control_frame(
+        &payload,
+    )?))
 }

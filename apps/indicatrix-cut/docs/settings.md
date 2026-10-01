@@ -18,11 +18,27 @@ Hand-rolled per-platform resolution (no `directories`/`dirs` crate), chosen to
 avoid needing write access to the install directory (e.g. under `Program Files`
 on Windows). Format is TOML, written via `toml::to_string_pretty`, and writes
 are crash-safe: written to a `.toml.tmp` sibling first, then atomically renamed
-over the real file. **Loading is deliberately infallible** — a missing,
-unreadable, or corrupt settings file just logs a warning and falls back to
-defaults; a broken settings file can never block startup, and every field has a
+over the real file. **Loading is deliberately infallible** — a missing or
+unreadable settings file just logs a warning and falls back to defaults, and a
+broken settings file can never block startup, since every field has a
 `#[serde(default)]` so an old/partial file loads fine with the missing fields
-defaulted.
+defaulted. A **corrupt** (unparseable TOML) file is not silently discarded: it
+is renamed aside first, to `settings.toml.corrupt-<unix-seconds>` next to it,
+*before* falling back to defaults — the next save then writes a fresh
+`settings.toml` rather than overwriting the corrupt one, so the broken file (and
+whatever was in it) stays recoverable on disk instead of being lost outright. A
+failed rename (e.g. no write permission on the directory) is logged and startup
+continues with defaults anyway; the corrupt file is simply left at its original
+path in that case.
+
+**Legacy migration.** The first time this app runs with no settings file of its
+own yet, it copies (never moves) a settings file from the old public viewer
+app's config directory, `diagram-gui` — the app `indicatrix-cut` superseded,
+before the 2026-09-07 suite-wide rename to Indicatrix removed it outright — so a
+machine that already had that app configured doesn't start completely blank.
+This only ever fires into a genuinely absent destination and never overwrites
+an existing `indicatrix-cut` settings file; a failed copy is logged and falls
+through to defaults, same as any other load failure.
 
 Example of what the file looks like:
 
@@ -39,6 +55,7 @@ camera_pitch = 0.45
 camera_distance = 2.4
 selected_material = "Diamond"
 denoise_enabled = true
+contribute_to_final_picture = true
 
 [settings.remote]
 export_transfer = "FullData"
@@ -136,6 +153,16 @@ compose correctly.
 `export_transfer` is the default of the export dialog's and the tilt video's
 "Transfer" choice; `live_transfer` is the settings dialog's "Live Transfer" -- see
 [remote-rendering.md](remote-rendering.md) for what "final picture" does.
+
+`contribute_to_final_picture` (default `true`, top-level, not on `RemoteEndpoint`)
+is the settings dialog's "Final-picture exports: this machine renders a share too"
+switch (v16): with a remote configured and `export_transfer`/the tilt video's own
+"Transfer" pill at `FinalPicture`, the viewer's own idle CPU/GPU traces a share of
+the sample budget alongside the remote and uploads it as one `CONTRIBUTION`, which
+the coordinator folds in before tone-mapping. Only takes effect when the export's
+"Compute" choice is `Both`; a scene mismatch or an HDR map the local tracer can't
+resolve identically silently falls back to a remote-only picture instead of
+refusing the export.
 
 **Migration.** A file written before the single-endpoint model carries a
 `[[settings.remote_workers]]` list. It still loads: the FIRST entry becomes `remote` (it was the only one any

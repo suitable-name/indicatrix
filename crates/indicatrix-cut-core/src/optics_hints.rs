@@ -9,7 +9,7 @@
 //!
 //! Every angle here is a [`crate::design::ConstraintTier::angle_deg`] value: signed
 //! degrees from the girdle plane, negative for a pavilion facet, non-negative for
-//! crown (an unsigned `0.0` inherits the previous tier's side -- see that field's
+//! crown (a zero angle is the table unless it is a sign-negative `-0.0`, the culet -- see that field's
 //! own doc comment, which mirrors `indicatrix_formats::asc::AscTier::angle_deg` exactly).
 //! [`tier_margin_deg`], [`windowing_risk`] and [`retarget_angle_deg`] all read the
 //! MAGNITUDE of that angle and preserve the input's own sign on any angle they
@@ -25,9 +25,15 @@
 //!
 //! `n` (a refractive index) is assumed `> 1.0` -- true for every real gem material
 //! this crate can produce. [`critical_angle_deg`] is not meaningful outside that
-//! domain (`asin` of an argument `>= 1.0` saturates to `NaN`/`90.0`); this module
-//! does not guard against `n <= 1.0` since every real caller's `n` traces back to a
-//! resolved material, never a raw, unvalidated user-typed number.
+//! domain (`asin` of an argument `> 1.0` is `NaN`; exactly `n == 1.0` saturates to
+//! `90.0`, not `NaN`). Every real caller's `n` traces back to a resolved material,
+//! never a raw, unvalidated user-typed number, so this is not expected to be
+//! reached in practice -- but [`windowing_risk`] still guards it
+//! defensively rather than trusting that: without the guard, a `NaN` margin
+//! (from `n < 1.0`, or `n`/the tier angle itself already `NaN`) compares
+//! `false` against both `margin < 0.0` and `margin < 2.0`, falling through to
+//! [`Risk::Safe`] -- the single MOST reassuring reading available, exactly
+//! backwards for an input this function cannot actually make sense of.
 
 /// The critical angle for total internal reflection at refractive index `n`.
 ///
@@ -72,9 +78,17 @@ pub enum Risk {
 /// comment for the three bands and their boundaries (`< 0.0` is
 /// [`Risk::Windows`], `[0.0, 2.0)` is [`Risk::Marginal`], `>= 2.0` is
 /// [`Risk::Safe`]).
+///
+/// `n <= 1.0` (or a `NaN` `n`/`tier_angle_deg`) reports [`Risk::Windows`] --
+/// the most conservative band, never [`Risk::Safe`] -- see the module doc
+/// comment's "Domain" section for why a `NaN` margin must not be
+/// allowed to fall through to the most reassuring reading by accident.
 #[must_use]
 pub fn windowing_risk(tier_angle_deg: f64, n: f64) -> Risk {
     let margin = tier_margin_deg(tier_angle_deg, n);
+    if margin.is_nan() {
+        return Risk::Windows;
+    }
     if margin < 0.0 {
         Risk::Windows
     } else if margin < 2.0 {
@@ -180,9 +194,15 @@ pub fn crown_window_margin_deg(pavilion_angle_deg: f64, crown_angle_deg: f64, n:
 /// [`crown_window_margin_deg`] classified into the same three [`Risk`] bands as
 /// [`windowing_risk`] -- an ESTIMATE (see that function's own doc comment), not
 /// a full ray trace.
+///
+/// Same `n <= 1.0`/`NaN` guard as [`windowing_risk`]: a `NaN` margin
+/// reports [`Risk::Windows`], never [`Risk::Safe`].
 #[must_use]
 pub fn crown_windowing_risk(pavilion_angle_deg: f64, crown_angle_deg: f64, n: f64) -> Risk {
     let margin = crown_window_margin_deg(pavilion_angle_deg, crown_angle_deg, n);
+    if margin.is_nan() {
+        return Risk::Windows;
+    }
     if margin < 0.0 {
         Risk::Windows
     } else if margin < 2.0 {

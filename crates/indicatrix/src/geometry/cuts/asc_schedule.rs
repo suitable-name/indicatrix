@@ -1,15 +1,18 @@
-//! Reconstructs facet planes directly from a parsed `.asc` cutting schedule's
-//! real per-tier mast (depth) values -- the accurate counterpart to
+//! Reconstructs facet planes directly from the real per-tier mast (depth) values
+//! in a parsed `.asc` file's cutting instructions -- the accurate counterpart to
 //! [`super::database_angles`]'s fabricated proportions.
 
-use glam::Vec3;
+use glam::{DVec3, Vec3};
 use indicatrix_formats::asc::AscSchedule;
 
 use super::{CutError, StandardGemCuts};
-use crate::geometry::{brep::GemPolyhedron, plane::GpuFacetPlane};
+use crate::geometry::{
+    brep::GemPolyhedron,
+    plane::{GpuFacetPlane, tier_is_crown_side},
+};
 
 impl StandardGemCuts {
-    /// Generates facet planes directly from a parsed `GemCAD` `.asc` cutting schedule.
+    /// Generates facet planes directly from a parsed `GemCAD` `.asc` file's cutting instructions.
     ///
     /// Uses [`indicatrix_formats::asc::parse_asc`]'s output and its real per-tier mast
     /// (depth) values as plane offsets, instead of the fabricated proportions
@@ -19,35 +22,30 @@ impl StandardGemCuts {
     /// # Conventions (determined empirically against the real corpus; see the
     /// module-level report this function was built for)
     ///
-    /// - **Angle sign** decides crown vs. pavilion: `.asc` angles are signed, and
-    ///   negative means pavilion, matching `GemCAD`'s own convention (confirmed by 74
-    ///   real files that carry both an explicit `-0.000000` pavilion culet and a
-    ///   `0.000000` crown table in the same schedule -- the sign, not just the
-    ///   magnitude, is meaningful). A tier whose angle is *unsigned* zero (the common
-    ///   case -- about 98% of zero-angle tiers in the sampled corpus never bother
-    ///   signing it, even for a culet) inherits the crown/pavilion side of the most
-    ///   recent tier that did carry a nonzero (or explicitly signed) angle, since
-    ///   `.asc` files consistently group a schedule's pavilion tiers before its crown
-    ///   tiers; defaults to crown if it's the very first tier.
+    /// - **Angle sign** decides crown vs. pavilion, via
+    ///   [`tier_is_crown_side`](crate::geometry::plane::tier_is_crown_side):
+    ///   negative is pavilion, positive is crown, and a zero angle is the table
+    ///   unless it is a sign-negative zero (the culet). `parse_asc` already turned
+    ///   the file's documented culet encoding (angle `0`, NEGATIVE distance) into
+    ///   that sign-negative zero, so file order never matters.
     /// - **Magnitude**: `theta` uses `angle_deg.abs()` -- the sign has already been
     ///   consumed above to pick crown vs. pavilion, so re-applying it to `sin`/`cos`
     ///   would rotate the facet to the wrong azimuthal quadrant.
     /// - **Plane offset**: `d = -mast.abs()`. `GemPolyhedron::from_planes` requires
-    ///   every `d < 0` (the origin must lie inside every half-space); the file's mast
-    ///   values are positive magnitudes in all but a handful of designs (a rare,
-    ///   single-tier `"B"`-named exception with a negative mast at a near-zero angle,
-    ///   seen in ~2.6% of sampled files), and even there the intent is a real
-    ///   physical depth, not a sign-bearing offset, so the magnitude is what belongs
-    ///   in the half-space equation.
+    ///   every `d < 0` (the origin must lie inside every half-space). After parsing,
+    ///   a mast is only negative on a nonzero-angle tier the manual does not
+    ///   describe (no real catalogue file has one; the parser warns), and the
+    ///   magnitude is still the physical depth.
     /// - **Azimuth**: `phi = 2*pi*(index + gear_reference_angle)/gear_teeth_abs()`
     ///   via [`Self::index_to_azimuth`] -- see that function's doc comment for
     ///   the reference-angle convention (tooth-denominated, additive, derived
     ///   from real corpus data) and why it never flips the existing handedness
     ///   of index growth. A tier with no listed index (rare -- a bare `angle
-    ///   mast` with only a name) still produces one plane at `phi = 0` (the
-    ///   reference angle is not applied to an absent index), the same
-    ///   convention [`Self::from_database_angles`] uses for an unlisted
-    ///   Table/Culet.
+    ///   mast` with only a name) still produces one plane, with normal
+    ///   `(0, +-cos(theta), sin(theta))` (the reference angle is not applied to an
+    ///   absent index). That normal points at +Z, i.e. azimuth `phi = 90` degrees,
+    ///   not at index 0 (+X, `phi = 0`); for a table or culet (`theta = 0`) the
+    ///   horizontal component vanishes, so the azimuth is immaterial there.
     /// - **`mirror` is not applied here.** `schedule.mirror` (the `y` line's
     ///   second field) is a symmetry *descriptor*, not a geometric transform:
     ///   every `a` record already lists every index-wheel position its facet
@@ -73,21 +71,8 @@ impl StandardGemCuts {
         let gear_reference_angle = schedule.gear_reference_angle as f32;
         let mut planes = Vec::with_capacity(schedule.facet_plane_count());
 
-        // Most recently resolved crown/pavilion side, used to break the tie for a
-        // tier whose angle is unsigned zero. See the doc comment above.
-        let mut last_side_is_crown = true;
-
         for tier in &schedule.tiers {
-            let is_crown = if tier.angle_deg == 0.0 {
-                if tier.angle_deg.is_sign_negative() {
-                    false
-                } else {
-                    last_side_is_crown
-                }
-            } else {
-                tier.angle_deg > 0.0
-            };
-            last_side_is_crown = is_crown;
+            let is_crown = tier_is_crown_side(tier.angle_deg);
 
             let theta = (tier.angle_deg.abs() as f32).to_radians();
             let sin_theta = theta.sin();
@@ -171,8 +156,8 @@ impl StandardGemCuts {
 /// a `-90 ... 0 32` row and a later `-90 ... 0` row at the same mast). Two planes with
 /// the same normal and offset are the same half-space -- geometrically redundant, not
 /// a real second facet -- and `GemPolyhedron::from_planes` correctly rejects them
-/// outright (two coincident half-spaces have coincident dual points, which the dual
-/// convex hull cannot use). Removing the redundant copy here does not change the
+/// outright (two coincident half-spaces would claim the same facet twice). Removing
+/// the redundant copy here does not change the
 /// resulting solid at all, only avoids handing `from_planes` a construction it cannot
 /// use.
 ///
@@ -182,44 +167,77 @@ impl StandardGemCuts {
 /// approach's own failure mode -- two planes whose true values are close but land in
 /// ADJACENT bins (e.g. offsets half a quantum apart, straddling a bin edge) hash to
 /// different keys and are kept as spurious distinct entries, which then makes
-/// `GemPolyhedron::from_planes` reject the schedule outright on coincident dual
-/// points.
+/// `GemPolyhedron::from_planes` reject the schedule outright as coincident planes.
 ///
-/// When two kept-and-new planes ARE recognized as the same half-space, the
-/// one with the smaller `|d|` (the tighter-fitting plane) survives, not simply whichever
-/// was seen first -- iterating `planes` in its own original order still makes the
-/// result deterministic regardless of input order, since the comparison itself (which
-/// of the two has the smaller `|d|`) does not depend on which arrived first.
+/// The **first** occurrence of a recognized duplicate survives; a later one is
+/// dropped in place, never substituted in. This is not a claim that the result is
+/// independent of input order in general -- an interior member of a chain of
+/// several mutually-within-tolerance planes can still end up merged into whichever
+/// neighbour is visited first, so an adversarial permutation (e.g. visiting the
+/// chain's middle element before its ends) can change which planes survive. What
+/// this dedup does guarantee is that the same real half-space is picked as *the*
+/// representative from either end of a schedule's own plane list -- i.e. reading a
+/// tier's plane run forwards or reading the same run backwards keeps the same set
+/// of planes, only the arrival order of two truly-distinct planes is reversed --
+/// because real `.asc` schedules list a duplicate revision row physically adjacent
+/// to the row it duplicates, never interleaved with an unrelated distinct facet.
+/// Keeping the first occurrence (rather than the smaller-`|d|` one, as an earlier
+/// version of this function did) also matters beyond dedup itself: callers such as
+/// `facet_plane_boundaries`/`apply_cheater_offsets`-style per-tier attribution walk
+/// `planes` positionally against the tier that produced them, and substituting a
+/// later tier's plane into an earlier tier's slot would silently reattribute it.
 pub(super) fn dedup_planes(planes: Vec<GpuFacetPlane>) -> Vec<GpuFacetPlane> {
-    // A genuine tolerance rather than a bin size (~5e-4, coarser than
-    // brep.rs's own coincidence epsilon): two planes within one quantum of each
-    // other in offset are always recognized as the same half-space, including
-    // across a would-be bin edge.
-    const QUANT: f32 = 1.0 / 2048.0;
-    const OFFSET_EPSILON: f32 = QUANT;
-    // Tightened to the f32 rounding scale: a true duplicate plane's
-    // normal survives sin/cos/normalize with rounding noise on the order of 1e-7,
-    // not a fraction of a degree. `1.0 - 1e-5` (~0.26 degrees) still catches genuine
-    // duplicates with margin while never merging two facets a real schedule intends to
-    // be distinct -- a looser epsilon like `1.0 - QUANT` (~1.79 degrees) would silently
-    // collapse two tiers at the same index/mast whose angles genuinely differ by as
-    // little as ~1 degree into a single facet, dropping a real half-space.
-    const NORMAL_DOT_EPSILON: f32 = 1.0 - 1e-5;
+    // Relative to the larger of the two offsets (floored at `1.0`, the common
+    // sub-unit mast range every real schedule up to now has used): a schedule
+    // authored at a larger `ScaleReference` has proportionally larger masts, and
+    // an absolute quantum sized for masts around `1.0` would either fail to
+    // merge genuine duplicate revision rows (too tight) or start merging
+    // genuinely distinct facets (too loose) once every offset is scaled up.
+    // Below the `1.0` floor this is exactly the old ~5e-4 absolute quantum.
+    const OFFSET_REL_EPSILON: f32 = 1.0 / 2048.0;
 
     let mut kept: Vec<GpuFacetPlane> = Vec::with_capacity(planes.len());
     for plane in planes {
-        let duplicate_of = kept.iter().position(|k| {
-            let dot = k.normal[0].mul_add(
-                plane.normal[0],
-                k.normal[1].mul_add(plane.normal[1], k.normal[2] * plane.normal[2]),
-            );
-            dot >= NORMAL_DOT_EPSILON && (k.d - plane.d).abs() <= OFFSET_EPSILON
+        let pn = plane_normal_f64(&plane);
+        let is_duplicate = kept.iter().any(|k| {
+            let offset_scale = k.d.abs().max(plane.d.abs()).max(1.0);
+            normals_coincide(plane_normal_f64(k), pn)
+                && (k.d - plane.d).abs() <= OFFSET_REL_EPSILON * offset_scale
         });
-        match duplicate_of {
-            Some(idx) if plane.d.abs() < kept[idx].d.abs() => kept[idx] = plane,
-            Some(_) => {}
-            None => kept.push(plane),
+        if !is_duplicate {
+            kept.push(plane);
         }
     }
     kept
+}
+
+/// The plane's stored `f32` normal widened to `f64`.
+fn plane_normal_f64(plane: &GpuFacetPlane) -> DVec3 {
+    DVec3::new(
+        f64::from(plane.normal[0]),
+        f64::from(plane.normal[1]),
+        f64::from(plane.normal[2]),
+    )
+}
+
+/// Whether two facet normals point the same way, to within `1 - cos(angle) <= 2e-7`
+/// (about 0.036 degrees).
+///
+/// The one normal-equality rule shared by every plane dedup that has to agree with
+/// the `.asc` plane builder: this module's `dedup_planes`, the solid measurer's
+/// plane filter and the facet-provenance map. Both inputs are normalised in `f64`
+/// first, because a normal that was unit-normalised in `f32` has a squared length
+/// of `1 +- ~1.5e-7`, so the raw dot product of two bit-identical copies can fall
+/// short of `1` by more than any bound tight enough to tell real neighbours apart.
+/// After the `f64` normalisation, rounding noise from independent `sin`/`cos`/
+/// `normalize` calls in `f32` (well under `1e-12` in `1 - cos`) is far below the
+/// bound, while the closest facets real schedules keep distinct, one degree apart
+/// (`1 - cos` of about `1.5e-4`), are far above it.
+///
+/// A zero or non-finite normal never coincides with anything, itself included.
+#[must_use]
+pub fn normals_coincide(a: DVec3, b: DVec3) -> bool {
+    const NORMAL_COINCIDE_EPSILON: f64 = 2e-7;
+    let (a_hat, b_hat) = (a.normalize_or_zero(), b.normalize_or_zero());
+    1.0 - a_hat.dot(b_hat) <= NORMAL_COINCIDE_EPSILON
 }

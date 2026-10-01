@@ -18,7 +18,13 @@ use indicatrix::geometry::meet_solver::MeetConstraint;
 /// [`crate::design::Design::from_asc_schedule`]'s own pinning.
 #[test]
 fn load_paired_reproduces_every_captured_field_on_a_clean_pair() {
-    let design = simple_design();
+    let mut design = simple_design();
+    // Tiers 0 and 2 ALSO get an authored constraint that differs from what a
+    // plain `.asc` import alone would pin them to (their own recorded masts,
+    // 1.0 and 0.55) -- not just tier 1's `MeetExisting` override -- so this test
+    // exercises the overlay across the WHOLE tier list, not one hand-picked tier.
+    design.tiers[0].constraint = MeetConstraint::ScaleReference(0.61);
+    design.tiers[2].constraint = MeetConstraint::ScaleReference(0.72);
     let native = to_native_file(
         &design,
         "design.asc",
@@ -34,13 +40,10 @@ fn load_paired_reproduces_every_captured_field_on_a_clean_pair() {
     assert_eq!(loaded.design.preform, design.preform);
     assert_eq!(loaded.design.girdle_diameter_mm, design.girdle_diameter_mm);
     assert_eq!(loaded.design.material, design.material);
-    // Tier 1 was deliberately set to `MeetExisting`, not what `.asc` import alone
-    // would pin it to (`ScaleReference`) -- the gap this module exists to close.
-    assert_eq!(
-        loaded.design.tiers[1].constraint,
-        MeetConstraint::MeetExisting
-    );
-    assert_eq!(loaded.design.tiers[1].detached, vec![0.0, 2.0]);
+    // The WHOLE tier list -- every tier's authored constraint/detached/name/
+    // indices, including 0 and 2 above -- must survive the overlay intact, not
+    // just the one tier a narrower field-by-field check happens to look at.
+    assert_eq!(loaded.design.tiers, design.tiers);
 }
 
 /// A per-tier cutter-authored note (`Design::tier_notes`) must round-trip
@@ -196,4 +199,62 @@ fn a_sidecar_with_no_tier_ids_still_loads_and_gets_fresh_distinct_ids() {
     ids.sort();
     ids.dedup();
     assert_eq!(ids.len(), before, "every fresh id must be distinct");
+}
+
+/// A design's body-colour override (`MaterialSelection::body_colour_override`) must
+/// round-trip through a real save/load pair bit for bit, like every other
+/// `[material]` field.
+#[test]
+fn body_colour_override_round_trips_through_save_and_load() {
+    let mut design = simple_design();
+    let yellow = [0.2f32, 0.4, 2.8];
+    design.material = design.material.clone().with_body_colour(Some(yellow));
+    let native = to_native_file(
+        &design,
+        "design.asc",
+        SIMPLE_ASC.as_bytes(),
+        None,
+        &SaveExtras::default(),
+    );
+    let native_toml = to_toml_string(&native).expect("must serialize");
+    assert!(native_toml.contains("body_colour_override"));
+    // The file shows the cutter's own short decimals, not `f64::from(0.2f32)`'s
+    // `0.20000000298023224` -- see `convert::body_colour_to_table`.
+    // The TOML writer spreads the array over several lines with a trailing comma;
+    // compare with all whitespace removed so only the digits matter.
+    let compact: String = native_toml.chars().filter(|c| !c.is_whitespace()).collect();
+    assert!(
+        compact.contains("body_colour_override=[0.2,0.4,2.8"),
+        "expected shortest-decimal components, got:\n{native_toml}"
+    );
+
+    let loaded = load_paired(SIMPLE_ASC, &native_toml, false).expect("must load");
+    let got = loaded
+        .design
+        .material
+        .body_colour_override
+        .expect("the override must load back");
+    assert_eq!(got.map(f32::to_bits), yellow.map(f32::to_bits));
+    assert_eq!(loaded.design.material, design.material);
+}
+
+/// A design with no override writes no `body_colour_override` key at all, and such
+/// a file -- exactly what every sidecar written before the field existed looks
+/// like -- loads back as `None`.
+#[test]
+fn a_sidecar_without_a_body_colour_override_loads_as_none() {
+    let design = simple_design();
+    assert_eq!(design.material.body_colour_override, None);
+    let native = to_native_file(
+        &design,
+        "design.asc",
+        SIMPLE_ASC.as_bytes(),
+        None,
+        &SaveExtras::default(),
+    );
+    let native_toml = to_toml_string(&native).expect("must serialize");
+    assert!(!native_toml.contains("body_colour_override"));
+
+    let loaded = load_paired(SIMPLE_ASC, &native_toml, false).expect("must load");
+    assert_eq!(loaded.design.material.body_colour_override, None);
 }

@@ -1,13 +1,17 @@
-//! Deep Solve/Optimize availability hints ([`deep_solve_hint`]/[`optimize_hint`])
-//! and the per-tier result tables built from a completed run
-//! ([`deep_solve_tier_rows`]/[`optimize_change_rows`]/[`facet_count_from_solved`]).
-//! See [`super::optimize_apply`] for the Optimize result SUMMARY table/ghost
-//! preview/weight parsing this file does not cover.
+//! Deep Solve's availability hint, status text and per-tier result table
+//! ([`deep_solve_hint`]/[`format_deep_solve_report`]/[`deep_solve_tier_rows`] --
+//! Deep Solve is desktop-only), and the Slint adapters over
+//! `indicatrix_editor::optimize_view`'s Optimize hint and change rows (shared with
+//! the web app, re-exported here at their old paths). See
+//! [`super::optimize_apply`] for the Optimize result SUMMARY table.
 
 use super::state::EditorState;
 use crate::{DeepSolveTierRow, OptimizeChangeRow, gui::editor::deep_solve::TierMastDelta};
-use indicatrix::geometry::meet_solver::{MeetConstraint, SolvedTier, VerifiedSolveReport};
-use indicatrix_cut_core::{Design, OptimizeOutcome, free_tier_indices};
+use indicatrix::geometry::meet_solver::{MeetConstraint, VerifiedSolveReport};
+use indicatrix_cut_core::{Design, OptimizeOutcome};
+use indicatrix_editor::optimize_view::tier_name_for_row;
+
+pub(in crate::gui::editor) use indicatrix_editor::optimize_view::facet_count_from_solved;
 
 /// Whether Deep Solve is available for `state`'s current design, and the
 /// explanatory hint text `EditorView` shows next to its button either way:
@@ -101,19 +105,6 @@ pub(in crate::gui::editor) fn format_deep_solve_report(
     format!("Deep Solve: {verdict}. {scores}.{stale_note}")
 }
 
-/// The tier name to show alongside a tier-index reference in a result table --
-/// `""` (never a placeholder like "(unnamed)") for an out-of-range index, since a
-/// design edited between when a background search started and when its result
-/// landed can shrink the tier list out from under a stale row (the caller already
-/// flags that case `stale` independently; see [`TierMastDelta`]'s own doc comment).
-fn tier_name_for_row(design: &Design, tier_index: usize) -> String {
-    design
-        .tiers
-        .get(tier_index)
-        .map(|tier| tier.name.clone())
-        .unwrap_or_default()
-}
-
 /// Builds one [`DeepSolveTierRow`] per [`TierMastDelta`] -- the per-tier table
 /// behind Deep Solve's aggregate verdict,
 /// additional to (never replacing) [`format_deep_solve_report`]'s status-line
@@ -144,123 +135,45 @@ pub(in crate::gui::editor) fn deep_solve_tier_rows(
         .collect()
 }
 
-/// Builds one [`OptimizeChangeRow`] per [`indicatrix_cut_core::AngleChange`] a
-/// pending Optimize result would apply -- the per-tier table behind
-/// [`super::optimize_apply::optimize_result_rows`]'s four aggregate component
-/// rows, so a cutter can see WHICH tiers move, and by how much, before clicking
-/// Apply.
+/// [`indicatrix_editor::optimize_view::optimize_change_rows`], mapped to the
+/// Optimize tab's "Tiers this would change" Slint rows.
 ///
 /// # Call site
 /// `callbacks::solve_actions::handle_optimize_outcome` calls this alongside
 /// [`super::optimize_apply::optimize_result_rows`] and pushes the result to
-/// `EditorModel.optimize_change_rows`, rendered as the "Tiers this would change"
-/// table in the Optimize tab.
+/// `EditorModel.optimize_change_rows`.
 #[must_use]
 pub(in crate::gui::editor) fn optimize_change_rows(
     outcome: &OptimizeOutcome,
     design: &Design,
 ) -> Vec<OptimizeChangeRow> {
-    outcome
-        .changes
-        .iter()
-        .map(|change| OptimizeChangeRow {
-            tier_number: format!("#{}", change.index + 1).into(),
-            name: tier_name_for_row(design, change.index).into(),
-            from_angle: format!("{:.2}\u{b0}", change.from_deg).into(),
-            to_angle: format!("{:.2}\u{b0}", change.to_deg).into(),
-            delta: format!("{:+.2}\u{b0}", change.to_deg - change.from_deg).into(),
+    indicatrix_editor::optimize_view::optimize_change_rows(outcome, design)
+        .into_iter()
+        .map(|line| OptimizeChangeRow {
+            tier_number: line.tier_number.into(),
+            name: line.name.into(),
+            from_angle: line.from_angle.into(),
+            to_angle: line.to_angle.into(),
+            delta: line.delta.into(),
         })
         .collect()
 }
 
-/// The design's total facet count after gear/symmetry expansion -- the count
-/// [`EditorStatusStrip`](crate::gui::editor)'s persistent solver-state segment
-/// still lacks (the state dot, tier
-/// count and last-solve duration are already live there). One entry in
-/// [`Design::planes_from_solved`]'s own output IS one facet, so this is just its
-/// length -- no new geometry computation, only a name for a count that already
-/// exists.
-///
-/// # Call site
-/// `super::panel::refresh_editor_panel_from_solve` calls this and pushes the
-/// result to `EditorModel.facet_count`.
-#[must_use]
-pub(in crate::gui::editor) fn facet_count_from_solved(
-    design: &Design,
-    solved: &[SolvedTier],
-) -> usize {
-    design.planes_from_solved(solved).len()
-}
-
-/// Whether Optimize is available for `state`'s current design, and the explanatory
-/// hint `EditorView` shows next to its button either way.
-///
-/// Unlike [`deep_solve_hint`], this button is genuinely **disabled** (not merely
-/// enabled-with-a-caveat) when there's nothing free to move: `free_tier_indices`
-/// empty means `optimize_design` would return its input unchanged at zero
-/// evaluations.
-///
-/// The one case worth stating loudly: a design fresh off the catalogue pins EVERY
-/// tier to `ScaleReference` on import, so it has zero free tiers until the user
-/// adopts at least one tier's real meet constraint or authors one by hand. That's
-/// correct, expected behaviour for a design nobody has started editing, not a bug --
-/// the hint text says so explicitly rather than leaving a disabled button to read as
-/// broken.
-///
-/// `max_evaluations` is the CONFIGURED coordinate-stage budget
-/// (`super::panel_stale::configured_optimize_max_evaluations`, read from
-/// `EditorModel.optimize_budget_text` -- `200` when unset/unparseable, matching
-/// [`indicatrix_cut_core::OptimizeConfig::default`]), quoted here instead of a
-/// literal `200` so the hint reflects what a run would actually use rather than a
-/// hard-coded figure divorced from it.
-///
-/// Also names the fixed canonical light pose every Optimize
-/// evaluation scores tilt brilliance under
-/// ([`indicatrix_cut_core::optimize::CANONICAL_LIGHT_YAW`]/`CANONICAL_LIGHT_PITCH`)
-/// -- NOT the light the trace/HUD/tilt dialog show after the cutter drags it. The
-/// tilt dialog's own caption already declares this half of the discrepancy
-/// (`performance_graph_dialog.slint`); this doc comment states the Optimize-panel
-/// half of it.
+/// Whether Optimize is available for `state`'s current design, and the hint shown
+/// next to its button either way -- see
+/// [`indicatrix_editor::optimize_view::optimize_hint`]. `max_evaluations` is the
+/// CONFIGURED budget (`super::panel_stale::configured_optimize_max_evaluations`).
 ///
 /// `pub(super)`, not private: `panel_stale.rs` (a sibling file) calls this from
 /// its own availability push.
 pub(super) fn optimize_hint(state: &EditorState, max_evaluations: usize) -> (bool, String) {
-    let free = free_tier_indices(&state.design);
-    if free.is_empty() {
-        (
-            false,
-            "Every tier is currently pinned as a scale reference -- a freshly \
-             imported design starts this way, and that is correct, not broken. \
-             Optimize has nothing free to move until you adopt at least one tier's \
-             real meet constraint (the tier list's Adopt action) or author one by \
-             hand."
-                .to_string(),
-        )
-    } else {
-        (
-            true,
-            format!(
-                "Coordinate search over {} free tier angle(s), scored on windowing, \
-                 extinction, and tilt brilliance under a FIXED canonical light pose \
-                 (not necessarily the light you see in the viewport right now -- drag \
-                 the light and these figures can disagree with the trace/HUD until you \
-                 re-run Optimize). Roughly 7 ms per evaluation on a small design, but \
-                 up to several seconds each on a large, heavily meet-derived one (a \
-                 {max_evaluations}-evaluation budget can then take minutes) -- plus two \
-                 fixed full-fidelity scorings (one before, one after the search) that \
-                 can each take over a second on their own, so even a fast run has some \
-                 up-front and trailing wait beyond the quoted per-evaluation cost. Runs \
-                 off the UI thread and can be cancelled.",
-                free.len()
-            ),
-        )
-    }
+    indicatrix_editor::optimize_view::optimize_hint(&state.design, max_evaluations)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use indicatrix_cut_core::{ConstraintTier, ObjectiveComponents};
+    use indicatrix_cut_core::ConstraintTier;
 
     fn some_proportions() -> indicatrix::geometry::stone_metrics::ExternalProportions {
         indicatrix::geometry::stone_metrics::ExternalProportions {
@@ -335,84 +248,6 @@ mod tests {
         assert!(hint.to_lowercase().contains("cancel"));
     }
 
-    #[test]
-    fn optimize_hint_is_unavailable_when_every_tier_is_pinned() {
-        // A design with only `ScaleReference` tiers has zero free tiers. Must read
-        // as "nothing to optimize yet, and that's expected," never as broken.
-        let mut state = EditorState::fresh();
-        state.design.tiers.push(scale_reference_tier(0.5));
-        state.design.tiers.push(scale_reference_tier(0.8));
-
-        let (available, hint) = optimize_hint(&state, 200);
-        assert!(!available);
-        assert!(hint.contains("pinned"));
-        assert!(hint.contains("Adopt"));
-    }
-
-    #[test]
-    fn optimize_hint_is_available_once_a_tier_is_free_to_move() {
-        let mut state = EditorState::fresh();
-        state.design.tiers.push(scale_reference_tier(0.5));
-        state.design.tiers.push(ConstraintTier {
-            angle_deg: -40.0,
-            name: "P1".to_string(),
-            indices: vec![0.0, 24.0],
-            constraint: MeetConstraint::MeetExisting,
-            imported_meet: None,
-            original_notes: None,
-            detached: Vec::new(),
-        });
-
-        let (available, hint) = optimize_hint(&state, 200);
-        assert!(available);
-        assert!(
-            hint.contains('1'),
-            "expected the free-tier count in: {hint}"
-        );
-        assert!(hint.to_lowercase().contains("cancel"));
-    }
-
-    #[test]
-    fn optimize_hint_quotes_the_configured_budget_not_a_hardcoded_number() {
-        // The hint must reflect whatever budget the caller
-        // passes in, not a literal `200` baked into the format string.
-        let mut state = EditorState::fresh();
-        state.design.tiers.push(scale_reference_tier(0.5));
-        state.design.tiers.push(ConstraintTier {
-            angle_deg: -40.0,
-            name: "P1".to_string(),
-            indices: vec![0.0, 24.0],
-            constraint: MeetConstraint::MeetExisting,
-            imported_meet: None,
-            original_notes: None,
-            detached: Vec::new(),
-        });
-
-        let (_, hint) = optimize_hint(&state, 750);
-        assert!(hint.contains("750"), "expected the budget in: {hint}");
-        assert!(!hint.contains("200-evaluation"));
-    }
-
-    #[test]
-    fn optimize_hint_names_the_canonical_light_pose() {
-        // The Optimize panel must say its score is measured
-        // under a fixed pose, not the user's own light.
-        let mut state = EditorState::fresh();
-        state.design.tiers.push(scale_reference_tier(0.5));
-        state.design.tiers.push(ConstraintTier {
-            angle_deg: -40.0,
-            name: "P1".to_string(),
-            indices: vec![0.0, 24.0],
-            constraint: MeetConstraint::MeetExisting,
-            imported_meet: None,
-            original_notes: None,
-            detached: Vec::new(),
-        });
-
-        let (_, hint) = optimize_hint(&state, 200);
-        assert!(hint.to_lowercase().contains("canonical light pose"));
-    }
-
     fn design_with_named_tiers(names: &[&str]) -> Design {
         let mut state = EditorState::fresh();
         for &name in names {
@@ -426,7 +261,7 @@ mod tests {
                 detached: Vec::new(),
             });
         }
-        state.design
+        state.session.design
     }
 
     // --- deep_solve_tier_rows ---
@@ -476,65 +311,5 @@ mod tests {
         }];
         let rows = deep_solve_tier_rows(&deltas, &design);
         assert_eq!(rows[0].name.as_str(), "");
-    }
-
-    // --- optimize_change_rows ---
-
-    #[test]
-    fn optimize_change_rows_formats_one_row_per_angle_change_with_the_tiers_own_name() {
-        let design = design_with_named_tiers(&["G1", "P1"]);
-        let outcome = OptimizeOutcome {
-            before: ObjectiveComponents {
-                windowing_pct: 0.0,
-                extinction_pct: 0.0,
-                tilt_brilliance_pct: 0.0,
-            },
-            before_score: 0.0,
-            before_yield_loss_pct: 0.0,
-            after: ObjectiveComponents {
-                windowing_pct: 0.0,
-                extinction_pct: 0.0,
-                tilt_brilliance_pct: 0.0,
-            },
-            after_score: 0.0,
-            after_yield_loss_pct: 0.0,
-            evaluations: 1,
-            changes: vec![indicatrix_cut_core::AngleChange {
-                index: 1,
-                from_deg: -40.0,
-                to_deg: -41.5,
-            }],
-            cancelled: false,
-            polish_evaluations: 0,
-            polish_improvement: 0.0,
-        };
-        let rows = optimize_change_rows(&outcome, &design);
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].tier_number.as_str(), "#2");
-        assert_eq!(rows[0].name.as_str(), "P1");
-        assert_eq!(rows[0].from_angle.as_str(), "-40.00\u{b0}");
-        assert_eq!(rows[0].to_angle.as_str(), "-41.50\u{b0}");
-        assert_eq!(rows[0].delta.as_str(), "-1.50\u{b0}");
-    }
-
-    // --- facet_count_from_solved ---
-
-    #[test]
-    fn facet_count_from_solved_is_the_length_of_the_designs_expanded_planes() {
-        let mut design = design_with_named_tiers(&["G1"]);
-        design.tiers[0].constraint = MeetConstraint::ScaleReference(1.0);
-        let solved = design
-            .solve()
-            .expect("a single scale-reference tier always solves");
-        // A thin wrapper, so this mostly guards against the wrapper drifting from
-        // `Design::planes_from_solved`'s own count rather than testing geometry.
-        assert_eq!(
-            facet_count_from_solved(&design, &solved),
-            design.planes_from_solved(&solved).len()
-        );
-        assert!(
-            facet_count_from_solved(&design, &solved) > 0,
-            "a solved design always has at least one facet plane"
-        );
     }
 }

@@ -6,7 +6,7 @@
 //! [`super::cuts::STANDARD_ROUND_BRILLIANT_GIRDLE_FACETS`], which only covers
 //! [`super::cuts::StandardGemCuts::standard_round_brilliant`]'s fixed construction order).
 //!
-//! Works from plane geometry rather than the cutting schedule:
+//! Works from plane geometry rather than the cutting instructions:
 //! [`super::meet_solver::classify_blocks`] needs a `&[MeetTierInput]`, which not
 //! every caller has, while a girdle facet's normal is by construction
 //! perpendicular to the stone's `+Y` axis and directly readable from the
@@ -26,6 +26,11 @@ use crate::optics::raytracer::FacetFinish;
 /// facet (~5e-8 measured). `1e-3` clears that noise floor with margin below
 /// the shallowest real non-girdle facet in either built-in cut (SRB
 /// `|y| ~= 0.737`; `emerald_cut` `|y| ~= 0.602`).
+///
+/// Purpose: classify `f32` plane normals (as carried by [`GpuFacetPlane`]), which
+/// is why it is 1000x looser than `classify_blocks`' exact-angle test, and why it
+/// is unrelated to the 85 degree girdle-tier pick in `meet_solver::names` (a
+/// naming heuristic over schedule angles).
 ///
 /// Also backs [`super::stone_metrics::measure_solid`]'s own girdle-thickness
 /// threshold -- that function's planes come from the SAME `GpuFacetPlane` f32

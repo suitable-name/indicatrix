@@ -14,7 +14,13 @@
 use std::f32::consts::PI;
 
 use glam::Vec3;
-use indicatrix::renderer::env_map::{EnvironmentMap, rgb_to_spectral_radiance};
+use indicatrix::{
+    color::{
+        ColorSpace,
+        cie1931::{CIE_1931_Y_INTEGRAL_5NM, cie_1931_cmf},
+    },
+    renderer::env_map::{EnvironmentMap, rgb_to_spectral_radiance},
+};
 
 /// Cheap, deterministic, decent-quality hash (splitmix64-style finalizer) used only to
 /// turn a counter into pseudorandom `f32`s in `(0, 1)` for these tests.
@@ -349,4 +355,93 @@ fn radiance_at_matches_rgb_to_spectral_radiance_of_the_bilinear_lookup() {
     let expected = rgb_to_spectral_radiance([0.5, 0.25, 0.75], 550.0);
     let got = env.radiance_at(dir, 550.0);
     assert!((expected - got).abs() < 1e-5);
+}
+
+// ---------------------------------------------------------------------------------
+// Absolute colour anchors: the reconstructed spectrum, integrated against the CIE 1931
+// observer, must land on the colour of the RGB triple it came from.
+// ---------------------------------------------------------------------------------
+
+/// CIE XYZ of `rgb_to_spectral_radiance(rgb, ..)`, integrated at 1 nm over 380-780 nm
+/// and normalised by the observer's Y integral so equal-Y white has `Y = 1`.
+fn upsampled_xyz(rgb: [f32; 3]) -> Vec3 {
+    let mut xyz = Vec3::ZERO;
+    for nm in 380..=780 {
+        let lambda = nm as f32;
+        xyz += Vec3::from(cie_1931_cmf(lambda)) * rgb_to_spectral_radiance(rgb, lambda);
+    }
+    xyz / CIE_1931_Y_INTEGRAL_5NM
+}
+
+/// Linear sRGB of the upsampled spectrum's XYZ.
+fn upsampled_linear_srgb(rgb: [f32; 3]) -> Vec3 {
+    ColorSpace::Srgb.xyz_to_linear(upsampled_xyz(rgb))
+}
+
+#[test]
+fn upsampled_white_is_d65_white_at_unit_luminance() {
+    let xyz = upsampled_xyz([1.0, 1.0, 1.0]);
+    let sum = xyz.x + xyz.y + xyz.z;
+    let (x, y) = (xyz.x / sum, xyz.y / sum);
+    assert!(
+        (x - 0.3127).abs() < 0.002 && (y - 0.3290).abs() < 0.002,
+        "white must sit at the D65 chromaticity (got xy = ({x}, {y}))"
+    );
+    assert!(
+        (xyz.y - 1.0).abs() < 0.01,
+        "white must have Y = 1 within 1% (got {})",
+        xyz.y
+    );
+}
+
+/// The uplift puts white exactly on D65 at unit luminance (the test above). The three
+/// secondaries are chroma-only colours, lifted on the narrow bump basis whose coefficients
+/// are never negative, so each comes back within `2e-3` per linear-sRGB channel.
+#[test]
+fn upsampled_secondaries_match_their_srgb_colour() {
+    for rgb in [[0.0, 1.0, 1.0], [1.0, 1.0, 0.0], [1.0, 0.0, 1.0]] {
+        let got = upsampled_linear_srgb(rgb);
+        for (channel, (g, want)) in got.to_array().into_iter().zip(rgb).enumerate() {
+            assert!(
+                (g - want).abs() < 2e-3,
+                "secondary {rgb:?}: linear sRGB channel {channel} is {g}, expected {want} within 2e-3"
+            );
+        }
+    }
+}
+
+#[test]
+fn upsampled_primaries_match_their_srgb_colour() {
+    for rgb in [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+        let got = upsampled_linear_srgb(rgb);
+        for (channel, (g, want)) in got.to_array().into_iter().zip(rgb).enumerate() {
+            assert!(
+                (g - want).abs() < 2e-3,
+                "primary {rgb:?}: linear sRGB channel {channel} is {g}, expected {want} within 2e-3"
+            );
+        }
+    }
+}
+
+/// Colours that mix a neutral part and a chroma part, including one above 1.0, must also
+/// come back on their input: each channel within `2e-3` of the largest input channel.
+#[test]
+fn upsampled_mixed_colours_match_their_srgb_colour() {
+    for rgb in [
+        [0.8f32, 0.2, 0.05],
+        [0.1, 0.6, 0.9],
+        [0.5, 0.5, 0.1],
+        [2.0, 1.5, 1.0],
+        [0.02, 0.9, 0.3],
+    ] {
+        let scale = rgb[0].max(rgb[1]).max(rgb[2]);
+        let got = upsampled_linear_srgb(rgb);
+        for (channel, (g, want)) in got.to_array().into_iter().zip(rgb).enumerate() {
+            assert!(
+                (g - want).abs() < 2e-3 * scale,
+                "mixed {rgb:?}: linear sRGB channel {channel} is {g}, expected {want} within {}",
+                2e-3 * scale
+            );
+        }
+    }
 }

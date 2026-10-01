@@ -5,12 +5,27 @@
 //!
 //! A job checks its workers out of the [`Registry`] once, when it starts, and each
 //! [`JoinedWorkerLane`] keeps its connection across chunks while they succeed back to
-//! back: a job's lanes claim their next chunk immediately after merging the last one, so
-//! the connection stays busy (the worker hangs up after 45 s idle; a checked-out
-//! connection is never pinged). Holding per job rather than re-checking out per chunk
-//! means a lane never loses its worker to another job between two chunks, and a
-//! connection's stream is always drained to `DONE`/`ERROR` before anything else is
-//! written to it.
+//! back. Holding per job rather than re-checking out per chunk means a lane never loses
+//! its worker to another job between two chunks, and a connection's stream is always
+//! drained to `DONE`/`ERROR` before anything else is written to it.
+//!
+//! Between two chunks the connection can genuinely sit idle for a while: a lane with
+//! nothing left to claim waits (`indicatrix_dispatch::pool::epoch::Epoch::claim`) while
+//! another lane's straggling chunk is still in flight, and the registry's own liveness
+//! `PING` only reaches CHECKED-IN (idle-in-the-registry) connections -- a checked-out one
+//! is invisible to it. Left alone, that combination lets a perfectly healthy connection
+//! sit past the 45 s a joined worker hangs up at (`join::session::JOIN_IDLE_TIMEOUT`)
+//! with no traffic at all, and the worker drops it out from under the job. Each
+//! `JoinedWorkerLane` therefore runs its own small heartbeat thread
+//! ([`held_ping_loop`]) for as long as it holds a connection idle between chunks,
+//! `PING`ing it well before that deadline; `render_chunk` holds the same lock for the
+//! whole duration of an actual request, so the heartbeat only ever touches a connection
+//! that is genuinely between chunks, never one mid-request. The heartbeat itself only
+//! holds that lock long enough to lift the connection out and (on a successful ping) put
+//! it back, never across the `PING`/`PONG` round trip -- see
+//! [`try_heartbeat_once`](self::try_heartbeat_once)'s doc comment for why that is still
+//! never racing `render_chunk` over the same connection, at the cost of `render_chunk`
+//! occasionally checking out a different idle worker instead of waiting the ping out.
 //!
 //! On any failed chunk the lane lets go before the pool's backoff pause: a broken stream
 //! is [`WorkerHandle::discard`]ed (unregistered; `join` reconnects by itself), a worker
@@ -23,6 +38,25 @@
 //! fixed per run); they serve the next job. (A lane that lost its connection may still
 //! pick one of them up as its replacement, exactly as it picks up a worker that
 //! reconnected -- subject to the job's [`LaneNeed`].)
+//!
+//! # Chunk sizing across lanes of very different speed
+//!
+//! Each lane's next chunk is sized tail-aware and share-aware
+//! (`indicatrix_dispatch::pool::epoch::Epoch::want` ->
+//! `indicatrix_dispatch::ChunkPolicy::tail_aware_samples`): the smaller of the plain
+//! target-duration chunk and this lane's proportional share (by rate) of the run's
+//! outstanding samples. A fast joined worker (an A100 dialed in over `join`) can
+//! therefore no longer be left idling in `Epoch::claim` while a much slower lane (the
+//! coordinator's own GPU, say) works through an oversized last chunk it grabbed simply
+//! because its own target-duration size happened to exceed what was left. The rates
+//! that sizing (and the coordinator's own fastest-worker ranking for `Interactive`
+//! requests) reads come from `super::job::Coordinator::rates`, a book shared
+//! coordinator-wide across every viewer connection -- not rebuilt per connection -- so
+//! a joined worker's calibration
+//! survives a GUI export's successive one-shot connections and, keyed by its
+//! certificate label, its own reconnects too. A viewer that wants joined workers
+//! included in its live view passes `--interactive-workers 1` (or higher) to `serve`;
+//! the default `0` serves `Interactive` requests from the own lane alone.
 //!
 //! # HDR jobs
 //!
@@ -45,10 +79,17 @@ use crate::{assets::HeldAsset, cli::ComputeMode, validate::MAX_SAMPLES_PER_REQUE
 use glam::Vec3;
 use indicatrix::renderer::gpu_backend::GpuBackend;
 use indicatrix_dispatch::{CancelToken, ChunkResult, SampleRange, WorkerLane};
-use indicatrix_net::{SceneState, messages::error_codes};
-use std::sync::{
-    Arc, Mutex, PoisonError,
-    atomic::{AtomicU32, Ordering},
+use indicatrix_net::{
+    SceneState,
+    messages::{ClientMessage, StreamEvent, error_codes},
+};
+use std::{
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicBool, AtomicU32, Ordering},
+    },
+    thread,
+    time::{Duration, Instant},
 };
 
 /// What a joined worker must accept to take part in a job.
@@ -127,6 +168,27 @@ pub(in crate::coordinator) fn next_worker_request_id() -> u32 {
     NEXT_WORKER_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// A [`JoinedWorkerLane`]'s connection and when it last saw traffic, shared with its own
+/// heartbeat thread ([`held_ping_loop`]) -- see the module doc comment.
+struct Held {
+    handle: Mutex<Option<WorkerHandle>>,
+    last_traffic: Mutex<Instant>,
+}
+
+/// How long a checked-out connection may go without traffic before a lane pings it
+/// itself: comfortably under the 45 s a joined worker hangs up at
+/// (`join::session::JOIN_IDLE_TIMEOUT`) and under the registry's own idle-ping cadence
+/// (`liveness`'s 10 s), so a lane sitting in `Epoch::claim` waiting for other lanes to
+/// finish never looks silent to the worker it is holding.
+const HELD_PING_INTERVAL: Duration = Duration::from_secs(15);
+
+/// How often [`held_ping_loop`] wakes to check -- short so [`JoinedWorkerLane`]'s `Drop`
+/// never waits long for it to notice `stop`.
+const HELD_PING_POLL: Duration = Duration::from_millis(200);
+
+/// How long one heartbeat `PING` may take to get its `PONG`.
+const HELD_PING_DEADLINE: Duration = Duration::from_secs(5);
+
 /// A lane over one joined worker connection (see the module doc comment for how it
 /// holds and replaces its connection).
 pub struct JoinedWorkerLane {
@@ -135,18 +197,39 @@ pub struct JoinedWorkerLane {
     /// The job's shared lane state: what a replacement connection must accept, the
     /// held HDR map, the excluded workers.
     job: Arc<JobLanes>,
-    handle: Mutex<Option<WorkerHandle>>,
+    held: Arc<Held>,
+    heartbeat_stop: Arc<AtomicBool>,
+    heartbeat: Option<thread::JoinHandle<()>>,
 }
 
 impl JoinedWorkerLane {
-    /// A lane starting on the checked-out `handle`, for the job `job` describes.
+    /// A lane starting on the checked-out `handle`, for the job `job` describes. Spawns
+    /// this lane's own heartbeat thread (see the module doc comment); a spawn failure
+    /// (vanishingly unlikely) just means no heartbeat, not a construction failure --
+    /// the ordinary liveness deadlines still apply, just without the extra margin.
     #[must_use]
     pub fn new(handle: WorkerHandle, registry: Arc<Registry>, job: Arc<JobLanes>) -> Self {
+        let name = format!("joined worker #{}", handle.info().worker_id);
+        let held = Arc::new(Held {
+            handle: Mutex::new(Some(handle)),
+            last_traffic: Mutex::new(Instant::now()),
+        });
+        let heartbeat_stop = Arc::new(AtomicBool::new(false));
+        let heartbeat = {
+            let held = Arc::clone(&held);
+            let stop = Arc::clone(&heartbeat_stop);
+            thread::Builder::new()
+                .name(format!("{name}-heartbeat"))
+                .spawn(move || held_ping_loop(&held, &stop))
+                .ok()
+        };
         Self {
-            name: format!("joined worker #{}", handle.info().worker_id),
+            name,
             registry,
             job,
-            handle: Mutex::new(Some(handle)),
+            held,
+            heartbeat_stop,
+            heartbeat,
         }
     }
 
@@ -229,7 +312,11 @@ impl WorkerLane for JoinedWorkerLane {
         range: SampleRange,
         cancel: &CancelToken,
     ) -> ChunkResult {
-        let mut slot = self.handle.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut slot = self
+            .held
+            .handle
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let handle = slot
             .take()
             .or_else(|| Registry::checkout(&self.registry, |w| self.job.accepts(w)));
@@ -237,6 +324,11 @@ impl WorkerLane for JoinedWorkerLane {
             return ChunkResult::failed("no idle joined worker to take the chunk".to_string());
         };
         let (result, broken) = self.run_on(&mut handle, scene, range, cancel);
+        *self
+            .held
+            .last_traffic
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Instant::now();
         match broken {
             Some(why) => handle.discard(&why),
             // A clean chunk keeps the connection for the next one; a refused one goes
@@ -246,6 +338,117 @@ impl WorkerLane for JoinedWorkerLane {
         }
         drop(slot);
         result
+    }
+}
+
+impl Drop for JoinedWorkerLane {
+    /// Stops and joins this lane's heartbeat thread -- bounded by [`HELD_PING_POLL`],
+    /// not [`HELD_PING_INTERVAL`], so ending a job never waits long per lane.
+    fn drop(&mut self) {
+        self.heartbeat_stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.heartbeat.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// One [`JoinedWorkerLane`]'s heartbeat thread body (see the module doc comment): while
+/// `stop` isn't set, every [`HELD_PING_INTERVAL`] with no other traffic, `PING`s the
+/// connection currently idling in `held.handle`, if any.
+///
+/// `render_chunk` holds `held.handle`'s lock for the WHOLE duration of an actual
+/// request, so a successful `try_lock` here, finding a connection in it, means the lane
+/// is genuinely between chunks right now -- never mid-request, never racing
+/// `render_chunk`'s own use of the same connection.
+fn held_ping_loop(held: &Held, stop: &AtomicBool) {
+    while !stop.load(Ordering::Relaxed) {
+        thread::sleep(HELD_PING_POLL);
+        if stop.load(Ordering::Relaxed) {
+            return;
+        }
+        let due = held
+            .last_traffic
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .elapsed()
+            >= HELD_PING_INTERVAL;
+        if due {
+            try_heartbeat_once(held);
+        }
+    }
+}
+
+/// One heartbeat attempt for [`held_ping_loop`]: pings the connection currently idling
+/// in `held.handle`, if any, bumping `held.last_traffic` on success or discarding the
+/// connection on failure. A no-op when nothing is checked out there right now, or when
+/// `render_chunk` is already using it (`try_lock` finds it busy).
+///
+/// `held.handle`'s lock is taken only to lift the connection out and, on success, to put
+/// it back -- never held across the ping itself (a network round trip): while it is out,
+/// `render_chunk`'s own blocking `lock()` sees `None` and checks out a fresh idle worker
+/// from the registry rather than waiting, which is fine -- this worker's registry slot
+/// stays `CheckedOut` for as long as this `JoinedWorkerLane` exists regardless of whether
+/// its handle currently sits in `held.handle` or in this function's local `handle`, so
+/// nothing else can ever pick up the SAME connection out from under this ping.
+fn try_heartbeat_once(held: &Held) {
+    let mut slot = match held.handle.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            // `render_chunk` is using the connection right now: real traffic, no
+            // heartbeat needed.
+            return;
+        }
+    };
+    let Some(mut handle) = slot.take() else {
+        // Nothing checked out right now (lost earlier); `render_chunk` checks out
+        // a replacement on its own next call.
+        return;
+    };
+    drop(slot);
+    match ping_held(&mut handle) {
+        Ok(()) => {
+            *held
+                .last_traffic
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Instant::now();
+            *held.handle.lock().unwrap_or_else(PoisonError::into_inner) = Some(handle);
+        }
+        Err(why) => {
+            tracing::info!(
+                "coordinator job: heartbeat ping to worker #{} failed while it idled between \
+                 chunks: {why}",
+                handle.info().worker_id
+            );
+            handle.discard(&why);
+            // `held.handle` stays `None`; `render_chunk`'s own checkout picks a
+            // replacement on its next call.
+        }
+    }
+}
+
+/// Sends `PING` on `handle`'s connection and waits (bounded by [`HELD_PING_DEADLINE`])
+/// for the matching `PONG`.
+fn ping_held(handle: &mut WorkerHandle) -> Result<(), String> {
+    // A fixed nonce is fine: this exchange is fully synchronous, with `held.handle`'s
+    // lock excluding `render_chunk` for its duration, so nothing else could be waiting
+    // on a PONG of its own over this connection at the same time.
+    const NONCE: u64 = 0x4845_4152_5442_4954; // "HEARTBIT" in ASCII hex, arbitrary.
+    let mut conn = handle.stream();
+    conn.set_timeouts(Some(HELD_PING_DEADLINE), Some(HELD_PING_DEADLINE))
+        .map_err(|e| format!("could not arm the heartbeat ping deadline: {e}"))?;
+    indicatrix_net::messages::write_message(&mut conn, &ClientMessage::Ping { nonce: NONCE })
+        .map_err(|e| format!("heartbeat PING failed: {e}"))?;
+    loop {
+        let (event, _payload) = indicatrix_net::messages::read_stream_event(&mut conn)
+            .map_err(|e| format!("heartbeat: no PONG ({e})"))?;
+        match event {
+            StreamEvent::Pong { nonce: NONCE } => {
+                let _ = conn.set_timeouts(None, None);
+                return Ok(());
+            }
+            other => tracing::debug!("coordinator: ignoring {other:?} from a held idle worker"),
+        }
     }
 }
 
@@ -302,5 +505,81 @@ impl WorkerLane for OwnLane {
             return ChunkResult::partial(traced.sum, traced.done, "cancelled".to_string());
         }
         ChunkResult::complete(traced.sum, traced.done, None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::coordinator::LivenessConfig;
+    use indicatrix_net::messages::{Backend, PayloadEncoding, RenderCapability};
+    use std::{
+        net::{TcpListener, TcpStream},
+        thread,
+    };
+
+    /// A checked-out [`WorkerHandle`] over a real loopback TCP pair, and the far end
+    /// (kept open so the connection stays live).
+    fn checked_out_handle() -> (WorkerHandle, TcpStream) {
+        let registry = Registry::new(LivenessConfig::default());
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback listener");
+        let addr = listener
+            .local_addr()
+            .expect("a bound listener has a local address");
+        let near = TcpStream::connect(addr).expect("connect to our own listener");
+        let far = listener
+            .accept()
+            .expect("accept the connection just made")
+            .0;
+        let worker_id = registry.allocate_id();
+        let info = WorkerInfo {
+            worker_id,
+            capability: RenderCapability {
+                backend: Backend::Cpu { threads: 1 },
+                max_pixels: 1_000,
+                min_cadence_ms: 100,
+                hdr: false,
+            },
+            peer: None,
+            label: None,
+            payload_encoding: PayloadEncoding::Raw,
+        };
+        registry.insert(info, Box::new(near), None);
+        let handle =
+            Registry::checkout(&registry, |_| true).expect("the just-inserted worker is idle");
+        (handle, far)
+    }
+
+    /// A peer that reads exactly one `PING` and answers `PONG` with the same nonce,
+    /// then stops (a stand-in for a joined worker's own request loop between chunks).
+    fn answer_one_ping(mut far: TcpStream) {
+        thread::spawn(move || {
+            let message: ClientMessage = indicatrix_net::messages::read_message(&mut far)
+                .expect("the heartbeat sends exactly one PING");
+            let ClientMessage::Ping { nonce } = message else {
+                panic!("expected ClientMessage::Ping, got {message:?}");
+            };
+            indicatrix_net::messages::write_stream_event(
+                &mut far,
+                &StreamEvent::Pong { nonce },
+                None,
+            )
+            .expect("writing PONG must not fail on a live loopback socket");
+        });
+    }
+
+    #[test]
+    fn ping_held_succeeds_against_a_peer_that_answers_pong() {
+        let (mut handle, far) = checked_out_handle();
+        answer_one_ping(far);
+        ping_held(&mut handle).expect("a live peer answering PONG must succeed");
+    }
+
+    #[test]
+    fn ping_held_fails_against_a_silent_peer() {
+        let (mut handle, _far) = checked_out_handle();
+        // `_far` is kept alive (not dropped) but never answers -- `ping_held` must
+        // still fail once `HELD_PING_DEADLINE` passes, not hang.
+        assert!(ping_held(&mut handle).is_err());
     }
 }

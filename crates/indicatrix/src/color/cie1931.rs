@@ -23,12 +23,14 @@
 //! Single source of truth: [`optics::raytracer`](crate::optics::raytracer) delegates to
 //! [`cie_1931_cmf`] rather than keeping its own copy of the table.
 //!
-//! # Bit-identical WGSL transcription
+//! # ULP-budgeted WGSL transcription
 //!
 //! [`cie_1931_cmf`] is written so a WGSL port (`const` array + the same `floor`/
-//! fraction/lerp steps, in the same order) reproduces it bit-for-bit modulo ordinary
-//! driver-level `f32` rounding: only `f32` arithmetic, no `mul_add`/fma, no `f64`
-//! intermediates anywhere in the lookup or interpolation.
+//! fraction/lerp steps, in the same order) reproduces it within a small ULP budget:
+//! only `f32` arithmetic, no `mul_add`/fma, no `f64` intermediates anywhere in the
+//! lookup or interpolation. This is ULP-budgeted, not bit-for-bit: WGSL leaves `fma`
+//! contraction, `/`, `sqrt`, and `sin`/`cos` implementation-defined, so a driver is
+//! free to round the same formula's intermediate steps differently than the CPU does.
 
 /// Wavelength (nm) of the table's first entry.
 const TABLE_START_NM: f32 = 380.0;
@@ -161,21 +163,23 @@ pub const CIE_1931_Y_INTEGRAL_5NM: f32 = {
 /// `SPECTRUM_SPAN`/hero-wavelength wrapping -- so this is a defensive bound, not a path
 /// any real caller takes).
 ///
-/// # Bit-identical WGSL transcription
+/// # ULP-budgeted WGSL transcription
 ///
 /// Deliberately plain `f32` arithmetic in a fixed order (`index = floor((lambda -
 /// start) / step)`, `t = position - index`, `lo + (hi - lo) * t`), no `mul_add`/fma and
 /// no `f64` intermediate anywhere -- a WGSL port doing the exact same steps against the
-/// same table reproduces this bit-for-bit modulo ordinary driver rounding. See
-/// `shaders/environment.wgsl`, `shaders/furnace.wgsl`, and `shaders/spectral_transport.wgsl`'s
-/// own copies of this function.
+/// same table reproduces this within a small ULP budget, not bit-for-bit: WGSL leaves
+/// `fma` contraction (among other things) implementation-defined, so a driver may still
+/// round a step differently than the CPU does. See `shaders/environment.wgsl`,
+/// `shaders/furnace.wgsl`, and `shaders/spectral_transport.wgsl`'s own copies of this
+/// function.
 #[must_use]
 #[expect(
     clippy::suboptimal_flops,
     reason = "the lerp below is deliberately plain `lo + (hi - lo) * t`, no `mul_add`/fma, \
-              so a WGSL port doing the exact same steps reproduces this bit-for-bit -- see \
-              this function's own doc comment and `shaders/{environment,furnace,\
-              spectral_transport}.wgsl`'s copies of it"
+              so a WGSL port doing the exact same steps reproduces this within a small ULP \
+              budget -- see this function's own doc comment and \
+              `shaders/{environment,furnace,spectral_transport}.wgsl`'s copies of it"
 )]
 pub fn cie_1931_cmf(lambda_nm: f32) -> [f32; 3] {
     const TABLE_END_NM: f32 = TABLE_START_NM + (CIE_1931_TABLE.len() - 1) as f32 * TABLE_STEP_NM;
@@ -247,34 +251,45 @@ fn cie_1931_cmf_legacy_gaussian_fit(lambda_nm: f32) -> [f32; 3] {
 mod tests {
     use super::*;
 
-    /// [`cie_1931_cmf_x8`] must agree with 8 separate [`cie_1931_cmf`] calls exactly --
-    /// both go through the identical per-lane table lookup, with no SIMD exponential
-    /// involved (unlike a Gaussian-lobe analytic fit, which would only guarantee a
-    /// few-ULP agreement).
+    /// [`cie_1931_cmf_x8`] must return the tabulated CIE 1931 rows, lane by lane:
+    ///
+    /// - 380, 555 and 780nm are exact table points (`t == 0`), so the lanes must equal
+    ///   the table rows `[0.0014, 0.0, 0.0065]`, `[0.5121, 1.0, 0.0057]` and
+    ///   `[0.0, 0.0, 0.0]` exactly.
+    /// - 552nm lies at position `(552 - 380) / 5 = 34.4`, i.e. between the 550nm row
+    ///   `[0.4334, 0.9950, 0.0087]` and the 555nm row `[0.5121, 1.0000, 0.0057]` at
+    ///   `t = 0.4`: `x = 0.4334 + 0.0787 * 0.4 = 0.46488`,
+    ///   `y = 0.9950 + 0.0050 * 0.4 = 0.9970`, `z = 0.0087 - 0.0030 * 0.4 = 0.0075`.
+    /// - 502.5nm lies halfway between the 500nm row `[0.0049, 0.3230, 0.2720]` and the
+    ///   505nm row `[0.0024, 0.4073, 0.2123]`: the means are `0.00365`, `0.36515` and
+    ///   `0.24215`.
+    /// - 379 and 781nm are outside the table and must give zero.
     #[test]
-    fn cmf_x8_matches_scalar_exactly() {
-        let mut state = 99u64;
-        let mut next = move || {
-            state = state
-                .wrapping_mul(6_364_136_223_846_793_005)
-                .wrapping_add(1);
-            (((state >> 33) as f32) / (u32::MAX as f32)).mul_add(700.0 - 380.0, 380.0)
-        };
-        for _round in 0..200 {
-            let lambdas = [
-                next(),
-                next(),
-                next(),
-                next(),
-                next(),
-                next(),
-                next(),
-                next(),
-            ];
-            let batched = cie_1931_cmf_x8(&lambdas);
-            for (k, &l) in lambdas.iter().enumerate() {
-                let scalar = cie_1931_cmf(l);
-                assert_eq!(batched[k], scalar, "lambda={l}");
+    fn cmf_x8_returns_the_tabulated_rows() {
+        let lambdas = [380.0, 555.0, 780.0, 552.0, 502.5, 480.0, 379.0, 781.0];
+        let batched = cie_1931_cmf_x8(&lambdas);
+
+        assert_eq!(batched[0], [0.0014, 0.0, 0.0065], "380nm is the first row");
+        assert_eq!(batched[1], [0.5121, 1.0, 0.0057], "555nm is the y_bar peak");
+        assert_eq!(
+            batched[2],
+            [0.0, 0.0, 0.0],
+            "780nm is the last (all-zero) row"
+        );
+        assert_eq!(batched[5], [0.0956, 0.1390, 0.8130], "480nm is a table row");
+        assert_eq!(batched[6], [0.0, 0.0, 0.0], "379nm is below the table");
+        assert_eq!(batched[7], [0.0, 0.0, 0.0], "781nm is above the table");
+
+        let interpolated = [
+            (3, [0.46488, 0.9970, 0.0075]),
+            (4, [0.00365, 0.36515, 0.24215]),
+        ];
+        for (lane, expected) in interpolated {
+            for (channel, (&got, want)) in batched[lane].iter().zip(expected).enumerate() {
+                assert!(
+                    (got - want).abs() < 1e-5,
+                    "lane {lane} channel {channel}: got {got}, hand-interpolated {want}"
+                );
             }
         }
     }

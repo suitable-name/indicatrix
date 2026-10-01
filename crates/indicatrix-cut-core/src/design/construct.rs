@@ -18,10 +18,15 @@ use std::collections::BTreeMap;
 /// directly.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FreshDesignSpec {
+    /// Number of teeth on the index gear.
     pub gear_teeth: i32,
+    /// Rotational symmetry order of the schedule.
     pub symmetry_order: u32,
+    /// Whether the schedule carries mirror symmetry.
     pub mirror: bool,
+    /// Gem material the design is cut from.
     pub material: MaterialSelection,
+    /// Rough (preform) the design is cut from.
     pub preform: PreformSpec,
 }
 

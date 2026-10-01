@@ -52,7 +52,7 @@ use crate::model::performance::{
     GlobalExtremes, PerformanceAggregate, PerformanceBound, PerformanceFilter,
     PerformanceGlobalExtremes,
 };
-use anyhow::{Result, bail};
+use anyhow::{Result, bail, ensure};
 
 /// Sample points per axis. See this module's doc for the indexing convention
 /// (index 0 = tilt -90, index 90 = table-up, index 180 = tilt +90, 1-degree step).
@@ -92,8 +92,11 @@ pub const TILT_CURVE_BLOB_BYTES: usize = TILT_CURVE_TOTAL_SAMPLES * 4;
 /// convention (index 90 = table-up/face-up; indices 0/180 = the edge-on extremes).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AxisTiltCurves {
+    /// Brilliance percentage per tilt sample.
     pub brilliance_pct: [f32; TILT_CURVE_POINTS_PER_AXIS],
+    /// Extinction percentage per tilt sample.
     pub extinction_pct: [f32; TILT_CURVE_POINTS_PER_AXIS],
+    /// Windowing percentage per tilt sample.
     pub windowing_pct: [f32; TILT_CURVE_POINTS_PER_AXIS],
 }
 
@@ -101,6 +104,7 @@ pub struct AxisTiltCurves {
 /// [`AxisTiltCurves`]. See this module's doc for the canonical shape and BLOB encoding.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TiltPerformanceCurves {
+    /// Tilt curves for each tilt axis.
     pub axes: [AxisTiltCurves; TILT_CURVE_AXIS_COUNT],
 }
 
@@ -128,13 +132,32 @@ impl TiltPerformanceCurves {
         out
     }
 
+    /// Whether every sample of every curve is a finite number. [`Self::from_bytes`]
+    /// only ever returns such a record, and the database refuses to store any other, so
+    /// a NaN or infinity produced by a broken sweep is caught where it is made instead
+    /// of poisoning the decoded record's mean and extremes later.
+    #[must_use]
+    pub fn is_finite(&self) -> bool {
+        self.axes.iter().all(|axis| {
+            [
+                &axis.brilliance_pct,
+                &axis.extinction_pct,
+                &axis.windowing_pct,
+            ]
+            .into_iter()
+            .all(|curve| curve.iter().copied().all(f32::is_finite))
+        })
+    }
+
     /// Unpacks `bytes` (as written by [`Self::to_bytes`]) back into a record.
     ///
     /// # Errors
     ///
     /// Returns an error if `bytes.len()` is not exactly [`TILT_CURVE_BLOB_BYTES`] -- a
     /// fixed-shape record, so any other length is a schema mismatch, never a value to
-    /// silently truncate or zero-pad.
+    /// silently truncate or zero-pad -- or if any decoded sample is NaN or infinite
+    /// (the same refusal `SolidHull::from_bytes` makes for a vertex): a bit-rotted or
+    /// foreign BLOB must not become a record whose statistics are silently NaN.
     ///
     /// # Panics
     ///
@@ -165,12 +188,18 @@ impl TiltPerformanceCurves {
                 &mut axis.windowing_pct,
             ] {
                 for sample in curve.iter_mut() {
-                    *sample = f32::from_le_bytes([
+                    let value = f32::from_le_bytes([
                         bytes[offset],
                         bytes[offset + 1],
                         bytes[offset + 2],
                         bytes[offset + 3],
                     ]);
+                    ensure!(
+                        value.is_finite(),
+                        "tilt-curve BLOB sample {} is not finite",
+                        offset / 4
+                    );
+                    *sample = value;
                     offset += 4;
                 }
             }
@@ -196,6 +225,11 @@ impl TiltPerformanceCurves {
 
     /// The min/max of one metric across all 4 axes, entire 181-point axis (no windowing)
     /// -- the per-metric unit [`Self::global_extremes`] computes three times.
+    ///
+    /// A non-finite sample is ignored, exactly as [`Self::matches_performance_filter`]
+    /// ignores it in its window, so the stored extremes and the exact filter never
+    /// disagree about a record; a record with no finite sample at all yields
+    /// `min == +inf` and `max == -inf`.
     fn metric_global_extremes(
         &self,
         select: impl Fn(&AxisTiltCurves) -> &[f32; TILT_CURVE_POINTS_PER_AXIS],
@@ -203,7 +237,7 @@ impl TiltPerformanceCurves {
         let mut min = f32::INFINITY;
         let mut max = f32::NEG_INFINITY;
         for axis in &self.axes {
-            for &v in select(axis) {
+            for &v in select(axis).iter().filter(|v| v.is_finite()) {
                 min = min.min(v);
                 max = max.max(v);
             }
@@ -226,6 +260,10 @@ impl TiltPerformanceCurves {
     /// [`PerformanceFilter::new`]'s validation) degrades gracefully: negative matches
     /// zero points and returns `false` (safe default for an empty aggregate); above 90
     /// matches every point, same as exactly 90.
+    ///
+    /// A non-finite sample (only reachable in an in-memory record, since
+    /// [`Self::from_bytes`] refuses one) is left out of the window altogether -- not
+    /// counted, summed or compared -- so the worst-case and mean tests treat it alike.
     #[must_use]
     pub fn matches_performance_filter(&self, filter: &PerformanceFilter) -> bool {
         let radius = filter.tilt_radius_deg;
@@ -238,7 +276,7 @@ impl TiltPerformanceCurves {
             let curve = filter.metric.select(axis);
             for (i, &v) in curve.iter().enumerate() {
                 let angle_deg = i as f32 - 90.0;
-                if angle_deg.abs() <= radius {
+                if angle_deg.abs() <= radius && v.is_finite() {
                     min = min.min(v);
                     max = max.max(v);
                     sum += f64::from(v);
@@ -486,5 +524,65 @@ mod tests {
         )
         .unwrap();
         assert!(curves.matches_performance_filter(&filter));
+    }
+
+    #[test]
+    fn from_bytes_rejects_a_nan_or_infinite_sample() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut curves = sample_curves();
+            curves.axes[3].windowing_pct[120] = bad;
+            let err = TiltPerformanceCurves::from_bytes(&curves.to_bytes()).unwrap_err();
+            assert!(
+                err.to_string().contains("not finite"),
+                "{bad}: unexpected error {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn is_finite_sees_a_bad_sample_in_any_curve() {
+        assert!(sample_curves().is_finite());
+        let mut curves = sample_curves();
+        curves.axes[1].extinction_pct[0] = f32::NAN;
+        assert!(!curves.is_finite());
+        let mut curves = sample_curves();
+        curves.axes[0].brilliance_pct[180] = f32::INFINITY;
+        assert!(!curves.is_finite());
+    }
+
+    #[test]
+    fn global_extremes_ignore_a_non_finite_sample() {
+        let mut curves = sample_curves();
+        curves.axes[0].brilliance_pct[0] = f32::NAN;
+        curves.axes[3].brilliance_pct[180] = f32::INFINITY;
+        let extremes = curves.global_extremes();
+        // Axis 0's first sample was the minimum (0.0) and axis 3's last the maximum
+        // (3180.0); with both ignored the next samples take their place.
+        assert!((extremes.brilliance.min - 1.0).abs() < 1e-6);
+        assert!((extremes.brilliance.max - 3179.0).abs() < 1e-6);
+    }
+
+    /// A NaN used to reach the mean's sum and poison it while `min`/`max` skipped it.
+    #[test]
+    fn matches_performance_filter_leaves_a_non_finite_sample_out_of_the_mean() {
+        let flat_axis = AxisTiltCurves {
+            brilliance_pct: [42.0; TILT_CURVE_POINTS_PER_AXIS],
+            extinction_pct: [1.0; TILT_CURVE_POINTS_PER_AXIS],
+            windowing_pct: [99.0; TILT_CURVE_POINTS_PER_AXIS],
+        };
+        let mut curves = TiltPerformanceCurves {
+            axes: [flat_axis; TILT_CURVE_AXIS_COUNT],
+        };
+        curves.axes[0].brilliance_pct[90] = f32::NAN;
+        for aggregate in [PerformanceAggregate::Mean, PerformanceAggregate::Worst] {
+            let filter = PerformanceFilter::new(
+                PerformanceMetric::Brilliance,
+                PerformanceBound::AtMost(42.0),
+                90.0,
+                aggregate,
+            )
+            .unwrap();
+            assert!(curves.matches_performance_filter(&filter), "{aggregate:?}");
+        }
     }
 }

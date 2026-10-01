@@ -6,11 +6,12 @@ rust-version = { workspace = true }
 authors = { workspace = true }
 license = { workspace = true }
 repository = { workspace = true }
+homepage = { workspace = true }
 documentation = "https://docs.rs/indicatrix-cut-core"
 keywords = ["gemstone", "faceting", "cad", "editor", "undo"]
 categories = ["science", "graphics"]
 publish = { workspace = true }
-description = "Editor-core library for a faceting cutting schedule: preform, tiers, undo/redo, and live solid validation. No UI, no database, no rendering -- see the crate's own doc comment."
+description = "Editor-core library for faceting cutting instructions: preform, tiers, undo/redo, and live solid validation. No UI, no database, no rendering -- see the crate's own doc comment."
 
 [dependencies]
 # The public geometry crate -- see its own crate doc comment. This crate reaches it
@@ -27,7 +28,7 @@ glam = { workspace = true }
 # headers/footnotes) that `indicatrix_formats::native`'s schema itself has no field
 # for. Same `toml` version the workspace already pins for `indicatrix-formats`.
 toml = { workspace = true }
-# `.asc` cutting-schedule read/write, AND (via `indicatrix_formats::native`) the on-disk schema,
+# `.asc` cutting-instructions read/write, AND (via `indicatrix_formats::native`) the on-disk schema,
 # TOML encode/decode, sidecar path rules, and paired-`.asc` fingerprint for the
 # `.indicatrix.toml` native design file (`native/` in this crate holds only the half
 # of that format that needs `Design`/`MeetConstraint` in scope: the conversions, and
@@ -46,7 +47,7 @@ indicatrix-formats = { workspace = true }
 # For `examples/manufacturability_corpus_probe.rs` only -- reads the user's real
 # `facet_diagrams.sqlite` catalogue read-only to measure the manufacturability
 # checks at corpus scale, exactly the pattern
-# `crates/indicatrix/examples/meet_solver_validation.rs` already uses (see its own
+# `crates/indicatrix/examples/meet_solver_validation/main.rs` already uses (see its own
 # doc comment on why that lives in `examples/`, not the test suite: it needs a real
 # catalogue this repository does not ship, so a `#[test]` cannot depend on it). A
 # dev-dependency only -- never pulled into the library itself, so

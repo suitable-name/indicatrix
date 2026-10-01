@@ -9,7 +9,7 @@ use indicatrix::{
     color::{
         ColorSpace, ToneMap, TransferFunction, cie1931::cie_1931_cmf, gamut::project_to_gamut,
     },
-    optics::raytracer::xyz_to_srgb_gamma,
+    optics::raytracer::{aces_tonemap, xyz_to_srgb_gamma},
 };
 
 const ALL_SPACES: [ColorSpace; 4] = [
@@ -406,10 +406,17 @@ fn srgb_encode_matches_xyz_to_srgb_gamma_reference_within_the_known_gamma_curve_
         let reference = xyz_to_srgb_gamma(xyz);
         let candidate = ColorSpace::Srgb.encode(xyz, ToneMap::AcesFilmic { exposure: 1.0 });
 
+        // The known gamma-curve difference is largest deep in the shadows (up to 9/255,
+        // see this function's own doc comment) and shrinks to well under 2/255 across
+        // the 0.1-0.9 midtone/highlight range -- measured here at exactly 0 for every
+        // sample in this table, including the shadow one, but the tighter bound is only
+        // applied at/above the luminance (`Y`, CIE XYZ) where the doc comment's analysis
+        // actually guarantees it.
+        let tolerance = if xyz.y >= 0.1 { 2 } else { 10 };
         for ch in 0..3 {
             let diff = i32::from(reference[ch]) - i32::from(candidate[ch]);
             assert!(
-                diff.abs() <= 10,
+                diff.abs() <= tolerance,
                 "channel {ch} differs by more than the known gamma-curve tolerance for xyz={xyz:?}: \
                  reference={reference:?} candidate={candidate:?}"
             );
@@ -593,4 +600,63 @@ fn aces_highlight_clipping_desaturates_instead_of_clamping_one_channel() {
          (per-channel clamp) saturation={old_sat:.4}, new (gamut-projected) \
          saturation={new_sat:.4} (old_clamped={old_clamped:?}, new={new_rgb:?})"
     );
+}
+
+// ---------------------------------------------------------------------------------
+// Known-value anchors (independent of round-trip and monotonicity checks above).
+// ---------------------------------------------------------------------------------
+
+#[test]
+fn srgb_transfer_function_matches_known_values() {
+    let encoded = TransferFunction::Srgb.encode(0.5);
+    assert!(
+        (encoded - 0.7354).abs() < 1e-3,
+        "sRGB encode(0.5) should be 0.7354 (got {encoded})"
+    );
+    let decoded = TransferFunction::Srgb.decode(0.5);
+    assert!(
+        (decoded - 0.2140).abs() < 1e-3,
+        "sRGB decode(0.5) should be 0.2140 (got {decoded})"
+    );
+}
+
+#[test]
+fn rec2020_transfer_function_matches_known_value() {
+    let encoded = TransferFunction::Rec2020.encode(0.5);
+    assert!(
+        (encoded - 0.7054).abs() < 1e-3,
+        "Rec.2020 encode(0.5) should be 0.7054 (got {encoded})"
+    );
+}
+
+#[test]
+fn aces_tonemap_matches_known_value_at_middle_grey() {
+    let mapped = aces_tonemap(0.18);
+    assert!(
+        (mapped - 0.2669).abs() < 1e-3,
+        "ACES (Narkowicz) at 0.18 should be 0.2669 (got {mapped})"
+    );
+}
+
+#[test]
+fn every_space_maps_its_own_white_to_unit_linear_rgb() {
+    for &space in &ALL_SPACES {
+        let (wx, wy) = space.white_point_xy();
+        let white_xyz = Vec3::new(wx / wy, 1.0, (1.0 - wx - wy) / wy);
+        let rgb = space.xyz_to_linear(white_xyz);
+        for (channel, value) in rgb.to_array().into_iter().enumerate() {
+            assert!(
+                (value - 1.0).abs() < 3e-3,
+                "{space:?}: white (Y = 1) should map to linear RGB (1, 1, 1), channel {channel} is {value}"
+            );
+        }
+
+        // Equivalently, the inverse matrix's middle row (the Y row) sums to 1.
+        let inverse = invert_3x3(space.xyz_to_rgb_matrix());
+        let y_row_sum: f32 = inverse[1].iter().sum();
+        assert!(
+            (y_row_sum - 1.0).abs() < 3e-3,
+            "{space:?}: RGB(1, 1, 1) should have Y = 1 (got {y_row_sum})"
+        );
+    }
 }

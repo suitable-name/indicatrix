@@ -61,6 +61,8 @@ export component MaterialCrystalClassification inherits VerticalLayout {
                 border-width: 1px;
                 border-color: Theme.border-dialog;
                 ComboBox {
+                    width: 100%;
+                    height: 100%;
                     model: root.crystal_system_options;
                     current-index <=> root.selected_crystal_system_idx;
                 }
@@ -78,6 +80,8 @@ export component MaterialCrystalClassification inherits VerticalLayout {
                 border-width: 1px;
                 border-color: Theme.border-dialog;
                 ComboBox {
+                    width: 100%;
+                    height: 100%;
                     model: root.optical_character_options;
                     current-index <=> root.selected_optical_character_idx;
                 }

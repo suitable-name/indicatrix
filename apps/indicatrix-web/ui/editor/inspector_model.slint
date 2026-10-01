@@ -1,0 +1,170 @@
+// The inspector's state, pushed by `src/editor/inspector` and edited by its tabs
+// (modelled on the desktop's `EditorModel` inspector fields). A global is only a Rust
+// type if `app.slint`'s export block names it.
+
+// One per-facet chip of the Tier tab (`indicatrix_editor::view_model::IndexChip`).
+export struct ChipRow {
+    label: string,
+    position: float,
+    detached: bool,
+}
+
+// One row of the Schedule tab (`indicatrix_editor::view_model::CuttingRow`).
+export struct ScheduleRow {
+    facet: string,
+    angle: string,
+    index-val: string,
+    notes: string,
+}
+
+// The read-only "Solved" section of the Tier tab, from the tier's row of the last solve.
+export struct SolvedInfo {
+    visible: bool,
+    mast: string,
+    block: string,
+    strategy: string,
+    strategy-detail: string,
+    strategy-uncertain: bool,
+    margin-text: string,
+    risk-level: int,
+    orbit-status: string,
+    orbit-incomplete: bool,
+    meet-partners: string,
+    imported-meet: string,
+    warning: string,
+}
+
+// One proportion metric's "within / near / outside" judgement; `level` -1 = nothing to
+// judge yet.
+export struct Verdict {
+    level: int,
+    reason: string,
+}
+
+// The Preform tab's five verdict chips.
+export struct VerdictSet {
+    table: Verdict,
+    crown-angle: Verdict,
+    pavilion-angle: Verdict,
+    total-depth: Verdict,
+    girdle: Verdict,
+}
+
+// The Preform tab's read-only figures (proportions, ratios, yield), `""` = not available.
+export struct PreformReadout {
+    half-width-mm: string,
+    depth-mm: string,
+    table-pct: string,
+    crown-height: string,
+    pavilion-depth: string,
+    total-depth: string,
+    length-to-width: string,
+    girdle-thickness: string,
+    crown-to-width: string,
+    pavilion-to-width: string,
+    girdle-to-width: string,
+    volumetric-yield: string,
+    carat-weight: string,
+    specific-gravity-used: string,
+    preform-fit-warning: string,
+}
+
+export global InspectorModel {
+    // -- Shell ---------------------------------------------------------------------
+    // 0 Tier, 1 Preform, 2 Optimize, 3 Schedule.
+    in-out property <int> tab: 0;
+    in-out property <bool> collapsed: false;
+    // A request to put the keyboard cursor in a Tier-tab field ("angle" or "constraint"):
+    // Rust sets `focus-target`, raises `focus-pending` and bumps `focus-serial`; the tab
+    // focuses the field (as it appears, or at once when it is already there) and clears
+    // `focus-pending`. "+ Add Tier" asks for the angle, the table's "Add Anchor" for the
+    // scale value.
+    in-out property <string> focus-target: "";
+    in-out property <bool> focus-pending: false;
+    in-out property <int> focus-serial: 0;
+
+    // -- Tier tab: the form ----------------------------------------------------------
+    // The five fields are the form's scratch state AND the display of the loaded tier.
+    // Nothing commits until Save / Add Tier.
+    in-out property <string> tier-angle: "0.0";
+    in-out property <int> tier-constraint-kind: 0;
+    in-out property <string> tier-constraint-text: "";
+    in-out property <string> tier-name: "";
+    in-out property <string> tier-indices: "";
+    // The values `loaded-*` last seeded / saved; `form-dirty` is a pure comparison
+    // against them (the desktop's rule).
+    in property <string> loaded-angle: "0.0";
+    in property <int> loaded-constraint-kind: 0;
+    in property <string> loaded-constraint-text: "";
+    in property <string> loaded-name: "";
+    in property <string> loaded-indices: "";
+    // The tier the form represents; -1 = "Add Tier" draft.
+    in property <int> loaded-tier-index: -1;
+    out property <bool> form-dirty: root.tier-angle != root.loaded-angle
+        || root.tier-constraint-kind != root.loaded-constraint-kind
+        || root.tier-constraint-text != root.loaded-constraint-text
+        || root.tier-name != root.loaded-name
+        || root.tier-indices != root.loaded-indices;
+    // The selection moved on while the form held an unsaved draft.
+    in property <bool> show-dirty-warning: false;
+    in property <int> pending-load-index: -1;
+    // The last save's error, and which field it concerns ("angle", "name", "indices",
+    // "constraint" or "").
+    in-out property <string> form-error: "";
+    in-out property <string> form-error-field: "";
+    // The live critical-angle bar under the angle field.
+    in property <string> angle-margin-text: "";
+    in property <int> angle-margin-level: -1;
+    in property <bool> angle-margin-is-estimate: false;
+    // Per-facet chips of the loaded tier, and the scratch fields beside them.
+    in property <[ChipRow]> chips: [];
+    in-out property <string> new-facet-position: "";
+    in-out property <string> rotate-by-text: "1";
+    in-out property <string> cheater-text: "";
+    in-out property <string> note-text: "";
+    in property <SolvedInfo> solved;
+    // A design that does not solve for lack of a scale anchor: the tab explains it.
+    in property <bool> anchor-hint: false;
+
+    callback save-tier();
+    callback new-tier();
+    callback keep-draft();
+    callback discard-draft();
+    // The angle field was edited (or stepped): refresh the live margin bar.
+    callback angle-edited();
+    callback facet-toggle-detach(float);
+    callback facet-remove(float);
+    callback facet-add();
+    // +1 or -1 times the "rotate by" field.
+    callback rotate(int);
+    callback mirror();
+    callback apply-cheater();
+    callback apply-note();
+
+    // -- Preform tab -----------------------------------------------------------------
+    in-out property <int> preform-shape-index: 1;
+    in-out property <string> preform-half-width: "";
+    in-out property <string> preform-length-over-width: "";
+    in-out property <string> preform-depth: "";
+    in-out property <string> preform-y-offset-mm: "";
+    in-out property <string> girdle-diameter-mm: "";
+    in-out property <string> specific-gravity-override: "";
+    // Typed since the last Apply (the "*" on the button).
+    in-out property <bool> preform-pending: false;
+    in-out property <bool> yield-pending: false;
+    in property <PreformReadout> readout;
+    // Nothing to judge (level -1) until the first push.
+    in property <VerdictSet> verdicts: {
+        table: { level: -1, reason: "" },
+        crown-angle: { level: -1, reason: "" },
+        pavilion-angle: { level: -1, reason: "" },
+        total-depth: { level: -1, reason: "" },
+        girdle: { level: -1, reason: "" },
+    };
+
+    callback apply-preform();
+    callback apply-yield();
+
+    // -- Schedule tab ----------------------------------------------------------------
+    in property <[ScheduleRow]> schedule-rows: [];
+}

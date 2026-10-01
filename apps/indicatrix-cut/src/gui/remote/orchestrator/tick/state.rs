@@ -45,6 +45,16 @@ pub(super) fn current_pose(ctx: &Mutex<RenderContext>) -> Pose {
     }
 }
 
+/// Whether a mouse button is currently held for an orbit or light drag in either
+/// viewport (`RenderContext::camera_drag_held`), read fresh each poll tick. The raw
+/// flag -- `poll::poll_tick` applies the watchdog (`decisions::drag_held_effective`).
+#[must_use]
+pub(super) fn current_drag_held(ctx: &Mutex<RenderContext>) -> bool {
+    ctx.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .camera_drag_held
+}
+
 /// State shared by the orchestrator's timer tick (always on the Slint event loop) and
 /// its `on_update` closure (constructed there, but must be `Send` to cross into
 /// `bridge::remote::remote_render`'s worker thread as the closure argument). `Arc<Mutex<_>>`
@@ -116,7 +126,13 @@ pub(super) struct Orchestrator {
     /// once this says `Some(false)`. Reset wherever `remote_connection` is replaced.
     pub(super) remote_hdr: Option<bool>,
     pub(super) last_pose: Pose,
+    /// When the settle debounce last restarted: the last pose change, or the last
+    /// held-to-released edge of `RenderContext::camera_drag_held` (whichever is later).
     pub(super) last_change_at: Instant,
+    /// `RenderContext::camera_drag_held` as of the PREVIOUS poll tick -- compared every
+    /// tick purely to catch the held-to-released edge, which restarts `last_change_at`
+    /// so the settle fires `poll::POSE_SETTLE_DEBOUNCE` after the release.
+    pub(super) drag_was_held: bool,
     /// Guide buffers (depth/normal/facet-id) for denoising a remote-sourced merged
     /// image -- see `bridge::frame_cache::guide_pass`'s module docs.
     pub(super) guide_cache: GuideCache,
@@ -151,6 +167,13 @@ pub(super) struct Orchestrator {
     /// tonemap is "tens of milliseconds" at 1080p+, not free, and a fast remote stream
     /// can otherwise arrive faster than any human can perceive a redraw changing.
     pub(super) last_redraw_at: Option<Instant>,
+    /// `decisions::live_remote_may_run`'s value as of the PREVIOUS poll tick --
+    /// compared every tick by `poll::update_live_remote_suspension` purely to catch its
+    /// `true -> false` edge (a Pause, an export starting, or the tab going invisible)
+    /// and suspend the live remote lane right then, rather than leaving it to keep
+    /// claiming/transmitting until the next chunk boundary. Starts `true`: nothing has
+    /// been dispatched yet at startup, so there is nothing to suspend either way.
+    pub(super) live_remote_was_allowed: bool,
 }
 
 impl Orchestrator {

@@ -6,10 +6,11 @@ ray-sample computation**, and **reading a remote design library**. Both run over
 authenticated connection, and a server may offer either or both — `WELCOME` says
 which.
 
-**Types, codec, and framing only — no networking, no sockets.** Every function in
-this crate operates on an in-memory buffer, a `[u8]` slice, or a generic
-`Read`/`Write`. The whole crate is testable with nothing more than a
-`std::io::Cursor`, and every test in it does exactly that. `apps/indicatrix-worker`
+**Types, codec, and framing, plus one small client.** Every function in this crate
+operates on an in-memory buffer, a `[u8]` slice, or a generic `Read`/`Write` — with the
+single exception of `enroll::claim`, which opens a `TcpStream` to a worker's enrollment
+listener (with connect and read timeouts). The protocol itself is testable with nothing
+more than a `std::io::Cursor`, and its tests do exactly that. `apps/indicatrix-worker`
 (the coordinator, and a `join`ed worker's side of its connection) and
 `apps/indicatrix-cut`'s `bridge::remote::remote_render` / `bridge::library::client`
 (the viewer side) are what wire these functions to a real `TcpStream`/TLS connection.
@@ -40,13 +41,10 @@ occupies part of the frame and background pixels are nearly free to trace, so ti
 partitioning would load-balance badly, while sample partitioning divides the work
 evenly by construction. This only works because the per-sample RNG seed is a pure
 function of `(pixel_index, sample_number)` — never of which batch a sample happens
-to land in, or how many samples are in that batch. `crates/indicatrix-net/tests/partition_correctness.rs`
-reproduces the exact seed formula the viewer's render loop
-(`apps/indicatrix-cut/src/bridge/render_thread/`) and the worker
-(`apps/indicatrix-worker/src/render_core/`) use and proves additivity end to end
-against the real `trace_spectral_ray`: tracing samples `[0,64)` in one batch sums
-to (within float-rounding tolerance) the same radiance as tracing `[0,32)` and
-`[32,64)` separately and adding the results.
+to land in, or how many samples are in that batch. Additivity against the real tracer
+is checked in `apps/indicatrix-worker`'s `render_core` and `live_split` tests: tracing
+samples `[0,64)` in one batch sums to (within float-rounding tolerance) the same
+radiance as tracing `[0,32)` and `[32,64)` separately and adding the results.
 
 **Samples are summed, never averaged**, anywhere in this crate or its wire
 format. Normalizing a sum into a displayable average (dividing by total sample
@@ -56,11 +54,14 @@ into the same buffer without knowing in advance how many total samples there wil
 be. Every backend applies the same non-finite rule while summing
 (`indicatrix::optics::raytracer::add_finite_sample` and its GPU twin): a sample with
 any NaN/±Inf component is dropped but still counted, so sums from different nodes
-stay mergeable by plain addition.
+stay mergeable by plain addition. The receiving side applies the same rule to what a
+peer sends (a pixel with a non-finite or negative component is skipped and counted, and
+the frame's samples still count as done), because a dishonest producer is not bound by
+it.
 
 ## Protocol version and message set
 
-`messages::PROTOCOL_VERSION: u16 = 14`. Three protocols share one authenticated
+`messages::PROTOCOL_VERSION: u16 = 17`. Three protocols share one authenticated
 connection: **render** (offload sample tracing), **tilt curves** (offload one design's
 full tilt-performance sweep), and **library** (read a design catalogue). A peer may
 serve any subset, and — for a viewer — consume all three.
@@ -114,15 +115,19 @@ client-side counterparts.
 <- PREVIEW  { request_id, width, height, samples_done, payload_len, encoding, raw_len } + payload -- CUMULATIVE, reduced-res
 <- PROGRESS { request_id, samples_done }
 -> CANCEL   { request_id }
-<- DONE     { request_id, cancelled, stats: Stats }
+<- DONE     { request_id, cancelled, stats: Stats }             -- Stats gained reclaimed_samples in v16
 <- ERROR    { code, message }                                 -- codes: messages::error_codes
 -> PING     { nonce }                    <- PONG { nonce }     -- v14 liveness
--> FINAL_IMAGE_REQUEST { request_id, scene, first_sample, samples, width, height, color_space, output }
+-> FINAL_IMAGE_REQUEST { request_id, scene, first_sample, samples, width, height, color_space, output,
+                          viewer_samples }
 <- FINAL_IMAGE   { request_id, width, height, samples_done, encoding, payload_len } + PNG   -- v14
 <- DISPLAY_FRAME { request_id, samples_done, width, height, encoding, payload_len } + RGBA8/PNG (TransferMode::DisplayOnly)
 <- CAPABILITY_CHANGED { render: Option<RenderCapability> }
 <- NEED_ASSET { content_hash }                               -- v14: "send me this HDR map"
 -> ASSET      { content_hash, len } + bytes                    -- the map's exact file bytes
+-> CONTRIBUTION { request_id, first_sample, samples, width, height, encoding, payload_len, raw_len } + payload
+                                                                 -- v16: the viewer's own share of a
+                                                                    FINAL_IMAGE_REQUEST's reserved tail
 ```
 
 A `FRAME`'s `samples` is exact and `[first_sample, first_sample + samples)` lies inside
@@ -214,10 +219,22 @@ chips stop blanking out, v7 widened `GemMaterial` with `absorption_path_scale` a
 documents `StreamEvent::Progress` as doubling as this stream's liveness heartbeat,
 v9/v10 changed `LightingPreset`, v11 appended `SceneState::backdrop`, v12 added
 `source_hash` to `HELLO`/`WELCOME`, v13 added sort order and tag filter to library
-search, and v14 — the current version — added coordinator mode (peer roles, worker
+search, v14 added coordinator mode (peer roles, worker
 registration, `Backend::Coordinator`, request intent, `PING`/`PONG`,
 `FINAL_IMAGE_REQUEST`, `DISPLAY_FRAME`, `CAPABILITY_CHANGED`), negotiated lossless
-payload compression, and HDR environments by content hash (`NEED_ASSET`/`ASSET`)).
+payload compression, and HDR environments by content hash (`NEED_ASSET`/`ASSET`), and
+v15 added `request_id` to `ErrorMsg` so a late error can be
+matched to (or dropped for) the request/epoch it concerns instead of failing whatever
+request happens to be current, plus new `library::DesignRecord` fields under the same
+bump, v16 added viewer contribution to final pictures:
+`FinalImageRequest.viewer_samples` reserves a tail of samples for the viewer to render
+and upload itself as `ClientMessage::Contribution` (index 7, `messages::contribution`),
+and `Stats.reclaimed_samples` reports how many of those the server ended up rendering
+anyway because the contribution didn't arrive in time or was invalid, and v17 — the
+current version — appended `library::DesignSummary::design_version` (the design's
+revision token, so a mirror re-fetches a design whose edit left the search summary
+unchanged) and made `library::DesignRecord::version` carry that same token instead of a
+content hash).
 
 What matters is knowing when to bump it, and that follows entirely from postcard
 being **not self-describing**:
@@ -313,11 +330,22 @@ cancelled request the next time `begin_request` is called for a different id.
 ## The `BUILD_ID` handshake gate
 
 `handshake::verify_compatible(local: &Hello, remote: &Hello) -> Result<(), Incompatible>`
-refuses to pair a viewer and a worker whose `indicatrix::BUILD_ID` (a content hash of
-`indicatrix`'s own source — see `indicatrix`'s README) or `PROTOCOL_VERSION` disagree. There
-is deliberately no "close enough" tier: any mismatch anywhere means refuse, full
-stop, including two peers that both report an `UNKNOWN_BUILD_HASH` (i.e. two
-unknown builds are never treated as compatible even with each other).
+refuses to pair a viewer and a worker whose `PROTOCOL_VERSION` or `build_hash` disagree.
+`build_hash` (`indicatrix::BUILD_ID`) is a hash of `indicatrix`'s crate *version*, a
+release-process promise, not of its source. The content hash is the separate
+`source_hash` (`indicatrix::SOURCE_HASH`): when both sides know theirs and they differ,
+pairing is refused too; when either side's is unknown, that is only logged at `warn!` and
+the peers pair on `build_hash` alone. There is no "close enough" tier for anything that
+can be compared: a known disagreement means refuse, including two peers that both
+report an `UNKNOWN_BUILD_HASH` (two unknown builds are never treated as compatible even
+with each other).
+
+Two limits of this gate. Both hashes are *self-reported* in the peer's `HELLO`/`WELCOME`,
+so it is an accident detector for honest peers on mismatched builds, not a security
+control — mutual TLS and the allowlist are the trust boundary. And a server may
+deliberately pair a peer that reports an unknown build *library-only* (no radiance ever
+flows on that connection) instead of refusing it; `apps/indicatrix-worker`'s
+`serve/connection/worker.rs` does this for a client speaking the same protocol version.
 
 Why this can't be relaxed: the whole remote-offload design rests on
 `sample_sum += trace_spectral_ray(..)` being valid regardless of which node
@@ -482,8 +510,14 @@ additionally be byte-shuffled and zstd/LZ4-compressed (`radiance::payload`, see
 - **A payload's `request_id` must match the accumulator's current epoch** or it is
   dropped, unconditionally — this is the only defense against a stale, in-flight
   reply from a just-cancelled request being merged into the next one.
-- **A `BUILD_ID`/protocol mismatch is always refused**, never downgraded or
-  warned-and-continued.
+- **A known `build_hash`/`source_hash`/protocol mismatch is refused.** An unknown
+  `source_hash` is logged and pairs on `build_hash`; a peer with no build at all may be
+  paired library-only by the server, which then serves it no render capacity.
+- **Reads are bounded and incremental.** A control message (anything but a radiance,
+  asset or contribution payload) is read with `framing::MAX_CONTROL_FRAME_LEN` (1 MiB),
+  and a frame's buffer grows as bytes arrive, so a length prefix alone never commits
+  memory. A connection that ends inside a frame is `FramingError::TruncatedFrame`, not a
+  clean close (`Io(UnexpectedEof)` at a frame boundary).
 - Every message from `RENDER` onward is tagged (`StreamEvent` / `ClientMessage`) —
   do not add a new untagged reply type; that reintroduces exactly the ambiguity the
   tagging exists to remove (see "Tagged envelopes, and why they exist" above).
@@ -495,17 +529,10 @@ cargo test -p indicatrix-net
 ```
 
 No networking or sockets are exercised — every test runs against a `std::io::Cursor`
-or an in-memory `Vec<u8>`, consistent with the crate's "types, codec, and framing
-only" scope. This includes:
+or an in-memory `Vec<u8>` (the enrollment claim client's TCP path is exercised from
+`apps/indicatrix-worker`'s tests). This includes:
 
 - `tests/scene_roundtrip.rs` — `SceneState` round-trips exactly through `postcard`.
-- `tests/partition_correctness.rs` — reproduces the viewer's/worker's real per-sample
-  seed formula and proves sample-range partitioning is additive against the real
-  `trace_spectral_ray` (batch `[0,64)` equals batch `[0,32)` + batch `[32,64)`, an
-  uneven three-way split, and single-sample batches summed one at a time), using a
-  `1e-4` relative tolerance rather than exact equality since float addition is not
-  associative — the test is there to catch a *real* discrepancy (a seed depending on
-  batch-relative state, a dropped sample), not float-rounding noise.
 - Extensive inline `#[cfg(test)]` unit tests in every `src/*.rs` module covering
   round-trips, malformed-payload rejection, epoch-gating, and partial/dribbling
   reads.

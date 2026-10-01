@@ -97,7 +97,7 @@ pub fn run_phase3_checks(ctx: &GpuContext) -> bool {
     // `estimator_check::rutile_material`'s own doc comment for why this is the
     // strongest single Tier 3 check the closed-form solve's WGSL mirror has.
     let rutile_image_comparison_passed = report_image_comparison_material(
-        "Rutile, delta=+0.287",
+        "Rutile, delta=+0.2957",
         &estimator_check::run_image_comparison_rutile(ctx),
     );
     // Final Tier 3 check: a strongly dispersive uniaxial material's refractive

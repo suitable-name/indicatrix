@@ -14,7 +14,10 @@ use indicatrix_formats::native::{
     CustomMaterialSnapshot, FORMAT_VERSION, FingerprintCheck, NativeFormatError, NativeTierTarget,
     TierTable, check_fingerprint, from_toml_str,
 };
-use std::{collections::BTreeMap, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 /// Whether [`load_paired`] actually applied this file's per-tier `constraint`/
 /// `detached` overlay on top of the freshly-imported `.asc` schedule.
@@ -180,8 +183,11 @@ impl fmt::Display for MaterialResolution {
 /// between them.
 #[derive(Debug)]
 pub struct LoadPairedResult {
+    /// The loaded design.
     pub design: Design,
+    /// Result of checking the sidecar against the paired `.asc`.
     pub fingerprint: FingerprintCheck,
+    /// Per-tier data restored from the sidecar.
     pub tier_overlay: TierOverlay,
     /// See [`MaterialResolution`] -- whether `design.material.name` is likely to
     /// still mean what it meant when this file was saved.
@@ -237,20 +243,26 @@ pub struct LoadPairedResult {
 /// For a non-draft file, on top of the `.asc`-derived base this applies (in order):
 /// `preform`/`material`/`girdle_diameter_mm` unconditionally (none are tier-indexed,
 /// so a changed `.asc` can't make them wrong), then, whenever the tier counts agree
-/// (regardless of fingerprint), the per-tier GEOMETRY-FREE fields --
-/// [`indicatrix_formats::native::TierTable::note`]/`cheater_offset_deg`/`imported_meet`/
+/// (regardless of fingerprint), the per-tier fields that feed nothing but display --
+/// [`indicatrix_formats::native::TierTable::name`]/`note`/`imported_meet`/
 /// `original_notes` -- since array-position correlation is all any of those four
-/// need (none feeds the solver, so a changed `.asc` can't make them wrong either,
-/// only stale); a `note`/`cheater_offset_deg`/`original_notes` present in the file
-/// overwrites whatever `.asc` import produced, while `imported_meet` only overwrites
-/// when the file actually recorded one. Finally the per-tier `constraint`/`detached`
-/// overlay applies ONLY when tier counts agree AND either [`check_fingerprint`]
-/// reports [`FingerprintCheck::Match`] or the caller passed
-/// `apply_overlay_on_mismatch: true` (see [`TierOverlay`]): `tiers[i]`'s
-/// `constraint`/`detached` are only meaningful paired with the `i`-th tier of the
-/// EXACT `.asc` content they were saved against, which is exactly what a
-/// fingerprint match promises; `true` lets a caller (e.g. the editor, after the
-/// cutter confirms they still want it) apply it anyway.
+/// need (none feeds the solver or the plane arrangement, so a changed `.asc` can't
+/// make them wrong either, only stale); `name`/`note` present in the file overwrite
+/// whatever `.asc` import produced, while `imported_meet`/`original_notes` are
+/// assigned exactly as saved, `None` included, so a clean save/load/save round trip
+/// stays byte-identical. Finally the per-tier fields that DO feed geometry --
+/// `constraint`/`detached`, `indices` (a cheater offset is baked into a tier's
+/// exported indices, not carried as a separate `.asc` field at all -- see
+/// [`Design::to_asc_schedule_from_solved_with_cheater_offsets`]), `cheater_offset_deg`
+/// itself, and [`crate::design::TierTarget`] -- apply ONLY when tier counts agree
+/// AND either [`check_fingerprint`] reports [`FingerprintCheck::Match`] or the
+/// caller passed `apply_overlay_on_mismatch: true` (see [`TierOverlay`]): `tiers[i]`'s
+/// geometry is only meaningful paired with the `i`-th tier of the EXACT `.asc`
+/// content it was saved against, which is exactly what a fingerprint match
+/// promises; `true` lets a caller (e.g. the editor, after the cutter confirms they
+/// still want it) apply it anyway. Restoring `indices`/`cheater_offset_deg`
+/// unconditionally, instead of gating them the same way, would silently re-shift
+/// the wrong facet on a fingerprint mismatch, and double the shift on a match.
 ///
 /// # Errors
 ///
@@ -292,7 +304,10 @@ pub fn load_paired(
         let raw_ids = raw_tier_ids_from_native(&native.tiers);
         let raw_targets = raw_tier_targets_from_native(&native.tiers);
         design.tiers = draft_tiers_from_native(native.tiers)?;
-        apply_tier_ids_and_targets(&mut design, raw_ids, raw_targets);
+        // A draft sidecar's tier list is the design's ONLY source of state --
+        // there is no fingerprint concept to gate on (the paired `.asc` is a
+        // placeholder), so its own recorded target always applies.
+        apply_tier_ids_and_targets(&mut design, raw_ids, raw_targets, true);
         TierOverlay::AppliedFromDraft
     } else if native_tier_count != design.tiers.len() {
         TierOverlay::SkippedTierCountMismatch {
@@ -301,35 +316,44 @@ pub fn load_paired(
         }
     } else {
         // The tier counts agree, so array-position correlation is trustworthy
-        // regardless of the fingerprint for the four GEOMETRY-FREE fields below
-        // -- only `constraint`/`detached` need a fingerprint match
-        // (or an explicit override) since those two feed the solver. `tier_id`/
-        // `target` join that same geometry-free group: neither feeds the solver
-        // either, so both restore on a tier-count match regardless of
-        // fingerprint too.
+        // regardless of the fingerprint for the tier's IDENTITY (`tier_id`) and
+        // the fields that feed nothing but display (`name`/`note`/
+        // `imported_meet`/`original_notes`) -- none of those needs anything more
+        // than "this is the same tier slot". Everything that DOES feed geometry
+        // -- `constraint`/`detached`, `indices`, `cheater_offset_deg` and
+        // `TierTarget` -- only restores when `apply_geometry_overlay` holds; see
+        // this function's own doc comment for why.
         let apply_geometry_overlay = fingerprint_matches || apply_overlay_on_mismatch;
         let raw_ids = raw_tier_ids_from_native(&native.tiers);
         let raw_targets = raw_tier_targets_from_native(&native.tiers);
         for (index, saved) in native.tiers.into_iter().enumerate() {
             let tier = &mut design.tiers[index];
+            // Restored whenever the tier counts agree, regardless of
+            // fingerprint -- a name is not geometry, so a changed `.asc` cannot
+            // make it wrong, only stale.
+            tier.name = saved.name;
             if apply_geometry_overlay {
                 tier.constraint = meet_constraint_from_native(saved.constraint);
                 tier.detached = saved.detached;
+                if let Some(indices) = saved.indices {
+                    tier.indices = indices;
+                }
+                if let Some(offset) = saved.cheater_offset_deg {
+                    design.cheater_offsets_deg.insert(index, offset);
+                }
             }
             if let Some(note) = saved.note {
                 design.tier_notes.insert(index, note);
             }
-            if let Some(offset) = saved.cheater_offset_deg {
-                design.cheater_offsets_deg.insert(index, offset);
-            }
-            if let Some(imported_meet) = saved.imported_meet {
-                tier.imported_meet = Some(meet_constraint_from_native(imported_meet));
-            }
-            if let Some(original_notes) = saved.original_notes {
-                tier.original_notes = Some(original_notes);
-            }
+            // Assigned exactly as saved -- `None` included -- so a clean
+            // save/load/save round trip is byte-identical instead of leaving
+            // whatever `.asc` import produced (construct.rs's own
+            // `Design::from_asc_schedule` always sets `original_notes` to
+            // `Some`) in place just because the file happened to carry `None`.
+            tier.imported_meet = saved.imported_meet.map(meet_constraint_from_native);
+            tier.original_notes = saved.original_notes;
         }
-        apply_tier_ids_and_targets(&mut design, raw_ids, raw_targets);
+        apply_tier_ids_and_targets(&mut design, raw_ids, raw_targets, apply_geometry_overlay);
         match (apply_geometry_overlay, fingerprint_matches) {
             (false, _) => TierOverlay::SkippedFingerprintMismatch,
             (true, true) => TierOverlay::Applied,
@@ -362,10 +386,17 @@ pub fn load_paired(
 
 /// [`MaterialResolution`]'s own computation -- see that type's doc comment for the
 /// heuristic and its limits.
+///
+/// Exact, case-insensitive match only (via
+/// [`crate::material::built_in_material_by_exact_name`]) -- NOT
+/// [`indicatrix::optics::materials::GemMaterial::by_name`]'s own substring
+/// fallback, which would report a name like "My Blue Sapphire" as `Known` (and
+/// silently write Sapphire's own RI to a re-exported `.asc`'s `I` line) just
+/// because it CONTAINS a built-in name.
 fn material_resolution_of(name: Option<&str>) -> MaterialResolution {
     match name {
         None => MaterialResolution::NoneSelected,
-        Some(name) if indicatrix::optics::materials::GemMaterial::by_name(name).is_some() => {
+        Some(name) if crate::material::built_in_material_by_exact_name(name).is_some() => {
             MaterialResolution::Known
         }
         Some(_) => MaterialResolution::Unresolved,
@@ -421,14 +452,32 @@ fn raw_tier_targets_from_native(native_tiers: &[TierTable]) -> Vec<Option<Native
 /// arbitrarily) reassigned by whichever constructor (`Design::new`/
 /// `Design::from_asc_schedule`) built it.
 ///
-/// Each `Some(id)` in `raw_ids` is restored verbatim; each `None` (an old file,
-/// or a tier the file never recorded one for) gets a genuinely fresh id via
-/// [`Design::allocate_tier_id`] instead -- "assign a fresh id only when the file
-/// has none," never reusing one a DIFFERENT tier in this same file already
-/// claims. `design.tier_ids` is replaced wholesale (not patched position by
-/// position) since a draft/self-contained load's `design.tiers` was itself just
-/// rebuilt wholesale from this exact tier list and may not even be the length
-/// whatever constructor built `design` first assumed.
+/// Each `Some(id)` in `raw_ids` is restored verbatim -- EXCEPT a duplicate (the
+/// same id named by more than one position in this file, never produced by this
+/// crate's own save path but not rejected by the file format either), where only
+/// the FIRST occurrence keeps it and every later one gets a fresh id instead, the
+/// same as a tier the file never recorded one for at all -- two tiers sharing a
+/// [`TierId`] would make [`Design::index_of_tier_id`]/`design.tier_targets`
+/// (keyed by id, not position) silently pick the wrong tier. Before any of that,
+/// [`Design::next_tier_id`] is bumped past the highest id this file restores --
+/// `Design::from_asc_schedule`/`Design::new` only ever set it to the fresh
+/// design's own tier count, which is easily behind a restored id (e.g. a design
+/// whose tiers were added and removed many times before this save), and without
+/// this bump [`Design::allocate_tier_id`] could hand out an id a restored tier
+/// already claims the very next time a tier is added.
+///
+/// `design.tier_ids` is replaced wholesale (not patched position by position)
+/// since a draft/self-contained load's `design.tiers` was itself just rebuilt
+/// wholesale from this exact tier list and may not even be the length whatever
+/// constructor built `design` first assumed.
+///
+/// `design.tier_targets` is restored from `raw_targets` only when `apply_targets`
+/// is `true` -- a draft/self-contained load (no fingerprint concept at all) and a
+/// clean-fingerprint paired load always pass `true`; a paired load with a
+/// mismatched fingerprint (and no override) passes `false`, since a
+/// [`crate::design::TierTarget`] feeds the solver exactly like `constraint` does
+/// and is only meaningful paired with the exact `.asc` content it was saved
+/// against -- see [`load_paired`]'s own doc comment.
 ///
 /// `raw_ids`/`raw_targets`/`design.tiers` must all be the same length, in the
 /// same order -- the same "tier counts agree" precondition every other
@@ -437,18 +486,35 @@ fn apply_tier_ids_and_targets(
     design: &mut Design,
     raw_ids: Vec<Option<u64>>,
     raw_targets: Vec<Option<NativeTierTarget>>,
+    apply_targets: bool,
 ) {
     debug_assert_eq!(design.tiers.len(), raw_ids.len());
     debug_assert_eq!(raw_ids.len(), raw_targets.len());
+
+    if let Some(max_restored) = raw_ids.iter().filter_map(|id| *id).max() {
+        design.next_tier_id = design.next_tier_id.max(max_restored + 1);
+    }
+
+    let mut seen = BTreeSet::new();
     let ids: Vec<TierId> = raw_ids
         .into_iter()
-        .map(|maybe_id| maybe_id.map_or_else(|| design.allocate_tier_id(), TierId))
+        .map(|maybe_id| {
+            maybe_id
+                .filter(|id| seen.insert(*id))
+                .map_or_else(|| design.allocate_tier_id(), TierId)
+        })
         .collect();
-    design.tier_targets = raw_targets
-        .into_iter()
-        .zip(&ids)
-        .filter_map(|(maybe_target, &id)| maybe_target.map(|t| (id, tier_target_from_native(t))))
-        .collect();
+    design.tier_targets = if apply_targets {
+        raw_targets
+            .into_iter()
+            .zip(&ids)
+            .filter_map(|(maybe_target, &id)| {
+                maybe_target.map(|t| (id, tier_target_from_native(t)))
+            })
+            .collect()
+    } else {
+        BTreeMap::new()
+    };
     design.tier_ids = ids;
 }
 
@@ -538,6 +604,7 @@ impl std::error::Error for LoadNativeOnlyError {}
 /// is no paired `.asc` to check either against).
 #[derive(Debug)]
 pub struct LoadNativeOnlyResult {
+    /// The loaded design.
     pub design: Design,
     /// See [`MaterialResolution`] -- same meaning as [`LoadPairedResult::material_resolution`].
     pub material_resolution: MaterialResolution,
@@ -597,7 +664,9 @@ pub fn load_native_only(native_text: &str) -> Result<LoadNativeOnlyResult, LoadN
     design.material = material_selection_from_table(&native.material);
     design.tier_notes = tier_notes;
     design.cheater_offsets_deg = cheater_offsets;
-    apply_tier_ids_and_targets(&mut design, raw_ids, raw_targets);
+    // A self-contained save has no fingerprint concept at all (no paired `.asc`
+    // to check against) -- its own recorded target always applies.
+    apply_tier_ids_and_targets(&mut design, raw_ids, raw_targets, true);
     // See `load_paired`'s matching comment.
     if let Some(authored) = native.authored_refractive_index {
         design.meta.refractive_index = authored;

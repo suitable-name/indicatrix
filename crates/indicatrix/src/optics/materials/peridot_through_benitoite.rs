@@ -85,25 +85,28 @@ impl GemMaterial {
             // historically used as a diamond simulant before Cubic Zirconia).
             //
             // No primary Sellmeier fit for GGG is transcribed here; this is a
-            // LOWER-CONFIDENCE 2-parameter Cauchy fit solved directly from n_d=1.970
-            // and Delta n(F-C)=0.045 (A=1.970-0.023556/0.5893^2=1.902186,
-            // B=0.023556 -- unlike the natural gemstone entries above, this figure is
-            // not converted via the B-G->F-C ratio, since a synthetic laser-crystal
-            // figure like this one is more likely to already be a true F-C/Abbe
-            // figure, as YAG's and the two glasses' are). n_d's general magnitude
-            // (~1.97-2.0) is corroborated by D.L. Wood & K. Nassau, "Optical
-            // properties of gadolinium gallium garnet," Appl. Opt. 29, 3704-3707
-            // (1990) -- the same author pair cited for this file's Cubic Zirconia
-            // entry -- though this entry's Cauchy coefficients are not transcribed
-            // from that paper. Flagged for human cross-check against a primary
-            // Sellmeier fit if one becomes available.
+            // LOWER-CONFIDENCE 2-parameter Cauchy fit solved from n_d=1.970 and a
+            // Delta n(F-C) obtained the same way as the natural gemstone entries
+            // above. The 0.045 commonly quoted for GGG is the gemological Fraunhofer
+            // B-G dispersion figure (the same kind of figure as Diamond's 0.044 and
+            // Benitoite's 0.045), not an F-C value, so it is converted with this
+            // file's B-G->F-C ratio of 0.579: Delta n(F-C) = 0.045*0.579 = 0.026055
+            // (Diamond 0.044 -> 0.0256 uses the same ratio). B follows from
+            // B*(1/0.4861^2 - 1/0.6563^2) = B*1.9104 = 0.026055, so B=0.013639;
+            // A=1.970-0.013639/0.5893^2=1.930726, keeping n_d=1.970. Abbe V_d~37.2.
+            // n_d's general magnitude (~1.97-2.0) is corroborated by D.L. Wood &
+            // K. Nassau, "Optical properties of gadolinium gallium garnet," Appl.
+            // Opt. 29, 3704-3707 (1990) -- the same author pair cited for this file's
+            // Cubic Zirconia entry -- though this entry's Cauchy coefficients are not
+            // transcribed from that paper. Flagged for human cross-check against a
+            // primary Sellmeier fit if one becomes available.
             Self {
                 name: "GGG".to_string(),
                 crystal_system: CrystalSystem::Cubic,
                 optical_character: OpticalCharacter::Isotropic,
                 dispersion: DispersionModel::Cauchy {
-                    a: 1.902_186,
-                    b: 0.023_556,
+                    a: 1.930_726,
+                    b: 0.013_639,
                     c: 0.0,
                 },
                 birefringence_delta: 0.0,

@@ -12,6 +12,7 @@
 
 use super::{
     MAX_PLANES, MeetConstraint, MeetTierInput, SolveControl, SolveError, SolvedTier,
+    first_non_finite_tier,
     solve::{PipelineResult, SolveContext},
 };
 use crate::geometry::stone_metrics::ExternalProportions;
@@ -33,7 +34,7 @@ use std::collections::BTreeMap;
 /// figures, a multiple-comparisons effect the plain measurement doesn't have --
 /// precision is 90.4% by the strict every-tier-within-10% test, with the
 /// accepted designs' pooled per-tier median error at 0.0001
-/// (`examples/meet_solver_validation.rs` Report C, full corpus).
+/// (`examples/meet_solver_validation/main.rs`, full corpus).
 pub const VERIFY_ACCEPT_TOL: f64 = 0.01;
 
 /// Repair-search budget: greedy rounds (each committing at most one decision
@@ -141,7 +142,7 @@ pub struct VerifiedSolveReport {
 /// a deterministic scorer ([`measure_solid`](crate::geometry::stone_metrics::measure_solid)).
 ///
 /// `adjustable_anchors` lists tiers whose [`MeetConstraint::ScaleReference`]
-/// values are *estimates* the search may adjust (Report B's printed-ratio
+/// values are *estimates* the search may adjust (printed-ratio
 /// anchors, which carry 10-25% isolated error -- never pass anchors holding
 /// real recorded masts). For those, a coarse per-anchor calibration grid
 /// ([`ANCHOR_GRID`]) runs first, and fine anchor moves
@@ -150,7 +151,7 @@ pub struct VerifiedSolveReport {
 /// plain repair search.
 ///
 /// Measured end-to-end on the full 2,881-design corpus
-/// (`examples/meet_solver_validation.rs` Report C, Report-A anchoring,
+/// (`examples/meet_solver_validation/main.rs`, printed-ratio anchoring,
 /// `adjustable_anchors` empty, deterministic run): overall median relative
 /// error 0.2110 -> **0.1278**, designs with every meet-derived tier within 10%
 /// of truth 10.8% -> **23.7%**, 409 designs (14.2%) verified-accepted with a
@@ -195,7 +196,7 @@ pub fn solve_meet_points_verified(
         &SolveControl::default(),
     ) {
         Ok(result) => result,
-        Err(SolveError::TooManyPlanes { .. }) => {
+        Err(SolveError::TooManyPlanes { .. } | SolveError::NonFiniteInput { .. }) => {
             let ctx = SolveContext::new(gear_teeth_abs, tiers);
             let report = VerifiedSolveReport {
                 initial_score: f64::INFINITY,
@@ -228,10 +229,12 @@ pub fn solve_meet_points_verified(
 ///
 /// # Errors
 ///
-/// [`SolveError::TooManyPlanes`] when the design has more than [`MAX_PLANES`]
-/// facet-plane instances (checked before any solving starts);
-/// [`SolveError::Cancelled`] the first time `control`'s cancel flag is
-/// observed set, from inside whichever pipeline run was in flight.
+/// [`SolveError::NonFiniteInput`] when any tier carries a non-finite (NaN or
+/// infinite) `angle_deg`, index, or `ScaleReference` mast (checked before any
+/// solving starts); [`SolveError::TooManyPlanes`] when the design has more
+/// than [`MAX_PLANES`] facet-plane instances (checked before any solving
+/// starts); [`SolveError::Cancelled`] the first time `control`'s cancel flag
+/// is observed set, from inside whichever pipeline run was in flight.
 pub fn solve_meet_points_verified_with(
     gear_teeth_abs: u32,
     tiers: &[MeetTierInput],
@@ -239,6 +242,9 @@ pub fn solve_meet_points_verified_with(
     adjustable_anchors: &[usize],
     control: &SolveControl<'_>,
 ) -> Result<(Vec<SolvedTier>, VerifiedSolveReport), SolveError> {
+    if let Some(err) = first_non_finite_tier(tiers) {
+        return Err(err);
+    }
     let ctx = SolveContext::new(gear_teeth_abs, tiers);
     if ctx.total_planes > MAX_PLANES {
         return Err(SolveError::TooManyPlanes {

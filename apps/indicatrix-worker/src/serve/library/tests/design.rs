@@ -7,7 +7,7 @@ use crate::serve::library::handle_request;
 use indicatrix_net::library::{LibraryRequest, LibraryResponse};
 use indicatrix_vault::{
     db::sqlite::Database,
-    model::{detail::FacetDiagramDetail, entry::FacetDiagramEntry, file::AttachedFile},
+    model::{detail::FacetingDiagramDetail, entry::FacetingDiagramEntry, file::AttachedFile},
 };
 
 #[test]
@@ -78,7 +78,7 @@ fn fetch_design_carries_the_stored_ratio_and_symmetry_fields() {
 
     let entry_id = db
         .save_diagram_entry(
-            &FacetDiagramEntry {
+            &FacetingDiagramEntry {
                 title: "Round Brilliant".to_string(),
                 url: "https://example.test/diagram/1".to_string(),
                 design_id: "RB-1".to_string(),
@@ -86,7 +86,7 @@ fn fetch_design_carries_the_stored_ratio_and_symmetry_fields() {
             "facetdiagrams.org",
         )
         .unwrap();
-    let detail = FacetDiagramDetail {
+    let detail = FacetingDiagramDetail {
         page_url: "https://example.test/diagram/1".to_string(),
         shape: Some("Round".to_string()),
         refractive_index: Some("2.417".to_string()),
@@ -117,6 +117,66 @@ fn fetch_design_carries_the_stored_ratio_and_symmetry_fields() {
     assert_eq!(record.mirror_symmetry, Some(true));
     assert_eq!(record.designer.as_deref(), Some("Capps, Jerry"));
     assert_ne!(record.version, [0u8; 32]);
+
+    drop(db);
+    std::fs::remove_file(&path).ok();
+}
+
+/// `source_citation`/`pdf_file`/`gem_file`/`shape_category` (added to `DesignRecord`
+/// under `PROTOCOL_VERSION` v15, see that constant's doc comment) must reach a remote
+/// client the same way the ratio/symmetry fields above do -- pins that
+/// `Database::get_diagram_full_meta` actually selects these four columns (a gap
+/// `get_diagram_full`, the local-only counterpart, did not have) and that
+/// `convert::to_record` maps them through.
+#[test]
+fn fetch_design_carries_the_stored_citation_and_shape_category_fields() {
+    let path = std::env::temp_dir().join(format!(
+        "indicatrix-worker-library-citation-test-{}-{}.sqlite",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let path_str = path.to_str().unwrap();
+    let db = Database::new(Some(path_str)).unwrap();
+
+    let entry_id = db
+        .save_diagram_entry(
+            &FacetingDiagramEntry {
+                title: "Competition Entry".to_string(),
+                url: "https://example.test/diagramus/1".to_string(),
+                design_id: String::new(),
+            },
+            "facetdiagrams.org",
+        )
+        .unwrap();
+    let detail = FacetingDiagramDetail {
+        page_url: "https://example.test/diagramus/1".to_string(),
+        source_citation: Some("Lapidary Journal, May 1994, p95".to_string()),
+        pdf_file: Some("2002SSCMasters.pdf".to_string()),
+        gem_file: Some("USFG-SSC-2020-Novice-1.gem".to_string()),
+        shape_category: Some("5".to_string()),
+        ..Default::default()
+    };
+    db.save_diagram_detail(&detail, entry_id).unwrap();
+    drop(db);
+
+    let db = Database::open_read_only(path_str).unwrap();
+    let response = handle_request(&LibraryRequest::FetchDesign { entry_id }, &db);
+    let LibraryResponse::Design(record) = response else {
+        panic!("expected Design, got {response:?}");
+    };
+    assert_eq!(
+        record.source_citation.as_deref(),
+        Some("Lapidary Journal, May 1994, p95")
+    );
+    assert_eq!(record.pdf_file.as_deref(), Some("2002SSCMasters.pdf"));
+    assert_eq!(
+        record.gem_file.as_deref(),
+        Some("USFG-SSC-2020-Novice-1.gem")
+    );
+    assert_eq!(record.shape_category.as_deref(), Some("5"));
 
     drop(db);
     std::fs::remove_file(&path).ok();
@@ -214,7 +274,7 @@ fn fetch_design_source_returns_the_attached_asc_files_exact_text() {
 
     let entry_id = db
         .save_diagram_entry(
-            &FacetDiagramEntry {
+            &FacetingDiagramEntry {
                 title: "Round Brilliant".to_string(),
                 url: "https://example.test/diagram/1".to_string(),
                 design_id: "RB-1".to_string(),
@@ -223,7 +283,7 @@ fn fetch_design_source_returns_the_attached_asc_files_exact_text() {
         )
         .unwrap();
     let asc_text = "GemCad 5.0\nR1  c 41.0 96\n";
-    let detail = FacetDiagramDetail {
+    let detail = FacetingDiagramDetail {
         page_url: "https://example.test/diagram/1".to_string(),
         shape: Some("Round".to_string()),
         attached_files: vec![AttachedFile {

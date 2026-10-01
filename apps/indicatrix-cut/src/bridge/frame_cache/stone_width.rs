@@ -3,16 +3,18 @@
 //! `apply_material_overrides` needs the design's real girdle width in model units
 //! every time `stone_width_mm` (see `RenderContext::stone_width_mm`) is dialled in, so
 //! it can turn a physical millimetre width into `GemMaterial::absorption_path_scale`.
-//! `indicatrix::geometry::stone_metrics::measure_solid` is not free (it enumerates every
-//! feasible plane-triple intersection of the active design), and the render loop calls
-//! `apply_material_overrides` every frame, so [`StoneWidthCache`] recomputes only when
-//! `render_thread::hash_planes`'s key actually differs from the last call -- the exact
-//! same cheap `Pod`-bytes identity scheme `GirdleFinishCache` (see that module's doc
-//! comment) already uses for the identical reason.
+//! The measurement itself now lives in `indicatrix::render_setup::measure_model_width`
+//! (see that function's own doc comment) so the browser app measures a design's girdle
+//! width exactly the same way; it is not free (it enumerates every feasible
+//! plane-triple intersection of the active design), and the render loop calls
+//! `apply_material_overrides` every frame, so [`StoneWidthCache`] -- which stays
+//! desktop-side, since it is plain per-call state rather than render physics --
+//! recomputes only when `render_thread::hash_planes`'s key actually differs from the
+//! last call, the exact same cheap `Pod`-bytes identity scheme `GirdleFinishCache`
+//! (see that module's doc comment) already uses for the identical reason.
 
 use crate::bridge::render_thread::hash_planes;
-use glam::DVec3;
-use indicatrix::geometry::{plane::GpuFacetPlane, stone_metrics::measure_solid};
+use indicatrix::{geometry::plane::GpuFacetPlane, render_setup::measure_model_width};
 
 /// `key` starts `None`, so the very first [`Self::ensure`] call always sees a "stale"
 /// key and measures before anything reads `width` -- same never-empty-but-still-
@@ -25,6 +27,7 @@ pub struct StoneWidthCache {
 }
 
 impl StoneWidthCache {
+    /// Creates an empty instance.
     #[must_use]
     pub const fn new() -> Self {
         Self {
@@ -48,26 +51,6 @@ impl StoneWidthCache {
         }
         self.width
     }
-}
-
-/// Converts `planes` (`GpuFacetPlane { normal, d }`, whose inside half-space is
-/// `n . x + d <= 0`) into `measure_solid`'s own `n . x <= m` convention (`m = -d`),
-/// then measures the resulting solid's axis-aligned girdle width.
-fn measure_model_width(planes: &[GpuFacetPlane]) -> Option<f64> {
-    let converted: Vec<(DVec3, f64)> = planes
-        .iter()
-        .map(|p| {
-            (
-                DVec3::new(
-                    f64::from(p.normal[0]),
-                    f64::from(p.normal[1]),
-                    f64::from(p.normal[2]),
-                ),
-                -f64::from(p.d),
-            )
-        })
-        .collect();
-    measure_solid(&converted).map(|m| m.width_axis)
 }
 
 #[cfg(test)]

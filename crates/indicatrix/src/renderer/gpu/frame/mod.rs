@@ -43,9 +43,10 @@
 //! # Cancellation
 //!
 //! [`GpuFrameRenderer::accumulate_cancellable`] checks a caller-supplied `AtomicBool`
-//! between chunks and can stop early -- see [`AccumulateOutcome`] for the
-//! drain-then-discard guarantee this makes about `accum`. [`GpuFrameRenderer::accumulate`]
-//! delegates to the same loop with `cancel: None`, which can never fire.
+//! between chunks and can stop early -- see [`AccumulateOutcome`] for what `accum` holds
+//! afterwards (the chunks already summed, nothing from the chunk then in flight).
+//! [`GpuFrameRenderer::accumulate`] delegates to the same loop with `cancel: None`,
+//! which can never fire.
 //!
 //! # Overlapped chunk pipeline
 //!
@@ -86,9 +87,10 @@
 //! false ahead of time. [`compute::create_compute_pipeline_with_constants`] fixes
 //! `spectral_transport.wgsl`'s `MATERIAL_CLASS` pipeline-overridable constant at
 //! pipeline-creation time; [`GpuFrameRenderer`] builds one specialised pipeline per
-//! class LAZILY, on first use of that class, alongside the GENERIC pipeline every
-//! self-test still compiles -- lazy so a session that only ever renders one or two
-//! classes never pays every class's shader-compile cost.
+//! class LAZILY, on first use of that class. The GENERIC pipeline is lazy too: it compiles
+//! on the first `pipeline_for_class(GENERIC)` request, which only the self-tests and
+//! equivalence checks make (`classify_material` never returns GENERIC). A session that
+//! renders one or two classes never pays the others' shader-compile cost.
 //!
 //! [`classify_material`] is the single place that decision is made, and MIRRORS (never
 //! duplicates) `renderer::buffers::GpuGemMaterial::encode`'s own
@@ -244,14 +246,7 @@ use std::{sync::atomic::AtomicBool, time::Instant};
 
 use glam::Vec3;
 
-use crate::{
-    geometry::GpuFacetPlane,
-    optics::{
-        materials::GemMaterial,
-        raytracer::{Camera, EnvironmentSource, FacetFinish},
-    },
-    renderer::gpu::GpuAcquireError,
-};
+use crate::renderer::gpu::GpuAcquireError;
 
 mod accumulate;
 #[cfg(target_arch = "wasm32")]
@@ -407,8 +402,9 @@ pub enum GpuFrameError {
     /// buffer-mapping callback failure, or an unreadable mapped range. Carries a
     /// human-readable message for the caller's log line. Unlike every other variant here,
     /// this is NOT a per-scene routing decision: `renderer::gpu_backend::GpuBackend`
-    /// treats it as a signal to permanently stop using this renderer for the rest of the
-    /// process, not merely to fall this one call back to the CPU.
+    /// treats it as a signal to stop using this renderer altogether, not merely to fall
+    /// this one call back to the CPU. The backend replaces it with a freshly acquired
+    /// renderer once its recovery cool-down has passed; this renderer never recovers.
     DeviceLost(String),
 }
 
@@ -429,7 +425,7 @@ impl std::fmt::Display for GpuFrameError {
             ),
             Self::DeviceLost(why) => write!(
                 f,
-                "GPU device lost or unresponsive, disabling GPU rendering for the rest of this process: {why}"
+                "GPU device lost or unresponsive, GPU rendering is suspended until the backend recovers: {why}"
             ),
         }
     }
@@ -439,38 +435,37 @@ impl std::error::Error for GpuFrameError {}
 
 /// Everything the megakernel needs to render a frame.
 ///
+/// A type alias, not a struct of its own: the field-for-field definition now lives at
+/// [`crate::renderer::frame_scene::FrameScene`] (backend-independent, so the wasm-safe
+/// CPU tracer in [`crate::renderer::cpu_frame`] can use it with no `gpu` feature
+/// enabled), kept alive at this path so every existing `GpuFrameScene { .. }`
+/// construction and import keeps compiling unchanged.
+///
 /// Bundled so [`GpuFrameRenderer::accumulate`] stays within clippy's argument-count limit and so
 /// the caller assembles the scene once rather than per chunk.
-pub struct GpuFrameScene<'a> {
-    pub camera: &'a Camera,
-    pub width: u32,
-    pub height: u32,
-    pub planes: &'a [GpuFacetPlane],
-    /// Per-plane finish, indexed in step with `planes`. A shorter slice is padded with
-    /// [`FacetFinish::default`], matching [`crate::renderer::buffers::encode_facet_finishes`].
-    pub facet_finishes: &'a [FacetFinish],
-    pub material: &'a GemMaterial,
-    pub max_bounces: u32,
-    pub environment: EnvironmentSource<'a>,
-}
+pub type GpuFrameScene<'a> = crate::renderer::frame_scene::FrameScene<'a>;
 
 /// Outcome of [`GpuFrameRenderer::accumulate_cancellable`].
 ///
-/// Lets a caller tell "every requested sample landed in `accum`" apart from "cancelled,
-/// `accum` untouched" -- which a plain `bool` cannot, since [`GpuFrameRenderer::accumulate`]'s
-/// `Ok(())`/`Err(GpuFrameError)` shape already means something else (decline reasons).
+/// Lets a caller tell "every requested sample landed in `accum`" apart from "cancelled
+/// before the frame was finished" -- which a plain `bool` cannot, since
+/// [`GpuFrameRenderer::accumulate`]'s `Ok(())`/`Err(GpuFrameError)` shape already means
+/// something else (decline reasons).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccumulateOutcome {
     /// Every requested sample was traced and summed into `accum`.
     Done,
     /// `cancel` was observed set before every chunk finished.
     ///
-    /// `accum` is GUARANTEED untouched: drain-then-discard semantics mean any chunk
-    /// already in flight when cancellation was observed is still waited on and read off
-    /// the GPU -- so double-buffered chunk-output state stays consistent for the next
-    /// call -- but that chunk's samples are thrown away rather than summed. A caller
-    /// never has to reason about a partial sample count: `accum`/`sample_offset`
-    /// bookkeeping stay exactly as if this call had never been made.
+    /// `accum` holds the sums of the chunks that were already drained before the
+    /// cancellation was observed, and nothing from the chunk that was in flight then:
+    /// that chunk is still waited on and read off the GPU -- so double-buffered
+    /// chunk-output state stays consistent for the next call -- but its samples are not
+    /// summed. Pixels are covered by chunks
+    /// in order, so the affected pixels are exactly those of the undrained chunks; a
+    /// caller that needs the buffer left wholly untouched (as
+    /// `renderer::gpu_backend::GpuBackend` promises its own callers) must accumulate into
+    /// a scratch buffer and add it only on [`Self::Done`].
     Cancelled,
 }
 
@@ -497,8 +492,8 @@ pub(crate) enum ChunkTurnOutcome {
     /// Every requested sample was traced and summed into `accum` -- the whole request
     /// is finished. Matches [`AccumulateOutcome::Done`].
     Done,
-    /// `cancel` fired during this turn. Matches [`AccumulateOutcome::Cancelled`]'s
-    /// drain-then-discard guarantee about `accum`.
+    /// `cancel` fired during this turn. Matches [`AccumulateOutcome::Cancelled`]: chunks
+    /// drained earlier stay summed in `accum`, the chunk in flight is not summed.
     Cancelled,
     /// This turn's `max_chunks` budget was spent, but pixels remain. Every chunk
     /// dispatched THIS turn is already summed into `accum` (nothing here is discarded,

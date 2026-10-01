@@ -12,7 +12,7 @@ use indicatrix::{
     },
 };
 
-/// Task B: `spectral_absorption` now sums real chromophore `AbsorptionBand`s (see
+/// `spectral_absorption` sums real chromophore `AbsorptionBand`s (see
 /// `GemMaterial::all_materials`' doc comments for the cited band positions) instead of
 /// blending a `[f32; 3]` RGB triple against three fixed sRGB-primary lobes -- this
 /// test reads the actual built-in materials' band sets rather than a synthetic
@@ -78,10 +78,10 @@ fn test_absorption_band_peaks_at_its_own_centre_and_bands_sum() {
     );
 }
 
-/// Task B requirement 5: Diamond, Moissanite and Cubic Zirconia are colourless -- their
+/// Diamond, Moissanite and Cubic Zirconia are colourless -- their
 /// `AbsorptionTensor`s must be empty band sets, giving EXACTLY zero absorption at every
 /// wavelength (not merely "small"), which is what makes their rendering unchanged from
-/// before this task (the pre-Task-B `[0.0, 0.0, 0.0]` RGB triple also always evaluated
+/// the earlier RGB-triple model (the old `[0.0, 0.0, 0.0]` triple also always evaluated
 /// to exactly 0.0 in the old `spectral_absorption`, so this is a genuine equivalence,
 /// not just a superficially-similar new behaviour).
 #[test]

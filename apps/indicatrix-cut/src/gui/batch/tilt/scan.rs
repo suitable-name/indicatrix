@@ -3,57 +3,28 @@
 //! unlike `gui::batch::preview::scan`.
 
 use crate::MainWindow;
-use indicatrix_vault::{db::sqlite::Database, model::filter::RangeFilter};
+use indicatrix_vault::db::sqlite::Database;
 use slint::Weak;
 use std::{
     sync::{Arc, Mutex, PoisonError},
     thread,
 };
 
-/// Keyset page size for [`scan_missing_tilt_curve_ids`]'s catalogue walk -- matches
-/// `gui::batch::preview::scan`'s `SCAN_PAGE_SIZE` reasoning (few round trips against a
-/// ~3,187-design catalogue, each page cheap).
-const SCAN_PAGE_SIZE: i64 = 500;
-
-/// Walks the whole local catalogue via `Database::search_diagrams_page`'s keyset
-/// pagination and returns every entry id with no stored tilt curves at all
-/// (`Database::has_tilt_curves` false) -- the tilt-curve counterpart of
-/// `gui::batch::preview::scan`'s `scan_missing_preview_ids`, same
-/// one-query-per-page-plus-one-point-lookup-per-row approach since `indicatrix-vault`
-/// has no bulk "which designs lack curves" query of its own. Intended to run off the
-/// UI thread -- see [`spawn_missing_tilt_curve_scan`].
+/// Every entry id with no stored tilt curves at all
+/// (`Database::entry_ids_missing_tilt_curves`) -- the tilt-curve counterpart of
+/// `gui::batch::preview::scan`'s `scan_missing_preview_ids`: one blob-free `LEFT JOIN`
+/// query rather than a page walk plus a per-row point lookup. Intended to run
+/// off the UI thread -- see [`spawn_missing_tilt_curve_scan`].
 fn scan_missing_tilt_curve_ids(db: &Mutex<Database>) -> Vec<i64> {
-    let mut missing = Vec::new();
-    let mut after_id: Option<i64> = None;
-    loop {
-        let page = {
-            let guard = db.lock().unwrap_or_else(PoisonError::into_inner);
-            guard.search_diagrams_page(
-                "",
-                "All",
-                "All",
-                &RangeFilter::default(),
-                after_id,
-                SCAN_PAGE_SIZE,
+    db.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .entry_ids_missing_tilt_curves(|material| {
+            crate::bridge::preview_render::cache_fingerprint(
+                crate::bridge::preview_render::CacheKind::TiltCurves,
+                material,
             )
-        };
-        let Ok(page) = page else { break };
-        let page_len = page.len();
-        if page_len == 0 {
-            break;
-        }
-        after_id = page.last().map(|item| item.id);
-        for item in &page {
-            let guard = db.lock().unwrap_or_else(PoisonError::into_inner);
-            if guard.has_tilt_curves(item.id).is_ok_and(|has| !has) {
-                missing.push(item.id);
-            }
-        }
-        if (page_len as i64) < SCAN_PAGE_SIZE {
-            break;
-        }
-    }
-    missing
+        })
+        .unwrap_or_default()
 }
 
 /// Runs [`scan_missing_tilt_curve_ids`] on its own worker thread and reports the result

@@ -213,6 +213,10 @@ impl PayloadDecoder {
     /// Any [`RadianceError`] from the module doc comment's bounded-decode checks, or
     /// [`RadianceError::LengthMismatch`] if `acc.len() != width * height`. `acc` is left
     /// untouched on error.
+    ///
+    /// A pixel with a non-finite or negative component is not summed (it adds nothing);
+    /// the returned count is how many pixels were skipped that way. The caller still
+    /// counts the frame's samples as done, matching the tracer's own rule.
     pub fn decode_and_add(
         &mut self,
         encoding: PayloadEncoding,
@@ -221,7 +225,7 @@ impl PayloadDecoder {
         width: u32,
         height: u32,
         acc: &mut [Vec3],
-    ) -> Result<(), RadianceError> {
+    ) -> Result<u32, RadianceError> {
         let pixels = width as usize * height as usize;
         if acc.len() != pixels {
             return Err(RadianceError::LengthMismatch {
@@ -231,17 +235,21 @@ impl PayloadDecoder {
                 got_bytes: acc.len() * BYTES_PER_PIXEL,
             });
         }
-        match self.prepare(encoding, raw_len, wire, width, height)? {
+        let dropped = match self.prepare(encoding, raw_len, wire, width, height)? {
             Prepared::Raw(delta) => {
+                let mut dropped = 0u32;
                 for (a, d) in acc.iter_mut().zip(delta) {
-                    *a += *d;
+                    if shuffle::is_valid_sample(*d) {
+                        *a += *d;
+                    } else {
+                        dropped = dropped.saturating_add(1);
+                    }
                 }
+                dropped
             }
-            Prepared::Planes(planes) => {
-                shuffle::add_unshuffled(planes, bytemuck::cast_slice_mut(acc));
-            }
-        }
-        Ok(())
+            Prepared::Planes(planes) => shuffle::add_unshuffled_valid(planes, acc),
+        };
+        Ok(dropped)
     }
 
     /// Decodes a `width * height` payload into a fresh buffer -- the `PREVIEW` path.

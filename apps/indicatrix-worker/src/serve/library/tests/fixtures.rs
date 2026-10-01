@@ -3,7 +3,7 @@
 
 use indicatrix_vault::{
     db::sqlite::Database,
-    model::{detail::FacetDiagramDetail, entry::FacetDiagramEntry, file::AttachedFile},
+    model::{detail::FacetingDiagramDetail, entry::FacetingDiagramEntry, file::AttachedFile},
 };
 
 /// Builds a fresh, populated temp database (read-write) and returns the path;
@@ -23,7 +23,7 @@ pub(super) fn populated_temp_db() -> std::path::PathBuf {
 
     let entry_id = db
         .save_diagram_entry(
-            &FacetDiagramEntry {
+            &FacetingDiagramEntry {
                 title: "Round Brilliant".to_string(),
                 url: "https://example.test/diagram/1".to_string(),
                 design_id: "RB-1".to_string(),
@@ -32,7 +32,7 @@ pub(super) fn populated_temp_db() -> std::path::PathBuf {
         )
         .unwrap();
 
-    let mut detail = FacetDiagramDetail {
+    let mut detail = FacetingDiagramDetail {
         page_url: "https://example.test/diagram/1".to_string(),
         shape: Some("Round".to_string()),
         refractive_index: Some("2.417".to_string()),

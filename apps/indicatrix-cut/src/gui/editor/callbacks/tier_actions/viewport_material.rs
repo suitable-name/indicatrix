@@ -113,58 +113,9 @@ pub(in crate::gui::editor) fn setup_viewport_material_linked_changed_callback(
     );
 }
 
-/// One printed-proportions field's text, parsed as `None` for blank text or
-/// `Some(value)` for a finite positive number -- shared by
-/// [`parse_printed_proportions_form`] across all five fields.
-///
-/// # Errors
-///
-/// A ready-to-toast message naming `label` when `text` is non-blank but does not
-/// parse as a finite positive number.
-///
-/// `pub(super)` since [`super::tests`] exercises this directly.
-pub(super) fn parse_printed_proportions_field(
-    label: &str,
-    text: &str,
-) -> Result<Option<f64>, String> {
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return Ok(None);
-    }
-    let value: f64 = trimmed
-        .parse()
-        .map_err(|_| format!("{label} '{trimmed}' is not a number."))?;
-    if !value.is_finite() || value <= 0.0 {
-        return Err(format!("{label} must be a positive number."));
-    }
-    Ok(Some(value))
-}
-
-/// Parses the printed-proportions panel's five text fields
-/// into an [`ExternalProportions`], the exact shape
-/// `loading::external_proportions_from_full_record` already
-/// builds from a catalogue row's own measured columns -- see that function's own
-/// doc comment for the target this feeds ([`EditorState::printed_proportions`],
-/// Deep Solve's external verification).
-///
-/// # Errors
-///
-/// The first field (in `vol_w3, lw, cw, pw, hw` order) that fails to parse, via
-/// [`parse_printed_proportions_field`].
-///
-/// `pub(super)` for the same reason as [`parse_printed_proportions_field`] above.
-pub(super) fn parse_printed_proportions_form(
-    vol_w3: &str,
-    lw: &str,
-    cw: &str,
-    pw: &str,
-    hw: &str,
-) -> Result<indicatrix::geometry::stone_metrics::ExternalProportions, String> {
-    Ok(indicatrix::geometry::stone_metrics::ExternalProportions {
-        vol_w3: parse_printed_proportions_field("Vol/W\u{b3}", vol_w3)?,
-        lw: parse_printed_proportions_field("L/W", lw)?,
-        cw: parse_printed_proportions_field("C/W", cw)?,
-        pw: parse_printed_proportions_field("P/W", pw)?,
-        hw: parse_printed_proportions_field("H/W", hw)?,
-    })
-}
+// The printed-proportions parsers moved to `indicatrix_editor::printed_proportions`
+// (shared with the web design settings); re-exported at their old path, which
+// `super::tests` exercises.
+#[cfg(test)]
+pub(super) use indicatrix_editor::printed_proportions::parse_printed_proportions_field;
+pub(super) use indicatrix_editor::printed_proportions::parse_printed_proportions_form;

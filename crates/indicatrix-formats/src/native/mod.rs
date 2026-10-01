@@ -1,5 +1,5 @@
 //! The native design file -- a text sidecar that carries design state a paired
-//! `.asc` cutting-schedule file has no field for, meant to sit next to (never
+//! `.asc` cutting-instructions file has no field for, meant to sit next to (never
 //! replace) a real `.asc` export.
 //!
 //! # The gap this closes
@@ -72,6 +72,7 @@
 //! mirrors (see that crate's `native` module for the conversions, and for the
 //! load/save functions that pair a document built here back up with a real `.asc`).
 
+mod custom_material;
 mod fingerprint;
 mod path;
 mod schema;

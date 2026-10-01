@@ -26,6 +26,11 @@ import { BatchModel } from "../../models/batch.slint";
 export component GemViewportToolbarActions inherits HorizontalLayout {
     spacing: 8px;
 
+    // Set by `gem_viewport.slint` from the viewport width: drops the colour readout,
+    // the "Tilt Curve" and "Linked to design" labels (their icons/toggle stay), so the
+    // row fits a narrower window.
+    in property <bool> compact: false;
+
     property <bool> saving_view_preset: false;
     property <string> new_view_preset_name: "";
     property <bool> batch_suspends_tracer: BatchModel.tilt_batch_running || BatchModel.preview_batch_running;
@@ -36,8 +41,14 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
     // control. This one picks what's simulated for
     // colour/dispersion/birefringence in the render; it never
     // touches the cut itself.
+    // A stretch item (96px up to its share of the free width) rather than a fixed
+    // 140px: the fluent ComboBox has its own 160px minimum, so it is zeroed and
+    // filled to the box instead.
     Rectangle {
-        width: 140px;
+        min-width: 96px;
+        preferred-width: 140px;
+        max-width: 160px;
+        horizontal-stretch: 1;
         height: 32px;
         background: #1e293bee;
         border-radius: Theme.radius-sm;
@@ -47,17 +58,42 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
         Tooltip { text: @markdown("Render Material -- material simulated for colour, dispersion and birefringence. Does not change the cut."); }
 
         ComboBox {
+            width: 100%;
+            height: 100%;
             model: ViewportModel.material_options;
             current-index <=> ViewportModel.selected_material_index;
             selected(val) => { ViewportModel.material_changed(val); }
         }
     }
 
+    // The design's body-colour variant, beside the dropdown that names only the
+    // species: while linked, a yellow-sapphire design traces as `Sapphire (Yellow)`
+    // even though the dropdown itself says `Sapphire`.
+    if ViewportModel.viewport_material_linked && EditorModel.body_colour_readout != "" && !root.compact: Rectangle {
+        height: 32px;
+        background: #1e293bee;
+        border-radius: Theme.radius-sm;
+        border-width: 1px;
+        border-color: Theme.border-medium;
+        Tooltip { text: @markdown("Rendered in this design's own body colour -- set with Colour in the Edit tab's Design settings."); }
+        colour_readout_layout := HorizontalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            Text {
+                text: EditorModel.body_colour_readout;
+                font-size: 11px;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+            }
+        }
+        width: colour_readout_layout.preferred-width;
+    }
+
     // "Linked to design" -- see `viewport_material_linked`'s own doc
     // comment above. Only shown on an `editor` build; a build with no
     // Edit tab has nothing for this dropdown to link to.
     if EditorModel.enabled: Rectangle {
-        width: link_txt.preferred-width + 44px;
+        width: root.compact ? 44px : link_txt.preferred-width + 44px;
         height: 32px;
         background: #1e293bee;
         border-radius: Theme.radius-sm;
@@ -90,6 +126,7 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
                 }
             }
             link_txt := Text {
+                visible: !root.compact;
                 text: "Linked to design";
                 font-size: 10px;
                 color: Theme.text-secondary;
@@ -124,7 +161,10 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
 
     // Lighting Dropdown
     Rectangle {
-        width: 190px;
+        min-width: 110px;
+        preferred-width: 190px;
+        max-width: 220px;
+        horizontal-stretch: 1;
         height: 32px;
         background: #1e293bee;
         border-radius: Theme.radius-sm;
@@ -134,6 +174,8 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
         Tooltip { text: @markdown("Lighting: the four studio rigs, or the lit models -- ISO hemisphere, light tent with black cards, daylight sky with sun."); }
 
         ComboBox {
+            width: 100%;
+            height: 100%;
             model: ViewportModel.lighting_options;
             current-index <=> ViewportModel.selected_lighting_index;
             // Emits the INDEX (already synced into
@@ -146,6 +188,10 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
     // Performance Curve Graph Trigger Button (📊 Tilt Curve)
     Rectangle {
         height: 32px;
+        // Sized to its content, never stretched: a Rectangle in a HorizontalLayout
+        // has horizontal-stretch 1 by default and would otherwise absorb the width
+        // the capped ComboBoxes above no longer take. Icon only (32px) when compact.
+        width: root.compact ? 32px : tilt_layout.preferred-width;
         background: TiltModel.dialog_open ? Theme.accent-cyan : (perf_touch.has-hover ? Theme.bg-elevated : #1e293bee);
         border-radius: Theme.radius-sm;
         border-width: 1px;
@@ -160,7 +206,7 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
         }
         Tooltip { text: @markdown("Open the tilt-performance chart: brilliance, windowing and extinction versus tilt."); }
 
-        HorizontalLayout {
+        tilt_layout := HorizontalLayout {
             padding-left: 8px;
             padding-right: 8px;
             spacing: 5px;
@@ -172,7 +218,7 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
                 height: 13px;
                 vertical-alignment: center;
             }
-            Text {
+            if !root.compact: Text {
                 text: "Tilt Curve";
                 font-size: 11px;
                 font-weight: 600;
@@ -350,6 +396,8 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
 
     if ViewportModel.live_view_mode == 1: Rectangle {
         height: 32px;
+        // Sized to its content -- see the Tilt Curve pill's comment.
+        width: live_layout.preferred-width;
         background: (ViewportModel.render_paused || ExportModel.is_exporting || root.batch_suspends_tracer) ? Theme.accent-amber : (pause_touch.has-hover ? Theme.bg-elevated : #1e293bee);
         border-radius: Theme.radius-sm;
         border-width: 1px;
@@ -367,7 +415,7 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
             }
         }
 
-        HorizontalLayout {
+        live_layout := HorizontalLayout {
             padding-left: 8px;
             padding-right: 8px;
             spacing: 5px;
@@ -444,6 +492,8 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
     // High-Resolution Export Trigger Button
     Rectangle {
         height: 32px;
+        // Sized to its content -- see the Tilt Curve pill's comment.
+        width: export_layout.preferred-width;
         background: (ExportModel.is_open || ExportModel.is_exporting) ? Theme.accent-emerald : (export_touch.has-hover ? Theme.bg-elevated : #1e293bee);
         border-radius: Theme.radius-sm;
         border-width: 1px;
@@ -453,7 +503,7 @@ export component GemViewportToolbarActions inherits HorizontalLayout {
             clicked => { ExportModel.is_open = !ExportModel.is_open; }
         }
 
-        HorizontalLayout {
+        export_layout := HorizontalLayout {
             padding-left: 8px;
             padding-right: 8px;
             spacing: 5px;

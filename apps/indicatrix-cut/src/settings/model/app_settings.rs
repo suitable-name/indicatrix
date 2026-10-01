@@ -7,29 +7,48 @@ use super::{
     worker::{LiveComputeTarget, LocalPreviewScale, WorkerSettings},
 };
 use crate::bridge::export_thread::DEFAULT_TEMPLATE as DEFAULT_EXPORT_FILENAME_TEMPLATE;
+use indicatrix::optics::raytracer::DEFAULT_POSE;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 // Defaults mirror `RenderContext::default()` and `settings_dialog.slint`'s property
-// initializers. Camera yaw/pitch are kept in RADIANS (matching `RenderContext`) while
-// light yaw/pitch are kept in DEGREES (matching the settings-dialog sliders) -- each
-// field stores whatever unit its main consumer already uses. See
-// `gui::mod::apply_loaded_settings` for the one place that converts degrees -> radians.
+// initializers, with ONE deliberate exception: `DEFAULT_LIGHTING_RIG` ("Light tent +
+// black cards") does not match `RenderContext::default()`'s `lighting_preset`
+// (`LightingPreset::RingLights`) -- the 2026-09-16 lighting rework changed the
+// settings-dialog/startup default to the light tent without touching
+// `RenderContext::default()` itself, which only ever seeds the render thread before
+// `gui::startup_settings::apply_saved_settings` overwrites it with whatever
+// `AppSettings` actually loads. Camera yaw/pitch are kept in RADIANS (matching
+// `RenderContext`) while light yaw/pitch are kept in DEGREES (matching the
+// settings-dialog sliders) -- each field stores whatever unit its main consumer
+// already uses. See `gui::mod::apply_loaded_settings` for the one place that
+// converts degrees -> radians.
 /// `256` matches the old "High / Quality" preset's typical converged sample count --
 /// see `RenderContext::default()`'s `target_samples`, which mirrors this.
 pub const DEFAULT_TARGET_SAMPLES: u32 = 256;
 /// Live render resolution -- matches `RenderContext::default()`'s `width`/`height`.
 pub const DEFAULT_RENDER_WIDTH: u32 = 800;
+/// Default render height for new settings.
 pub const DEFAULT_RENDER_HEIGHT: u32 = 600;
-pub const DEFAULT_MAX_BOUNCES: u32 = 12;
+/// Default max bounces for new settings: the raytracer's shared default.
+pub use indicatrix::optics::raytracer::DEFAULT_MAX_BOUNCES;
+/// Default exposure for new settings.
 pub const DEFAULT_EXPOSURE: f32 = 1.0;
+/// Default inclusion sigma s for new settings.
 pub const DEFAULT_INCLUSION_SIGMA_S: f32 = 0.0;
+/// Default c axis override enabled for new settings.
 pub const DEFAULT_C_AXIS_OVERRIDE_ENABLED: bool = false;
+/// Default c axis tilt deg for new settings.
 pub const DEFAULT_C_AXIS_TILT_DEG: f32 = 0.0;
+/// Default c axis azimuth deg for new settings.
 pub const DEFAULT_C_AXIS_AZIMUTH_DEG: f32 = 0.0;
+/// Default girdle frosted for new settings.
 pub const DEFAULT_GIRDLE_FROSTED: bool = false;
+/// Default edge rounding radius for new settings.
 pub const DEFAULT_EDGE_ROUNDING_RADIUS: f32 = 0.0;
+/// Default stone width mm for new settings.
 pub const DEFAULT_STONE_WIDTH_MM: f32 = 0.0;
+/// Default local preview scale for new settings.
 pub const DEFAULT_LOCAL_PREVIEW_SCALE: LocalPreviewScale = LocalPreviewScale::Off;
 /// `LiveComputeTarget::Both` is a no-op without a configured remote
 /// (`orchestrator::poll_tick` only dispatches remote when `AppSettings::remote` is set),
@@ -40,7 +59,14 @@ pub const DEFAULT_LIVE_COMPUTE_TARGET: LiveComputeTarget = LiveComputeTarget::Bo
 /// behaviour on a `gpu`-feature build (CPU-only otherwise, since `ViewportGpu` always
 /// declines there regardless of this setting).
 pub const DEFAULT_LOCAL_COMPUTE_TARGET: LocalComputeTarget = LocalComputeTarget::CpuGpu;
+/// v16: on by default -- a configured remote's final-picture exports converge faster
+/// with the idle local machine helping, and `worker::final_picture::contribution_allowed`'s
+/// own guards (compute target, matching scene, HDR) already keep it from ever changing
+/// what a picture looks like, only how fast it arrives.
+pub const DEFAULT_CONTRIBUTE_TO_FINAL_PICTURE: bool = true;
+/// Default light yaw deg for new settings.
 pub const DEFAULT_LIGHT_YAW_DEG: f32 = 48.0;
+/// Default light pitch deg for new settings.
 pub const DEFAULT_LIGHT_PITCH_DEG: f32 = 54.0;
 /// The light tent: the lit model whose ambient sits at middle grey with black cards for
 /// facet contrast, so an undialled-in render already reads like a photograph.
@@ -48,6 +74,17 @@ pub const DEFAULT_LIGHTING_RIG: &str = "Light tent + black cards";
 
 /// What the camera sees behind the stone -- `EnvironmentSource::Studio::backdrop`. Only
 /// the camera ray sees it; the stone's optics never do, so leakage stays dark.
+///
+/// The `level`/`index`/`from_index` derivation this carries is now pinned once in
+/// `indicatrix::render_setup::Backdrop` (shared with the browser app) and mirrored
+/// here variant-for-variant -- this type keeps its own definition, rather than a
+/// re-export, purely so it can carry the `serde` derives its on-disk settings-file
+/// representation needs: `indicatrix`'s own `serde` dependency is optional/feature-
+/// gated (off by default, on only for `indicatrix-net`'s wire protocol), and this
+/// crate doesn't enable it, so adding an unconditional `Serialize`/`Deserialize` to
+/// the indicatrix side would grow ITS base dependency footprint for every consumer,
+/// not just this one. Every method below just converts to the indicatrix mirror and
+/// delegates, so the derivation logic itself lives in exactly one place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Backdrop {
     /// The environment's own ground, as lit.
@@ -63,36 +100,47 @@ impl Backdrop {
     /// Backdrop radiance handed to `EnvironmentSource::with_backdrop`.
     #[must_use]
     pub const fn level(self) -> f32 {
-        match self {
-            Self::AsLit => 0.0,
-            Self::Grey => indicatrix::optics::raytracer::BACKDROP_GREY,
-            Self::White => indicatrix::optics::raytracer::BACKDROP_WHITE,
-        }
+        self.to_indicatrix().level()
     }
 
     /// Index into the settings dialog's pill row (`SettingsModel.backdrop_index`).
     #[must_use]
     pub const fn index(self) -> i32 {
-        match self {
-            Self::AsLit => 0,
-            Self::Grey => 1,
-            Self::White => 2,
-        }
+        self.to_indicatrix().index()
     }
 
     /// Inverse of [`Self::index`]; anything else is the default.
     #[must_use]
     pub const fn from_index(index: i32) -> Self {
-        match index {
-            0 => Self::AsLit,
-            2 => Self::White,
-            _ => Self::Grey,
+        Self::from_indicatrix(indicatrix::render_setup::Backdrop::from_index(index))
+    }
+
+    /// Converts to the pure `indicatrix::render_setup` mirror this type's own
+    /// `level`/`index` delegate to.
+    const fn to_indicatrix(self) -> indicatrix::render_setup::Backdrop {
+        match self {
+            Self::AsLit => indicatrix::render_setup::Backdrop::AsLit,
+            Self::Grey => indicatrix::render_setup::Backdrop::Grey,
+            Self::White => indicatrix::render_setup::Backdrop::White,
+        }
+    }
+
+    /// Inverse of [`Self::to_indicatrix`].
+    const fn from_indicatrix(backdrop: indicatrix::render_setup::Backdrop) -> Self {
+        match backdrop {
+            indicatrix::render_setup::Backdrop::AsLit => Self::AsLit,
+            indicatrix::render_setup::Backdrop::Grey => Self::Grey,
+            indicatrix::render_setup::Backdrop::White => Self::White,
         }
     }
 }
-pub const DEFAULT_CAMERA_YAW: f32 = 0.60;
-pub const DEFAULT_CAMERA_PITCH: f32 = 0.45;
-pub const DEFAULT_CAMERA_DISTANCE: f32 = 2.4;
+/// Default camera yaw for new settings: the raytracer's shared default pose.
+pub const DEFAULT_CAMERA_YAW: f32 = DEFAULT_POSE.yaw;
+/// Default camera pitch for new settings: the raytracer's shared default pose.
+pub const DEFAULT_CAMERA_PITCH: f32 = DEFAULT_POSE.pitch;
+/// Default camera distance for new settings: the raytracer's shared default pose.
+pub const DEFAULT_CAMERA_DISTANCE: f32 = DEFAULT_POSE.distance;
+/// Default material for new settings.
 pub const DEFAULT_MATERIAL: &str = "Diamond";
 /// Cached-preview (front/top thumbnail) square render size, in pixels -- see
 /// `bridge::preview_render`'s doc comment for the measured cost table this was picked
@@ -132,9 +180,12 @@ pub const DEFAULT_EDITOR_AUTO_SOLVE_BUDGET_MS: u32 = 300;
 /// exactly the width it always rendered at.
 pub const DEFAULT_EDITOR_DOCK_WIDTH: f32 = 640.0;
 /// The Edit sub-tab's inspector height, in logical pixels -- see `EditorModel.
-/// inspector_height`'s own doc comment. `260.0` matches the inspector's old fixed
-/// height, for the same reason as [`DEFAULT_EDITOR_DOCK_WIDTH`].
-pub const DEFAULT_EDITOR_INSPECTOR_HEIGHT: f32 = 260.0;
+/// inspector_height`'s own doc comment. `340.0` is tall enough for the Tier tab to show
+/// its title plus the Angle, Meets, Name and Indices rows and the pinned Save/Add row
+/// without scrolling (the old fixed `260.0` left a ~160px fold that hid Meets/Name/
+/// Indices). A settings file that already carries `editor_inspector_height` keeps its
+/// own value; only a missing key takes this default.
+pub const DEFAULT_EDITOR_INSPECTOR_HEIGHT: f32 = 340.0;
 
 /// The four originally in-memory-only settings, plus camera pose and the selected
 /// material -- everything migrated into persistent storage.
@@ -142,7 +193,7 @@ pub const DEFAULT_EDITOR_INSPECTOR_HEIGHT: f32 = 260.0;
 /// `#[serde(default)]` on the struct makes every field individually optional on
 /// deserialization: a settings file that predates a field still loads successfully
 /// with that field defaulted. Full-document parse failure is handled one level up, in
-/// `store::load_or_default`.
+/// `store::load_with_outcome`.
 ///
 /// Unknown keys are IGNORED (no `deny_unknown_fields`), which is how a removed setting
 /// retires without a migration: a file still carrying the old `remote_render_samples`
@@ -161,19 +212,28 @@ pub struct AppSettings {
     /// which Slint has no mechanism to report back to Rust. A hand-edited value
     /// outside the four pills still loads and renders fine.
     pub render_width: u32,
+    /// Render height in pixels.
     pub render_height: u32,
+    /// Maximum number of ray bounces per path.
     pub max_bounces: u32,
+    /// Exposure multiplier applied when tone-mapping.
     pub exposure: f32,
+    /// Light yaw in degrees.
     pub light_yaw_deg: f32,
+    /// Light pitch in degrees.
     pub light_pitch_deg: f32,
     /// The lighting "rig" selection (e.g. "Gem Studio Ring Lights") -- what
     /// `RenderContext::lighting_preset` calls a "lighting preset". Named
     /// `lighting_rig` to stay unambiguous next to `LightingPreset` (the saveable
     /// bundle, which itself has a `lighting_rig` field referencing this).
     pub lighting_rig: String,
+    /// Camera yaw.
     pub camera_yaw: f32,
+    /// Camera pitch.
     pub camera_pitch: f32,
+    /// Camera distance from the stone.
     pub camera_distance: f32,
+    /// Name of the selected material.
     pub selected_material: String,
     /// The one remote this viewer renders with and browses the library of (a
     /// coordinator, rendering itself when started with `--render`). `None` renders
@@ -237,6 +297,13 @@ pub struct AppSettings {
     /// Local live-rendering CPU/CPU+GPU/GPU choice -- see `LocalComputeTarget`.
     #[serde(default)]
     pub local_compute_target: LocalComputeTarget,
+    /// v16: whether this machine's own idle CPU/GPU traces a share of a "final picture
+    /// only" export/tilt-frame alongside the remote, uploading its sum for the
+    /// coordinator to fold in before tone-mapping -- see
+    /// [`DEFAULT_CONTRIBUTE_TO_FINAL_PICTURE`] and
+    /// `worker::final_picture::contribution_allowed` for when it actually applies.
+    #[serde(default = "default_contribute_to_final_picture")]
+    pub contribute_to_final_picture: bool,
     /// HDR environment maps: path to the last-loaded Radiance `.hdr` file, or empty
     /// for "no map loaded, use the studio rig" (same empty-string-means-off
     /// convention as `selected_material`/`lighting_rig`). `gui::mod::apply_loaded_settings`
@@ -326,8 +393,9 @@ pub struct AppSettings {
     /// A `BTreeSet` (not `HashMap`/`HashSet` -- house rule: no hash-map iteration
     /// in a decision path), keyed by a short, stable string each call site owns
     /// (e.g. `"write_confirm.not_closed_solid"`) -- see
-    /// `gui::editor::native_io::ConfirmKey` for the one enum of keys this app
-    /// defines today. A key present here means that SPECIFIC prompt is silenced;
+    /// `gui::editor::native_io::confirm`'s `confirm_keys` module for the write-confirm
+    /// keys and `gui::editor::state`'s anchor-explainer key. A key present here means
+    /// that SPECIFIC prompt is silenced;
     /// nothing else is affected, so suppressing "not a closed solid" never
     /// silences "overwrite an unrelated sidecar" or vice versa.
     #[serde(default)]
@@ -347,6 +415,10 @@ const fn default_preview_spp() -> u32 {
 
 const fn default_denoise_enabled() -> bool {
     true
+}
+
+const fn default_contribute_to_final_picture() -> bool {
+    DEFAULT_CONTRIBUTE_TO_FINAL_PICTURE
 }
 
 const fn default_editor_auto_solve_budget_ms() -> u32 {
@@ -398,6 +470,7 @@ impl Default for AppSettings {
             local_preview_scale: DEFAULT_LOCAL_PREVIEW_SCALE,
             live_compute_target: DEFAULT_LIVE_COMPUTE_TARGET,
             local_compute_target: DEFAULT_LOCAL_COMPUTE_TARGET,
+            contribute_to_final_picture: DEFAULT_CONTRIBUTE_TO_FINAL_PICTURE,
             env_map_path: String::new(),
             preview_size: DEFAULT_PREVIEW_SIZE,
             preview_spp: DEFAULT_PREVIEW_SPP,
@@ -429,7 +502,7 @@ impl AppSettings {
     }
 
     /// Folds a legacy multi-worker `remote_workers` list into [`Self::remote`] -- see
-    /// [`migrate_legacy_workers`]. Called by `settings::store::load_or_default` right
+    /// [`migrate_legacy_workers`]. Called by `settings::store::load_with_outcome` right
     /// after parsing; idempotent (a second call finds the legacy list empty).
     pub fn migrate_legacy_remote_workers(&mut self) -> Option<LegacyWorkerMigration> {
         migrate_legacy_workers(&mut self.legacy_remote_workers, &mut self.remote)

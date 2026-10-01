@@ -8,12 +8,6 @@
 //! and the `Wavefront` pipeline alternative) that
 //! `renderer::gpu_backend::GpuBackend` dispatches scenes through today.
 //!
-//! `renderer::pipeline::IndicatrixRaytracerPipeline` is a SEPARATE,
-//! unrelated rasterized/hybrid preview path that still panics
-//! unconditionally (its shader is quarantined) and has never been wired to
-//! anything in this workspace -- unlike [`frame`], which every self-test
-//! below and `renderer::gpu_backend` exercise directly.
-//!
 //! # Modules
 //!
 //! - [`context`]: adapter/device acquisition ([`GpuContext`]).
@@ -60,8 +54,10 @@ pub mod shading_normal_check;
 // Not a self-test: renders an arbitrary scene with the megakernel every
 // module above verifies, via the dispatch routine `estimator_check` uses.
 pub mod frame;
-#[cfg(test)]
-mod shader_validation_tests;
+// `shader_validation_tests` used to live here, but that put it behind this module's
+// own `#[cfg(feature = "gpu")]` gate even though it needs no GPU adapter (`naga` is an
+// unconditional dev-dependency) -- see `renderer::shader_validation_tests`, declared
+// in `renderer/mod.rs` outside the gate, with `#[path]` pointing back at the same file.
 
 // CPU+GPU hybrid rendering: GPU and every CPU core trace disjoint sample
 // ranges of one frame concurrently, merging into one image.
@@ -77,6 +73,11 @@ pub mod hybrid;
 // buffers and summed counts) -- see the module's own doc comment.
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod merge_tests;
+
+// Before/after identity pin on `hybrid::cpu_accumulate` -- see the module's
+// own doc comment for why it exists and what it guards.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod pin_tests;
 
 pub use context::{
     GpuAcquireError, GpuContext, MEGAKERNEL_STORAGE_BUFFERS, WAVEFRONT_BOUNCE_TOTAL_BUFFERS,

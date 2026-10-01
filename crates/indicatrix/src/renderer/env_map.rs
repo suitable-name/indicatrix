@@ -237,6 +237,7 @@ impl EnvironmentMap {
         self.width
     }
 
+    /// Height in pixels.
     #[must_use]
     pub const fn height(&self) -> usize {
         self.height

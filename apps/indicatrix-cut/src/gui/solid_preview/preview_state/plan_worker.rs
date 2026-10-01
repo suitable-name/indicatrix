@@ -3,107 +3,53 @@
 //! plan_preview`), plus the [`super::SolidPreviewState`] methods that spawn and
 //! feed that worker thread. See the parent module's doc comment ("Two workers:
 //! planning vs. rendering") for why this is split from the RENDER worker.
+//!
+//! The planner itself moved to `indicatrix_solid::preview::build_planned_frame`
+//! (shared with the web app, which runs it on its main thread with a
+//! `performance.now()` clock); [`build_planned_frame`] here is the thin wrapper
+//! passing this desktop's `Instant`-backed clock.
 
 use super::{
-    FacetMap, SolidPreviewState, SolidStyle, live_update,
+    SolidPreviewState, live_update,
     request::{PlanJob, PlannedFrame, RedrawRequest},
 };
 use std::sync::{
     Arc, PoisonError,
+    atomic::Ordering,
     mpsc::{self, Sender},
 };
 
-/// Runs `live_update::plan_preview` (the expensive, potentially multi-second
-/// call) and builds facet-level [`SolidStyle`] from its result via
-/// `facet_map::FacetMap::overlay_flags`.
+/// This desktop's real `live_update::Clock`: `std::time::Instant`-backed, relative
+/// to a per-process epoch (`Instant` has no absolute "now" of its own to read).
+///
+/// Lives here, not in `indicatrix-solid`: that crate must contain no
+/// `Instant::now` at all, since it needs to compile clean on
+/// `wasm32-unknown-unknown`, where `Instant::now()` panics at runtime -- see
+/// `live_update::Clock`'s own doc comment. A wasm caller passes its own
+/// `performance.now()`-backed implementation instead.
+#[derive(Debug, Clone, Copy, Default)]
+struct InstantClock;
+
+impl live_update::Clock for InstantClock {
+    fn now_ms(&self) -> f64 {
+        static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        EPOCH
+            .get_or_init(std::time::Instant::now)
+            .elapsed()
+            .as_secs_f64()
+            * 1000.0
+    }
+}
+
+/// `indicatrix_solid::preview::build_planned_frame` with this desktop's
+/// [`InstantClock`]: runs `live_update::plan_preview` (the expensive, potentially
+/// multi-second call) and builds the facet-level style from its result.
 ///
 /// `budget` is a parameter (rather than always `live_update::DEFAULT_PREVIEW_BUDGET`
 /// inline) so this module's tests can force the `Stale` branch deterministically
 /// (`Duration::ZERO`, which a real `resolve_dirty` call can never finish within).
-///
-/// The full `plan.freshness`'s `Stale.pending` set is forwarded unchanged.
-/// All tiers in a batch edit are outlined as pending.
-///
-/// Deliberately does NOT decide `Unbounded` vs. closed -- that needs a
-/// `mesh_cache::MeshCache`, which this (PLAN-worker-only) function never touches;
-/// see `super::state::resolve_planned_state` for the render-side half that
-/// finishes the job.
 pub fn build_planned_frame(job: PlanJob, budget: std::time::Duration) -> PlannedFrame {
-    let PlanJob {
-        design,
-        dirty,
-        last_solved,
-        camera,
-        size,
-        selected_tier,
-        n_d,
-        view_mode,
-        generation,
-        show_preform,
-        enlarged_panel,
-        tier_cutoff,
-    } = job;
-    let plan = live_update::plan_preview(
-        &design,
-        last_solved.as_deref(),
-        &dirty,
-        budget,
-        &live_update::RealSolver,
-        tier_cutoff,
-    );
-    // Use the WHOLE pending set, not just its first member. `empty_pending` gives
-    // the non-`Stale` arm something to borrow.
-    let empty_pending = std::collections::BTreeSet::new();
-    let pending_tiers = match &plan.freshness {
-        live_update::Freshness::Stale { pending } => pending,
-        _ => &empty_pending,
-    };
-    let facet_map = FacetMap::from_design(&design, plan.solved.as_deref().unwrap_or(&[]));
-    let overlay = facet_map.overlay_flags(&design, n_d, selected_tier, pending_tiers);
-    let unsolvable_status = match &plan.freshness {
-        live_update::Freshness::Unsolvable(err) => {
-            Some(format!("Preview cannot be solved: {err}."))
-        }
-        _ => None,
-    };
-    // No `MeshCache` on this thread. The `Unbounded` check is done by
-    // `super::state::resolve_planned_state` on the RENDER worker. `style` below
-    // is UNDIMMED regardless of whether this frame turns out unbounded.
-    let is_unsolvable = unsolvable_status.is_some();
-    let preform_plane_count = facet_map.preform_plane_count();
-    let style = SolidStyle {
-        flagged: overlay.flagged,
-        pending: overlay.pending,
-        selected: overlay.selected,
-        preform_plane_count,
-        show_preform,
-        ..SolidStyle::default()
-    };
-    let stale = matches!(plan.freshness, live_update::Freshness::Stale { .. });
-    // An `Unsolvable` frame must not wipe the shared `last_solved` cache with `None`
-    // (`plan.solved` is always `None` on that path -- see `live_update::plan_preview`):
-    // chain the OLD masts forward unchanged instead, so the next edit's
-    // `resolve_dirty` still has something to diff against rather than being forced
-    // into a full `Design::solve()`.
-    let solved = if is_unsolvable {
-        last_solved
-    } else {
-        plan.solved
-    };
-    PlannedFrame {
-        design,
-        planes: plan.planes,
-        style,
-        solved,
-        stale,
-        unsolvable_status,
-        camera,
-        size,
-        view_mode,
-        generation,
-        n_d,
-        enlarged_panel,
-    }
+    indicatrix_solid::preview::build_planned_frame(job, budget, &InstantClock)
 }
 
 impl SolidPreviewState {
@@ -141,6 +87,7 @@ impl SolidPreviewState {
     fn spawn_plan_worker(&self) -> Sender<()> {
         let (tx, rx) = mpsc::channel::<()>();
         let plan_gate = Arc::clone(&self.plan_gate);
+        let generation_floor = Arc::clone(&self.generation_floor);
         let self_weak = self
             .self_weak
             .lock()
@@ -155,6 +102,14 @@ impl SolidPreviewState {
                 let Some(job) = plan_gate.take() else {
                     continue;
                 };
+                // a `PlanJob` queued (or already in flight) for a design
+                // `reset_for_new_design` has since replaced must not be solved
+                // and handed back as a frame -- `Self::bump_generation_floor`
+                // moves this floor past every generation the OLD design could
+                // still have queued the moment New/Load/Open replaces it.
+                if job.generation < generation_floor.load(Ordering::Relaxed) {
+                    continue;
+                }
                 let frame = build_planned_frame(job, live_update::DEFAULT_PREVIEW_BUDGET);
                 if let Some(state) = self_weak.upgrade() {
                     state.submit(RedrawRequest::Planned(Box::new(frame)));

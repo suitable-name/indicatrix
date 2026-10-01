@@ -98,6 +98,7 @@ fn trace_forced_extraordinary_slab(
         split_radiance: &mut split_radiance,
         enabled: false,
         compat: [u8::MAX; NUM_CHANNELS],
+        split_mis_weight: 1.0,
     };
 
     for seed in 0..SEED_SEARCH_LIMIT {

@@ -59,13 +59,24 @@ pub(in crate::gui) fn setup_material_changed_callback(
             // Deliberately folded into this same handler rather than a second
             // `on_material_changed` registration: Slint only keeps the last handler
             // registered for a given callback, so a second one would silently replace it.
+            // A dropdown selection always names something in `ViewportModel.
+            // material_options` (built-ins + the current custom list), so this should
+            // always resolve in practice -- but `resolve_material` is `Option` now
+            // (no `materials[0]` fallback, see its own doc comment), so a `None` here
+            // is handled the same defensive way `resolve_material_and_quality` does:
+            // Diamond stands in for these two UI-default computations only (crystal-
+            // axis availability, the RI filter's starting point), never for anything
+            // that reaches the tracer.
             let resolved = resolve_material(
                 &GemMaterial::all_materials(),
                 &ctx.custom_materials,
                 &material,
             );
-            let available = is_c_axis_override_available(&resolved);
-            let ri_default = material_ri_at_sodium_d(&resolved);
+            let available = resolved.as_ref().is_some_and(is_c_axis_override_available);
+            let ri_default = resolved.as_ref().map_or_else(
+                || material_ri_at_sodium_d(&GemMaterial::diamond()),
+                material_ri_at_sodium_d,
+            );
             drop(ctx);
             settings_store_mat.update(|s| s.settings.selected_material = material.to_string());
             if let Some(ui) = ui_weak_mat.upgrade() {
@@ -202,12 +213,12 @@ pub(in crate::gui) fn setup_material_and_quality_callbacks(
         });
 
     // Automatic render suspend when the rendered image isn't visible anywhere is driven
-    // by `RenderContext::tab_visible`, recomputed by `gui::detached_render::
-    // recompute_tab_visible` from all five signals `render_is_visible` combines (outer
-    // tab, inner sub-tab, detached window, and each sub-tab's own Solid/Path-traced
-    // view-mode toggle) -- see that function's own doc comment for the full list of
+    // by `RenderContext::tab_visible`, recomputed by `gui::render::render_visibility::
+    // recompute_tab_visible` from all the signals `render_is_visible` combines (outer
+    // tab, inner sub-tab, each sub-tab's own Solid/Path-traced view-mode toggle, and
+    // the Retarget dialog) -- see that function's own doc comment for the full list of
     // call sites. That path must never touch `ctx.paused`: a manual pause must survive
-    // switching tabs (or docking/undocking, or flipping a view mode) away and back.
+    // switching tabs (or flipping a view mode) away and back.
 
     let render_ctx_bnc = render_ctx.clone();
     let settings_store_bnc = settings_store.clone();
@@ -321,11 +332,20 @@ pub(in crate::gui) fn setup_material_effect_override_callbacks(
         .on_c_axis_override_changed(move |enabled: bool| {
             let mut ctx = RenderContext::lock(&render_ctx_axis_toggle);
             if enabled {
+                // The checkbox this wires is only enabled in the UI while
+                // `is_c_axis_override_available` already confirmed the CURRENT
+                // material resolves and supports one, so this should always resolve
+                // here too -- but `resolve_material` is `Option` (no `materials[0]`
+                // fallback, see its own doc comment), so a `None` still falls back to
+                // Diamond's own (identity) axis rather than panicking, matching the
+                // "Diamond stands in for a UI-default computation, never the tracer"
+                // convention this module already uses elsewhere.
                 let base = resolve_material(
                     &GemMaterial::all_materials(),
                     &ctx.custom_materials,
                     &ctx.material_name,
-                );
+                )
+                .unwrap_or_else(GemMaterial::diamond);
                 let (tilt_deg, azimuth_deg) = c_axis_to_angles(base.c_axis);
                 ctx.c_axis_override = Some(angles_to_c_axis(tilt_deg, azimuth_deg));
                 ctx.dirty = true;

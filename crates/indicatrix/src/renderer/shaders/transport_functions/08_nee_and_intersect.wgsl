@@ -148,7 +148,7 @@ fn tf_intersect_ray(origin: vec3<f32>, dir: vec3<f32>) -> HitInfo {
 }
 
 
-// Findings 2b/2d: `sigma_s`/`absorption_path_scale`/`alphas` and `frosted_exit` mirror
+// `sigma_s`/`absorption_path_scale`/`alphas` and `frosted_exit` mirror
 // `optics::raytracer::scattering::nee_contribution_hg_scatter`'s own extra parameters
 // -- the standalone harness has no scene-wide `material`/`facet_finishes` bindings the
 // megakernel (`transport_bounce.wgsl`) reads those from, so each case carries its own
@@ -170,15 +170,19 @@ struct NeeHgScatterCase {
     alphas: array<f32, 8>,
     lambdas: array<f32, 8>,
     stokes: array<vec4<f32>, 8>,
-    radiance_in: array<f32, 8>,
+    path_pdf: array<f32, 8>,
+    compat: array<u32, 8>,
 }
 
 @group(0) @binding(76) var<storage, read> nee_hg_cases: array<NeeHgScatterCase>;
 @group(0) @binding(77) var<storage, read_write> nee_hg_out: array<f32>;
 
-// Operation-for-operation copy of `transport_bounce.wgsl`'s `nee_contribution_hg_scatter`
-// (itself the WGSL translation of `optics::raytracer::scattering::nee_contribution_hg_scatter`,
-// findings 2a-2d), adapted only in how it reaches the medium/finish inputs the megakernel
+// Operation-for-operation copy of `transport_bounce/06_nee_sampling.wgsl`'s
+// `nee_contribution_hg_scatter` (itself the WGSL translation of
+// `optics::raytracer::scattering::nee_contribution_hg_scatter` plus the immediate
+// family-integration `try_scatter_step` applies to its deposit), with the same signature
+// for the spectral inputs (`path_pdf`, `compat`, `nee_xyz`), adapted only in how it
+// reaches the medium/finish inputs the megakernel
 // reads off the shared `material`/`facet_finishes` bindings: this standalone twin takes
 // them as explicit per-case parameters instead (`alphas`, `sigma_s`,
 // `absorption_path_scale`, `frosted_exit`), and samples the HDR environment through this
@@ -193,7 +197,9 @@ fn tf_nee_contribution_hg_scatter(
     rng_seed: u32,
     bounce: u32,
     stokes: ptr<function, array<vec4<f32>, 8>>,
-    radiance: ptr<function, array<f32, 8>>,
+    path_pdf: ptr<function, array<f32, 8>>,
+    compat: ptr<function, array<u32, 8>>,
+    nee_xyz: ptr<function, vec3<f32>>,
     alphas: array<f32, 8>,
     sigma_s: f32,
     absorption_path_scale: f32,
@@ -253,11 +259,13 @@ fn tf_nee_contribution_hg_scatter(
     let hit_t_scaled = hit.t * absorption_path_scale;
 
     let nee_common = t_unpol * phase_val * mis_weight / sample.pdf;
+    var nee_deposit: array<f32, 8>;
     for (var k: u32 = 0u; k < 8u; k = k + 1u) {
         let transmittance_k = exp_poly(-(alphas[k] + sigma_s) * hit_t_scaled);
         let env_k = rgb_to_spectral_radiance(env_rgb.x, env_rgb.y, env_rgb.z, (*lambdas)[k]);
-        (*radiance)[k] = fma((*stokes)[k].x * transmittance_k * nee_common * env_k, 1.0, (*radiance)[k]);
+        nee_deposit[k] = fma((*stokes)[k].x * transmittance_k * nee_common * env_k, 1.0, 0.0);
     }
+    (*nee_xyz) = (*nee_xyz) + integrate_channels_to_xyz_family(nee_deposit, *lambdas, *path_pdf, *compat);
 }
 
 @compute @workgroup_size(64)
@@ -269,14 +277,15 @@ fn nee_hg_scatter_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let c = nee_hg_cases[idx];
     var lambdas = c.lambdas;
     var stokes = c.stokes;
-    var radiance = c.radiance_in;
+    var path_pdf = c.path_pdf;
+    var compat = c.compat;
+    var nee_xyz = vec3<f32>(0.0, 0.0, 0.0);
     tf_nee_contribution_hg_scatter(
         &lambdas, c.n_inside_hero, c.scatter_point, c.scatter_dir_in,
-        c.g, c.rng_seed, c.bounce, &stokes, &radiance,
+        c.g, c.rng_seed, c.bounce, &stokes, &path_pdf, &compat, &nee_xyz,
         c.alphas, c.sigma_s, c.absorption_path_scale, c.frosted_exit,
     );
-    let base = idx * 8u;
-    for (var k: u32 = 0u; k < 8u; k = k + 1u) {
-        nee_hg_out[base + k] = radiance[k];
-    }
+    nee_hg_out[idx * 3u + 0u] = nee_xyz.x;
+    nee_hg_out[idx * 3u + 1u] = nee_xyz.y;
+    nee_hg_out[idx * 3u + 2u] = nee_xyz.z;
 }

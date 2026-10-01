@@ -10,7 +10,8 @@ use super::{
         evaluate_candidate, evaluate_candidate_pair, free_tier_indices, yield_loss_pct,
     },
     objective::{
-        ObjectiveComponents, ObjectiveFidelity, ObjectiveWeights, evaluate_objective, to_gpu_planes,
+        CANONICAL_LIGHTING_PRESET, ObjectiveComponents, ObjectiveFidelity, ObjectiveWeights,
+        evaluate_objective_under, to_gpu_planes,
     },
     polish,
 };
@@ -18,7 +19,7 @@ use crate::{
     design::{Design, DesignSolveError},
     manufacturability::{DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2, check_manufacturability},
 };
-use indicatrix::optics::materials::GemMaterial;
+use indicatrix::optics::{materials::GemMaterial, raytracer::LightingPreset};
 
 /// Which phase of [`optimize_design`] a [`SearchHooks::on_progress`] call reports on.
 ///
@@ -89,7 +90,9 @@ impl SearchStage {
 /// test) that wants neither.
 #[derive(Default)]
 pub struct SearchHooks<'a> {
+    /// Flag polled during the search; setting it stops the search early.
     pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
+    /// Callback invoked with the evaluation count and current stage.
     pub on_progress: Option<&'a dyn Fn(usize, SearchStage)>,
 }
 
@@ -138,7 +141,9 @@ pub(super) fn seeded_permutation(len: usize, seed: u64) -> Vec<usize> {
 /// section for why `seed` is required rather than defaulted from wall-clock time.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct OptimizeConfig {
+    /// Weights blended into the objective score.
     pub weights: ObjectiveWeights,
+    /// Seed for the search's deterministic pseudo-random choices.
     pub seed: u64,
     /// Approximate cap on the number of candidate evaluations this search will
     /// perform, regardless of whether it has converged -- the one knob that bounds
@@ -149,6 +154,7 @@ pub struct OptimizeConfig {
     /// Initial per-tier angle step, in degrees, for the coordinate search. Halved each
     /// time a full sweep produces no accepted improvement, down to `min_step_deg`.
     pub initial_step_deg: f64,
+    /// Smallest per-tier angle step, in degrees, before the coordinate search stops halving.
     pub min_step_deg: f64,
     /// The coordinate stage's own step threshold for handing off to the polish
     /// stage -- see [`optimize_design`]'s "Two stages" doc section. Once a sweep's
@@ -165,6 +171,11 @@ pub struct OptimizeConfig {
     /// evaluation per free tier) plus a modest number of reflect/expand/contract
     /// iterations. Has no effect when the polish stage is disabled.
     pub polish_max_evaluations: Option<usize>,
+    /// The lighting preset every design is scored under, before, during and after the
+    /// search: the metrics describe the image a preset lights, so a stone optimized for
+    /// the preset the viewport shows is optimized for what the user sees. Defaults to
+    /// [`CANONICAL_LIGHTING_PRESET`].
+    pub lighting: LightingPreset,
 }
 
 impl Default for OptimizeConfig {
@@ -177,6 +188,7 @@ impl Default for OptimizeConfig {
             min_step_deg: 0.125,
             polish_start_step_deg: Some(0.5),
             polish_max_evaluations: None,
+            lighting: CANONICAL_LIGHTING_PRESET,
         }
     }
 }
@@ -212,8 +224,11 @@ pub fn inclusive_max_evaluations(config: &OptimizeConfig, free_tier_count: usize
 /// [`super::apply_optimize_outcome`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AngleChange {
+    /// Tier position this refers to.
     pub index: usize,
+    /// Tier angle before the change, in degrees.
     pub from_deg: f64,
+    /// Tier angle after the change, in degrees.
     pub to_deg: f64,
 }
 
@@ -225,7 +240,9 @@ pub struct AngleChange {
 /// spent getting there, and which tiers it would change.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OptimizeOutcome {
+    /// Objective components of the starting design.
     pub before: ObjectiveComponents,
+    /// Combined score of the starting design.
     pub before_score: f32,
     /// `100.0 -` the starting design's own
     /// [`crate::yield_metrics::volumetric_yield`] percentage -- the same figure
@@ -235,12 +252,19 @@ pub struct OptimizeOutcome {
     /// yield term even when `yield_weight == 0.0` left it out of the score
     /// itself.
     pub before_yield_loss_pct: f32,
+    /// Objective components after applying the changes.
     pub after: ObjectiveComponents,
+    /// Combined score after applying the changes. Never above [`Self::before_score`]:
+    /// when the search's end point does not measure as an improvement at
+    /// [`ObjectiveFidelity::Full`], the outcome proposes no change and `after` is
+    /// `before`.
     pub after_score: f32,
     /// [`Self::before_yield_loss_pct`]'s counterpart for the design
     /// [`Self::changes`] produced.
     pub after_yield_loss_pct: f32,
+    /// Number of candidate evaluations spent.
     pub evaluations: usize,
+    /// Proposed angle changes, one per modified tier.
     pub changes: Vec<AngleChange>,
     /// `true` iff [`SearchHooks::cancel`] was observed set before the search would
     /// otherwise have stopped on its own -- `after`/`after_score`/`changes` still
@@ -338,7 +362,7 @@ pub fn optimize_design(
     config: &OptimizeConfig,
     hooks: &SearchHooks<'_>,
 ) -> Result<OptimizeOutcome, DesignSolveError> {
-    let baseline = baseline_report(design, material, &config.weights, hooks)?;
+    let baseline = baseline_report(design, material, &config.weights, config.lighting, hooks)?;
 
     if baseline.free.is_empty() {
         return Ok(OptimizeOutcome {
@@ -360,6 +384,7 @@ pub fn optimize_design(
         material,
         weights: &config.weights,
         baseline_warnings: &baseline.warnings,
+        lighting: config.lighting,
     };
     let coord = run_search(design, config, &ctx, &baseline, hooks);
     let coord_evaluations = coord.evaluations;
@@ -400,6 +425,17 @@ pub fn optimize_design(
 struct Baseline {
     before: ObjectiveComponents,
     before_score: f32,
+    /// The SAME starting design's score, but at [`ObjectiveFidelity::Fast`] --
+    /// what [`run_search`] actually seeds `current_score` from. Every
+    /// candidate [`super::candidate::evaluate_candidate`] scores is `Fast` too
+    /// (see the parent module's "Cost first" doc section), so comparing a
+    /// candidate's score against [`Self::before_score`] (`Full`) mixed
+    /// fidelities: a `Fast` candidate that merely reproduces the TRUE starting
+    /// point's own `Fast` score could still read as an "improvement" over the
+    /// `Full` figure whenever `Full` happened to score worse than `Fast` on the
+    /// same design (measured: RBC-445's Upper Girdle, `Full` 30.766 vs `Fast`
+    /// 21.926) -- accepting a candidate that changed nothing real.
+    before_score_fast: f32,
     /// `weights.score_with_yield`
     /// already computes this to fold into [`Self::before_score`] -- stored here
     /// too (rather than recomputed) so [`OptimizeOutcome::before_yield_loss_pct`]
@@ -425,6 +461,7 @@ fn baseline_report(
     design: &Design,
     material: &GemMaterial,
     weights: &ObjectiveWeights,
+    lighting: LightingPreset,
     hooks: &SearchHooks<'_>,
 ) -> Result<Baseline, DesignSolveError> {
     hooks.report(0, SearchStage::BaselineFull);
@@ -435,17 +472,29 @@ fn baseline_report(
         &baseline_solved,
         DEFAULT_MIN_FACET_AREA_FRACTION_OF_W2,
     ));
-    let before = evaluate_objective(
+    let before = evaluate_objective_under(
         &to_gpu_planes(&baseline_planes),
         material,
         ObjectiveFidelity::Full,
+        lighting,
     );
     let before_yield_loss_pct = yield_loss_pct(design, &baseline_planes);
     let before_score = weights.score_with_yield(&before, before_yield_loss_pct);
+    // Same planes, same yield figure -- just re-scored at `Fast` so `run_search`
+    // has a same-fidelity baseline to compare its `Fast`-scored candidates
+    // against (see `Baseline::before_score_fast`'s own doc comment).
+    let before_fast = evaluate_objective_under(
+        &to_gpu_planes(&baseline_planes),
+        material,
+        ObjectiveFidelity::Fast,
+        lighting,
+    );
+    let before_score_fast = weights.score_with_yield(&before_fast, before_yield_loss_pct);
     let free = free_tier_indices(design);
     Ok(Baseline {
         before,
         before_score,
+        before_score_fast,
         before_yield_loss_pct,
         warnings,
         free,
@@ -471,9 +520,15 @@ fn run_search(
     hooks: &SearchHooks<'_>,
 ) -> CoordinateStageOutcome {
     let free = &baseline.free;
-    let before_score = baseline.before_score;
     let mut current = design.clone();
-    let mut current_score = before_score;
+    // Seeded from the `Fast`-fidelity baseline, not `baseline.before_score`
+    // (`Full`) -- every candidate this loop compares against `current_score` is
+    // itself scored at `Fast` (see `evaluate_candidate`), so mixing in a `Full`
+    // starting figure could accept a candidate that only reproduces the true
+    // starting point, never actually improving anything. See
+    // `Baseline::before_score_fast`'s own doc comment for the measured case this
+    // fixes.
+    let mut current_score = baseline.before_score_fast;
     let mut evaluations = 0usize;
     let mut step_deg = config.initial_step_deg;
     let mut sweep_index = 0u64;
@@ -605,6 +660,7 @@ fn run_polish_stage(
                 ctx.material,
                 ctx.weights,
                 ctx.baseline_warnings,
+                ctx.lighting,
             ) {
                 CandidateOutcome::Rejected => f32::INFINITY,
                 CandidateOutcome::Accepted { score } => score,
@@ -698,13 +754,33 @@ fn build_outcome(
         .solve()
         .expect("current was only ever advanced via evaluate_candidate-accepted, solvable states");
     let final_planes = current.planes_from_solved(&final_solved);
-    let after = evaluate_objective(
+    let after = evaluate_objective_under(
         &to_gpu_planes(&final_planes),
         ctx.material,
         ObjectiveFidelity::Full,
+        ctx.lighting,
     );
     let after_yield_loss_pct = yield_loss_pct(current, &final_planes);
     let after_score = ctx.weights.score_with_yield(&after, after_yield_loss_pct);
+    // The search accepts candidates on the `Fast` objective; the `Full` measurement here
+    // is the gate. When it does not confirm the search's end point as an improvement, the
+    // outcome proposes no change: the design is reported as it is, with the evaluations
+    // that were spent.
+    if after_score > baseline.before_score {
+        return OptimizeOutcome {
+            before: baseline.before,
+            before_score: baseline.before_score,
+            before_yield_loss_pct: baseline.before_yield_loss_pct,
+            after: baseline.before,
+            after_score: baseline.before_score,
+            after_yield_loss_pct: baseline.before_yield_loss_pct,
+            evaluations: summary.evaluations,
+            changes: Vec::new(),
+            cancelled: summary.cancelled,
+            polish_evaluations: summary.polish_evaluations,
+            polish_improvement: 0.0,
+        };
+    }
 
     let changes: Vec<AngleChange> = design
         .tiers

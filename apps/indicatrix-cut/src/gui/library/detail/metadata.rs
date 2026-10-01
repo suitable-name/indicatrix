@@ -27,12 +27,13 @@ use std::sync::{Arc, Mutex};
 /// so this is a backstop, not the only thing standing between a remote id and the
 /// local database.
 ///
-/// Title is saved through [`Database::rename_diagram_entry`] -- it lives in
-/// `diagram_entries`, not `diagram_details`, and already has its own narrow, correct
-/// setter with none of the subset trap `update_diagram_metadata` exists for. Every
-/// other field goes through `update_diagram_metadata` in one call, which -- unlike
-/// `save_diagram_detail` -- touches only the twelve columns it's given and leaves
-/// everything else untouched; see that method's own doc comment for the full story.
+/// Title and metadata are saved together through
+/// [`Database::rename_and_update_metadata`], one transaction. The title lives in
+/// `diagram_entries`, not `diagram_details`, and is renamed with none of the subset
+/// trap `update_diagram_metadata` exists for. Every other field goes through that
+/// method's `UPDATE`, which -- unlike `save_diagram_detail` -- touches only the twelve
+/// columns it's given and leaves everything else untouched; see its own doc comment for
+/// the full story.
 ///
 /// On success, reloads the design from the database via
 /// [`super::local_load::load_diagram_detail`] rather than hand-patching
@@ -88,27 +89,32 @@ pub fn setup_save_metadata_callback(
             }
             let entry_id = i64::from(entry_id);
 
+            let update = MetadataUpdate {
+                designer_info: non_empty(&designer),
+                shape: non_empty(&shape),
+                refractive_index: non_empty(&refractive_index),
+                index_gear: non_empty(&index_gear),
+                facets_count: non_empty(&facets_count),
+                symmetry_order: non_empty(&symmetry_order),
+                mirror_symmetry: Some(mirror_symmetry),
+                lw_ratio: non_empty(&lw_ratio),
+                hw_ratio: non_empty(&hw_ratio),
+                cw_ratio: non_empty(&cw_ratio),
+                pw_ratio: non_empty(&pw_ratio),
+                volume: non_empty(&volume),
+            };
+            // Title and metadata in one transaction: a rejected numeric field must not
+            // leave the new title applied while the toast below reports a failure.
             let result = {
                 let db = db_meta
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                db.rename_diagram_entry(entry_id, &title).and_then(|()| {
-                    let update = MetadataUpdate {
-                        designer_info: non_empty(&designer),
-                        shape: non_empty(&shape),
-                        refractive_index: non_empty(&refractive_index),
-                        index_gear: non_empty(&index_gear),
-                        facets_count: non_empty(&facets_count),
-                        symmetry_order: non_empty(&symmetry_order),
-                        mirror_symmetry: Some(mirror_symmetry),
-                        lw_ratio: non_empty(&lw_ratio),
-                        hw_ratio: non_empty(&hw_ratio),
-                        cw_ratio: non_empty(&cw_ratio),
-                        pw_ratio: non_empty(&pw_ratio),
-                        volume: non_empty(&volume),
-                    };
-                    db.update_diagram_metadata(entry_id, &update)
-                })
+                let result = db.rename_and_update_metadata(entry_id, &title, &update);
+                if result.is_ok() {
+                    invalidate_derived_caches(&db, entry_id);
+                }
+                drop(db);
+                result
             };
             match result {
                 Ok(()) => {
@@ -149,4 +155,20 @@ pub fn setup_save_metadata_callback(
             }
         },
     );
+}
+
+/// Deletes `entry_id`'s cached previews, tilt curves and solid extents after a metadata
+/// edit: the edited fields (shape, index, gear) feed those renders and sweeps, so the
+/// cached results no longer describe the design. Logged, not propagated: the edit
+/// itself succeeded.
+fn invalidate_derived_caches(db: &Database, entry_id: i64) {
+    if let Err(e) = db.delete_preview_images(entry_id) {
+        tracing::warn!("Metadata edit: failed to drop cached previews for #{entry_id}: {e}");
+    }
+    if let Err(e) = db.delete_tilt_curves(entry_id) {
+        tracing::warn!("Metadata edit: failed to drop cached tilt curves for #{entry_id}: {e}");
+    }
+    if let Err(e) = db.delete_solid_extents(entry_id) {
+        tracing::warn!("Metadata edit: failed to drop cached solid extents for #{entry_id}: {e}");
+    }
 }

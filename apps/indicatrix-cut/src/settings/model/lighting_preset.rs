@@ -38,15 +38,21 @@ use serde::{Deserialize, Serialize};
 /// default so an existing preset doesn't silently start appearing in every export.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LightingPreset {
+    /// Display name of the preset.
     pub name: String,
     /// Built-in presets ship with the app and cannot be renamed or deleted -- see
     /// `SettingsFile::rename_preset` / `delete_preset`, which both refuse to act on one.
     #[serde(default)]
     pub built_in: bool,
+    /// Light yaw in degrees.
     pub light_yaw_deg: f32,
+    /// Light pitch in degrees.
     pub light_pitch_deg: f32,
+    /// Exposure multiplier applied when tone-mapping.
     pub exposure: f32,
+    /// Name of the lighting rig the preset selects.
     pub lighting_rig: String,
+    /// Camera distance from the stone.
     pub camera_distance: f32,
     /// Camera yaw, in radians -- see this type's doc comment for why `Option`.
     #[serde(default)]

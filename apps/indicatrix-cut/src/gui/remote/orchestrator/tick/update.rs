@@ -7,7 +7,7 @@
 
 use super::{
     dispatch::dispatch_next_chunk,
-    poll::{apply_actions, sync_served_by_to_ui},
+    poll::{apply_actions, live_remote_allowed, sync_served_by_to_ui},
     state::{Orchestrator, lock},
 };
 use crate::{
@@ -209,10 +209,14 @@ fn apply_update(c: &UpdateCtx<'_>, update: RemoteUpdate) {
             request_id,
             cancelled,
         } => {
-            // A cancellation the worker confirmed after this orchestrator had
-            // already moved on -- nothing further to do (a drag already released
-            // the epoch; the id check above normally catches this first).
-            if !cancelled {
+            if cancelled {
+                // A drag/scene-change cancel already abandoned the lane before this
+                // arrived (nothing left to do, caught by `chunk_paused` finding no
+                // matching in-flight chunk below); a suspend cancel
+                // (`poll::suspend_live_remote`) left the lane in place, waiting for
+                // exactly this confirmation to merge the chunk's valid prefix.
+                on_chunk_paused(state, request_id);
+            } else {
                 // The final display frame may have been coalesced away by the gate.
                 if lane_is_display_only(state) {
                     show_display_frame(ui, state, c.chunk_accumulator, c.width, c.height);
@@ -349,23 +353,17 @@ fn on_display_only_refused(
     );
 }
 
-fn tab_visible(render_ctx: &Arc<Mutex<RenderContext>>) -> bool {
-    render_ctx
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .tab_visible
-}
-
-/// Requests the epoch's next chunk if the viewport is visible (a hidden viewport just
-/// pauses the lane between chunks; `poll::resume_idle_lane` picks it up again), and
-/// finishes the epoch once the lane has nothing left to claim.
+/// Requests the epoch's next chunk if [`live_remote_allowed`] (a hidden viewport, a
+/// Pause, or a running export just pauses the lane between chunks; `poll::
+/// resume_idle_lane` picks it up again once allowed), and finishes the epoch once the
+/// lane has nothing left to claim.
 pub(super) fn continue_lane(
     ui: &MainWindow,
     ui_weak: &Weak<MainWindow>,
     render_ctx: &Arc<Mutex<RenderContext>>,
     state: &Arc<Mutex<Orchestrator>>,
 ) {
-    if tab_visible(render_ctx) && dispatch_next_chunk(ui_weak, render_ctx, state) {
+    if live_remote_allowed(render_ctx) && dispatch_next_chunk(ui_weak, render_ctx, state) {
         return;
     }
     let finished = lock(state)
@@ -394,6 +392,27 @@ fn on_chunk_done(
     }
     lock(state).remote_handle = None;
     continue_lane(ui, ui_weak, render_ctx, state);
+}
+
+/// The in-flight chunk `request_id`'s confirmed cancellation
+/// (`RemoteUpdate::Done{cancelled: true}`) after `poll::suspend_live_remote` asked for
+/// it: merges its valid prefix via `LiveLane::chunk_paused` (unlike [`on_chunk_done`],
+/// counting neither a failure nor a rate sample -- the worker was cut off, not slow or
+/// broken) and clears `remote_handle`. Deliberately does NOT call [`continue_lane`]:
+/// the lane is left idle on purpose, for `poll::resume_idle_lane` to continue once
+/// `live_remote_allowed` again -- calling it here would just re-check the same
+/// still-suspended condition a poll tick later. A no-op if `request_id` doesn't match
+/// the lane's in-flight chunk (already superseded by a drag/scene-change abandon, which
+/// takes the lane away entirely).
+fn on_chunk_paused(state: &Arc<Mutex<Orchestrator>>, request_id: u32) {
+    let merged = lock(state)
+        .live_lane
+        .as_mut()
+        .and_then(|lane| lane.chunk_paused(request_id));
+    if merged.is_none() {
+        return;
+    }
+    lock(state).remote_handle = None;
 }
 
 /// A chunk failed (worker error, transport error or liveness timeout): the lane keeps
@@ -509,7 +528,7 @@ fn finish_epoch(
 /// `Orchestrator::last_redraw_at`'s "tens of milliseconds even at 4K, not free" doc
 /// comment): `handle_remote_update`'s own rate-limit check takes this same lock
 /// SYNCHRONOUSLY on the connection thread and must never wait out a tonemap.
-fn redraw_from_epoch(
+pub(super) fn redraw_from_epoch(
     ui: &MainWindow,
     render_ctx: &Arc<Mutex<RenderContext>>,
     state: &Arc<Mutex<Orchestrator>>,

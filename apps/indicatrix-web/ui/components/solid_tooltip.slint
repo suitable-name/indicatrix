@@ -1,0 +1,23 @@
+import { Theme } from "theme.slint";
+
+// The hover tooltip panel of the Solid/Diagram views: bottom-left of the image,
+// above the status line (the desktop's `solid_viewport.slint` hover panel).
+// Position it with `x`/`y`; it sizes itself to `text`.
+export component SolidTooltip inherits Rectangle {
+    in property <string> text;
+
+    width: label.preferred-width + 16px;
+    height: label.preferred-height + 10px;
+    background: Theme.bg-elevated;
+    border-radius: Theme.radius-sm;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+
+    label := Text {
+        x: 8px;
+        y: 5px;
+        text: root.text;
+        font-size: 11px;
+        color: Theme.text-primary;
+    }
+}

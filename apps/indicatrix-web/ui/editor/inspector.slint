@@ -1,0 +1,137 @@
+import { Button, ScrollView } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { SectionHeader } from "../components/section_header.slint";
+import { AppModel } from "../models/app_model.slint";
+import { GuideModel } from "../models/guide_model.slint";
+import { InspectorModel } from "inspector_model.slint";
+import { TierFormTab } from "inspector_tier.slint";
+import { PreformTab } from "inspector_preform.slint";
+import { OptimizeTab } from "optimize_tab.slint";
+import { ScheduleTab } from "inspector_schedule.slint";
+
+component TabPill inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    // True while the guided walkthrough locks the tab (the caller binds
+    // `!GuideModel.allows-*()`): the pill dims, ignores clicks and says why.
+    in property <bool> locked: false;
+    // The guided walkthrough's outline around the tab a step points at.
+    in property <bool> highlighted: false;
+    callback clicked();
+
+    height: 26px;
+    opacity: root.locked ? 0.4 : 1.0;
+    background: root.active ? Theme.accent-cyan-surface : (touch.has-hover && !root.locked ? Theme.bg-elevated : Theme.bg-input);
+    border-radius: Theme.radius-sm;
+    border-width: root.highlighted ? 2px : 1px;
+    border-color: (root.active || root.highlighted) ? Theme.accent-cyan : Theme.border-subtle;
+
+    touch := TouchArea {
+        enabled: !root.locked;
+        clicked => { root.clicked(); }
+    }
+    if root.locked: Tooltip { text: @markdown("\{GuideModel.locked-hint}"); }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        alignment: center;
+        Text {
+            text: root.label;
+            font-size: 11px;
+            font-weight: 600;
+            color: root.active ? Theme.text-primary : Theme.text-secondary;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// The per-tier / preform / optimize / schedule inspector (modelled on the desktop's
+// `editor_inspector.slint`): a header row with the tab pills, the selected tab's body in a
+// scroll view, and, on the Tier tab, the Save / New Tier buttons pinned below it. All
+// state is `InspectorModel` / `OptimizeModel`; the Design dock places this component.
+export component Inspector inherits Rectangle {
+    // Switching tabs or collapsing removes the focused field without a `has-focus`
+    // change, which would leave `AppModel.text-focus` stuck on and Ctrl+Z dead.
+    property <int> tracked-tab: InspectorModel.tab;
+    property <bool> tracked-collapsed: InspectorModel.collapsed;
+    changed tracked-tab => { AppModel.text-focus = false; }
+    changed tracked-collapsed => { AppModel.text-focus = false; }
+
+    // The guided walkthrough outlines the whole inspector on the tier-authoring steps.
+    property <bool> highlighted: GuideModel.highlight-target == "inspector_tier";
+
+    background: Theme.bg-darkest;
+    border-radius: Theme.radius-sm;
+    border-width: root.highlighted ? 2px : 1px;
+    border-color: root.highlighted ? Theme.accent-cyan : Theme.border-subtle;
+    clip: true;
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+
+        SectionHeader {
+            title: "INSPECTOR";
+            collapsed: InspectorModel.collapsed;
+            toggled => { InspectorModel.collapsed = !InspectorModel.collapsed; }
+        }
+
+        if !InspectorModel.collapsed: HorizontalLayout {
+            spacing: 4px;
+            TabPill {
+                label: "Tier";
+                active: InspectorModel.tab == 0;
+                locked: !GuideModel.allows-tier-form();
+                clicked => { InspectorModel.tab = 0; }
+            }
+            TabPill {
+                label: "Preform";
+                active: InspectorModel.tab == 1;
+                locked: !GuideModel.allows-preform-tab();
+                highlighted: GuideModel.highlight-target == "preform_tab";
+                clicked => { InspectorModel.tab = 1; }
+            }
+            TabPill {
+                label: "Optimize";
+                active: InspectorModel.tab == 2;
+                locked: !GuideModel.allows-advanced();
+                clicked => { InspectorModel.tab = 2; }
+            }
+            TabPill {
+                label: "Schedule";
+                active: InspectorModel.tab == 3;
+                clicked => { InspectorModel.tab = 3; }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        if !InspectorModel.collapsed: ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                padding-right: 10px;
+                if InspectorModel.tab == 0: TierFormTab {}
+                if InspectorModel.tab == 1: PreformTab {}
+                if InspectorModel.tab == 2: OptimizeTab {}
+                if InspectorModel.tab == 3: ScheduleTab {}
+            }
+        }
+
+        // Pinned outside the scroll view so it stays visible when the form is taller than
+        // the dock.
+        if !InspectorModel.collapsed && InspectorModel.tab == 0: HorizontalLayout {
+            spacing: 6px;
+            Button {
+                text: InspectorModel.loaded-tier-index < 0 ? "Add Tier" : "Save Tier";
+                enabled: GuideModel.allows-tier-form();
+                primary: InspectorModel.form-dirty;
+                clicked => { InspectorModel.save-tier(); }
+            }
+            Button {
+                text: "New Tier";
+                enabled: GuideModel.allows-tier-form();
+                clicked => { InspectorModel.new-tier(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+    }
+}

@@ -15,11 +15,14 @@ use std::sync::{
 /// worker port gets a second, separate instance (separate pools for viewers and
 /// workers), held for as long as a joined worker stays registered.
 ///
-/// `Clone` (cheap: `active` is already an `Arc`) so [`super::run`] can also hand a clone to the
-/// token-based enrollment listener (`crate::enroll`) -- a genuinely separate
-/// listener/concern (bootstrapping trust, not serving render/library requests), but one
-/// whose TLS accept requires no client certificate at all (see that module's own doc
-/// comment), so unauthenticated connections there need the same bound.
+/// `Clone` (cheap: `active` is already an `Arc`) so a listener's own accept loop and its
+/// spawned connection threads can share one counter. The token-based enrollment listener
+/// (`crate::enroll`) builds its OWN separate, dedicated pair of these (F-06b) rather
+/// than being handed a clone of the matching viewer/worker listener's real one -- an
+/// unauthenticated flood of bare TCP connects to the enrollment port (no client
+/// certificate required at all -- see that module's own doc comment) must never be able
+/// to exhaust slots meant for authenticated viewers/workers on a different port
+/// entirely, which sharing one counter across both listeners used to allow.
 #[derive(Debug, Clone)]
 pub struct ConnectionLimiter {
     active: Arc<AtomicUsize>,

@@ -1,0 +1,200 @@
+import { Theme } from "../components/theme.slint";
+import { SectionHeader } from "../components/section_header.slint";
+import { AppModel } from "../models/app_model.slint";
+import { GuideModel } from "../models/guide_model.slint";
+import { ToolButton } from "tier_table_style.slint";
+import { DesignSettingsModel } from "design_settings.slint";
+import { TierTableModel } from "tier_table_model.slint";
+import { CommandBar } from "tier_table_commands.slint";
+import { TierStatus } from "tier_table_status.slint";
+import { QuickAdd } from "quick_add.slint";
+import { TierTable } from "tier_table.slint";
+import { Inspector } from "inspector.slint";
+import { InspectorModel } from "inspector_model.slint";
+
+// The dock's layout state, kept in a global because two places size it: the resize
+// handles here, and `app.slint`, which lays the dock out beside the main view (or over it
+// on a narrow window).
+export global DockModel {
+    // The dock's width; the left-edge handle drags it.
+    in-out property <length> width: 400px;
+    // The inspector's height; the handle above it drags it.
+    in-out property <length> inspector-height: 230px;
+    // On a narrow window the dock is an overlay, opened by a toggle in `app.slint`.
+    in-out property <bool> overlay-open: false;
+    out property <length> min-width: 320px;
+    out property <length> max-width: 820px;
+}
+
+// The right-hand Design dock, top to bottom: the design's name, the command bar (Undo, Redo,
+// Solve, Add tier, Complete orbit, Mirror, Delete, and the auto-solve toggle), the solve
+// status with its manufacturability warnings, the quick-add panel (when open), the tier
+// table and the inspector. Resizable like the desktop's: drag the left edge for the
+// width, the bar above the inspector for the split. Below 900px the dock does not fit
+// beside the main view, so `app.slint` shows it as an overlay instead (`overlay: true`,
+// no left-edge handle).
+export component DesignDock inherits Rectangle {
+    // Set by `app.slint` for the narrow-window overlay.
+    in property <bool> overlay: false;
+    property <bool> collapsed: false;
+    // The inspector height that still leaves the tier table its room.
+    property <length> effective-inspector-height: max(90px, min(DockModel.inspector-height, root.height - 380px));
+    // A dock this short cannot show about six table rows beside an open inspector, so the
+    // inspector folds to its header row (the table takes the room); it opens again with
+    // its header, or by itself when the window grows tall enough. `> 0` skips the first
+    // layout pass, which reports no height yet.
+    property <bool> short: root.height > 0px && root.height < 600px;
+    // Whether `short` (not the user) folded the inspector, so growing re-opens only that.
+    property <bool> folded-by-height: false;
+    // Also keyed on the design being there: the dock is laid out before any design exists,
+    // so `short` alone can already be true on its first evaluation and never "change".
+    property <bool> fold-inspector: root.short && AppModel.has-design;
+    // A `changed` handler does not run for the value a binding starts with (a design
+    // restored at page load can make it true from the very first evaluation), hence `init`.
+    function fold-if-short() {
+        if root.fold-inspector {
+            if !InspectorModel.collapsed {
+                InspectorModel.collapsed = true;
+                root.folded-by-height = true;
+            }
+        } else if root.folded-by-height && !root.short {
+            InspectorModel.collapsed = false;
+            root.folded-by-height = false;
+        }
+    }
+    init => { root.fold-if-short(); }
+    changed fold-inspector => { root.fold-if-short(); }
+
+    background: Theme.bg-card;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    clip: true;
+
+    // In the overlay, swallow clicks on the dock's empty areas so they do not reach the
+    // click-away backdrop behind it.
+    if root.overlay: TouchArea {}
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+
+        SectionHeader {
+            title: "DESIGN";
+            collapsed: root.collapsed;
+            toggled => { root.collapsed = !root.collapsed; }
+            if root.overlay: Rectangle {
+                width: 20px;
+                accessible-role: button;
+                accessible-label: "Close the Design panel";
+                Tooltip { text: @markdown("Close the Design panel."); }
+                Text {
+                    text: "\u{00D7}";
+                    font-size: 15px;
+                    color: Theme.text-secondary;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                TouchArea { clicked => { DockModel.overlay-open = false; } }
+            }
+        }
+
+        if !root.collapsed && !AppModel.has-design: Text {
+            text: "No design loaded. Use File > New Design... or Open, or drop a file onto the window.";
+            font-size: 11px;
+            color: Theme.text-muted;
+            wrap: word-wrap;
+        }
+
+        if !root.collapsed && AppModel.has-design: VerticalLayout {
+            spacing: 2px;
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: AppModel.design-name;
+                    font-size: 12px;
+                    font-weight: 700;
+                    color: Theme.text-primary;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+                if AppModel.is-dirty: Rectangle {
+                    width: unsaved-text.preferred-width + 10px;
+                    height: 16px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: Theme.radius-sm;
+                    background: Theme.accent-amber;
+                    unsaved-text := Text {
+                        text: "UNSAVED";
+                        font-size: 9px;
+                        font-weight: 700;
+                        color: Theme.bg-darkest;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                // The schedule-wide settings (material, gear, symmetry, details, printed
+                // proportions) -- also Design > Design settings... in the menu bar.
+                ToolButton {
+                    text: "Design settings";
+                    locked: !GuideModel.allows-design-settings();
+                    highlighted: GuideModel.highlight-target == "design_settings";
+                    hint: "Open the design's settings: material, index gear, symmetry, details and printed proportions.";
+                    clicked => { DesignSettingsModel.open = true; }
+                }
+            }
+            if !root.short: Text {
+                text: AppModel.source-kind;
+                font-size: 10px;
+                color: Theme.text-secondary;
+                overflow: elide;
+            }
+        }
+
+        if !root.collapsed && AppModel.has-design: CommandBar {}
+        if !root.collapsed && AppModel.has-design: TierStatus { compact: root.short; }
+        if !root.collapsed && AppModel.has-design && TierTableModel.quick-add-open: QuickAdd {}
+        if !root.collapsed && AppModel.has-design: TierTable {}
+
+        // The split between the table and the inspector: drag it up or down.
+        if !root.collapsed && AppModel.has-design: Rectangle {
+            height: 6px;
+            background: (split-touch.pressed || split-touch.has-hover) ? Theme.accent-cyan : Theme.border-subtle;
+            split-touch := TouchArea {
+                mouse-cursor: MouseCursor.row-resize;
+                moved => {
+                    // Absolute pointer y (the handle moves as the split changes), against
+                    // the dock's own bottom edge, which does not.
+                    DockModel.inspector-height = max(90px, root.absolute-position.y + root.height - (self.absolute-position.y + self.mouse-y) - 8px);
+                }
+            }
+        }
+        // A collapsed inspector is just its header row; the table takes the room.
+        if !root.collapsed && AppModel.has-design: Inspector {
+            vertical-stretch: 0;
+            min-height: InspectorModel.collapsed ? 40px : root.effective-inspector-height;
+            max-height: InspectorModel.collapsed ? 40px : root.effective-inspector-height;
+        }
+
+        // Keeps the collapsed dock's header at the top.
+        if root.collapsed: Rectangle { vertical-stretch: 1; }
+    }
+
+    // The left-edge width handle (not in the narrow overlay, where the dock is as wide as
+    // it can be).
+    if !root.overlay: Rectangle {
+        x: 0;
+        y: 0;
+        width: 5px;
+        height: 100%;
+        background: (width-touch.pressed || width-touch.has-hover) ? Theme.accent-cyan : transparent;
+        width-touch := TouchArea {
+            mouse-cursor: MouseCursor.col-resize;
+            moved => {
+                DockModel.width = max(DockModel.min-width, min(DockModel.max-width,
+                    root.absolute-position.x + root.width - (self.absolute-position.x + self.mouse-x)));
+            }
+        }
+    }
+}

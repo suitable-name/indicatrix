@@ -219,7 +219,7 @@ impl ColorSpace {
     /// Converts a CIE XYZ radiance sample to encoded 8-bit RGBA: gamut-maps into this
     /// space (preserving luminance and hue, see [`gamut::project_to_gamut`]), applies
     /// `tonemap`, applies the transfer function, and quantizes each channel to
-    /// `0..=255`. Alpha is always `255`.
+    /// `0..=255` by rounding to the nearest code value. Alpha is always `255`.
     ///
     /// Every channel is finite and in `0..=255` for any input, including non-positive,
     /// extreme, or far-out-of-gamut `xyz`; non-finite `xyz` maps to opaque black.
@@ -261,7 +261,7 @@ impl ColorSpace {
                 0.0
             };
             let encoded = tf.encode(linear).clamp(0.0, 1.0);
-            (encoded * 255.0) as u8
+            encoded.mul_add(255.0, 0.5) as u8
         };
 
         [

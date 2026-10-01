@@ -5,9 +5,12 @@ use super::{
     fixtures::{bundle, coordinator_args, pki_with_server, start, wait_for},
     support::{collect, render, scene, send, spawn_worker, viewer},
 };
-use crate::{coordinator::LivenessConfig, render_core::trace_samples};
+use crate::{
+    coordinator::{JobConfig, LivenessConfig},
+    render_core::trace_samples,
+};
 use indicatrix::{
-    optics::raytracer::Camera,
+    optics::raytracer::{Camera, DEFAULT_FOV_DEG},
     renderer::{
         denoise::AtrousDenoiser,
         frame_denoise::{DenoiseScratch, FirstHitSnapshot, denoise_and_tonemap_frame},
@@ -18,10 +21,11 @@ use indicatrix::{
 use indicatrix_net::{
     display,
     messages::{
-        Backend, ClientMessage, DisplayEncoding, FinalImageRequest, FinalOutput, PeerRole,
-        RequestIntent, StreamEvent, TILT_CURVE_AXIS_COUNT, TiltCurvesRequest, TiltCurvesResponse,
-        TransferMode, WireColorSpace,
+        Backend, ClientMessage, DisplayEncoding, FinalImageRequest, FinalOutput, PayloadEncoding,
+        PeerRole, RequestIntent, StreamEvent, TILT_CURVE_AXIS_COUNT, TiltCurvesRequest,
+        TiltCurvesResponse, TransferMode, WireColorSpace, error_codes,
     },
+    radiance::PayloadEncoder,
 };
 use std::{sync::Arc, time::Duration};
 
@@ -57,6 +61,7 @@ fn a_final_image_is_byte_identical_to_the_gui_tonemap_of_the_same_sum() {
                 height: 7,
                 color_space,
                 output: FinalOutput::PngRgba8,
+                viewer_samples: 0,
             })),
         );
         let transcript = collect(&mut client, (9, 7), |_, _| {});
@@ -79,6 +84,185 @@ fn a_final_image_is_byte_identical_to_the_gui_tonemap_of_the_same_sum() {
             "{color_space:?}: PNG differs from the GUI tonemap"
         );
     }
+}
+
+/// v16: `viewer_samples` reserves the request's tail for the viewer; the server plans
+/// only the rest, the viewer uploads its own trace as `CONTRIBUTION`, and the merged
+/// `FINAL_IMAGE` is byte-identical to summing both halves directly -- the server's own
+/// share and the viewer's, exactly as each was traced.
+#[test]
+fn a_viewer_contribution_completes_a_byte_identical_final_image() {
+    let pki = pki_with_server("pictures-contribution");
+    let viewer_bundle = bundle(&pki, "laptop", PeerRole::Viewer);
+    let worker_bundle = bundle(&pki, "box", PeerRole::Worker);
+    let handle = start(&coordinator_args(&pki), LivenessConfig::default());
+    let registry = Arc::clone(handle.registry.as_ref().unwrap());
+    spawn_worker(handle.worker_addr.unwrap(), &worker_bundle);
+    assert!(wait_for(WAIT, || registry.capacity().workers == 1));
+
+    let (_, mut client) = viewer(handle.viewer_addr, &viewer_bundle);
+    let image = scene(9, 7);
+    let (first_sample, total_samples, viewer_samples) = (5, 4, 2);
+    let server_samples = total_samples - viewer_samples;
+    // Bit-identical to what the job itself traces for a 2-sample range (see the sibling
+    // test above): the server's own share and the viewer's contribution, computed and
+    // summed exactly the same way the production code does.
+    let server_sum = trace_samples(&image, first_sample, server_samples, 2);
+    let viewer_sum = trace_samples(&image, first_sample + server_samples, viewer_samples, 2);
+    let mut expected_sum = server_sum;
+    for (e, v) in expected_sum.iter_mut().zip(&viewer_sum) {
+        *e += *v;
+    }
+
+    send(
+        &mut client,
+        &ClientMessage::FinalImageRequest(Box::new(FinalImageRequest {
+            request_id: 7,
+            scene: image,
+            first_sample,
+            samples: total_samples,
+            width: 9,
+            height: 7,
+            color_space: WireColorSpace::Srgb,
+            output: FinalOutput::PngRgba8,
+            viewer_samples,
+        })),
+    );
+    // Uploaded before reading anything back -- the server's own lanes take a moment,
+    // giving this plenty of time to land before the wait even starts.
+    let mut encoder = PayloadEncoder::new(PayloadEncoding::Raw);
+    indicatrix_net::client::send_contribution(
+        &mut client,
+        7,
+        (first_sample + server_samples, viewer_samples),
+        9,
+        7,
+        &viewer_sum,
+        &mut encoder,
+    )
+    .unwrap();
+
+    let transcript = collect(&mut client, (9, 7), |_, _| {});
+    let done = transcript.done.expect("DONE after FINAL_IMAGE");
+    assert!(!done.cancelled && done.request_id == 7);
+    assert_eq!(done.stats.samples_done, total_samples);
+    assert_eq!(
+        done.stats.reclaimed_samples, 0,
+        "the contribution arrived in time; nothing should be reclaimed"
+    );
+    let (header, png) = transcript.final_image.expect("one FINAL_IMAGE");
+    assert_eq!(
+        (header.samples_done, header.encoding),
+        (4, DisplayEncoding::Png)
+    );
+    let pixels = display::decode_rgba8(DisplayEncoding::Png, 9, 7, &png).unwrap();
+    let expected = tonemap_accumulation(
+        9,
+        7,
+        total_samples,
+        &expected_sum,
+        indicatrix::color::ColorSpace::Srgb,
+    );
+    assert_eq!(pixels, expected, "PNG differs from the server+viewer sum");
+}
+
+/// v16: when the viewer's `CONTRIBUTION` never arrives, the coordinator traces that
+/// range itself after `contribution_wait` elapses, reports it in
+/// `DONE.stats.reclaimed_samples`, and the export still succeeds -- with a picture
+/// equal to tracing the whole request server-side.
+#[test]
+fn a_missing_contribution_is_reclaimed_and_reported_in_done_stats() {
+    let pki = pki_with_server("pictures-reclaim");
+    let viewer_bundle = bundle(&pki, "laptop", PeerRole::Viewer);
+    let worker_bundle = bundle(&pki, "box", PeerRole::Worker);
+    let handle = start(&coordinator_args(&pki), LivenessConfig::default());
+    handle
+        .coordinator
+        .as_ref()
+        .unwrap()
+        .set_job_config(JobConfig {
+            contribution_wait: Duration::from_millis(200),
+            ..JobConfig::default()
+        });
+    let registry = Arc::clone(handle.registry.as_ref().unwrap());
+    spawn_worker(handle.worker_addr.unwrap(), &worker_bundle);
+    assert!(wait_for(WAIT, || registry.capacity().workers == 1));
+
+    let (_, mut client) = viewer(handle.viewer_addr, &viewer_bundle);
+    let image = scene(9, 7);
+    let (first_sample, total_samples, viewer_samples) = (5, 4, 2);
+    let server_samples = total_samples - viewer_samples;
+    let server_sum = trace_samples(&image, first_sample, server_samples, 2);
+    let reclaimed_sum = trace_samples(&image, first_sample + server_samples, viewer_samples, 2);
+    let mut expected_sum = server_sum;
+    for (e, r) in expected_sum.iter_mut().zip(&reclaimed_sum) {
+        *e += *r;
+    }
+
+    send(
+        &mut client,
+        &ClientMessage::FinalImageRequest(Box::new(FinalImageRequest {
+            request_id: 8,
+            scene: image,
+            first_sample,
+            samples: total_samples,
+            width: 9,
+            height: 7,
+            color_space: WireColorSpace::Srgb,
+            output: FinalOutput::PngRgba8,
+            viewer_samples,
+        })),
+    );
+    // No CONTRIBUTION ever sent for request 8.
+    let transcript = collect(&mut client, (9, 7), |_, _| {});
+    let done = transcript.done.expect("DONE after FINAL_IMAGE");
+    assert!(!done.cancelled && done.request_id == 8);
+    assert_eq!(done.stats.samples_done, total_samples);
+    assert_eq!(done.stats.reclaimed_samples, viewer_samples);
+    let (_, png) = transcript.final_image.expect("one FINAL_IMAGE");
+    let pixels = display::decode_rgba8(DisplayEncoding::Png, 9, 7, &png).unwrap();
+    let expected = tonemap_accumulation(
+        9,
+        7,
+        total_samples,
+        &expected_sum,
+        indicatrix::color::ColorSpace::Srgb,
+    );
+    assert_eq!(
+        pixels, expected,
+        "a reclaimed export must equal an all-server render"
+    );
+}
+
+/// v16: `viewer_samples` over half of `samples` is refused with `VALIDATION_FAILED`,
+/// before any route is planned -- no worker or own lane is even needed for this.
+#[test]
+fn viewer_samples_over_half_is_refused_with_validation_failed() {
+    let pki = pki_with_server("pictures-viewer-share");
+    let viewer_bundle = bundle(&pki, "laptop", PeerRole::Viewer);
+    let handle = start(&coordinator_args(&pki), LivenessConfig::default());
+    let (_, mut client) = viewer(handle.viewer_addr, &viewer_bundle);
+    let image = scene(4, 4);
+    send(
+        &mut client,
+        &ClientMessage::FinalImageRequest(Box::new(FinalImageRequest {
+            request_id: 9,
+            scene: image,
+            first_sample: 0,
+            samples: 4,
+            width: 4,
+            height: 4,
+            color_space: WireColorSpace::Srgb,
+            output: FinalOutput::PngRgba8,
+            viewer_samples: 3, // > samples / 2 == 2
+        })),
+    );
+    let (event, _) = indicatrix_net::messages::read_stream_event(&mut client).unwrap();
+    let StreamEvent::Error(err) = event else {
+        panic!("expected StreamEvent::Error, got {event:?}");
+    };
+    assert_eq!(err.code, error_codes::VALIDATION_FAILED);
+    assert_eq!(err.request_id, Some(9));
 }
 
 /// Display-only live view: `DisplayOnly` on a render-less coordinator runs on the
@@ -113,7 +297,7 @@ fn display_only_streams_tone_mapped_display_frames() {
     assert_eq!(header.encoding, encoding);
     let pixels = display::decode_rgba8(encoding, 8, 6, &payload).unwrap();
     let sum = trace_samples(&image, 0, 2, 2);
-    let camera = Camera::new(image.yaw, image.pitch, image.distance, 42.0);
+    let camera = Camera::new(image.yaw, image.pitch, image.distance, DEFAULT_FOV_DEG);
     let guides = generate_guide_buffers(8, 6, &camera, &image.planes);
     let expected = denoise_and_tonemap_frame(
         FirstHitSnapshot {

@@ -2,14 +2,14 @@ import { Button } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { LibraryModel } from "../models/library.slint";
 
-// "Import" popup: brings the user's own `.asc` file(s) into the local library.
+// "Import" popup: brings the user's own `.asc`/`.gem`/`.gcs` file(s) into the local library.
 // Picking a file or folder runs the import immediately -- there is no path field to
 // edit and no separate "Import" button to confirm through; `pick_asc_file`/
 // `pick_asc_folder` (handled in Rust with `rfd::FileDialog`, see
 // `gui::library::setup_import_callback`'s doc comment) pick AND import in one step,
 // off the UI thread. Cancelling either native dialog does nothing at all -- no
 // import, no error, this popup just stays open. Two buttons rather than one because
-// a folder import (every `.asc` file directly inside it) and a single-file import are
+// a folder import (every design file directly inside it) and a single-file import are
 // both genuinely useful, and one native dialog can't offer both at once.
 //
 // When a picked file/folder would replace an existing catalogue row by filename,
@@ -110,7 +110,7 @@ export component ImportDialog inherits PopupWindow {
             HorizontalLayout {
                 alignment: space-between;
                 Text {
-                    text: "Import .asc files";
+                    text: "Import designs";
                     font-size: 14px;
                     font-weight: 700;
                     color: Theme.text-primary;
@@ -133,19 +133,17 @@ export component ImportDialog inherits PopupWindow {
             }
 
             Text {
-                text: "Pick a single .asc file, or a folder of .asc files -- the import runs immediately.";
+                text: "Pick a single .asc, .gem or .gcs file, or a folder of them -- the import runs immediately.";
                 font-size: 11px;
                 color: Theme.text-muted;
                 wrap: word-wrap;
             }
-            // This importer reads ONLY `.asc` -- a folder containing `GemCAD`'s own
-            // `.gem`/`.gcs` files scans past them silently unless something says so.
-            // The Rust side (`gui::library::local::import::import_path`) counts and
-            // names any `.gem`/`.gcs` files it skips in `result_text` itself once an
-            // import actually runs; this line sets the expectation up front, before
-            // the cutter even picks a folder.
+            // `.gem` (GemCAD) and `.gcs` (Gem Cut Studio) files are converted to
+            // `.asc` cutting instructions on import
+            // (`gui::library::local::import::foreign`); the original file is kept
+            // as an attachment, and converter notes are listed in `result_text`.
             Text {
-                text: ".gem and .gcs files are not read by Import -- this app only reads part of .gem elsewhere (no facet geometry) and .gcs is read-only wherever it is read.";
+                text: ".gem (GemCAD) and .gcs (Gem Cut Studio) files are converted to .asc cutting instructions; the original file stays attached to the design.";
                 font-size: 10px;
                 color: Theme.text-muted;
                 wrap: word-wrap;

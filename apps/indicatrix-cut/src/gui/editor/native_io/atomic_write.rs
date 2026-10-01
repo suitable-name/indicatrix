@@ -1,8 +1,71 @@
 //! Writes an `.asc`/native TOML pair to disk as one atomic-as-possible operation:
-//! stage both files under same-directory temp names, back up whatever already sits
-//! at each destination, then rename both temp files into place.
+//! stage both files under same-directory temp names (unique per writer, flushed to
+//! stable storage), back up whatever already sits at each destination, then rename
+//! both temp files into place.
 
-use std::path::{Path, PathBuf};
+use std::{
+    io::Write,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
+};
+
+/// Distinguishes the temp names [`temp_sibling`] hands out within this process, so
+/// two writers aimed at the same target never stage into the same file.
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// How long a writer may hold the [`WriteGate`] before a later save stops waiting for
+/// it: a writer thread that panicked never reports back, and the gate must not stay
+/// shut for the rest of the session.
+const WRITER_STALL_LIMIT: Duration = Duration::from_secs(120);
+
+/// Admits one disk writer at a time. A request that arrives while a writer is in
+/// flight is parked (the newest one wins -- an older parked request describes a
+/// design the newer one already supersedes) and handed back by [`Self::release`] when
+/// the running writer reports in, so two saves never race on the same files.
+///
+/// Pure bookkeeping over an opaque request type `T`: the caller owns the thread that
+/// does the writing and calls [`Self::release`] from the UI thread when it finishes.
+#[derive(Debug)]
+pub(super) struct WriteGate<T> {
+    /// When the writer now in flight was admitted, or `None` while idle.
+    in_flight_since: Option<Instant>,
+    /// The newest request parked behind the writer in flight.
+    queued: Option<T>,
+}
+
+impl<T> WriteGate<T> {
+    /// An idle gate.
+    pub(super) const fn new() -> Self {
+        Self {
+            in_flight_since: None,
+            queued: None,
+        }
+    }
+
+    /// `Some(request)` when the writer may start now (the gate is marked in flight at
+    /// `now`); `None` when a writer is already running and `request` was parked
+    /// instead, replacing any older parked request.
+    pub(super) fn admit(&mut self, request: T, now: Instant) -> Option<T> {
+        let busy = self
+            .in_flight_since
+            .is_some_and(|since| now.saturating_duration_since(since) < WRITER_STALL_LIMIT);
+        if busy {
+            self.queued = Some(request);
+            return None;
+        }
+        self.in_flight_since = Some(now);
+        Some(request)
+    }
+
+    /// The running writer finished: hands back the parked request to start next (the
+    /// gate stays in flight, marked at `now`), or `None` and an idle gate.
+    pub(super) fn release(&mut self, now: Instant) -> Option<T> {
+        let next = self.queued.take();
+        self.in_flight_since = next.as_ref().map(|_| now);
+        next
+    }
+}
 
 /// Writes `asc_text`/`native_toml` to `dest_path`/`native_path` as one
 /// atomic-as-possible pair: a read-only folder, a full disk, or an
@@ -13,7 +76,11 @@ use std::path::{Path, PathBuf};
 /// Both files are staged under same-directory temp sibling names first ([`temp_sibling`]
 /// -- always the same filesystem as the real target, so the rename that follows is a
 /// cheap, effectively-atomic same-volume operation, never one that could silently
-/// fall back to copy+delete across volumes). Before either temp file is renamed into
+/// fall back to copy+delete across volumes; unique per call, so concurrent writers
+/// to one target cannot clobber each other's staging file). Each staged file is
+/// flushed to stable storage ([`write_synced`]) before any rename, so a power loss
+/// after the rename cannot leave a zero-length file under the real name. Before
+/// either temp file is renamed into
 /// place, any file ALREADY at that destination is copied to a `.bak` sibling first
 /// ([`backup_existing`]): a bad save (or this very save, if the design
 /// regressed since the last one) must never overwrite the only copy of a design that
@@ -35,14 +102,14 @@ pub(super) fn write_pair_atomically(
     let tmp_asc = temp_sibling(dest_path);
     let tmp_native = temp_sibling(native_path);
 
-    if let Err(e) = std::fs::write(&tmp_asc, asc_text) {
+    if let Err(e) = write_synced(&tmp_asc, asc_text) {
         let _ = std::fs::remove_file(&tmp_asc);
         return Err(format!(
             "Failed to write {}: {e}. Nothing was saved.",
             dest_path.display()
         ));
     }
-    if let Err(e) = std::fs::write(&tmp_native, native_toml) {
+    if let Err(e) = write_synced(&tmp_native, native_toml) {
         let _ = std::fs::remove_file(&tmp_asc);
         let _ = std::fs::remove_file(&tmp_native);
         return Err(format!(
@@ -83,16 +150,39 @@ pub(super) fn write_pair_atomically(
 /// atomic-as-possible rename -- see [`write_pair_atomically`]. Always a sibling
 /// (never `std::env::temp_dir()`), so the rename that follows never crosses
 /// filesystems.
+///
+/// Unique on every call (`<file>.<pid>.<counter>.tmp`): a fixed `<file>.tmp` let two
+/// quick saves, or a save and an autosave, write into one staging file and rename
+/// an interleaved result into place. A crash mid-write leaves one such file behind
+/// instead of reusing it on the next save.
 pub(super) fn temp_sibling(path: &Path) -> PathBuf {
+    let suffix = format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
     let file_name = path.file_name().map_or_else(
-        || std::ffi::OsString::from("save.tmp"),
+        || std::ffi::OsString::from(format!("save{suffix}")),
         |n| {
             let mut s = n.to_os_string();
-            s.push(".tmp");
+            s.push(&suffix);
             s
         },
     );
     path.with_file_name(file_name)
+}
+
+/// Creates (or truncates) `path`, writes `contents` and flushes the file to stable
+/// storage (`File::sync_all`) before returning, so the rename that follows publishes
+/// bytes that are actually on disk.
+///
+/// # Errors
+///
+/// Any error from creating, writing or syncing the file.
+pub(super) fn write_synced(path: &Path, contents: &str) -> std::io::Result<()> {
+    let mut file = std::fs::File::create(path)?;
+    file.write_all(contents.as_bytes())?;
+    file.sync_all()
 }
 
 /// `path`'s `.bak` sibling -- e.g. `design.asc` -> `design.asc.bak`, `design.

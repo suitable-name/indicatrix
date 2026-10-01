@@ -6,16 +6,23 @@
 
 use glam::Vec3;
 
+/// A ray with an origin and a direction.
 #[derive(Clone, Copy, Debug)]
 pub struct Ray {
+    /// Ray origin.
     pub origin: Vec3,
+    /// Ray direction.
     pub dir: Vec3,
 }
 
+/// The entry hit of a ray against a faceted solid.
 #[derive(Clone, Copy, Debug)]
 pub struct HitRecord {
+    /// Ray parameter of the hit.
     pub t: f32,
+    /// Outward normal of the hit facet.
     pub normal: Vec3,
+    /// Index of the hit facet in the plane slice.
     pub facet_idx: usize,
 }
 
@@ -50,15 +57,53 @@ pub enum FacetFinish {
     Frosted,
 }
 
+/// The vertical field of view, in degrees, every renderer front end builds its
+/// [`Camera`] with.
+///
+/// The CPU tracer, the GPU megakernel's camera uniform, the rasterised Solid view and
+/// its orbit "Fit" distance must all agree on it, or the fitted pose would not match
+/// what ends up on screen.
+pub const DEFAULT_FOV_DEG: f32 = 42.0;
+
+/// An orbit camera pose: `yaw` and `pitch` in radians, `distance` in scene units.
+///
+/// The three arguments [`Camera::new`] takes before the field of view.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OrbitPose {
+    /// Azimuth around the vertical axis, in radians.
+    pub yaw: f32,
+    /// Elevation above the horizon, in radians.
+    pub pitch: f32,
+    /// Distance from the orbit centre, in scene units.
+    pub distance: f32,
+}
+
+/// The pose a fresh session and every "Reset" camera action start from.
+///
+/// Yaw 0.60 (about 35 degrees azimuth), pitch 0.45 (about 26 degrees elevation, showing
+/// crown, table and pavilion sparkle in 3D) and distance 2.4.
+pub const DEFAULT_POSE: OrbitPose = OrbitPose {
+    yaw: 0.60,
+    pitch: 0.45,
+    distance: 2.4,
+};
+
+/// Orbit pinhole camera looking at the origin.
 pub struct Camera {
+    /// Eye position.
     pub origin: Vec3,
+    /// Unit viewing direction.
     pub forward: Vec3,
+    /// Unit right vector of the image plane.
     pub right: Vec3,
+    /// Unit up vector of the image plane.
     pub up: Vec3,
+    /// Tangent of the half field of view.
     pub fov_tan: f32,
 }
 
 impl Camera {
+    /// Builds an orbit camera from yaw, pitch, distance to the origin and vertical field of view in degrees.
     #[must_use]
     pub fn new(yaw: f32, pitch: f32, distance: f32, fov_deg: f32) -> Self {
         let cos_p = pitch.cos();
@@ -99,6 +144,7 @@ impl Camera {
         }
     }
 
+    /// Generates the primary ray through a (jittered) pixel position.
     #[must_use]
     pub fn generate_ray(
         &self,

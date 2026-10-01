@@ -7,6 +7,10 @@ import { TiltBatchDialog } from "../tilt_batch_dialog.slint";
 import { ShortcutOverlay } from "../shortcut_overlay.slint";
 import { ConfirmActionDialog } from "../confirm_action_dialog.slint";
 import { AnchorExplainer } from "../anchor_explainer.slint";
+import { MaterialEditorDialog } from "../material_editor_dialog.slint";
+import { PerformanceGraphDialog } from "../performance_graph_dialog.slint";
+import { TiltModel } from "../../models/tilt.slint";
+import { ViewportModel } from "../../models/viewport.slint";
 import { EditorModel } from "../../models/editor.slint";
 import { RetargetModel } from "../../models/retarget.slint";
 import { LibraryModel } from "../../models/library.slint";
@@ -15,14 +19,22 @@ import { ShortcutsModel } from "../../models/shortcuts.slint";
 
 // Every modal dialog `app.slint` mounts that is driven ENTIRELY by a global
 // model (no `MainWindow`-local property or callback involved) -- split out to
-// keep `app.slint` under its line budget. `MaterialEditorDialog`/`ExportDialog`
-// need the identical wrapping-`FocusScope` treatment but are mounted in
-// `gem_viewport.slint` instead (mutually exclusive with everything here, since
-// they belong to the Live Render/Edit viewports). `close_confirm_open`'s own
+// keep `app.slint` under its line budget. `MaterialEditorDialog` and
+// `PerformanceGraphDialog` are mounted here too (window size, so a short Edit
+// viewport cannot shrink their cards); `ExportDialog` is still mounted in
+// `gem_viewport.slint`. `close_confirm_open`'s own
 // dialog and the `Toast` stay in `app.slint`: both read `MainWindow`'s own
 // local properties/callbacks, which this component -- driven only by globals
 // -- deliberately has none of.
-export component GlobalDialogsOverlay {
+//
+// Inherits `Rectangle` and is mounted with explicit `x/y/width/height` in
+// `app.slint`: a component with no base is an `Empty` whose size is its
+// content's preferred size, and every child here is an `if` branch, which
+// contributes no layout info -- so without this the overlay is 0 x 0 and every
+// dialog inside (all sized from `root.height`) draws nothing. A plain
+// `Rectangle` with no `TouchArea` passes input through, so while every `if`
+// branch is false the full-window overlay does not intercept clicks.
+export component GlobalDialogsOverlay inherits Rectangle {
     // `NewDesignDialog`/`RetargetDialog`/`MetadataEditorDialog` are plain
     // Rectangles with no key handling of their own -- wrapped here in
     // a `FocusScope` that takes focus on mount, maps Escape to that dialog's own
@@ -40,6 +52,19 @@ export component GlobalDialogsOverlay {
         key-pressed(event) => {
             if event.text == Key.Escape {
                 EditorModel.new_dialog_open = false;
+                // `NewDesignDialog`'s own fields (`new_design_dialog.slint`) set
+                // `EditorModel.text_focus` the same way every other text field
+                // in the Edit tab does -- the assignment above unmounts this
+                // WHOLE `if EditorModel.new_dialog_open:` subtree (this
+                // `FocusScope` and `new_design_dialog` together) on the very
+                // next re-evaluation, which drops a still-focused field's
+                // `changed has-focus` tracker along with it before it ever
+                // sees `has-focus` go `false` (a conditional element's tracker
+                // is dropped with the element, losing its queued handlers). Reset
+                // explicitly here, or `text_focus` sticks `true` forever,
+                // silently blocking `app.slint`'s Ctrl+Z/Ctrl+Y guard for the
+                // rest of the session.
+                EditorModel.text_focus = false;
             } else if event.text == Key.Return {
                 // Through the dialog's own `do_create`, so Return respects
                 // `form_valid` exactly like the Create button. The dialog is NOT
@@ -177,6 +202,25 @@ export component GlobalDialogsOverlay {
         }
     }
 
+    // The gem material editor, opened by the Live Render tab's Material actions and
+    // by the Edit tab's "New/Edit material..." button. Mounted here, at window size,
+    // rather than inside either viewport: the Edit viewport can be only 170-260px tall
+    // in the narrow stack, which would size the dialog card from that. Same `z` it had
+    // in the viewports.
+    if ViewportModel.material_editor_open: MaterialEditorDialog {
+        width: 100%;
+        height: 100%;
+        z: 300;
+    }
+
+    // The tilt-performance chart, opened by both viewports' "Tilt Curve" pills and
+    // mounted here at window size for the same reason.
+    if TiltModel.dialog_open: PerformanceGraphDialog {
+        width: 100%;
+        height: 100%;
+        z: 350;
+    }
+
     // Unsaved-changes guard for New/Load Selected/Open Native -- see
     // `EditorModel.unsaved_dialog_*`'s own doc comment.
     // Deliberately last-but-one in this stack: it only
@@ -190,8 +234,13 @@ export component GlobalDialogsOverlay {
             : EditorModel.startup_restore_path;
         primary_label: EditorModel.startup_restore_is_autosave ? "Recover" : "Reopen";
         secondary_label: "Not now";
+        // Only a leftover AUTOSAVE is ever safe to delete outright here -- an
+        // ordinary recent file is the cutter's own real save, not a recovery
+        // snapshot, so it never gets this action.
+        tertiary_label: EditorModel.startup_restore_is_autosave ? "Delete" : "";
         primary => { EditorModel.startup_restore_accept(); }
         secondary => { EditorModel.startup_restore_dismiss(); }
+        tertiary => { EditorModel.startup_restore_delete(); }
         cancel => { EditorModel.startup_restore_dismiss(); }
     }
 

@@ -5,6 +5,8 @@ import { GuideModel } from "../models/guide.slint";
 // "Export Cutting Sheet" and "Export Diagram" live on one "Export..." split
 // button on the command bar, next to Save Native, instead of as separate
 // File menu entries. Mounted with one line in `editor_command_bar.slint`.
+// "Export as Gem Cut Studio (.gcs)..." (`EditorModel.export_gcs()`) is here too,
+// with its "experimental" tooltip, and also on the File menu.
 //
 // Keeps the existing callback names -- `EditorModel.export_cutting_sheet()`/
 // `export_diagram()`, unchanged from the File menu's own `activated` handlers.
@@ -34,7 +36,7 @@ export component ExportSplitButton inherits Rectangle {
                 enabled: root.enabled;
                 clicked => { root.menu_open = !root.menu_open; }
             }
-            Tooltip { text: root.enabled ? @markdown("Export the Cutting Sheet (HTML) or the Diagram (PNG).") : @markdown("\{GuideModel.locked_hint}"); }
+            Tooltip { text: root.enabled ? @markdown("Export the Cutting Sheet (HTML), the Diagram (PNG), or the design as a Gem Cut Studio (.gcs) file.") : @markdown("\{GuideModel.locked_hint}"); }
         }
     }
 
@@ -55,7 +57,7 @@ export component ExportSplitButton inherits Rectangle {
         x: 0px;
         y: root.height + 2px;
         z: 50;
-        width: 190px;
+        width: 220px;
         height: menu_col.preferred-height;
         background: Theme.surface-dialog;
         border-radius: Theme.radius-sm;
@@ -101,6 +103,25 @@ export component ExportSplitButton inherits Rectangle {
                         EditorModel.export_diagram();
                     }
                 }
+            }
+            Rectangle {
+                height: 26px;
+                background: item3_touch.has-hover ? Theme.bg-card-hover : transparent;
+                Text {
+                    text: "Export as Gem Cut Studio (.gcs)...";
+                    font-size: 10px;
+                    color: Theme.text-primary;
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                    x: 8px;
+                }
+                item3_touch := TouchArea {
+                    clicked => {
+                        root.menu_open = false;
+                        EditorModel.export_gcs();
+                    }
+                }
+                Tooltip { text: @markdown("Experimental: written from the published Gem Cut Studio 1.1 file description; chiral designs are untested."); }
             }
         }
     }

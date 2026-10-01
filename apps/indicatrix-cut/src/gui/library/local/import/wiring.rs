@@ -62,6 +62,7 @@ fn spawn_import(
             imported_ids,
             had_failures,
             had_collision,
+            had_notes,
         } = import_path(&db, &path, recurse, move |done, total| {
             let _ = progress_ui_weak.upgrade_in_event_loop(move |ui| {
                 ui.global::<LibraryModel>().set_import_done(done as i32);
@@ -86,11 +87,11 @@ fn spawn_import(
             // Keep the import popup open on completion (instead
             // of auto-closing into the toast, where a failure list becomes
             // unreadable within 3.5s) whenever there is something worth reading --
-            // a failure list or a collision warning, both already in `message`/
-            // `import_result_text` above -- driving `import_dialog.slint`'s
-            // `changed importing` handler.
+            // a failure list, a collision warning, or a `.gem`/`.gcs` converter
+            // note, all already in `message`/`import_result_text` above -- driving
+            // `import_dialog.slint`'s `changed importing` handler.
             ui.global::<LibraryModel>()
-                .set_import_should_stay_open(had_failures || had_collision);
+                .set_import_should_stay_open(had_failures || had_collision || had_notes);
             // For more than one imported id, set
             // `recent_import_filter` to exactly those ids BEFORE
             // `refresh_after_library_change` runs, so the very refresh this import
@@ -107,6 +108,7 @@ fn spawn_import(
                 .iter()
                 .filter_map(|&id| i32::try_from(id).ok())
                 .collect();
+            ui.global::<LibraryModel>().set_id_filter_label("".into());
             if imported_id_items.len() > 1 {
                 ui.global::<LibraryModel>()
                     .set_recent_import_filter(ModelRc::new(VecModel::from(imported_id_items)));
@@ -115,7 +117,7 @@ fn spawn_import(
                     .set_recent_import_filter(ModelRc::new(VecModel::from(Vec::<i32>::new())));
             }
             super::super::helpers::refresh_after_library_change(&ui, &db, &source);
-            // The common case (a single `.asc` picked via "Choose file...")
+            // The common case (a single design file picked via "Choose file...")
             // knows exactly which row it just created; without this, the cutter would
             // have to scroll a possibly-large list looking for their own
             // title. `invoke_select_diagram` re-runs the exact same path a click on
@@ -190,8 +192,8 @@ pub fn setup_import_callback(
                 kind: crate::gui::pickers::PickerKind::OpenFile,
                 title: None,
                 filters: vec![crate::gui::pickers::PickerFilter {
-                    label: ".asc design".to_string(),
-                    extensions: vec!["asc".to_string()],
+                    label: "Faceting design (.asc, .gem, .gcs)".to_string(),
+                    extensions: vec!["asc".to_string(), "gem".to_string(), "gcs".to_string()],
                 }],
                 default_file_name: None,
                 starting_dir: last_import_directory(&settings_file),

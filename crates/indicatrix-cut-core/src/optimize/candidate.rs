@@ -5,7 +5,9 @@
 //! regress", "Where the compute runs") for why these gates and this
 //! parallelism shape exist.
 
-use super::objective::{ObjectiveFidelity, ObjectiveWeights, evaluate_objective, to_gpu_planes};
+use super::objective::{
+    ObjectiveFidelity, ObjectiveWeights, evaluate_objective_under, to_gpu_planes,
+};
 use crate::{
     design::Design,
     manufacturability::{
@@ -18,7 +20,7 @@ use indicatrix::{
         meet_solver::MeetConstraint,
         stone_metrics::{SolidStatus, build_solid_mesh, measure_solid},
     },
-    optics::materials::GemMaterial,
+    optics::{materials::GemMaterial, raytracer::LightingPreset},
 };
 
 /// A candidate's yield loss (`0.0` to `100.0`, LOWER is better), for
@@ -117,13 +119,14 @@ pub(super) enum CandidateOutcome {
 }
 
 /// Solves `design`, checks closure and manufacturability against `baseline_warnings`,
-/// and (only if both pass) scores it at [`ObjectiveFidelity::Fast`] -- the one
-/// function [`super::optimize_design`]'s search loop calls for every candidate.
+/// and (only if both pass) scores it at [`ObjectiveFidelity::Fast`] under `lighting` --
+/// the one function [`super::optimize_design`]'s search loop calls for every candidate.
 pub(super) fn evaluate_candidate(
     design: &Design,
     material: &GemMaterial,
     weights: &ObjectiveWeights,
     baseline_warnings: &BaselineWarningCounts,
+    lighting: LightingPreset,
 ) -> CandidateOutcome {
     let Ok(solved) = design.solve() else {
         return CandidateOutcome::Rejected;
@@ -137,9 +140,21 @@ pub(super) fn evaluate_candidate(
         return CandidateOutcome::Rejected;
     }
     let gpu_planes = to_gpu_planes(&planes);
-    let components = evaluate_objective(&gpu_planes, material, ObjectiveFidelity::Fast);
+    let components =
+        evaluate_objective_under(&gpu_planes, material, ObjectiveFidelity::Fast, lighting);
     let score = weights.score_with_yield(&components, yield_loss_pct(design, &planes));
     CandidateOutcome::Accepted { score }
+}
+
+/// [`evaluate_candidate`] with every fixed input taken from `ctx`.
+fn evaluate_in_context(design: &Design, ctx: &SearchContext) -> CandidateOutcome {
+    evaluate_candidate(
+        design,
+        ctx.material,
+        ctx.weights,
+        ctx.baseline_warnings,
+        ctx.lighting,
+    )
 }
 
 /// Builds a candidate [`Design`] from `base` with every tier index in `free` set to
@@ -183,6 +198,8 @@ pub(super) struct SearchContext<'a> {
     pub(super) material: &'a GemMaterial,
     pub(super) weights: &'a ObjectiveWeights,
     pub(super) baseline_warnings: &'a BaselineWarningCounts,
+    /// The lighting preset every candidate is scored under.
+    pub(super) lighting: LightingPreset,
 }
 
 /// Builds the surviving `original_deg + step_deg` / `original_deg - step_deg`
@@ -213,48 +230,71 @@ pub(super) fn select_candidate_directions(
         .collect()
 }
 
+/// Evaluates both surviving candidates from [`select_candidate_directions`]'s
+/// two-element case, on two OS threads via `std::thread::scope` natively.
+///
+/// `wasm32-unknown-unknown` has no OS thread to spawn (`std::thread::Scope::spawn`
+/// panics there), so that target's build gets a separate, sequential definition of
+/// this function below, evaluating `design_a` then `design_b` in the same order --
+/// each candidate is a pure function of its own `Design`, so the result is identical
+/// either way. Two `cfg`-gated definitions, like `renderer::tonemap`'s
+/// `effective_thread_count`, rather than one function with an internal `#[cfg]`
+/// block on the body.
+#[cfg(not(target_arch = "wasm32"))]
+fn evaluate_two_survivors(
+    design_a: &Design,
+    design_b: &Design,
+    ctx: &SearchContext,
+) -> (CandidateOutcome, CandidateOutcome) {
+    std::thread::scope(|scope| {
+        let handle_a = scope.spawn(|| evaluate_in_context(design_a, ctx));
+        let handle_b = scope.spawn(|| evaluate_in_context(design_b, ctx));
+        (
+            handle_a
+                .join()
+                .expect("candidate evaluation thread must not panic"),
+            handle_b
+                .join()
+                .expect("candidate evaluation thread must not panic"),
+        )
+    })
+}
+
+/// The `wasm32` arm of [`evaluate_two_survivors`] -- see that function's doc comment.
+#[cfg(target_arch = "wasm32")]
+fn evaluate_two_survivors(
+    design_a: &Design,
+    design_b: &Design,
+    ctx: &SearchContext,
+) -> (CandidateOutcome, CandidateOutcome) {
+    let outcome_a = evaluate_in_context(design_a, ctx);
+    let outcome_b = evaluate_in_context(design_b, ctx);
+    (outcome_a, outcome_b)
+}
+
 /// Evaluates every surviving `(candidate_deg, Design)` from
 /// [`select_candidate_directions`] and reduces them to the `(best,
 /// evaluations_spent)` shape [`evaluate_candidate_pair`] documents. Threading is
 /// shaped by how many survivors there are: two are solved concurrently via
-/// `std::thread::scope`; exactly one is solved inline, no scope, no spawn; zero
-/// (both directions rejected before either was solved) returns `(None, 0)`
-/// immediately, starting no threads at all.
+/// `std::thread::scope` natively (`wasm32` solves them sequentially instead, in the
+/// same `[a, b]` order -- see [`evaluate_two_survivors`]); exactly one is solved
+/// inline, no scope, no spawn; zero (both directions rejected before either was
+/// solved) returns `(None, 0)` immediately, starting no threads at all.
 pub(super) fn evaluate_survivors(
     survivors: Vec<(f64, Design)>,
     ctx: &SearchContext,
     current_score: f32,
 ) -> (Option<(f64, f32)>, usize) {
-    let outcomes: Vec<(f64, CandidateOutcome)> = if let [(deg_a, design_a), (deg_b, design_b)] =
-        survivors.as_slice()
-    {
-        let (outcome_a, outcome_b) = std::thread::scope(|scope| {
-            let handle_a = scope.spawn(|| {
-                evaluate_candidate(design_a, ctx.material, ctx.weights, ctx.baseline_warnings)
-            });
-            let handle_b = scope.spawn(|| {
-                evaluate_candidate(design_b, ctx.material, ctx.weights, ctx.baseline_warnings)
-            });
-            (
-                handle_a
-                    .join()
-                    .expect("candidate evaluation thread must not panic"),
-                handle_b
-                    .join()
-                    .expect("candidate evaluation thread must not panic"),
-            )
-        });
-        vec![(*deg_a, outcome_a), (*deg_b, outcome_b)]
-    } else {
-        survivors
-            .into_iter()
-            .map(|(deg, design)| {
-                let outcome =
-                    evaluate_candidate(&design, ctx.material, ctx.weights, ctx.baseline_warnings);
-                (deg, outcome)
-            })
-            .collect()
-    };
+    let outcomes: Vec<(f64, CandidateOutcome)> =
+        if let [(deg_a, design_a), (deg_b, design_b)] = survivors.as_slice() {
+            let (outcome_a, outcome_b) = evaluate_two_survivors(design_a, design_b, ctx);
+            vec![(*deg_a, outcome_a), (*deg_b, outcome_b)]
+        } else {
+            survivors
+                .into_iter()
+                .map(|(deg, design)| (deg, evaluate_in_context(&design, ctx)))
+                .collect()
+        };
 
     let mut evaluations = 0usize;
     let mut best: Option<(f64, f32)> = None;
@@ -273,8 +313,9 @@ pub(super) fn evaluate_survivors(
 /// Evaluates a free tier's two candidate directions (`original_deg + step_deg`,
 /// `original_deg - step_deg`) -- see [`select_candidate_directions`] for how the
 /// unsafe ones are filtered out and [`evaluate_survivors`] for how the survivors
-/// are run (concurrently on two OS threads only when both survive -- see the
-/// module doc comment's "Where the compute runs" section). `std::thread::scope`
+/// are run (concurrently on two OS threads only when both survive, natively -- see
+/// the module doc comment's "Where the compute runs" section; sequentially, same
+/// order, on `wasm32` -- see [`evaluate_two_survivors`]). `std::thread::scope`
 /// guarantees both spawned threads finish before this function returns, so there
 /// is no lifetime hazard in borrowing `current`/`ctx` from the calling thread's
 /// stack.

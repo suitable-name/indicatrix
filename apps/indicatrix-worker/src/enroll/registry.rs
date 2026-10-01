@@ -6,7 +6,7 @@ use indicatrix_net::{messages::PeerRole, tls::Fingerprint, token};
 use std::{
     fmt,
     path::Path,
-    sync::Mutex,
+    sync::{Mutex, MutexGuard, PoisonError},
     time::{Duration, Instant},
 };
 use subtle::ConstantTimeEq;
@@ -114,6 +114,9 @@ pub(super) struct ClaimedEnrollment {
 pub struct EnrollRegistry {
     pub(super) pending: Mutex<Vec<PendingEnrollment>>,
     role: PeerRole,
+    /// The secret an `Issue` request must present (`<pki_dir>/issue.secret`). `None`
+    /// refuses every `Issue`: a registry nobody configured a secret for issues nothing.
+    operator_secret: Option<Zeroizing<[u8; token::SECRET_LEN]>>,
 }
 
 impl Default for EnrollRegistry {
@@ -135,7 +138,30 @@ impl EnrollRegistry {
         Self {
             pending: Mutex::new(Vec::new()),
             role,
+            operator_secret: None,
         }
+    }
+
+    /// This registry, authorising `Issue` requests that present `secret`.
+    #[must_use]
+    pub fn with_operator_secret(mut self, secret: Zeroizing<[u8; token::SECRET_LEN]>) -> Self {
+        self.operator_secret = Some(secret);
+        self
+    }
+
+    /// Whether `presented` is the operator secret, compared in constant time. `false`
+    /// when no operator secret is configured.
+    #[must_use]
+    pub fn operator_secret_matches(&self, presented: &[u8; token::SECRET_LEN]) -> bool {
+        self.operator_secret
+            .as_ref()
+            .is_some_and(|secret| bool::from(secret.ct_eq(presented)))
+    }
+
+    /// The pending table, tolerating a poisoned lock: a panic in one enrollment
+    /// connection must not disable enrollment for every other.
+    fn lock_pending(&self) -> MutexGuard<'_, Vec<PendingEnrollment>> {
+        self.pending.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// The certificate role this registry mints.
@@ -187,7 +213,10 @@ impl EnrollRegistry {
         let encoded = token::encode(&secret, &bundle.ca_fingerprint);
         secret.zeroize_local();
 
-        let mut pending = self.pending.lock().unwrap();
+        let mut pending = self.lock_pending();
+        // Expired entries do not count against the cap.
+        let now = Instant::now();
+        pending.retain(|p| p.expires_at > now);
         if pending.len() >= MAX_PENDING {
             return Err(EnrollIssueError::TooManyPending);
         }
@@ -216,7 +245,7 @@ impl EnrollRegistry {
         let candidate_hash = sha256(secret);
         let now = Instant::now();
 
-        let mut pending = self.pending.lock().unwrap();
+        let mut pending = self.lock_pending();
         pending.retain(|p| p.expires_at > now); // expired entries dropped (and zeroized) here
 
         let mut matched_index = None;
@@ -245,7 +274,7 @@ impl EnrollRegistry {
 ///
 /// [`EnrollIssueError::Csprng`] in the (extremely rare, effectively "the OS RNG is
 /// unavailable") case `ring` itself reports failure.
-fn random_bytes(dest: &mut [u8]) -> Result<(), EnrollIssueError> {
+pub(super) fn random_bytes(dest: &mut [u8]) -> Result<(), EnrollIssueError> {
     use ring::rand::SecureRandom;
     ring::rand::SystemRandom::new()
         .fill(dest)

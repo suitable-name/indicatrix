@@ -102,7 +102,8 @@ mod tests {
     use super::*;
     use crate::bridge::frame_cache::guide_pass::generate_guide_buffers;
     use indicatrix::{
-        geometry::cuts::StandardGemCuts, optics::raytracer::Camera,
+        geometry::cuts::StandardGemCuts,
+        optics::raytracer::{Camera, DEFAULT_FOV_DEG},
         renderer::denoise::AtrousDenoiser,
     };
 
@@ -364,7 +365,7 @@ mod tests {
         // Independently reproduce what `render_merged_frame` should have done: generate
         // the guides for the same pose/geometry and denoise directly, with fresh
         // scratch state so nothing is shared with the call above.
-        let camera = Camera::new(yaw, pitch, distance, 42.0);
+        let camera = Camera::new(yaw, pitch, distance, DEFAULT_FOV_DEG);
         let guides = generate_guide_buffers(width, height, &camera, &planes);
         let mut expected_denoiser = AtrousDenoiser::new();
         let mut expected_avg = Vec::new();

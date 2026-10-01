@@ -27,5 +27,6 @@ slint::include_modules!();
 // suddenly become part of a real public API needing `# Errors`/`# Panics` docs -- see
 // `gui::MainWindowHandle`'s doc comment for the one seam that IS public.
 mod bridge;
+/// Slint user interface layer.
 pub mod gui;
 mod settings;

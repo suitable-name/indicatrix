@@ -273,10 +273,17 @@ fn flush_keyed(
 ) {
     let sol = crate::simd::solve_triple_batch(batch);
     for (lane, key) in key_meta.iter().enumerate().take(batch.len) {
-        if sol.det[lane].abs() < MIN_TRIPLE_DET {
+        // `is_nan() || .. < MIN_TRIPLE_DET` rather than a plain `.. < MIN_TRIPLE_DET`:
+        // a NaN determinant (a non-finite mast or index) fails the plain `<`
+        // comparison and would otherwise fall through to a NaN-tainted vertex.
+        let det_abs = sol.det[lane].abs();
+        if det_abs.is_nan() || det_abs < MIN_TRIPLE_DET {
             continue;
         }
         let v = DVec3::new(sol.vx[lane], sol.vy[lane], sol.vz[lane]);
+        if !v.is_finite() {
+            continue;
+        }
         if v.x.abs() > BLANK_HALF_EXTENT + 1.0
             || v.y.abs() > BLANK_HALF_EXTENT + 1.0
             || v.z.abs() > BLANK_HALF_EXTENT + 1.0
@@ -334,4 +341,115 @@ fn merge_sorted(a: Vec<CachedCandidate>, b: Vec<CachedCandidate>) -> Vec<CachedC
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CachedCandidate, Phase1Cache};
+    use crate::geometry::meet_solver::{
+        MeetConstraint, MeetTierInput,
+        candidates::{
+            CandidateVertex, SolvePlane, blank_planes, enumerate_candidate_vertices_cancellable,
+        },
+        tier_instance_normals,
+    };
+    use glam::DVec3;
+
+    /// One synthetic tier: `count` facets spaced 12 index teeth apart on a
+    /// 96-tooth wheel, starting at `first_index` (no indices for `count == 0`).
+    fn tier(angle_deg: f64, first_index: f64, count: u32) -> MeetTierInput {
+        MeetTierInput {
+            angle_deg,
+            indices: (0..count)
+                .map(|k| f64::from(k).mul_add(12.0, first_index))
+                .collect(),
+            constraint: MeetConstraint::MeetExisting,
+            names: Vec::new(),
+        }
+    }
+
+    /// Eight tiers of a closed, round-brilliant-like stone with a mast each.
+    fn synthetic_schedule() -> Vec<(MeetTierInput, f64)> {
+        vec![
+            (tier(90.0, 0.0, 8), 1.0),
+            (tier(0.0, 0.0, 0), 0.55),
+            (tier(40.0, 6.0, 8), 0.96),
+            (tier(25.0, 0.0, 8), 0.86),
+            (tier(-41.0, 0.0, 8), 1.0),
+            (tier(-38.0, 6.0, 8), 0.97),
+            (tier(70.0, 6.0, 8), 0.99),
+            (tier(-60.0, 6.0, 8), 0.98),
+        ]
+    }
+
+    /// A full enumeration over the blanks plus every settled tier's planes in
+    /// tier order -- the arrangement the cache claims to mirror.
+    fn fresh_enumeration(
+        normals: &[Vec<DVec3>],
+        masts: &[f64],
+        settled: &[bool],
+    ) -> Vec<CandidateVertex> {
+        let mut planes = blank_planes();
+        let first_real = planes.len();
+        for (owner, ((tier_normals, &m), &is_settled)) in
+            normals.iter().zip(masts).zip(settled).enumerate()
+        {
+            if is_settled {
+                planes.extend(tier_normals.iter().map(|&n| SolvePlane { n, m, owner }));
+            }
+        }
+        enumerate_candidate_vertices_cancellable(&planes, first_real, None)
+            .expect("no cancel flag was passed")
+    }
+
+    fn vertex_bits(v: DVec3) -> [u64; 3] {
+        [v.x.to_bits(), v.y.to_bits(), v.z.to_bits()]
+    }
+
+    fn assert_same(step: usize, cached: &[CachedCandidate], fresh: &[CandidateVertex]) {
+        assert_eq!(cached.len(), fresh.len(), "step {step}: candidate count");
+        for (i, (c, f)) in cached.iter().zip(fresh).enumerate() {
+            assert_eq!(
+                vertex_bits(c.v),
+                vertex_bits(f.v),
+                "step {step}, candidate {i}: vertex bits"
+            );
+            assert_eq!(
+                c.violated, f.violated,
+                "step {step}, candidate {i}: violator"
+            );
+            assert_eq!(
+                c.key.map(|(tier, _)| tier),
+                f.owners,
+                "step {step}, candidate {i}: defining tiers"
+            );
+        }
+    }
+
+    /// After every `add_tier` -- in tier order and in an order where later tiers
+    /// settle before earlier ones -- the cache's candidates must equal a fresh
+    /// enumeration of blanks plus the settled tiers: same vertices bit for bit,
+    /// same violators, same order.
+    #[test]
+    fn cache_equals_a_fresh_enumeration_after_every_settle() {
+        let schedule = synthetic_schedule();
+        let tiers: Vec<MeetTierInput> = schedule.iter().map(|(t, _)| t.clone()).collect();
+        let masts: Vec<f64> = schedule.iter().map(|&(_, m)| m).collect();
+        let normals = tier_instance_normals(96, &tiers);
+
+        for order in [[0, 1, 2, 3, 4, 5, 6, 7], [0, 2, 1, 5, 4, 7, 3, 6]] {
+            let mut cache = Phase1Cache::new();
+            let mut settled = vec![false; tiers.len()];
+            for (step, &tier_index) in order.iter().enumerate() {
+                cache.add_tier(tier_index, &normals[tier_index], masts[tier_index]);
+                settled[tier_index] = true;
+                let fresh = fresh_enumeration(&normals, &masts, &settled);
+                assert_same(step, &cache.candidates, &fresh);
+            }
+            assert!(
+                cache.candidates.iter().any(|c| c.violated.is_none()),
+                "the closed synthetic stone must have feasible vertices"
+            );
+        }
+    }
 }

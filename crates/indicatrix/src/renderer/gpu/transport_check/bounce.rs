@@ -15,7 +15,7 @@ use crate::{
             build_plane_soa,
             cosine_weighted_hemisphere,
             // `NeeContext` stays `pub(crate)` inside `scattering` rather than being added
-            // to `raytracer::mod`'s re-export hub (a file this task does not own) --
+            // to `raytracer::mod`'s re-export hub (kept out of the hub deliberately) --
             // reached here via its own module's full path instead.
             scattering::NeeContext,
         },
@@ -32,6 +32,7 @@ use super::{SHADER_SRC, UlpAccumulator, UlpCheckResult};
 // directly (now `pub(crate)` -- see that function's own doc comment).
 // ---------------------------------------------------------------------------------
 
+/// One input case for the cosine hemisphere check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CosineHemisphereCase {
@@ -85,9 +86,8 @@ fn build_cosine_hemisphere_cases() -> Vec<CosineHemisphereCase> {
         }
     }
     // Adversarial: the hemisphere pole (u1 -> 0, r -> 0), the hemisphere BOUNDARY/
-    // equator (u1 -> 1, the (1-u1).sqrt() term -> 0 -- explicitly called out in the
-    // task brief as a required adversarial point), and theta wraparound (u2 near 0 and
-    // near 1, where sin_cos(2*PI*u2) crosses the branch cut).
+    // equator (u1 -> 1, the (1-u1).sqrt() term -> 0), and theta wraparound
+    // (u2 near 0 and near 1, where sin_cos(2*PI*u2) crosses the branch cut).
     let adversarial_u = [
         (0.0f32, 0.0f32),
         (0.0, 0.5),
@@ -131,6 +131,7 @@ fn cpu_cosine_hemisphere(c: &CosineHemisphereCase) -> [f32; 3] {
     cosine_weighted_hemisphere(c.u1, c.u2, Vec3::from_array(c.n)).to_array()
 }
 
+/// Runs the cosine hemisphere check against the CPU reference.
 #[must_use]
 pub fn run_cosine_hemisphere(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -193,6 +194,7 @@ pub fn run_cosine_hemisphere(
 // see that function's own doc comment for the achromatic-by-design physics this pins.
 // ---------------------------------------------------------------------------------
 
+/// One input case for the frosted bounce check.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct FrostedBounceCase {
@@ -305,7 +307,7 @@ fn build_frosted_bounce_dense_cases(
 }
 
 /// Adversarial cases: the TIR-forced / partial-transmit boundary (`sin2_t` straddling
-/// exactly 1.0 -- the "hemisphere boundary" the task brief calls out), grazing incidence
+/// exactly 1.0 -- the hemisphere boundary), grazing incidence
 /// (`cos_i` essentially 0), normal incidence (`cos_i` essentially 1), and a
 /// zero-intensity edge case (`StokesVector::intensity()`'s own `.max(0.0)` clamp). Split
 /// out of [`build_frosted_bounce_cases`] for the same function-length reason as
@@ -470,6 +472,7 @@ fn cpu_frosted_bounce(case: &FrostedBounceCase, material: &GemMaterial) -> Frost
     )
 }
 
+/// Runs the frosted bounce check against the CPU reference.
 #[must_use]
 pub fn run_frosted_bounce(
     ctx: &crate::renderer::gpu::GpuContext,

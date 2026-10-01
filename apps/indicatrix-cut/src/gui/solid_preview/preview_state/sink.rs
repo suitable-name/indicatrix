@@ -1,7 +1,7 @@
 //! Where a finished (or status-only) solid-preview frame goes once the worker
 //! thread has it -- the [`PreviewSink`] trait and its [`PreviewFrame`] payload.
 
-use super::types::PickBuffer;
+use super::types::{FrameGeometry, PickBuffer};
 use glam::Vec3;
 use indicatrix::geometry::meet_solver::SolvedTier;
 
@@ -47,7 +47,7 @@ pub struct PreviewFrame {
     pub stale: bool,
     pub pick: PickBuffer,
     pub edges_image: Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>,
-    /// View mode 3's three-panel 2D facet diagram (`diagram2d::render_diagram`),
+    /// View mode 3's three-panel 2D faceting diagram (`diagram2d::render_diagram`),
     /// built only when the request's `view_mode` was `3` and the arrangement
     /// closed -- `None` otherwise (never built for view modes 0/1/2, matching
     /// `edges_image`'s own "only when asked for" contract).
@@ -63,6 +63,11 @@ pub struct PreviewFrame {
     /// from `diagram_pick` (different hit regions), using the same `PickBuffer`
     /// encoding. `None` when no diagram or arrangement did not close.
     pub diagram_tooth_pick: Option<PickBuffer>,
+    /// Which panel painted each pixel: the same `PickBuffer` encoding, but a lookup
+    /// yields the panel index (`0` Crown, `1` Pavilion, `2` Profile) that
+    /// `SolidPreviewModel.diagram_enlarged_panel` uses. Backs the double-click that
+    /// enlarges a panel. `None` when no diagram or arrangement did not close.
+    pub diagram_panel_pick: Option<PickBuffer>,
     /// Facet id -> full hover tooltip text (`facet_map::FacetMap::hover_text`),
     /// built alongside the diagram image so the UI thread can resolve a diagram
     /// hover without needing `Design`/`FacetMap` access itself. `None` when no
@@ -123,6 +128,16 @@ pub struct PreviewFrame {
     /// from them directly instead of leaving that to a second, separately
     /// dispatched `Design::solve()`.
     pub generation: u64,
+    /// `true` for a frame answering a [`super::request::RedrawRequest::Planned`]
+    /// request (a fresh replan of the design); `false` for a `Reproject`/
+    /// `UpdateFacetOverlay` frame, whose [`Self::generation`] is only the worker's
+    /// LAST planned generation carried forward. `gui::solid_sink`'s out-of-order
+    /// guard applies to planned frames only: a camera-follow frame legitimately
+    /// trails the `solid_last_solved` watermark whenever that cache was written by a
+    /// redraw-only path (`gui::editor::view::refresh_viewport`,
+    /// `gui::editor::auto_solve::apply::push_viewport_after_background_solve`),
+    /// neither of which ever sends a `Planned` request.
+    pub planned: bool,
     /// The current solid's own bounding radius (`mesh_cache::CachedMesh::
     /// bounding_radius`) -- whichever mesh this frame actually rendered
     /// from (a fresh build, or the dimmed `last_closed` fallback `super::render::
@@ -133,12 +148,16 @@ pub struct PreviewFrame {
     /// of a fixed range that clips a large preform or strands a tiny one in
     /// empty space.
     pub mesh_bounding_radius: f64,
+    /// The geometry of the mesh this frame was drawn from (corner points, facet
+    /// centroids, bounding radius) together with the camera pose and raster size the
+    /// rasterizer used -- what the direct-manipulation handles project with. `None`
+    /// only when no closed solid was ever built. Stored by the sink inside the same
+    /// UI-thread closure that swaps `pick`, so it always describes the pick buffer a
+    /// click resolves against.
+    pub geometry: Option<FrameGeometry>,
 }
 
 /// [`PreviewFrame::mesh_bounding_radius`]'s fallback before any arrangement has
-/// ever closed.
-///
-/// Roughly a standard round brilliant's own half-width (`ui/models/editor.slint`'s
-/// preform defaults are `1.20`/`1.50`), so the very first frame's distance clamp
-/// is already in a sensible range rather than `0.0` collapsing it to nothing.
-pub const DEFAULT_MESH_BOUNDING_RADIUS: f64 = 1.5;
+/// ever closed (`1.5`, roughly a standard round brilliant's own half-width) --
+/// moved with the render step to `indicatrix_solid::preview`, re-exported here.
+pub use indicatrix_solid::preview::DEFAULT_MESH_BOUNDING_RADIUS;

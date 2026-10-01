@@ -3,10 +3,18 @@
 //! never touching the socket itself. See `crate::serve`'s module docs for why that
 //! separation is the whole point.
 
-use super::{emitter::PendingDelta, sizing::next_batch_size};
-use crate::{cli::ComputeMode, render_core, render_core::hybrid::CalibrationOutcome};
+use super::{
+    emitter::PendingDelta,
+    sizing::{next_batch_size, remember_converged_subbatch, seeded_batch_size},
+};
+use crate::{
+    cli::ComputeMode,
+    render_core,
+    render_core::hybrid::{CachedCalibration, JobKey},
+};
 use glam::Vec3;
 use indicatrix::renderer::gpu_backend::GpuBackend;
+use indicatrix_dispatch::SampleRange;
 use indicatrix_net::{SceneState, messages::ErrorMsg};
 use std::{
     sync::{
@@ -55,6 +63,11 @@ pub(super) struct SharedState {
     /// `TransferMode::FinalOnly`, the final `DISPLAY_FRAME`, and `FINAL_IMAGE`; `None`
     /// falls back to the running total. Always `None` for [`run_tracer`].
     pub(super) final_total: Option<Vec<Vec3>>,
+    /// v16: samples of a `FinalImageRequest`'s viewer-reserved range the coordinator
+    /// ended up rendering itself, because the viewer's `CONTRIBUTION` didn't arrive in
+    /// time or was invalid. `0` otherwise, and always for [`run_tracer`] (a plain
+    /// worker never reserves a viewer share).
+    pub(super) reclaimed_samples: u32,
 }
 
 impl SharedState {
@@ -67,6 +80,7 @@ impl SharedState {
             panicked: false,
             failed: None,
             final_total: None,
+            reclaimed_samples: 0,
         }
     }
 }
@@ -104,16 +118,28 @@ pub(super) struct TracerJob {
 /// (GPU-first with per-frame CPU fallback for `OnlyGpu`; CPU-only for `OnlyCpu`, via a
 /// [`GpuBackend::disabled`] backend).
 ///
-/// For `Hybrid`, calibration spends 3 real samples (folded into `state` like any other
-/// sub-batch) measuring each engine's throughput. Four outcomes (see
-/// [`CalibrationOutcome`]): `Split` calibrates a concurrent hybrid split; `GpuDeclined`
-/// (no adapter, or an unsupported material) falls back to the either/or behavior for the
-/// whole job; `GpuDominates` is `HYBRID_MAX_GPU_SHARE` firing (measured GPU share so far
-/// ahead that splitting would cost more than it saves) and falls back similarly;
-/// `Cancelled` folds in whatever probe samples completed, then leaves `gpu_frac` at
-/// `None` (moot, since the sub-batch loop stops on the same flag immediately). Once
-/// calibrated, every subsequent sub-batch runs GPU and CPU concurrently over disjoint
-/// sample sub-ranges, re-measuring and blending the split as the job runs.
+/// For `Hybrid`, calibration goes through [`render_core::hybrid::calibrate_cached`]:
+/// a process-wide cache keyed on this job's [`JobKey`] (resource profile -- compute
+/// mode, GPU identity, thread count, resolution bucket; see that type's own doc comment)
+/// skips the real 3-sample probe entirely once a decision for that profile is already
+/// known, so a long-running stream's many jobs pay it once per profile rather than once
+/// per job. Four outcomes (see [`CachedCalibration`]): `Split` calibrates (or reuses) a
+/// concurrent hybrid split; `GpuDeclined` (no adapter, or an unsupported material) falls
+/// back to the either/or behavior for the whole job, and is never cached, since a decline
+/// can depend on the request's own material; `GpuOnly` is `HYBRID_MAX_GPU_SHARE` firing
+/// (measured GPU share so far ahead that splitting would cost more than it saves, fresh
+/// or replayed from the cache) and falls back similarly; `Cancelled` folds in whatever
+/// probe samples completed, then leaves `gpu_frac` at `None` (moot, since the sub-batch
+/// loop stops on the same flag immediately). Once calibrated, every subsequent sub-batch
+/// runs GPU and CPU concurrently over disjoint sample sub-ranges, re-measuring and
+/// blending the split as the job runs; [`render_core::hybrid::finalize_split_cache`]
+/// writes the job's own final blend back into the cache when the job ends, so later jobs
+/// seed from an estimate that keeps tracking the machine's real throughput.
+///
+/// The adaptive sub-batch size (see [`next_batch_size`]) is cached the same way, via
+/// [`seeded_batch_size`]/[`remember_converged_subbatch`] keyed on the same [`JobKey`] --
+/// for every `compute_mode`, not just `Hybrid`, since the ramp-up cost is the same
+/// regardless of which engine(s) are tracing.
 ///
 /// Runs the whole loop inside `catch_unwind`, so a panic anywhere in `indicatrix`'s
 /// tracer on pathological geometry sets `state.panicked` for `run_stream` to notice
@@ -126,19 +152,28 @@ pub(super) fn run_tracer(
     progress_tx: &mpsc::Sender<()>,
 ) {
     let reporter = Reporter { state, progress_tx };
+    // Every job's resource profile -- shared by the hybrid calibration cache and the
+    // sub-batch sizing cache, computed once so both read exactly the same key (see
+    // `render_core::hybrid::job_key`'s own doc comment for what it depends on).
+    let key = render_core::hybrid::job_key(gpu, &job.scene, job.threads, job.compute_mode);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut produced: u32 = 0;
-        let mut batch_size: u32 = 1;
+        let mut batch_size: u32 = seeded_batch_size(key);
 
         // Only `Hybrid` ever attempts a split -- `OnlyGpu`/`OnlyCpu` leave `gpu_frac`
         // `None` for the whole job.
         let mut gpu_frac: Option<f64> = if matches!(job.compute_mode, ComputeMode::Hybrid)
             && job.samples >= render_core::hybrid::HYBRID_MIN_SPP
         {
-            calibrate_hybrid_split(gpu, job, &reporter, cancel, &mut produced)
+            calibrate_hybrid_split(key, gpu, job, &reporter, cancel, &mut produced)
         } else {
             None
         };
+        // Whether this job actually started on the hybrid split path -- only then does
+        // `finalize_split_cache` get called below, so a `GpuOnly`/`GpuDeclined`/
+        // `Cancelled` outcome (or an `OnlyGpu`/`OnlyCpu` job that never calibrates at
+        // all) never evicts a cache entry it didn't itself create.
+        let started_on_split_path = gpu_frac.is_some();
 
         while produced < job.samples {
             if cancel.load(Ordering::Relaxed) {
@@ -180,6 +215,16 @@ pub(super) fn run_tracer(
             reporter.fold_and_notify(batch_first, this_batch, &buf, &mut produced);
 
             batch_size = next_batch_size(batch_size, elapsed);
+        }
+
+        // Write back this job's own converged state for the next job/chunk with the
+        // same resource profile -- see `run_tracer`'s own doc comment. Skipped entirely
+        // on a panic (this whole closure unwinds before reaching here), so a
+        // partially-completed, panicking job never poisons either cache with a bogus
+        // value.
+        remember_converged_subbatch(key, batch_size);
+        if started_on_split_path {
+            render_core::hybrid::finalize_split_cache(key, gpu_frac);
         }
     }));
 
@@ -277,13 +322,15 @@ impl Reporter<'_> {
     }
 }
 
-/// Runs [`render_core::hybrid::calibrate`] for a job that has already cleared
+/// Runs [`render_core::hybrid::calibrate_cached`] for a job that has already cleared
 /// `job.compute_mode == ComputeMode::Hybrid && job.samples >= HYBRID_MIN_SPP` (checked
-/// by [`run_tracer`], not re-checked here). Folds whatever `calibrate` produced via
-/// `reporter`, advances `*produced`, and returns the initial `gpu_frac` the sub-batch
-/// loop should start from (`Some` only for `Split`; every other outcome leaves the job
-/// on the single-engine path).
+/// by [`run_tracer`], not re-checked here). Folds whatever real samples were produced
+/// (`0` on a cache hit -- see [`CachedCalibration`]'s own doc comment) via `reporter`,
+/// advances `*produced`, and returns the initial `gpu_frac` the sub-batch loop should
+/// start from (`Some` only for `Split`; every other outcome leaves the job on the
+/// single-engine path).
 fn calibrate_hybrid_split(
+    key: JobKey,
     gpu: &GpuBackend,
     job: &TracerJob,
     reporter: &Reporter<'_>,
@@ -292,33 +339,32 @@ fn calibrate_hybrid_split(
 ) -> Option<f64> {
     let pixel_count = job.scene.width as usize * job.scene.height as usize;
     let mut calib_buf = vec![Vec3::ZERO; pixel_count];
-    match render_core::hybrid::calibrate(
+    match render_core::hybrid::calibrate_cached(
+        key,
         gpu,
         &job.scene,
-        job.first_sample,
-        job.samples,
+        SampleRange::new(job.first_sample, job.samples),
         job.threads,
         &mut calib_buf,
         cancel,
     ) {
-        CalibrationOutcome::Split(frac, consumed) => {
-            reporter.fold_and_notify(job.first_sample, consumed, &calib_buf, produced);
-            Some(frac)
+        CachedCalibration::Split { gpu_frac, consumed } => {
+            if consumed > 0 {
+                reporter.fold_and_notify(job.first_sample, consumed, &calib_buf, produced);
+            }
+            Some(gpu_frac)
         }
-        // Falls through to the single-engine path below.
-        CalibrationOutcome::GpuDeclined => None,
-        CalibrationOutcome::GpuDominates { gpu_share_frac } => {
-            // HYBRID_MAX_GPU_SHARE firing. Runs at most once per job, before the
-            // sub-batch loop begins.
-            tracing::info!(
-                gpu_share_pct = gpu_share_frac * 100.0,
-                "hybrid CPU+GPU split declined: measured GPU share exceeds the hybrid \
-                 cutoff, so this job runs GPU-only (splitting measured slower on this \
-                 hardware)"
-            );
+        // Falls through to the single-engine path below. Any `info`/`debug` logging for
+        // this decision already happened inside `calibrate_cached` itself (fresh
+        // calibration vs. cache hit), not here.
+        CachedCalibration::GpuOnly { consumed } => {
+            if consumed > 0 {
+                reporter.fold_and_notify(job.first_sample, consumed, &calib_buf, produced);
+            }
             None
         }
-        CalibrationOutcome::Cancelled { consumed } => {
+        CachedCalibration::GpuDeclined => None,
+        CachedCalibration::Cancelled { consumed } => {
             // Cancelled during calibration itself -- consumed samples are folded in
             // like Split's accounting, so progress is never silently dropped.
             // Returning `None` is moot: the sub-batch loop checks the same flag on its

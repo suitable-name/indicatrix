@@ -53,10 +53,8 @@ impl JoinTarget {
     /// A human-readable message if `addr` isn't `host:port` or a bundle file can't be
     /// loaded.
     pub fn from_bundle(addr: &str, cert_dir: &Path) -> Result<Self, String> {
-        let (host, _port) = addr
-            .rsplit_once(':')
+        let host = indicatrix_net::tls::host_for_server_name(addr)
             .ok_or_else(|| format!("coordinator address {addr:?} must be host:port"))?;
-        let host = host.trim_start_matches('[').trim_end_matches(']');
         let server_name = ServerName::try_from(host.to_string())
             .map_err(|e| format!("coordinator address {addr:?}: invalid host for TLS: {e}"))?;
         let ca_path = cert_dir.join(pki::CA_CERT_FILE);
@@ -94,14 +92,40 @@ pub struct WorkerSetup {
     pub threads: usize,
     /// `--only-gpu`/`--only-cpu`/hybrid.
     pub compute_mode: ComputeMode,
-    /// What the `HELLO` reports ([`serve::local_render_capability`]); `hdr` exactly when
-    /// [`Self::assets`] is `Some`.
+    /// The capability at start-up ([`serve::local_render_capability`]); `hdr` exactly when
+    /// [`Self::assets`] is `Some`. Every field except the backend is advertised as given
+    /// here; the backend is recomputed from [`Self::gpu`] by [`Self::current_capability`]
+    /// on every connection, since a lost GPU device can come back (or go away) between
+    /// reconnects.
     pub capability: RenderCapability,
     /// The HDR asset cache (shared by every slot): HDR scenes are resolved
     /// through it, missing maps asked of the coordinator. `None` (it could not be
     /// opened) refuses HDR scenes -- and the `HELLO` then says `hdr: false`, so the
     /// coordinator never sends any.
     pub assets: Option<Arc<AssetCache>>,
+}
+
+impl WorkerSetup {
+    /// The capability the next `HELLO` reports: [`Self::capability`] with its backend
+    /// taken from the GPU's state right now.
+    ///
+    /// Gives a lost device its chance to come back first ([`GpuBackend::try_recover`],
+    /// which honours the backend's own cool-down and hourly attempt budget), so a worker
+    /// whose GPU recovered re-registers as `Gpu`, and one whose GPU was lost registers as
+    /// `Cpu` rather than advertising an adapter it cannot use.
+    #[must_use]
+    pub fn current_capability(&self) -> RenderCapability {
+        if !self.gpu.try_recover() {
+            tracing::debug!(
+                "indicatrix-worker join: the GPU is lost and not yet recoverable; advertising \
+                 the CPU backend"
+            );
+        }
+        RenderCapability {
+            backend: serve::local_render_capability(&self.gpu, self.threads).backend,
+            ..self.capability.clone()
+        }
+    }
 }
 
 /// Why a join attempt did not get as far as registering.
@@ -164,7 +188,8 @@ pub struct Session {
 /// A [`JoinError`] if the connection never registered.
 pub fn join_once(target: &JoinTarget, setup: &WorkerSetup) -> Result<Session, JoinError> {
     let mut tls = dial(target)?;
-    let hello = handshake::local_worker_hello(setup.capability.clone());
+    // Recomputed per connection, not reused from start-up: see `WorkerSetup::capability`.
+    let hello = handshake::local_worker_hello(setup.current_capability());
     let welcome = handshake_with_hello(&mut tls, &hello).map_err(|e| match e {
         ClientError::Refused(refusal) => JoinError::Refused(refusal),
         other => JoinError::Handshake(other.to_string()),

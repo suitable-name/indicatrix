@@ -64,14 +64,32 @@ pub fn run(args: &JoinArgs) -> Result<(), String> {
     check_worker_bundle(&args.cert_dir)?;
     let target = Arc::new(JoinTarget::from_bundle(&args.coordinator, &args.cert_dir)?);
 
+    // Acquired once; a device lost later is re-acquired by the backend itself (cool-down
+    // and hourly attempt budget in `indicatrix::renderer::gpu_backend`), and every
+    // reconnect advertises the backend's state at that moment
+    // (`WorkerSetup::current_capability`).
     let gpu = Arc::new(if args.compute_mode == ComputeMode::OnlyCpu {
         GpuBackend::disabled()
     } else {
         GpuBackend::acquire()
     });
+    // Makes the hybrid CPU/GPU split decision once, before the coordinator's first real
+    // chunk, rather than paying its 3-sample probe on whichever chunk happens to arrive
+    // first. Only meaningful with a real adapter and the hybrid path (`OnlyGpu`/
+    // `OnlyCpu` never calibrate a split at all -- see `render_core::hybrid::job_key`'s
+    // doc comment).
+    if args.compute_mode == ComputeMode::Hybrid && gpu.adapter_label().is_some() {
+        crate::render_core::hybrid::calibrate_now(
+            &gpu,
+            &probe_scene(),
+            args.threads,
+            args.compute_mode,
+        );
+    }
     // HDR maps are cached next to the certificate bundle (or where
     // INDICATRIX_ASSET_CACHE_DIR says); without a cache this worker takes no HDR jobs.
     let assets = crate::assets::open_configured(&args.cert_dir);
+    // The start-up baseline: the HELLO recomputes its backend from `gpu` per connection.
     let capability = indicatrix_net::messages::RenderCapability {
         hdr: assets.is_some(),
         ..crate::serve::local_render_capability(&gpu, args.threads)
@@ -104,6 +122,36 @@ pub fn run(args: &JoinArgs) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// A representative scene for [`crate::render_core::hybrid::calibrate_now`]'s start-up
+/// probe: a real, traceable scene (so the probe measures genuine per-dispatch overhead,
+/// not just call overhead) at a typical interactive/live-view resolution. Only its
+/// resolution matters to the calibration decision (`render_core::hybrid::job_key`
+/// buckets to the enclosing power of two), so the exact material/geometry/lighting
+/// below are arbitrary.
+fn probe_scene() -> indicatrix_net::SceneState {
+    use indicatrix::{
+        geometry::cuts::StandardGemCuts,
+        optics::{materials::GemMaterial, raytracer::LightingPreset},
+    };
+    indicatrix_net::SceneState {
+        width: 512,
+        height: 512,
+        yaw: 0.4,
+        pitch: 0.3,
+        distance: 3.0,
+        light_yaw: 0.85,
+        light_pitch: 0.95,
+        exposure: 1.0,
+        max_bounces: 4,
+        lighting_preset: LightingPreset::Daylight,
+        material: GemMaterial::diamond(),
+        planes: StandardGemCuts::standard_round_brilliant(),
+        girdle_frosted: false,
+        backdrop: 0.0,
+        environment: indicatrix_net::scene::SceneEnvironment::Studio,
+    }
 }
 
 /// Refuses a bundle whose certificate is not a WORKER certificate, with the fix.

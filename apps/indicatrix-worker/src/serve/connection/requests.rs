@@ -9,12 +9,12 @@ use crate::{
     assets::{self, AssetCache, Fetched, HdrRoute, HeldAsset},
     cli::ComputeMode,
     coordinator::{self, CapabilityWatch, ViewerSession},
-    stream_emit::{self, StreamOutcome, TimeoutRead, TimeoutWrite},
+    stream_emit::{self, StreamOutcome, TimeoutRead, TimeoutWrite, is_stream_timeout},
     validate,
 };
 use indicatrix::renderer::gpu_backend::GpuBackend;
 use indicatrix_net::{
-    framing::FramingError,
+    framing::{FramingError, IDLE_READ_TIMEOUT},
     messages::{
         ClientMessage, ErrorMsg, FinalImageRequest, NetError, PayloadEncoding, RenderRequest,
         StreamEvent, TiltCurvesRequest, TransferMode, error_codes,
@@ -30,11 +30,11 @@ use std::{
 /// failed [`validate::validate_scene`] -- shared verbatim between `RenderRequest`
 /// and `TiltCurvesRequest` validation failures even though the reply envelope
 /// differs.
-pub const VALIDATION_FAILED_CODE: u32 = 2;
+pub const VALIDATION_FAILED_CODE: u32 = error_codes::VALIDATION_FAILED;
 /// `<- ERROR`/`TiltCurvesResponse::Error` code for a `indicatrix` panic caught by
 /// `catch_unwind` on a validation-passing but pathological scene; shared with
 /// [`VALIDATION_FAILED_CODE`]'s reasoning.
-pub const TRACE_PANIC_CODE: u32 = 3;
+pub const TRACE_PANIC_CODE: u32 = error_codes::TRACE_PANIC;
 
 /// Everything [`serve_requests`] needs for one connection.
 pub struct RequestContext<'a> {
@@ -67,13 +67,18 @@ pub struct RequestContext<'a> {
 
 /// Writes the `UNSUPPORTED_REQUEST` reply for a well-formed request this server does
 /// not implement yet -- the connection stays open for the next one.
-fn refuse_unsupported<S: Write>(stream: &mut S, what: &str) -> Result<(), NetError> {
+fn refuse_unsupported<S: Write>(
+    stream: &mut S,
+    what: &str,
+    request_id: u32,
+) -> Result<(), NetError> {
     tracing::info!("refusing an unsupported request: {what}");
     indicatrix_net::messages::write_stream_event(
         stream,
         &StreamEvent::Error(ErrorMsg {
             code: error_codes::UNSUPPORTED_REQUEST,
             message: format!("{what} is not supported by this server (a plain worker)"),
+            request_id: Some(request_id),
         }),
         None,
     )
@@ -90,6 +95,7 @@ fn refuse_without_own_lane<S: Write>(stream: &mut S, request_id: u32) -> Result<
             "RenderRequest (request_id={request_id}): this server has no render lane; its WELCOME \
              advertised no render capability"
         ),
+        request_id: Some(request_id),
     };
     tracing::info!("{}", error.message);
     indicatrix_net::messages::write_stream_event(stream, &StreamEvent::Error(error), None)
@@ -158,6 +164,7 @@ pub fn serve_requests<S: Read + Write + TimeoutRead + TimeoutWrite>(
                 refuse_unsupported(
                     stream,
                     &format!("FinalImageRequest (request_id={})", request.request_id),
+                    request.request_id,
                 )?;
                 None
             }
@@ -193,6 +200,7 @@ fn serve_one_render<S: Read + Write + TimeoutRead + TimeoutWrite>(
                 "TransferMode::DisplayOnly (request_id={})",
                 request.request_id
             ),
+            request.request_id,
         )?;
         return Ok(None);
     }
@@ -208,6 +216,7 @@ fn serve_one_render<S: Read + Write + TimeoutRead + TimeoutWrite>(
             &StreamEvent::Error(ErrorMsg {
                 code: VALIDATION_FAILED_CODE,
                 message: msg,
+                request_id: Some(request.request_id),
             }),
             None,
         )?;
@@ -217,6 +226,7 @@ fn serve_one_render<S: Read + Write + TimeoutRead + TimeoutWrite>(
     // Runs the tracer on its own thread (never touching `stream`) and this thread as
     // the emitter -- see `stream_emit`'s module docs. The tracer thread runs inside
     // `catch_unwind`, surfaced here as [`StreamOutcome::TracePanicked`].
+    let started = std::time::Instant::now();
     let (outcome, next) = stream_emit::run_stream(
         stream,
         &request,
@@ -225,6 +235,18 @@ fn serve_one_render<S: Read + Write + TimeoutRead + TimeoutWrite>(
         ctx.compute_mode,
         ctx.payload_encoding,
     )?;
+    // The one line a request that SUCCEEDS leaves on the console: without it "went
+    // quiet" cannot tell "stopped being asked" from "stopped answering".
+    tracing::info!(
+        request_id = request.request_id,
+        intent = ?request.intent,
+        size = %format_args!("{}x{}", request.scene.width, request.scene.height),
+        samples = request.samples,
+        route = "plain worker",
+        elapsed = ?started.elapsed(),
+        %outcome,
+        "worker: served a render request"
+    );
     let error = match outcome {
         StreamOutcome::Completed => None,
         StreamOutcome::TracePanicked => {
@@ -237,8 +259,10 @@ fn serve_one_render<S: Read + Write + TimeoutRead + TimeoutWrite>(
             Some(ErrorMsg {
                 code: TRACE_PANIC_CODE,
                 message: "internal error while tracing this request".to_string(),
+                request_id: Some(request.request_id),
             })
         }
+        // `stream_emit::run_stream` already stamped this error's `request_id`.
         StreamOutcome::Failed(error) => Some(error),
     };
     if let Some(error) = error {
@@ -399,17 +423,27 @@ enum NextRequest {
 ///
 /// # Errors
 ///
-/// Returns [`NetError`] for a transport-level failure. `Ok(None)` (not an error) for
-/// a clean EOF.
+/// Returns [`NetError`] for a transport-level failure (including a connection that ends
+/// inside a frame). `Ok(None)` (not an error) for a clean EOF between messages, and for
+/// a connection that sent nothing for [`IDLE_READ_TIMEOUT`], which is closed with a
+/// logged reason.
 fn read_next_message<S: Read + Write + TimeoutRead>(
     stream: &mut S,
     db: Option<&Database>,
     mut watch: Option<&mut CapabilityWatch>,
 ) -> Result<Option<NextRequest>, NetError> {
     loop {
-        let read = match watch.as_deref_mut() {
-            Some(watch) => coordinator::read_message_watching(stream, watch),
-            None => indicatrix_net::messages::read_message(stream).map(Some),
+        let read = if let Some(watch) = watch.as_deref_mut() {
+            coordinator::read_message_watching(stream, watch)
+        } else {
+            // Arm the idle deadline for this wait: the emitter and the asset fetch
+            // reset the socket's read timeout to blocking after they finish. A
+            // `join`ed worker's connection has no database; its stream maps
+            // "blocking" to its own, shorter coordinator-liveness deadline, which
+            // must stay in force.
+            let idle = db.is_some().then_some(IDLE_READ_TIMEOUT);
+            let _ = stream.set_read_timeout(idle);
+            indicatrix_net::messages::read_control_message(stream).map(Some)
         };
         let msg: ClientMessage = match read {
             Ok(Some(m)) => m,
@@ -417,6 +451,13 @@ fn read_next_message<S: Read + Write + TimeoutRead>(
             Err(NetError::Framing(FramingError::Io(e)))
                 if e.kind() == std::io::ErrorKind::UnexpectedEof =>
             {
+                return Ok(None);
+            }
+            Err(NetError::Framing(FramingError::Io(e))) if is_stream_timeout(&e) => {
+                tracing::info!(
+                    "closing a connection that sent nothing for {} s (idle timeout)",
+                    IDLE_READ_TIMEOUT.as_secs()
+                );
                 return Ok(None);
             }
             Err(e) => return Err(e),
@@ -432,6 +473,11 @@ fn read_next_message<S: Read + Write + TimeoutRead>(
             ClientMessage::Ping { nonce } => write_pong(stream, nonce)?,
             // An asset nobody asked for: consume its payload frame.
             ClientMessage::Asset(header) => assets::discard_asset(stream, &header)?,
+            // A stray v16 contribution (e.g. arriving after this request's own DONE):
+            // consume its payload frame to stay in sync.
+            ClientMessage::Contribution(header) => {
+                indicatrix_net::messages::discard_contribution_payload(stream, &header)?;
+            }
             other @ (ClientMessage::Cancel(_) | ClientMessage::Library(_)) => {
                 handle_non_render_message(stream, &other, db)?;
             }

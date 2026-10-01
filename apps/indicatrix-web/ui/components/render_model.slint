@@ -1,0 +1,63 @@
+// The renderer's global: the frame and its status (pushed by `src/render/live.rs`),
+// the render settings panel's values (`src/render/panel.rs` pushes them and reads
+// them back on `settings-edited`), and the PNG export dialog (`src/render/export.rs`).
+// Named in `app.slint`'s export block, which is what makes it a Rust type.
+export global RenderModel {
+    // -- The live frame --------------------------------------------------------------
+    in property <image> frame;
+    in property <bool> has-frame: false;
+    // "128/256 spp · 41 spp/s · 7 workers", "" before the first pass.
+    in property <string> progress-text: "";
+    // Why nothing (new) is rendering -- solving, an unresolved material, a design that
+    // does not solve -- shown centred over the view; "" when rendering.
+    in property <string> overlay-text: "";
+    // A render Worker crashed: the view offers "Restart render workers".
+    in property <bool> workers-failed: false;
+
+    // -- The settings panel ------------------------------------------------------------
+    in-out property <bool> panel-open: false;
+    in-out property <float> exposure: 1.0;
+    in-out property <float> light-yaw-deg: 48.0;
+    in-out property <float> light-pitch-deg: 54.0;
+    // The lighting preset reads the light direction (all but the ISO hemisphere).
+    in property <bool> light-direction-used: true;
+    // 0 as lit, 1 grey, 2 white.
+    in-out property <int> backdrop-index: 1;
+    in-out property <int> bounces: 12;
+    in-out property <int> target-spp: 256;
+    in-out property <bool> denoise: true;
+    in-out property <bool> frosted-girdle: false;
+    // The desktop's "Linked to design": material and stone size follow the design.
+    in-out property <bool> link-material: true;
+    in-out property <bool> c-axis-override: false;
+    in-out property <float> c-axis-tilt-deg: 0.0;
+    in-out property <float> c-axis-azimuth-deg: 0.0;
+    in-out property <float> inclusion-sigma-s: 0.0;
+    in-out property <float> edge-rounding: 0.0;
+    in-out property <float> stone-width-mm: 0.0;
+    in-out property <bool> use-hdr: true;
+
+    // -- The PNG export dialog ---------------------------------------------------------
+    in-out property <bool> export-open: false;
+    in-out property <int> export-long-edge: 1600;
+    in-out property <int> export-spp: 256;
+    // 0 sRGB, 1 Display P3.
+    in-out property <int> export-color-space: 0;
+    in-out property <bool> export-denoise: false;
+    // "1600 x 1200 px".
+    in property <string> export-size-text: "";
+    in property <bool> export-running: false;
+    in property <float> export-progress: 0.0;
+    in property <string> export-status: "";
+
+    // -- Actions -------------------------------------------------------------------------
+    // Any panel control changed: Rust reads every panel property above.
+    callback settings-edited();
+    callback load-hdr();
+    callback restart-workers();
+    // An export dialog field changed (the size text follows).
+    callback export-edited();
+    callback export-start();
+    callback export-cancel();
+    callback export-close();
+}

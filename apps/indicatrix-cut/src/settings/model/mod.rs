@@ -611,4 +611,23 @@ address = "10.0.0.9:9443"
         assert_eq!(parsed.settings.preview_size, 128);
         assert_eq!(parsed.settings.preview_spp, 64);
     }
+
+    // ---- v16: AppSettings::contribute_to_final_picture ---------------------------
+
+    /// Defaults `true` (both for a fresh install and a settings file that predates this
+    /// control), and round-trips either value through TOML.
+    #[test]
+    fn contribute_to_final_picture_defaults_true_when_absent_and_round_trips() {
+        assert!(AppSettings::default().contribute_to_final_picture);
+
+        let toml_str = "[settings]\nexposure = 1.2\n";
+        let parsed: SettingsFile = toml::from_str(toml_str).expect("deserialize");
+        assert!(parsed.settings.contribute_to_final_picture);
+
+        let mut file = SettingsFile::default();
+        file.settings.contribute_to_final_picture = false;
+        let toml_str = toml::to_string_pretty(&file).expect("serialize");
+        let parsed: SettingsFile = toml::from_str(&toml_str).expect("deserialize");
+        assert!(!parsed.settings.contribute_to_final_picture);
+    }
 }

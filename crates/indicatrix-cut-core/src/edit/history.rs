@@ -3,7 +3,7 @@
 
 use super::edit_type::{Edit, EditError};
 use crate::design::Design;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// An undo/redo stack of [`Edit`]s over one [`Design`].
 ///
@@ -24,7 +24,7 @@ pub struct History {
     /// existing `assert_eq!(design, ...)` in this crate compares `Design`, never
     /// `History`, and the handful of direct `History` comparisons are `can_undo`/
     /// `can_redo` checks that don't care about this field either).
-    last_coalesce: Option<(u64, Instant)>,
+    last_coalesce: Option<(u64, Duration)>,
     /// This instance's own coalescing window -- [`Self::COALESCE_WINDOW`] unless
     /// built via [`Self::with_coalesce_window`]. A fixed,
     /// crate-wide 500ms suits one caller (a keyboard/wheel angle nudge) but not
@@ -131,6 +131,18 @@ impl History {
     /// separate storage for, since the old inverse already IS that combined undo
     /// step.
     ///
+    /// # The `now` timestamp
+    ///
+    /// `now` is a caller-supplied monotonic timestamp: the time elapsed since an
+    /// arbitrary origin the caller keeps fixed for this `History`'s lifetime (the
+    /// desktop measures it from a process-wide `std::time::Instant`; a browser can
+    /// pass `performance.now()` converted with `Duration::from_secs_f64(ms / 1000.0)`).
+    /// Only differences between successive `now` values matter, so the origin itself
+    /// never does. It is a plain [`Duration`] rather than a `std::time::Instant`
+    /// because `Instant::now()` panics on `wasm32-unknown-unknown`. A `now` earlier
+    /// than the previous call's (a clock that stepped back) counts as zero elapsed
+    /// time, exactly like `Instant::saturating_duration_since`.
+    ///
     /// # Errors
     ///
     /// Propagates [`Design::apply_edit`]'s error verbatim -- `design` (and this
@@ -140,12 +152,12 @@ impl History {
         design: &mut Design,
         edit: Edit,
         key: u64,
-        now: Instant,
+        now: Duration,
     ) -> Result<(), EditError> {
         let description = edit.describe(design);
         let inverse = design.apply_edit(edit)?;
         let merges = self.last_coalesce.is_some_and(|(last_key, last_time)| {
-            last_key == key && now.saturating_duration_since(last_time) <= self.coalesce_window
+            last_key == key && now.saturating_sub(last_time) <= self.coalesce_window
         });
         if merges {
             // The undo entry recorded by the FIRST nudge in this run already reverts

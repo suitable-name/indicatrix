@@ -4,19 +4,17 @@
 //! [`cancellation`] (`CANCEL`, the write-timeout bound, pipelining), [`tilt_curves`]
 //! (the connection stays usable afterward), [`v14`] (payload-encoding negotiation and
 //! compressed streams, `PING`/`PONG`, the v14 refusals), [`hdr_assets`] (an HDR
-//! scene's map fetched once by `NEED_ASSET`/`ASSET`), and [`repro`] (a manual,
-//! `#[ignore]`d real-socket repro). [`fixtures`] holds the scene/database builders and `Read + Write`
+//! scene's map fetched once by `NEED_ASSET`/`ASSET`). [`fixtures`] holds the scene/database builders and `Read + Write`
 //! test doubles shared across them.
 //!
 //! [`mtls`] (real mutual-TLS handshakes over real loopback sockets) is a separate,
 //! larger test suite kept in its own file, as it always has been.
 
 mod cancellation;
-mod fixtures;
+pub mod fixtures;
 mod handshake;
 mod hdr_assets;
 mod render_roundtrip;
-mod repro;
 mod streaming;
 mod tilt_curves;
 mod v14;

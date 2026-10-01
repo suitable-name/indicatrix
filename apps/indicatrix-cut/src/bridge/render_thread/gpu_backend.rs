@@ -64,24 +64,19 @@ pub(super) struct ViewportGpu {
     /// unchanged pose copies nothing rather than memcpying ~10 MB every frame.
     applied_guide_key: Option<crate::bridge::frame_cache::guide_pass::GuideKey>,
     /// Set once a joined GPU-thread panic is observed (see [`hybrid_frame`])
-    /// and never cleared -- `GpuBackend` itself only retires its OWN `lost` flag on a
-    /// cleanly-reported [`indicatrix::renderer::gpu::GpuFrameError::DeviceLost`], which
+    /// and never cleared -- `GpuBackend` itself only recovers from a cleanly-reported
+    /// [`indicatrix::renderer::gpu::GpuFrameError::DeviceLost`], which
     /// a raw thread panic never reaches (the panic unwinds past the normal return path
     /// entirely). Without this, a panic observed only through `hybrid_frame`'s joined
     /// thread left the single-engine path at [`accumulate_frame_samples`] free to call
     /// [`Self::try_accumulate`] again next frame, straight back into the wgpu state
-    /// that produced the panic.
+    /// that produced the panic. A reported device loss is deliberately NOT tracked here:
+    /// `GpuBackend` owns that recovery (see [`Self::try_accumulate`]).
     gpu_retired: bool,
-    /// True once a post-loss re-acquire attempt (see
-    /// [`Self::try_accumulate`]'s own doc comment) has ALSO failed -- permanently
-    /// falls back to the CPU tracer for the rest of this session, mirroring
-    /// [`Self::gpu_retired`]'s "never cleared" policy for a different trigger
-    /// (`GpuBackend::is_lost` rather than a joined thread panic).
-    cpu_fallback: bool,
     /// User-facing status text for the viewport's own status pill
     /// (`ui/components/gem_viewport.slint`'s `ViewportModel.gpu_status_text`) --
     /// `None` while healthy or on a CPU-only build (nothing to report), `Some` while
-    /// transiently re-acquiring or once [`Self::cpu_fallback`] is permanent. The
+    /// the device is lost or once [`Self::gpu_retired`] is set. The
     /// render loop polls [`Self::status_message`] once per frame and only pushes a
     /// Slint property write when it actually changed -- see `spawn_render_thread`'s
     /// own `last_gpu_status` local.
@@ -95,7 +90,6 @@ impl ViewportGpu {
             guides: crate::bridge::frame_cache::guide_pass::GuideCache::new(),
             applied_guide_key: None,
             gpu_retired: false,
-            cpu_fallback: false,
             status_message: None,
         }
     }
@@ -136,27 +130,22 @@ impl ViewportGpu {
     /// Accumulates one frame's samples on the GPU and refreshes the guide buffers.
     ///
     /// Returns `false` without touching `out` if the GPU declines OR this backend was
-    /// already [`Self::retire`]d/has permanently fallen back to the CPU tracer, in
-    /// which case the caller must run the CPU path for this frame.
+    /// already [`Self::retire`]d, in which case the caller must run the CPU path for this
+    /// frame.
     ///
-    /// # Self-healing a lost device
+    /// # Lost devices
     ///
-    /// `GpuBackend::try_accumulate` (crate-level) correctly stops dispatching into a
-    /// lost device, but nothing above it on its own tells the user or tries to recover --
-    /// left unhandled, the viewport would just stop updating forever, with no crash
-    /// (this app installs no `tracing` subscriber, so even the crate's own
-    /// `tracing::warn!` goes nowhere). So a decline is checked against
-    /// [`GpuBackend::is_lost`]: an ORDINARY decline
+    /// Recovery belongs to [`GpuBackend`] alone: a lost device makes it decline, and at
+    /// the start of each later request it re-acquires a fresh device once its cool-down
+    /// has passed (`GpuBackend::try_recover`, within an hourly attempt budget). This
+    /// wrapper never swaps the backend itself; it only reports. An ORDINARY decline
     /// (unsupported material/environment, or no adapter at all -- neither sets `lost`)
-    /// still just falls back to the CPU for this one frame, no status change, exactly
-    /// as before. A decline caused by a genuine loss drops the poisoned backend and
-    /// re-acquires a fresh [`GpuBackend`] ONCE, retrying THIS SAME frame against it
-    /// (see [`Self::reacquire_after_loss`]) -- if that also fails, this session gives
-    /// up on the GPU for good ([`Self::cpu_fallback`]). Either way
-    /// [`Self::status_message`] carries a user-visible reason for the viewport's own
-    /// status pill, and clears back to `None` the moment a GPU frame succeeds again.
+    /// falls back to the CPU for this one frame with no status change. A decline caused
+    /// by a genuine loss also runs the frame on the CPU and sets [`Self::status_message`]
+    /// for the viewport's status pill; the message clears the moment a GPU frame
+    /// succeeds again.
     fn try_accumulate(&mut self, frame: &BackendFrame<'_>, out: &mut FrameOutputs<'_>) -> bool {
-        if self.gpu_retired || self.cpu_fallback {
+        if self.gpu_retired {
             return false;
         }
         let scene = GpuSceneRef {
@@ -181,50 +170,29 @@ impl ViewportGpu {
             // An ordinary per-call decline -- not a loss, nothing to heal.
             return false;
         }
-        self.reacquire_after_loss(&scene, frame, out)
+        self.note_device_loss();
+        false
     }
 
-    /// The self-healing path [`Self::try_accumulate`] takes once [`GpuBackend::is_lost`]
-    /// confirms this frame's decline was a genuine device loss rather than an ordinary
-    /// one. Split out purely to keep `try_accumulate` under clippy's function-length
-    /// limit; see that function's own doc comment for the full sequence.
-    fn reacquire_after_loss(
-        &mut self,
-        scene: &GpuSceneRef<'_>,
-        frame: &BackendFrame<'_>,
-        out: &mut FrameOutputs<'_>,
-    ) -> bool {
-        let reason = self
-            .gpu
-            .last_lost_reason()
-            .unwrap_or_else(|| "unknown reason".to_string());
-        tracing::warn!(%reason, "GPU renderer lost; dropping it and re-acquiring once");
-        self.status_message = Some("GPU renderer lost \u{2014} reacquiring\u{2026}".to_string());
-        self.gpu = GpuBackend::acquire();
-        if self
-            .gpu
-            .try_accumulate(scene, frame.sample_offset, frame.spp, out.accum)
-        {
-            tracing::info!(%reason, "GPU renderer re-acquired successfully after loss");
-            self.status_message = None;
-            self.copy_guides(frame, out);
-            return true;
+    /// Records a genuine device loss in the status pill. The backend recovers itself
+    /// (cool-down, attempt budget) at the start of a later request, so this only reports:
+    /// the frame that hit the loss, and every frame until recovery, runs on the CPU
+    /// tracer. The log line is written once per loss, on the transition into the lost
+    /// state, not on every declined frame.
+    fn note_device_loss(&mut self) {
+        if self.status_message.is_none() {
+            let reason = self
+                .gpu
+                .last_lost_reason()
+                .unwrap_or_else(|| "unknown reason".to_string());
+            tracing::warn!(%reason, "GPU renderer lost; rendering on the CPU tracer until it recovers");
+            self.status_message = Some(format!("CPU fallback (GPU lost: {reason})"));
         }
-        tracing::warn!(
-            %reason,
-            "GPU re-acquire failed (or was lost again immediately); falling back to the \
-             CPU tracer for the rest of this session"
-        );
-        self.cpu_fallback = true;
-        self.status_message = Some(format!("CPU fallback (GPU lost: {reason})"));
-        false
     }
 
     /// Copies the guide buffers for `frame`'s pose/geometry into `out` if they are not
     /// already the ones last applied -- see [`Self::applied_guide_key`]'s own doc
-    /// comment. Split out of [`Self::try_accumulate`] so both the first GPU attempt and
-    /// the post-re-acquire retry in [`Self::reacquire_after_loss`] share one copy of
-    /// this logic instead of two copies that could drift.
+    /// comment. Split out of [`Self::try_accumulate`] to keep it short.
     fn copy_guides(&mut self, frame: &BackendFrame<'_>, out: &mut FrameOutputs<'_>) {
         let key = crate::bridge::frame_cache::guide_pass::GuideCache::key_for(
             frame.width,
@@ -347,7 +315,7 @@ fn hybrid_frame(
 ) {
     let cpu_share = frame.spp - gpu_share;
     let pixel_count = (frame.width as usize) * (frame.height as usize);
-    hybrid.reset_scratch(pixel_count);
+    hybrid.prepare_scratch(pixel_count);
     let (gpu_ok, gpu_time, cpu_time, gpu_panicked) = {
         let cpu_scratch = &mut hybrid.cpu_scratch;
         let cpu_depth = &mut hybrid.scratch_depth;
@@ -464,14 +432,20 @@ impl HybridPacing {
         Some(share.min(cap))
     }
 
-    fn reset_scratch(&mut self, pixel_count: usize) {
+    /// Sizes the scratch buffers for a `pixel_count`-pixel frame and zeroes the part that
+    /// needs it.
+    ///
+    /// Only the radiance scratch must start at zero, because the scanline tracer adds
+    /// into it. The three guide scratch buffers are throwaway: the tracer overwrites every
+    /// pixel of each on every call, so they are only resized (growth fills with the miss
+    /// sentinels) and never cleared, which saves 20 of the 32 bytes per pixel the old
+    /// full reset wrote each frame. The radiance clear and the merge still cover every
+    /// pixel because the CPU share traces the whole frame, not a band of rows.
+    fn prepare_scratch(&mut self, pixel_count: usize) {
         self.cpu_scratch.clear();
         self.cpu_scratch.resize(pixel_count, Vec3::ZERO);
-        self.scratch_depth.clear();
-        self.scratch_depth.resize(pixel_count, 0.0);
-        self.scratch_normal.clear();
+        self.scratch_depth.resize(pixel_count, 1.0e6);
         self.scratch_normal.resize(pixel_count, Vec3::ZERO);
-        self.scratch_facet.clear();
         self.scratch_facet.resize(pixel_count, -1);
     }
 
@@ -537,7 +511,7 @@ mod gpu_hardware_tests {
     /// `accum_samples` does), for the given pipeline kind. Every call must succeed
     /// (`true`), and `status_message()` must stay `None` throughout -- any `Some` means
     /// a turn was declared `DeviceLost` and the self-healing path in
-    /// `ViewportGpu::try_accumulate`/`reacquire_after_loss` had to react, which is
+    /// `ViewportGpu::try_accumulate` had to report a loss, which is
     /// exactly the poisoning this bug report describes.
     fn assert_twelve_rotated_frames_never_lose_the_device(pipeline_kind: GpuPipelineKind) {
         let mut viewport = ViewportGpu::acquire();
@@ -562,15 +536,7 @@ mod gpu_hardware_tests {
         let mut facet_id = vec![-1i32; pixel_count];
 
         for frame in 0..12u32 {
-            #[allow(
-                clippy::cast_precision_loss,
-                reason = "frame index is tiny; precision loss is not a concern in this test"
-            )]
             let yaw = (frame as f32).mul_add(0.29, 0.1);
-            #[allow(
-                clippy::cast_precision_loss,
-                reason = "frame index is tiny; precision loss is not a concern in this test"
-            )]
             let pitch = (frame as f32).mul_add(0.13, 0.2).clamp(-1.4, 1.4);
             let camera = Camera::new(yaw, pitch, 5.0, 18.0);
             let backend_frame = BackendFrame {

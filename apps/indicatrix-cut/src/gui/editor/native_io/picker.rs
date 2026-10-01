@@ -25,11 +25,14 @@ use std::path::{Path, PathBuf};
 pub(super) enum PickKind {
     /// "Export .asc" / "Save Native As...": the `.asc` save-as picker.
     SaveAsc { default_name: String },
+    /// "Export as Gem Cut Studio (.gcs)...": the `.gcs` save-as picker.
+    SaveGcs { default_name: String },
     /// "Export Cutting Sheet": the `.html` save-as picker.
     SaveCuttingSheet { default_name: String },
     /// "Export Diagram": the `.png` save-as picker.
     SaveDiagram { default_name: String },
-    /// "Open Native": accepts a native sidecar or a bare `.asc`.
+    /// "Open Native": accepts a native sidecar, a bare `.asc`, or a `.gem`/`.gcs`
+    /// design (converted to `.asc` on open).
     OpenNativeOrAsc,
     /// [`resolve_paired_asc_text_then`]'s "Locate the paired .asc" recovery picker.
     LocateAsc,
@@ -71,6 +74,16 @@ pub(super) fn pick_file(
             // in place) when that folder doesn't exist yet.
             starting_dir: default_export_dir(),
         },
+        PickKind::SaveGcs { default_name } => PickerRequest {
+            kind: PickerKind::SaveFile,
+            title: None,
+            filters: vec![PickerFilter {
+                label: "Gem Cut Studio design (.gcs)".to_string(),
+                extensions: vec!["gcs".to_string()],
+            }],
+            default_file_name: Some(default_name),
+            starting_dir: default_export_dir(),
+        },
         PickKind::SaveCuttingSheet { default_name } => PickerRequest {
             kind: PickerKind::SaveFile,
             title: None,
@@ -109,6 +122,10 @@ pub(super) fn pick_file(
                     extensions: vec!["toml".to_string()],
                 },
                 asc_filter(),
+                PickerFilter {
+                    label: "GemCAD / Gem Cut Studio design (.gem, .gcs)".to_string(),
+                    extensions: vec!["gem".to_string(), "gcs".to_string()],
+                },
             ],
             default_file_name: None,
             starting_dir: None,

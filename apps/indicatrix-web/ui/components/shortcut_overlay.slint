@@ -1,0 +1,189 @@
+import { Button, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+
+// One row of the shortcut list.
+export struct ShortcutItem {
+    keys: string,
+    action: string,
+    // "Anywhere", "The tier list" or "Solid and Diagram views".
+    group: string,
+}
+
+// The keyboard shortcuts the web app implements, and whether the overlay listing them is
+// open (Help > Keyboard shortcuts, or `?` while no text field has focus).
+//
+// The list is the desktop's set (`apps/indicatrix-cut/src/gui/editor/shortcuts.rs`) where a
+// browser allows it. The desktop's Ctrl+N (new window), Ctrl+1/2/3 (switch browser tab),
+// Ctrl+E and Ctrl+F (the browser's find) are not reusable, so the web app uses Alt+N and
+// Alt+1/2/3 instead. Every row names a binding some `.slint` file in this app actually
+// reads (`app.slint`'s `shortcuts` scope, `tier_table.slint`, `solid.slint`,
+// `diagram.slint`); keep the two in step when a key changes.
+export global ShortcutsModel {
+    in-out property <bool> open: false;
+
+    out property <[ShortcutItem]> items: [
+        { group: "Anywhere", keys: "Ctrl+O", action: "Open a design file (.asc, native pair, .indicatrix.toml, .gem, .gcs)" },
+        { group: "Anywhere", keys: "Ctrl+S", action: "Save the native pair (.asc + .indicatrix.toml) as downloads" },
+        { group: "Anywhere", keys: "Ctrl+Shift+S", action: "Save the .asc only" },
+        { group: "Anywhere", keys: "Alt+N", action: "New Design... (the desktop's Ctrl+N would open a new browser window)" },
+        { group: "Anywhere", keys: "Ctrl+Z", action: "Undo (left to a text field while one has focus)" },
+        { group: "Anywhere", keys: "Ctrl+Y or Ctrl+Shift+Z", action: "Redo" },
+        { group: "Anywhere", keys: "F5", action: "Solve the design (the page does not reload)" },
+        { group: "Anywhere", keys: "Alt+1 / Alt+2 / Alt+3", action: "Render / Solid / Diagram tab (Ctrl+1..3 switch the browser's own tabs)" },
+        { group: "Anywhere", keys: "Esc", action: "Clear the tier selection and dismiss the message" },
+        { group: "Anywhere", keys: "?", action: "Show this list (not while typing in a field)" },
+        { group: "The tier list", keys: "Up / Down", action: "Select the previous / next tier" },
+        { group: "The tier list", keys: "Home / End", action: "Select the first / last tier" },
+        { group: "The tier list", keys: "Page Up / Page Down", action: "Select 10 tiers back / forward" },
+        { group: "The tier list", keys: "Enter", action: "Select the highlighted tier" },
+        { group: "The tier list", keys: "F2", action: "Edit the highlighted tier's angle in place (Enter applies, Esc cancels)" },
+        { group: "The tier list", keys: "Delete", action: "Remove the highlighted tier (Backspace is left alone)" },
+        { group: "The tier list", keys: "Ctrl+D", action: "Duplicate the highlighted tier" },
+        { group: "The tier list", keys: "Alt+Up / Alt+Down", action: "Move the highlighted tier up / down in cutting order" },
+        { group: "The tier list", keys: "Ctrl+click / Shift+click", action: "Add to the multi-selection / select a range" },
+        { group: "The tier list", keys: "Ctrl+wheel", action: "Nudge the angle under the pointer" },
+        { group: "Solid and Diagram views", keys: "Up / Down", action: "Select the previous / next tier" },
+        { group: "Solid and Diagram views", keys: "Page Up / Page Down", action: "Select 10 tiers back / forward" },
+        { group: "Solid and Diagram views", keys: "S", action: "Solid tab: turn the Slice tool on or off" },
+        { group: "Solid and Diagram views", keys: "Enter / F", action: "Solid tab, provisional slice: keep it / cut the other side" },
+        { group: "Solid and Diagram views", keys: "Esc", action: "Cancel a drag, drop a slice, leave Slice mode, then clear the selection" },
+        { group: "Solid and Diagram views", keys: "Shift (while dragging)", action: "Solid tab, angle / depth / index handles: snap finely" },
+    ];
+
+    public function close() {
+        root.open = false;
+    }
+}
+
+// One row of a group: a layout with no children at all (zero height, no spacing) unless the
+// item belongs to the group, so a group can loop over the whole list.
+component ShortcutRow inherits VerticalLayout {
+    in property <ShortcutItem> item;
+    in property <string> group;
+
+    if root.item.group == root.group: HorizontalLayout {
+        padding-bottom: 4px;
+        spacing: 8px;
+        Rectangle {
+            width: 136px;
+            background: Theme.bg-input;
+            border-radius: Theme.radius-sm;
+            VerticalLayout {
+                padding: 3px;
+                padding-left: 4px;
+                padding-right: 4px;
+                Text {
+                    text: root.item.keys;
+                    font-size: 10px;
+                    font-weight: 600;
+                    color: Theme.accent-amber;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        Text {
+            horizontal-stretch: 1;
+            text: root.item.action;
+            font-size: 10px;
+            color: Theme.text-secondary;
+            wrap: word-wrap;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// One group of the list.
+component ShortcutGroup inherits VerticalLayout {
+    in property <string> name;
+    spacing: 0px;
+
+    Text {
+        text: root.name;
+        font-size: 11px;
+        font-weight: 700;
+        color: Theme.accent-cyan;
+        height: 20px;
+    }
+    for entry in ShortcutsModel.items: ShortcutRow {
+        item: entry;
+        group: root.name;
+    }
+}
+
+// The "Keyboard shortcuts" overlay; mounted by `app.slint` while `ShortcutsModel.open`.
+// Escape, `?`, the Close button and a click outside the card all close it. Every other key
+// is swallowed, so the global shortcuts cannot act on the design underneath; Tab is let
+// through to the Close button.
+export component ShortcutOverlay inherits Rectangle {
+    background: Theme.overlay-backdrop;
+
+    TouchArea {
+        clicked => { ShortcutsModel.close(); }
+    }
+
+    FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape || event.text == "?" {
+                ShortcutsModel.close();
+                return accept;
+            } else if event.text == Key.Tab {
+                return reject;
+            }
+            accept
+        }
+    }
+
+    Rectangle {
+        width: min(500px, root.width - 24px);
+        height: min(560px, root.height - 24px);
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        background: Theme.bg-card;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-medium;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: Theme.toast-shadow;
+        clip: true;
+
+        TouchArea {}
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+
+            Text {
+                text: "Keyboard shortcuts";
+                font-size: 14px;
+                font-weight: 700;
+                color: Theme.text-primary;
+            }
+            ScrollView {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    spacing: 10px;
+                    ShortcutGroup { name: "Anywhere"; }
+                    ShortcutGroup { name: "The tier list"; }
+                    ShortcutGroup { name: "Solid and Diagram views"; }
+                    Text {
+                        text: "On macOS, Option+letter types a symbol, so Alt+N and Alt+1..3 need the File menu and the tabs instead.";
+                        font-size: 9px;
+                        color: Theme.text-muted;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+            HorizontalLayout {
+                alignment: end;
+                Button {
+                    text: "Close";
+                    primary: true;
+                    clicked => { ShortcutsModel.close(); }
+                }
+            }
+        }
+    }
+}

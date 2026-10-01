@@ -5,7 +5,12 @@
 //! against synthetic buffers rather than through any render path.
 
 use glam::Vec3;
-use indicatrix::renderer::denoise::{AtrousDenoiser, AtrousParams, GBuffers, taper_strength};
+use indicatrix::renderer::{
+    denoise::{AtrousDenoiser, AtrousParams, GBuffers, taper_strength},
+    frame_denoise::{DenoiseScratch, FirstHitSnapshot, denoise_and_tonemap_frame},
+    tonemap::tonemap_to_rgba,
+};
+use std::ops::Range;
 
 /// A tiny deterministic xorshift32 PRNG so tests do not need an external `rand`
 /// dependency and are reproducible without any seed-management ceremony.
@@ -49,6 +54,19 @@ fn mse(a: &[Vec3], b: &[Vec3]) -> f64 {
 fn all_finite(buf: &[Vec3]) -> bool {
     buf.iter()
         .all(|v| v.x.is_finite() && v.y.is_finite() && v.z.is_finite())
+}
+
+/// Mean squared distance to `truth` over the pixels `xs` x `ys` of a row-major image.
+fn region_mse(buf: &[Vec3], truth: Vec3, width: usize, xs: &Range<usize>, ys: Range<usize>) -> f64 {
+    let mut sum = 0.0f64;
+    let mut count = 0usize;
+    for y in ys {
+        for x in xs.clone() {
+            sum += f64::from((buf[y * width + x] - truth).length_squared());
+            count += 1;
+        }
+    }
+    sum / count as f64
 }
 
 // ---------------------------------------------------------------------------------
@@ -190,10 +208,29 @@ fn facet_edges_survive_filtering() {
         "facet boundary must stay sharp: original_jump={original_jump:.4}, filtered_jump={filtered_jump:.4}"
     );
 
-    // Also confirm the filter did not just leave the whole image untouched (i.e. this
-    // is testing edge preservation specifically, not an accidental no-op): pixels deep
-    // inside each region, far from the boundary but with a bit of injected per-pixel
-    // colour jitter, should still get pulled toward their neighbours.
+    // An identity filter would pass the edge check above, so run the same layout with
+    // strong per-pixel noise in both regions and demand that the flat interiors (clear of
+    // the boundary columns and the image border) end up at least 4x less noisy.
+    let mut rng = Xorshift32::new(0xfeed);
+    let noisy: Vec<Vec3> = color
+        .iter()
+        .map(|c| *c + Vec3::new(rng.next_signed(), rng.next_signed(), rng.next_signed()) * 0.15)
+        .collect();
+    let noisy_inputs = GBuffers {
+        color: &noisy,
+        ..inputs
+    };
+    let cleaned = denoiser.denoise(&noisy_inputs, &params);
+
+    let rows = 4..height - 4;
+    for (truth, xs) in [(color_a, 4..split - 4), (color_b, split + 4..width - 4)] {
+        let before = region_mse(&noisy, truth, width, &xs, rows.clone());
+        let after = region_mse(&cleaned, truth, width, &xs, rows.clone());
+        assert!(
+            after * 4.0 <= before,
+            "a flat noisy region must lose at least 3/4 of its error: before={before:.6}, after={after:.6}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------------
@@ -631,4 +668,130 @@ fn zero_passes_param_does_not_panic() {
 
     assert_eq!(filtered.len(), len);
     assert!(all_finite(&filtered));
+}
+
+// ---------------------------------------------------------------------------------
+// 8. Non-finite texels, background pixels, and frames with no samples.
+// ---------------------------------------------------------------------------------
+
+/// One NaN or infinite colour texel must stay a local problem: every other pixel of a
+/// uniform image has to come out as the uniform colour, and the damaged texels themselves
+/// must be repaired from their neighbours rather than staying non-finite. (Previously a single NaN poisoned the whole 5x5 window of every pass.)
+#[test]
+fn a_non_finite_texel_does_not_contaminate_its_neighbours() {
+    let width = 40;
+    let height = 40;
+    let len = width * height;
+    let constant = Vec3::new(0.4, 0.5, 0.6);
+
+    let mut color = vec![constant; len];
+    color[20 * width + 20] = Vec3::new(f32::NAN, 0.5, 0.6);
+    color[5 * width + 30] = Vec3::new(f32::INFINITY, f32::NEG_INFINITY, 0.1);
+    color[35 * width + 2] = Vec3::splat(f32::NAN);
+    let depth = vec![1.0f32; len];
+    let normal = vec![Vec3::Z; len];
+    let facet_id = vec![0i32; len];
+
+    let inputs = GBuffers {
+        color: &color,
+        depth: &depth,
+        normal: &normal,
+        facet_id: &facet_id,
+        width,
+        height,
+        spp: 1,
+    };
+    let filtered = AtrousDenoiser::new().denoise(&inputs, &AtrousParams::default());
+
+    // A NaN distance also fails the comparison, so this covers finiteness too.
+    for (i, v) in filtered.iter().enumerate() {
+        let d = (*v - constant).length();
+        assert!(d < 1.0e-4, "pixel {i} is {v:?}, not the uniform colour");
+    }
+}
+
+/// A pixel with a negative facet id is background: its value passes through every pass
+/// bit for bit, while the foreground beside it is still filtered.
+#[test]
+fn background_pixels_are_copied_through_unfiltered() {
+    let width = 24;
+    let height = 24;
+    let len = width * height;
+    let split = 12;
+
+    let mut rng = Xorshift32::new(77);
+    let color: Vec<Vec3> = (0..len)
+        .map(|_| Vec3::new(rng.next_f32(), rng.next_f32(), rng.next_f32()))
+        .collect();
+    let depth = vec![1.0f32; len];
+    let normal = vec![Vec3::Z; len];
+    let facet_id: Vec<i32> = (0..len)
+        .map(|i| if i % width < split { -1 } else { 3 })
+        .collect();
+
+    let inputs = GBuffers {
+        color: &color,
+        depth: &depth,
+        normal: &normal,
+        facet_id: &facet_id,
+        width,
+        height,
+        spp: 1,
+    };
+    let filtered = AtrousDenoiser::new().denoise(&inputs, &AtrousParams::default());
+
+    let mut foreground_changed = false;
+    for i in 0..len {
+        if facet_id[i] < 0 {
+            assert_eq!(filtered[i], color[i], "background pixel {i} was altered");
+        } else {
+            foreground_changed |= filtered[i] != color[i];
+        }
+    }
+    assert!(foreground_changed, "the foreground must still be filtered");
+}
+
+/// A frame with no samples accumulated yet (the first poll) is a finite black picture,
+/// not `0 * inf = NaN` pushed through the denoiser and tone-mapper.
+#[test]
+fn a_frame_with_no_samples_is_a_finite_black_frame() {
+    let (width, height) = (6u32, 5u32);
+    let len = (width * height) as usize;
+    let mut rng = Xorshift32::new(31);
+    let accum: Vec<Vec3> = (0..len)
+        .map(|_| Vec3::new(rng.next_f32(), rng.next_f32(), rng.next_f32()))
+        .collect();
+    let depth = vec![1.0f32; len];
+    let normal = vec![Vec3::Z; len];
+    let facet_id = vec![0i32; len];
+
+    let mut denoiser = AtrousDenoiser::new();
+    let (mut avg_color_buf, mut filtered_buf) = (Vec::new(), Vec::new());
+    let rgba = denoise_and_tonemap_frame(
+        FirstHitSnapshot {
+            width,
+            height,
+            current_sample_count: 0,
+            accum_buffer: &accum,
+            first_hit_depth: &depth,
+            first_hit_normal: &normal,
+            first_hit_facet_id: &facet_id,
+        },
+        &mut DenoiseScratch {
+            denoiser: &mut denoiser,
+            avg_color_buf: &mut avg_color_buf,
+            filtered_buf: &mut filtered_buf,
+        },
+    );
+
+    assert!(all_finite(&filtered_buf));
+    let black = vec![Vec3::ZERO; len];
+    assert_eq!(rgba, tonemap_to_rgba(&black, 1.0));
+    assert!(
+        rgba.as_chunks::<4>()
+            .0
+            .iter()
+            .all(|px| px[..3] == [0, 0, 0]),
+        "a frame with no samples must be black"
+    );
 }

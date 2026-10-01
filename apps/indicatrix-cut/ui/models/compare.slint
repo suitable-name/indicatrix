@@ -1,0 +1,84 @@
+// The visual before/after compare window's model -- see `compare_window.slint` and
+// `gui::editor::compare`'s module doc comment.
+//
+// Slint instantiates every global once PER top-level window, so this global has
+// two independent instances, and Rust always reaches each through its own window
+// handle:
+// - `CompareWindow`'s instance carries everything down to the "main window only"
+//   marker below: the two images and labels, the layout/renderer switches, the
+//   status line, and the window's own callbacks.
+// - `MainWindow`'s instance carries the three `open_*` entry callbacks (the
+//   Retarget dialog's and the Optimize tab's "Compare…" buttons and the snapshot
+//   table's "Compare visually…"), `optimize_preview_reset_serial`, and -- for the
+//   comparison pane embedded in the Retarget dialog (`CompareView`) -- the same
+//   image/label/status/switch properties and view callbacks as the window's
+//   instance, plus `embedded_open` and the two embedded-session callbacks.
+export global CompareModel {
+    // Mirrors whether this instance's surface is showing a live session -- set by
+    // Rust (the window's instance: the pop-out window; the main window's: the
+    // Retarget dialog's embedded pane).
+    in-out property <bool> is_open: false;
+    // 0 = side by side, 1 = split slider, 2 = overlay (the difference layer over
+    // the "after" side).
+    in-out property <int> mode_index: 0;
+    // 0 = solid (instant, default), 1 = traced (CPU path tracer, modest quality).
+    in-out property <int> renderer_index: 0;
+    // Split slider only: where the divider sits, 0 (all "after") .. 1 (all
+    // "before"). Written by the divider's own drag; Rust only re-clamps it on open.
+    in-out property <float> split_fraction: 0.5;
+    in property <image> before_image;
+    in property <image> after_image;
+    // Overlay mode only: a transparent RGBA difference layer (removed red, added
+    // green, outlines), the same size as `after_image` and drawn over it.
+    in property <image> overlay_image;
+    in property <string> before_label;
+    in property <string> after_label;
+    // The dimmed status line ("Solid", "Tracing… 1 of 2", "After does not solve: …").
+    in property <string> status;
+    // "Keep after" is enabled only when both sides solved.
+    in property <bool> can_keep: false;
+    // False for a snapshot comparison: only Close is offered.
+    in property <bool> show_keep_discard: true;
+    // One image slot's logical size, pushed by the window on every layout change
+    // (like `SolidPreviewModel.viewport_width`); Rust renders at this size times
+    // the scale factor.
+    in-out property <length> image_width: 0px;
+    in-out property <length> image_height: 0px;
+
+    // Drag in logical pixels (orbits the ONE camera both sides share).
+    callback orbit(float, float);
+    // Wheel delta in logical pixels.
+    callback zoom(float);
+    // Double-click: back to the front view at the fit distance.
+    callback reset_pose();
+    // The image area's orbit drag begins (button pressed) / ends (released or
+    // cancelled). The traced render never starts while a drag is held.
+    callback drag_begin();
+    callback drag_end();
+    // Applies the change exactly as the originating feature's Apply does, then closes.
+    callback keep();
+    // Closes without applying and turns the originating feature's ghost preview off.
+    callback discard();
+    // Closes; a pending proposal/result stays pending.
+    callback close();
+    callback mode_changed(int);
+    callback renderer_changed(int);
+    // Debounced (~100 ms) after the image slot's size settles.
+    callback size_changed(length, length);
+
+    // --- main window only ----------------------------------------------------
+    // Bumped by Rust on an Optimize "Discard"; `EditorInspector` watches it to
+    // untick its local "Preview" checkbox (a callback-only surface Rust cannot
+    // otherwise reach).
+    in property <int> optimize_preview_reset_serial: 0;
+    callback open_retarget();
+    callback open_optimize();
+    callback open_snapshot();
+    // The Retarget dialog's embedded pane has a live session (set by Rust; false
+    // while the session is shown in the pop-out window instead).
+    in property <bool> embedded_open: false;
+    // (Re)opens the embedded Retarget session for the current proposal.
+    callback open_retarget_embedded();
+    // Drops the embedded session.
+    callback close_embedded();
+}

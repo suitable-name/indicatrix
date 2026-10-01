@@ -2,7 +2,7 @@
 //! self-contained (no paired `.asc`) native-only save/load path used for
 //! autosave restore.
 
-use super::fixtures::{SIMPLE_ASC, simple_design};
+use super::fixtures::{SIMPLE_ASC, fully_anchored_design, simple_design};
 use crate::{
     design::TierTarget,
     native::{
@@ -102,10 +102,18 @@ fn save_native_only_then_load_native_only_round_trips_the_full_design() {
 /// defaults) an ORDINARY paired-mode native file -- one that never went through
 /// `save_native_only` -- since such a file's `tiers` carry no `angle_deg`/`indices`
 /// at all, and it carries no stashed `meta` either.
+///
+/// `fully_anchored_design`, not `simple_design`: this test needs a design that
+/// actually SOLVES (an ordinary, non-draft save), and `simple_design`'s own
+/// tier-1 `MeetExisting` override leaves the Crown block with no
+/// `ScaleReference` anchor at all -- `save_paired` on THAT design always falls
+/// back to a draft (see the sibling `load_native_only_opens_an_ordinary_draft_save`
+/// test), which is a different case entirely.
 #[test]
 fn load_native_only_refuses_an_ordinary_paired_mode_file() {
-    let design = simple_design();
+    let design = fully_anchored_design();
     let saved = save_paired(&design, "design.asc", None, None, None).expect("must save");
+    assert!(saved.draft_reason.is_none(), "fixture must actually solve");
 
     let err = load_native_only(&saved.native_toml)
         .expect_err("an ordinary overlay-only native file has no self-contained meta");
@@ -113,12 +121,14 @@ fn load_native_only_refuses_an_ordinary_paired_mode_file() {
 }
 
 /// A draft save (`design` does not currently solve) already writes full per-tier
-/// `angle_deg`/`indices` via `super::save::draft_tier_tables` -- but NOT the
-/// stashed `meta` `save_native_only` adds, so it must still be refused by
-/// `load_native_only` as not self-contained, distinguishing "has full tier
-/// geometry" from "is actually openable with no `.asc` at all."
+/// `angle_deg`/`indices` via `super::save::draft_tier_tables`, and also stashes `meta` via `stash_schedule_meta` -- exactly
+/// like `save_native_only` -- so `load_native_only` can open this same ordinary
+/// draft sidecar with no paired `.asc` at all. Without this, a draft `.asc`
+/// (itself just a placeholder-mast reconstruction) getting lost or moved away
+/// from its sidecar meant the design underneath -- which the sidecar's tier list
+/// holds in full -- could not be recovered at all.
 #[test]
-fn load_native_only_refuses_an_ordinary_draft_save_with_no_stashed_meta() {
+fn load_native_only_opens_an_ordinary_draft_save() {
     let mut design = simple_design();
     // No `ScaleReference` tier anywhere -> `design.solve()` fails -> draft save.
     for tier in &mut design.tiers {
@@ -127,9 +137,13 @@ fn load_native_only_refuses_an_ordinary_draft_save_with_no_stashed_meta() {
     let saved = save_paired(&design, "design.asc", None, None, None).expect("must draft-save");
     assert!(saved.draft_reason.is_some());
 
-    let err = load_native_only(&saved.native_toml)
-        .expect_err("a plain draft save carries no stashed schedule meta");
-    assert!(matches!(err, LoadNativeOnlyError::NotSelfContained));
+    let loaded = load_native_only(&saved.native_toml)
+        .expect("a draft sidecar now stashes its own schedule meta and opens alone");
+    assert_eq!(loaded.design.tiers.len(), design.tiers.len());
+    for (loaded_tier, original_tier) in loaded.design.tiers.iter().zip(&design.tiers) {
+        assert_eq!(loaded_tier.angle_deg, original_tier.angle_deg);
+        assert_eq!(loaded_tier.indices, original_tier.indices);
+    }
 }
 
 /// `printed_proportions`/history round-trip through the self-contained path exactly

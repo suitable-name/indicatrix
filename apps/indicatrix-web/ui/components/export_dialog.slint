@@ -1,0 +1,158 @@
+import { SpinBox, ComboBox, CheckBox, Button } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { RenderModel } from "render_model.slint";
+
+// One labelled row.
+component Row inherits HorizontalLayout {
+    in property <string> label;
+    spacing: 8px;
+    Text {
+        text: root.label;
+        font-size: 11px;
+        color: Theme.text-secondary;
+        vertical-alignment: center;
+        width: 110px;
+    }
+    @children
+}
+
+// File > Export PNG: size, samples, colour space and denoise, then a progress bar
+// with Cancel while the export renders through the render Workers
+// (`src/render/export.rs`). Covers the window; the live render pauses meanwhile.
+export component ExportDialog inherits Rectangle {
+    background: Theme.overlay-backdrop;
+
+    // Swallows clicks on the backdrop.
+    TouchArea { }
+
+    // Escape closes (or cancels a running export); other keys are swallowed so the global
+    // shortcuts cannot act on the design mid-export; Tab reaches the fields and buttons.
+    FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                if RenderModel.export-running {
+                    RenderModel.export-cancel();
+                } else {
+                    RenderModel.export-close();
+                }
+                return accept;
+            } else if event.text == Key.Tab || event.text == Key.Backtab {
+                return reject;
+            }
+            accept
+        }
+    }
+
+    Rectangle {
+        width: min(380px, root.width - 32px);
+        height: content.preferred-height;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        background: Theme.bg-card;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-medium;
+        drop-shadow-blur: 20px;
+        drop-shadow-color: Theme.toast-shadow;
+
+        content := VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Text {
+                text: "Export PNG";
+                font-size: 14px;
+                font-weight: 700;
+                color: Theme.text-primary;
+            }
+
+            Row {
+                label: "Long edge (px)";
+                SpinBox {
+                    horizontal-stretch: 1;
+                    enabled: !RenderModel.export-running;
+                    minimum: 64;
+                    maximum: 4096;
+                    step-size: 64;
+                    value <=> RenderModel.export-long-edge;
+                    edited => { RenderModel.export-edited(); }
+                }
+            }
+            Text {
+                text: RenderModel.export-size-text;
+                font-size: 10px;
+                color: Theme.text-muted;
+                horizontal-alignment: right;
+            }
+            Row {
+                label: "Samples per pixel";
+                SpinBox {
+                    horizontal-stretch: 1;
+                    enabled: !RenderModel.export-running;
+                    minimum: 16;
+                    maximum: 4096;
+                    step-size: 16;
+                    value <=> RenderModel.export-spp;
+                    edited => { RenderModel.export-edited(); }
+                }
+            }
+            Row {
+                label: "Colour space";
+                ComboBox {
+                    horizontal-stretch: 1;
+                    enabled: !RenderModel.export-running;
+                    model: ["sRGB", "Display P3"];
+                    current-index <=> RenderModel.export-color-space;
+                    selected => { RenderModel.export-edited(); }
+                }
+            }
+            CheckBox {
+                enabled: !RenderModel.export-running;
+                text: "Denoise (the live view's filter)";
+                checked <=> RenderModel.export-denoise;
+                toggled => { RenderModel.export-edited(); }
+            }
+
+            if RenderModel.export-running || RenderModel.export-status != "": VerticalLayout {
+                spacing: 4px;
+                Rectangle {
+                    height: 8px;
+                    background: Theme.bg-input;
+                    border-radius: 4px;
+                    clip: true;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * Math.max(0, Math.min(1, RenderModel.export-progress));
+                        background: Theme.accent-cyan;
+                        border-radius: 4px;
+                    }
+                }
+                Text {
+                    text: RenderModel.export-status;
+                    font-size: 11px;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                if RenderModel.export-running: Button {
+                    text: "Cancel";
+                    clicked => { RenderModel.export-cancel(); }
+                }
+                if !RenderModel.export-running: Button {
+                    text: "Close";
+                    clicked => { RenderModel.export-close(); }
+                }
+                if !RenderModel.export-running: Button {
+                    text: "Export";
+                    primary: true;
+                    clicked => { RenderModel.export-start(); }
+                }
+            }
+        }
+    }
+}

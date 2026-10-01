@@ -58,6 +58,7 @@ export global LibraryModel {
     // refresh already applies it -- setting it afterwards raced the async reload.
     // Cleared the moment the cutter makes any real search or filter change.
     in-out property <[int]> recent_import_filter: [];
+    in-out property <string> id_filter_label: "";
 
     // Keeps the import popup open on completion instead of
     // auto-closing into a 3.5s toast, when the import either replaced an existing
@@ -84,6 +85,12 @@ export global LibraryModel {
     // refuses instead of silently acting on the wrong catalogue.
     callback regenerate_previews_for_filtered_set();
     callback regenerate_tilt_curves_for_filtered_set();
+    // The Library menu's whole-catalogue counterparts (`gui::batch::regenerate_all`).
+    // "Both" asks about previews first and offers the tilt curves once that dialog
+    // closes, so the two confirm steps never stack.
+    callback regenerate_all_previews();
+    callback regenerate_all_tilt_curves();
+    callback regenerate_all_previews_and_tilt_curves();
 
     in property <bool> is_busy: false;
     in property <int> selected_entry_id: -1;
@@ -102,6 +109,9 @@ export global LibraryModel {
     in-out property <int> preview_cache_version: 0;
     callback generate_previews_for_entry(int);
     callback toggle_ignored(int);
+    // Flips whether the Rough Planner may use this design (the entry id); the design
+    // stays in the library either way. See `gui::library::local::organize`.
+    callback toggle_planner_excluded(int);
     callback compute_tilt_curves_for_entry(int);
 
     in property <[string]> shape_picker_options: [];
@@ -143,6 +153,9 @@ export global LibraryModel {
     callback set_shape(string);
     callback delete_diagram();
     callback export_asc();
+    // Experimental Gem Cut Studio `.gcs` export of the selected design
+    // (`gui::library::local::export::setup_export_asc_callback`).
+    callback export_gcs();
     callback save_metadata(string, string, string, string, string, string, string, bool, string, string, string, string, string);
     callback export_file(string);
     callback open_diagram_url(string);

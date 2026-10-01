@@ -1,0 +1,326 @@
+import { Button, CheckBox, ComboBox, LineEdit, ScrollView, Slider } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { AppModel } from "../models/app_model.slint";
+
+// One reviewable row of a retarget proposal (`indicatrix_editor::retarget::view::RetargetRowView`).
+export struct RetargetRow {
+    tier-index: int,
+    block: string,
+    name: string,
+    old-angle: string,
+    new-angle: string,
+    margin: string,
+    risk-label: string,
+    risk-color: color,
+}
+
+// "Retarget for material" (modelled on the desktop's `RetargetModel`): the target material,
+// the algorithm, the proposal rows and Apply. Pushed by `src/editor/retarget`.
+export global RetargetModel {
+    in-out property <bool> is-open: false;
+    // 0 Shift (the deterministic critical-angle shift), 1 Optimize (shift, then search).
+    in-out property <int> mode-index: 0;
+    // How far crown tiers follow the pavilion critical-angle delta, 0..1.
+    in-out property <float> crown-fraction: 0.0;
+    in-out property <bool> scale-crown-by-ratio: false;
+    // The target: the material combo (built-ins, custom materials, "Custom RI...") and an
+    // optional typed RI.
+    in property <[string]> material-options: [];
+    in-out property <int> target-material-index: 0;
+    in-out property <string> target-ri-override-text: "";
+    in property <string> target-readout: "";
+    in property <string> target-error: "";
+    in property <[RetargetRow]> rows: [];
+    in property <[string]> notes: [];
+    in property <[string]> anchored-errors: [];
+    in property <string> solve-error: "";
+    // An Optimize-mode search is running in the solve Worker.
+    in property <bool> is-busy: false;
+    in property <string> progress-text: "";
+    in property <float> progress: -1;
+    in property <bool> can-apply: false;
+
+    // The dialog was asked to open (seeds the target from the design's material).
+    callback open();
+    callback close();
+    // The mode, crown or target changed: rebuild the proposal.
+    callback proposal-changed();
+    callback cancel-optimize();
+    callback apply();
+}
+
+component Lbl inherits Text {
+    font-size: 10px;
+    color: Theme.text-muted;
+}
+
+// One column of the proposal table: `fixed` wide, or (`narrow`) sharing the row's width by
+// the `share` stretch factor so the header and the rows always end at the card's edge.
+component Col inherits Text {
+    in property <bool> narrow;
+    in property <length> fixed;
+    in property <float> share: 3;
+    preferred-width: root.narrow ? 0px : root.fixed;
+    min-width: root.narrow ? 0px : root.fixed;
+    max-width: root.narrow ? 100000px : root.fixed;
+    horizontal-stretch: root.narrow ? root.share : 0;
+}
+
+// The Retarget dialog; mounted by `app.slint` while `RetargetModel.is-open`.
+export component RetargetDialog inherits Rectangle {
+    background: Theme.overlay-backdrop;
+
+    // A phone-width window: the mode row and the proposal table drop what does not fit.
+    property <bool> narrow: root.width < 520px;
+
+    TouchArea {
+        clicked => { RetargetModel.close(); }
+    }
+
+    FocusScope {
+        init => { self.focus(); }
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                RetargetModel.close();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    Rectangle {
+        width: min(600px, root.width - 32px);
+        height: min(640px, root.height - 32px);
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        background: Theme.bg-card;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-medium;
+        drop-shadow-blur: 20px;
+        drop-shadow-color: Theme.toast-shadow;
+        clip: true;
+
+        TouchArea {}
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+
+            Text {
+                text: "Retarget for material";
+                font-size: 14px;
+                font-weight: 700;
+                color: Theme.text-primary;
+            }
+            Text {
+                text: "Proposes new facet angles for another material. Shift moves every pavilion tier so its margin over the critical angle stays fixed; Optimize then searches the free tiers for the target. Apply changes the angles and the design's material in one undo step.";
+                font-size: 10px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                spacing: 10px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    spacing: 3px;
+                    Lbl { text: "Target material"; }
+                    ComboBox {
+                        // (`min-width: 0px` on the fields of this dialog's rows: the style's
+                        // ComboBox / LineEdit are 160px wide at minimum, which pushed the RI
+                        // override field past the dialog's right edge.)
+                        min-width: 0px;
+                        enabled: !RetargetModel.is-busy;
+                        model: RetargetModel.material-options;
+                        current-index <=> RetargetModel.target-material-index;
+                        selected => { RetargetModel.proposal-changed(); }
+                    }
+                }
+                VerticalLayout {
+                    width: 110px;
+                    spacing: 3px;
+                    Lbl { text: "RI override"; }
+                    LineEdit {
+                        min-width: 0px;
+                        text <=> RetargetModel.target-ri-override-text;
+                        placeholder-text: "auto";
+                        accepted => { RetargetModel.proposal-changed(); }
+                        changed has-focus => {
+                            AppModel.text-focus = self.has-focus;
+                            if !self.has-focus { RetargetModel.proposal-changed(); }
+                        }
+                    }
+                }
+            }
+            Text {
+                text: RetargetModel.target-readout;
+                font-size: 10px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+            if RetargetModel.target-error != "": Text {
+                text: RetargetModel.target-error;
+                font-size: 10px;
+                font-weight: 700;
+                color: Theme.danger;
+                wrap: word-wrap;
+            }
+
+            HorizontalLayout {
+                spacing: 10px;
+                VerticalLayout {
+                    width: root.narrow ? 110px : 150px;
+                    spacing: 3px;
+                    Lbl { text: "Mode"; }
+                    ComboBox {
+                        min-width: 0px;
+                        enabled: !RetargetModel.is-busy;
+                        model: ["Shift", "Optimize"];
+                        current-index <=> RetargetModel.mode-index;
+                        selected => { RetargetModel.proposal-changed(); }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    min-width: 0px;
+                    spacing: 3px;
+                    // Short on a phone-width dialog: the full sentence ran past the card.
+                    Lbl {
+                        text: (root.narrow ? "Crown follows: " : "Crown follows the pavilion shift: ") + Math.round(RetargetModel.crown-fraction * 100) + "%";
+                        overflow: elide;
+                    }
+                    Slider {
+                        min-width: 0px;
+                        minimum: 0.0;
+                        maximum: 1.0;
+                        value <=> RetargetModel.crown-fraction;
+                        enabled: !RetargetModel.scale-crown-by-ratio && !RetargetModel.is-busy;
+                        changed(value) => {
+                            if RetargetModel.mode-index == 0 { RetargetModel.proposal-changed(); }
+                        }
+                        released(value) => {
+                            if RetargetModel.mode-index == 1 { RetargetModel.proposal-changed(); }
+                        }
+                    }
+                }
+                if !root.narrow: VerticalLayout {
+                    alignment: end;
+                    CheckBox {
+                        enabled: !RetargetModel.is-busy;
+                        text: "Scale crown by ratio";
+                        checked <=> RetargetModel.scale-crown-by-ratio;
+                        toggled => { RetargetModel.proposal-changed(); }
+                    }
+                }
+            }
+            // On a phone-width dialog the checkbox gets its own line under the mode row.
+            if root.narrow: HorizontalLayout {
+                CheckBox {
+                    enabled: !RetargetModel.is-busy;
+                    text: "Scale crown by ratio";
+                    checked <=> RetargetModel.scale-crown-by-ratio;
+                    toggled => { RetargetModel.proposal-changed(); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
+
+            if RetargetModel.is-busy: VerticalLayout {
+                spacing: 4px;
+                Text {
+                    text: RetargetModel.progress-text;
+                    font-size: 10px;
+                    color: Theme.accent-amber;
+                    wrap: word-wrap;
+                }
+                if RetargetModel.progress >= 0: Rectangle {
+                    height: 6px;
+                    background: Theme.bg-input;
+                    border-radius: 3px;
+                    clip: true;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * Math.max(0, Math.min(1, RetargetModel.progress));
+                        background: Theme.accent-amber;
+                    }
+                }
+                HorizontalLayout {
+                    Button { text: "Cancel search"; clicked => { RetargetModel.cancel-optimize(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+
+            for error in RetargetModel.anchored-errors: Text {
+                text: "Adopt the meet constraint of " + error + " first: the search cannot move an anchored tier.";
+                font-size: 10px;
+                color: Theme.danger;
+                wrap: word-wrap;
+            }
+            if RetargetModel.solve-error != "": Text {
+                text: "The design does not solve: " + RetargetModel.solve-error;
+                font-size: 10px;
+                color: Theme.danger;
+                wrap: word-wrap;
+            }
+            for note in RetargetModel.notes: Text {
+                text: note;
+                font-size: 10px;
+                color: Theme.text-secondary;
+                wrap: word-wrap;
+            }
+
+            if RetargetModel.rows.length > 0: VerticalLayout {
+                spacing: 2px;
+                vertical-stretch: 1;
+                HorizontalLayout {
+                    spacing: 6px;
+                    // The NAME column is dropped on a phone-width dialog: with it the fixed
+                    // columns ran past the card and MARGIN and RISK could not be seen.
+                    // Narrow, the columns share the width by stretch factor (# 1, the rest 3)
+                    // instead of fixed widths, so header and rows always end at the card's edge.
+                    Col { narrow: root.narrow; fixed: 28px; share: 1; text: "#"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                    Col { narrow: root.narrow; fixed: 60px; text: "BLOCK"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                    if !root.narrow: Text { horizontal-stretch: 1; text: "NAME"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                    Col { narrow: root.narrow; fixed: 62px; text: "OLD"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                    Col { narrow: root.narrow; fixed: 62px; text: "NEW"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                    Col { narrow: root.narrow; fixed: 56px; text: "MARGIN"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                    Col { narrow: root.narrow; fixed: 64px; text: "RISK"; font-size: 9px; font-weight: 700; color: Theme.text-muted; }
+                }
+                ScrollView {
+                    vertical-stretch: 1;
+                    // The rows are laid out at the visible width, like the header above.
+                    content-width: self.visible-width;
+                    VerticalLayout {
+                        spacing: 2px;
+                        for row in RetargetModel.rows: HorizontalLayout {
+                            spacing: 6px;
+                            Col { narrow: root.narrow; fixed: 28px; share: 1; text: "" + (row.tier-index + 1); font-size: 10px; color: Theme.text-secondary; }
+                            Col { narrow: root.narrow; fixed: 60px; text: row.block; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                            if !root.narrow: Text { horizontal-stretch: 1; text: row.name; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                            Col { narrow: root.narrow; fixed: 62px; text: row.old-angle; font-size: 10px; color: Theme.text-muted; overflow: elide; }
+                            Col { narrow: root.narrow; fixed: 62px; text: row.new-angle; font-size: 10px; font-weight: 600; color: Theme.text-primary; overflow: elide; }
+                            Col { narrow: root.narrow; fixed: 56px; text: row.margin; font-size: 10px; color: Theme.text-secondary; overflow: elide; }
+                            Col { narrow: root.narrow; fixed: 64px; text: row.risk-label; font-size: 10px; font-weight: 700; color: row.risk-color; overflow: elide; }
+                        }
+                    }
+                }
+            }
+            if RetargetModel.rows.length == 0: Rectangle { vertical-stretch: 1; }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: end;
+                Button {
+                    text: "Close";
+                    clicked => { RetargetModel.close(); }
+                }
+                Button {
+                    text: "Apply";
+                    primary: true;
+                    enabled: RetargetModel.can-apply && !RetargetModel.is-busy;
+                    clicked => { RetargetModel.apply(); }
+                }
+            }
+        }
+    }
+}

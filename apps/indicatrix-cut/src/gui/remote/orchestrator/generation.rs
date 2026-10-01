@@ -246,7 +246,7 @@ pub(super) fn adopt_ready_denoise(
 mod tests {
     use super::*;
     use crate::bridge::frame_cache::guide_pass::generate_guide_buffers;
-    use indicatrix::geometry::cuts::StandardGemCuts;
+    use indicatrix::{geometry::cuts::StandardGemCuts, optics::raytracer::DEFAULT_FOV_DEG};
 
     /// Builds a [`PendingGuideGeneration`] whose result is already sitting in its slot
     /// (as if the background thread had already finished), for `key`.
@@ -341,7 +341,7 @@ mod tests {
         // The cache already holds the current (newer) pose's guides, as if an earlier
         // redraw had already adopted them.
         let current_key = GuideCache::key_for(width, height, 0.90, 0.45, 2.4, &planes);
-        let current_camera = Camera::new(0.90, 0.45, 2.4, 42.0);
+        let current_camera = Camera::new(0.90, 0.45, 2.4, DEFAULT_FOV_DEG);
         let current_buffers = generate_guide_buffers(width, height, &current_camera, &planes);
         let mut guide_cache = GuideCache::new();
         guide_cache.adopt(current_key.clone(), current_buffers.clone());
@@ -349,7 +349,7 @@ mod tests {
         // A generation for an older pose finally finishes late, after being superseded
         // (its cancel flag was set, but it raced past the last check anyway).
         let old_key = GuideCache::key_for(width, height, 0.10, 0.45, 2.4, &planes);
-        let old_camera = Camera::new(0.10, 0.45, 2.4, 42.0);
+        let old_camera = Camera::new(0.10, 0.45, 2.4, DEFAULT_FOV_DEG);
         let old_buffers = generate_guide_buffers(width, height, &old_camera, &planes);
         let superseded = ready_pending(old_key, old_buffers);
 

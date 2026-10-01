@@ -10,20 +10,24 @@ use super::{
     panel_stale::refresh_deep_solve_availability,
     state::{
         EditorState, ScratchDelta, apply_multi_selection, apply_proposed_angles,
-        cutting_schedule_rows, design_label_text, girdle_and_ratio_texts,
-        manufacturability_warnings_tagged, material_index_from_name, preform_mm_texts,
-        preform_y_offset_mm_text, proportion_verdicts, proportions_texts,
-        push_multi_selected_count, push_rows, push_tiers, status_text_and_is_problem,
-        status_text_and_is_problem_from_solved, tier_items, tier_items_from_solved,
-        yield_report_texts, yield_report_texts_from_solved,
+        cutting_instructions_rows, design_label_text, girdle_and_ratio_texts,
+        manufacturability_warnings_tagged, preform_mm_texts, preform_y_offset_mm_text,
+        proportion_verdicts, proportions_texts, push_multi_selected_count, push_rows, push_tiers,
+        status_text_and_is_problem, status_text_and_is_problem_from_solved, tier_items,
+        tier_items_from_solved, yield_report_texts, yield_report_texts_from_solved,
     },
 };
+// The `_from_solved` proportion mirrors moved to `indicatrix_editor` with the rest of
+// the yield view model; re-exported here (and through `view`) at their old paths.
 use crate::{
     AngleItem, EditorModel, EditorTierItem, MainWindow, UndoRedoLabels,
     bridge::render_thread::RenderContext,
 };
 use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_cut_core::{Design, DesignSolveError, PreformShape};
+pub(in crate::gui::editor) use indicatrix_editor::view_model::yield_report::{
+    girdle_and_ratio_texts_from_solved, preform_mm_texts_from_solved, proportions_texts_from_solved,
+};
 use slint::{ComponentHandle, SharedString};
 use std::sync::{Arc, Mutex, PoisonError, atomic::Ordering as AtomicOrdering};
 
@@ -51,7 +55,7 @@ use std::sync::{Arc, Mutex, PoisonError, atomic::Ordering as AtomicOrdering};
 /// Returns the solve result so [`super::viewport::refresh_all`] can hand it to
 /// [`super::viewport::refresh_viewport`] without that function paying for a
 /// SECOND solve of its own. A thin wrapper around
-/// [`refresh_editor_panel_from_solve`] that solves `state.design` itself -- see
+/// [`refresh_editor_panel_from_solve`] that solves `state.design` itself. See
 /// that function's own doc comment for the caller (`refresh_all`'s synchronous
 /// branch) that instead already has a solve result on hand and would otherwise
 /// pay for a second, redundant one: `refresh_all` solves once to measure
@@ -105,6 +109,9 @@ pub(in crate::gui::editor) fn refresh_editor_panel_from_solve(
         |solved| tier_items_from_solved(&state.design, solved, n_d),
     );
     push_tier_list_and_undo_redo(ui, state, tiers);
+    // The inspector form follows the design the list now shows: an adopt, retarget
+    // apply, optimize apply or deep-solve pin changes the selected tier's values.
+    super::panel_stale::sync_tier_form_with_design(ui, state);
 
     let (status_text, is_problem) = solved.map_or_else(
         || status_text_and_is_problem(&state.design),
@@ -128,7 +135,7 @@ pub(in crate::gui::editor) fn refresh_editor_panel_from_solve(
     ui.global::<EditorModel>()
         .set_design_label(design_label_text(state.asc_filename.as_deref()).into());
     let rows: Vec<AngleItem> = solved.map_or_else(Vec::new, |solved| {
-        cutting_schedule_rows(&state.design, solved)
+        cutting_instructions_rows(&state.design, solved)
     });
     push_rows(
         &ui.global::<EditorModel>().get_cutting_rows(),
@@ -216,8 +223,7 @@ fn push_manufacturability_and_preform_scratch(
             .set_preform_length_over_width(format!("{:.4}", preform.length_over_width).into());
         ui.global::<EditorModel>()
             .set_preform_depth(format!("{:.4}", preform.depth).into());
-        // The mm equivalent shown ALONGSIDE the model-unit fields above -- see
-        // `preform_mm_texts`'s own doc comment.
+        // The mm equivalent shown ALONGSIDE the model-unit fields above        // `preform_mm_texts`'s own doc comment.
         let (preform_half_width_mm, preform_depth_mm) = solved.map_or_else(
             || preform_mm_texts(&state.design),
             |solved| preform_mm_texts_from_solved(&state.design, solved),
@@ -311,28 +317,53 @@ fn push_yield_and_proportions(
     ui.global::<EditorModel>()
         .set_girdle_to_width_text(girdle_to_width.into());
 
-    push_proportion_verdicts(ui, &state.design, solved, n_d);
+    push_proportion_verdicts_from_solved(ui, &state.design, solved.map(Vec::as_slice), n_d);
 }
 
-/// The verdict-chip push half of [`push_yield_and_proportions`] -- split out
-/// purely to keep that function under clippy's function-length lint. Pushes
-/// "within" / "near" / "outside" chips next to the raw proportion numbers
-/// [`push_yield_and_proportions`]
-/// already pushes, judged against `indicatrix_cut_core::proportions_windows`'s
-/// reference table -- see [`super::state::proportion_verdicts`]'s own doc
-/// comment. Re-measures the SAME `solved` mast list
-/// `proportions_texts_from_solved`/`girdle_and_ratio_texts_from_solved`
-/// already read from (a cheap geometry measurement, not a re-solve); `None`
-/// (design not solved/closed) pushes every chip's "nothing to judge yet"
-/// level (`-1`) and an empty reason.
-fn push_proportion_verdicts(
+/// the ONE place that computes AND pushes the Preform tab's five
+/// "within"/"near"/"outside" proportion-verdict chips against
+/// `indicatrix_cut_core::proportions_windows`'s reference table (see
+/// [`super::state::proportion_verdicts`]'s own doc comment) -- shared by the
+/// synchronous "Solve" push ([`push_yield_and_proportions`], above),
+/// `auto_solve::apply::push_solve_dependent_background_fields` (the debounced
+/// background-solve completion), and `view::viewport::push_solved_preview`
+/// (a completed solid-preview replan). Every path that publishes a solve's
+/// numbers pushes the chips with them, so a design solved in the background
+/// (any design the solve policy does not run inline:
+/// `indicatrix_editor::solve_policy::should_solve_synchronously_for` runs inline
+/// only at most 32 planes, at most 8 meet-derived tiers, no tier targets and no
+/// slow last measurement) never keeps chips from an older solve next to fresh
+/// numbers.
+///
+/// Re-measures the SAME `solved` mast list `proportions_texts_from_solved`/
+/// `girdle_and_ratio_texts_from_solved` already read from (a cheap geometry
+/// measurement, not a re-solve). Pushes every chip's "nothing to judge yet"
+/// level (`-1`) and an empty reason when `solved` is `None` (design not
+/// currently solved/closed) OR `design.tiers.is_empty()` (the SAME
+/// tierless guard the Preform tab's own proportions readouts already apply --
+/// `state::yield_report::proportions_texts`'s own doc comment -- a bare,
+/// uncut preform is not a stone whose crown/pavilion angles or table percent
+/// mean anything to judge).
+///
+/// Deliberately never spells out `state::yield_report::ProportionVerdicts`
+/// (this function's own local `verdicts` binding, or a return type, or a
+/// parameter -- nowhere): that type lives in a `state` submodule private to
+/// `state` itself (`mod yield_report;`, no re-export of the type, only of the
+/// [`proportion_verdicts`] function that builds one), so no file outside
+/// `state/` can name it at all. Computing it in a type-inferred local and
+/// consuming it fully within this one function (rather than splitting
+/// "compute" from "push" across two functions, which WOULD need to name it)
+/// is what lets `view`/`auto_solve` share this logic without a
+/// `state/mod.rs` re-export outside this module.
+pub(in crate::gui::editor) fn push_proportion_verdicts_from_solved(
     ui: &MainWindow,
     design: &Design,
-    solved: Option<&Vec<SolvedTier>>,
+    solved: Option<&[SolvedTier]>,
     n_d: f64,
 ) {
-    let verdicts = solved
-        .and_then(|solved| design.stone_proportions(solved))
+    let verdicts = (!design.tiers.is_empty())
+        .then(|| solved.and_then(|solved| design.stone_proportions(solved)))
+        .flatten()
         .map(|proportions| proportion_verdicts(design, &proportions, n_d));
     let push = |level: i32,
                 reason: &str,
@@ -510,10 +541,15 @@ pub(super) fn push_yield_material_scratch(
         );
     }
     if delta.material {
-        ui.global::<EditorModel>()
-            .set_material_index(material_index_from_name(
-                state.design.material.name.as_deref(),
-            ));
+        // no longer pushes `EditorModel.material_index` -- the Preform
+        // tab's "Yield Material" combo that property fed was removed
+        // (`ui/components/editor_inspector/preform_tab.slint`): its selected
+        // index was never actually read back (`state::parse_yield_form`'s own
+        // `_material_index` parameter stayed unused), so keeping a dead
+        // control's display in sync with the design's real material served
+        // no purpose. The Design Settings panel's own material combo
+        // (`EditorModel.material_combo_index`, `view::inspector::
+        // refresh_design_settings`) is the one that actually names/changes it.
         ui.global::<EditorModel>().set_specific_gravity_override(
             state
                 .design
@@ -521,177 +557,6 @@ pub(super) fn push_yield_material_scratch(
                 .specific_gravity_override
                 .map_or_else(String::new, |sg| format!("{sg:.4}"))
                 .into(),
-        );
-    }
-}
-
-/// [`super::state::proportions_texts`]'s counterpart for a caller that already has
-/// an up-to-date `solved` mast list on hand -- see [`refresh_editor_panel`]'s own
-/// doc comment for why this small mirror lives here rather than as a new function
-/// on `state` (a shared module this file does not add functions to). Mirrors
-/// that function's body exactly, minus the internal `design.solve()` it exists to
-/// avoid repeating -- INCLUDING its `tiers.is_empty()` guard: a tierless design
-/// still solves (an empty mast list is a valid, closed, zero-plane solve), so a
-/// caller here can perfectly well be holding exactly that solved-empty list, and
-/// without this guard `stone_proportions` would measure the bare preform block as
-/// if it were the stone. `pub(in crate::gui::editor)` (not just private) so
-/// `auto_solve::apply_background_solve_result` can call this directly to close
-/// the same background-solve panel-field gap.
-#[must_use]
-pub(in crate::gui::editor) fn proportions_texts_from_solved(
-    design: &Design,
-    solved: &[SolvedTier],
-) -> (String, String, String, String, String) {
-    let dash = || "-".to_string();
-    if design.tiers.is_empty() {
-        return (dash(), dash(), dash(), dash(), dash());
-    }
-    let Some(proportions) = design.stone_proportions(solved) else {
-        return (dash(), dash(), dash(), dash(), dash());
-    };
-    let mm_per_unit = design.yield_report(solved).mm_per_unit;
-    let proportions = mm_per_unit.map_or(proportions, |mm| proportions.to_mm(mm));
-    let unit = if mm_per_unit.is_some() { " mm" } else { "" };
-    let table_percent_text = proportions
-        .table_percent
-        .map_or_else(dash, |v| format!("{v:.1}%"));
-    let crown_height_text = proportions
-        .crown_height
-        .map_or_else(dash, |v| format!("{v:.3}{unit}"));
-    let pavilion_depth_text = proportions
-        .pavilion_depth
-        .map_or_else(dash, |v| format!("{v:.3}{unit}"));
-    let total_depth_text = format!("{:.3}{unit}", proportions.total_depth);
-    let length_to_width_text = proportions
-        .length_to_width
-        .map_or_else(dash, |v| format!("{v:.3}"));
-    (
-        table_percent_text,
-        crown_height_text,
-        pavilion_depth_text,
-        total_depth_text,
-        length_to_width_text,
-    )
-}
-
-/// [`girdle_and_ratio_texts`]'s counterpart for a caller that already has an
-/// up-to-date `solved` mast list on hand -- see [`proportions_texts_from_solved`]'s
-/// own doc comment for why this small mirror lives here rather than as a new
-/// function on `state`. Mirrors that function's body exactly, minus the
-/// internal `design.solve()` it exists to avoid repeating.
-///
-/// A tierless design does NOT skip `Design::solve` -- an empty mast list is a
-/// valid, closed, zero-plane solve -- so a caller here can perfectly well be
-/// holding exactly that solved-empty list. This mirror carries the SAME
-/// `tiers.is_empty()` guard [`girdle_and_ratio_texts`] documents, not a weaker
-/// one, since without it `stone_proportions` would measure the bare preform
-/// block (girdle 50% of a cube, crown/pavilion 0%) as if it were the stone --
-/// the hazard sits on [`refresh_editor_panel_from_solve`]'s hot path
-/// ([`push_yield_and_proportions`], which always prefers this `_from_solved`
-/// mirror over the guarded plain function once a design solves).
-/// `pub(in crate::gui::editor)` (not just private) so
-/// `auto_solve::apply_background_solve_result` can call this directly.
-#[must_use]
-pub(in crate::gui::editor) fn girdle_and_ratio_texts_from_solved(
-    design: &Design,
-    solved: &[SolvedTier],
-) -> (String, String, String, String) {
-    let dash = || "-".to_string();
-    if design.tiers.is_empty() {
-        return (dash(), dash(), dash(), dash());
-    }
-    let Some(proportions) = design.stone_proportions(solved) else {
-        return (dash(), dash(), dash(), dash());
-    };
-    let mm_per_unit = design.yield_report(solved).mm_per_unit;
-    let proportions = mm_per_unit.map_or(proportions, |mm| proportions.to_mm(mm));
-    let unit = if mm_per_unit.is_some() { " mm" } else { "" };
-    let girdle_thickness_text = proportions
-        .girdle_thickness
-        .map_or_else(dash, |v| format!("{v:.3}{unit}"));
-    let crown_to_width_percent_text = proportions
-        .crown_to_width_percent
-        .map_or_else(dash, |v| format!("{v:.1}%"));
-    let pavilion_to_width_percent_text = proportions
-        .pavilion_to_width_percent
-        .map_or_else(dash, |v| format!("{v:.1}%"));
-    let girdle_to_width_percent_text = proportions
-        .girdle_to_width_percent
-        .map_or_else(dash, |v| format!("{v:.1}%"));
-    (
-        girdle_thickness_text,
-        crown_to_width_percent_text,
-        pavilion_to_width_percent_text,
-        girdle_to_width_percent_text,
-    )
-}
-
-/// [`preform_mm_texts`]'s counterpart for a caller that already has an
-/// up-to-date `solved` mast list on hand -- see [`proportions_texts_from_solved`]'s
-/// own doc comment for why this lives here. `pub(in crate::gui::editor)` (not
-/// just private) so `auto_solve::apply_background_solve_result` can call this
-/// directly.
-#[must_use]
-pub(in crate::gui::editor) fn preform_mm_texts_from_solved(
-    design: &Design,
-    solved: &[SolvedTier],
-) -> (String, String) {
-    let Some(mm_per_unit) = design.yield_report(solved).mm_per_unit else {
-        return (String::new(), String::new());
-    };
-    let preform = &design.preform;
-    (
-        format!("\u{2248} {:.3} mm", preform.half_width * mm_per_unit),
-        format!("\u{2248} {:.3} mm", preform.depth * mm_per_unit),
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // --- The `_from_solved` mirrors must dash out
-    // a tierless design too, not just their plain (internally-solving)
-    // counterparts -- see `proportions_texts_from_solved`'s own doc comment for
-    // why a guard on `girdle_and_ratio_texts` alone would miss the hot
-    // path `refresh_editor_panel_from_solve` actually takes once a design solves. ---
-
-    #[test]
-    fn proportions_texts_from_solved_dashes_out_a_design_with_no_tiers() {
-        // A brand-new design (`Design::fresh`) has no tiers, but it still SOLVES
-        // (an empty mast list is a valid, closed, zero-plane solve) -- so this
-        // must be exercised with a REAL `solved` list from that solve, exactly
-        // like `refresh_editor_panel_from_solve` hands one to this function,
-        // not skipped because "the design doesn't solve."
-        let design = EditorState::fresh().design;
-        let solved = design.solve().expect("a tierless design still solves");
-        assert_eq!(
-            proportions_texts_from_solved(&design, &solved),
-            (
-                "-".to_string(),
-                "-".to_string(),
-                "-".to_string(),
-                "-".to_string(),
-                "-".to_string(),
-            ),
-            "a tierless design's proportions must never show the bare preform \
-             block's own numbers (table 100%, total depth = preform depth) as \
-             if they were the stone's"
-        );
-    }
-
-    #[test]
-    fn girdle_and_ratio_texts_from_solved_dashes_out_a_design_with_no_tiers() {
-        let design = EditorState::fresh().design;
-        let solved = design.solve().expect("a tierless design still solves");
-        assert_eq!(
-            girdle_and_ratio_texts_from_solved(&design, &solved),
-            (
-                "-".to_string(),
-                "-".to_string(),
-                "-".to_string(),
-                "-".to_string(),
-            )
         );
     }
 }

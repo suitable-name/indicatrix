@@ -195,12 +195,17 @@ fn cancel_stops_a_large_real_solve_quickly() {
         // below that still need them.
         let design_ref = &design;
         let cancel_ref = &cancel;
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         scope.spawn(move || {
             let control = SolveControl::with_cancel(cancel_ref);
+            let _ = ready_tx.send(());
             let result = design_ref.solve_with(&control);
             let _ = tx.send(result);
         });
 
+        ready_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("the solver thread must start within 30s");
         std::thread::sleep(std::time::Duration::from_millis(50));
         cancel.store(true, std::sync::atomic::Ordering::Relaxed);
 

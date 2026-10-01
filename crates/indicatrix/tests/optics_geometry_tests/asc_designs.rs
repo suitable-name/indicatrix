@@ -19,82 +19,34 @@ use crate::fixtures::assert_euler_formula;
 // (via `indicatrix_formats::asc::parse_asc`), not hand-authored test data, so that the
 // tests exercise the actual empirically-determined sign/offset conventions against
 // real designs whose published `lw_ratio` / `facets_count` (from `diagram_details`)
-// are known independently. See `apps/diagram-loader/examples/asc_corpus_report.rs` for the
-// same cross-check run across the full corpus.
+// are known independently. The same cross-check
+// run across the full corpus lives in `examples/meet_solver_validation/main.rs`.
 // ---------------------------------------------------------------------------
 
 /// `attached_files` id 4208 ("pc45149.asc") -- "PC 45.149 Round Trichecker-12" by Fred
 /// W. Van Sant. Published: `lw_ratio` = 1.000, `facets_count` = "36+12" (48 total).
-const ASC_ROUND_TRICHECKER_12: &str = "GemCad 5.0\n\
-g 96 0.0\n\
-y 6 y\n\
-I 1.72\n\
-H PC 45.149  Round Trichecker-12\n\
-H by Fred W. Van Sant, X 51, Extra Designs 2000\n\
-H Released into the public domain in memory of Charles L. Moon\n\
-a -41.000000 0.64991234 92 n 1 84 76 68 60 52 44 36 28 20 12 4\n\
-a -90.000000 1.07325092 92 n 2 84 76 68 60 52 44 36 28 20 12 4\n\
-a 29.730000 0.65249790 4 n A 12 20 28 36 44 52 60 68 76 84 92\n\
-a 25.000000 0.59508784 96 n B 16 32 48 64 80\n\
-a 10.000000 0.48799664 96 n C 16 32 48 64 80\n\
-F \"For small stones\"\n";
+///
+/// Lives in `tests/fixtures/asc/trichecker12.asc` (`include_str!`'d, not inlined) so
+/// `crates/indicatrix/examples/pgo_train/stages.rs`'s solver-training stage can train against
+/// the exact same real design without duplicating this text.
+const ASC_ROUND_TRICHECKER_12: &str = include_str!("../fixtures/asc/trichecker12.asc");
 
 /// `attached_files` id 4210 ("pc46019.asc") -- "PC 46.019 For Fun" by Michiko Huyhn.
 /// Published: `lw_ratio` = 1.631, `facets_count` = "48+8" (56 total). Exercises an unsigned
 /// zero-angle culet-like tier ("U") with no explicit crown/pavilion marker.
-const ASC_FOR_FUN: &str = "GemCad 5.0\n\
-g 96 0.0\n\
-y 1 y\n\
-I 1.54\n\
-H PC 46.019  For Fun\n\
-H by Michiko Huyhn\n\
-a -44.864054 0.53791082 84 n P1 12 G Cut to mast depth X.\n\
-a -50.185680 0.48593919 71 n P2 25 G Cut to mast depth X.\n\
-a -48.722313 0.50066786 67 n P3 29 G Cut to mast depth X.\n\
-a -43.200000 0.55323049 34 62 n P4 G Cut to mast depth X.\n\
-a -90.000000 0.78956831 36 12 84 n G1 60 n G1 G Set stone size.\n\
-a -90.000000 0.58736554 69 n G2 27 G Meet P1, P2, G1\n\
-a -69.917066 0.54241199 69 n P5 27 G Level girdle.\n\
-a -63.805515 0.54369547 65 n P6 31 G Meet P2, P3, P5\n\
-a -90.000000 0.61916050 65 n G3 31 G Level girdle.\n\
-a -50.270584 0.59003581 60 n P7 36 G Level girdle.\n\
-a 54.575729 0.70935195 12 n C1 84 G Set girdle width.\n\
-a 43.584337 0.48735616 27 n C2 69 G Level girdle.\n\
-a 43.883301 0.51120026 65 31 n C3 G Level girdle.\n\
-a 40.781358 0.60187658 60 36 n C4 G Level girdle.\n\
-a 42.551058 0.68288357 10 n C5 86 G Meet G1, C1\n\
-a 42.551058 0.62897635 14 n C6 82 G Meet G1, G2, C1, C2\n\
-a 36.064955 0.49509639 24 n C7 72 G Meet G1, G2, C1, C2, C6\n\
-a 39.972596 0.47212999 28 n C8 68 G Meet G2, G3, C2, C3\n\
-a 40.114031 0.47905350 29 n C9 67 G Meet G2, G3, C2, C3, C8\n\
-a 40.468111 0.51438869 64 32 n C10 G Meet G1, G3, C3, C4\n\
-a 37.224985 0.62845267 12 n C11 84 G Meet C1, C5, C6\n\
-a 29.739521 0.46322909 26 n C12 70 G Meet C2, C7, C8; C6, C7, C11\n\
-a 36.239767 0.49263893 31 n C13 65 G Meet C3, C9, C10\n\
-a 22.049986 0.47954099 65 31 n C14 G Meet C8, C9, C12, C13; C10, C13\n\
-a 6.000000 0.46712247 48 n C15 G Meet C10, C13, C14\n\
-a 21.597048 0.45849715 26 n C16 70 G Meet C6, C7, C11, C12; C8, C9, C12, C13, C14\n\
-a 24.656793 0.57799286 12 n C17 84 G Meet C5, C11; C6, C7, C11, C12, C16\n\
-a 0.000000 0.44755829 96 n U\n\
-F Also USFG Newsletter Sep 2013, Facets Jan 2014\n";
+///
+/// Lives in `tests/fixtures/asc/forfun.asc` (`include_str!`'d, not inlined) -- see
+/// [`ASC_ROUND_TRICHECKER_12`]'s doc comment for why.
+const ASC_FOR_FUN: &str = include_str!("../fixtures/asc/forfun.asc");
 
 /// `attached_files` id 4430 ("pc42060.asc") -- "PC 42.060 Large Texas Star" by
 /// Charles `McCoy`. Published: `lw_ratio` = 1.051, `facets_count` = "41+10" (51 total). Gear=80 (not
 /// the far more common 96), symmetry order 5 -- exercises both away from the
 /// dominant convention, plus an explicit table tier at unsigned zero.
-const ASC_LARGE_TEXAS_STAR: &str = "GemCad 5.0\n\
-g 80 0.0\n\
-y 5 y\n\
-I 1.61\n\
-H PC 42.060  Large Texas Star\n\
-H by Charles McCoy\n\
-a -40.000000 0.54589773 76 n 1 68 60 52 44 36 28 20 12 4 G TCP\n\
-a -90.000000 1.05672946 76 n 2 68 60 52 44 36 28 20 12 4 G Size stone\n\
-a -67.800000 0.78700478 76 n 3 68 60 52 44 36 28 20 12 4 G Determine the size of the star\n\
-a -37.310000 0.53454720 78 n 4 66 62 50 46 34 30 18 14 2 G MP 1-3\n\
-a 40.000000 1.11585176 4 n A 12 20 28 36 44 52 60 68 76 G Establish girdle thickness\n\
-a 0.000000 0.72641642 80 n T G Make table large enough to show all of the star\n\
-F Leave #4 frosted\n";
+///
+/// Lives in `tests/fixtures/asc/texasstar.asc` (`include_str!`'d, not inlined) -- see
+/// [`ASC_ROUND_TRICHECKER_12`]'s doc comment for why.
+const ASC_LARGE_TEXAS_STAR: &str = include_str!("../fixtures/asc/texasstar.asc");
 
 /// `attached_files` id 4422 ("pc43001a.asc") -- "PC 43.001A Shah (Replica)". No facet
 /// names anywhere, a rare negative-mast tier at an unsigned zero angle, and two
@@ -102,26 +54,12 @@ F Leave #4 frosted\n";
 /// producing a literal duplicate half-space plane. Exercises `dedup_planes` and the
 /// "no name at all" parsing path, not the L/W or facet-count cross-check (this
 /// design's own footnote flags it as disagreeing with the reference it's replicating).
-const ASC_SHAH_REPLICA_NO_NAMES: &str = "GemCad 4.51\n\
-g 64 64.0\n\
-y 1 n\n\
-I 1.54\n\
-H PC 43.001A Shah (Replica)\n\
-a -90.00 1.00000 16\n\
-a -90.00 0.44700 0 32\n\
-a 0.00 -0.36800 0\n\
-a -90.00 0.99518 49 47\n\
-a 1.87 0.34210 49 47\n\
-a -90.00 0.44700 0\n\
-a 69.84 0.87020 16\n\
-a 85.00 0.44530 0\n\
-a -71.11 0.90450 48\n\
-a 20.59 0.39882 30\n\
-a 24.47 0.38860 1.7\n\
-F Does not agree with Barbour's 43.001. Glass replica has rounded facets on the ends.\n";
+///
+/// Lives in `tests/fixtures/asc/shah.asc` (`include_str!`'d, not inlined) -- see
+/// [`ASC_ROUND_TRICHECKER_12`]'s doc comment for why.
+const ASC_SHAH_REPLICA_NO_NAMES: &str = include_str!("../fixtures/asc/shah.asc");
 
-/// Same length/width measure the corpus-wide report in
-/// `apps/diagram-loader/examples/asc_corpus_report.rs` uses: the longest chord across the reconstructed
+/// Length/width measure: the longest chord across the reconstructed
 /// girdle outline as length, and the outline's extent perpendicular to that chord as
 /// width.
 fn length_width_ratio(hull: &GemPolyhedron) -> f64 {
@@ -183,8 +121,11 @@ fn asc_round_trichecker_12_matches_published_lw_ratio_and_facet_count() {
         "published facets_count is \"36+12\" = 48"
     );
     let lw = length_width_ratio(&hull);
+    // Measured: 1.00090015 (diff 0.0009 from published) -- tightened from the original
+    // +/-0.02 (a bound loose enough to pass even a badly broken reconstruction) down to
+    // the tightest round bound this real fixture's measured diff still clears.
     assert!(
-        (lw - 1.000).abs() < 0.02,
+        (lw - 1.000).abs() < 0.001,
         "published lw_ratio is 1.000, got {lw:.4}"
     );
 }
@@ -208,8 +149,14 @@ fn asc_for_fun_matches_published_lw_ratio_and_facet_count() {
         "published facets_count is \"48+8\" = 56"
     );
     let lw = length_width_ratio(&hull);
+    // Measured: 1.63310838 (diff 0.00211 from published). Until 2026-09-28 this
+    // fixture's reconstruction was NOT run-to-run deterministic: `chull`'s randomly
+    // seeded hash sets picked which of several nearly coincident meet solutions became
+    // the welded vertex, and repeated runs landed in two clusters, ~1.63064 and ~1.63311.
+    // `from_planes` is now byte-identical run to run and always gives the second value,
+    // so the bound is the tightest round one that clears the measured diff.
     assert!(
-        (lw - 1.631).abs() < 0.02,
+        (lw - 1.631).abs() < 0.0025,
         "published lw_ratio is 1.631, got {lw:.4}"
     );
 }
@@ -229,8 +176,14 @@ fn asc_large_texas_star_matches_published_lw_ratio_and_facet_count() {
         "published facets_count is \"41+10\" = 51"
     );
     let lw = length_width_ratio(&hull);
+    // Measured: 1.05231798 (diff 0.00232 from published) -- this fixture's own diff does
+    // NOT clear +/-0.001 (unlike the other two `.asc` fixtures in this file), so it keeps
+    // a looser, but still 8x tighter than the original +/-0.02, bound; a small margin
+    // over the measured diff, not the tightest possible one, since this fixture's own
+    // gear=80 / explicit-zero-tier shape (see the comment above) is already called out
+    // as unlike the more common case the other two fixtures exercise.
     assert!(
-        (lw - 1.051).abs() < 0.02,
+        (lw - 1.051).abs() < 0.0025,
         "published lw_ratio is 1.051, got {lw:.4}"
     );
 }

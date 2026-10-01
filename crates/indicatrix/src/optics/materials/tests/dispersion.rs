@@ -233,6 +233,20 @@ fn m4_new_species_match_their_target_n_d_within_tolerance() {
         "GGG: n_d={ggg_n_d:.5} does not match target 1.970 within 0.002"
     );
 }
+
+/// GGG's stored dispersion is the F-C convention: the gemological B-G figure 0.045 times
+/// the file-wide 0.579 B-G->F-C ratio gives `Delta n(F-C) = 0.026055`, which the Cauchy
+/// fit reproduces between the Fraunhofer F (486.1nm) and C (656.3nm) lines. Feeding 0.045
+/// straight into the F-C slot would give 0.045 here, 1.7x too dispersive.
+#[test]
+fn ggg_dispersion_uses_the_converted_f_minus_c_value() {
+    let ggg = GemMaterial::by_name("GGG").expect("GGG must resolve via by_name");
+    let delta_f_c = ggg.dispersion.evaluate(486.1) - ggg.dispersion.evaluate(656.3);
+    assert!(
+        (delta_f_c - 0.026_055).abs() <= 1e-3,
+        "GGG: n(F)-n(C)={delta_f_c:.5} should be 0.045 * 0.579 = 0.026055 within 1e-3"
+    );
+}
 /// Quartz's genuine per-axis (Ghosh o/e) dispersion must make its
 /// extraordinary-ray index actually VARY with wavelength in a way the old
 /// constant-offset approximation could not (the offset `n_o(lambda) +
@@ -278,4 +292,33 @@ fn quartz_extraordinary_index_has_wavelength_dependent_birefringence_while_legac
                  constant birefringence_delta exactly"
         );
     }
+}
+
+/// Rutile's principal indices follow `DeVore` (1951): `n_o(D) = 2.6129`, `n_e(D) =
+/// 2.9086`, with Fraunhofer `Delta n(F-C)` of 0.1636 (o) and 0.2072 (e) -- far below
+/// the gemological B-G figure (~0.30) the earlier Cauchy fit mistook for F-C -- and the
+/// stored `birefringence_delta` equals `n_e(D) - n_o(D)`.
+#[test]
+fn rutile_matches_devore_indices_and_dispersion() {
+    let rutile = GemMaterial::by_name("Rutile").expect("Rutile must be a built-in material");
+    let e_ray = rutile
+        .uniaxial_extraordinary_dispersion
+        .expect("Rutile must carry its own e-ray dispersion curve");
+
+    let n_o = rutile.dispersion.evaluate(589.3);
+    let n_e = e_ray.evaluate(589.3);
+    assert!((n_o - 2.613).abs() <= 0.002, "n_o(D) = {n_o}");
+    assert!((n_e - 2.909).abs() <= 0.002, "n_e(D) = {n_e}");
+
+    let fc_o = rutile.dispersion.evaluate(486.1) - rutile.dispersion.evaluate(656.3);
+    let fc_e = e_ray.evaluate(486.1) - e_ray.evaluate(656.3);
+    assert!((fc_o - 0.164).abs() <= 0.003, "o-ray F-C = {fc_o}");
+    assert!((fc_e - 0.207).abs() <= 0.003, "e-ray F-C = {fc_e}");
+
+    assert!(
+        (rutile.birefringence_delta - (n_e - n_o)).abs() <= 1e-3,
+        "birefringence_delta {} must equal n_e(D) - n_o(D) = {}",
+        rutile.birefringence_delta,
+        n_e - n_o
+    );
 }

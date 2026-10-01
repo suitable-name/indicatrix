@@ -68,7 +68,11 @@
 //!   ([`connection::refuse_for_capacity`]). For TLS the real slot is acquired only AFTER
 //!   [`tls::accept_tls`] succeeds; a second, wider limiter (see
 //!   [`limiter::PRE_AUTH_HANDSHAKE_MULTIPLIER`]) bounds bare, not-yet-authenticated
-//!   connections in flight, refused silently.
+//!   connections in flight, refused silently. A per-source-address cap on those
+//!   (`--max-preauth-per-ip`, default 8, checked first so one address cannot take the
+//!   wider cap's slots) closes an over-cap connection at once with a logged reason.
+//!   Both pre-authentication counts are released as soon as [`tls::accept_tls`]
+//!   succeeds, so an authenticated connection counts only against `--max-connections`.
 
 use std::{
     net::{SocketAddr, TcpListener},
@@ -92,8 +96,9 @@ mod tilt;
 mod tls;
 // These tests drive a real render round trip, uncompilable without `render` support.
 // `library`'s own tests cover the library protocol unconditionally.
+// `pub(crate)` so other test modules (the coordinator's) share its temp-dir helper.
 #[cfg(all(test, feature = "worker"))]
-mod tests;
+pub(crate) mod tests;
 
 #[cfg(feature = "worker")]
 pub(crate) use connection::refuse_for_capacity;
@@ -101,6 +106,10 @@ pub(crate) use connection::refuse_for_capacity;
 pub(crate) use limiter::PRE_AUTH_HANDSHAKE_MULTIPLIER;
 pub use limiter::{ConnectionLimiter, ConnectionSlot};
 pub(crate) use socket::HANDSHAKE_TIMEOUT;
+// Ungated (unlike the `worker`-only re-exports below): `crate::enroll`'s listener runs
+// in every build, and needs these two to apply the same pre-HELLO deadline (F-06a) to
+// its own TLS-handshake-then-one-message exchange.
+pub(crate) use socket::{DeadlineIo, DeadlineSocket};
 #[cfg(feature = "worker")]
 pub(crate) use socket::{apply_handshake_timeout, tune_accepted_socket};
 pub(crate) use tls::Auth;
@@ -239,7 +248,6 @@ fn start_inner(
         bind_addr,
         1,
         viewer_auth.as_ref(),
-        limiter.clone(),
     )?;
 
     #[cfg(feature = "worker")]
@@ -251,6 +259,7 @@ fn start_inner(
         transport,
         limiter,
         handshake_limiter,
+        pre_auth_addresses: accept::PreAuthAddresses::new(args.max_preauth_per_ip),
         db_path,
         max_connections: args.max_connections,
         #[cfg(feature = "worker")]
@@ -294,6 +303,10 @@ fn start_worker_side(
     db_path: &std::path::Path,
 ) -> Result<(WorkerSide, accept::RenderSetup), String> {
     use indicatrix::renderer::gpu_backend::GpuBackend;
+    // Acquired once. A device lost later is re-acquired by the backend itself (cool-down
+    // and hourly attempt budget in `indicatrix::renderer::gpu_backend`), and each
+    // connection's `WELCOME` reads the backend's state when it is built
+    // (`local_render_capability`), so nothing here re-acquires.
     let gpu = Arc::new(
         if args.render && args.compute_mode != ComputeMode::OnlyCpu {
             GpuBackend::acquire()
@@ -301,6 +314,19 @@ fn start_worker_side(
             GpuBackend::disabled()
         },
     );
+    // Makes the hybrid CPU/GPU split decision once, before the first real request,
+    // rather than paying its 3-sample probe on whichever request happens to arrive
+    // first. Only meaningful with a real adapter and the hybrid path (`OnlyGpu`/
+    // `OnlyCpu` never calibrate a split at all -- see `render_core::hybrid::job_key`'s
+    // doc comment).
+    if args.render && args.compute_mode == ComputeMode::Hybrid && gpu.adapter_label().is_some() {
+        crate::render_core::hybrid::calibrate_now(
+            &gpu,
+            &probe_scene(),
+            args.threads,
+            args.compute_mode,
+        );
+    }
 
     let mut side = WorkerSide::default();
     match transport {
@@ -327,7 +353,7 @@ fn start_worker_side(
                 bind_addr: worker_bind,
                 tls_config: Arc::clone(config),
                 auth: auth.clone(),
-                limiter: worker_limiter.clone(),
+                limiter: worker_limiter,
                 max_connections: args.max_connections,
                 registry: Arc::clone(&registry),
             })?;
@@ -338,7 +364,6 @@ fn start_worker_side(
                 worker_bind,
                 1,
                 Some(&auth),
-                worker_limiter,
             )?;
             side.addr = Some(addr);
             side.registry = Some(registry);
@@ -386,16 +411,50 @@ fn start_worker_side(
     Ok((side, render))
 }
 
+/// A representative scene for [`crate::render_core::hybrid::calibrate_now`]'s start-up
+/// probe: a real, traceable scene (so the probe measures genuine per-dispatch overhead,
+/// not just call overhead) at a typical interactive/live-view resolution. Only its
+/// resolution matters to the calibration decision (`render_core::hybrid::job_key`
+/// buckets to the enclosing power of two), so the exact material/geometry/lighting
+/// below are arbitrary.
+#[cfg(feature = "worker")]
+fn probe_scene() -> indicatrix_net::SceneState {
+    use indicatrix::{
+        geometry::cuts::StandardGemCuts,
+        optics::{materials::GemMaterial, raytracer::LightingPreset},
+    };
+    indicatrix_net::SceneState {
+        width: 512,
+        height: 512,
+        yaw: 0.4,
+        pitch: 0.3,
+        distance: 3.0,
+        light_yaw: 0.85,
+        light_pitch: 0.95,
+        exposure: 1.0,
+        max_bounces: 4,
+        lighting_preset: LightingPreset::Daylight,
+        material: GemMaterial::diamond(),
+        planes: StandardGemCuts::standard_round_brilliant(),
+        girdle_frosted: false,
+        backdrop: 0.0,
+        environment: indicatrix_net::scene::SceneEnvironment::Studio,
+    }
+}
+
 /// Starts one token-enrollment listener (see [`crate::enroll`]) for `auth.role` at
 /// `explicit`, else `base`'s host `offset` ports up. `None` (no listener) under
 /// `--no-enroll` or `--insecure-no-tls` (no `auth`).
+///
+/// Builds its own dedicated pair of connection limiters (F-06b) rather than being
+/// handed the matching viewer/worker listener's real `--max-connections` limiter --
+/// see [`enroll::ENROLL_MAX_CONNECTIONS`]'s doc comment for why sharing it was a bug.
 fn start_enrollment(
     args: &ServeArgs,
     explicit: Option<&str>,
     base: SocketAddr,
     offset: u16,
     auth: Option<&Auth>,
-    limiter: ConnectionLimiter,
 ) -> Result<Option<SocketAddr>, String> {
     let Some(auth) = auth else {
         return Ok(None);
@@ -411,15 +470,8 @@ fn start_enrollment(
         PeerRole::Worker => "--worker-enroll-bind",
     };
     let bind = derived_addr(explicit, base, offset, flag, args.allow_remote)?;
-    let config = enroll::EnrollConfig::build(
-        bind,
-        ca,
-        cert,
-        key,
-        auth.allowlist.clone(),
-        limiter,
-        auth.role,
-    )?;
+    let config =
+        enroll::EnrollConfig::build(bind, ca, cert, key, auth.allowlist.clone(), auth.role)?;
     enroll::spawn_enroll_listener(config).map(Some)
 }
 

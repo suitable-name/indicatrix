@@ -21,13 +21,78 @@ use rustls::{
 use serde::{Deserialize, Serialize};
 use std::{
     fmt,
-    net::TcpStream,
+    net::{TcpStream, ToSocketAddrs},
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 use zeroize::{Zeroize, Zeroizing};
+
+/// Connect timeout and per-read/per-write socket timeout of [`claim`]: an enrollment
+/// exchange is a few small messages, so a listener that stalls longer is treated as dead.
+const CLAIM_IO_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Cap on the reply [`claim`] will read. A `Claimed` reply is a few PEM blocks (a few
+/// KiB); nothing legitimate approaches this.
+const MAX_CLAIM_REPLY_LEN: u32 = 64 * 1024;
+
+/// Length in bytes of the operator secret that authorises [`EnrollRequest::IssueAuthorized`].
+pub const OPERATOR_SECRET_LEN: usize = 32;
+
+/// File name of the operator secret inside the PKI directory.
+pub const OPERATOR_SECRET_FILE: &str = "issue.secret";
+
+/// Path of the operator secret file inside `pki_dir`.
+#[must_use]
+pub fn operator_secret_path(pki_dir: &Path) -> PathBuf {
+    pki_dir.join(OPERATOR_SECRET_FILE)
+}
+
+/// Reads the operator secret (hex, one line) from `<pki_dir>/issue.secret`.
+///
+/// `serve` creates the file on first start with owner-only permissions; `cert
+/// issue-token` reads it and presents it in [`EnrollRequest::IssueAuthorized`]. The returned secret
+/// is zeroized on drop.
+///
+/// # Errors
+///
+/// A human-readable message if the file can't be read or isn't 64 hex characters.
+pub fn read_operator_secret(
+    pki_dir: &Path,
+) -> Result<Zeroizing<[u8; OPERATOR_SECRET_LEN]>, String> {
+    let path = operator_secret_path(pki_dir);
+    let text = Zeroizing::new(
+        std::fs::read_to_string(&path)
+            .map_err(|e| format!("could not read the operator secret {}: {e}", path.display()))?,
+    );
+    crate::tls::fingerprint_from_hex(text.trim())
+        .map(Zeroizing::new)
+        .ok_or_else(|| {
+            format!(
+                "{} is not a valid operator secret (expected {} hex characters)",
+                path.display(),
+                OPERATOR_SECRET_LEN * 2
+            )
+        })
+}
+
+/// Writes `secret` as hex to `<pki_dir>/issue.secret`, readable by the current user only
+/// (the same protection as `ca.key`, see [`crate::tls::write_private_key_pem`]).
+///
+/// # Errors
+///
+/// A human-readable message if the file can't be created or its permissions restricted.
+pub fn write_operator_secret(
+    pki_dir: &Path,
+    secret: &[u8; OPERATOR_SECRET_LEN],
+) -> Result<(), String> {
+    let mut text = Zeroizing::new(crate::tls::fingerprint_to_hex(secret));
+    text.push('\n');
+    crate::tls::write_private_key_pem(&operator_secret_path(pki_dir), &text)
+}
 
 /// One request on the enrollment wire protocol.
 ///
@@ -36,13 +101,28 @@ use zeroize::{Zeroize, Zeroizing};
 /// the wrong protocol if a wire got crossed.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum EnrollRequest {
-    /// Mint a new token for a viewer labeled `name` once claimed. Only honored from a
-    /// loopback peer.
+    /// The original unauthenticated issue request. A listener refuses it with a reply
+    /// telling the operator to update `cert issue-token`, because issuing is no longer
+    /// authorised by "the peer is loopback" alone (see [`Self::IssueAuthorized`]); the
+    /// variant stays so an older client gets that message instead of a decode error.
     Issue { name: String },
     /// Attempt to claim a pending enrollment with this secret.
     Claim { secret: [u8; token::SECRET_LEN] },
+    /// Mint a new token for a viewer (or, on the worker listener, a worker) labeled `name`
+    /// once claimed. Honored only from a loopback peer that also presents the operator
+    /// secret (`<pki_dir>/issue.secret`, see [`read_operator_secret`]), so a local user or
+    /// a port forward without read access to the PKI directory cannot mint certificates.
+    ///
+    /// Protocol note: appended after `Claim`, so the existing variants keep their wire
+    /// indices. The enrollment protocol has no version field; an `IssueAuthorized` sent to
+    /// a listener that predates it fails to decode there.
+    IssueAuthorized {
+        name: String,
+        operator_secret: [u8; OPERATOR_SECRET_LEN],
+    },
 }
 
+/// The reply to one [`EnrollRequest`] on the enrollment wire protocol.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum EnrollResponse {
     Issued {
@@ -176,13 +256,6 @@ impl ServerCertVerifier for PinnedCaVerifier {
     }
 }
 
-/// Splits `addr` (`host:port`) into its host part, for building a TLS [`ServerName`].
-/// Splits on the last `:` so a bracketed IPv6 literal's own colons don't confuse it (full
-/// validation still happens in `ServerName::try_from`). `None` if `addr` has no `:`.
-fn host_of(addr: &str) -> Option<&str> {
-    addr.rsplit_once(':').map(|(host, _)| host)
-}
-
 /// A freshly claimed client-certificate bundle, still in memory.
 ///
 /// The same three PEM blocks `indicatrix-worker cert issue-client`/`cert claim` write to
@@ -191,7 +264,9 @@ fn host_of(addr: &str) -> Option<&str> {
 /// job, since where the bundle belongs is caller-specific.
 #[derive(Debug)]
 pub struct ClaimedBundle {
+    /// PEM-encoded certificate authority that signs the server.
     pub ca_pem: String,
+    /// PEM-encoded client certificate issued to the enrolling peer.
     pub client_cert_pem: String,
     /// Wrapped in [`Zeroizing`] since this is the client's private key, plaintext,
     /// having just crossed the wire. Overwritten as soon as the caller is done with it
@@ -301,7 +376,7 @@ impl std::error::Error for ClaimError {
 pub fn claim(token: &str, addr: &str) -> Result<ClaimedBundle, ClaimError> {
     let decoded = token::decode(token).map_err(ClaimError::InvalidToken)?;
 
-    let host = host_of(addr)
+    let host = crate::tls::host_for_server_name(addr)
         .ok_or_else(|| ClaimError::InvalidAddr(format!("{addr:?} must be host:port")))?;
     let server_name = ServerName::try_from(host.to_string()).map_err(|e| {
         ClaimError::InvalidAddr(format!("{addr:?}: invalid host for TLS verification: {e}"))
@@ -318,7 +393,7 @@ pub fn claim(token: &str, addr: &str) -> Result<ClaimedBundle, ClaimError> {
             .with_custom_certificate_verifier(verifier)
             .with_no_client_auth();
 
-    let tcp = TcpStream::connect(addr).map_err(|e| ClaimError::Connect {
+    let tcp = connect_with_timeout(addr).map_err(|e| ClaimError::Connect {
         addr: addr.to_string(),
         source: e,
     })?;
@@ -355,8 +430,9 @@ pub fn claim(token: &str, addr: &str) -> Result<ClaimedBundle, ClaimError> {
     drop(decoded); // zeroizes its own `Zeroizing<[u8; 32]>` secret on drop
     write_result.map_err(|e| ClaimError::Protocol(e.to_string()))?;
 
-    let response: EnrollResponse = crate::messages::read_message(&mut stream)
-        .map_err(|e| ClaimError::Protocol(e.to_string()))?;
+    let response: EnrollResponse =
+        crate::messages::read_message_bounded(&mut stream, MAX_CLAIM_REPLY_LEN)
+            .map_err(|e| ClaimError::Protocol(e.to_string()))?;
 
     match response {
         EnrollResponse::Claimed {
@@ -375,19 +451,50 @@ pub fn claim(token: &str, addr: &str) -> Result<ClaimedBundle, ClaimError> {
     }
 }
 
+/// Connects to `addr`, trying each resolved address with [`CLAIM_IO_TIMEOUT`], and arms
+/// the same timeout as the socket's read and write deadline.
+fn connect_with_timeout(addr: &str) -> std::io::Result<TcpStream> {
+    let mut last_error = None;
+    for candidate in addr.to_socket_addrs()? {
+        match TcpStream::connect_timeout(&candidate, CLAIM_IO_TIMEOUT) {
+            Ok(stream) => {
+                stream.set_read_timeout(Some(CLAIM_IO_TIMEOUT))?;
+                stream.set_write_timeout(Some(CLAIM_IO_TIMEOUT))?;
+                return Ok(stream);
+            }
+            Err(e) => last_error = Some(e),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            "the address resolved to nothing",
+        )
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn host_of_splits_on_the_last_colon() {
-        assert_eq!(host_of("127.0.0.1:7879"), Some("127.0.0.1"));
-        assert_eq!(host_of("worker.lan:7879"), Some("worker.lan"));
-    }
+    fn operator_secret_round_trips_through_its_file() {
+        let dir = std::env::temp_dir().join(format!(
+            "indicatrix-net-operator-secret-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let secret: [u8; OPERATOR_SECRET_LEN] = std::array::from_fn(|i| u8::try_from(i).unwrap());
+        write_operator_secret(&dir, &secret).unwrap();
+        assert_eq!(*read_operator_secret(&dir).unwrap(), secret);
 
-    #[test]
-    fn host_of_returns_none_for_a_missing_port() {
-        assert_eq!(host_of("worker.lan"), None);
+        std::fs::write(operator_secret_path(&dir), "not hex\n").unwrap();
+        assert!(read_operator_secret(&dir).is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

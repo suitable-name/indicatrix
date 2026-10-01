@@ -1,22 +1,50 @@
 use super::{angle::AngleSetting, file::AttachedFile};
 use serde::{Deserialize, Serialize};
 
+/// A design's full detail row, plus its child angle-setting/attached-file records.
+///
+/// What [`crate::db::sqlite::Database::save_diagram_detail`] fully replaces on every
+/// (re-)sync, and what a fresh scrape/import populates from scratch. See
+/// [`crate::model::metadata_update::MetadataUpdate`] for the narrower, hand-correction
+/// path that does NOT go through this type (a naive read-modify-write through this
+/// struct would silently zero every field a scraped record doesn't carry).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct FacetDiagramDetail {
+pub struct FacetingDiagramDetail {
+    /// The source page's URL this detail was scraped from, or empty for a locally
+    /// imported design.
     pub page_url: String,
+    /// The diagram image's file name, if the source page has one.
     pub diagram_image_name: Option<String>,
+    /// The diagram image's raw bytes, if the source page has one.
     pub diagram_image_data: Option<Vec<u8>>,
+    /// This design's angle-settings table -- one row per tier.
     pub angle_settings_table: Vec<AngleSetting>,
+    /// Every attachment (`.asc`/`.gem`/`.pdf`/native-sidecar, or a scraped page's own
+    /// attachments) with full byte content.
     pub attached_files: Vec<AttachedFile>,
 
     // Specific metadata fields
+    /// The competition-entry class/label, for a competition-sourced design; `None` for
+    /// a regular (non-competition) design.
     pub competition_diagram: Option<String>,
+    /// Length/width ratio, as recorded on the design sheet.
     pub lw_ratio: Option<String>,
+    /// Refractive index, as recorded on the design sheet.
     pub refractive_index: Option<String>,
+    /// The gear-tooth count, as recorded on the design sheet.
     pub index_gear: Option<String>,
+    /// Volume, as recorded on the design sheet.
     pub volume: Option<String>,
+    /// The scraped-style `"55+6"` facet-count text -- see
+    /// [`crate::model::facets::parse_facets_count`] for how it's split.
     pub facets_count: Option<String>,
+    /// The shape name, as recorded/cleaned from the design sheet (free-text; see
+    /// `crate::db::sqlite::DEFAULT_SHAPES`'s doc comment for why the catalogue's
+    /// vocabulary is only a starting list, not exhaustive).
     pub shape: Option<String>,
+    /// The free-text `"Designer; Publication citation"` string as printed on the
+    /// design sheet -- see [`Self::designer`]/[`Self::source_citation`] for the
+    /// machine-split halves of the same text.
     pub designer_info: Option<String>,
 
     // Proportion ratios and symmetry, as printed on a design sheet's metadata block
@@ -25,10 +53,16 @@ pub struct FacetDiagramDetail {
     // `None` by default; a missing ratio must stay missing, not fabricated.
     // `apps/indicatrix-cut`'s importer derives several from the design's own geometry;
     // see `gui::library::apply_measured_metadata`.
+    /// Height/width ratio -- see this field group's own doc comment above for why it's
+    /// the odd one out among the five ratios here.
     pub hw_ratio: Option<String>,
+    /// Table/width ratio.
     pub tw_ratio: Option<String>,
+    /// Upper-girdle/width ratio.
     pub uw_ratio: Option<String>,
+    /// Pavilion/width ratio.
     pub pw_ratio: Option<String>,
+    /// Culet/width ratio.
     pub cw_ratio: Option<String>,
     /// The rotational fold count (e.g. `4` in "4-fold, mirror-image symmetry").
     pub symmetry_order: Option<String>,
@@ -42,7 +76,7 @@ pub struct FacetDiagramDetail {
     ///
     /// `designer_info` is deliberately *kept* alongside this and
     /// [`Self::source_citation`]: it's what `search_diagrams`' free-text `LIKE`
-    /// matches, what `find_cross_source_duplicates` compares, and what
+    /// matches, and what
     /// `apps/indicatrix-cut` renders -- it stays the display/search convenience, with
     /// these two as the queryable halves.
     pub designer: Option<String>,

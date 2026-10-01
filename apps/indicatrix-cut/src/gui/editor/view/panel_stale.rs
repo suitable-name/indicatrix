@@ -19,9 +19,91 @@ use crate::{
 use indicatrix_cut_core::PreformShape;
 use slint::{ComponentHandle, ModelRc, SharedString, VecModel};
 use std::{
+    cell::Cell,
     collections::BTreeSet,
     sync::{Arc, Mutex, PoisonError, atomic::Ordering as AtomicOrdering},
 };
+
+/// The design state the Tier inspector form was last reconciled against: the edit
+/// generation and the tier count. Two equal marks mean no edit landed in between,
+/// so the form has nothing to re-seed from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FormSyncMark {
+    /// `EditorState::generation` at the last refresh.
+    generation: u64,
+    /// `design.tiers.len()` at the last refresh.
+    tier_count: usize,
+}
+
+thread_local! {
+    /// The [`FormSyncMark`] the last refresh recorded (`None` before the first). UI
+    /// thread only: every caller is a Slint callback, and keeping the mark here leaves
+    /// `EditorState` untouched by a purely presentational bookkeeping value.
+    static LAST_FORM_SYNC: Cell<Option<FormSyncMark>> = const { Cell::new(None) };
+}
+
+/// Whether the Tier form owes a re-seed after a refresh, and if so whether the tier
+/// COUNT changed since the previous one (the payload of
+/// `EditorModel.form_reseed_tier_count_changed`).
+///
+/// `None` when nothing changed since `last` (a refresh that follows no edit, e.g.
+/// the availability pushes, must never disturb a form the cutter is typing into) or
+/// when the selection does not survive (`selection_survives == false`: the form is
+/// blanked through `form_reset_pulse` instead, and re-seeding a row that is gone
+/// would resurrect it). A missing `last` re-seeds once, since nothing is known about
+/// what the form was built from.
+fn form_reseed_request(
+    last: Option<FormSyncMark>,
+    now: FormSyncMark,
+    selection_survives: bool,
+) -> Option<bool> {
+    if !selection_survives {
+        return None;
+    }
+    match last {
+        Some(previous) if previous == now => None,
+        Some(previous) => Some(previous.tier_count != now.tier_count),
+        None => Some(false),
+    }
+}
+
+/// Bumps `EditorModel.form_reseed_pulse` with `form_reseed_tier_count_changed`
+/// written first, so `EditorView`'s watcher reads the matching flag.
+///
+/// A plain increment rather than a flag: a same-value property write raises no
+/// `changed` (see `EditorModel.form_reset_pulse`'s doc comment for the rule).
+fn push_form_reseed_pulse(ui: &crate::MainWindow, tier_count_changed: bool) {
+    let model = ui.global::<EditorModel>();
+    model.set_form_reseed_tier_count_changed(tier_count_changed);
+    let pulse = model.get_form_reseed_pulse();
+    model.set_form_reseed_pulse(pulse.wrapping_add(1));
+}
+
+/// Re-seeds the Tier inspector form from the design when an edit landed since the
+/// previous refresh and the selected tier is still there.
+///
+/// The form is a snapshot (`EditorInspector`'s scratch fields) that only a selection
+/// change loads, so every edit that leaves the selection where it was -- a handle
+/// drag, nudge, pin, adopt, facet edit, gear remap, retarget or optimize apply,
+/// symmetry change, Undo/Redo -- would otherwise leave it showing pre-edit values
+/// that Save Tier writes straight back. `EditorInspector.reseed_after_external_change`
+/// decides per form what the pulse does: a clean form follows the design, a dirty
+/// one keeps the draft and says the tier moved underneath it.
+///
+/// `pub(super)`, not private: `panel.rs` (a sibling file) shares this call for the
+/// refresh that follows a real solve.
+pub(super) fn sync_tier_form_with_design(ui: &crate::MainWindow, state: &EditorState) {
+    let now = FormSyncMark {
+        generation: state.generation.load(AtomicOrdering::Relaxed),
+        tier_count: state.design.tiers.len(),
+    };
+    let previous = LAST_FORM_SYNC.with(|cell| cell.replace(Some(now)));
+    let selected = ui.global::<EditorModel>().get_selected_tier_index();
+    let selection_survives = usize::try_from(selected).is_ok_and(|index| index < now.tier_count);
+    if let Some(tier_count_changed) = form_reseed_request(previous, now, selection_survives) {
+        push_form_reseed_pulse(ui, tier_count_changed);
+    }
+}
 
 /// Pushes Deep Solve's `available`/`hint` properties (see [`deep_solve_hint`]) --
 /// shared by [`super::panel::refresh_editor_panel_from_solve`] and
@@ -93,6 +175,11 @@ pub(in crate::gui::editor) fn configured_optimize_max_evaluations(ui: &crate::Ma
 /// "not solved" message instead of calling
 /// [`super::state::status_text_and_is_problem`] -- this function must never touch
 /// `Design::solve`/`status`/`measure` even indirectly.
+///
+/// Also re-seeds the Tier inspector form when an edit changed the design and the
+/// selected tier survived -- see [`sync_tier_form_with_design`]; it runs inside
+/// [`push_stale_content`], so this function's callers and `refresh_all`'s
+/// large-design path both get it.
 ///
 /// Ends by calling [`auto_solve::on_edit`]: every edit callback in this group calls
 /// this function already, so that one call is this crate's single hook point for
@@ -241,7 +328,7 @@ fn push_stale_preform_and_yield(ui: &crate::MainWindow, state: &EditorState, del
         .set_preform_fit_warning("".into());
 }
 
-/// [`push_stale_content`]'s proportions/cutting-schedule/facet-count reset,
+/// [`push_stale_content`]'s proportions/cutting-instructions/facet-count reset,
 /// split out purely to keep that function under clippy's function-length lint.
 /// All three need a real solve -- cleared here and repopulated once
 /// [`super::panel::refresh_editor_panel`] next runs (the explicit "Solve"
@@ -268,11 +355,39 @@ fn push_stale_proportions_reset(ui: &crate::MainWindow) {
     ui.global::<EditorModel>()
         .set_cutting_rows(ModelRc::new(VecModel::from(Vec::<AngleItem>::new())));
     // Facets are a solve-dependent count exactly
-    // like the cutting schedule just above -- reset to 0 ("nothing solved yet")
+    // like the cutting instructions just above -- reset to 0 ("nothing solved yet")
     // rather than left showing a superseded design's count, matching
     // `refresh_editor_panel_from_solve`'s own "0 when the design does not
     // currently solve" reasoning for this same property.
     ui.global::<EditorModel>().set_facet_count(0);
+    // the proportion-verdict chips are solve-dependent exactly like the
+    // numbers above -- reset to "nothing to judge yet" (`-1`/`""`) rather than
+    // left describing whichever design was last solved. `panel::
+    // push_proportion_verdicts_from_solved`'s own `None` case pushes the
+    // identical five values; this stays a direct push (not a shared call
+    // through that function) since this call site has no `Design`/effective-RI
+    // on hand to pass it, and none is needed to know the answer is always
+    // "nothing yet" here.
+    ui.global::<EditorModel>()
+        .set_proportion_verdict_table_level(-1);
+    ui.global::<EditorModel>()
+        .set_proportion_verdict_table_reason("".into());
+    ui.global::<EditorModel>()
+        .set_proportion_verdict_crown_angle_level(-1);
+    ui.global::<EditorModel>()
+        .set_proportion_verdict_crown_angle_reason("".into());
+    ui.global::<EditorModel>()
+        .set_proportion_verdict_pavilion_angle_level(-1);
+    ui.global::<EditorModel>()
+        .set_proportion_verdict_pavilion_angle_reason("".into());
+    ui.global::<EditorModel>()
+        .set_proportion_verdict_total_depth_level(-1);
+    ui.global::<EditorModel>()
+        .set_proportion_verdict_total_depth_reason("".into());
+    ui.global::<EditorModel>()
+        .set_proportion_verdict_girdle_level(-1);
+    ui.global::<EditorModel>()
+        .set_proportion_verdict_girdle_reason("".into());
 }
 
 /// The actual "no-solve" content push -- see [`refresh_editor_panel_stale`]'s doc
@@ -307,10 +422,20 @@ pub(super) fn push_stale_content(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
+            // the shared cache is now generation-tagged
+            // (`Arc<Mutex<Option<(u64, Vec<SolvedTier>)>>>`) -- this reader
+            // predates that tag and only ever wanted the masts themselves, so
+            // the generation half is simply dropped here rather than checked
+            // (this function already has `dirty`'s own precise "which rows
+            // changed" information from the caller, and only reads the cache
+            // as evidence for the rows `dirty` does NOT name).
+            .map(|(_, solved)| solved)
     });
     let tiers =
         tier_items_stale_with_last_solved(&state.design, n_d, last_solved.as_deref(), dirty);
     push_tier_list_and_undo_redo(ui, state, tiers);
+    // After the tier rows: the form re-seeds from `EditorModel.tiers`.
+    sync_tier_form_with_design(ui, state);
 
     ui.global::<EditorModel>().set_status_text(
         "Not solved -- click Solve to compute masts and validate this design.".into(),
@@ -328,4 +453,60 @@ pub(super) fn push_stale_content(
 
     refresh_deep_solve_availability(ui, state);
     refresh_optimize_availability(ui, state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FormSyncMark, form_reseed_request};
+
+    const fn mark(generation: u64, tier_count: usize) -> FormSyncMark {
+        FormSyncMark {
+            generation,
+            tier_count,
+        }
+    }
+
+    #[test]
+    fn a_new_generation_with_a_surviving_selection_requests_a_reseed() {
+        assert_eq!(
+            form_reseed_request(Some(mark(4, 6)), mark(5, 6), true),
+            Some(false),
+            "an in-place edit re-seeds without claiming the tier count moved"
+        );
+    }
+
+    #[test]
+    fn a_tier_count_change_is_reported_in_the_request() {
+        assert_eq!(
+            form_reseed_request(Some(mark(4, 6)), mark(5, 7), true),
+            Some(true)
+        );
+        assert_eq!(
+            form_reseed_request(Some(mark(4, 6)), mark(5, 5), true),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn an_unchanged_design_never_requests_a_reseed() {
+        assert_eq!(
+            form_reseed_request(Some(mark(4, 6)), mark(4, 6), true),
+            None,
+            "a refresh with no edit must not disturb a form being typed into"
+        );
+    }
+
+    #[test]
+    fn a_vanished_selection_leaves_the_form_to_the_reset_pulse() {
+        assert_eq!(
+            form_reseed_request(Some(mark(4, 6)), mark(5, 5), false),
+            None
+        );
+        assert_eq!(form_reseed_request(None, mark(1, 0), false), None);
+    }
+
+    #[test]
+    fn the_first_refresh_reseeds_once() {
+        assert_eq!(form_reseed_request(None, mark(1, 3), true), Some(false));
+    }
 }

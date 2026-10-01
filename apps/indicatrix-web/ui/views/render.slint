@@ -1,0 +1,215 @@
+import { Button } from "std-widgets.slint";
+import { Theme } from "../components/theme.slint";
+import { AppModel } from "../models/app_model.slint";
+import { RenderModel } from "../components/render_model.slint";
+import { RenderSettingsPanel } from "../components/render_settings_panel.slint";
+import { MetricsHud } from "../components/metrics_hud.slint";
+import { MetricsModel, TiltModel } from "../components/metrics_model.slint";
+
+// A small toolbar pill over the render view.
+component ViewPill inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    // The tooltip (what the pill does).
+    in property <string> hint;
+    callback clicked();
+    height: 24px;
+    width: label.preferred-width + 16px;
+    accessible-role: button;
+    accessible-label: root.text;
+    border-radius: Theme.radius-sm;
+    background: root.active ? Theme.accent-cyan-surface : (touch.has-hover ? #1e293be0 : #0f172ad0);
+    border-width: 1px;
+    border-color: root.active ? Theme.accent-cyan : Theme.border-medium;
+    touch := TouchArea {
+        clicked => { root.clicked(); }
+    }
+    Tooltip { text: @markdown("\{root.hint}"); }
+    label := Text {
+        text: root.text;
+        font-size: 11px;
+        font-weight: 600;
+        color: root.active ? Theme.accent-cyan : Theme.text-secondary;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// The Render tab: the CPU-worker renderer's frame (`src/render/live.rs` writes
+// `RenderModel.frame`), its progress, the render settings panel and the worker
+// status.
+//
+// - Viewport size: `changed width/height` forward this element's size to
+//   `AppModel.render-size-changed`, which `src/render/viewport.rs` debounces and
+//   clamps (DPR-aware) into a render-target size.
+// - Orbit: dragging writes `AppModel.yaw/pitch` with the desktop's signs, factor and
+//   pitch clamp, and reports every change through `AppModel.camera-changed`; the
+//   renderer keeps accumulating progressively at every pose (no low-resolution
+//   preview, like the desktop's default).
+export component RenderView inherits Rectangle {
+    background: #101014;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    clip: true;
+
+    // Also on mount: `changed` does not fire for the size a view is created with, so without
+    // this the raster stayed at the 800 x 600 start-up default (a 4:3 picture, letterboxed)
+    // until the window was first resized.
+    init => { AppModel.render-size-changed(self.width, self.height); }
+    changed width => { AppModel.render-size-changed(self.width, self.height); }
+    changed height => { AppModel.render-size-changed(self.width, self.height); }
+
+    Image {
+        source: RenderModel.frame;
+        width: 100%;
+        height: 100%;
+        image-fit: contain;
+    }
+
+    TouchArea {
+        property <length> last-x;
+        property <length> last-y;
+
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                self.last-x = self.mouse-x;
+                self.last-y = self.mouse-y;
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                // The desktop's `gui::camera_lighting::on_camera_orbit` signs and
+                // factor: the drag rotates the stone, hence the negative yaw.
+                AppModel.yaw -= (self.mouse-x - self.last-x) / 1px * 0.008;
+                AppModel.pitch += (self.mouse-y - self.last-y) / 1px * 0.008;
+                AppModel.pitch = Math.max(-1.48, Math.min(1.48, AppModel.pitch));
+                AppModel.camera-changed(AppModel.yaw, AppModel.pitch, AppModel.distance);
+            }
+            self.last-x = self.mouse-x;
+            self.last-y = self.mouse-y;
+        }
+    }
+
+    // Why nothing (new) renders: solving, an unresolved material, a failed solve.
+    if RenderModel.overlay-text != "": Rectangle {
+        width: min(420px, root.width - 32px);
+        height: overlay.preferred-height;
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        background: #1c202ce0;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.border-medium;
+        overlay := VerticalLayout {
+            padding: 14px;
+            Text {
+                text: RenderModel.overlay-text;
+                font-size: 12px;
+                color: Theme.text-primary;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+    }
+
+    // Progress, top left; on a view too narrow to hold it beside the toolbar buttons
+    // (about 270px), it drops to the row under them instead of running beneath them.
+    if RenderModel.progress-text != "": Rectangle {
+        x: 8px;
+        y: root.width < progress.preferred-width + 16px + 8px + 270px + 8px ? 38px : 8px;
+        width: min(progress.preferred-width + 16px, root.width - 16px);
+        height: 22px;
+        background: #000000a0;
+        border-radius: 4px;
+        progress := Text {
+            // A Text does not fill its parent by itself: without a width the long line
+            // ("... denoised (0.6 s)") overflowed a phone-width view on both sides instead of eliding.
+            x: 4px;
+            width: parent.width - 8px;
+            height: parent.height;
+            text: RenderModel.progress-text;
+            color: white;
+            font-size: 11px;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    // The gemological metrics of the pose on screen, bottom left (the desktop's HUD), above
+    // the worker-failure banner when that shows. Nothing while there is nothing to measure.
+    if MetricsModel.has-metrics || MetricsModel.status-text != "": MetricsHud {
+        compact: root.width < 520px;
+        x: 8px;
+        // A phone-width view lifts the HUD above the "Design" toggle at the window's
+        // bottom-right corner (`app.slint`), which it would otherwise cover.
+        y: root.height - self.height - 8px - (RenderModel.workers-failed ? 50px : 0px) - (root.width < 560px ? 36px : 0px);
+    }
+
+    // Toolbar, top right: the Tilt Curve dialog, the Denoise toggle and the settings
+    // panel button.
+    HorizontalLayout {
+        width: self.preferred-width;
+        x: root.width - self.width - 8px;
+        y: 8px;
+        height: 24px;
+        spacing: 4px;
+        ViewPill {
+            text: "Tilt Curve";
+            hint: "Plot brilliance, windowing and extinction against tilt from table-up.";
+            active: TiltModel.open;
+            clicked => { TiltModel.toggle-dialog(); }
+        }
+        ViewPill {
+            text: "Denoise";
+            hint: "Denoise the picture once the samples have settled.";
+            active: RenderModel.denoise;
+            clicked => {
+                RenderModel.denoise = !RenderModel.denoise;
+                RenderModel.settings-edited();
+            }
+        }
+        ViewPill {
+            text: "Settings";
+            hint: "Exposure, light, backdrop, bounces, samples and the environment map.";
+            active: RenderModel.panel-open;
+            clicked => { RenderModel.panel-open = !RenderModel.panel-open; }
+        }
+    }
+
+    if RenderModel.panel-open: RenderSettingsPanel {
+        width: min(260px, root.width - 16px);
+        height: min(560px, root.height - 44px);
+        x: root.width - self.width - 8px;
+        y: 38px;
+    }
+
+    // A render Worker crashed.
+    if RenderModel.workers-failed: Rectangle {
+        width: min(360px, root.width - 16px);
+        height: failed.preferred-height;
+        x: (root.width - self.width) / 2;
+        y: root.height - self.height - 10px;
+        background: Theme.toast-error-surface;
+        border-radius: Theme.radius-md;
+        border-width: 1px;
+        border-color: Theme.danger;
+        failed := HorizontalLayout {
+            padding: 8px;
+            spacing: 8px;
+            Text {
+                text: "A render worker stopped.";
+                font-size: 11px;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                wrap: word-wrap;
+            }
+            Button {
+                text: "Restart render workers";
+                clicked => { RenderModel.restart-workers(); }
+            }
+        }
+    }
+}

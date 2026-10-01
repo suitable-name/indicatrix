@@ -48,7 +48,9 @@ pub enum RequestIntent {
 /// set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PreviewConfig {
+    /// Width in pixels.
     pub width: u32,
+    /// Height in pixels.
     pub height: u32,
 }
 
@@ -59,6 +61,7 @@ pub struct PreviewConfig {
 /// link and hardware rather than share one hardcoded default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamConfig {
+    /// How frames are transferred to the client.
     pub transfer_mode: TransferMode,
     /// Target interval, in milliseconds, between emissions. Advisory, not a hard
     /// guarantee -- backpressure naturally widens the EFFECTIVE cadence when the

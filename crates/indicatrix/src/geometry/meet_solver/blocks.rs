@@ -3,6 +3,7 @@
 //! with the normal-vector construction in `candidates`.
 
 use super::MeetTierInput;
+use crate::geometry::plane::tier_is_crown_side;
 
 /// Which block a tier belongs to.
 ///
@@ -16,7 +17,7 @@ pub enum Block {
     Girdle,
 }
 
-/// Classifies every tier's [`Block`] in one pass, per [`tier_sides`]'s unsigned-zero rule.
+/// Classifies every tier's [`Block`] in one pass, per [`tier_sides`]'s sign rule.
 #[must_use]
 pub fn classify_blocks(tiers: &[MeetTierInput]) -> Vec<Block> {
     let sides = tier_sides(tiers);
@@ -26,6 +27,12 @@ pub fn classify_blocks(tiers: &[MeetTierInput]) -> Vec<Block> {
         .map(|(t, &crown)| {
             let theta = t.angle_deg.abs().to_radians();
             let y = if crown { theta.cos() } else { -theta.cos() };
+            // Purpose: classify an exact `f64` schedule angle (a 90 degree tier
+            // gives `|cos| ~ 6e-17`), so the threshold only has to absorb libm noise.
+            // Deliberately tighter than `girdle::GIRDLE_NORMAL_Y_EPSILON` (1e-3, for
+            // `f32` plane normals carrying normalize noise) and looser in kind than
+            // the 85 degree girdle-tier pick in `names` (a naming heuristic, not a
+            // geometric test).
             if y.abs() <= 1e-6 {
                 Block::Girdle
             } else if y > 0.0 {
@@ -37,24 +44,14 @@ pub fn classify_blocks(tiers: &[MeetTierInput]) -> Vec<Block> {
         .collect()
 }
 
-/// Crown/pavilion side per tier, honoring the unsigned-zero inheritance rule.
+/// Crown/pavilion side per tier (`true` = crown), from each tier's own angle sign
+/// via [`tier_is_crown_side`] -- a sign-negative zero is the culet, a positive
+/// zero the table; file order plays no part.
 pub(super) fn tier_sides(tiers: &[MeetTierInput]) -> Vec<bool> {
-    let mut sides = Vec::with_capacity(tiers.len());
-    let mut last_crown = true;
-    for tier in tiers {
-        let crown = if tier.angle_deg == 0.0 {
-            if tier.angle_deg.is_sign_negative() {
-                false
-            } else {
-                last_crown
-            }
-        } else {
-            tier.angle_deg > 0.0
-        };
-        last_crown = crown;
-        sides.push(crown);
-    }
-    sides
+    tiers
+        .iter()
+        .map(|tier| tier_is_crown_side(tier.angle_deg))
+        .collect()
 }
 
 #[cfg(test)]

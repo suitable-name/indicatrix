@@ -7,7 +7,7 @@
 //!               registration: Option<WorkerRegistration>, payload_encoding }
 //! -> <ClientMessage>  Cancel | Library(LibraryRequest) | RenderRequest | TiltCurvesRequest
 //!                     | Ping { nonce } | FinalImageRequest | Asset { content_hash, len } + payload
-//!                                                                     (post-handshake, tagged)
+//!                     | Contribution + payload                        (post-handshake, tagged)
 //! <- <StreamEvent>    Frame | Preview | Progress | Done | Error
 //!                     | Pong { nonce } | DisplayFrame | FinalImage | CapabilityChanged { render }
 //!                     | NeedAsset { content_hash }                      (tagged)
@@ -23,6 +23,8 @@
 //! - [`render`]: `RENDER`'s request shape (`render` feature only).
 //! - [`final_image`]: `FINAL_IMAGE_REQUEST`'s shape and reply semantics (`render` feature
 //!   only, v14).
+//! - [`contribution`]: `-> CONTRIBUTION`, the viewer's own share of a final-picture
+//!   export (`render` feature only, v16).
 //! - [`tilt`]: `TILT_CURVES`'s request/response shapes (`render` feature only).
 //! - [`stream`]: everything else post-handshake -- [`stream::ClientMessage`],
 //!   [`stream::StreamEvent`], and [`stream::ErrorMsg`].
@@ -32,9 +34,13 @@
 //!
 //! Every item is re-exported here at its original flat `messages::` path.
 
+/// Content-addressed assets (v14) -- see this module's own "Modules" doc section.
 pub mod asset;
 mod codec;
+#[cfg(feature = "render")]
+mod contribution;
 mod encoding;
+/// The `ErrorMsg::code` vocabulary -- see this module's own "Modules" doc section.
 pub mod error_codes;
 #[cfg(feature = "render")]
 mod final_image;
@@ -48,9 +54,18 @@ mod tilt;
 #[cfg(feature = "render")]
 pub use asset::write_asset_message;
 pub use asset::{
-    AssetError, AssetHeader, ContentHash, MAX_ASSET_LEN, content_hash, hash_hex, read_asset_payload,
+    AssetError, AssetHeader, ContentHash, MAX_ASSET_LEN, content_hash, discard_asset_payload,
+    hash_hex, read_asset_payload,
 };
-pub use codec::{NetError, read_message, read_message_bounded, write_message};
+pub use codec::{
+    NetError, decode_control_frame, read_control_message, read_message, read_message_bounded,
+    write_message,
+};
+#[cfg(feature = "render")]
+pub use contribution::{
+    ContributionError, ContributionHeader, ExpectedContribution, discard_contribution_payload,
+    read_contribution_payload, write_contribution_message,
+};
 pub use encoding::{
     DEFAULT_SERVER_PREFERENCE, DisplayEncoding, LOOPBACK_SERVER_PREFERENCE, PayloadEncoding,
     negotiate,
@@ -135,15 +150,29 @@ pub use tilt::{
 ///     `SceneState::environment` (`SceneEnvironment::{Studio, Hdr}`),
 ///     `RenderCapability::hdr`, `ClientMessage::Asset`, `StreamEvent::NeedAsset` and the
 ///     error code `ASSET_FAILED` -- see [`asset`].
-pub const PROTOCOL_VERSION: u16 = 14;
+/// 15: `ErrorMsg` gained `request_id` (`Option<u32>`): a worker's `StreamEvent::Error`
+///     now names the request it concerns (when it concerns exactly one), so
+///     [`crate::client::accumulate::Accumulator::apply`] can drop a late error for an
+///     epoch the client has already moved on from instead of failing whatever request
+///     happens to be current -- see [`ErrorMsg`]'s own doc comment. The design-library
+///     protocol's `DesignRecord` also grew new fields under this same bump (a separate
+///     lane's change, sharing this version rather than bumping twice).
+/// 16: `FinalImageRequest.viewer_samples`; `ClientMessage::Contribution` (index 7) +
+///     raw payload; `Stats.reclaimed_samples` -- the viewer renders the tail of a
+///     final-picture range itself and uploads float XYZ; see `messages::contribution`.
+/// 17: `library::DesignSummary::design_version` appended (the design's revision token,
+///     so a mirror detects an edit that leaves the search summary unchanged), and
+///     `library::DesignRecord::version` redefined to carry that same token instead of a
+///     content hash.
+pub const PROTOCOL_VERSION: u16 = 17;
 
 #[cfg(test)]
 mod tests {
     #[test]
     /// Pins the constant so a bump is always a deliberate, reviewed edit.
     ///
-    /// 14: coordinator mode + payload compression (see the constant's history).
+    /// 17: library design revision token (see the constant's history).
     fn protocol_version_matches_constant() {
-        assert_eq!(super::PROTOCOL_VERSION, 14);
+        assert_eq!(super::PROTOCOL_VERSION, 17);
     }
 }

@@ -64,12 +64,17 @@ pub(super) fn degenerate_marker_header(headers: &[String], message: &str) -> Opt
 /// cutter already saw on screen, never a second, differently-worded description of it.
 ///
 /// Every write call site in this module resolves the design's solve off the UI
-/// thread first (via [`resolve_solved_then`]), then decides synchronously with
-/// [`decide_write_status`] (a pure decision over the already-resolved solve)
-/// whether to prompt with [`ask_write_confirm`] (the in-window dialog, never a
-/// blocking native message dialog): `resolve_solved_then` -> `decide_write_status`
-/// -> (`Fine`: write immediately) or (`NeedsConfirm`: `ask_write_confirm`, write
-/// from its `on_accept`).
+/// thread first (via [`resolve_solve_at`]), then decides
+/// synchronously with [`decide_write_status`] (a pure decision over the
+/// already-resolved solve) whether to prompt with [`ask_write_confirm`] (the
+/// in-window dialog, never a blocking native message dialog): `resolve_solve_at` ->
+/// `decide_write_status` -> (`Fine`: write immediately) or (`NeedsConfirm`:
+/// `ask_write_confirm`, write from its `on_accept`).
+///
+/// The marker message is always a real finding about the design's geometry. A solve
+/// that never finished ([`SolveFailure::Superseded`]) is not one: it aborts the
+/// write before this function is reached, so such a message is never stamped into a
+/// file header.
 ///
 /// Also returns the `solved` masts themselves (`None` only for a `MissingAnchor`),
 /// so a caller that goes on to write the file can pass them straight to
@@ -180,12 +185,15 @@ pub(super) fn custom_material_snapshot_for_save(
         .ok()?
         .into_iter()
         .find(|r| r.name.eq_ignore_ascii_case(name))?;
-    Some(CustomMaterialSnapshot::new(
-        f64::from(row.refractive_index),
-        f64::from(row.dispersion),
-        f64::from(row.birefringence),
-        row.specific_gravity.map(f64::from),
-        row.crystal_system.unwrap_or_default(),
-        row.optical_character.unwrap_or_default(),
-    ))
+    Some(
+        CustomMaterialSnapshot::new(
+            f64::from(row.refractive_index),
+            f64::from(row.dispersion),
+            f64::from(row.birefringence),
+            row.specific_gravity.map(f64::from),
+            row.crystal_system.unwrap_or_default(),
+            row.optical_character.unwrap_or_default(),
+        )
+        .with_body_colour(Some(row.absorption_rgb)),
+    )
 }

@@ -4,7 +4,7 @@
 //! Plus [`narrow_compat`], the MIS-family narrowing step those functions share at an
 //! interior dispersive event.
 
-use super::geometry::BounceRefractionGeometry;
+use super::{DIRECTION_MATCH_COS_TOL, geometry::BounceRefractionGeometry};
 use crate::optics::{
     birefringence::{AbsorptionTensor3, BiaxialIndicatrix},
     materials::GemMaterial,
@@ -71,10 +71,11 @@ pub(in crate::optics::raytracer) struct ExitSplitCtx<'a> {
     /// bounded "does channel k's own exit ray re-enter the gem" probe, never rebuilt.
     pub(in crate::optics::raytracer) plane_soa: &'a crate::simd::PlanesSoA32,
     pub(in crate::optics::raytracer) environment: EnvironmentSource<'a>,
-    /// Precomputed once per trace, same rationale as `accumulate_miss_radiance`'s own
-    /// `studio_rig`: constant across an entire ray, so building it once here avoids a
-    /// redundant rebuild per split channel. `None` for [`EnvironmentSource::HdrMap`],
-    /// which `sample_environment_channel` ignores.
+    /// Built once per trace by `trace_spectral_ray_inner` and shared: the exit-split
+    /// probes here and `accumulate_miss_radiance`'s escape lookup both borrow this one
+    /// instance, since the rig depends only on the light pose, which is constant across
+    /// an entire ray. `None` for [`EnvironmentSource::HdrMap`], which
+    /// `sample_environment_channel` ignores.
     pub(in crate::optics::raytracer) studio_rig: Option<StudioRig>,
     /// Unit direction from the stone towards the eye -- the reverse of the pixel's
     /// primary ray -- for the lit lighting models' head shadow; see
@@ -109,6 +110,21 @@ pub(in crate::optics::raytracer) struct ExitSplitCtx<'a> {
     /// by [`narrow_compat`]; read by `color::integrate_channels_to_xyz_families`. Only
     /// meaningful while `enabled`.
     pub(in crate::optics::raytracer) compat: [u8; NUM_CHANNELS],
+    /// The balance-heuristic MIS weight [`super::exit_split::try_split_exit_channel`]
+    /// must apply to every channel it adds into `split_radiance` THIS bounce -- `1.0`
+    /// (the default outside a transmit-out event) reproduces the pre-MIS-weighted
+    /// behaviour exactly. Set by `transport::bounce::dispatch_bounce` right before it
+    /// dispatches a bounce that MIGHT turn out to be a transmit-out-of-gem event with a
+    /// live incoming NEE carry (`pre_bounce_inside_gem && incoming_light_mis.is_some()`,
+    /// mirroring the hero's own escape weight at `transport::inner`'s
+    /// `phase_pdf_for_mis_this_check` site: `balance_heuristic(phase_pdf,
+    /// environment_nee_pdf(environment, interior_dir))`), and reset to `1.0` right after
+    /// that dispatch returns. A dispatch that turns out to reflect (or to transmit
+    /// without a live carry) never reads this field for a nonzero contribution, since
+    /// `try_split_exit_channel` is only reachable from the transmit/chromatic-termination
+    /// branch in the first place -- so setting it speculatively before the branch
+    /// decision is made is harmless.
+    pub(in crate::optics::raytracer) split_mis_weight: f32,
 }
 
 const _: () = assert!(
@@ -200,7 +216,6 @@ pub(super) fn narrow_compat(
     hero: usize,
     hero_match: [bool; NUM_CHANNELS],
 ) {
-    const DIRECTION_MATCH_COS_TOL: f32 = 1.0 - 1e-6;
     for a in 0..NUM_CHANNELS {
         for b in (a + 1)..NUM_CHANNELS {
             let matches = if a == hero {

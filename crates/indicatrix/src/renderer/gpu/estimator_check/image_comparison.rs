@@ -32,23 +32,32 @@ use crate::renderer::gpu::{
     z_stats::{NULL_OVER_3_SIGMA_RATE, SIGMA_THRESHOLD, connected_components, passes_z_criteria},
 };
 
+/// Outcome of the image comparison check.
 #[derive(Debug, Clone)]
 pub struct ImageComparisonResult {
+    /// Width.
     pub width: u32,
+    /// Height.
     pub height: u32,
+    /// Cpu samples per pixel.
     pub cpu_samples_per_pixel: u32,
+    /// Gpu samples per pixel.
     pub gpu_samples_per_pixel: u32,
     /// Image-aggregate mean z (averaged over every pixel's per-pixel z, luminance
     /// channel).
     pub mean_z: f64,
+    /// Over 3 sigma count.
     pub over_3_sigma_count: usize,
+    /// Total number of pixels compared.
     pub total_pixels: usize,
     /// Binomial expectation for `|z| > 3` under the null (two-sided): ~0.27%.
     pub over_3_sigma_expected: f64,
     /// Sizes of every connected component (4-connectivity) of `|z| > 3` pixels,
     /// largest first.
     pub cluster_sizes: Vec<usize>,
+    /// Max abs z.
     pub max_abs_z: f64,
+    /// Max abs z pixel.
     pub max_abs_z_pixel: (u32, u32),
 }
 
@@ -67,11 +76,13 @@ impl ImageComparisonResult {
     }
 }
 
+/// Runs the image comparison check against the CPU reference.
 #[must_use]
 pub fn run_image_comparison(ctx: &crate::renderer::gpu::GpuContext) -> ImageComparisonResult {
     run_image_comparison_for(ctx, &tier3_material(), &[], LightingPreset::Daylight)
 }
 
+/// Runs the image comparison zircon check against the CPU reference.
 #[must_use]
 pub fn run_image_comparison_zircon(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -79,6 +90,7 @@ pub fn run_image_comparison_zircon(
     run_image_comparison_for(ctx, &zircon_material(), &[], LightingPreset::Daylight)
 }
 
+/// Runs the image comparison tourmaline check against the CPU reference.
 #[must_use]
 pub fn run_image_comparison_tourmaline(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -86,8 +98,9 @@ pub fn run_image_comparison_tourmaline(
     run_image_comparison_for(ctx, &tourmaline_material(), &[], LightingPreset::Daylight)
 }
 
-/// Quartz: the one built-in whose extraordinary ray disperses with a genuine
-/// independent curve (`uniaxial_extraordinary_dispersion.is_some()`).
+/// Quartz: a built-in whose extraordinary ray disperses with a genuine independent
+/// curve (`uniaxial_extraordinary_dispersion.is_some()`; Amethyst, Citrine and Rutile
+/// set it too).
 ///
 /// Rather than the constant-offset approximation the other uniaxial materials here use,
 /// this exercises `has_extraordinary_dispersion != 0` through the real megakernel
@@ -132,6 +145,7 @@ pub fn run_image_comparison_synthetic_moissanite(
     run_image_comparison_for(ctx, &material, &[], LightingPreset::Daylight)
 }
 
+/// Runs the image comparison alexandrite check against the CPU reference.
 #[must_use]
 pub fn run_image_comparison_alexandrite(
     ctx: &crate::renderer::gpu::GpuContext,
@@ -139,11 +153,13 @@ pub fn run_image_comparison_alexandrite(
     run_image_comparison_for(ctx, &alexandrite_material(), &[], LightingPreset::Daylight)
 }
 
+/// Runs the image comparison topaz check against the CPU reference.
 #[must_use]
 pub fn run_image_comparison_topaz(ctx: &crate::renderer::gpu::GpuContext) -> ImageComparisonResult {
     run_image_comparison_for(ctx, &topaz_material(), &[], LightingPreset::Daylight)
 }
 
+/// Runs the image comparison tanzanite check against the CPU reference.
 #[must_use]
 pub fn run_image_comparison_tanzanite(
     ctx: &crate::renderer::gpu::GpuContext,

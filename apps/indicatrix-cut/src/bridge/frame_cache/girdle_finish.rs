@@ -26,6 +26,7 @@ pub struct GirdleFinishCache {
 }
 
 impl GirdleFinishCache {
+    /// Creates an empty instance.
     #[must_use]
     pub const fn new() -> Self {
         Self {

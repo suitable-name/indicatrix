@@ -3,16 +3,20 @@
 //! whether a detail fetch is even needed.
 
 use super::Database;
-use crate::model::{detail::FacetDiagramDetail, facets::parse_facets_count};
+use crate::model::{detail::FacetingDiagramDetail, facets::parse_facets_count};
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use tracing::{debug, info};
 
 impl Database {
-    /// Saves the details of a facet diagram, first deleting any existing detail,
+    /// Saves the details of a faceting diagram, first deleting any existing detail,
     /// angle settings, and attached files for `entry_id` so the row set stays fresh
     /// and duplicate-free. Also bumps `entry_id`'s `diagram_entries.updated_at` (see
     /// [`Self::bump_entry_updated_at`]) for the "recently edited" sort.
+    ///
+    /// A caller that also saves the entry row in the same operation should call
+    /// [`Self::save_design`] instead, which commits both in one transaction; this method
+    /// is for a detail-only write against an entry that already exists.
     ///
     /// # Performance: one transaction per design, not one per row
     ///
@@ -30,13 +34,38 @@ impl Database {
     ///
     /// Returns an error if the transaction fails to start/commit, or any lookup,
     /// delete, or insert fails -- in every case it rolls back with no partial data left.
-    pub fn save_diagram_detail(&self, detail: &FacetDiagramDetail, entry_id: i64) -> Result<()> {
+    pub fn save_diagram_detail(&self, detail: &FacetingDiagramDetail, entry_id: i64) -> Result<()> {
         let tx = self.conn.unchecked_transaction().context(format!(
             "Failed to start save transaction for entry_id: {entry_id}"
         ))?;
+        Self::save_diagram_detail_tx(&tx, detail, entry_id)?;
+        tx.commit().context(format!(
+            "Failed to commit save transaction for entry_id: {entry_id}"
+        ))?;
+        info!(
+            "Successfully saved diagram detail and associated data for entry_id: {}",
+            entry_id
+        );
+        Ok(())
+    }
 
+    /// [`Self::save_diagram_detail`]'s body, minus starting/committing the
+    /// transaction -- taking `conn: &Connection` (satisfied by `&Transaction<'_>` via
+    /// deref, same convention as [`Self::save_angle_settings`]/
+    /// [`Self::save_attached_files`] below) so [`super::Database::save_design`] can run
+    /// this against an in-progress transaction it shares with
+    /// `save_diagram_entry_conn`, rather than always opening/committing its own.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any lookup, delete, or insert fails.
+    pub(super) fn save_diagram_detail_tx(
+        conn: &Connection,
+        detail: &FacetingDiagramDetail,
+        entry_id: i64,
+    ) -> Result<()> {
         // ON DELETE CASCADE handles child rows in angle_settings/attached_files.
-        let existing_detail_id: Option<i64> = tx
+        let existing_detail_id: Option<i64> = conn
             .query_row(
                 "SELECT id FROM diagram_details WHERE entry_id = ?1",
                 params![entry_id],
@@ -52,7 +81,7 @@ impl Database {
                 "Deleting existing detail (ID: {}) and its associated data for entry_id: {}",
                 old_detail_id, entry_id
             );
-            tx.execute(
+            conn.execute(
                 "DELETE FROM diagram_details WHERE id = ?1",
                 params![old_detail_id],
             )
@@ -65,7 +94,7 @@ impl Database {
         // parse_facets_count the schema migration uses) so every newly-saved design
         // is immediately range-filterable by facet count.
         let (facets, girdle_facets) = parse_facets_count(detail.facets_count.as_deref());
-        let mut stmt_detail = tx.prepare_cached(
+        let mut stmt_detail = conn.prepare_cached(
             "INSERT INTO diagram_details (
                 entry_id, page_url, diagram_image_name, diagram_image_data,
                 competition_diagram, lw_ratio, refractive_index, index_gear,
@@ -108,27 +137,18 @@ impl Database {
             .context(format!(
                 "Failed to insert diagram detail for entry_id: {entry_id}"
             ))?;
-        // prepare_cached borrows tx for the statement's lifetime; drop before reborrowing below.
+        // prepare_cached borrows conn for the statement's lifetime; drop before reborrowing below.
         drop(stmt_detail);
 
-        let detail_id = tx.last_insert_rowid();
+        let detail_id = conn.last_insert_rowid();
         debug!(
             "Inserted diagram detail for entry_id {} with new detail_id: {}",
             entry_id, detail_id
         );
 
-        Self::save_angle_settings(&tx, detail_id, &detail.angle_settings_table)?;
-        Self::save_attached_files(&tx, detail_id, &detail.attached_files)?;
-        Self::bump_entry_updated_at(&tx, entry_id)?;
-
-        tx.commit().context(format!(
-            "Failed to commit save transaction for entry_id: {entry_id}"
-        ))?;
-
-        info!(
-            "Successfully saved diagram detail and associated data for entry_id: {}",
-            entry_id
-        );
+        Self::save_angle_settings(conn, detail_id, &detail.angle_settings_table)?;
+        Self::save_attached_files(conn, detail_id, &detail.attached_files)?;
+        Self::bump_entry_updated_at(conn, entry_id)?;
         Ok(())
     }
 
@@ -144,7 +164,7 @@ impl Database {
     /// Returns an error if the underlying `UPDATE` fails.
     fn bump_entry_updated_at(conn: &Connection, entry_id: i64) -> Result<()> {
         conn.execute(
-            "UPDATE diagram_entries SET updated_at = ?1 WHERE id = ?2",
+            "UPDATE diagram_entries SET updated_at = MAX(?1, COALESCE(updated_at, 0) + 1) WHERE id = ?2",
             params![super::unix_now(), entry_id],
         )
         .context(format!(

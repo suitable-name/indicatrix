@@ -1,0 +1,177 @@
+import { Theme } from "../components/theme.slint";
+import { AppModel } from "../models/app_model.slint";
+import { SolidModel } from "../components/solid_model.slint";
+import { DiagramToolbar } from "../components/diagram_toolbar.slint";
+import { SolidTooltip } from "../components/solid_tooltip.slint";
+
+// The Diagram tab: the desktop's `solid_viewport.slint` in its Diagram view mode
+// (the GemCAD-style crown/pavilion/profile diagram, `indicatrix_solid::diagram2d`).
+// `src/views/` renders it into `SolidModel.diagram-frame` at this view's size.
+// Zoom and pan are presentational, as on the desktop (#29): the wheel zooms
+// (1x..6x), a drag pans (clamped so the diagram never leaves the view), and
+// hover/click positions are mapped back to the un-zoomed view before they reach
+// Rust. A click picks a facet (and selects its tier) or an index-wheel tooth; a
+// double click on a panel enlarges it (again: back to three panels).
+export component DiagramView inherits Rectangle {
+    // Kept for `main_area.slint`, which mounts this view with no bindings.
+    in property <image> frame: SolidModel.diagram-frame;
+
+    property <bool> dragging: false;
+    property <length> last-x;
+    property <length> last-y;
+    property <float> drag-distance: 0;
+    property <float> zoom: 1.0;
+    property <length> pan-x: 0px;
+    property <length> pan-y: 0px;
+
+    function unzoomed-x(mouse-x: length) -> length {
+        return (mouse-x - root.pan-x) / root.zoom;
+    }
+    function unzoomed-y(mouse-y: length) -> length {
+        return (mouse-y - root.pan-y) / root.zoom;
+    }
+    function clamp-pan(value: length, extent: length) -> length {
+        return max(-(extent * (root.zoom - 1)), min(extent * (root.zoom - 1), value));
+    }
+
+    // Below this view width the three panels' labels are too small to read and pile up, so
+    // the tab opens (once) on the Crown panel alone; Pavilion / Profile switch panels, and
+    // clicking the enlarged one again brings back all three. Keep in step with
+    // `views/refresh.rs`.
+    property <length> small-view-width: 800px;
+
+    function apply-first-layout() {
+        if !SolidModel.panel-default-applied && root.width > 0px {
+            SolidModel.panel-default-applied = true;
+            if root.width < root.small-view-width && SolidModel.enlarged-panel == -1 {
+                SolidModel.enlarged-panel = 0;
+                SolidModel.options-changed();
+            }
+        }
+    }
+
+    background: #080a0f;
+    border-radius: Theme.radius-md;
+    border-width: 1px;
+    border-color: Theme.border-subtle;
+    clip: true;
+
+    init => {
+        SolidModel.view-size-changed(self.width, self.height);
+        root.apply-first-layout();
+    }
+    changed width => {
+        SolidModel.view-size-changed(self.width, self.height);
+        root.apply-first-layout();
+    }
+    changed height => { SolidModel.view-size-changed(self.width, self.height); }
+
+    if SolidModel.has-diagram: Image {
+        x: root.pan-x;
+        y: root.pan-y;
+        width: root.width * root.zoom;
+        height: root.height * root.zoom;
+        source: root.frame;
+        image-fit: contain;
+    }
+
+    if !SolidModel.has-diagram: Text {
+        x: root.width * 0.1;
+        width: root.width * 0.8;
+        height: root.height;
+        text: AppModel.tier-count == 0
+            ? "Nothing to show yet -- start with File > New Design or open a design."
+            : "Solve to preview";
+        font-size: 13px;
+        color: Theme.text-muted;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        wrap: word-wrap;
+    }
+
+    focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Escape {
+                SolidModel.clear-selection();
+                return accept;
+            } else if event.text == Key.DownArrow {
+                SolidModel.step-selection(1);
+                return accept;
+            } else if event.text == Key.UpArrow {
+                SolidModel.step-selection(-1);
+                return accept;
+            } else if event.text == Key.PageDown {
+                SolidModel.step-selection(10);
+                return accept;
+            } else if event.text == Key.PageUp {
+                SolidModel.step-selection(-10);
+                return accept;
+            }
+            reject
+        }
+
+        touch := TouchArea {
+            changed has-hover => {
+                if !self.has-hover { SolidModel.pointer-left(); }
+            }
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    root.last-x = self.mouse-x;
+                    root.last-y = self.mouse-y;
+                    root.drag-distance = 0;
+                    root.dragging = true;
+                    focus.focus();
+                } else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel {
+                    root.dragging = false;
+                }
+            }
+            moved => {
+                if root.dragging {
+                    let dx = self.mouse-x - root.last-x;
+                    let dy = self.mouse-y - root.last-y;
+                    root.last-x = self.mouse-x;
+                    root.last-y = self.mouse-y;
+                    root.drag-distance += Math.abs(dx / 1px) + Math.abs(dy / 1px);
+                    root.pan-x = root.clamp-pan(root.pan-x + dx, root.width);
+                    root.pan-y = root.clamp-pan(root.pan-y + dy, root.height);
+                } else {
+                    SolidModel.hover(root.unzoomed-x(self.mouse-x), root.unzoomed-y(self.mouse-y));
+                }
+            }
+            clicked => {
+                if root.drag-distance < 3 {
+                    SolidModel.click(root.unzoomed-x(self.mouse-x), root.unzoomed-y(self.mouse-y));
+                }
+            }
+            double-clicked => {
+                SolidModel.double-click(root.unzoomed-x(self.mouse-x), root.unzoomed-y(self.mouse-y));
+            }
+            scroll-event(event) => {
+                root.zoom = max(1.0, min(6.0, root.zoom - (event.delta-y / 1px) * 0.003));
+                root.pan-x = root.clamp-pan(root.pan-x, root.width);
+                root.pan-y = root.clamp-pan(root.pan-y, root.height);
+                accept
+            }
+        }
+    }
+
+    if SolidModel.diagram-hover-text != "" && touch.has-hover && !root.dragging: SolidTooltip {
+        x: 10px;
+        y: root.height - self.height - 46px;
+        text: SolidModel.diagram-hover-text;
+    }
+
+    toolbar := DiagramToolbar {
+        zoom <=> root.zoom;
+        pan-x <=> root.pan-x;
+        pan-y <=> root.pan-y;
+    }
+
+    if SolidModel.timing-text != "": Text {
+        x: root.width - self.width - 12px;
+        y: toolbar.top-height + 16px;
+        text: SolidModel.timing-text;
+        font-size: 10px;
+        color: Theme.text-muted;
+    }
+}

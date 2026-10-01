@@ -1,0 +1,87 @@
+// The globals the Rust side pushes into (`src/app/push.rs`) and whose callbacks it
+// wires (`src/app/callbacks.rs`). Every one is named in `app.slint`'s export block,
+// which is what makes it a Rust type.
+
+// One New Design gallery card (`indicatrix_editor::templates::TemplateCard`).
+export struct TemplateCard {
+    name: string,
+    shape: string,
+    description: string,
+}
+
+// The New Design gallery: its cards, whether it is open, and the selected card.
+// Card `i` creates `EditorSession::from_template(.., i)` (0 is "Empty").
+export global GalleryModel {
+    in property <[TemplateCard]> templates;
+    in-out property <bool> open: false;
+    in-out property <int> selected-index: 1;
+}
+
+// Everything the shell shows about the app and the design, plus every shell action.
+export global AppModel {
+    // -- Design (pushed by `push_design`) ------------------------------------------
+    in property <bool> has-design: false;
+    // "round.asc", or "Untitled design" for a New design that was never saved.
+    in property <string> design-name: "";
+    // Where the design came from: "Opened .asc", "Native pair", "Template: ...".
+    in property <string> source-kind: "";
+    in property <bool> is-dirty: false;
+    in property <int> tier-count: 0;
+    in property <bool> can-undo: false;
+    in property <bool> can-redo: false;
+    // Set by a text field while it has focus, so Ctrl+Z/Ctrl+Y stay with the field
+    // (the desktop's `EditorModel.text_focus`). Nothing sets it yet; the editor
+    // panels' text fields are meant to.
+    in-out property <bool> text-focus: false;
+
+    // -- Solve status (pushed by `push_solve_status`) -------------------------------
+    in property <string> solve-status: "";
+    in property <bool> solve-problem: false;
+
+    // -- Messages (pushed by `show_message`) ----------------------------------------
+    in property <string> message: "";
+    // "info", "success", "warning" or "error".
+    in property <string> message-kind: "info";
+    in property <bool> toast-visible: false;
+
+    // -- Backend / performance slot (the renderer fills it) ---------------------------
+    in property <string> backend-text: "Rendering: not started";
+
+    // -- Render settings (pushed by `push_settings`) --------------------------------
+    in property <[string]> material-options;
+    in-out property <int> material-index: 0;
+    in property <[string]> lighting-options;
+    in-out property <int> lighting-index: 5;
+    // 0 Render, 1 Solid, 2 Diagram.
+    in-out property <int> view-tab: 0;
+    // An `.hdr` environment map is held for the renderer; its name, or "".
+    in property <string> hdr-name: "";
+
+    // -- Camera (the renderer reads it; the render view writes yaw/pitch) -------------
+    // The literals below are only the first frame's values: the source of truth is
+    // `indicatrix::optics::raytracer::DEFAULT_POSE`; the app's view state (seeded from
+    // the render settings) overwrites these from `src/app/push.rs`. A Slint file cannot
+    // import a Rust constant, so keep them equal to it by hand.
+    in-out property <float> yaw: 0.6;
+    in-out property <float> pitch: 0.45;
+    in-out property <float> distance: 2.4;
+
+    // -- Actions ------------------------------------------------------------------
+    callback open-file();
+    callback save-asc();
+    callback save-native-pair();
+    callback save-native-only();
+    callback download-cutting-sheet();
+    callback download-diagram();
+    // Opens the PNG export dialog (`src/render/export.rs`).
+    callback export-png();
+    callback new-design(int);
+    callback undo();
+    callback redo();
+    callback material-changed(int);
+    callback lighting-changed(int);
+    callback view-tab-changed(int);
+    callback dismiss-message();
+    callback camera-changed(float, float, float);
+    callback render-size-changed(length, length);
+}

@@ -18,7 +18,15 @@ const APP_DIR_NAME: &str = "indicatrix-cut";
 /// The public app's own app-dir name, kept for exactly one purpose:
 /// [`migrate_legacy_settings_if_needed`]'s one-time copy, so a machine that already
 /// has the public app configured doesn't have the editor start completely blank.
-const LEGACY_APP_DIR_NAME: &str = "indicatrix-cut";
+///
+/// `"diagram-gui"` -- the old public viewer this editor (`indicatrix-cut`, née
+/// `private/apps/diagram-editor`) superseded, before the 2026-09-07 suite-wide rename
+/// to Indicatrix deleted it outright (see the rename map in project memory:
+/// `apps/diagram-gui (old viewer) -> deleted; superseded by the editor`). This used
+/// to be a no-op (both constants read `"indicatrix-cut"`), which made the migration
+/// below silently copy a path onto itself and orphan any real `diagram-gui`
+/// installation's settings on upgrade.
+const LEGACY_APP_DIR_NAME: &str = "diagram-gui";
 const SETTINGS_FILE_NAME: &str = "settings.toml";
 
 /// Resolves `app_dir_name/settings.toml` inside the platform config directory (not
@@ -135,21 +143,74 @@ fn platform_config_dir() -> Option<PathBuf> {
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config"))
 }
 
-/// Loads settings from `path`, falling back to defaults (with built-in presets) on
-/// any failure -- missing file, unreadable file, or corrupt/unparseable TOML. Never
-/// panics and never propagates an error: this is deliberately infallible so a broken
-/// settings file can never block startup.
+/// What happened while loading the settings file -- returned by [`load_with_outcome`]
+/// alongside the (possibly-defaulted) [`SettingsFile`] so `gui::main_window` can toast
+/// a corrupt-file recovery instead of the cutter's saved settings silently vanishing
+/// with only a `tracing::warn!` nobody watching a release build's console ever sees.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingsLoadOutcome {
+    /// Loaded normally, or the file was genuinely absent (first run) -- nothing to
+    /// report.
+    Ok,
+    /// The file existed but its content was unreadable or failed to parse as valid
+    /// `SettingsFile` TOML. Renamed aside to `renamed_to`
+    /// (`settings.toml.corrupt-<unix-seconds>`, see [`rename_aside`]) before this load
+    /// fell back to defaults, so the broken file is never silently overwritten by the
+    /// very next save -- it stays on disk for the cutter (or a bug report) to inspect.
+    Corrupt {
+        /// Where the corrupt file was renamed to, for the toast to name.
+        renamed_to: PathBuf,
+    },
+}
+
+/// Renames `path` aside to `<path>.corrupt-<unix-seconds>` so the next save never
+/// silently overwrites the one piece of evidence explaining what went wrong. Returns
+/// the new path on success; logs and returns `None` on failure (e.g. no write
+/// permission on the containing directory) rather than blocking startup on a rename
+/// that isn't the load itself.
+fn rename_aside(path: &Path) -> Option<PathBuf> {
+    let unix_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let mut renamed = path.as_os_str().to_owned();
+    renamed.push(format!(".corrupt-{unix_secs}"));
+    let renamed = PathBuf::from(renamed);
+    match std::fs::rename(path, &renamed) {
+        Ok(()) => Some(renamed),
+        Err(e) => {
+            warn!(
+                "Could not rename the corrupt settings file at {} aside to {}: {e}. \
+                 Continuing with defaults; the corrupt file is still at its original path.",
+                path.display(),
+                renamed.display()
+            );
+            None
+        }
+    }
+}
+
+/// [`load_or_default`], plus what actually happened -- see [`SettingsLoadOutcome`].
+/// Never panics and never propagates an error: this is deliberately infallible so a
+/// broken settings file can never block startup.
 #[must_use]
-pub fn load_or_default(path: &Path) -> SettingsFile {
-    let mut file = match std::fs::read_to_string(path) {
+pub fn load_with_outcome(path: &Path) -> (SettingsFile, SettingsLoadOutcome) {
+    let (mut file, outcome) = match std::fs::read_to_string(path) {
         Ok(contents) => match toml::from_str::<SettingsFile>(&contents) {
-            Ok(file) => file,
+            Ok(file) => (file, SettingsLoadOutcome::Ok),
             Err(e) => {
                 warn!(
                     "Settings file at {} is corrupt ({e}); falling back to defaults.",
                     path.display()
                 );
-                SettingsFile::default()
+                // Renamed BEFORE falling back to defaults: the very next save (which
+                // happens on almost any interaction) would otherwise overwrite the
+                // corrupt file with a fresh default one, losing the one piece of
+                // evidence explaining what went wrong -- see this constructor's own
+                // doc comment.
+                let outcome = rename_aside(path).map_or(SettingsLoadOutcome::Ok, |renamed_to| {
+                    SettingsLoadOutcome::Corrupt { renamed_to }
+                });
+                (SettingsFile::default(), outcome)
             }
         },
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
@@ -157,21 +218,41 @@ pub fn load_or_default(path: &Path) -> SettingsFile {
                 "No settings file at {} yet; using defaults.",
                 path.display()
             );
-            SettingsFile::default()
+            (SettingsFile::default(), SettingsLoadOutcome::Ok)
         }
         Err(e) => {
             warn!(
                 "Could not read settings file at {} ({e}); falling back to defaults.",
                 path.display()
             );
-            SettingsFile::default()
+            (SettingsFile::default(), SettingsLoadOutcome::Ok)
         }
     };
     file.ensure_built_in_presets();
     // Files from before the single-remote-endpoint rule carry a `remote_workers`
     // list; fold it into the single endpoint (logged inside). The next save writes only `remote`.
     file.settings.migrate_legacy_remote_workers();
-    file
+    (file, outcome)
+}
+
+/// Loads settings from `path`, falling back to defaults (with built-in presets) on
+/// any failure -- missing file, unreadable file, or corrupt/unparseable TOML. Never
+/// panics and never propagates an error: this is deliberately infallible so a broken
+/// settings file can never block startup.
+///
+/// A thin wrapper over [`load_with_outcome`] for callers that only want the settings
+/// themselves. The application's only load, `gui::main_window`'s startup one, wants the
+/// full [`SettingsLoadOutcome`] to toast a corrupt-file recovery, so this is a
+/// convenience for tests.
+///
+/// Reading the file belongs to startup only: once the `SettingsPersister` is seeded
+/// from it, the persister's in-memory snapshot is the source of truth, and a caller
+/// that re-read the file mid-session would miss changes still inside the persister's
+/// debounce window.
+#[cfg(test)]
+#[must_use]
+pub fn load_or_default(path: &Path) -> SettingsFile {
+    load_with_outcome(path).0
 }
 
 /// Writes `settings` to `path` as pretty-printed TOML, creating the parent directory

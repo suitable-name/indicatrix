@@ -15,7 +15,7 @@ export global SolidPreviewModel {
     // The Live Render tab's OWN viewport size (`gem_viewport.slint`) -- a SEPARATE
     // pair of properties from `viewport_width`/`viewport_height` above. Keeping them
     // separate stops whichever viewport resizes last from silently overwriting the
-    // other's pending redraw size (e.g. undocking/resizing the Live Render window
+    // other's pending redraw size (e.g. resizing the Live Render viewport
     // while the Edit tab is open would otherwise size the Edit tab's next redraw to
     // the Live tab's viewport, or vice versa). `render::camera_lighting::resubmit_at_current_pose`/
     // `resubmit_live_solid` read these for the Live tab, `viewport_width`/
@@ -28,7 +28,7 @@ export global SolidPreviewModel {
     // the cursor until the next orbit/zoom redraw. Handled in `gui::mod`'s
     // `build_main_window`, which calls `render::camera_lighting::
     // resubmit_at_current_pose` deferred by one event-loop turn (so it reads the
-    // post-layout size), the same call `detached_render.rs`'s tab-switch handler
+    // post-layout size), the same call `render_visibility.rs`'s tab-switch handler
     // already makes.
     callback viewport_resized();
     // `true` while the shown solid is the last SOLVED one, not the current
@@ -106,6 +106,17 @@ export global SolidPreviewModel {
     // is unaffected either way (`DiagramFrame::pick_at`/`panel_at` work
     // identically from either render function).
     in-out property <int> diagram_enlarged_panel: -1;
+    // Setting `diagram_enlarged_panel` alone redraws nothing (the panel choice is
+    // read by the plan worker, so a replan has to be requested). This callback is
+    // raised by the `changed` handler just below on EVERY change, whichever path
+    // made it -- a pill click, a double-click, Escape -- and `gui::editor`
+    // (`gui::editor::setup::setup_tier_cutoff_callback`) turns it into that replan.
+    callback diagram_enlarged_panel_changed();
+    changed diagram_enlarged_panel => { diagram_enlarged_panel_changed(); }
+    // A left double-click in Diagram mode at the unzoomed viewport coordinates (the
+    // same space as `diagram_facet_click`): Rust resolves the panel under the pointer
+    // and toggles `diagram_enlarged_panel`, like the web app does.
+    callback diagram_double_click(length, length);
 
     // Draws the stone as it stands after this many tiers of the
     // schedule, so a cutter can see what the next course actually lands on. `-1` is

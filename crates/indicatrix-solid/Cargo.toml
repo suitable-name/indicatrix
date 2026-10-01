@@ -1,0 +1,39 @@
+[package]
+name = "indicatrix-solid"
+version = { workspace = true }
+edition = { workspace = true }
+rust-version = { workspace = true }
+authors = { workspace = true }
+license = { workspace = true }
+repository = { workspace = true }
+homepage = { workspace = true }
+documentation = "https://docs.rs/indicatrix-solid"
+keywords = ["gemstone", "faceting", "rendering", "wasm"]
+categories = ["rendering", "graphics"]
+publish = { workspace = true }
+description = "Pure-CPU solid rasterizer and 2D faceting diagram for a design's SolidMesh: raster, diagram2d, facet_map, mesh_cache, edges_layer, pixel_font, and the pure replan planner. No GUI toolkit, no threads, no filesystem -- see the crate's own doc comment. Shared by the desktop editor and the wasm web app."
+
+[dependencies]
+# `SolidMesh`/`build_solid_mesh` (the geometry `raster`/`diagram2d`/`facet_map` all
+# render or map), plus `optics::raytracer::Camera` and `geometry::meet_solver` types
+# `facet_map` and `live_update` read.
+indicatrix = { workspace = true }
+# `Design`/`DesignSolveError`/`SolvedTier` -- `facet_map::FacetMap::from_design` and
+# `live_update::plan_preview` both work directly against the editor-core design type
+# rather than a locally redefined lookalike.
+indicatrix-cut-core = { workspace = true }
+glam = { workspace = true }
+
+[dev-dependencies]
+# `.asc` fixture parsing for this crate's own tests only (the "CrackOtto-Step"
+# 103-tier probe design `live_update`/`mesh_cache`/`raster` tests build from) --
+# never pulled into the library itself.
+indicatrix-formats = { workspace = true }
+# `raster::tests::renders_the_standard_round_brilliant_without_panicking` only: a
+# manual, `#[ignore]`d PNG-to-temp-dir visual smoke test, `#[cfg(not(target_arch =
+# "wasm32"))]` (this crate's own `std::fs` use is confined to that one gated test --
+# see the crate README). Never pulled into the library itself.
+image = { workspace = true, features = ["png"] }
+
+[lints]
+workspace = true

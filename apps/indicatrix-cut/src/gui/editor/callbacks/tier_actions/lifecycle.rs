@@ -3,12 +3,12 @@
 
 use std::{
     cell::RefCell,
-    collections::BTreeSet,
     rc::Rc,
     sync::{Arc, Mutex, atomic::AtomicU64},
 };
 
 use indicatrix_cut_core::History;
+use indicatrix_editor::EditorSession;
 use indicatrix_vault::db::sqlite::Database;
 use slint::ComponentHandle;
 
@@ -21,7 +21,7 @@ use crate::{
             callbacks::solve_actions::clear_analysis_results,
             loading,
             material_lookup::nearest_built_in_material,
-            native_io::do_open_native,
+            native_io::{self, AfterSave, do_open_native},
             stall_guard::stall_guard,
             state::{
                 ANGLE_NUDGE_COALESCE_WINDOW, EditorState, MaterialComboCache, PendingUnsavedAction,
@@ -162,14 +162,15 @@ fn apply_loaded_design(
         // fields together here (rather than scattered) is easier to audit.
         used_placeholder: loaded.used_placeholder,
         source_entry_id,
-        design: loaded.design,
-        // See `EditorState::fresh`'s matching comment.
-        history: History::with_coalesce_window(ANGLE_NUDGE_COALESCE_WINDOW),
+        // See `EditorState::fresh`'s matching comment on the coalescing window.
+        session: EditorSession::with_history(
+            loaded.design,
+            History::with_coalesce_window(ANGLE_NUDGE_COALESCE_WINDOW),
+        ),
         printed_proportions,
-        generation: Arc::new(AtomicU64::new(0)),
         design_epoch: Arc::new(AtomicU64::new(0)),
-        saved_generation: 0,
         pending_unsaved_action: None,
+        after_save: None,
         deep_solve: None,
         optimize: None,
         pending_optimize: Arc::new(Mutex::new(None)),
@@ -178,7 +179,6 @@ fn apply_loaded_design(
         original_asc_text: loaded.original_asc_text,
         pending_gear_remap: None,
         pending_retarget: None,
-        multi_selected: BTreeSet::new(),
         // A freshly replaced `EditorState` has never pushed anything yet -- matches
         // `EditorState::fresh_from_spec`'s own construction (`state/mod.rs`); every
         // other `EditorState` construction site, including `native_io.rs`'s own,
@@ -337,6 +337,35 @@ pub(in crate::gui::editor) fn setup_load_selected_callback(
     });
 }
 
+/// Whether replacing the design now would throw away edits made since `captured`, the
+/// generation the cutter last decided about: the generation moved AND the design is
+/// unsaved. A generation that did not move means the cutter already answered for
+/// exactly this design (a "Discard" that resumed the load leaves it dirty by choice).
+const fn discards_edits_since(captured: u64, current: u64, is_dirty: bool) -> bool {
+    current != captured && is_dirty
+}
+
+/// [`discards_edits_since`] against the live state.
+fn edited_since(state: &Rc<RefCell<EditorState>>, captured: u64) -> bool {
+    let st = state.borrow();
+    discards_edits_since(captured, st.current_generation(), st.is_dirty())
+}
+
+/// Puts the Save/Discard/Cancel guard back up for a Load Selected whose remote
+/// download finished after the design gained unsaved edits: nothing has been
+/// replaced, and "Save"/"Discard" resume the load (a fresh download) exactly like
+/// the first dirty check does.
+fn ask_again_before_load(ui: &MainWindow, state: &Rc<RefCell<EditorState>>) {
+    state.borrow_mut().pending_unsaved_action = Some(PendingUnsavedAction::LoadSelected);
+    let model = ui.global::<EditorModel>();
+    model.set_unsaved_dialog_message(
+        "The design was edited while the remote design was downloading. Loading it will \
+         discard those unsaved changes."
+            .into(),
+    );
+    model.set_unsaved_dialog_open(true);
+}
+
 /// The actual "Load Selected" work -- see [`setup_load_selected_callback`]'s own doc
 /// comment for why the dirty check runs before this is ever called, not inside it.
 /// `entry_id` is re-read from [`LibraryModel::get_selected_entry_id`] here rather than
@@ -373,6 +402,10 @@ fn do_load_selected(
         let render_ctx = Arc::clone(render_ctx);
         let preview_state = Arc::clone(preview_state);
         let solid_last_solved = Arc::clone(solid_last_solved);
+        // The download is asynchronous and the editor stays interactive meanwhile:
+        // the generation as of the dirty check (or the Save/Discard answer) is
+        // compared again when the design arrives, before anything is replaced.
+        let requested_generation = state.borrow().current_generation();
         fetch_remote_design_source(
             ui.as_weak(),
             worker,
@@ -383,6 +416,10 @@ fn do_load_selected(
                         Ok(loaded) => REMOTE_LOAD_TARGET.with(|cell| {
                             let target = cell.borrow().clone();
                             if let Some(state) = target {
+                                if edited_since(&state, requested_generation) {
+                                    ask_again_before_load(ui, &state);
+                                    return;
+                                }
                                 apply_loaded_design(
                                     ui,
                                     &state,
@@ -405,7 +442,7 @@ fn do_load_selected(
                         Err(e) => show_toast(
                             ui,
                             &format!(
-                                "'{}' failed to parse as a .asc cutting schedule: {e}",
+                                "'{}' failed to parse as a .asc cutting instructions: {e}",
                                 remote.file_name
                             ),
                             "error",
@@ -448,27 +485,42 @@ fn do_load_selected(
     }
 }
 
-/// Runs whichever [`PendingUnsavedAction`] `state` is currently holding (taking it,
-/// so a second call finds nothing left to resume), or does nothing if there isn't
-/// one. Shared by [`setup_unsaved_guard_dispatch`]'s "Save" (once the save actually
-/// left the design clean) and "Discard" handlers -- the only two ways to reach past
-/// the Save/Discard/Cancel guard.
-fn resume_pending_unsaved_action(
+/// The render/preview plumbing [`run_pending_unsaved_action`]'s three resumable
+/// actions (New/Load Selected/Open Native) all need alongside `ui`/`state` --
+/// bundled purely to keep that function's own argument count under clippy's
+/// `too_many_arguments` lint; each field is unpacked back to its own `do_*`
+/// parameter at the call, so no callee's signature changes.
+#[derive(Clone, Copy)]
+struct RenderPreviewHandles<'a> {
+    render_ctx: &'a Arc<Mutex<RenderContext>>,
+    preview_state: &'a Arc<SolidPreviewState>,
+    solid_last_solved: &'a SolidLastSolved,
+}
+
+/// Runs whichever [`PendingUnsavedAction`] `pending` holds, or does nothing for
+/// `None`. Shared by [`setup_unsaved_guard_dispatch`]'s "Discard" handler (which
+/// takes it straight off `state` itself, immediately) and the [`AfterSave::Resume`]
+/// listener registered in that same function (which takes it out of `after_save`
+/// instead, once the "Save" resolution's own save actually lands -- see
+/// [`AfterSave`]'s own doc comment) -- the only two ways to reach past the
+/// Save/Discard/Cancel guard. Takes `pending` by value (already taken out of
+/// wherever it lived) rather than reading `state.pending_unsaved_action` itself:
+/// every arm below calls back into a `do_*` function that itself starts with its
+/// own `state.borrow_mut()`, so this must never itself be holding that guard's
+/// `RefMut` across the call.
+fn run_pending_unsaved_action(
+    pending: Option<PendingUnsavedAction>,
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
-    render_ctx: &Arc<Mutex<RenderContext>>,
-    preview_state: &Arc<SolidPreviewState>,
-    solid_last_solved: &SolidLastSolved,
+    handles: &RenderPreviewHandles<'_>,
     db: &Arc<Mutex<Database>>,
     source: &Arc<Mutex<LibrarySource>>,
 ) {
-    // Bound to a local first, not matched on directly: `match state.borrow_mut()...`
-    // would extend that `RefMut` temporary across every arm's own body (Rust's usual
-    // scrutinee-temporary-lifetime rule for `match`), and every arm here calls back
-    // into a `do_*` function that itself starts with its own `state.borrow_mut()` --
-    // a direct match would panic with "already mutably borrowed" the moment any arm
-    // ran.
-    let pending = state.borrow_mut().pending_unsaved_action.take();
+    let RenderPreviewHandles {
+        render_ctx,
+        preview_state,
+        solid_last_solved,
+    } = *handles;
     match pending {
         Some(PendingUnsavedAction::New {
             spec,
@@ -513,9 +565,15 @@ fn resume_pending_unsaved_action(
 ///
 /// "Save" invokes `EditorModel.save_native` (whatever handler is registered for it --
 /// `native_io::setup_save_native_callback`, wired up independently of this function)
-/// and only resumes the pending action once that save actually left the design clean;
-/// a cancelled or failed save (already toasted by `save_native` itself) aborts the
-/// pending action instead of discarding anyway.
+/// and only resumes the pending action once that save actually lands -- via the
+/// [`AfterSave::Resume`] listener registered below, not a synchronous `is_dirty`
+/// check run right after `invoke_save_native` returns: Save Native is
+/// asynchronous end to end, so that check used to read the state from BEFORE the
+/// save even started, silently dropping the pending action instead of ever resuming
+/// it. A cancelled or failed save (already toasted by `save_native` itself, and
+/// always clearing `after_save` -- see that enum's own doc comment) simply never
+/// fires the listener, leaving the pending action untouched -- so it is dropped
+/// here anyway, consistently with "Save" always ending the guard one way or another.
 fn setup_unsaved_guard_dispatch(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -525,32 +583,55 @@ fn setup_unsaved_guard_dispatch(
     db: &Arc<Mutex<Database>>,
     source: &Arc<Mutex<LibrarySource>>,
 ) {
+    // Runs once the save this guard's own "Save" resolution triggered actually
+    // completes -- see [`AfterSave::Resume`]'s own doc comment. A listener
+    // that finds `after_save` holding the OTHER guard's own `CloseWindow` (or
+    // `None`) must leave it untouched -- see `native_io::on_save_completed`'s own
+    // doc comment; only one listener may ever actually consume a given value.
+    let render_ctx_listener = Arc::clone(render_ctx);
+    let preview_state_listener = Arc::clone(preview_state);
+    let solid_last_solved_listener = Arc::clone(solid_last_solved);
+    let db_listener = Arc::clone(db);
+    let source_listener = Arc::clone(source);
+    native_io::on_save_completed(move |ui, state| {
+        let pending = {
+            let mut st = state.borrow_mut();
+            match st.after_save.take() {
+                Some(AfterSave::Resume(action)) => Some(action),
+                other => {
+                    st.after_save = other;
+                    return;
+                }
+            }
+        };
+        run_pending_unsaved_action(
+            pending,
+            ui,
+            state,
+            &RenderPreviewHandles {
+                render_ctx: &render_ctx_listener,
+                preview_state: &preview_state_listener,
+                solid_last_solved: &solid_last_solved_listener,
+            },
+            &db_listener,
+            &source_listener,
+        );
+    });
+
     let state_save = Rc::clone(state);
-    let render_ctx_save = Arc::clone(render_ctx);
-    let preview_state_save = Arc::clone(preview_state);
-    let solid_last_solved_save = Arc::clone(solid_last_solved);
-    let db_save = Arc::clone(db);
-    let source_save = Arc::clone(source);
     let ui_weak_save = ui.as_weak();
     ui.global::<EditorModel>().on_unsaved_dialog_save(move || {
         let Some(ui) = ui_weak_save.upgrade() else {
             return;
         };
         ui.global::<EditorModel>().set_unsaved_dialog_open(false);
-        ui.global::<EditorModel>().invoke_save_native();
-        if state_save.borrow().is_dirty() {
-            state_save.borrow_mut().pending_unsaved_action = None;
+        let Some(action) = state_save.borrow_mut().pending_unsaved_action.take() else {
             return;
-        }
-        resume_pending_unsaved_action(
-            &ui,
-            &state_save,
-            &render_ctx_save,
-            &preview_state_save,
-            &solid_last_solved_save,
-            &db_save,
-            &source_save,
-        );
+        };
+        // Marks `after_save` so the listener above resumes `action` once this
+        // save really lands -- see this function's own doc comment.
+        state_save.borrow_mut().after_save = Some(AfterSave::Resume(action));
+        ui.global::<EditorModel>().invoke_save_native();
     });
 
     let state_discard = Rc::clone(state);
@@ -566,12 +647,16 @@ fn setup_unsaved_guard_dispatch(
                 return;
             };
             ui.global::<EditorModel>().set_unsaved_dialog_open(false);
-            resume_pending_unsaved_action(
+            let pending = state_discard.borrow_mut().pending_unsaved_action.take();
+            run_pending_unsaved_action(
+                pending,
                 &ui,
                 &state_discard,
-                &render_ctx_discard,
-                &preview_state_discard,
-                &solid_last_solved_discard,
+                &RenderPreviewHandles {
+                    render_ctx: &render_ctx_discard,
+                    preview_state: &preview_state_discard,
+                    solid_last_solved: &solid_last_solved_discard,
+                },
                 &db_discard,
                 &source_discard,
             );
@@ -582,4 +667,30 @@ fn setup_unsaved_guard_dispatch(
         .on_unsaved_dialog_cancel(move || {
             state_cancel.borrow_mut().pending_unsaved_action = None;
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::discards_edits_since;
+
+    #[test]
+    fn edits_since_the_decision_are_not_discarded_silently() {
+        assert!(
+            discards_edits_since(4, 5, true),
+            "the generation moved and the design is unsaved"
+        );
+    }
+
+    #[test]
+    fn an_unchanged_generation_is_the_design_the_cutter_already_answered_for() {
+        assert!(
+            !discards_edits_since(4, 4, true),
+            "a Discard that resumed the load leaves the design dirty by choice"
+        );
+    }
+
+    #[test]
+    fn edits_undone_back_to_the_saved_state_need_no_question() {
+        assert!(!discards_edits_since(4, 6, false));
+    }
 }

@@ -53,8 +53,92 @@
 //! meaningful current-item title.
 
 mod engine;
+mod remote_lane;
 mod scan;
 mod wiring;
 
 pub use engine::{RI_MATCH_TOLERANCE, seeded_random_unit, target_ri_for_design};
 pub use wiring::{offer_batch_confirmation, setup_preview_batch_callbacks};
+
+#[cfg(test)]
+mod tests {
+    use super::engine::{BatchContext, record_planes};
+    use crate::gui::batch::test_records::{
+        ASC_MAST, ASC_TEXT, ENTRY_ID, angle_table_planes, angle_table_record, assert_gem_geometry,
+        gem_record, has_plane_at, record_with,
+    };
+    use indicatrix::geometry::GpuFacetPlane;
+    use indicatrix_vault::{db::sqlite::Database, model::entry::FullDiagramRecord};
+    use std::{
+        collections::BTreeSet,
+        sync::{Mutex, atomic::AtomicBool},
+    };
+
+    /// The preview engine's own geometry step for `full`, plus the ids its batch
+    /// context counted as angle-table fallbacks.
+    fn preview_planes(full: &FullDiagramRecord) -> (Option<Vec<GpuFacetPlane>>, BTreeSet<i64>) {
+        let db = Mutex::new(Database::new(Some(":memory:")).expect("in-memory database opens"));
+        let gpu_retired = AtomicBool::new(false);
+        let angle_table_entries = Mutex::new(BTreeSet::new());
+        let ctx = BatchContext {
+            db: &db,
+            material_candidates: &[],
+            preview_size: 1,
+            preview_spp: 1,
+            gpu_retired: &gpu_retired,
+            angle_table_entries: &angle_table_entries,
+        };
+        let planes = record_planes(&ctx, full);
+        let fallbacks = angle_table_entries
+            .into_inner()
+            .expect("the fallback set is never poisoned in a test");
+        (planes, fallbacks)
+    }
+
+    /// A record whose only design file is a `.gem` renders the `.gem`'s real
+    /// masts, not the angle table's, and is not counted as a fallback.
+    #[test]
+    fn preview_batch_renders_a_gem_only_record_from_its_design_file() {
+        let full = gem_record();
+        let (planes, fallbacks) = preview_planes(&full);
+        let planes = planes.expect("the .gem yields planes");
+        assert_gem_geometry(&planes);
+        assert_ne!(planes, angle_table_planes(&full));
+        assert!(fallbacks.is_empty());
+        // The detail view resolves the same record to the same stone.
+        assert_eq!(
+            planes,
+            crate::gui::editor::resolve_catalogue_planes(&full).planes
+        );
+    }
+
+    /// A record whose `.asc` masts differ from its angle table renders the `.asc`.
+    #[test]
+    fn preview_batch_prefers_the_asc_over_a_differing_angle_table() {
+        let full = record_with("design.asc", ASC_TEXT.as_bytes().to_vec());
+        let (planes, fallbacks) = preview_planes(&full);
+        let planes = planes.expect("the .asc yields planes");
+        assert!(has_plane_at(&planes, ASC_MAST));
+        assert_ne!(planes, angle_table_planes(&full));
+        assert!(fallbacks.is_empty());
+    }
+
+    /// A record with no design file keeps the angle-table geometry the batch
+    /// always rendered, and is counted as a fallback.
+    #[test]
+    fn preview_batch_renders_a_record_without_a_design_file_from_its_angle_table() {
+        let full = angle_table_record();
+        let (planes, fallbacks) = preview_planes(&full);
+        assert_eq!(planes, Some(angle_table_planes(&full)));
+        assert_eq!(fallbacks, BTreeSet::from([ENTRY_ID]));
+    }
+
+    /// A corrupt `.gem` falls back to the angle table without panicking.
+    #[test]
+    fn preview_batch_falls_back_to_the_angle_table_for_a_corrupt_gem() {
+        let full = record_with("broken.gem", vec![1, 2, 3]);
+        let (planes, fallbacks) = preview_planes(&full);
+        assert_eq!(planes, Some(angle_table_planes(&full)));
+        assert_eq!(fallbacks, BTreeSet::from([ENTRY_ID]));
+    }
+}

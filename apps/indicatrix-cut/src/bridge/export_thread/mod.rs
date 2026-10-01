@@ -17,8 +17,9 @@
 //! `ToneMap::AcesFilmic { exposure: 1.0 }`, which reproduces `xyz_to_srgb_gamma`'s
 //! tone-mapping exactly so the wide-gamut path only changes gamut primaries and
 //! transfer curve, never brightness. [`save_png`] embeds an ICC profile
-//! (`bridge::icc_profile::build`) for any non-`Srgb` space so pixel values are never
-//! silently misinterpreted as sRGB.
+//! (`indicatrix::render_setup::icc_profile::build`, re-exported here at
+//! `icc_profile::build`) for any non-`Srgb` space so pixel values are never silently
+//! misinterpreted as sRGB.
 //!
 //! `ColorSpace::AcesCg` is deliberately not offered by `export_dialog.slint`'s picker:
 //! it is scene-linear, meant to feed further compositing -- quantizing scene-linear
@@ -35,8 +36,12 @@
 // than `pub(crate)` costs nothing extra since `bridge` itself is a private module.
 pub mod batch;
 pub mod filename_template;
-// Builds the ICC profile embedded in a Display P3/Rec.2020 PNG so it isn't silently
-// misinterpreted as sRGB. Nested here since `export_thread` is its only consumer.
+// Re-export of `indicatrix::render_setup::icc_profile::build` (moved there so the
+// browser app embeds byte-identical wide-gamut profiles) at this crate's old path, so
+// `render_setup_pins` needs no changes. `#[cfg(test)]`: `save_png` (`tonemap_png.rs`)
+// now calls `indicatrix::render_setup::encode_png_with_icc` directly instead of going
+// through this re-export, so the only remaining caller is `render_setup_pins`.
+#[cfg(test)]
 mod icc_profile;
 mod params;
 mod preview;
@@ -48,6 +53,8 @@ mod worker;
 
 #[cfg(test)]
 mod hybrid_export_tests;
+#[cfg(test)]
+mod render_setup_pins;
 #[cfg(test)]
 mod tests;
 
@@ -73,6 +80,7 @@ use std::{
 };
 use worker::run_export;
 
+/// How an export ended.
 #[derive(Debug)]
 pub enum ExportOutcome {
     Completed(PathBuf),
@@ -87,7 +95,9 @@ pub enum ExportOutcome {
 pub struct ExportProgress {
     /// 0.0..=1.0, `samples_done as f32 / samples_total as f32`.
     pub fraction: f32,
+    /// Samples completed so far.
     pub samples_done: u32,
+    /// Samples the export will take in total.
     pub samples_total: u32,
     /// A small sRGB thumbnail of the combined local (CPU+GPU) and, while remote is
     /// also in flight, remote accumulation so far -- see `preview::downsample_preview`.
@@ -107,6 +117,7 @@ pub struct ExportHandle {
 }
 
 impl ExportHandle {
+    /// Requests cancellation; the running job stops at its next check.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }

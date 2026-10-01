@@ -24,19 +24,23 @@
 //! non-empty (a no-op, `self.meet_tier_inputs()` unchanged, whenever it is empty --
 //! every existing design has an empty map, so this changes nothing for them).
 //!
-//! - [`TierTarget::DepthMm`] resolves in one correction pass: solve once with the
-//!   target tier bootstrapped at mast `0.0` to measure the design's own
-//!   `width_axis`, convert `depth_mm` to a mast via
-//!   `crate::yield_metrics::mm_per_unit`, then use that mast as the tier's real
-//!   `ScaleReference`. Not iterated to convergence -- see the method's own doc
-//!   comment for why one pass is enough in practice and where it is not exact.
+//! - [`TierTarget::DepthMm`] resolves by iterating the bootstrap-and-convert step
+//!   to a fixed point: solve with the target tier pinned at the current mast
+//!   guess (starting from `0.0`) to measure the design's own `width_axis`,
+//!   convert `depth_mm` to a mast via `crate::yield_metrics::mm_per_unit`, and
+//!   repeat with that new mast as the next guess until it stops moving (at most
+//!   8 iterations) -- a single pass measures `width_axis` with the target tier
+//!   still sitting at the WRONG (bootstrap) mast, which is exactly what made a
+//!   single correction pass under-convert.
 //! - [`TierTarget::GirdleThicknessMm`]/[`TierTarget::TableWidthMm`] resolve by
-//!   bisecting the target tier's own mast (0 to a generous bound, at most 24
-//!   iterations, tolerance `1e-4` of the girdle diameter) until the resulting
-//!   solid's measured girdle thickness/table width lands within tolerance of the
-//!   target, in millimetres. [`TargetResolveError::CannotBracket`] when the two
-//!   bracket ends do not straddle the target (e.g. a target wider than the
-//!   preform itself allows).
+//!   bracketing the target tier's own mast around its CURRENTLY authored value
+//!   (never the bootstrap's `0.0`, which is measurably degenerate for a girdle/
+//!   table facet -- see [`bisect_tier_mast`]'s own doc comment), expanding
+//!   geometrically until the resulting solid's measured girdle thickness/table
+//!   width straddles the target, then bisecting to a tolerance of `1e-4` of the
+//!   girdle diameter. [`TargetResolveError::CannotBracket`] when the search
+//!   exhausts its budget without finding two measurable points that straddle the
+//!   target (e.g. a target wider than the preform itself allows).
 //!
 //! # Legacy entry points resolve targets too
 //!
@@ -180,52 +184,158 @@ fn measured_value_mm(
     Some(value_mast * scale)
 }
 
-/// Bisects tier `tier_index`'s own mast (bracket `[0, hi]`, `hi` a generous
-/// multiple of the preform's own largest plane offset) until `extract`'s
-/// measured figure lands within `1e-4 * girdle_mm` of `target_mm` -- at most 24
-/// iterations.
+/// `constraint`'s own mast when it is a [`MeetConstraint::ScaleReference`], else
+/// `1.0` -- [`bisect_tier_mast`]'s fallback seed for a target-bearing tier that
+/// has never carried a real scale value (e.g. a brand-new tier the editor just
+/// added).
+const fn constraint_mast(constraint: &MeetConstraint) -> f64 {
+    match constraint {
+        MeetConstraint::ScaleReference(m) => *m,
+        MeetConstraint::MeetExisting | MeetConstraint::MeetNamed(_) => 1.0,
+    }
+}
+
+/// Brackets tier `tier_index`'s own mast around `seed_mast` -- its CURRENTLY
+/// authored value, from BEFORE this resolution pass ever touches it, never the
+/// bootstrap pass's `0.0` (see [`Design::resolved_meet_tier_inputs`]'s own doc
+/// comment): a girdle/table facet pinned to mast `0.0` sits at the design's own
+/// central axis, which is measurably degenerate (an empty or non-closed solid),
+/// so bracketing from there failed to bracket ANY target -- the actual bug this
+/// function exists to fix (see the module doc comment's own "Resolution"
+/// section and [`TargetResolveError::CannotBracket`]'s doc comment).
+///
+/// # Direction is measured, never assumed
+///
+/// A bigger mast does not always mean a bigger measured figure: on a
+/// `standard_round_brilliant` fixture, girdle thickness (mast `1.0` ->
+/// `1.06`) and table width (mast `0.32` -> `0.46`) BOTH shrink as their own
+/// tier's mast grows, right up to where the design stops closing that way at
+/// all -- the exact opposite of "expand outward to grow the figure". So the
+/// expansion direction here comes from a tiny nudge off `seed_mast` (does the
+/// measured figure increase or decrease as mast increases?), combined with
+/// which way `target_mm` sits from the seed's own measured figure -- not a
+/// blanket assumption either way.
+///
+/// # Algorithm
+///
+/// Expands from `seed_mast` in the measured direction (doubling each step)
+/// until the measured figure's sign relative to `target_mm` flips (a real
+/// bracket, found by the SIGN of `measured - target_mm`, not by magnitude --
+/// correct regardless of which way the relationship runs), then bisects
+/// between the two bracket ends to a tolerance of `1e-4 * girdle_mm` -- at
+/// most 20 expansion steps plus 24 bisection steps. A trial mast that fails to
+/// measure at all (solve failure, non-closed solid, or a solid that no longer
+/// has this figure at all -- see the fixture note above) is walked back
+/// HALFWAY toward the last point that DID measure, rather than treated as an
+/// immediate hard failure -- only real exhaustion of the search budget (an
+/// unmeasurable neighborhood around `seed_mast` itself, or a target truly
+/// outside what the design can reach) reports
+/// [`TargetResolveError::CannotBracket`].
 fn bisect_tier_mast(
     design: &Design,
     tier_index: usize,
     girdle_mm: f64,
     target_mm: f64,
     extract: MeasureFn,
+    seed_mast: f64,
 ) -> Result<f64, TargetResolveError> {
-    let hi_bound = design
-        .preform
-        .planes()
-        .iter()
-        .fold(0.0_f64, |acc, &(_, m)| acc.max(m))
-        .mul_add(4.0, 1.0);
     let bracket_err = || TargetResolveError::CannotBracket { tier_index };
+    let measure = |mast: f64| measured_value_mm(design, tier_index, mast, girdle_mm, extract);
+    let tolerance = 1e-4 * girdle_mm.abs().max(1e-6);
 
-    let lo_val =
-        measured_value_mm(design, tier_index, 0.0, girdle_mm, extract).ok_or_else(bracket_err)?;
-    let hi_val = measured_value_mm(design, tier_index, hi_bound, girdle_mm, extract)
-        .ok_or_else(bracket_err)?;
-    if (lo_val - target_mm) * (hi_val - target_mm) > 0.0 {
-        return Err(bracket_err());
+    let seed = if seed_mast.is_finite() && seed_mast.abs() > 1e-9 {
+        seed_mast.abs()
+    } else {
+        1.0
+    };
+
+    // An anchor point known to measure, walked toward `seed` (halving) when
+    // `seed` itself does not -- e.g. a tier another target's own bootstrap pass
+    // left pinned at `0.0`.
+    let mut anchor = seed;
+    let mut anchor_val = measure(anchor);
+    let mut shrink_tries = 0;
+    while anchor_val.is_none() && shrink_tries < 16 {
+        anchor *= 0.5;
+        anchor_val = measure(anchor);
+        shrink_tries += 1;
+    }
+    let anchor_val = anchor_val.ok_or_else(bracket_err)?;
+    let anchor_diff = anchor_val - target_mm;
+    if anchor_diff.abs() <= tolerance {
+        return Ok(anchor);
     }
 
-    let tolerance = 1e-4 * girdle_mm.abs().max(1e-6);
-    let mut lo = 0.0_f64;
-    let mut lo_value = lo_val;
-    let mut hi = hi_bound;
+    // Which mast direction moves the measured figure toward `target_mm` --
+    // measured with a small (0.1%) nudge rather than assumed, and small enough
+    // not to overshoot a narrow measurable window itself (see "Direction is
+    // measured" above). `increases`: `true` if the figure grows as mast grows
+    // near `anchor`. `None` (the nudge itself did not measure) tries the
+    // opposite tiny nudge before giving up and defaulting to growing the mast.
+    let epsilon = (anchor * 1e-3).max(1e-9);
+    let increases = measure(anchor + epsilon).map_or_else(
+        || measure((anchor - epsilon).max(1e-9)).is_none_or(|v| v < anchor_val),
+        |v| v > anchor_val,
+    );
+    // We need the figure to grow (`anchor_diff < 0.0`) or shrink
+    // (`anchor_diff > 0.0`) to reach `target_mm`; combined with whether it
+    // grows or shrinks as mast grows, that tells us which way to move mast.
+    let grow_mast = increases == (anchor_diff < 0.0);
+
+    // Expand in that direction until the SIGN of `measured - target_mm` flips.
+    let mut probe = anchor;
+    let mut last_good = anchor;
+    let mut bound: Option<(f64, f64)> = None;
+    for _ in 0..20 {
+        let mut next = if grow_mast { probe * 2.0 } else { probe * 0.5 };
+        let mut value = measure(next);
+        let mut retries = 0;
+        while value.is_none() && retries < 6 {
+            next = f64::midpoint(next, last_good);
+            value = measure(next);
+            retries += 1;
+        }
+        let Some(v) = value else {
+            return Err(bracket_err());
+        };
+        last_good = next;
+        probe = next;
+        let diff = v - target_mm;
+        if diff.abs() <= tolerance {
+            return Ok(next);
+        }
+        if diff.signum() != anchor_diff.signum() {
+            bound = Some((next, diff));
+            break;
+        }
+    }
+    let Some((bound_mast, bound_diff)) = bound else {
+        return Err(bracket_err());
+    };
+
+    // `below`/`above` name which SIDE of `target_mm` each bracket end sits on
+    // (not which mast is numerically bigger -- see "Direction is measured"
+    // above for why the two can point either way).
+    let (mut below, mut above) = if anchor_diff < 0.0 {
+        (anchor, bound_mast)
+    } else {
+        (bound_mast, anchor)
+    };
+    debug_assert!(anchor_diff.signum() != bound_diff.signum() || bound_diff == 0.0);
     for _ in 0..24 {
-        let mid = f64::midpoint(lo, hi);
-        let mid_val = measured_value_mm(design, tier_index, mid, girdle_mm, extract)
-            .ok_or_else(bracket_err)?;
-        if (mid_val - target_mm).abs() <= tolerance {
+        let mid = f64::midpoint(below, above);
+        let mid_val = measure(mid).ok_or_else(bracket_err)?;
+        let diff = mid_val - target_mm;
+        if diff.abs() <= tolerance {
             return Ok(mid);
         }
-        if (mid_val - target_mm).signum() == (lo_value - target_mm).signum() {
-            lo = mid;
-            lo_value = mid_val;
+        if diff < 0.0 {
+            below = mid;
         } else {
-            hi = mid;
+            above = mid;
         }
     }
-    Ok(f64::midpoint(lo, hi))
+    Ok(f64::midpoint(below, above))
 }
 
 impl Design {
@@ -287,19 +397,46 @@ impl Design {
         let mut resolved = bootstrap;
         for index in 0..resolved.tiers.len() {
             if let Some(TierTarget::DepthMm(target_mm)) = self.tier_target(index) {
-                let width_axis = bootstrap_metrics
+                // Fixed-point iteration: the bootstrap solve above measured
+                // `width_axis` with THIS tier still pinned at mast `0.0` (the
+                // bootstrap's own placeholder), so converting `target_mm`
+                // through it once gives a mast that is only as accurate as that
+                // wrong starting placement -- the "halves the requested depth"
+                // bug. Each further pass re-measures `width_axis` with the tier
+                // at its OWN latest guess instead, until the guess stops
+                // moving (at most 8 passes; a design's width_axis in response
+                // to one tier's depth is well-behaved enough in practice that
+                // this converges in 2-3).
+                let mut width_axis = bootstrap_metrics
                     .as_ref()
                     .map(|m| m.width_axis)
                     .filter(|w| *w > 1e-9)
                     .ok_or(TargetResolveError::CannotMeasure { tier_index: index })?;
-                let scale = mm_per_unit(girdle_mm, width_axis)
-                    .ok_or(TargetResolveError::CannotMeasure { tier_index: index })?;
-                resolved.tiers[index].constraint =
-                    MeetConstraint::ScaleReference(target_mm / scale);
+                let mut mast = 0.0_f64;
+                for _ in 0..8 {
+                    let scale = mm_per_unit(girdle_mm, width_axis)
+                        .ok_or(TargetResolveError::CannotMeasure { tier_index: index })?;
+                    let next_mast = target_mm / scale;
+                    let converged = (next_mast - mast).abs() <= 1e-9 * next_mast.abs().max(1.0);
+                    mast = next_mast;
+                    if converged {
+                        break;
+                    }
+                    let mut trial = resolved.clone();
+                    trial.tier_targets.clear();
+                    trial.tiers[index].constraint = MeetConstraint::ScaleReference(mast);
+                    let trial_solved = trial.solve_with(&SolveControl::default())?;
+                    width_axis = measure_solid(&trial.planes_from_solved(&trial_solved))
+                        .map(|m| m.width_axis)
+                        .filter(|w| *w > 1e-9)
+                        .ok_or(TargetResolveError::CannotMeasure { tier_index: index })?;
+                }
+                resolved.tiers[index].constraint = MeetConstraint::ScaleReference(mast);
             }
         }
 
         for index in 0..resolved.tiers.len() {
+            let seed_mast = constraint_mast(&self.tiers[index].constraint);
             let mast = match self.tier_target(index) {
                 Some(TierTarget::GirdleThicknessMm(target_mm)) => Some(bisect_tier_mast(
                     &resolved,
@@ -307,6 +444,7 @@ impl Design {
                     girdle_mm,
                     target_mm,
                     girdle_thickness_mast,
+                    seed_mast,
                 )?),
                 Some(TierTarget::TableWidthMm(target_mm)) => Some(bisect_tier_mast(
                     &resolved,
@@ -314,6 +452,7 @@ impl Design {
                     girdle_mm,
                     target_mm,
                     table_width_mast,
+                    seed_mast,
                 )?),
                 _ => None,
             };

@@ -187,7 +187,11 @@ fn lossless_scattering_white_furnace_energy_conservation_holds() {
     const L0: f32 = 2.5;
     const SAMPLES_PER_PIXEL: u32 = 96;
     const GRID: usize = 12;
-    const TOLERANCE: f32 = 0.08; // generous: CPU-only unit test sample budget
+    // Measured on 2026-10-01 by the integration test `furnace_noise_floor` at this
+    // sample budget: 1.65 percent truncation loss at cap 16 (the medium lengthens the
+    // paths; nothing is lost at cap 256) plus about 0.2 percent noise; five standard
+    // deviations of headroom.
+    const TOLERANCE: f32 = 0.03;
 
     let planes = StandardGemCuts::standard_round_brilliant();
     let material = round_brilliant_colourless_scattering_material(1.2, 0.4);
@@ -224,7 +228,7 @@ fn lossless_scattering_white_furnace_energy_conservation_holds() {
         let spec = rgb_to_spectral_radiance([L0, L0, L0], lambda);
         target += cie_1931_cmf(lambda) * spec;
     }
-    target /= 106.856;
+    target /= crate::color::cie1931::CIE_1931_Y_INTEGRAL_5NM;
 
     let rel_err = |v: f32, t: f32| (v - t).abs() / t.abs().max(1e-6);
     let (ex, ey, ez) = (
@@ -238,6 +242,79 @@ fn lossless_scattering_white_furnace_energy_conservation_holds() {
     assert!(
         ex <= TOLERANCE && ey <= TOLERANCE && ez <= TOLERANCE,
         "a lossless scattering medium should still converge to the uniform \
+         environment's own radiance (mean={mean:?}, target={target:?}, \
+         rel_err=({ex}, {ey}, {ez}), tolerance={TOLERANCE})"
+    );
+}
+
+/// Regression: the furnace test above uses a colourless, NON-dispersive probe
+/// (every channel shares one index), which cannot see the exit-split MIS weight or
+/// the NEE-deposit `path_pdf`/`compat` timing bugs fixed alongside this test -- both
+/// are chromatic multi-technique (MIS-family) effects a single-family material can't
+/// exercise. `GemMaterial::diamond()` is genuinely dispersive (`Sellmeier3`) and still
+/// colourless (`sigma_a == 0`), isolating the fix from chromatic absorption. Traced via
+/// the public [`trace_spectral_ray`] entry point (NEE auto-enabled for `HdrMap`,
+/// matching production) at 64 bounces, measured against the pre-fix code: before
+/// the fix this read ~1.06 (NEE double-counting the exit-split radiance and
+/// mis-weighting the NEE deposit both push the mean above the analytic target); after,
+/// ~0.99-1.00.
+#[test]
+fn dispersive_lossless_scattering_white_furnace_energy_conservation_holds() {
+    const L0: f32 = 2.5;
+    const SAMPLES_PER_PIXEL: u32 = 96;
+    const GRID: usize = 12;
+    const MAX_BOUNCES: u32 = 64;
+    const TOLERANCE: f32 = 0.02;
+
+    let planes = StandardGemCuts::standard_round_brilliant();
+    let material = GemMaterial::diamond().with_scattering(1.5, 0.3);
+    let env_map = EnvironmentMap::uniform(1, 1, [L0, L0, L0]);
+
+    let camera = Camera::new(0.35, 0.28, 5.0, 18.0);
+    let mut sum = Vec3::ZERO;
+    let mut count = 0u32;
+    for iy in 0..GRID {
+        for ix in 0..GRID {
+            let ray = camera.generate_ray(ix as f32, iy as f32, GRID as f32, GRID as f32, 0.5, 0.5);
+            for s in 0..SAMPLES_PER_PIXEL {
+                let pixel_id = (iy as u32) * (GRID as u32) + (ix as u32);
+                let seed = hash_u32(pixel_id ^ hash_u32(s ^ 0xD15D_A1A1));
+                sum += trace_spectral_ray(
+                    ray,
+                    &planes,
+                    &material,
+                    MAX_BOUNCES,
+                    EnvironmentSource::HdrMap(&env_map),
+                    seed,
+                    (hash_u32(seed) as f32) / 4_294_967_295.0,
+                    None,
+                );
+                count += 1;
+            }
+        }
+    }
+    let mean = sum / count as f32;
+
+    let mut target = Vec3::ZERO;
+    for step in 0..=(780 - 380) {
+        let lambda = 380.0f32 + step as f32;
+        let spec = rgb_to_spectral_radiance([L0, L0, L0], lambda);
+        target += cie_1931_cmf(lambda) * spec;
+    }
+    target /= crate::color::cie1931::CIE_1931_Y_INTEGRAL_5NM;
+
+    let rel_err = |v: f32, t: f32| (v - t).abs() / t.abs().max(1e-6);
+    let (ex, ey, ez) = (
+        rel_err(mean.x, target.x),
+        rel_err(mean.y, target.y),
+        rel_err(mean.z, target.z),
+    );
+    println!(
+        "[dispersive scattering furnace] mean={mean:?} target={target:?} rel_err=({ex:.4}, {ey:.4}, {ez:.4}) over {count} samples"
+    );
+    assert!(
+        ex <= TOLERANCE && ey <= TOLERANCE && ez <= TOLERANCE,
+        "a dispersive lossless scattering medium should still converge to the uniform \
          environment's own radiance (mean={mean:?}, target={target:?}, \
          rel_err=({ex}, {ey}, {ez}), tolerance={TOLERANCE})"
     );

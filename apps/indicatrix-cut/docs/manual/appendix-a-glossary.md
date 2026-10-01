@@ -1,7 +1,15 @@
 # Appendix A: Glossary
 
-Terms used throughout this manual, gathered in one place. Cutting-schedule
+Terms used throughout this manual, gathered in one place. Cutting-instructions
 terms are introduced fully in Chapter 3; optical terms in Chapters 2 and 6.
+
+**A note on preferred terms.** This manual and the app say **cutting
+instructions**, not "cutting schedule" (an older, dated phrase that means
+different things in different Commonwealth countries), and **faceting
+diagram**, not "facet diagram" (a pre-1960s term for the plain top/bottom
+views of a stone). The catalogue database file keeps its historical name,
+`facet_diagrams.sqlite`, purely for compatibility with existing installs —
+that file name is not a statement about which term is preferred.
 
 **A note on interchangeable terms.** The app's own UI is not perfectly
 consistent about a few of these. "Mast," "depth," and "scale value" all
@@ -153,11 +161,12 @@ edit changes that tier list, until Solve runs again (Chapter 5).
 
 **Yield** — What fraction of the rough preform's volume ends up in the
 finished stone, and the resulting estimated carat weight — the inspector's
-Preform tab computes both after a girdle diameter and a yield material are
-set (Chapter 4). A separate control from the Design Settings panel's own
-Material combo (Chapter 6).
+Preform tab computes both once a girdle diameter is set (Chapter 4). The
+carat estimate uses the specific gravity of the design's material, set in
+the Design Settings panel (Chapter 6), unless a Specific Gravity Override
+is typed.
 
-**Tier** — One row of the cutting schedule: one facet, or one symmetric
+**Tier** — One row of the cutting instructions: one facet, or one symmetric
 family of identical facets cut at the same angle and depth.
 
 **Tilt curve / tilt axis** — The app's sweep of a design's optical

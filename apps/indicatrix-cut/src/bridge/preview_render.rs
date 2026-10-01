@@ -8,7 +8,7 @@
 //! rendering and the `GemMaterial::all_materials()` -> `RiPresetCandidate` adaptation
 //! both have to live on this side of the boundary. `gui::batch::preview` is the one
 //! caller: it resolves a design's planes/material and calls [`render_view`] (locally)
-//! or [`render_view_remote`] once per [`PreviewView`] -- up to twice per design, from
+//! or [`render_view_remote_checked`] once per [`PreviewView`] -- up to twice per design, from
 //! whichever of its local/remote lanes claims each view -- and persists whatever comes
 //! back via `Database::save_preview_images` once both views are accounted for.
 //!
@@ -58,9 +58,13 @@
 use crate::{
     bridge::{
         export_thread::{self, SceneSnapshot},
+        preview_wait::{
+            PREVIEW_CANCEL_ACK_WAIT, PREVIEW_PROGRESS_STALL, PREVIEW_REMOTE_MAX_WALL,
+            ProgressWatch, RemoteShortfall,
+        },
         remote::{
             remote_can_render,
-            remote_render::{self, RemoteRenderRequest, RemoteUpdate},
+            remote_render::{self, RemoteRenderHandle, RemoteRenderRequest, RemoteUpdate},
         },
     },
     settings::WorkerSettings,
@@ -70,7 +74,7 @@ use indicatrix::{
     geometry::plane::GpuFacetPlane,
     optics::{
         materials::GemMaterial,
-        raytracer::{Camera, LightingPreset},
+        raytracer::{Camera, DEFAULT_FOV_DEG, DEFAULT_POSE, LightingPreset},
     },
     renderer::{
         env_map::EnvironmentMap,
@@ -87,8 +91,12 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, RecvTimeoutError},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
+
+mod fingerprint;
+
+pub use fingerprint::{CacheKind, cache_fingerprint};
 
 /// Refractive index is conventionally quoted at the sodium D line -- see
 /// `indicatrix_vault::model::material_match`'s module doc comment for why every
@@ -117,8 +125,8 @@ pub fn material_ri_at_sodium_d(material: &GemMaterial) -> f64 {
 /// viewport's own fresh-install defaults), so a preview thumbnail looks like a plain,
 /// undialled-in render of the design -- not a special "thumbnail" look a user has never
 /// otherwise seen.
-const PREVIEW_YAW: f32 = 0.60;
-const PREVIEW_DISTANCE: f32 = 2.4;
+const PREVIEW_YAW: f32 = DEFAULT_POSE.yaw;
+const PREVIEW_DISTANCE: f32 = DEFAULT_POSE.distance;
 /// `pub` (effectively crate-visible only -- see [`SODIUM_D_NM`]'s note): `gui::batch::tilt`'s
 /// batch tilt-curve computation reuses this same light position for every design,
 /// rather than whatever angle happens to be dialled into the live viewport. Deliberate,
@@ -128,12 +136,9 @@ const PREVIEW_DISTANCE: f32 = 2.4;
 /// design's curves were swept under the identical light -- letting the batch inherit a
 /// per-session light pose would make stored curves silently depend on who last ran it.
 pub const PREVIEW_LIGHT_YAW: f32 = 0.85;
+/// Fixed light pitch used for previews.
 pub const PREVIEW_LIGHT_PITCH: f32 = 0.95;
 const PREVIEW_EXPOSURE: f32 = 1.0;
-/// Matches `bridge::export_thread::run_export`'s own `Camera::new(..., 42.0)` call --
-/// one field of view for every still render this app produces, live viewport included
-/// (`RenderContext::default`'s camera setup uses the same figure).
-const PREVIEW_FOV_DEG: f32 = 42.0;
 /// The lighting rig every preview renders under -- `LightTent` is this app's own
 /// default lighting-preset label (`DEFAULT_LIGHTING_RIG`), matching `PREVIEW_YAW`'s own
 /// "look like an undialled-in render" reasoning above.
@@ -186,7 +191,9 @@ pub fn ri_candidates() -> Vec<RiPresetCandidate> {
 /// resolved by the caller (`gui::batch::preview`); this module only renders what it's
 /// given.
 pub struct PreviewJob<'a> {
+    /// Facet planes of the stone.
     pub planes: &'a [GpuFacetPlane],
+    /// Gem material the stone is rendered with.
     pub material: &'a GemMaterial,
     /// Square render dimension in pixels -- `AppSettings::preview_size` (or a caller-
     /// chosen override), see this module's doc comment for the measured cost table.
@@ -237,7 +244,7 @@ pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) ->
         // triggered the batch.
         env_map: None,
     };
-    let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, PREVIEW_FOV_DEG);
+    let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, DEFAULT_FOV_DEG);
     let environment = scene
         .lighting_preset
         .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
@@ -268,6 +275,60 @@ pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) ->
     encode_png(job.size, job.size, &rgba)
 }
 
+/// Renders `planes` in `material` on the CPU at an arbitrary orbit pose and
+/// rectangular size, and returns the tone-mapped RGBA8 buffer (row-major, four bytes
+/// per pixel) instead of PNG bytes.
+///
+/// The visual compare window's "Traced" mode (`gui::editor::compare::render`) is the
+/// caller: it needs the SAME lighting rig, backdrop, exposure, field of view and
+/// tone-mapping every catalogue preview uses (so a compared stone reads like a
+/// thumbnail of itself), but at the window's own shared camera pose rather than one
+/// of the two fixed [`PreviewView`] poses, and straight into a `slint::Image`
+/// rather than a PNG. `camera_pose` is `(yaw, pitch, distance)` in exactly
+/// `Camera::new`'s convention -- the same one the solid rasterizer projects with,
+/// so a traced frame lines up with the solid frame rendered at the same pose.
+///
+/// CPU only ([`export_thread::batch::render_batch`], the tracer [`render_view`]
+/// falls back to): the compare window must never compete with the live viewport for
+/// the shared GPU adapter. A zero `size` component returns an empty buffer.
+#[must_use]
+pub fn render_rgba_at_pose(
+    planes: &[GpuFacetPlane],
+    material: &GemMaterial,
+    camera_pose: (f32, f32, f32),
+    size: (u32, u32),
+    spp: u32,
+    max_bounces: u32,
+) -> Vec<u8> {
+    let (width, height) = size;
+    if width == 0 || height == 0 {
+        return Vec::new();
+    }
+    let (yaw, pitch, distance) = camera_pose;
+    let spp = spp.max(1);
+    let scene = SceneSnapshot {
+        yaw,
+        pitch,
+        distance,
+        light_yaw: PREVIEW_LIGHT_YAW,
+        light_pitch: PREVIEW_LIGHT_PITCH,
+        material: material.clone(),
+        lighting_preset: PREVIEW_LIGHTING_PRESET,
+        max_bounces,
+        exposure: PREVIEW_EXPOSURE,
+        backdrop: PREVIEW_BACKDROP,
+        active_planes: planes.to_vec(),
+        // Same "every facet Polished, analytic studio rig" reasoning as
+        // `render_view`'s own snapshot.
+        facet_finishes: Vec::new(),
+        env_map: None,
+    };
+    let camera = Camera::new(yaw, pitch, distance, DEFAULT_FOV_DEG);
+    let mut accum = vec![Vec3::ZERO; (width as usize) * (height as usize)];
+    export_thread::batch::render_batch(width, height, spp, 0, &camera, &scene, &mut accum);
+    tonemap_to_rgba(&accum, 1.0 / spp as f32)
+}
+
 /// A single fixed request id for every preview remote dispatch -- safe for the same
 /// reason `export_thread::remote::REQUEST_ID` gives: [`remote_render::spawn_remote_render`]
 /// opens its OWN fresh one-shot connection per call, so nothing is ever pipelined
@@ -284,28 +345,62 @@ const PREVIEW_ENV_MAP: Option<&Arc<EnvironmentMap>> = None;
 /// is small enough to never need an export's batched-request chunking) against
 /// `worker`, blocking until it finishes, fails, or `cancel` is observed.
 ///
-/// Returns `None` on any kind of shortfall -- connection failure, worker rejection,
-/// cancellation, or fewer samples than asked for -- so `gui::batch::preview`'s remote
-/// lane can decide what's next: under `LiveComputeTarget::Both` it requeues the item
-/// for a guaranteed local retry via [`render_view`]; under `RemoteOnly` the failure is
-/// final and surfaced. Never partially reports: unlike an export (which keeps a
-/// worker's partial contribution and traces only the shortfall locally), a preview is
-/// cheap enough that a partial remote result is discarded and the whole image is
-/// retraced locally.
-#[must_use]
-pub fn render_view_remote(
+/// Returns an error on any kind of shortfall -- connection failure, worker rejection,
+/// cancellation, a missed progress/wall deadline, or fewer samples than asked for -- so
+/// `gui::batch::preview`'s remote lane can decide what's next: under
+/// `LiveComputeTarget::Both` it requeues the item for a guaranteed local retry via
+/// [`render_view`]; under `RemoteOnly` the failure is final and surfaced. Never
+/// partially reports: unlike an export (which keeps a worker's partial contribution and
+/// traces only the shortfall locally), a preview is cheap enough that a partial remote
+/// result is discarded and the whole image is retraced locally.
+///
+/// Every shortfall comes back as a [`RemoteShortfall`] naming the reason. Deadlines: the wait
+/// gives up (after sending a `CANCEL` and allowing [`PREVIEW_CANCEL_ACK_WAIT`] for its
+/// acknowledgement) when the reported `samples_done` has not advanced for
+/// [`PREVIEW_PROGRESS_STALL`], or the request has run past
+/// [`PREVIEW_REMOTE_MAX_WALL`].
+///
+/// Deadlines are needed because the transport's own liveness rule is silence-based and a
+/// coordinator heartbeats every couple of seconds whether or not its tracer advances: a
+/// wedged remote would otherwise park the batch's remote lane on one item forever, and a
+/// Cancel could never complete either. Every shortfall is logged at `warn!` with the
+/// view, so a failing remote is visible in `indicatrix-cut.log` instead of silent.
+///
+/// # Errors
+///
+/// A [`RemoteShortfall`] naming why no image was produced: a refused, failed or
+/// unsupported request, a cancel, a missed deadline, a disconnected update channel, a
+/// short sample count, or a PNG encode failure.
+pub fn render_view_remote_checked(
     job: &PreviewJob<'_>,
     view: PreviewView,
     worker: &WorkerSettings,
     cancel: &AtomicBool,
-) -> Option<Vec<u8>> {
+) -> Result<Vec<u8>, RemoteShortfall> {
+    let result = dispatch_remote_view(job, view, worker, cancel);
+    if let Err(shortfall) = &result {
+        tracing::warn!(?view, %shortfall, "remote preview render fell short");
+    }
+    result
+}
+
+/// The body of [`render_view_remote_checked`], separated so the single `warn!` covers
+/// every early return.
+fn dispatch_remote_view(
+    job: &PreviewJob<'_>,
+    view: PreviewView,
+    worker: &WorkerSettings,
+    cancel: &AtomicBool,
+) -> Result<Vec<u8>, RemoteShortfall> {
     // The shared remote-render rule (`bridge::remote::guard`). Catalogue thumbnails
     // always use the analytic studio rig -- `render_view`'s snapshot hard-codes
     // `env_map: None` -- so this never refuses today; it is asked anyway so a future
     // per-design environment cannot silently start mixing lighting between the local
     // and remote lanes of a batch.
-    if remote_can_render(PREVIEW_ENV_MAP, false).is_err() {
-        return None;
+    if let Err(refusal) = remote_can_render(PREVIEW_ENV_MAP, false) {
+        return Err(RemoteShortfall::Failed(format!(
+            "remote render refused: {refusal:?}"
+        )));
     }
     let scene = SceneState {
         width: job.size,
@@ -344,48 +439,120 @@ pub fn render_view_remote(
         },
     );
 
-    let mut cancel_sent = false;
-    loop {
-        if !cancel_sent && cancel.load(Ordering::Relaxed) {
-            handle.cancel();
-            cancel_sent = true;
-        }
-        match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(
-                RemoteUpdate::Done {
-                    cancelled: true, ..
-                }
-                | RemoteUpdate::Failed { .. }
-                | RemoteUpdate::Unsupported { .. },
-            ) => {
-                return None;
-            }
-            Ok(RemoteUpdate::Done {
-                cancelled: false, ..
-            }) => break,
-            Ok(
-                RemoteUpdate::Connected { .. }
-                | RemoteUpdate::Preview { .. }
-                | RemoteUpdate::Frame { .. }
-                | RemoteUpdate::Progress { .. }
-                | RemoteUpdate::DisplayFrame { .. }
-                | RemoteUpdate::FinalImage { .. }
-                | RemoteUpdate::CapabilityChanged { .. },
-            )
-            | Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => return None,
-        }
-    }
+    wait_for_remote(&rx, &handle, cancel)?;
 
     let acc = accumulator
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if acc.samples_done() < job.spp {
-        return None;
+    let done = acc.samples_done();
+    if done < job.spp {
+        return Err(RemoteShortfall::ShortSamples {
+            done,
+            wanted: job.spp,
+        });
     }
     let rgba = tonemap_to_rgba(acc.buffer(), 1.0 / job.spp as f32);
     drop(acc);
     encode_png(job.size, job.size, &rgba)
+        .ok_or_else(|| RemoteShortfall::Failed("could not encode the preview PNG".to_owned()))
+}
+
+/// What one [`RemoteUpdate`] means for the wait in [`wait_for_remote`].
+enum Step {
+    /// The request ended: `Ok` for a completed `Done`, `Err` for everything else terminal.
+    Terminal(Result<(), RemoteShortfall>),
+    /// A `samples_done` report to feed the [`ProgressWatch`].
+    Progress(u32),
+    /// Nothing the wait acts on (connection notices, preview frames, capability news).
+    Ignore,
+}
+
+/// Sorts one update into a [`Step`]. Only `Progress` and `Frame` carry a `samples_done`
+/// worth watching: a `DisplayFrame` repeats a count the preceding `Frame` already
+/// reported, and a `Preview` carries none.
+fn classify(update: RemoteUpdate) -> Step {
+    match update {
+        RemoteUpdate::Done {
+            cancelled: true, ..
+        } => Step::Terminal(Err(RemoteShortfall::Cancelled)),
+        RemoteUpdate::Done {
+            cancelled: false, ..
+        } => Step::Terminal(Ok(())),
+        RemoteUpdate::Failed { message, .. } => {
+            Step::Terminal(Err(RemoteShortfall::Failed(message)))
+        }
+        RemoteUpdate::Unsupported { message, .. } => {
+            Step::Terminal(Err(RemoteShortfall::Unsupported(message)))
+        }
+        RemoteUpdate::Progress { samples_done, .. } | RemoteUpdate::Frame { samples_done, .. } => {
+            Step::Progress(samples_done)
+        }
+        RemoteUpdate::Connected { .. }
+        | RemoteUpdate::Preview { .. }
+        | RemoteUpdate::DisplayFrame { .. }
+        | RemoteUpdate::FinalImage { .. }
+        | RemoteUpdate::CapabilityChanged { .. } => Step::Ignore,
+    }
+}
+
+/// Blocks until the remote request reaches a terminal update, forwarding `cancel` as a
+/// `CANCEL` and enforcing the progress-stall and wall-clock deadlines. On a deadline the
+/// request is cancelled and given [`PREVIEW_CANCEL_ACK_WAIT`] to acknowledge before the
+/// shortfall is returned; a batch Cancel gets the same bound, so a wedged remote cannot
+/// keep Cancel from completing.
+fn wait_for_remote(
+    rx: &mpsc::Receiver<RemoteUpdate>,
+    handle: &RemoteRenderHandle,
+    cancel: &AtomicBool,
+) -> Result<(), RemoteShortfall> {
+    let mut watch = ProgressWatch::new(Instant::now());
+    let mut cancelled_at: Option<Instant> = None;
+    loop {
+        if cancelled_at.is_none() && cancel.load(Ordering::Relaxed) {
+            handle.cancel();
+            cancelled_at = Some(Instant::now());
+        }
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(update) => match classify(update) {
+                Step::Terminal(outcome) => return outcome,
+                Step::Progress(samples_done) => watch.observe(samples_done, Instant::now()),
+                Step::Ignore => {}
+            },
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return Err(RemoteShortfall::Disconnected),
+        }
+        let now = Instant::now();
+        if cancelled_at.is_some_and(|at| now.duration_since(at) > PREVIEW_CANCEL_ACK_WAIT) {
+            return Err(RemoteShortfall::Cancelled);
+        }
+        if let Some(shortfall) = watch.verdict(now, PREVIEW_PROGRESS_STALL, PREVIEW_REMOTE_MAX_WALL)
+        {
+            handle.cancel();
+            await_cancel_ack(rx);
+            return Err(shortfall);
+        }
+    }
+}
+
+/// Waits at most [`PREVIEW_CANCEL_ACK_WAIT`] for any terminal update after a `CANCEL`
+/// was sent, discarding it -- the caller already knows why it gave up. Returns early when
+/// the update channel closes, which means the one-shot thread has ended too.
+fn await_cancel_ack(rx: &mpsc::Receiver<RemoteUpdate>) {
+    let deadline = Instant::now() + PREVIEW_CANCEL_ACK_WAIT;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return;
+        }
+        match rx.recv_timeout(remaining) {
+            Ok(update) => {
+                if matches!(classify(update), Step::Terminal(_)) {
+                    return;
+                }
+            }
+            Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => return,
+        }
+    }
 }
 
 /// PNG-encodes `rgba` (`width * height * 4` bytes) into an in-memory buffer -- the
@@ -408,6 +575,42 @@ mod tests {
     use super::*;
 
     #[test]
+    fn classify_maps_terminal_and_progress_updates() {
+        assert!(matches!(
+            classify(RemoteUpdate::Done {
+                request_id: 1,
+                cancelled: false
+            }),
+            Step::Terminal(Ok(()))
+        ));
+        assert!(matches!(
+            classify(RemoteUpdate::Done {
+                request_id: 1,
+                cancelled: true
+            }),
+            Step::Terminal(Err(RemoteShortfall::Cancelled))
+        ));
+        assert!(matches!(
+            classify(RemoteUpdate::Failed {
+                request_id: 1,
+                message: "x".to_owned()
+            }),
+            Step::Terminal(Err(RemoteShortfall::Failed(_)))
+        ));
+        assert!(matches!(
+            classify(RemoteUpdate::Progress {
+                request_id: 1,
+                samples_done: 7
+            }),
+            Step::Progress(7)
+        ));
+        assert!(matches!(
+            classify(RemoteUpdate::Preview { request_id: 1 }),
+            Step::Ignore
+        ));
+    }
+
+    #[test]
     fn preview_view_pitch_matches_the_documented_front_and_top_convention() {
         assert_eq!(PreviewView::Front.pitch(), 0.0);
         assert!((PreviewView::Top.pitch() - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
@@ -422,7 +625,7 @@ mod tests {
             0.0,
             PreviewView::Top.pitch(),
             PREVIEW_DISTANCE,
-            PREVIEW_FOV_DEG,
+            DEFAULT_FOV_DEG,
         );
         assert!((camera.origin.x).abs() < 1e-3);
         assert!((camera.origin.y - PREVIEW_DISTANCE).abs() < 1e-3);
@@ -438,7 +641,7 @@ mod tests {
                 yaw,
                 PreviewView::Front.pitch(),
                 PREVIEW_DISTANCE,
-                PREVIEW_FOV_DEG,
+                DEFAULT_FOV_DEG,
             );
             assert!((camera.origin.y).abs() < 1e-3, "yaw={yaw}");
         }

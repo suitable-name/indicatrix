@@ -70,13 +70,21 @@ the gear/facet count. **Right-click** a card for:
   (see below) ahead of time.
 - **Ignore** / **Un-ignore** — hide a design from ordinary search results
   (still visible in the Advanced Filters "Show ignored designs" mode).
+- **Exclude from planner** / **Include in planner** — keep a design out of the
+  Rough Planner's candidates (Chapter 15) and nothing else. Unlike **Ignore**, it
+  hides nothing: the card stays in the list, marked "not planned", and previews and
+  tilt curves are made as usual. It works on the local library only.
+
+Previews and tilt curves are rendered from the design's own design file (its
+`.asc`, else `.gem`, else `.gcs` attachment) when the record has one, and from
+the angle table only when it has none or the file cannot be read.
 
 Once selected, the detail header above the tabs shows the title, designer,
 and a row of spec chips (Shape, Gear, Facets, L/W, H/W, C/W, P/W, Vol/W³,
 R.I.) — each chip only appears when that value is known. Local designs get
 an inline pencil to rename, an **Edit Metadata** button for the full set of
 fields, and a **Delete** button (with a confirm step). Below the header are
-three tabs: **3D Spectral Preview (1)**, **Cutting Schedule (2)**, and
+three tabs: **3D Spectral Preview (1)**, **Cutting Instructions (2)**, and
 **Files & Downloads (3)** — covered further in Chapters 1 and 3.
 
 ## The 3D viewport

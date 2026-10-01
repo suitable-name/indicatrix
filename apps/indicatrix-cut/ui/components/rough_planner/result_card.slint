@@ -1,0 +1,288 @@
+import { Theme } from "../../theme.slint";
+import { RoughPlanModel, RoughPlanResult } from "../../models/rough_plan.slint";
+import { Chevron, ElidedText, RoughPill } from "fields.slint";
+import { DesignGroupRow } from "design_group_row.slint";
+
+// Layout card for one ranked rough planning result. The `keep` flag belongs to
+// Rust: the checkbox asks for a flip with `toggle_keep` and the row comes back
+// re-pushed, so the card never writes its own copy of the row. The card, its
+// checkbox and its Cut plan toggle each take keyboard focus (Tab); Space or Enter
+// presses the focused one.
+export component ResultCard inherits Rectangle {
+    in property <RoughPlanResult> result;
+    in property <int> rank_index;
+    in property <bool> show_thumbnails: true;
+    property <bool> is_selected: RoughPlanModel.selected_result == root.rank_index;
+    property <bool> is_expanded: RoughPlanModel.expanded_index == root.rank_index;
+
+    function toggle_cut_plan() {
+        if root.is_expanded {
+            RoughPlanModel.expanded_index = -1;
+        } else {
+            RoughPlanModel.expanded_index = root.rank_index;
+        }
+    }
+
+    // The header and info lines shrink with the column (their texts elide), so the
+    // card never grows wider than the column.
+    clip: true;
+    background: root.is_selected ? Theme.bg-card-hover : Theme.bg-card;
+    border-radius: Theme.radius-sm;
+    border-width: card_focus.has-focus ? 2px : 1px;
+    border-color: card_focus.has-focus ? Theme.accent-cyan
+        : (root.is_selected ? Theme.border-accent : Theme.border-subtle);
+
+    accessible-role: list-item;
+    accessible-label: "Result " + root.result.rank + ": " + root.result.total_ct + ", yield "
+        + root.result.yield_pct + ", "
+        + (root.result.stone_count == 1 ? "1 stone" : root.result.stone_count + " stones");
+    accessible-item-selectable: true;
+    accessible-item-selected: root.is_selected;
+    accessible-action-default => { RoughPlanModel.select_result(root.rank_index); }
+
+    card_focus := FocusScope {
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                RoughPlanModel.select_result(root.rank_index);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    // Declared before the controls: a click on the card body selects the result, and
+    // every control drawn above it keeps its own clicks.
+    TouchArea {
+        clicked => { RoughPlanModel.select_result(root.rank_index); }
+    }
+
+    VerticalLayout {
+        padding: 8px;
+        spacing: 6px;
+
+        // Header: keep checkbox, rank, total weight
+        HorizontalLayout {
+            spacing: 8px;
+
+            // Keep checkbox for saving, with a larger hit area than the box
+            Rectangle {
+                width: 22px;
+                height: 22px;
+
+                accessible-role: checkbox;
+                accessible-label: "Keep result " + root.result.rank + " for saving";
+                accessible-checkable: true;
+                accessible-checked: root.result.keep;
+                accessible-action-default => { RoughPlanModel.toggle_keep(root.rank_index); }
+
+                keep_focus := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == Key.Space || event.text == Key.Return {
+                            RoughPlanModel.toggle_keep(root.rank_index);
+                            return accept;
+                        }
+                        return reject;
+                    }
+                }
+
+                Rectangle {
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 3px;
+                    border-width: keep_focus.has-focus ? 2px : 1px;
+                    border-color: keep_focus.has-focus ? Theme.accent-cyan-hover
+                        : (root.result.keep ? Theme.accent-cyan : Theme.border-control);
+                    background: root.result.keep ? Theme.accent-cyan : Theme.surface-sunken;
+
+                    if root.result.keep: Rectangle {
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 1px;
+                        background: Theme.text-on-accent;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { RoughPlanModel.toggle_keep(root.rank_index); }
+                }
+            }
+
+            // Rank #N
+            Text {
+                text: "#" + root.result.rank;
+                font-size: 13px;
+                font-weight: 700;
+                color: Theme.text-primary;
+                vertical-alignment: center;
+            }
+
+            // Total weight in carat
+            ElidedText {
+                text: root.result.total_ct;
+                font_size: 13px;
+                font_weight: 700;
+                text_color: Theme.accent-cyan;
+            }
+        }
+
+        // Yield and stone count, with the cut plan disclosure at the right
+        HorizontalLayout {
+            spacing: 8px;
+
+            ElidedText {
+                text: "yield " + root.result.yield_pct + " \u{00B7} "
+                    + (root.result.stone_count == 1 ? "1 stone" : root.result.stone_count + " stones");
+                font_size: 11px;
+                text_color: Theme.text-secondary;
+            }
+
+            // Cut plan disclosure toggle
+            Rectangle {
+                width: 66px;
+                height: 18px;
+                border-radius: Theme.radius-sm;
+                border-width: cp_focus.has-focus ? 1px : 0px;
+                border-color: Theme.accent-cyan;
+
+                accessible-role: button;
+                accessible-label: "Cut plan";
+                accessible-expandable: true;
+                accessible-expanded: root.is_expanded;
+                accessible-action-default => { root.toggle_cut_plan(); }
+
+                cp_focus := FocusScope {
+                    key-pressed(event) => {
+                        if event.text == Key.Space || event.text == Key.Return {
+                            root.toggle_cut_plan();
+                            return accept;
+                        }
+                        return reject;
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 4px;
+                    alignment: end;
+
+                    VerticalLayout {
+                        alignment: center;
+                        Chevron {
+                            open: root.is_expanded;
+                            stroke_color: cp_touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                        }
+                    }
+
+                    Text {
+                        text: "Cut plan";
+                        font-size: 11px;
+                        color: root.is_expanded ? Theme.accent-cyan : (cp_touch.has-hover ? Theme.text-primary : Theme.text-secondary);
+                        vertical-alignment: center;
+                    }
+                }
+
+                // Overlay: a sibling of the layout, not a layout child
+                cp_touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.toggle_cut_plan(); }
+                }
+            }
+        }
+
+        // Saw loss and yield-weight lines (no saw line for an exact single stone, which
+        // involves no sawing), with the link to the result's designs at the right
+        HorizontalLayout {
+            spacing: 8px;
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                spacing: 2px;
+                alignment: center;
+
+                if root.result.saw_text != "": ElidedText {
+                    text: root.result.saw_text;
+                    font_size: 10px;
+                    text_color: Theme.text-muted;
+                }
+                if root.result.yield_weight_text != "": ElidedText {
+                    text: root.result.yield_weight_text;
+                    font_size: 10px;
+                    text_color: Theme.accent-emerald;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                RoughPill {
+                    text: "Result in library";
+                    enabled: RoughPlanModel.links_enabled;
+                    clicked => { RoughPlanModel.show_result_in_library(root.rank_index); }
+                }
+            }
+        }
+
+        // Body: thumbnail on left (if available) + design groups on right
+        HorizontalLayout {
+            spacing: 8px;
+
+            // The thumbnail, or a plain skeleton while it is still rendering
+            if root.show_thumbnails && (root.result.has_thumbnail || RoughPlanModel.thumbnails_pending): VerticalLayout {
+                alignment: center;
+                Rectangle {
+                    width: 88px;
+                    height: 66px;
+                    border-radius: Theme.radius-sm;
+                    background: root.result.has_thumbnail ? Theme.surface-sunken : Theme.surface-control;
+                    border-width: root.result.has_thumbnail ? 0px : 1px;
+                    border-color: Theme.border-subtle;
+                    clip: true;
+
+                    if root.result.has_thumbnail: Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.result.thumbnail;
+                    }
+                }
+            }
+
+            VerticalLayout {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                spacing: 4px;
+
+                for group[g_idx] in root.result.groups: DesignGroupRow {
+                    group: group;
+                    show_thumbnails: root.show_thumbnails;
+                    is_selected: root.is_selected && RoughPlanModel.selected_group == g_idx;
+                    clicked => {
+                        RoughPlanModel.select_result(root.rank_index);
+                        RoughPlanModel.select_group(root.rank_index, g_idx);
+                    }
+                }
+            }
+        }
+
+        // Cut plan expanded disclosure text
+        if root.is_expanded: Rectangle {
+            background: Theme.surface-sunken;
+            border-radius: Theme.radius-sm;
+            border-width: 1px;
+            border-color: Theme.border-subtle;
+
+            VerticalLayout {
+                padding: 8px;
+                Text {
+                    text: root.result.cut_plan;
+                    font-size: 10px;
+                    color: Theme.text-secondary;
+                    wrap: word-wrap;
+                }
+            }
+        }
+    }
+}

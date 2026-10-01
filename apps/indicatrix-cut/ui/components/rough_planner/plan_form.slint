@@ -1,0 +1,398 @@
+import { Theme } from "../../theme.slint";
+import { SpinBox, ScrollView } from "std-widgets.slint";
+import { RoughPlanModel } from "../../models/rough_plan.slint";
+import { RoughField, RoughRadio, RoughPill, Chevron, ElidedText } from "fields.slint";
+
+// Left column planning section: stones up to K, candidate radios, the excluded designs
+// disclosure, losses disclosure, Plan/Cancel button, and progress bar.
+export component PlanForm inherits VerticalLayout {
+    property <bool> busy: RoughPlanModel.running;
+    property <float> fraction: Math.max(0.0, Math.min(1.0, RoughPlanModel.progress_fraction));
+    // Plan needs a material with a known specific gravity and a valid model.
+    property <bool> can_plan: RoughPlanModel.materials.length > 0 && RoughPlanModel.model_error == "";
+
+    // "Whole library (1,234 designs)": the name of a choice with the grouped count Rust
+    // formatted. `count` only decides singular or plural, and the "counting..." state
+    // (negative) has no unit; an empty text means no count was taken yet.
+    pure function count_label(name: string, count_text: string, count: int) -> string {
+        if count_text == "" {
+            return name;
+        }
+        if count < 0 {
+            return name + " (" + count_text + ")";
+        }
+        return name + " (" + count_text + (count == 1 ? " design)" : " designs)");
+    }
+
+    function toggle_losses() {
+        RoughPlanModel.losses_open = !RoughPlanModel.losses_open;
+    }
+
+    function toggle_excluded() {
+        RoughPlanModel.excluded_open = !RoughPlanModel.excluded_open;
+    }
+
+    function plan_or_cancel() {
+        if root.busy {
+            RoughPlanModel.cancel();
+        } else if root.can_plan {
+            RoughPlanModel.plan();
+        }
+    }
+
+    spacing: 8px;
+
+    // Header
+    Text {
+        text: "PLAN";
+        font-size: 11px;
+        font-weight: 700;
+        color: Theme.text-muted;
+    }
+
+    // Stones count limit (1..=99)
+    HorizontalLayout {
+        spacing: 6px;
+        alignment: start;
+
+        Text {
+            text: "Stones (up to):";
+            font-size: 11px;
+            color: Theme.text-muted;
+            vertical-alignment: center;
+        }
+
+        SpinBox {
+            minimum: 1;
+            maximum: 99;
+            value <=> RoughPlanModel.count;
+            enabled: !root.busy;
+        }
+    }
+
+    // Candidate designs choice
+    VerticalLayout {
+        spacing: 2px;
+        Text {
+            text: "Candidate designs";
+            font-size: 10px;
+            color: Theme.text-muted;
+        }
+        RoughRadio {
+            label: root.count_label("Current filter", RoughPlanModel.filter_count_text, RoughPlanModel.filter_count);
+            selected: RoughPlanModel.use_filter;
+            editable: !root.busy;
+            picked => { RoughPlanModel.use_filter = true; }
+        }
+        RoughRadio {
+            label: root.count_label("Whole library", RoughPlanModel.library_count_text, RoughPlanModel.library_count);
+            selected: !RoughPlanModel.use_filter;
+            editable: !root.busy;
+            picked => { RoughPlanModel.use_filter = false; }
+        }
+    }
+
+    // Excluded designs disclosure: the designs the planner leaves out of both candidate
+    // choices, each with a Restore pill. Like the losses fields, the list folds away
+    // while a plan runs.
+    if RoughPlanModel.excluded_count > 0: VerticalLayout {
+        spacing: 6px;
+
+        Rectangle {
+            height: 20px;
+            border-radius: Theme.radius-sm;
+            border-width: excluded_focus.has-focus ? 1px : 0px;
+            border-color: Theme.accent-cyan;
+
+            accessible-role: button;
+            accessible-label: "Excluded designs (" + RoughPlanModel.excluded_count + "): designs the planner leaves out";
+            accessible-expandable: true;
+            accessible-expanded: RoughPlanModel.excluded_open && !root.busy;
+            accessible-action-default => { root.toggle_excluded(); }
+
+            excluded_focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.Space || event.text == Key.Return {
+                        root.toggle_excluded();
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+
+                VerticalLayout {
+                    alignment: center;
+                    Chevron {
+                        open: RoughPlanModel.excluded_open && !root.busy;
+                        stroke_color: excluded_touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                    }
+                }
+
+                Text {
+                    text: "Excluded designs (" + RoughPlanModel.excluded_count + ")";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: excluded_touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Overlay: a sibling of the layout, not a layout child
+            excluded_touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.toggle_excluded(); }
+            }
+        }
+
+        if RoughPlanModel.excluded_open && !root.busy: VerticalLayout {
+            spacing: 6px;
+
+            // Three rows show at once (22 px each, with their spacing); more scroll.
+            ScrollView {
+                height: Math.min(RoughPlanModel.excluded_count * 22px, 66px);
+
+                VerticalLayout {
+                    alignment: start;
+                    spacing: 2px;
+
+                    for excluded_name[index] in RoughPlanModel.excluded_names: HorizontalLayout {
+                        spacing: 6px;
+
+                        ElidedText {
+                            text: excluded_name;
+                            font_size: 11px;
+                            text_color: Theme.text-secondary;
+                        }
+
+                        VerticalLayout {
+                            alignment: center;
+                            RoughPill {
+                                text: "Restore";
+                                enabled: !RoughPlanModel.running;
+                                accessible-label: "Restore " + excluded_name + " to planning";
+                                clicked => { RoughPlanModel.restore_excluded(RoughPlanModel.excluded_ids[index]); }
+                            }
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                alignment: end;
+
+                RoughPill {
+                    text: "Restore all";
+                    enabled: !RoughPlanModel.running;
+                    clicked => { RoughPlanModel.restore_all_excluded(); }
+                }
+            }
+        }
+    }
+
+    // Losses disclosure
+    VerticalLayout {
+        spacing: 6px;
+
+        Rectangle {
+            height: 20px;
+            border-radius: Theme.radius-sm;
+            border-width: losses_focus.has-focus ? 1px : 0px;
+            border-color: Theme.accent-cyan;
+
+            accessible-role: button;
+            accessible-label: "Losses: kerf, allowance, skin and minimum stone width";
+            accessible-expandable: true;
+            accessible-expanded: RoughPlanModel.losses_open && !root.busy;
+            accessible-action-default => { root.toggle_losses(); }
+
+            losses_focus := FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.Space || event.text == Key.Return {
+                        root.toggle_losses();
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: start;
+
+                VerticalLayout {
+                    alignment: center;
+                    Chevron {
+                        open: RoughPlanModel.losses_open && !root.busy;
+                        stroke_color: losses_touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                    }
+                }
+
+                Text {
+                    text: "Losses";
+                    font-size: 11px;
+                    font-weight: 600;
+                    color: losses_touch.has-hover ? Theme.text-primary : Theme.text-secondary;
+                    vertical-alignment: center;
+                }
+
+                Text {
+                    horizontal-stretch: 1;
+                    text: "kerf " + RoughPlanModel.kerf_mm + ", allowance " + RoughPlanModel.allowance_mm
+                        + ", skin " + RoughPlanModel.skin_mm + ", min " + RoughPlanModel.min_width_mm + " mm";
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    overflow: elide;
+                    vertical-alignment: center;
+                }
+            }
+
+            // Overlay: a sibling of the layout, not a layout child
+            losses_touch := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.toggle_losses(); }
+            }
+        }
+
+        // The fields fold away while a plan runs, so the progress bar keeps its room;
+        // the one-line summary above still shows the values in use.
+        if RoughPlanModel.losses_open && !root.busy: VerticalLayout {
+            spacing: 6px;
+
+            HorizontalLayout {
+                spacing: 6px;
+                RoughField {
+                    label: "Saw kerf (mm)";
+                    editable: !root.busy;
+                    value <=> RoughPlanModel.kerf_mm;
+                }
+                RoughField {
+                    label: "Allowance / side (mm)";
+                    editable: !root.busy;
+                    value <=> RoughPlanModel.allowance_mm;
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 6px;
+                RoughField {
+                    label: "Rough skin (mm)";
+                    editable: !root.busy;
+                    value <=> RoughPlanModel.skin_mm;
+                }
+                RoughField {
+                    label: "Min stone width (mm)";
+                    editable: !root.busy;
+                    value <=> RoughPlanModel.min_width_mm;
+                }
+            }
+        }
+    }
+
+    // Progress bar when running
+    if root.busy: VerticalLayout {
+        spacing: 4px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                horizontal-stretch: 1;
+                text: RoughPlanModel.stage;
+                font-size: 10px;
+                color: Theme.text-muted;
+                overflow: elide;
+            }
+            Text {
+                text: Math.round(root.fraction * 100) + "%";
+                font-size: 10px;
+                font-weight: 700;
+                color: Theme.accent-cyan;
+            }
+        }
+
+        Rectangle {
+            height: 8px;
+            border-radius: 4px;
+            background: Theme.surface-sunken;
+            border-width: 1px;
+            border-color: Theme.border-dialog;
+            clip: true;
+
+            Rectangle {
+                x: 0;
+                y: 0;
+                width: parent.width * root.fraction;
+                height: 100%;
+                background: Theme.accent-cyan;
+                animate width { duration: 150ms; }
+            }
+        }
+    }
+
+    // Error text: at most a few lines, so a long message cannot push the Plan button
+    // out of the pinned area; the rest is cut off with an ellipsis.
+    if RoughPlanModel.error_text != "": Text {
+        text: RoughPlanModel.error_text;
+        font-size: 11px;
+        color: Theme.danger;
+        wrap: word-wrap;
+        overflow: elide;
+        max-height: 60px;
+    }
+
+    // Why Plan is greyed out
+    if !root.busy && RoughPlanModel.model_error != "": Text {
+        text: "Plan is off until the model is valid: see the red message under ROUGH.";
+        font-size: 10px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
+    }
+
+    // Plan / Cancel action button
+    Rectangle {
+        height: 32px;
+        border-radius: Theme.radius-sm;
+        background: root.busy
+            ? (plan_touch.has-hover ? Theme.surface-control-hover : Theme.surface-control)
+            : (root.can_plan
+                ? (plan_touch.has-hover ? Theme.accent-cyan-hover : Theme.accent-cyan)
+                : Theme.surface-disabled);
+        border-width: plan_focus.has-focus ? 2px : (root.busy ? 1px : 0px);
+        border-color: plan_focus.has-focus ? Theme.text-primary : Theme.border-dialog;
+
+        accessible-role: button;
+        accessible-label: root.busy ? "Cancel the plan" : "Plan";
+        accessible-enabled: root.busy || root.can_plan;
+        accessible-action-default => { root.plan_or_cancel(); }
+
+        plan_focus := FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Space || event.text == Key.Return {
+                    root.plan_or_cancel();
+                    return accept;
+                }
+                return reject;
+            }
+        }
+
+        Text {
+            text: root.busy ? "Cancel" : "Plan";
+            font-size: 12px;
+            font-weight: 700;
+            color: root.busy
+                ? Theme.text-primary
+                : (root.can_plan ? Theme.text-on-accent : Theme.text-disabled);
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+
+        plan_touch := TouchArea {
+            enabled: root.busy || root.can_plan;
+            mouse-cursor: self.enabled ? pointer : default;
+            clicked => { root.plan_or_cancel(); }
+        }
+    }
+}
