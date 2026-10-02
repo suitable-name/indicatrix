@@ -10,10 +10,10 @@ use super::{
 use glam::Vec3;
 use indicatrix_net::{
     SceneState,
-    messages::PayloadEncoding,
-    radiance::{self, EncodedPayload, PayloadEncoder},
+    messages::{NetError, adaptive::PeerLink},
+    radiance::{self, EncodedPayload},
 };
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// A full-resolution radiance delta accumulated (coalesced) since it was last taken --
 /// the shared buffer `run_tracer`'s sub-batches fold into and `run_stream`'s emitter
@@ -139,10 +139,10 @@ pub(in crate::stream_emit) struct EmitterAccum {
     /// [`PendingDelta::swap_with`] on every [`Self::swap_and_fold`] call; holds whatever
     /// delta was most recently swapped out until the next swap overwrites it.
     spare: Vec<Vec3>,
-    /// The connection's negotiated payload encoding (v14), with its reusable scratch
-    /// buffers and compression context -- one per request, owned by the emitter thread,
-    /// so compression never runs under the shared `Mutex`.
-    encoder: PayloadEncoder,
+    /// The connection's adaptive-compression state (its encoder with the reusable scratch
+    /// buffers and compression context, and the bandwidth measurement). Used only by the
+    /// emitter thread, so compression never runs under the shared `Mutex`.
+    link: Arc<PeerLink>,
     /// A `DisplayOnly` request's denoise thread, started by the first
     /// [`Self::display_tick`] (never for any other transfer mode).
     display: Option<DisplayDenoiser>,
@@ -155,19 +155,20 @@ impl EmitterAccum {
     /// Test-only: an accumulator whose payloads go out raw (the pre-v14 behaviour).
     #[cfg(test)]
     pub(in crate::stream_emit) fn new(pixel_count: usize) -> Self {
-        Self::with_encoding(pixel_count, PayloadEncoding::Raw)
+        Self::with_link(
+            pixel_count,
+            Arc::new(PeerLink::fixed(
+                indicatrix_net::messages::PayloadEncoding::Raw,
+            )),
+        )
     }
 
-    /// An accumulator whose `FRAME`/`PREVIEW` payloads are encoded with `encoding`
-    /// (the connection's negotiated one).
-    pub(in crate::stream_emit) fn with_encoding(
-        pixel_count: usize,
-        encoding: PayloadEncoding,
-    ) -> Self {
+    /// An accumulator whose payloads are encoded and sent through `link`.
+    pub(in crate::stream_emit) fn with_link(pixel_count: usize, link: Arc<PeerLink>) -> Self {
         Self {
             running_total: vec![Vec3::ZERO; pixel_count],
             spare: vec![Vec3::ZERO; pixel_count],
-            encoder: PayloadEncoder::new(encoding),
+            link,
             display: None,
             last_preview_samples_done: None,
         }
@@ -182,38 +183,51 @@ impl EmitterAccum {
         Self {
             running_total,
             spare,
-            encoder: PayloadEncoder::new(PayloadEncoding::Raw),
+            link: Arc::new(PeerLink::fixed(
+                indicatrix_net::messages::PayloadEncoding::Raw,
+            )),
             display: None,
             last_preview_samples_done: None,
         }
     }
 
-    /// The delta most recently swapped out by [`Self::swap_and_fold`], encoded for the
-    /// wire (zero-copy when the encoding is `Raw`) -- meaningful only when that call
-    /// returned `Some`; otherwise stale-but-harmless (already folded into
+    /// Sends the delta most recently swapped out by [`Self::swap_and_fold`], encoded for
+    /// the wire (zero-copy when the encoding is `Raw`): `write` gets the encoded payload
+    /// and must write it to the socket; only that call is timed. Meaningful only when that
+    /// call returned `Some`; otherwise stale-but-harmless (already folded into
     /// `running_total`), since no caller reads this without first checking the range.
-    pub(in crate::stream_emit) fn encoded_delta(&mut self) -> EncodedPayload<'_> {
-        self.encoder.encode(radiance::as_bytes(&self.spare))
+    pub(in crate::stream_emit) fn send_delta(
+        &self,
+        write: impl FnOnce(&EncodedPayload<'_>) -> Result<(), NetError>,
+    ) -> Result<(), NetError> {
+        self.link
+            .send_payload(radiance::as_bytes(&self.spare), write)
     }
 
-    /// [`Self::running_total`], encoded for the wire -- the `FinalOnly` final `FRAME`.
-    pub(in crate::stream_emit) fn encoded_running_total(&mut self) -> EncodedPayload<'_> {
-        self.encoder.encode(radiance::as_bytes(&self.running_total))
+    /// [`Self::running_total`], sent like [`Self::send_delta`] -- the `FinalOnly` final
+    /// `FRAME`.
+    pub(in crate::stream_emit) fn send_running_total(
+        &self,
+        write: impl FnOnce(&EncodedPayload<'_>) -> Result<(), NetError>,
+    ) -> Result<(), NetError> {
+        self.link
+            .send_payload(radiance::as_bytes(&self.running_total), write)
     }
 
-    /// The connection's negotiated payload encoding (what a `DISPLAY_FRAME`'s
-    /// `DisplayEncoding` is derived from).
-    pub(in crate::stream_emit) const fn encoding(&self) -> PayloadEncoding {
-        self.encoder.encoding()
+    /// Any other radiance buffer (a downsampled `PREVIEW`, a job's merged total), sent
+    /// like [`Self::send_delta`].
+    pub(in crate::stream_emit) fn send_other(
+        &self,
+        buffer: &[Vec3],
+        write: impl FnOnce(&EncodedPayload<'_>) -> Result<(), NetError>,
+    ) -> Result<(), NetError> {
+        self.link.send_payload(radiance::as_bytes(buffer), write)
     }
 
-    /// Any other radiance buffer (a downsampled `PREVIEW`), encoded with this request's
-    /// encoder.
-    pub(in crate::stream_emit) fn encode_other<'a>(
-        &'a mut self,
-        buffer: &'a [Vec3],
-    ) -> EncodedPayload<'a> {
-        self.encoder.encode(radiance::as_bytes(buffer))
+    /// The connection's link: what `DISPLAY_FRAME`/`FINAL_IMAGE` pictures are encoded and
+    /// timed through.
+    pub(in crate::stream_emit) fn link(&self) -> &PeerLink {
+        &self.link
     }
 
     /// Locks `state` just long enough to swap [`SharedState::pending_delta`]'s buffer

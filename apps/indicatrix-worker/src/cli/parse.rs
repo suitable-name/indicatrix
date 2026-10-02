@@ -13,7 +13,7 @@ use super::args::{
     CertClaimArgs, CertInitArgs, CertIssueClientArgs, CertIssueServerArgs, CertIssueTokenArgs,
     Command, ComputeMode, HelpTopic, JoinArgs, RenderArgs, ServeArgs,
 };
-use indicatrix_net::messages::PeerRole;
+use indicatrix_net::messages::{PeerRole, adaptive::PayloadChoice};
 use std::{net::IpAddr, path::PathBuf};
 
 impl HelpTopic {
@@ -407,6 +407,7 @@ fn default_serve_args() -> ServeArgs {
         whole_image_secs: super::DEFAULT_WHOLE_IMAGE_SECS,
         whole_image_pixel_samples: super::DEFAULT_WHOLE_IMAGE_PIXEL_SAMPLES,
         jobs_per_viewer: super::DEFAULT_JOBS_PER_VIEWER,
+        payload_encoding: PayloadChoice::Auto,
     }
 }
 
@@ -509,6 +510,7 @@ fn parse_serve_flag(
                 .parse::<u64>()
                 .map_err(|_| format!("{flag} expects a non-negative integer, got {raw:?}"))?;
         }
+        "--payload-encoding" => out.payload_encoding = parse_payload_choice(&value(&mut i)?)?,
         "--jobs-per-viewer" => {
             let jobs = parse_u32(flag, &value(&mut i)?)?;
             if jobs == 0 {
@@ -522,6 +524,12 @@ fn parse_serve_flag(
         other => return Err(format!("unknown flag {other:?} for \"serve\" (see --help)")),
     }
     Ok(i)
+}
+
+/// `--payload-encoding`'s value: `auto`, `raw`, `lz4`, `zstd` or `zstd:LEVEL`.
+fn parse_payload_choice(raw: &str) -> Result<PayloadChoice, String> {
+    raw.parse()
+        .map_err(|e| format!("--payload-encoding: {e} (see --help)"))
 }
 
 /// `--interactive-workers`'s value: `all` ([`super::ALL_INTERACTIVE_WORKERS`]) or a count.
@@ -570,6 +578,7 @@ fn parse_join(args: &[String]) -> Result<JoinArgs, String> {
         compute_mode: ComputeMode::default(),
         token: None,
         enroll_addr: None,
+        payload_encoding: PayloadChoice::Auto,
     };
     let mut coordinator: Option<String> = None;
     let mut compute_mode = None;
@@ -588,6 +597,7 @@ fn parse_join(args: &[String]) -> Result<JoinArgs, String> {
             "--threads" => out.threads = parse_u32(flag, &value(&mut i)?)? as usize,
             "--token" => out.token = Some(value(&mut i)?),
             "--enroll-addr" => out.enroll_addr = Some(value(&mut i)?),
+            "--payload-encoding" => out.payload_encoding = parse_payload_choice(&value(&mut i)?)?,
             "--only-gpu" => parse_compute_mode_flag(ComputeMode::OnlyGpu, &mut compute_mode)?,
             "--only-cpu" => parse_compute_mode_flag(ComputeMode::OnlyCpu, &mut compute_mode)?,
             positional if !positional.starts_with('-') => {

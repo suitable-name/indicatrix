@@ -1,7 +1,7 @@
 //! The parsed-argument types [`super::parse::parse`] produces -- one struct per
 //! subcommand, plus the [`Command`] enum that wraps them.
 
-use indicatrix_net::messages::PeerRole;
+use indicatrix_net::messages::{PeerRole, adaptive::PayloadChoice};
 use std::{net::IpAddr, path::PathBuf};
 
 /// Which engine(s) trace a request. See `USAGE_RENDER`/`USAGE_SERVE`'s
@@ -144,6 +144,11 @@ pub struct ServeArgs {
     /// `--jobs-per-viewer <n>` (default [`super::DEFAULT_JOBS_PER_VIEWER`], at least 1):
     /// the most whole-image jobs one viewer certificate has running at once.
     pub jobs_per_viewer: u32,
+    /// `--payload-encoding auto|raw|lz4|zstd[:LEVEL]` (default `auto`): how this
+    /// coordinator compresses the `FRAME`/`PREVIEW`/`DISPLAY_FRAME` payloads it sends each
+    /// viewer. `auto` follows each connection's measured speed (loopback peers get raw);
+    /// the others pin one encoding for every link.
+    pub payload_encoding: PayloadChoice,
 }
 
 /// Arguments of `cert init`.
@@ -217,6 +222,9 @@ pub struct JoinArgs {
     /// `--enroll-addr`: the coordinator's worker enrollment listener. Defaults to the
     /// coordinator host, one port above `coordinator` (7881 for 7880).
     pub enroll_addr: Option<String>,
+    /// `--payload-encoding auto|raw|lz4|zstd[:LEVEL]` (default `auto`): how this worker
+    /// compresses the frames it sends the coordinator (see [`ServeArgs::payload_encoding`]).
+    pub payload_encoding: PayloadChoice,
 }
 
 /// Arguments of `cert claim`.

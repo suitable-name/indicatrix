@@ -31,7 +31,7 @@ use std::sync::Arc;
 /// replaces the `Arc` when their content changes).
 struct SceneKey {
     dims: [u32; 4],
-    floats: [u32; 9],
+    floats: [u32; 10],
     c_axis: Option<[u32; 3]>,
     girdle_frosted: bool,
     lighting_preset: LightingPreset,
@@ -47,7 +47,7 @@ const fn dims(ctx: &RenderContext) -> [u32; 4] {
     [ctx.width, ctx.height, ctx.target_samples, ctx.max_bounces]
 }
 
-const fn floats(ctx: &RenderContext) -> [u32; 9] {
+const fn floats(ctx: &RenderContext) -> [u32; 10] {
     [
         ctx.yaw.to_bits(),
         ctx.pitch.to_bits(),
@@ -58,6 +58,7 @@ const fn floats(ctx: &RenderContext) -> [u32; 9] {
         ctx.inclusion_sigma_s.to_bits(),
         ctx.edge_rounding_radius.to_bits(),
         ctx.stone_width_mm.to_bits(),
+        ctx.surface_glare.to_bits(),
     ]
 }
 
@@ -155,10 +156,28 @@ mod tests {
     }
 
     #[test]
+    fn surface_glare_restarts_like_a_lighting_change_and_one_is_the_default() {
+        let mut ctx = RenderContext::default();
+        assert_eq!(ctx.surface_glare.to_bits(), 1.0f32.to_bits());
+        let first = ctx.scene_generation();
+        // Writing the default value back is not a scene change.
+        ctx.surface_glare = 1.0;
+        assert_eq!(ctx.scene_generation(), first);
+        ctx.surface_glare = 0.0;
+        let second = ctx.scene_generation();
+        assert!(second > first, "a glare change must bump the generation");
+        ctx.lighting_preset = LightingPreset::Daylight;
+        assert!(
+            ctx.scene_generation() > second,
+            "a lighting change bumps it the same way"
+        );
+    }
+
+    #[test]
     fn every_kind_of_scene_change_bumps_the_generation() {
         let mut ctx = RenderContext::default();
         let mut last = ctx.scene_generation();
-        let changes: [fn(&mut RenderContext); 8] = [
+        let changes: [fn(&mut RenderContext); 9] = [
             |c| c.yaw += 0.1,
             |c| c.exposure = 2.0,
             |c| c.material_name = "Spinel".to_string(),
@@ -167,6 +186,7 @@ mod tests {
             |c| c.env_map = Some(Arc::new(EnvironmentMap::uniform(2, 2, [1.0, 1.0, 1.0]))),
             |c| c.girdle_frosted = true,
             |c| c.width = 640,
+            |c| c.surface_glare = 0.5,
         ];
         for change in changes {
             change(&mut ctx);

@@ -107,6 +107,7 @@ pub fn run(args: &JoinArgs) -> Result<(), String> {
         compute_mode: args.compute_mode,
         capability,
         assets,
+        payload: args.payload_encoding,
     });
     let stop = Arc::new(AtomicBool::new(false));
     let slots: Vec<_> = (0..args.slots)
@@ -151,6 +152,7 @@ fn probe_scene() -> indicatrix_net::SceneState {
         girdle_frosted: false,
         backdrop: 0.0,
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
+        surface_glare: 1.0,
     }
 }
 

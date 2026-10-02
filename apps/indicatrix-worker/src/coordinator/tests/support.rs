@@ -45,6 +45,7 @@ pub fn scene(width: u32, height: u32) -> SceneState {
     SceneState {
         width,
         height,
+        surface_glare: 1.0,
         ..super::fixtures::tiny_scene()
     }
 }

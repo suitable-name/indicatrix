@@ -14,7 +14,6 @@ use crate::settings::WorkerSettings;
 use indicatrix_net::{
     client::{Accumulator, ApplyOutcome},
     messages::{FinalImageRequest, FinalOutput, RenderCapability, RenderRequest, StreamEvent},
-    radiance::PayloadEncoder,
 };
 use std::{
     sync::{
@@ -245,15 +244,18 @@ fn run(
                 if let OneShotRequest::FinalImage(final_request) = request {
                     let first = final_request.first_sample + final_request.samples
                         - final_request.viewer_samples;
-                    let mut encoder = PayloadEncoder::new(welcome.payload_encoding);
-                    indicatrix_net::client::send_contribution(
+                    // One adaptive link per connection, keyed by the coordinator's address:
+                    // the upload is encoded for the link speed measured last time and its
+                    // own blocking write (straight on the TLS socket, no buffering in
+                    // between) is timed for the next connection.
+                    let link = super::payload_setting::open_link(&request.worker().address);
+                    indicatrix_net::client::send_contribution_with_link(
                         &mut stream,
                         request_id,
                         (first, final_request.viewer_samples),
-                        final_request.scene.width,
-                        final_request.scene.height,
+                        (final_request.scene.width, final_request.scene.height),
                         &sum,
-                        &mut encoder,
+                        &link,
                     )?;
                     // Same reset as the `NEED_ASSET` upload above: a large upload can
                     // legitimately take a while, and the server sends nothing back while

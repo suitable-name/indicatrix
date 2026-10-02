@@ -39,6 +39,7 @@ pub(in crate::bridge::export_thread) fn scene_state_from_snapshot(
         planes: snapshot.active_planes.clone(),
         girdle_frosted: !snapshot.facet_finishes.is_empty(),
         backdrop: snapshot.backdrop,
+        surface_glare: snapshot.surface_glare,
         // The loaded HDR map by content hash, else the studio rig.
         environment: crate::bridge::remote::hdr_asset::scene_environment(snapshot.env_map.as_ref()),
     }

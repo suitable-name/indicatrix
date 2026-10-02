@@ -14,7 +14,10 @@ use indicatrix::renderer::gpu_backend::GpuBackend;
 use indicatrix_net::{
     client::{ClientError, handshake_with_hello},
     handshake,
-    messages::{ErrorMsg, Hello, NetError, RenderCapability, error_codes},
+    messages::{
+        ErrorMsg, Hello, NetError, PayloadEncoding, RenderCapability, adaptive::PayloadChoice,
+        error_codes,
+    },
 };
 use rustls::pki_types::ServerName;
 use std::{
@@ -103,6 +106,8 @@ pub struct WorkerSetup {
     /// opened) refuses HDR scenes -- and the `HELLO` then says `hdr: false`, so the
     /// coordinator never sends any.
     pub assets: Option<Arc<AssetCache>>,
+    /// `--payload-encoding`: how the frames sent to the coordinator are compressed.
+    pub payload: PayloadChoice,
 }
 
 impl WorkerSetup {
@@ -215,6 +220,15 @@ pub fn join_once(target: &JoinTarget, setup: &WorkerSetup) -> Result<Session, Jo
     // `IdleDeadlineStream`).
     let _ = tls.set_read_timeout(None);
     let _ = tls.set_write_timeout(None);
+    // One adaptive link per connection to the coordinator, keyed by its address. This
+    // build runs on both ends (the build hash was just verified), so the coordinator
+    // decodes every encoding this one can encode.
+    let link = serve::LinkSettings {
+        choice: setup.payload,
+        peer: target.addr.clone(),
+        loopback: serve::is_loopback_peer(tls.sock.tcp.peer_addr().ok()),
+    }
+    .open(&PayloadEncoding::default_accept_list());
     let ended = serve::serve_requests(
         &mut tls,
         &RequestContext {
@@ -223,6 +237,7 @@ pub fn join_once(target: &JoinTarget, setup: &WorkerSetup) -> Result<Session, Jo
             db: None,
             compute_mode: setup.compute_mode,
             payload_encoding: welcome.payload_encoding,
+            link: Some(&link),
             own_lane: true,
             session: None,
             // The coordinator answers this worker's `NEED_ASSET`.

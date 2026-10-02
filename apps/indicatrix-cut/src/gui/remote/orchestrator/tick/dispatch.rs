@@ -291,6 +291,7 @@ fn scene_state_from_snapshot(snapshot: &SceneSnapshot, width: u32, height: u32) 
         planes: snapshot.active_planes.clone(),
         girdle_frosted: !snapshot.facet_finishes.is_empty(),
         backdrop: snapshot.backdrop,
+        surface_glare: snapshot.surface_glare,
         // The loaded HDR map by content hash, else the studio rig.
         environment: crate::bridge::remote::hdr_asset::scene_environment(snapshot.env_map.as_ref()),
     }
@@ -310,6 +311,17 @@ mod tests {
             cert_dir: format!("/certs/{name}"),
             ..WorkerSettings::default()
         }
+    }
+
+    #[test]
+    fn the_live_dispatch_scene_carries_the_viewports_surface_glare() {
+        let ctx = Mutex::new(RenderContext {
+            surface_glare: 0.4,
+            ..Default::default()
+        });
+        let snapshot = SceneSnapshot::capture(&ctx).expect("default resolves");
+        let state = scene_state_from_snapshot(&snapshot, 64, 64);
+        assert_eq!(state.surface_glare.to_bits(), 0.4f32.to_bits());
     }
 
     #[test]

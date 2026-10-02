@@ -23,7 +23,19 @@ pub fn run_lighting_model_checks(ctx: &GpuContext) -> bool {
         "Diamond, Daylight sky + sun",
         &estimator_check::run_image_comparison_daylight_dome(ctx),
     );
-    iso_passed && light_tent_passed && daylight_dome_passed
+    let glare_zero_passed = report_image_comparison_material(
+        "Diamond, Daylight D65, surface glare 0.0",
+        &estimator_check::run_image_comparison_surface_glare(ctx, 0.0),
+    );
+    let glare_half_passed = report_image_comparison_material(
+        "Diamond, Daylight D65, surface glare 0.5",
+        &estimator_check::run_image_comparison_surface_glare(ctx, 0.5),
+    );
+    iso_passed
+        && light_tent_passed
+        && daylight_dome_passed
+        && glare_zero_passed
+        && glare_half_passed
 }
 
 /// The production frame renderer's own check: a chunked dispatch (`pixel_offset != 0`).

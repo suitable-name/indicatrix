@@ -621,13 +621,16 @@ pub(in crate::gui::editor) fn reclaim_viewport_for_editor(
     solid_last_solved: &SolidLastSolved,
     state: &EditorState,
 ) {
-    let catalogue_owns = matches!(
-        render_ctx
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .planes_owner,
-        PlanesOwner::Catalogue { .. }
-    );
+    let catalogue_owns = {
+        let mut ctx = render_ctx.lock().unwrap_or_else(PoisonError::into_inner);
+        let owns = matches!(ctx.planes_owner, PlanesOwner::Catalogue { .. });
+        if owns && state.has_design {
+            // At once, not when the (possibly background) solve claims the planes: a
+            // Library row that resolved no material must not keep tracing suspended.
+            ctx.restore_editor_material();
+        }
+        owns
+    };
     if catalogue_owns && state.has_design {
         refresh_all(
             ui,
@@ -637,6 +640,16 @@ pub(in crate::gui::editor) fn reclaim_viewport_for_editor(
             state,
             false,
         );
+        let name = render_ctx
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .material_name
+            .clone();
+        let options = ui.global::<crate::ViewportModel>().get_material_options();
+        if let Some(index) = crate::gui::startup_settings::find_option_index(&options, &name) {
+            ui.global::<crate::ViewportModel>()
+                .set_selected_material_index(index);
+        }
     }
 }
 

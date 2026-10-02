@@ -164,14 +164,6 @@ fn record_termination(
               hooks (primary_hit_out, termination_out) and the caller-supplied \
               plane_soa arena alongside the planes slice it was built from"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "already at the pedantic line-length threshold; the bounce_cost harness's \
-              termination bookkeeping pushes it a few lines over -- see \
-              record_termination's doc comment for why that extraction, not further \
-              splitting this already heavily-decomposed loop, is the right amount of \
-              surgery"
-)]
 pub(super) fn trace_spectral_ray_inner(
     initial_ray: Ray,
     planes: &[GpuFacetPlane],
@@ -182,7 +174,7 @@ pub(super) fn trace_spectral_ray_inner(
     environment: EnvironmentSource<'_>,
     rng_seed: u32,
     hero_rand: f32,
-    mut primary_hit_out: Option<&mut Option<HitRecord>>,
+    primary_hit_out: Option<&mut Option<HitRecord>>,
     enable_internal_mode_coupling: bool,
     enable_exit_splitting: bool,
     // `true` only at every public entry point when `environment` is `HdrMap`
@@ -192,8 +184,100 @@ pub(super) fn trace_spectral_ray_inner(
     // explicitly for an on/off A-B comparison, mirroring `enable_exit_splitting`'s
     // identical precedent.
     enable_nee: bool,
-    mut termination_out: Option<&mut (u32, PathTermination)>,
+    termination_out: Option<&mut (u32, PathTermination)>,
 ) -> Vec3 {
+    let scene = TraceScene {
+        planes,
+        plane_soa,
+        facet_finishes,
+        material,
+        max_bounces,
+        environment,
+        surface_glare: environment.surface_glare(),
+    };
+    let switches = TraceSwitches {
+        internal_mode_coupling: enable_internal_mode_coupling,
+        exit_splitting: enable_exit_splitting,
+        nee: enable_nee,
+    };
+    trace_spectral_ray_core(
+        &scene,
+        initial_ray,
+        rng_seed,
+        hero_rand,
+        switches,
+        (primary_hit_out, termination_out),
+    )
+}
+
+/// The per-trace inputs of one traced ray, bundled to keep the loop's argument count
+/// down. `surface_glare` is read from the environment (see
+/// `EnvironmentSource::surface_glare`), so it rides every existing entry point.
+#[derive(Clone, Copy)]
+struct TraceScene<'a> {
+    planes: &'a [GpuFacetPlane],
+    plane_soa: &'a crate::simd::PlanesSoA32,
+    facet_finishes: &'a [FacetFinish],
+    material: &'a GemMaterial,
+    max_bounces: u32,
+    environment: EnvironmentSource<'a>,
+    surface_glare: f32,
+}
+
+/// The A/B switches of the bounce loop. The public entry points hardcode every one
+/// (`nee` follows the environment kind); only this module's tests vary them.
+#[derive(Clone, Copy)]
+struct TraceSwitches {
+    internal_mode_coupling: bool,
+    exit_splitting: bool,
+    nee: bool,
+}
+
+/// Applies the surface-glare scale to every channel's Stokes vector. Called only for a
+/// camera path whose first event is the polished specular reflection off the stone's
+/// surface (it never entered), and only when the scale is below one.
+fn apply_surface_glare(stokes: &mut [StokesVector; NUM_CHANNELS], surface_glare: f32) {
+    for s in &mut *stokes {
+        *s = s.scale(surface_glare);
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "already at the pedantic line-length threshold; the bounce_cost harness's \
+              termination bookkeeping pushes it a few lines over -- see \
+              record_termination's doc comment for why that extraction, not further \
+              splitting this already heavily-decomposed loop, is the right amount of \
+              surgery"
+)]
+fn trace_spectral_ray_core(
+    scene: &TraceScene<'_>,
+    initial_ray: Ray,
+    rng_seed: u32,
+    hero_rand: f32,
+    switches: TraceSwitches,
+    outputs: (
+        Option<&mut Option<HitRecord>>,
+        Option<&mut (u32, PathTermination)>,
+    ),
+) -> Vec3 {
+    let TraceScene {
+        planes,
+        plane_soa,
+        facet_finishes,
+        material,
+        max_bounces,
+        environment,
+        surface_glare,
+    } = *scene;
+    let TraceSwitches {
+        internal_mode_coupling: enable_internal_mode_coupling,
+        exit_splitting: enable_exit_splitting,
+        nee: enable_nee,
+    } = switches;
+    let (mut primary_hit_out, mut termination_out) = outputs;
+    // Clamped at the boundary; a NaN fails the `< 1.0` test below and so behaves as off.
+    let surface_glare = surface_glare.clamp(0.0, 1.0);
     // Hero is drawn over the full visible range [380, 780) with wraparound, so a hero
     // draw `h` and `h + channel_width` generate the same 8-member comb, cyclically
     // rotated -- each member is equally likely to be drawn as hero, which is the
@@ -472,6 +556,15 @@ pub(super) fn trace_spectral_ray_inner(
             &mut radiance,
             phase_pdf_for_mis_this_check,
         );
+
+        // Surface glare: the camera path's first event at a polished facet left the
+        // ray outside the stone, so it was the specular (Fresnel) reflection and the
+        // light never entered. Scaling the throughput here scales everything this path
+        // later deposits. Skipped entirely at `1.0` (and for a frosted facet, whose
+        // diffuse scatter is not a mirror image), so that case is bit-identical.
+        if bounce == 0 && !inside_gem && surface_glare < 1.0 && finish != FacetFinish::Frosted {
+            apply_surface_glare(&mut stokes, surface_glare);
+        }
 
         // See `apply_russian_roulette`'s doc comment. Reborrowed through
         // `exit_split_ctx.split_radiance` since `exit_split_ctx` already holds that

@@ -416,7 +416,9 @@ pub fn run_transport_params(ctx: &crate::renderer::gpu::GpuContext) -> LayoutChe
     // A distinct, non-zero value for `studio_model` (LightTent).
     .with_studio_model(crate::renderer::buffers::studio_model::LIGHT_TENT)
     // A distinct, non-zero backdrop, same rationale.
-    .with_backdrop(0.23);
+    .with_backdrop(0.23)
+    // A distinct value below one, same rationale.
+    .with_surface_glare(0.37);
     let input_bytes = bytemuck::bytes_of(&sample).to_vec();
 
     let pipeline = compute::create_compute_pipeline(

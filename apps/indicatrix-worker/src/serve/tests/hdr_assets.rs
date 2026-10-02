@@ -103,6 +103,7 @@ fn run(input: Vec<u8>, assets: Option<&AssetCache>) -> (Welcome, Cursor<Vec<u8>>
             db: &db,
             compute_mode: ComputeMode::OnlyCpu,
             encodings: &LOOPBACK_SERVER_PREFERENCE,
+            link: None,
             own_lane: true,
             registry: None,
             cert_role: None,

@@ -4,6 +4,7 @@
 
 use super::{
     BUILD_MISMATCH_CODE, NO_RENDER_CAPACITY_CODE, handle_non_render_message,
+    link::LinkSettings,
     requests::{RequestContext, serve_requests, write_pong},
 };
 use crate::{
@@ -22,7 +23,7 @@ use indicatrix_net::{
     messages::{
         Backend, ClientMessage, ErrorMsg, Hello, LOOPBACK_SERVER_PREFERENCE, NetError,
         PROTOCOL_VERSION, PayloadEncoding, PeerRole, RenderCapability, StreamEvent,
-        TiltCurvesResponse, Welcome, negotiate,
+        TiltCurvesResponse, Welcome, adaptive::PeerLink, negotiate,
     },
 };
 use std::{
@@ -41,8 +42,14 @@ pub struct ViewerContext<'a> {
     pub db: &'a LibraryHandle,
     /// `--only-gpu`/`--only-cpu`/hybrid for the own lane.
     pub compute_mode: ComputeMode,
-    /// This server's payload-encoding preference for the connection (v14).
+    /// This server's payload-encoding preference for the connection (v14): what `WELCOME`
+    /// announces as the connection's encoding (each frame's own header says what it
+    /// carries).
     pub encodings: &'a [PayloadEncoding],
+    /// How the connection's frames are compressed (`--payload-encoding`, the peer's
+    /// identity and whether it is loopback). `None` pins every frame to the negotiated
+    /// encoding without measuring anything.
+    pub link: Option<LinkSettings>,
     /// `serve --render`: this machine renders requests itself.
     pub own_lane: bool,
     /// The coordinator's joined-worker registry (`None` without a worker port).
@@ -112,6 +119,7 @@ pub fn handle_connection_with_gpu<S: Read + Write + TimeoutRead + TimeoutWrite>(
             db,
             compute_mode,
             encodings,
+            link: None,
             own_lane: true,
             registry: None,
             cert_role: None,
@@ -180,6 +188,11 @@ pub fn handle_viewer_connection<S: Read + Write + TimeoutRead + TimeoutWrite>(
     }
 
     let payload_encoding = negotiate(ctx.encodings, &remote_hello.accept_encodings);
+    // One adaptive link per connection: the viewer's `HELLO` bounds what it may be sent.
+    let link = ctx.link.as_ref().map_or_else(
+        || Arc::new(PeerLink::fixed(payload_encoding)),
+        |settings| settings.open(&remote_hello.accept_encodings),
+    );
     // The own lane renders HDR scenes exactly when it has an asset cache.
     let own = ctx.own_lane.then(|| RenderCapability {
         hdr: ctx.assets.is_some(),
@@ -211,6 +224,7 @@ pub fn handle_viewer_connection<S: Read + Write + TimeoutRead + TimeoutWrite>(
             coordinator: Arc::clone(coordinator),
             viewer: Arc::from(viewer.as_str()),
             payload_encoding,
+            link: Some(Arc::clone(&link)),
             advertised: render,
             own_capability: own,
             // Coordinator-PROCESS-wide, not a fresh book per connection -- see
@@ -225,6 +239,7 @@ pub fn handle_viewer_connection<S: Read + Write + TimeoutRead + TimeoutWrite>(
             db: Some(ctx.db),
             compute_mode: ctx.compute_mode,
             payload_encoding,
+            link: Some(&link),
             own_lane: ctx.own_lane,
             session: session.as_ref(),
             assets: ctx.assets,

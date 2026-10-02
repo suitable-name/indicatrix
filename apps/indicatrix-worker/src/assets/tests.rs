@@ -128,6 +128,7 @@ fn scene(environment: SceneEnvironment) -> SceneState {
         girdle_frosted: false,
         backdrop: 0.0,
         environment,
+        surface_glare: 1.0,
     }
 }
 
@@ -170,6 +171,7 @@ fn session(
         coordinator: Arc::new(coordinator),
         viewer: Arc::from("test"),
         payload_encoding: PayloadEncoding::Raw,
+        link: None,
         advertised: None,
         own_capability: None,
         rates: Arc::default(),
@@ -352,4 +354,28 @@ fn a_map_in_the_disk_cache_is_resolved_without_need_asset() {
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The studio environment a worker builds carries the scene's surface glare, and an
+/// HDR map ignores it (reads back as the unscaled `1.0`).
+#[test]
+fn environment_source_carries_the_scenes_surface_glare() {
+    let mut studio = scene(SceneEnvironment::Studio);
+    studio.surface_glare = 0.0;
+    let env = environment_source(&studio, None);
+    assert_eq!(env.surface_glare().to_bits(), 0.0f32.to_bits());
+
+    studio.surface_glare = 0.35;
+    let env = environment_source(&studio, None);
+    assert_eq!(env.surface_glare().to_bits(), 0.35f32.to_bits());
+
+    studio.surface_glare = 1.0;
+    let env = environment_source(&studio, None);
+    assert_eq!(env.surface_glare().to_bits(), 1.0f32.to_bits());
+
+    let bytes = unique_hdr(16, 8);
+    let map = environment_from_hdr_bytes(&bytes, HdrLimits::DEFAULT).unwrap();
+    studio.surface_glare = 0.0;
+    let hdr = environment_source(&studio, Some(&map));
+    assert_eq!(hdr.surface_glare().to_bits(), 1.0f32.to_bits());
 }

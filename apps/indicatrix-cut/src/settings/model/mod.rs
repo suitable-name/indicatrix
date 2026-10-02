@@ -18,8 +18,11 @@ mod local_compute;
 mod recent_files;
 mod remote_endpoint;
 mod settings_file;
+mod surface_glare;
 #[cfg(test)]
 mod tests_batch_lanes;
+#[cfg(test)]
+mod tests_payload_encoding;
 #[cfg(test)]
 mod tests_remote;
 mod worker;
@@ -30,6 +33,9 @@ pub use lighting_preset::LightingPreset;
 pub use local_compute::LocalComputeTarget;
 pub use remote_endpoint::{ExportTransfer, LiveTransfer, RemoteEndpoint};
 pub use settings_file::SettingsFile;
+pub use surface_glare::{
+    clamp_surface_glare, percent_from_surface_glare, surface_glare_from_percent,
+};
 pub use worker::{LiveComputeTarget, LocalPreviewScale, PreviewScale, WorkerSettings};
 // Re-exported for path compatibility only -- each is named only from #[cfg(test)]
 // code via this `model::` path, so a plain (non-test) build sees them as unused.

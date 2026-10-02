@@ -88,8 +88,10 @@ indicatrix-worker serve  [--bind <host:port>] [--allow-remote] [--db <path>] [--
                      [--worker-bind <host:port>] [--worker-enroll-bind <host:port>] [--worker-allowlist <path>] [--no-workers]
                      [--interactive-workers <n|all>] [--pin-interactive-worker <label>] [--max-job-memory-mib <n>]
                      [--whole-image-secs <secs>] [--whole-image-pixel-samples <n>] [--jobs-per-viewer <n>]
+                     [--payload-encoding <auto|raw|lz4|zstd[:LEVEL]>]
 indicatrix-worker serve  [--bind <host:port>] [--render] [--threads <n>] [--only-gpu | --only-cpu] [--db <path>] [--max-connections <n>] --insecure-no-tls
 indicatrix-worker join   <coordinator-host:port> [--cert-dir <dir>] [--slots <k>] [--threads <n>] [--only-gpu | --only-cpu]
+                         [--payload-encoding <auto|raw|lz4|zstd[:LEVEL]>]
                          [--token <GW1-...> [--enroll-addr <host:port>]]
 
 indicatrix-worker cert init         --dir <pki-dir>
@@ -137,6 +139,7 @@ let scene = SceneState {
     girdle_frosted: false,
     backdrop: 0.0,
     environment: SceneEnvironment::Studio,
+    surface_glare: 1.0, // 0.0..=1.0 scale of the first-surface reflection
 };
 std::fs::write("scene.json", serde_json::to_string_pretty(&scene)?)?;
 # Ok::<(), Box<dyn std::error::Error>>(())
@@ -195,10 +198,13 @@ stays closed under `--insecure-no-tls` or `--no-workers`).
   `indicatrix::renderer::guide_pass`'s primary-ray prepass) and sends tone-mapped
   8-bit frames. A "final picture" export is tone-mapped with the GUI export's own
   function and sent as one lossless PNG.
-- **Compression.** Radiance payloads are compressed losslessly when both sides can
-  decode it: byte shuffle + zstd by default, LZ4 as the alternative, raw for a
-  loopback peer or when compression would not shrink the payload. The two sides
-  negotiate it in the handshake; nothing needs configuring.
+- **Compression.** Radiance payloads and display pictures are compressed losslessly,
+  adaptively: each connection measures how fast its writes drain and picks the codec
+  (byte shuffle + zstd on slow links, LZ4 in between, raw on fast ones) for what it
+  measured, changing it on the fly if the link changes. A loopback peer always gets raw.
+  Nothing needs configuring; `--payload-encoding auto|raw|lz4|zstd[:LEVEL]` on `serve`
+  and `join` pins one encoding instead. See `docs/architecture.md`, "Adaptive payload
+  compression".
 
 **Small pictures** (`worker` builds). Splitting a picture that takes a fast GPU a
 fraction of a second only makes the job wait for the slowest lane, so a small `Batch`
@@ -246,6 +252,7 @@ one regardless of what was advertised.
 | `--whole-image-secs <secs>` | 2 | A `Batch` request estimated to render in less than this on the fastest eligible joined worker is rendered whole on one lane (the fastest idle worker, the own lane only while none is idle) instead of being split. `0` never qualifies. `worker` builds only. |
 | `--whole-image-pixel-samples <n>` | 67108864 | The same decision by size while no eligible worker has a measured rate yet: `width × height × samples` of at most `n`. `0` never qualifies. `worker` builds only. |
 | `--jobs-per-viewer <n>` | 8 | Most whole-image jobs one viewer certificate has running at once; the next waits for a free slot. At least 1. Other jobs of the viewer still run one at a time. `worker` builds only. |
+| `--payload-encoding <auto\|raw\|lz4\|zstd[:LEVEL]>` | `auto` | How the radiance and picture payloads sent to each viewer are compressed. `auto` follows each connection's measured write speed (zstd or LZ4 on slow links, raw on fast ones; a loopback peer always gets raw); the others pin one encoding on every link, loopback included, when the viewer accepts it (zstd level 1 to 22, bare `zstd` is level 1). `worker` builds only. |
 | `--interactive-workers <n\|all>` | `all` | **Advanced.** How many of the fastest idle joined workers a live-view request takes besides the own lane: `all` is every idle one that accepts the image. `0` keeps the live view on the own lane alone (or, without `--render`, on the single fastest idle worker) — the lowest-latency path over a slow link. `worker` builds only. |
 | `--pin-interactive-worker <label>` | none | **Advanced.** When a live-view request takes joined workers (the default, unless `--interactive-workers 0` is combined with `--render`), use the worker whose certificate label is `<label>` first — the `--name` its worker certificate was issued with; `worker:<label>` also works — while it is connected, idle and accepts the image size. Otherwise the fastest-idle-worker rule applies, and the log says so once per change. `worker` builds only. |
 | `--allow-remote` | off | Required to bind any non-loopback address, TLS or not — exposing this worker beyond localhost must be an explicit, visible choice. |
@@ -298,6 +305,7 @@ with jittered backoff (1 s doubling to 60 s); the coordinator drops a connection
 | `--token <GW1-...>` | — | Claim a worker enrollment token (`cert issue-token --role worker`, issued on the coordinator host) into `--cert-dir` first. |
 | `--enroll-addr <host:port>` | coordinator host, worker port + 1 (7881) | The worker enrollment listener. |
 | `--slots <k>` | 2 | Parallel connections, one request stream each (at most 64). A second slot keeps a chunk in flight while the first one's transfer/decode gap would otherwise leave this worker idle between chunks — measured as an underused fast remote worker (e.g. an A100) behind a much slower coordinator lane, so it helps a GPU worker too, not only a CPU-only machine. Bump further only for a CPU-only machine juggling many small chunks. |
+| `--payload-encoding <auto\|raw\|lz4\|zstd[:LEVEL]>` | `auto` | How the frames sent to the coordinator are compressed: `auto` follows the measured speed of each connection (a loopback coordinator gets raw); the others pin one encoding. As for `serve`. |
 | `--threads <n>` / `--only-gpu` / `--only-cpu` | all cores / hybrid | As for `render`. |
 
 **Setting up a coordinator with joined workers, end to end:**

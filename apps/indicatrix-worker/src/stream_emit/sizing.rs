@@ -113,6 +113,7 @@ mod cache_tests {
             girdle_frosted: false,
             backdrop: 0.0,
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
+            surface_glare: 1.0,
         }
     }
 

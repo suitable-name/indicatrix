@@ -44,6 +44,7 @@ fn sample_scene() -> SceneState {
         girdle_frosted: false,
         backdrop: 0.0,
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
+        surface_glare: 1.0,
     }
 }
 
@@ -139,6 +140,26 @@ fn scene_state_round_trip_preserves_the_environment_both_ways() {
     assert_eq!(scene.hdr(), Some(&hdr));
     scene.environment = SceneEnvironment::Studio;
     assert_eq!(scene.hdr(), None);
+}
+
+/// `surface_glare` (v18) round-trips for the default, the clamp ends and a dialled-in
+/// value, and the serde default is the unscaled `1.0`.
+#[test]
+fn scene_state_round_trip_preserves_surface_glare() {
+    assert_eq!(
+        indicatrix_net::scene::default_surface_glare().to_bits(),
+        1.0f32.to_bits()
+    );
+    assert_eq!(sample_scene().surface_glare.to_bits(), 1.0f32.to_bits());
+    for glare in [1.0f32, 0.0, 0.35] {
+        let mut scene = sample_scene();
+        scene.surface_glare = glare;
+
+        let bytes = postcard::to_allocvec(&scene).unwrap();
+        let decoded: SceneState = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.surface_glare.to_bits(), glare.to_bits());
+        assert_eq!(scene, decoded);
+    }
 }
 
 /// `GemMaterial::absorption_path_scale` is embedded inside `SceneState::material`, not

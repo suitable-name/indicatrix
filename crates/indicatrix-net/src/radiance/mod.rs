@@ -31,7 +31,7 @@ mod payload_tests;
 /// "v14 payload encodings" doc section.
 pub mod shuffle;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 pub use payload::{EncodedPayload, PayloadDecoder, PayloadEncoder, decode_payload};
 

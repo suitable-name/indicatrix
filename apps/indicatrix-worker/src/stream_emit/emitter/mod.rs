@@ -31,7 +31,8 @@ use crate::cli::ComputeMode;
 use emit::{emit_final, emit_progress_heartbeat, emit_tick_or_heartbeat};
 use indicatrix::renderer::gpu_backend::GpuBackend;
 use indicatrix_net::messages::{
-    Done, ErrorMsg, NetError, PayloadEncoding, RenderRequest, Stats, StreamEvent, error_codes,
+    Done, ErrorMsg, NetError, PayloadEncoding, RenderRequest, Stats, StreamEvent,
+    adaptive::PeerLink, error_codes,
 };
 use std::{
     io::{Read, Write},
@@ -542,9 +543,12 @@ fn run_stream_loop<S: Read + Write + TimeoutRead + TimeoutWrite>(
 /// adaptively-sized sub-batch; `compute_mode` threads through to the tracer job, one
 /// connection-wide choice applied to every request.
 ///
-/// `payload_encoding` is the connection's negotiated encoding (v14): every `FRAME` and
-/// `PREVIEW` payload is encoded with it on this (emitter) thread, never under the
-/// tracer's lock; a payload that would not shrink goes out `Raw`, as its header says.
+/// `payload_encoding` is the connection's negotiated encoding (v14) and `link` its
+/// adaptive-compression state: with a `link`, every `FRAME`, `PREVIEW` and display picture
+/// is encoded for the connection's measured write speed and its blocking write is timed
+/// (see [`PeerLink`]); without one every payload uses `payload_encoding`. Encoding runs on
+/// this (emitter) thread, never under the tracer's lock; a payload that would not shrink
+/// goes out `Raw`, as its header says.
 ///
 /// A `PING` arriving mid-stream is answered with a `PONG` between this request's own
 /// events.
@@ -560,12 +564,14 @@ pub fn run_stream<S: Read + Write + TimeoutRead + TimeoutWrite>(
     gpu: &Arc<GpuBackend>,
     compute_mode: ComputeMode,
     payload_encoding: PayloadEncoding,
+    link: Option<&Arc<PeerLink>>,
 ) -> Result<(StreamOutcome, Option<RenderRequest>), NetError> {
     run_stream_with(
         stream,
         &StreamSpec {
             request,
             payload_encoding,
+            link,
             output: Output::Radiance,
             // A plain `RENDER` never reserves a viewer contribution -- only a
             // coordinator's `FinalImageRequest` job does (see `coordinator::job::mod`).
@@ -596,9 +602,13 @@ pub fn run_stream_with<S: Read + Write + TimeoutRead + TimeoutWrite>(
 ) -> Result<(StreamOutcome, Option<RenderRequest>), NetError> {
     let request = spec.request;
     let (state, cancel, progress_rx, tracer_handle) = spawn_producer(request, producer);
-    let mut emitter_accum = EmitterAccum::with_encoding(
+    let link = spec.link.map_or_else(
+        || Arc::new(PeerLink::fixed(spec.payload_encoding)),
+        Arc::clone,
+    );
+    let mut emitter_accum = EmitterAccum::with_link(
         request.scene.width as usize * request.scene.height as usize,
-        spec.payload_encoding,
+        link,
     );
 
     // Bounds every write this call makes to at most WRITE_TIMEOUT; scoped to the
@@ -623,6 +633,10 @@ pub fn run_stream_with<S: Read + Write + TimeoutRead + TimeoutWrite>(
         &mut emitter_accum,
         streaming_start,
     );
+
+    // The request is over: its multi-megabyte compression scratch is not needed until the
+    // next one.
+    emitter_accum.link().release_buffers();
 
     if stalled {
         // A wedged producer may never return, and joining it would keep the stall

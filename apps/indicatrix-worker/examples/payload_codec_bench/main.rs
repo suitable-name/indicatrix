@@ -14,11 +14,14 @@
 mod captures;
 mod data;
 mod link;
+mod matrix_gen;
 mod measure;
 mod report;
+mod simulate;
 
 use data::{DataSet, generate, to_rgba8, zero_fraction};
-use link::Model;
+use indicatrix_net::messages::adaptive::TIERS_MBPS;
+use link::{Model, Rank};
 use measure::{Candidate, Frame, Record, measure};
 use std::{error::Error, path::PathBuf};
 
@@ -58,6 +61,26 @@ FLAGS:
                             every compress/decompress time is divided by F
     --csv <path>            write every measurement to a CSV file (fixed column order)
     --captures <dir>        legacy mode: report on capture_frame_payloads output instead
+    --model <serial|pipelined>
+                            ranking model for --emit-matrix and --simulate (default
+                            serial: compress + transfer + decompress summed, because the
+                            coordinator traces concurrently and cannot overlap
+                            compression for free)
+    --tiers <a,b,..>        bandwidth tier ladder in Mbit/s for --emit-matrix, ascending
+                            (default 50,100,300,1000,2500,10000)
+    --emit-matrix           print the generated Rust source of the adaptive encoding matrix
+                            (crates/indicatrix-net/src/messages/encoding_matrix.rs) from
+                            these measurements; adds sizes 128x128 and 512x512 so the small
+                            and medium size classes both have data. Without --large the
+                            large class is marked 'extrapolated from medium'
+    --matrix-out <path>     with --emit-matrix: also write the source to this file
+    --simulate              replay bandwidth traces over measured frames and compare fixed
+                            zstd 1, fixed best-for-1000, the adaptive policy and an oracle
+                            (simulated time only; reports totals, loss vs the oracle and the
+                            adaptive policy's tier switches)
+    --trace <m:n[,m:n..]>   with --simulate: replace the built-in traces (lan-dip,
+                            wlan-wobble, staircase) with this one, bandwidth Mbit/s : frames,
+                            e.g. 1000:20,100:20,300:20; repeatable
     -h, --help              this text
 
 LINK MODEL (per frame, per link):
@@ -77,6 +100,12 @@ struct Args {
     cpu_share: f64,
     csv: Option<PathBuf>,
     captures: Option<String>,
+    rank: Rank,
+    tiers: Vec<f64>,
+    emit_matrix: bool,
+    matrix_out: Option<PathBuf>,
+    simulate: bool,
+    traces: Vec<String>,
 }
 
 /// Parses a comma-separated list with `parse`.
@@ -102,6 +131,12 @@ fn parse_args() -> Result<Option<Args>, Box<dyn Error>> {
         cpu_share: 1.0,
         csv: None,
         captures: None,
+        rank: Rank::Serial,
+        tiers: TIERS_MBPS.to_vec(),
+        emit_matrix: false,
+        matrix_out: None,
+        simulate: false,
+        traces: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -120,6 +155,12 @@ fn parse_args() -> Result<Option<Args>, Box<dyn Error>> {
             "--cpu-share" => a.cpu_share = value("--cpu-share")?.parse()?,
             "--csv" => a.csv = Some(PathBuf::from(value("--csv")?)),
             "--captures" => a.captures = Some(value("--captures")?),
+            "--model" => a.rank = parse_model(&value("--model")?)?,
+            "--tiers" => a.tiers = list(&value("--tiers")?, "tier")?,
+            "--emit-matrix" => a.emit_matrix = true,
+            "--matrix-out" => a.matrix_out = Some(PathBuf::from(value("--matrix-out")?)),
+            "--simulate" => a.simulate = true,
+            "--trace" => a.traces.push(value("--trace")?),
             other => return Err(format!("unknown flag '{other}' (see --help)").into()),
         }
     }
@@ -130,8 +171,33 @@ fn parse_args() -> Result<Option<Args>, Box<dyn Error>> {
     Ok(Some(a))
 }
 
+/// Parses the `--model` value.
+fn parse_model(text: &str) -> Result<Rank, Box<dyn Error>> {
+    match text {
+        "serial" => Ok(Rank::Serial),
+        "pipelined" => Ok(Rank::Pipelined),
+        other => Err(format!("--model must be serial or pipelined, got '{other}'").into()),
+    }
+}
+
+/// Rejects a tier ladder or flag combination the matrix generator cannot use.
+fn validate_matrix_flags(a: &Args) -> Result<(), Box<dyn Error>> {
+    let ascending = a.tiers.windows(2).all(|w| w[0] < w[1]);
+    if a.tiers.is_empty() || !ascending || a.tiers.iter().any(|t| !t.is_finite() || *t <= 0.0) {
+        return Err("--tiers must be a non-empty ascending list of positive Mbit/s".into());
+    }
+    if a.matrix_out.is_some() && !a.emit_matrix {
+        return Err("--matrix-out needs --emit-matrix".into());
+    }
+    if !a.traces.is_empty() && !a.simulate {
+        return Err("--trace needs --simulate".into());
+    }
+    Ok(())
+}
+
 /// Rejects values the model cannot use.
 fn validate(a: &Args) -> Result<(), Box<dyn Error>> {
+    validate_matrix_flags(a)?;
     if a.levels.is_empty() || a.levels.iter().any(|l| !(1..=22).contains(l)) {
         return Err("--levels must be a non-empty list within 1..=22".into());
     }
@@ -195,10 +261,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         return captures::run(dir);
     }
     let reps = args.reps.unwrap_or(if args.quick { 2 } else { 5 });
-    let mut sizes = if args.quick {
-        vec![(256, 256), (512, 512)]
-    } else {
-        vec![(256, 256), (1024, 1024)]
+    let mut sizes = match (args.quick, args.emit_matrix) {
+        (true, false) => vec![(256, 256), (512, 512)],
+        (false, false) => vec![(256, 256), (1024, 1024)],
+        (true, true) => vec![(128, 128), (256, 256), (512, 512)],
+        (false, true) => vec![(128, 128), (256, 256), (512, 512), (1024, 1024)],
     };
     if args.large {
         sizes.push((3840, 2160));
@@ -226,5 +293,26 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("\nwrote {} measurements to {}", all.len(), path.display());
     }
     println!("all round trips were bit-identical");
+    if args.emit_matrix {
+        let spec = matrix_gen::Spec {
+            tiers: &args.tiers,
+            rank: args.rank,
+            cpu_share: args.cpu_share,
+            command: command_line(),
+        };
+        matrix_gen::emit(&all, &spec, args.matrix_out.as_deref())?;
+    }
+    if args.simulate {
+        simulate::run(&all, &model, args.rank, &args.traces)?;
+    }
     Ok(())
+}
+
+/// The command that reproduces this run, for the generated file's header.
+fn command_line() -> String {
+    let flags: Vec<String> = std::env::args().skip(1).collect();
+    format!(
+        "cargo run -p indicatrix-worker --release --example payload_codec_bench -- {}",
+        flags.join(" ")
+    )
 }

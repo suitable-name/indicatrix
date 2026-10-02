@@ -165,6 +165,16 @@ genuine right-drag gesture.)
   the stone: **As lit** (the environment's own ground), **Grey** (the default:
   the neutral canvas GemRay paints, for like-for-like comparisons) or **White**. Only
   the camera sees it; the stone's optics never do, so leakage and windows stay dark.
+- **Surface glare** (Settings gear, under Backdrop) — a 0–100 % slider in steps of 5
+  (default 100 %). It scales the white mirror image of the light that a polished
+  surface reflects, which is what a cross-polarised photograph removes: at 0 % the
+  bright reflection of the light on the table disappears and the inner facets stay
+  visible, while the light that entered the stone is untouched. It applies to the
+  built-in lighting presets (Studio and the lit models), not to an HDR environment
+  map (the slider greys out while one is loaded), and it follows into the live view,
+  remote and hybrid rendering and every export. The brilliance, windowing and
+  extinction numbers, tilt curves and catalogue previews never use it, and the Solid
+  view is unaffected. "Reset to 100 %" restores the default.
 - **Tilt Curve** — opens the tilt-performance dialog (below).
 - A reset-camera button, a "Save as preset" button (captures your full
   current lighting *and* camera pose as a named preset), a Pause/Live

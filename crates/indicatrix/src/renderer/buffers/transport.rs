@@ -30,9 +30,10 @@ use core::mem::offset_of;
 /// before it, landing at offset 48 and ending at 60. `studio_use_d65` (offset 60) fills
 /// the remaining 4 bytes of that 16-byte block, bringing the running total to 64 --
 /// exactly what the struct WOULD be without the two fields below. `studio_model` (64)
-/// and `backdrop` (68) add one more 16-byte block; `_pad_backdrop`
-/// (72, 8 bytes of genuine padding -- not a field WGSL's `GpuTransportParams` reads)
-/// rounds that block out to the struct's own 16-byte alignment, for 80 bytes total.
+/// and `backdrop` (68) add one more 16-byte block; `surface_glare` (72) fills the next
+/// slot and `_pad_surface_glare` (76, 4 bytes of genuine padding -- not a field WGSL's
+/// `GpuTransportParams` reads) rounds that block out to the struct's own 16-byte
+/// alignment, for 80 bytes total.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GpuTransportParams {
@@ -82,7 +83,10 @@ pub struct GpuTransportParams {
     /// Radiance of the backdrop card a camera ray sees where it misses the stone
     /// (`0.0`: none) -- mirrors `EnvironmentSource::Studio::backdrop`.
     pub backdrop: f32,
-    _pad_backdrop: [u32; 2],
+    /// Scale of the stone's first-surface specular reflection, `0.0..=1.0` (`1.0`:
+    /// unchanged) -- mirrors `EnvironmentSource::Studio::surface_glare`.
+    pub surface_glare: f32,
+    _pad_surface_glare: u32,
 }
 
 /// `studio_model` discriminants for [`GpuTransportParams`].
@@ -158,7 +162,8 @@ impl GpuTransportParams {
             studio_use_d65: 0,
             studio_model: 0,
             backdrop: 0.0,
-            _pad_backdrop: [0; 2],
+            surface_glare: 1.0,
+            _pad_surface_glare: 0,
         }
     }
 
@@ -204,6 +209,20 @@ impl GpuTransportParams {
         self.backdrop = backdrop;
         self
     }
+
+    /// Returns a copy with the specified surface-glare scale (see
+    /// [`Self::surface_glare`]), clamped to `0.0..=1.0`; NaN means `1.0`.
+    #[must_use]
+    pub const fn with_surface_glare(mut self, surface_glare: f32) -> Self {
+        self.surface_glare = if surface_glare >= 1.0 || surface_glare.is_nan() {
+            1.0
+        } else if surface_glare > 0.0 {
+            surface_glare
+        } else {
+            0.0
+        };
+        self
+    }
 }
 
 const _: () = {
@@ -221,6 +240,7 @@ const _: () = {
     assert!(offset_of!(GpuTransportParams, studio_use_d65) == 60);
     assert!(offset_of!(GpuTransportParams, studio_model) == 64);
     assert!(offset_of!(GpuTransportParams, backdrop) == 68);
-    assert!(offset_of!(GpuTransportParams, _pad_backdrop) == 72);
+    assert!(offset_of!(GpuTransportParams, surface_glare) == 72);
+    assert!(offset_of!(GpuTransportParams, _pad_surface_glare) == 76);
     assert!(size_of::<GpuTransportParams>() == 80);
 };

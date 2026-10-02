@@ -140,6 +140,8 @@ pub struct RenderSetup {
     /// coordinator holds HDR jobs' maps through it), `None` otherwise (and when
     /// it cannot be opened), in which case HDR scenes are refused.
     pub assets: Option<Arc<crate::assets::AssetCache>>,
+    /// `--payload-encoding`: how frames sent to a viewer are compressed.
+    pub payload: indicatrix_net::messages::adaptive::PayloadChoice,
 }
 
 /// What TLS established about a viewer: its certificate's role and the certificate
@@ -326,16 +328,23 @@ fn serve_accepted<S>(
 {
     let library = LibraryHandle::lazy(shared.db_path.clone(), peer);
     let render = &shared.render;
+    let viewer = viewer_key(certificate.as_ref(), peer);
+    let preference = super::socket::payload_preference_for_choice(render.payload, peer);
     let ctx = connection::ViewerContext {
         threads: render.threads,
         gpu: &render.gpu,
         db: &library,
         compute_mode: render.compute_mode,
-        encodings: super::socket::payload_preference_for(peer),
+        encodings: &preference,
+        link: Some(connection::LinkSettings {
+            choice: render.payload,
+            peer: viewer.clone(),
+            loopback: connection::is_loopback_peer(peer),
+        }),
         own_lane: render.own_lane,
         registry: render.registry.as_ref(),
         cert_role,
-        coordinator: Some((&render.coordinator, viewer_key(certificate.as_ref(), peer))),
+        coordinator: Some((&render.coordinator, viewer)),
         assets: render.assets.as_deref(),
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {

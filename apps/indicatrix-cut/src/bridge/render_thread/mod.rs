@@ -236,6 +236,7 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                 material_unresolved,
                 lighting_preset,
                 backdrop,
+                surface_glare,
                 target_samples,
                 max_bounces,
                 exposure,
@@ -575,6 +576,7 @@ pub fn spawn_render_thread<T, F, M, S, R>(
                     lighting_preset
                         .studio(exposure, light_yaw, light_pitch)
                         .with_backdrop(backdrop.level())
+                        .with_surface_glare(surface_glare)
                 },
                 EnvironmentSource::HdrMap,
             );

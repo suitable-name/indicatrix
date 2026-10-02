@@ -1184,6 +1184,16 @@ fn transport_bounce_step(
             }
         }
 
+        // Surface glare -- mirrors `trace_spectral_ray_inner`'s identical block: the camera
+        // path's first event at a polished facet left the ray outside the stone, so it was
+        // the specular reflection and the light never entered. Skipped at 1.0 and for a
+        // frosted facet, so those cases are bit-identical.
+        if (bounce == 0u && !(*inside_gem) && finish != FACET_FINISH_FROSTED && params.surface_glare < 1.0) {
+            for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {
+                (*stokes)[k] = (*stokes)[k] * params.surface_glare;
+            }
+        }
+
         if (bounce > 4u) {
             var max_intensity: f32 = 0.0;
             for (var k: u32 = 0u; k < NUM_CHANNELS; k = k + 1u) {

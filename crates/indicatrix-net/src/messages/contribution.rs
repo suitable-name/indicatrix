@@ -8,7 +8,10 @@
 //! ([`crate::messages::stream::wire`]) and `ASSET` ([`super::asset`]).
 //!
 //! The payload is encoded with the connection's negotiated [`PayloadEncoding`] (or `Raw`
-//! per payload, see [`crate::radiance::payload`]) and decoded the same bounded way every
+//! per payload, see [`crate::radiance::payload`]), or, through
+//! [`write_contribution_message_with_link`], with the encoding a
+//! [`super::adaptive::PeerLink`] picks for the measured link speed; either way it is
+//! decoded the same bounded way every
 //! other radiance payload is: the receiver's expected size (`width * height * 12`) is
 //! checked against the header's declared `raw_len` and the frame cap
 //! ([`crate::framing::MAX_FRAME_LEN`]) BEFORE anything is allocated -- mirroring
@@ -40,8 +43,9 @@ pub struct ContributionHeader {
     pub width: u32,
     /// Picture height in pixels.
     pub height: u32,
-    /// How the payload is encoded -- the WELCOME-negotiated encoding, or `Raw` when
-    /// this particular payload fell back (see [`PayloadEncoder::encode`]).
+    /// How the payload is encoded -- the encoding the sender chose for the link (the
+    /// WELCOME-negotiated one for a non-adaptive sender), or `Raw` when this particular
+    /// payload fell back (see [`PayloadEncoder::encode`]).
     pub encoding: PayloadEncoding,
     /// On-wire byte length of the payload frame that follows, as sent. Must be `<=
     /// raw_len`.
@@ -153,6 +157,40 @@ pub fn write_contribution_message<W: std::io::Write>(
     codec::write_message(w, &super::ClientMessage::Contribution(header))?;
     framing::write_frame(w, encoded.bytes)?;
     Ok(())
+}
+
+/// [`write_contribution_message`] through a connection's [`PeerLink`].
+///
+/// The payload is encoded for the link's measured speed, and the blocking write of the
+/// header and the payload frame is what the link times, so the next contribution (or the
+/// next connection to the same peer) starts from what this one measured.
+///
+/// # Errors
+///
+/// Returns [`NetError`] if writing fails.
+pub fn write_contribution_message_with_link<W: std::io::Write>(
+    w: &mut W,
+    request_id: u32,
+    range: (u32, u32),
+    width: u32,
+    height: u32,
+    sum: &[Vec3],
+    link: &super::adaptive::PeerLink,
+) -> Result<(), NetError> {
+    let (first_sample, samples) = range;
+    link.send_payload(radiance::as_bytes(sum), |encoded| {
+        let header = ContributionHeader::for_encoded(
+            request_id,
+            first_sample,
+            samples,
+            width,
+            height,
+            encoded,
+        );
+        codec::write_message(w, &super::ClientMessage::Contribution(header))?;
+        framing::write_frame(w, encoded.bytes)?;
+        Ok(())
+    })
 }
 
 /// Reads the payload frame that follows a [`ContributionHeader`] (already read),

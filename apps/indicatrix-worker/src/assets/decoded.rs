@@ -150,7 +150,8 @@ pub fn resolved_hdr_map(scene: &SceneState) -> Option<Arc<EnvironmentMap>> {
 ///
 /// The studio rig from the scene's lighting fields, or `hdr_map` (from
 /// [`resolved_hdr_map`]) exactly as the viewer lights an HDR scene
-/// (`EnvironmentSource::HdrMap`, no backdrop).
+/// (`EnvironmentSource::HdrMap`, no backdrop, no surface glare). The studio rig carries
+/// the scene's backdrop and `surface_glare`.
 #[must_use]
 pub fn environment_source<'a>(
     scene: &SceneState,
@@ -162,6 +163,7 @@ pub fn environment_source<'a>(
                 .lighting_preset
                 .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
                 .with_backdrop(scene.backdrop)
+                .with_surface_glare(scene.surface_glare)
         },
         EnvironmentSource::HdrMap,
     )

@@ -101,6 +101,31 @@ pub fn encode_rgba8(
     }
 }
 
+/// Encodes `rgba` as `preferred`, or as raw RGBA8 when that is not larger.
+///
+/// PNG of noisy pixels is no smaller than the pixels (plus headers), and a build without the
+/// PNG codec cannot encode it at all. Returns the encoding the event header must carry
+/// together with the bytes.
+///
+/// # Errors
+///
+/// [`DisplayError::LengthMismatch`]/[`DisplayError::TooLarge`] for a wrongly sized input,
+/// [`DisplayError::Codec`] if the PNG encoder fails.
+pub fn encode_rgba8_smallest(
+    preferred: DisplayEncoding,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+) -> Result<(DisplayEncoding, Vec<u8>), DisplayError> {
+    match encode_rgba8(preferred, width, height, rgba) {
+        Ok(bytes) if preferred == DisplayEncoding::Rgba8 || bytes.len() < rgba.len() => {
+            Ok((preferred, bytes))
+        }
+        Ok(_) | Err(DisplayError::Unsupported(_)) => Ok((DisplayEncoding::Rgba8, rgba.to_vec())),
+        Err(e) => Err(e),
+    }
+}
+
 /// Decodes a display payload to exactly `width * height * 4` RGBA8 bytes -- see the
 /// module doc comment's "Bounded decoding".
 ///
@@ -247,6 +272,45 @@ mod tests {
             decode_rgba8(DisplayEncoding::Png, 16, 16, &png),
             Err(DisplayError::HeaderMismatch(_))
         ));
+    }
+
+    /// Pixels PNG cannot shrink go out as raw RGBA8, and the returned encoding says so.
+    #[cfg(feature = "compression")]
+    #[test]
+    fn smallest_falls_back_to_rgba8_for_incompressible_pixels() {
+        let mut state = 0x1234_5679_u32;
+        let noise: Vec<u8> = (0..64 * 64 * 4)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                (state >> 11) as u8
+            })
+            .collect();
+        let (encoding, bytes) =
+            encode_rgba8_smallest(DisplayEncoding::Png, 64, 64, &noise).unwrap();
+        assert_eq!(encoding, DisplayEncoding::Rgba8);
+        assert_eq!(bytes, noise);
+
+        let smooth = vec![7_u8; 64 * 64 * 4];
+        let (encoding, bytes) =
+            encode_rgba8_smallest(DisplayEncoding::Png, 64, 64, &smooth).unwrap();
+        assert_eq!(encoding, DisplayEncoding::Png);
+        assert!(bytes.len() < smooth.len());
+        assert_eq!(
+            decode_rgba8(encoding, 64, 64, &bytes).unwrap(),
+            smooth,
+            "the chosen encoding must decode back to the pixels"
+        );
+    }
+
+    #[test]
+    fn smallest_with_raw_preference_is_a_plain_copy() {
+        let rgba = gradient(5, 3);
+        assert_eq!(
+            encode_rgba8_smallest(DisplayEncoding::Rgba8, 5, 3, &rgba).unwrap(),
+            (DisplayEncoding::Rgba8, rgba)
+        );
     }
 
     #[cfg(feature = "compression")]

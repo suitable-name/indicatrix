@@ -36,8 +36,10 @@ struct GpuTransportParams {
     // `EnvironmentSource::Studio::backdrop`: the card the camera ray sees where it
     // misses the stone, 0.0 for none.
     backdrop: f32,
-    _pad_backdrop_0: u32,
-    _pad_backdrop_1: u32,
+    // `EnvironmentSource::Studio::surface_glare`: scale of the camera path's first-surface
+    // specular reflection, 1.0 for no change.
+    surface_glare: f32,
+    _pad_surface_glare: u32,
 }
 
 struct DispersionParams {

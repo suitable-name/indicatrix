@@ -4,6 +4,7 @@
 use super::{
     local_compute::LocalComputeTarget,
     remote_endpoint::{LegacyWorkerMigration, RemoteEndpoint, migrate_legacy_workers},
+    surface_glare::{DEFAULT_SURFACE_GLARE, default_surface_glare, deserialize_surface_glare},
     worker::{LiveComputeTarget, LocalPreviewScale, WorkerSettings},
 };
 use crate::bridge::export_thread::DEFAULT_TEMPLATE as DEFAULT_EXPORT_FILENAME_TEMPLATE;
@@ -270,6 +271,15 @@ pub struct AppSettings {
     /// What the camera sees behind the stone, in the live view and every export.
     #[serde(default)]
     pub backdrop: Backdrop,
+    /// Scale of the white mirror image of the light on the table, `0.0..=1.0` (`1.0`,
+    /// the default, is the unscaled render). Applies to the built-in lighting presets
+    /// in the live view and every export, never to an HDR map. Limited when loaded
+    /// (see [`super::clamp_surface_glare`]); a file without the key loads `1.0`.
+    #[serde(
+        default = "default_surface_glare",
+        deserialize_with = "deserialize_surface_glare"
+    )]
+    pub surface_glare: f32,
     /// Inclusion/subsurface scattering amount: the Henyey-Greenstein `sigma_s`
     /// applied via `GemMaterial::with_scattering_amount` -- see `scattering_sigma_s`
     /// in `crates/indicatrix/src/optics/materials/mod.rs` for the `0.05`-`3.0` useful
@@ -334,6 +344,15 @@ pub struct AppSettings {
     /// catalogue previews (`ask` shows the question every time).
     #[serde(default)]
     pub import_preview_choice: super::ImportPreviewChoice,
+    /// How the viewer compresses the uploads it sends a coordinator (today the
+    /// `CONTRIBUTION` of a final-picture export): `"auto"` (default) follows the measured
+    /// link speed, `"raw"`, `"lz4"`, `"zstd"` or `"zstd:LEVEL"` pin one encoding. A
+    /// missing or unreadable value loads as `"auto"`.
+    #[serde(
+        default,
+        deserialize_with = "indicatrix_net::messages::adaptive::PayloadChoice::deserialize_lenient"
+    )]
+    pub payload_encoding: indicatrix_net::messages::adaptive::PayloadChoice,
     /// HDR environment maps: path to the last-loaded Radiance `.hdr` file, or empty
     /// for "no map loaded, use the studio rig" (same empty-string-means-off
     /// convention as `selected_material`/`lighting_rig`). `gui::mod::apply_loaded_settings`
@@ -510,6 +529,7 @@ impl Default for AppSettings {
             legacy_remote_workers: Vec::new(),
             denoise_enabled: true,
             backdrop: Backdrop::default(),
+            surface_glare: DEFAULT_SURFACE_GLARE,
             inclusion_sigma_s: DEFAULT_INCLUSION_SIGMA_S,
             c_axis_override_enabled: DEFAULT_C_AXIS_OVERRIDE_ENABLED,
             c_axis_tilt_deg: DEFAULT_C_AXIS_TILT_DEG,
@@ -523,6 +543,7 @@ impl Default for AppSettings {
             contribute_to_final_picture: DEFAULT_CONTRIBUTE_TO_FINAL_PICTURE,
             remote_batch_lanes: DEFAULT_REMOTE_BATCH_LANES,
             import_preview_choice: super::ImportPreviewChoice::Ask,
+            payload_encoding: indicatrix_net::messages::adaptive::PayloadChoice::Auto,
             env_map_path: String::new(),
             preview_size: DEFAULT_PREVIEW_SIZE,
             preview_spp: DEFAULT_PREVIEW_SPP,

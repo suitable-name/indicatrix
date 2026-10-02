@@ -182,10 +182,33 @@ mod tests {
             girdle_frosted: false,
             backdrop: 0.0,
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
+            surface_glare: 1.0,
         };
         let path = dir.join("scene.json");
         std::fs::write(&path, serde_json::to_string(&scene).unwrap()).unwrap();
         path
+    }
+
+    /// A `scene.json` written before `surface_glare` existed loads with the unscaled
+    /// `1.0`, and a written value survives the file round trip.
+    #[test]
+    fn a_scene_json_without_surface_glare_loads_as_unscaled() {
+        let dir = std::env::temp_dir().join(format!(
+            "indicatrix-worker-glare-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = std::fs::read_to_string(write_tiny_scene_json(&dir)).unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let object = value.as_object_mut().unwrap();
+        assert!(object.remove("surface_glare").is_some());
+        let loaded: SceneState = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(loaded.surface_glare.to_bits(), 1.0f32.to_bits());
+
+        value["surface_glare"] = serde_json::json!(0.25);
+        let loaded: SceneState = serde_json::from_value(value).unwrap();
+        assert_eq!(loaded.surface_glare.to_bits(), 0.25f32.to_bits());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// End-to-end smoke test: a real tiny scene file through the real `run` path (JSON
@@ -260,6 +283,7 @@ mod tests {
             girdle_frosted: false,
             backdrop: 0.0,
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
+            surface_glare: 1.0,
         };
         scene.environment =
             indicatrix_net::scene::SceneEnvironment::Hdr(indicatrix_net::scene::HdrEnvironment {
@@ -313,6 +337,7 @@ mod tests {
             girdle_frosted: false,
             backdrop: 0.0,
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
+            surface_glare: 1.0,
         };
         scene.planes[0].normal = [0.0, 0.0, 0.0];
         let scene_path = dir.join("scene.json");

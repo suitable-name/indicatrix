@@ -53,8 +53,8 @@ mod connection;
 mod types;
 
 pub use connection::{
-    connect_and_handshake, spawn_final_image_request, spawn_remote_connection, spawn_remote_render,
-    test_connection,
+    connect_and_handshake, set_payload_choice, spawn_final_image_request, spawn_remote_connection,
+    spawn_remote_render, test_connection,
 };
 pub use types::{
     RemoteConnectionHandle, RemoteError, RemoteFinalImageRequest, RemoteRenderHandle,

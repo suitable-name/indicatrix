@@ -52,6 +52,10 @@ pub struct SceneSnapshot {
     pub exposure: f32,
     /// Backdrop radiance -- `RenderContext::backdrop` resolved through `Backdrop::level`.
     pub backdrop: f32,
+    /// Surface-glare scale (`RenderContext::surface_glare`, `0.0..=1.0`): exports follow
+    /// the viewport's value the way they follow its lighting preset. Analytic presets
+    /// only; an HDR map ignores it.
+    pub surface_glare: f32,
     /// Facet planes of the active design.
     pub active_planes: Vec<GpuFacetPlane>,
     /// Frosted girdle: `girdle_facet_finishes(&active_planes)` when
@@ -144,6 +148,7 @@ impl SceneSnapshot {
             max_bounces: guard.max_bounces,
             exposure: guard.exposure,
             backdrop: guard.backdrop.level(),
+            surface_glare: guard.surface_glare,
             // `SceneSnapshot::active_planes` is a plain `Vec` (a one-shot export
             // capture, not `RenderContext`'s hot-path per-frame snapshot), so this is
             // the one actual deep copy `capture` makes -- `.to_vec()` off the `Arc<Vec<..>>`
@@ -347,6 +352,22 @@ mod tests {
              absorption_path_scale: got {}, expected {expected_scale}",
             on.material.absorption_path_scale
         );
+    }
+
+    /// The viewport's surface glare reaches the export snapshot, and the default
+    /// (`1.0`) is what an untouched context captures.
+    #[test]
+    fn capture_carries_the_surface_glare_into_the_exported_scene() {
+        let default = SceneSnapshot::capture(&Mutex::new(RenderContext::default()))
+            .expect("default resolves");
+        assert_eq!(default.surface_glare.to_bits(), 1.0f32.to_bits());
+
+        let dimmed = SceneSnapshot::capture(&Mutex::new(RenderContext {
+            surface_glare: 0.25,
+            ..Default::default()
+        }))
+        .expect("default resolves");
+        assert_eq!(dimmed.surface_glare.to_bits(), 0.25f32.to_bits());
     }
 
     /// The girdle-frosted toggle is captured as a resolved per-facet finish list, not

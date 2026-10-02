@@ -17,10 +17,12 @@
 //! - A server never picks an encoding its own build cannot produce
 //!   ([`PayloadEncoding::is_supported`]).
 //!
-//! The negotiated encoding is an upper bound, not a promise for every frame: each
-//! `FrameHeader`/`PreviewHeader` names its own `encoding`, and an encoder may send an
-//! individual payload `Raw` when compressing it would not make it smaller. A decoder
-//! must therefore dispatch on the header, never on the handshake result.
+//! The negotiated encoding is the connection's default, not a promise or a cap for every
+//! frame: each `FrameHeader`/`PreviewHeader` names its own `encoding`, an encoder may send
+//! an individual payload `Raw` when compressing it would not make it smaller, and an
+//! adaptive sender ([`super::adaptive`]) may use any encoding the client announced in
+//! `accept_encodings`. A decoder must therefore dispatch on the header, never on the
+//! handshake result (none in this crate compares the two).
 //!
 //! # Defaults (measured with `indicatrix-worker`'s `payload_codec_bench` example)
 //!

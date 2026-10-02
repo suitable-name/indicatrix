@@ -81,6 +81,7 @@ const fn build_chunk_params(
     .with_studio_use_d65(state.use_d65)
     .with_studio_model(state.studio_model)
     .with_backdrop(state.backdrop)
+    .with_surface_glare(state.scene.environment.surface_glare())
 }
 
 impl GpuFrameRenderer {
@@ -507,6 +508,7 @@ pub const fn environment_params(environment: EnvironmentSource<'_>) -> Environme
             light_yaw,
             light_pitch,
             backdrop,
+            ..
         } => (
             transport_env_mode::STUDIO_RIG,
             illuminant_temperature_k(preset),

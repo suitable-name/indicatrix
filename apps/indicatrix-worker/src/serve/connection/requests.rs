@@ -18,7 +18,7 @@ use indicatrix_net::{
     framing::{FramingError, IDLE_READ_TIMEOUT},
     messages::{
         ClientMessage, ErrorMsg, FinalImageRequest, NetError, PayloadEncoding, RenderRequest,
-        StreamEvent, TiltCurvesRequest, TransferMode, error_codes,
+        StreamEvent, TiltCurvesRequest, TransferMode, adaptive::PeerLink, error_codes,
     },
 };
 use std::{
@@ -49,8 +49,11 @@ pub struct RequestContext<'a> {
     pub db: Option<&'a LibraryHandle>,
     /// `--only-gpu`/`--only-cpu`/hybrid for the own lane.
     pub compute_mode: ComputeMode,
-    /// The encoding negotiated in `WELCOME` for every `FRAME`/`PREVIEW` on this connection.
+    /// The encoding negotiated in `WELCOME`: what a request sends when there is no
+    /// [`Self::link`].
     pub payload_encoding: PayloadEncoding,
+    /// The connection's adaptive-compression state, shared by every request on it.
+    pub link: Option<&'a Arc<PeerLink>>,
     /// Whether this machine renders requests itself (`serve --render`, or any `join`ed
     /// worker). Without it (and without a [`Self::session`]) a `RenderRequest` is refused
     /// (see [`refuse_without_own_lane`]).
@@ -235,6 +238,7 @@ fn serve_one_render<S: Read + Write + TimeoutRead + TimeoutWrite>(
         ctx.gpu,
         ctx.compute_mode,
         ctx.payload_encoding,
+        ctx.link,
     )?;
     // The one line a request that SUCCEEDS leaves on the console: without it "went
     // quiet" cannot tell "stopped being asked" from "stopped answering".

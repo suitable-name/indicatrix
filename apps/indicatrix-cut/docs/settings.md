@@ -56,7 +56,9 @@ camera_distance = 2.4
 selected_material = "Diamond"
 denoise_enabled = true
 contribute_to_final_picture = true
+payload_encoding = "auto"
 remote_batch_lanes = 4
+surface_glare = 1.0
 import_preview_choice = "ask"
 
 [settings.remote]
@@ -102,6 +104,18 @@ there is no `#[serde(deny_unknown_fields)]`, so TOML drops the unknown key and
 local and remote samples count toward it together. The separate
 `remote_render_samples` key older files carry is ignored on load and dropped on the
 next save.
+
+### Surface glare
+
+`surface_glare` (`0.0..=1.0`, default `1.0`) scales the white mirror image of the
+light on a polished surface -- the cross-polarised look; the dialog's "Surface glare"
+slider drags it as a percent in steps of 5. `1.0` is the unscaled render, `0.0` keeps
+only light that entered the stone. It applies to the built-in lighting presets, never
+to an HDR map, and follows into the live view, remote workers and exports (it rides
+`SceneState::surface_glare`, protocol v18). The metrics, tilt curves and catalogue
+previews never read it. The key is optional (a file without it loads `1.0`) and a
+hand-edited value outside the range loads as the nearest valid one (NaN as `1.0`).
+It is not part of a saved lighting preset.
 
 ### Bounce cap
 
@@ -165,6 +179,17 @@ the coordinator folds in before tone-mapping. Only takes effect when the export'
 "Compute" choice is `Both`; a scene mismatch or an HDR map the local tracer can't
 resolve identically silently falls back to a remote-only picture instead of
 refusing the export.
+
+`payload_encoding` (default `"auto"`, top-level) is how the viewer compresses what it
+uploads to a coordinator -- today the `CONTRIBUTION` of a final-picture export (its own
+share of the samples). `"auto"` follows the measured speed of the link (zstd or LZ4 on a
+slow one, raw on a fast one or a loopback coordinator), starting each connection from the
+speed last measured to the same coordinator address; `"raw"`, `"lz4"`, `"zstd"` (level 1)
+and `"zstd:LEVEL"` (1 to 22) pin one encoding on every link. A missing key loads as
+`"auto"`, and an unreadable value loads as `"auto"` with a warning rather than failing the
+file. It is read from the file at startup (there is no dialog control), so restart after
+editing it. The coordinator's own choice for what it sends the viewer is
+`indicatrix-worker serve --payload-encoding`.
 
 `import_preview_choice` (default `"ask"`, top-level; `"full"`, `"solid"` or `"skip"`) is
 the remembered answer to the question asked after an import about generating catalogue

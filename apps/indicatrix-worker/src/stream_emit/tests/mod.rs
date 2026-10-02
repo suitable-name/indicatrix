@@ -3,9 +3,11 @@
 //! [`downsample`] (the reduced-resolution `PREVIEW` snapshot), [`cadence`] (effective
 //! cadence averaging), [`emit_tick`] (one cadence-tick emission), and [`liveness`]
 //! (stream-timeout classification and the heartbeat backstop), and [`stall`] (the
-//! producer-stall watchdog, end to end). [`fixtures`] holds the
+//! producer-stall watchdog, end to end), and [`adaptive_link`] (per-connection adaptive
+//! compression against a throttled or fast wire). [`fixtures`] holds the
 //! scene/state/request builders and `StreamEvent`-decoding helpers shared across them.
 
+mod adaptive_link;
 mod batch_sizing;
 mod cadence;
 mod downsample;

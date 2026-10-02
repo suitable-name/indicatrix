@@ -134,6 +134,29 @@ pub fn send_contribution<W: Write>(
     Ok(())
 }
 
+/// [`send_contribution`] through the connection's [`messages::adaptive::PeerLink`].
+///
+/// The payload is encoded for the measured link speed and the blocking write is timed, so
+/// the peer's last known bandwidth carries over to the next connection.
+///
+/// # Errors
+///
+/// Returns [`ClientError::Net`] if writing fails.
+#[cfg(feature = "render")]
+pub fn send_contribution_with_link<W: Write>(
+    writer: &mut W,
+    request_id: u32,
+    range: (u32, u32),
+    size: (u32, u32),
+    sum: &[glam::Vec3],
+    link: &messages::adaptive::PeerLink,
+) -> Result<(), ClientError> {
+    messages::write_contribution_message_with_link(
+        writer, request_id, range, size.0, size.1, sum, link,
+    )?;
+    Ok(())
+}
+
 /// Sends a `TILT_CURVES` request -- the client's `-> TiltCurvesRequest(...)`.
 ///
 /// Wraps `request` in the tagged [`ClientMessage::TiltCurvesRequest`] envelope, the way
@@ -403,6 +426,7 @@ mod tests {
             girdle_frosted: false,
             backdrop: 0.0,
             environment: crate::scene::SceneEnvironment::Studio,
+            surface_glare: 1.0,
         }
     }
 

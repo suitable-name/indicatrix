@@ -120,7 +120,8 @@ pub(crate) use tls::{TlsStream, accept_tls};
 pub use connection::handle_connection;
 #[cfg(feature = "worker")]
 pub(crate) use connection::{
-    RequestContext, local_render_capability, refuse_incompatible_handshake, serve_requests,
+    LinkSettings, RequestContext, is_loopback_peer, local_render_capability,
+    refuse_incompatible_handshake, serve_requests,
 };
 #[cfg(feature = "worker")]
 pub use connection::{handle_connection, handle_connection_with_gpu};
@@ -413,6 +414,7 @@ fn start_worker_side(
         registry: side.registry.clone(),
         coordinator,
         assets,
+        payload: args.payload_encoding,
     };
     Ok((side, render))
 }
@@ -445,6 +447,7 @@ fn probe_scene() -> indicatrix_net::SceneState {
         girdle_frosted: false,
         backdrop: 0.0,
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
+        surface_glare: 1.0,
     }
 }
 

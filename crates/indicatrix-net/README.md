@@ -61,7 +61,7 @@ it.
 
 ## Protocol version and message set
 
-`messages::PROTOCOL_VERSION: u16 = 17`. Three protocols share one authenticated
+`messages::PROTOCOL_VERSION: u16 = 18`. Three protocols share one authenticated
 connection: **render** (offload sample tracing), **tilt curves** (offload one design's
 full tilt-performance sweep), and **library** (read a design catalogue). A peer may
 serve any subset, and — for a viewer — consume all three.
@@ -230,11 +230,16 @@ bump, v16 added viewer contribution to final pictures:
 `FinalImageRequest.viewer_samples` reserves a tail of samples for the viewer to render
 and upload itself as `ClientMessage::Contribution` (index 7, `messages::contribution`),
 and `Stats.reclaimed_samples` reports how many of those the server ended up rendering
-anyway because the contribution didn't arrive in time or was invalid, and v17 — the
-current version — appended `library::DesignSummary::design_version` (the design's
+anyway because the contribution didn't arrive in time or was invalid, v17 appended
+`library::DesignSummary::design_version` (the design's
 revision token, so a mirror re-fetches a design whose edit left the search summary
 unchanged) and made `library::DesignRecord::version` carry that same token instead of a
-content hash).
+content hash, and v18 — the current version — appended `SceneState::surface_glare`
+(the scale of the first-surface reflection of the analytic lighting presets). postcard
+lays structs out as bare fields in order, so the appended `f32` shifts the byte
+layout of every `SceneState`: the bump turns a silent misread into a clear handshake
+refusal (the build-hash check would refuse a peer on a different build anyway, but
+the version names the cause).
 
 What matters is knowing when to bump it, and that follows entirely from postcard
 being **not self-describing**:
@@ -407,10 +412,11 @@ pub struct SceneState {
     pub girdle_frosted: bool,             // per-facet finishes are re-derived from `planes`
     pub backdrop: f32,                    // backdrop-card radiance, 0.0 = none
     pub environment: SceneEnvironment,    // Studio (the fields above) | Hdr { content_hash, width, height }
+    pub surface_glare: f32,               // 0.0..=1.0 scale of the first-surface reflection, 1.0 = unscaled; analytic presets only
 }
 ```
 
-The last three fields are `#[serde(default)]` so an older on-disk `scene.json` still
+The last four fields are `#[serde(default)]` so an older on-disk `scene.json` still
 loads; on the wire (postcard) every field is always present.
 
 A viewer stores a material as a name plus a list of custom materials loaded from

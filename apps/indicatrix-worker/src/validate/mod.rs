@@ -86,6 +86,7 @@ pub fn validate_scene(scene: &SceneState) -> Result<(), String> {
         ("light_pitch", scene.light_pitch),
         ("exposure", scene.exposure),
         ("backdrop", scene.backdrop),
+        ("surface_glare", scene.surface_glare),
     ] {
         if !v.is_finite() {
             return Err(format!("scene.{name} must be finite (got {v})"));
@@ -167,19 +168,7 @@ pub fn validate_scene(scene: &SceneState) -> Result<(), String> {
     // into a fixed-capacity `[GpuAbsorptionBand; MAX_ABSORPTION_BANDS]` array for GPU
     // encoding. Reject an oversized `Vec` here rather than silently truncating it the
     // first time the GPU path encodes it.
-    for (mode_name, bands) in [
-        ("o_ray", &scene.material.absorption.o_ray),
-        ("e_ray", &scene.material.absorption.e_ray),
-    ] {
-        if bands.len() > indicatrix::renderer::buffers::MAX_ABSORPTION_BANDS {
-            return Err(format!(
-                "scene.material.absorption.{mode_name} has {} band(s), exceeding the GPU \
-                 encoding's cap of {} (see renderer::buffers::MAX_ABSORPTION_BANDS)",
-                bands.len(),
-                indicatrix::renderer::buffers::MAX_ABSORPTION_BANDS
-            ));
-        }
-    }
+    check_absorption_band_caps(scene)?;
 
     // Sodium D line (589.3nm, the conventional n_d reference) plus both ends of the
     // visible spectrum -- a fit that looks fine at n_d can still blow up (or be masked
@@ -194,6 +183,28 @@ pub fn validate_scene(scene: &SceneState) -> Result<(), String> {
     }
 
     validate_environment(scene)
+}
+
+/// Rejects an absorption band list longer than the GPU encoding's fixed-size array.
+///
+/// # Errors
+///
+/// Returns a message naming the oversized ray when a list exceeds the cap.
+fn check_absorption_band_caps(scene: &SceneState) -> Result<(), String> {
+    for (mode_name, bands) in [
+        ("o_ray", &scene.material.absorption.o_ray),
+        ("e_ray", &scene.material.absorption.e_ray),
+    ] {
+        if bands.len() > indicatrix::renderer::buffers::MAX_ABSORPTION_BANDS {
+            return Err(format!(
+                "scene.material.absorption.{mode_name} has {} band(s), exceeding the GPU \
+                 encoding's cap of {} (see renderer::buffers::MAX_ABSORPTION_BANDS)",
+                bands.len(),
+                indicatrix::renderer::buffers::MAX_ABSORPTION_BANDS
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Validates the scene's HDR environment, if any (v14).
@@ -377,6 +388,7 @@ mod tests {
             girdle_frosted: false,
             backdrop: 0.0,
             environment: indicatrix_net::scene::SceneEnvironment::Studio,
+            surface_glare: 1.0,
         }
     }
 
@@ -437,6 +449,14 @@ mod tests {
         let mut scene = valid_scene();
         scene.exposure = f32::INFINITY;
         assert!(validate_scene(&scene).is_err());
+    }
+
+    #[test]
+    fn rejects_non_finite_surface_glare() {
+        let mut scene = valid_scene();
+        scene.surface_glare = f32::NAN;
+        let err = validate_scene(&scene).unwrap_err();
+        assert!(err.contains("surface_glare"), "{err}");
     }
 
     #[test]

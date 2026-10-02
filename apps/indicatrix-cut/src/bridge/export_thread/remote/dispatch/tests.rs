@@ -40,6 +40,7 @@ fn scene_state_from_snapshot_carries_the_snapshots_own_bounce_cap_not_a_viewport
         active_planes: StandardGemCuts::standard_round_brilliant(),
         facet_finishes: Vec::new(),
         env_map: None,
+        surface_glare: 1.0,
     };
 
     let state = scene_state_from_snapshot(&snapshot, 1920, 1080, snapshot.yaw, snapshot.pitch);
@@ -48,6 +49,32 @@ fn scene_state_from_snapshot_carries_the_snapshots_own_bounce_cap_not_a_viewport
         state.max_bounces, 64,
         "the remote RenderRequest's scene must carry the export's OWN bounce cap"
     );
+}
+
+/// The viewport's surface glare must reach the remote scene, so a combined
+/// local+remote export traces both engines at the same value.
+#[test]
+fn scene_state_from_snapshot_carries_the_snapshots_surface_glare() {
+    let snapshot = SceneSnapshot {
+        yaw: 0.6,
+        pitch: 0.45,
+        distance: 2.4,
+        light_yaw: 0.85,
+        light_pitch: 0.95,
+        material: GemMaterial::diamond(),
+        lighting_preset: indicatrix::optics::raytracer::LightingPreset::RingLights,
+        max_bounces: 12,
+        exposure: 1.0,
+        backdrop: 0.0,
+        active_planes: StandardGemCuts::standard_round_brilliant(),
+        facet_finishes: Vec::new(),
+        env_map: None,
+        surface_glare: 0.25,
+    };
+
+    let state = scene_state_from_snapshot(&snapshot, 64, 64, snapshot.yaw, snapshot.pitch);
+
+    assert_eq!(state.surface_glare.to_bits(), 0.25f32.to_bits());
 }
 
 /// A caller sweeping the camera across many renders of the SAME static snapshot
@@ -72,6 +99,7 @@ fn scene_state_from_snapshot_uses_the_explicit_pose_override_not_the_snapshots_o
         active_planes: StandardGemCuts::standard_round_brilliant(),
         facet_finishes: Vec::new(),
         env_map: None,
+        surface_glare: 1.0,
     };
 
     let state = scene_state_from_snapshot(&snapshot, 1920, 1080, 1.23, -0.45);

@@ -24,7 +24,7 @@ pub enum Output {
     /// Radiance: `FRAME`/`PREVIEW` per the request's `TransferMode`, or `DISPLAY_FRAME`s
     /// for `TransferMode::DisplayOnly`; then `DONE`.
     Radiance,
-    /// A `FinalImageRequest`: `PROGRESS` heartbeats, then one `FINAL_IMAGE` (a PNG
+    /// A `FinalImageRequest`: `PROGRESS` heartbeats, then one `FINAL_IMAGE` (always a PNG
     /// tone-mapped into this colour space with the GUI export's own
     /// `indicatrix::renderer::tonemap::tonemap_accumulation`), then `DONE`.
     FinalImage(indicatrix::color::ColorSpace),

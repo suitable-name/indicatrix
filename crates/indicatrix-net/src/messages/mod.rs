@@ -20,6 +20,8 @@
 //! - [`asset`]: content-addressed assets (v14): `NEED_ASSET`/`ASSET`, the
 //!   SHA-256 [`content_hash`] and the bounded payload read.
 //! - [`encoding`]: payload-encoding negotiation (v14).
+//! - [`adaptive`]: per-frame encoding choice that follows the measured link bandwidth;
+//!   needs no wire change (headers name each frame's encoding).
 //! - [`render`]: `RENDER`'s request shape (`render` feature only).
 //! - [`final_image`]: `FINAL_IMAGE_REQUEST`'s shape and reply semantics (`render` feature
 //!   only, v14).
@@ -34,12 +36,14 @@
 //!
 //! Every item is re-exported here at its original flat `messages::` path.
 
+pub mod adaptive;
 /// Content-addressed assets (v14) -- see this module's own "Modules" doc section.
 pub mod asset;
 mod codec;
 #[cfg(feature = "render")]
 mod contribution;
 mod encoding;
+mod encoding_matrix;
 /// The `ErrorMsg::code` vocabulary -- see this module's own "Modules" doc section.
 pub mod error_codes;
 #[cfg(feature = "render")]
@@ -64,7 +68,7 @@ pub use codec::{
 #[cfg(feature = "render")]
 pub use contribution::{
     ContributionError, ContributionHeader, ExpectedContribution, discard_contribution_payload,
-    read_contribution_payload, write_contribution_message,
+    read_contribution_payload, write_contribution_message, write_contribution_message_with_link,
 };
 pub use encoding::{
     DEFAULT_SERVER_PREFERENCE, DisplayEncoding, LOOPBACK_SERVER_PREFERENCE, PayloadEncoding,
@@ -164,15 +168,17 @@ pub use tilt::{
 ///     so a mirror detects an edit that leaves the search summary unchanged), and
 ///     `library::DesignRecord::version` redefined to carry that same token instead of a
 ///     content hash.
-pub const PROTOCOL_VERSION: u16 = 17;
+/// 18: `SceneState::surface_glare` appended (the cross-polarised scale of the first
+///     surface reflection of the analytic lighting presets).
+pub const PROTOCOL_VERSION: u16 = 18;
 
 #[cfg(test)]
 mod tests {
     #[test]
     /// Pins the constant so a bump is always a deliberate, reviewed edit.
     ///
-    /// 17: library design revision token (see the constant's history).
+    /// 18: `SceneState::surface_glare` (see the constant's history).
     fn protocol_version_matches_constant() {
-        assert_eq!(super::PROTOCOL_VERSION, 17);
+        assert_eq!(super::PROTOCOL_VERSION, 18);
     }
 }

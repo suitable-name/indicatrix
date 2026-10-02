@@ -25,6 +25,7 @@ fn run_export_produces_a_valid_png_for_a_tiny_scene() {
         active_planes: StandardGemCuts::standard_round_brilliant(),
         facet_finishes: Vec::new(),
         env_map: None,
+        surface_glare: 1.0,
     };
     let params = ExportParams {
         width: 8,
@@ -93,6 +94,7 @@ fn run_export_with_an_hdr_environment_map_still_produces_a_valid_png() {
         env_map: Some(std::sync::Arc::new(
             indicatrix::renderer::env_map::EnvironmentMap::uniform(4, 4, [0.5, 0.5, 0.5]),
         )),
+        surface_glare: 1.0,
     };
     let params = ExportParams {
         width: 8,
@@ -145,6 +147,7 @@ fn run_export_honors_pre_set_cancellation_and_writes_no_file() {
         active_planes: StandardGemCuts::standard_round_brilliant(),
         facet_finishes: Vec::new(),
         env_map: None,
+        surface_glare: 1.0,
     };
     let params = ExportParams {
         width: 8,
@@ -193,6 +196,7 @@ fn tiny_scene() -> SceneSnapshot {
         active_planes: StandardGemCuts::standard_round_brilliant(),
         facet_finishes: Vec::new(),
         env_map: None,
+        surface_glare: 1.0,
     }
 }
 

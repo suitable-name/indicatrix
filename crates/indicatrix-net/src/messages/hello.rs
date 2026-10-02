@@ -184,8 +184,10 @@ pub struct Welcome {
     /// every viewer.
     pub registration: Option<WorkerRegistration>,
     /// The payload encoding this server negotiated for the connection
-    /// (`super::encoding::negotiate`). An upper bound: each FRAME/PREVIEW header still
-    /// names its own encoding, which may be `Raw` for an incompressible payload.
+    /// (`super::encoding::negotiate`): its default, not a cap. Each FRAME/PREVIEW header
+    /// names its own encoding, which may be `Raw` for an incompressible payload, and a
+    /// sender that adapts to the link speed (`super::adaptive`) may use any encoding the
+    /// receiver announced in its `HELLO`.
     pub payload_encoding: PayloadEncoding,
 }
 

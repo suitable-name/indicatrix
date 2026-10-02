@@ -19,6 +19,7 @@ use crate::{
     },
     settings::{
         LightingPreset as SavedLightingPreset, LocalComputeTarget, LocalPreviewScale, SettingsFile,
+        model::{clamp_surface_glare, percent_from_surface_glare},
     },
 };
 use indicatrix::{
@@ -49,6 +50,8 @@ pub(super) fn apply_loaded_settings(
     loaded: &SettingsFile,
 ) {
     let s = &loaded.settings;
+    // The upload compression setting has no UI mirror: the connection layer reads it.
+    crate::bridge::remote::remote_render::set_payload_choice(s.payload_encoding);
     // Parse the persisted lighting-rig label back into its enum at this one
     // boundary -- gracefully migrating any legacy or unrecognized label (including the
     // old, mislabelled `"D65 Daylight (5500K)"` string) via `from_label`'s own
@@ -214,6 +217,7 @@ fn apply_loaded_render_context(
     ctx.material_name = material_name.to_string();
     ctx.denoise_enabled = s.denoise_enabled;
     ctx.backdrop = s.backdrop;
+    ctx.surface_glare = clamp_surface_glare(s.surface_glare);
     // Local preview-then-settle rendering and the live compute targets --
     // live-update `RenderContext` at startup exactly like every other setting in
     // this block, `camera_moving` deliberately left at its
@@ -256,6 +260,8 @@ fn apply_loaded_ui_mirrors(
         .set_exposure_val(s.exposure.clamp(0.2, 5.0));
     ui.global::<SettingsModel>()
         .set_backdrop_index(s.backdrop.index());
+    ui.global::<SettingsModel>()
+        .set_surface_glare_pct(percent_from_surface_glare(s.surface_glare));
     ui.global::<SettingsModel>()
         .set_inclusion_sigma_s(s.inclusion_sigma_s.clamp(0.0, 3.0));
     ui.global::<SettingsModel>()

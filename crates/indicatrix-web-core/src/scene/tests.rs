@@ -140,6 +140,7 @@ fn assert_environment_eq(a: EnvironmentSource<'_>, b: EnvironmentSource<'_>) {
                 light_yaw: ya,
                 light_pitch: qa,
                 backdrop: ba,
+                ..
             },
             EnvironmentSource::Studio {
                 preset: pb,
@@ -147,6 +148,7 @@ fn assert_environment_eq(a: EnvironmentSource<'_>, b: EnvironmentSource<'_>) {
                 light_yaw: yb,
                 light_pitch: qb,
                 backdrop: bb,
+                ..
             },
         ) => {
             assert_eq!(pa, pb, "preset");

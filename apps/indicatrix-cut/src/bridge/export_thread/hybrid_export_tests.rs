@@ -40,6 +40,7 @@ fn export_completes_via_hybrid_or_cpu_path() {
         active_planes: StandardGemCuts::standard_round_brilliant(),
         facet_finishes: Vec::new(),
         env_map: None,
+        surface_glare: 1.0,
     };
     let params = ExportParams {
         width: 48,

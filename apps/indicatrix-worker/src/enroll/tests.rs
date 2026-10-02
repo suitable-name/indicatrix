@@ -498,6 +498,7 @@ fn a_claim_connection_cannot_issue_a_render_request() {
         girdle_frosted: false,
         backdrop: 0.0,
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
+        surface_glare: 1.0,
     };
     let request = RenderRequest {
         intent: indicatrix_net::messages::RequestIntent::Batch,

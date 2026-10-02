@@ -81,6 +81,7 @@ fn spec(request: &RenderRequest, stall_timeout: Option<Duration>) -> StreamSpec<
     StreamSpec {
         request,
         payload_encoding: PayloadEncoding::Raw,
+        link: None,
         output: Output::Radiance,
         contribution: None,
         stall_timeout,

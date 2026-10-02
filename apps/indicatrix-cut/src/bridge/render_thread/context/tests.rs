@@ -315,3 +315,30 @@ fn a_display_only_epoch_acts_as_remote_only_until_released() {
     assert!(!ctx.live_display_only);
     assert_eq!(ctx.effective_live_target(), Both);
 }
+
+#[test]
+fn the_editors_material_survives_a_library_selection_and_comes_back() {
+    let mut ctx = RenderContext::default();
+    assert!(ctx.claim_active_planes(
+        Arc::new(Vec::new()),
+        None,
+        PlanesOwner::Editor { generation: 1 },
+    ));
+    "Sapphire".clone_into(&mut ctx.material_name);
+    assert!(ctx.claim_active_planes(
+        Arc::new(Vec::new()),
+        None,
+        PlanesOwner::Catalogue { entry_id: 7 },
+    ));
+    // The row resolves no material and refuses, as a Library selection may.
+    ctx.material_name.clear();
+    ctx.material_unresolved = Some("no material".to_string());
+    assert!(ctx.claim_active_planes(
+        Arc::new(Vec::new()),
+        None,
+        PlanesOwner::Editor { generation: 2 },
+    ));
+    assert_eq!(ctx.material_name, "Sapphire");
+    assert!(ctx.material_unresolved.is_none());
+    assert!(ctx.editor_material_stash.is_none());
+}

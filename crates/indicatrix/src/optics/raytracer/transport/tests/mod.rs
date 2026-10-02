@@ -19,6 +19,9 @@ mod exit_splitting_tests;
 /// use for their own on/off flags).
 mod nee_tests;
 
+/// The surface-glare scale on the first-surface specular reflection.
+mod surface_glare_tests;
+
 /// Plane-parallel uniaxial slab, e-mode forced. Drives
 /// `compute_bounce_refraction_geometry`/`apply_partial_fresnel_bounce` directly
 /// (bypassing the full stochastic bounce loop) at exactly two facets -- the slab's

@@ -35,6 +35,7 @@ fn default_serve_args() -> ServeArgs {
         whole_image_secs: DEFAULT_WHOLE_IMAGE_SECS,
         whole_image_pixel_samples: DEFAULT_WHOLE_IMAGE_PIXEL_SAMPLES,
         jobs_per_viewer: DEFAULT_JOBS_PER_VIEWER,
+        payload_encoding: indicatrix_net::messages::adaptive::PayloadChoice::Auto,
     }
 }
 
@@ -407,4 +408,48 @@ fn parses_serve_enroll_flags() {
             ..default_serve_args()
         }))
     );
+}
+
+/// `--payload-encoding` defaults to `auto` (adaptive) and every other spelling pins one
+/// encoding: the parsed choice maps to a fixed (non-adaptive) policy.
+#[test]
+fn serve_payload_encoding_defaults_to_auto_and_pins_a_fixed_policy_otherwise() {
+    use indicatrix_net::messages::{
+        PayloadEncoding,
+        adaptive::PayloadChoice::{self, Auto, Fixed},
+    };
+    let choice = |args: &[&str]| -> Result<PayloadChoice, String> {
+        let mut argv = vec!["serve".to_string()];
+        argv.extend(args.iter().map(ToString::to_string));
+        match parse(&argv)? {
+            Command::Serve(serve) => Ok(serve.payload_encoding),
+            other => panic!("expected Serve, got {other:?}"),
+        }
+    };
+    let accepts = PayloadEncoding::default_accept_list();
+
+    assert_eq!(choice(&[]), Ok(Auto));
+    assert!(
+        Auto.policy(&accepts, false).is_adaptive(),
+        "the default follows the link"
+    );
+    for (text, want) in [
+        ("raw", Fixed(PayloadEncoding::Raw)),
+        ("lz4", Fixed(PayloadEncoding::ShuffleLz4)),
+        ("zstd:5", Fixed(PayloadEncoding::ShuffleZstd { level: 5 })),
+        ("auto", Auto),
+    ] {
+        let parsed = choice(&["--payload-encoding", text]).unwrap();
+        assert_eq!(parsed, want, "{text}");
+        assert_eq!(
+            parsed.policy(&accepts, false).is_adaptive(),
+            parsed == Auto,
+            "{text}: only auto adapts"
+        );
+    }
+    for bad in ["gzip", "zstd:0", "zstd:99", ""] {
+        let error = choice(&["--payload-encoding", bad]).unwrap_err();
+        assert!(error.contains("--payload-encoding"), "{bad:?}: {error}");
+    }
+    assert!(choice(&["--payload-encoding"]).is_err());
 }

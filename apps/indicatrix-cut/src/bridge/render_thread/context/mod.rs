@@ -70,6 +70,11 @@ pub struct RenderContext {
     pub lighting_preset: LightingPreset,
     /// What the camera sees behind the stone -- `AppSettings::backdrop`.
     pub backdrop: crate::settings::model::Backdrop,
+    /// Surface-glare scale, `0.0..=1.0` (`AppSettings::surface_glare`): `1.0` is the
+    /// unscaled render, `0.0` hides the mirror image of the light on the table (first
+    /// surface event only). Analytic presets only -- an HDR map ignores it. Scene
+    /// identity includes it, so a change restarts accumulation (local and remote).
+    pub surface_glare: f32,
     /// Progressive-accumulation target -- the single global target for the live image:
     /// the render loop stops once local plus (while combining) the live epoch's remote
     /// samples reach this, and a settled epoch's shared cursor covers exactly
@@ -150,6 +155,11 @@ pub struct RenderContext {
     /// capture`, the remote dispatch tick, and the tilt-video export -- which all
     /// refuse rather than trace/export the wrong stone while this is set.
     pub material_unresolved: Option<String>,
+    /// The editor's viewport material as it was when a Library selection took the
+    /// planes slot over from it, so the editor gets it back when it claims the slot
+    /// again. Without it a Library row that resolves no material would leave the
+    /// refusal in [`Self::material_unresolved`] behind and tracing suspended.
+    pub editor_material_stash: Option<MaterialStash>,
     /// User-defined gem materials.
     pub custom_materials: Arc<Vec<GemMaterial>>,
     /// Name -> specific gravity for custom catalogue materials. A parallel side
@@ -281,6 +291,18 @@ pub struct RenderContext {
     pub scene_identity: SceneIdentity,
 }
 
+/// The viewport material state a Library selection replaces and the editor takes back:
+/// see [`RenderContext::editor_material_stash`].
+#[derive(Debug, Clone)]
+pub struct MaterialStash {
+    /// `RenderContext::material_name` at the time.
+    pub name: String,
+    /// `RenderContext::material_override` at the time.
+    pub material_override: Option<GemMaterial>,
+    /// `RenderContext::material_unresolved` at the time.
+    pub unresolved: Option<String>,
+}
+
 /// Tags which subsystem last claimed `RenderContext::active_planes`/`design_gear`.
 /// See [`RenderContext::claim_active_planes`] for the
 /// intended write path and [`RenderContext::planes_owner`] for why this exists.
@@ -368,10 +390,41 @@ impl RenderContext {
                  stone's measured width"
             );
         }
+        self.swap_editor_material(owner);
         self.active_planes = planes;
         self.design_gear = design_gear;
         self.planes_owner = owner;
         true
+    }
+
+    /// Keeps the editor's viewport material across a Library selection: stashed when a
+    /// catalogue claim takes the slot from the editor (before the row writes its own),
+    /// restored when the editor claims it back.
+    fn swap_editor_material(&mut self, new_owner: PlanesOwner) {
+        match (self.planes_owner, new_owner) {
+            (PlanesOwner::Editor { .. }, PlanesOwner::Catalogue { .. }) => {
+                self.editor_material_stash = Some(MaterialStash {
+                    name: self.material_name.clone(),
+                    material_override: self.material_override.clone(),
+                    unresolved: self.material_unresolved.clone(),
+                });
+            }
+            (PlanesOwner::Catalogue { .. }, PlanesOwner::Editor { .. }) => {
+                self.restore_editor_material();
+            }
+            _ => {}
+        }
+    }
+
+    /// Puts back the viewport material the editor had before a Library selection took
+    /// the slot (see [`Self::editor_material_stash`]); does nothing when none is stashed.
+    pub fn restore_editor_material(&mut self) {
+        if let Some(stash) = self.editor_material_stash.take() {
+            self.material_name = stash.name;
+            self.material_override = stash.material_override;
+            self.material_unresolved = stash.unresolved;
+            self.dirty = true;
+        }
     }
 
     /// Whether the currently traced/rasterized `active_planes`
@@ -472,6 +525,7 @@ impl Default for RenderContext {
             material_override: None,
             lighting_preset: LightingPreset::RingLights,
             backdrop: crate::settings::model::Backdrop::default(),
+            surface_glare: 1.0,
             target_samples: 256,
             max_bounces: DEFAULT_MAX_BOUNCES,
             exposure: 1.0,
@@ -484,6 +538,7 @@ impl Default for RenderContext {
             design_gear: None,
             planes_owner: PlanesOwner::Builtin,
             material_unresolved: None,
+            editor_material_stash: None,
             custom_materials: Arc::new(Vec::new()),
             custom_material_specific_gravity: Arc::new(Vec::new()),
             running: true,

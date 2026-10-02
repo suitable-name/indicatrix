@@ -111,7 +111,8 @@ use indicatrix::renderer::gpu_backend::GpuBackend;
 use indicatrix_dispatch::{ChunkPolicy, PoolConfig, SampleRange};
 use indicatrix_net::messages::{
     ErrorMsg, FinalImageRequest, NetError, PayloadEncoding, PreviewConfig, RenderCapability,
-    RenderRequest, RequestIntent, StreamConfig, StreamEvent, TransferMode, error_codes,
+    RenderRequest, RequestIntent, StreamConfig, StreamEvent, TransferMode, adaptive::PeerLink,
+    error_codes,
 };
 use std::{
     collections::BTreeMap,
@@ -411,6 +412,9 @@ pub struct ViewerSession {
     pub viewer: Arc<str>,
     /// The encoding negotiated in this connection's `WELCOME`.
     pub payload_encoding: PayloadEncoding,
+    /// This connection's adaptive-compression state (`None` pins every frame to
+    /// [`Self::payload_encoding`]); shared by every request the viewer sends on it.
+    pub link: Option<Arc<PeerLink>>,
     /// What `WELCOME.render` said (the baseline for `CapabilityChanged`).
     pub advertised: Option<RenderCapability>,
     /// The own lane's capability, if any (for re-advertising).
@@ -668,6 +672,7 @@ fn stream_request<S: Read + Write + TimeoutRead + TimeoutWrite>(
     let spec = StreamSpec {
         request,
         payload_encoding: session.payload_encoding,
+        link: session.link.as_ref(),
         output,
         contribution: slot.map(Arc::as_ref),
         stall_timeout: direct.then_some(stream_emit::PRODUCER_STALL_TIMEOUT),

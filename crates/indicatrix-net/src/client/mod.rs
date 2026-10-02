@@ -35,8 +35,8 @@ pub use handshake::{ConnectionInfo, handshake_with_hello, test_connection};
 pub use session::{SessionUpdate, run_client_session, send_cancel, send_library_request};
 #[cfg(feature = "render")]
 pub use session::{
-    recv_tilt_curves_response, send_asset, send_contribution, send_final_image_request, send_ping,
-    send_render_request, send_tilt_curves_request,
+    recv_tilt_curves_response, send_asset, send_contribution, send_contribution_with_link,
+    send_final_image_request, send_ping, send_render_request, send_tilt_curves_request,
 };
 
 use crate::messages::{ErrorMsg, NetError};

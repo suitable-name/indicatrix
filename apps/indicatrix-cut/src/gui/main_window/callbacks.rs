@@ -54,6 +54,7 @@ pub(super) fn setup_render_callbacks(
     render::camera_lighting::setup_camera_drag_callbacks(ui, render_ctx);
     render::material_quality::setup_material_changed_callback(ui, render_ctx, settings_store);
     render::material_quality::setup_backdrop_callback(ui, render_ctx, settings_store);
+    render::material_quality::setup_surface_glare_callback(ui, render_ctx, settings_store);
     render::material_quality::setup_material_and_quality_callbacks(ui, render_ctx, settings_store);
     render::material_quality::setup_material_effect_override_callbacks(
         ui,

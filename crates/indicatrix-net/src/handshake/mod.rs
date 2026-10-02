@@ -390,7 +390,7 @@ mod tests {
     fn a_peer_advertising_the_previous_protocol_version_is_refused() {
         let current = crate::messages::PROTOCOL_VERSION;
         assert_eq!(
-            current, 17,
+            current, 18,
             "update this pinned value if PROTOCOL_VERSION moves again"
         );
         let local = hello(current, [1; 8]);

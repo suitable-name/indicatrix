@@ -54,6 +54,7 @@ fn with_export_ctx<R>(
                 .lighting_preset
                 .studio(scene.exposure, scene.light_yaw, scene.light_pitch)
                 .with_backdrop(scene.backdrop)
+                .with_surface_glare(scene.surface_glare)
         },
         EnvironmentSource::HdrMap,
     );

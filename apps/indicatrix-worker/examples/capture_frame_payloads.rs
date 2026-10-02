@@ -72,6 +72,7 @@ fn scene(preset: LightingPreset, material: &GemMaterial, width: u32, height: u32
         girdle_frosted: false,
         backdrop: BACKDROP_GREY,
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
+        surface_glare: 1.0,
     }
 }
 

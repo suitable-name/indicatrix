@@ -93,6 +93,7 @@ pub fn coordinator_args(pki: &Path) -> ServeArgs {
         whole_image_secs: crate::cli::DEFAULT_WHOLE_IMAGE_SECS,
         whole_image_pixel_samples: crate::cli::DEFAULT_WHOLE_IMAGE_PIXEL_SAMPLES,
         jobs_per_viewer: crate::cli::DEFAULT_JOBS_PER_VIEWER,
+        payload_encoding: indicatrix_net::messages::adaptive::PayloadChoice::Auto,
     }
 }
 
@@ -174,6 +175,7 @@ pub fn cpu_worker_setup_with_cache(cache: bool) -> Arc<WorkerSetup> {
         compute_mode: ComputeMode::OnlyCpu,
         capability,
         assets,
+        payload: indicatrix_net::messages::adaptive::PayloadChoice::Auto,
     })
 }
 
@@ -207,5 +209,6 @@ pub fn tiny_scene() -> SceneState {
         girdle_frosted: false,
         backdrop: 0.0,
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
+        surface_glare: 1.0,
     }
 }

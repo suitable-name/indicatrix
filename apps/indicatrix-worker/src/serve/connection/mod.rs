@@ -22,6 +22,8 @@ use std::io::{Read, Write};
 use std::net::SocketAddr;
 
 #[cfg(feature = "worker")]
+mod link;
+#[cfg(feature = "worker")]
 mod requests;
 #[cfg(feature = "worker")]
 mod worker;
@@ -58,6 +60,8 @@ pub(super) const NO_RENDER_CAPACITY_CODE: u32 = error_codes::NO_RENDER_CAPACITY;
 /// why no new wire message type was needed for this.
 pub(super) const CONNECTION_LIMIT_REACHED_CODE: u32 = error_codes::CONNECTION_LIMIT_REACHED;
 
+#[cfg(feature = "worker")]
+pub use link::{LinkSettings, is_loopback_peer};
 #[cfg(feature = "worker")]
 pub use requests::{RequestContext, serve_requests};
 #[cfg(feature = "worker")]

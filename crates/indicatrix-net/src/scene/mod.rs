@@ -69,6 +69,20 @@ pub struct SceneState {
     /// `girdle_frosted`.
     #[serde(default)]
     pub environment: SceneEnvironment,
+    /// Scale of the first-surface specular reflection of the analytic presets (v18),
+    /// `0.0..=1.0`; `1.0` is the unscaled render --
+    /// `EnvironmentSource::Studio::surface_glare`. Ignored for an HDR environment.
+    /// `#[serde(default = "default_surface_glare")]` for the same on-disk `scene.json`
+    /// reason as `girdle_frosted`.
+    #[serde(default = "default_surface_glare")]
+    pub surface_glare: f32,
+}
+
+/// The unscaled surface-glare value (`1.0`), the serde default of
+/// [`SceneState::surface_glare`].
+#[must_use]
+pub const fn default_surface_glare() -> f32 {
+    1.0
 }
 
 impl SceneState {

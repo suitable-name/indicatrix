@@ -289,7 +289,7 @@ pub fn run_image_comparison_iso_hemisphere(
         &material,
         &[],
         LightingPreset::IsoHemisphere,
-        BACKDROP_GREY,
+        (BACKDROP_GREY, 1.0),
     )
 }
 
@@ -311,7 +311,7 @@ pub fn run_image_comparison_light_tent(
         &material,
         &[],
         LightingPreset::LightTent,
-        BACKDROP_GREY,
+        (BACKDROP_GREY, 1.0),
     )
 }
 
@@ -333,7 +333,7 @@ pub fn run_image_comparison_daylight_dome(
         &material,
         &[],
         LightingPreset::DaylightDome,
-        BACKDROP_GREY,
+        (BACKDROP_GREY, 1.0),
     )
 }
 
@@ -351,19 +351,47 @@ fn run_image_comparison_for(
     facet_finishes: &[FacetFinish],
     preset: LightingPreset,
 ) -> ImageComparisonResult {
-    run_image_comparison_with_backdrop(ctx, material, facet_finishes, preset, 0.0)
+    run_image_comparison_with_backdrop(ctx, material, facet_finishes, preset, (0.0, 1.0))
 }
 
-/// [`run_image_comparison_for`] with a backdrop card behind the stone (see
-/// `EnvironmentSource::Studio::backdrop`), so the camera-ray miss branch is compared
-/// too; `0.0` is the plain environment.
+/// Tier 3 statistical image comparison of the surface-glare scale.
+///
+/// Diamond under the D65 daylight preset with the given `surface_glare` (`0.0..=1.0`)
+/// applied to both the CPU tracer and the megakernel, so the first-surface reflection
+/// branch is compared.
+///
+/// # Panics
+///
+/// Panics if `"Diamond"` is ever removed from `GemMaterial::all_materials()`.
+#[must_use]
+pub fn run_image_comparison_surface_glare(
+    ctx: &crate::renderer::gpu::GpuContext,
+    surface_glare: f32,
+) -> ImageComparisonResult {
+    let material = GemMaterial::by_name("Diamond")
+        .expect("\"Diamond\" is a built-in material in GemMaterial::all_materials()");
+    run_image_comparison_with_backdrop(
+        ctx,
+        &material,
+        &[],
+        LightingPreset::Daylight,
+        (BACKDROP_GREY, surface_glare),
+    )
+}
+
+/// [`run_image_comparison_for`] with a backdrop card behind the stone and a
+/// surface-glare scale, passed as `(backdrop, surface_glare)` (see
+/// `EnvironmentSource::Studio::backdrop`/`surface_glare`), so the camera-ray miss branch
+/// and the first-surface reflection are compared too; `(0.0, 1.0)` is the plain
+/// environment.
 fn run_image_comparison_with_backdrop(
     ctx: &crate::renderer::gpu::GpuContext,
     material: &GemMaterial,
     facet_finishes: &[FacetFinish],
     preset: LightingPreset,
-    backdrop: f32,
+    backdrop_and_glare: (f32, f32),
 ) -> ImageComparisonResult {
+    let (backdrop, surface_glare) = backdrop_and_glare;
     let camera = test_camera();
     let (width, height) = (48u32, 48u32);
     let planes = round_brilliant_planes();
@@ -374,7 +402,8 @@ fn run_image_comparison_with_backdrop(
     let temp_k = illuminant_temperature_k(preset);
     let environment = preset
         .studio(exposure, light_yaw, light_pitch)
-        .with_backdrop(backdrop);
+        .with_backdrop(backdrop)
+        .with_surface_glare(surface_glare);
     let wb = environment_white_balance(environment);
 
     let cpu_samples_per_pixel = 500u32;
@@ -412,7 +441,8 @@ fn run_image_comparison_with_backdrop(
     // dispatch must match or this comparison reintroduces CPU/GPU divergence.
     .with_studio_use_d65(preset.uses_d65())
     .with_studio_model(preset.model().gpu_id())
-    .with_backdrop(backdrop);
+    .with_backdrop(backdrop)
+    .with_surface_glare(surface_glare);
     let total_gpu = (width * height * gpu_samples_per_pixel) as usize;
     // Dispatch through whichever pipeline `GpuFrameRenderer::accumulate` would actually
     // pick for `material` (via `frame::classify_material`), not the GENERIC one every

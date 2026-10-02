@@ -18,7 +18,7 @@ use crate::{
         render::sample_scale::exponent_to_count,
         show_toast,
     },
-    settings::SettingsPersister,
+    settings::{SettingsPersister, model::surface_glare_from_percent},
 };
 use indicatrix::optics::{LightingPreset, materials::GemMaterial};
 use slint::{ComponentHandle, SharedString};
@@ -411,6 +411,31 @@ pub(in crate::gui) fn setup_material_effect_override_callbacks(
             ctx.dirty = true;
             drop(ctx);
             settings_store_stone.update(|s| s.settings.stone_width_mm = clamped);
+        });
+}
+
+/// Wires the surface-glare slider: the scale of the white mirror image of the light in
+/// the live view and every export (`RenderContext::surface_glare`, persisted as
+/// `AppSettings::surface_glare`). The slider reports a percent; a drag that stays on the
+/// same 5 % step changes nothing and so never restarts accumulation.
+pub(in crate::gui) fn setup_surface_glare_callback(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    settings_store: &Arc<SettingsPersister>,
+) {
+    let render_ctx = render_ctx.clone();
+    let settings_store = settings_store.clone();
+    ui.global::<SettingsModel>()
+        .on_surface_glare_changed(move |percent: f32| {
+            let glare = surface_glare_from_percent(percent);
+            let mut ctx = RenderContext::lock(&render_ctx);
+            if ctx.surface_glare.to_bits() == glare.to_bits() {
+                return;
+            }
+            ctx.surface_glare = glare;
+            ctx.dirty = true;
+            drop(ctx);
+            settings_store.update(|s| s.settings.surface_glare = glare);
         });
 }
 

@@ -245,6 +245,7 @@ pub fn render_view(job: &PreviewJob<'_>, view: PreviewView, gpu: &GpuBackend) ->
         // HDR map happened to be loaded in the live viewport during the session that
         // triggered the batch.
         env_map: None,
+        surface_glare: 1.0,
     };
     let camera = Camera::new(scene.yaw, scene.pitch, scene.distance, DEFAULT_FOV_DEG);
     let environment = scene
@@ -324,6 +325,7 @@ pub fn render_rgba_at_pose(
         // `render_view`'s own snapshot.
         facet_finishes: Vec::new(),
         env_map: None,
+        surface_glare: 1.0,
     };
     let camera = Camera::new(yaw, pitch, distance, DEFAULT_FOV_DEG);
     let mut accum = vec![Vec3::ZERO; (width as usize) * (height as usize)];
@@ -420,6 +422,7 @@ fn dispatch_remote_view(
         girdle_frosted: false,
         backdrop: PREVIEW_BACKDROP,
         environment: indicatrix_net::scene::SceneEnvironment::Studio,
+        surface_glare: 1.0,
     };
     let accumulator = Arc::new(Mutex::new(Accumulator::new(job.size, job.size)));
     let (tx, rx) = mpsc::channel::<RemoteUpdate>();

@@ -247,6 +247,22 @@ pub fn apply_handshake_timeout(stream: &TcpStream, peer: Option<SocketAddr>) {
     }
 }
 
+/// The preference list `choice` gives a connection from `peer`: the pinned encoding
+/// alone, or [`payload_preference_for`] under `auto`. It decides what `WELCOME` announces;
+/// each frame's own header names what it actually carries.
+#[cfg(feature = "worker")]
+pub fn payload_preference_for_choice(
+    choice: indicatrix_net::messages::adaptive::PayloadChoice,
+    peer: Option<SocketAddr>,
+) -> Vec<indicatrix_net::messages::PayloadEncoding> {
+    match choice {
+        indicatrix_net::messages::adaptive::PayloadChoice::Fixed(encoding) => vec![encoding],
+        indicatrix_net::messages::adaptive::PayloadChoice::Auto => {
+            payload_preference_for(peer).to_vec()
+        }
+    }
+}
+
 /// The payload-encoding preference (v14) this server uses for a connection from `peer`:
 /// raw only for a loopback peer (memory bandwidth beats every codec), else the measured
 /// default -- zstd level 1, then LZ4, then raw (coordinator guide section 11). The value

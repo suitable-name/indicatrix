@@ -274,6 +274,7 @@ impl LightingPreset {
             light_yaw,
             light_pitch,
             backdrop: 0.0,
+            surface_glare: 1.0,
         }
     }
 }
@@ -299,6 +300,12 @@ pub enum EnvironmentSource<'a> {
         /// leakage and windows stay as dark as the real ground, behind a neutral grey
         /// backdrop card. See [`BACKDROP_GREY`].
         backdrop: f32,
+        /// Scale of the stone's first-surface specular (Fresnel) reflection, `1.0`
+        /// leaving it as is and `0.0` removing the mirror image of the light so only
+        /// light that entered the stone remains (the effect of cross-polarised
+        /// viewing). Everything that went into the stone is untouched. See
+        /// [`EnvironmentSource::with_surface_glare`].
+        surface_glare: f32,
     },
     HdrMap(&'a EnvironmentMap),
 }
@@ -319,6 +326,7 @@ impl EnvironmentSource<'_> {
                 exposure,
                 light_yaw,
                 light_pitch,
+                surface_glare,
                 ..
             } => Self::Studio {
                 preset,
@@ -326,9 +334,56 @@ impl EnvironmentSource<'_> {
                 light_yaw,
                 light_pitch,
                 backdrop,
+                surface_glare,
             },
             hdr @ Self::HdrMap(_) => hdr,
         }
+    }
+
+    /// Sets the surface-glare scale (see the `Studio` variant's field), clamped to
+    /// `0.0..=1.0`; a NaN is treated as `1.0`. `1.0` is the default and leaves the
+    /// render bit-identical to one without the field. An HDR map is returned unchanged
+    /// (glare is only applied for the analytic lighting presets).
+    #[must_use]
+    pub const fn with_surface_glare(self, surface_glare: f32) -> Self {
+        match self {
+            Self::Studio {
+                preset,
+                exposure,
+                light_yaw,
+                light_pitch,
+                backdrop,
+                ..
+            } => Self::Studio {
+                preset,
+                exposure,
+                light_yaw,
+                light_pitch,
+                backdrop,
+                surface_glare: clamp_surface_glare(surface_glare),
+            },
+            hdr @ Self::HdrMap(_) => hdr,
+        }
+    }
+
+    /// The surface-glare scale in force: the `Studio` field, `1.0` for an HDR map.
+    #[must_use]
+    pub const fn surface_glare(&self) -> f32 {
+        match *self {
+            Self::Studio { surface_glare, .. } => surface_glare,
+            Self::HdrMap(_) => 1.0,
+        }
+    }
+}
+
+/// Clamps a surface-glare scale to `0.0..=1.0`, mapping NaN to `1.0` (off).
+const fn clamp_surface_glare(value: f32) -> f32 {
+    if value >= 1.0 || value.is_nan() {
+        1.0
+    } else if value > 0.0 {
+        value
+    } else {
+        0.0
     }
 }
 

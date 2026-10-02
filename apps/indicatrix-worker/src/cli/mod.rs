@@ -160,6 +160,7 @@ USAGE:
                          [--worker-bind <host:port>] [--worker-enroll-bind <host:port>] [--worker-allowlist <path>] [--no-workers]
                          [--interactive-workers <n|all>] [--pin-interactive-worker <label>] [--max-job-memory-mib <n>]
                          [--whole-image-secs <secs>] [--whole-image-pixel-samples <n>] [--jobs-per-viewer <n>]
+                         [--payload-encoding <auto|raw|lz4|zstd[:LEVEL]>]
     indicatrix-worker serve  [--bind <host:port>] [--render] [--threads <n>] [--only-gpu | --only-cpu] [--db <path>] [--max-connections <n>] --insecure-no-tls
 
     RELEASE NOTE: `serve` no longer renders by default. A single-worker setup that
@@ -270,6 +271,13 @@ USAGE:
                                (default 67108864).
     --jobs-per-viewer <n>     Most whole-image jobs one viewer certificate has running
                                at once (default 8). At least 1.
+    --payload-encoding <auto|raw|lz4|zstd[:LEVEL]>
+                              How the radiance and picture payloads sent to each viewer
+                               are compressed. auto (default): follow each connection's
+                               measured write speed (zstd or LZ4 on slow links, raw on
+                               fast ones; a loopback peer always gets raw). raw, lz4,
+                               zstd (level 1) or zstd:LEVEL (1-22) pin one encoding on
+                               every link, loopback included, when the viewer accepts it.
     --max-job-memory-mib <n>  Cap on the buffers of all in-flight multi-lane jobs
                                (default 2048). Each job is charged width x height x 48
                                bytes, plus width x height x 36 bytes for every lane
@@ -292,6 +300,7 @@ pub const USAGE_JOIN: &str = "indicatrix-worker join -- dial a coordinator and r
 
 USAGE:
     indicatrix-worker join <coordinator-host:port> [--cert-dir <dir>] [--slots <k>] [--threads <n>] [--only-gpu | --only-cpu]
+                           [--payload-encoding <auto|raw|lz4|zstd[:LEVEL]>]
     indicatrix-worker join --coordinator <host:port> --token <GW1-...> [--enroll-addr <host:port>] [--cert-dir <dir>] ...
 
     Connects OUT to a coordinator's worker port (`serve`, default port 7880) over mutual
@@ -319,6 +328,12 @@ USAGE:
     --only-gpu                GPU only (rejected without the gpu feature). Mutually
                                exclusive with --only-cpu.
     --only-cpu                CPU only, even with a usable GPU adapter.
+    --payload-encoding <auto|raw|lz4|zstd[:LEVEL]>
+                              How the frames sent to the coordinator are compressed.
+                               auto (default): follow the measured speed of each
+                               connection (zstd or LZ4 on slow links, raw on fast ones;
+                               a loopback coordinator always gets raw). raw, lz4, zstd
+                               (level 1) or zstd:LEVEL (1-22) pin one encoding.
 
     HDR ENVIRONMENT MAPS: a scene lit by an HDR map names it by hash; this worker asks
     the coordinator for a map it lacks (once) and keeps it in a bounded on-disk cache:

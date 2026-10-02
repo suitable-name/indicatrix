@@ -38,9 +38,14 @@ pub struct StreamSpec<'a> {
     /// The request being streamed (a `FinalImageRequest` is carried as an equivalent
     /// `FinalOnly` request with no preview; see [`Output::FinalImage`]).
     pub request: &'a indicatrix_net::messages::RenderRequest,
-    /// The encoding negotiated in `WELCOME` for every `FRAME`/`PREVIEW` (and, derived
-    /// from it, every `DISPLAY_FRAME`).
+    /// The encoding negotiated in `WELCOME`: what a request without a [`Self::link`] sends
+    /// for every `FRAME`/`PREVIEW` (and, derived from it, every `DISPLAY_FRAME`).
     pub payload_encoding: indicatrix_net::messages::PayloadEncoding,
+    /// The connection's adaptive-compression state (one per peer connection, shared by
+    /// every request on it): chooses the encoding of each frame from the measured write
+    /// speed and times each frame's blocking write. `None` pins every frame to
+    /// [`Self::payload_encoding`], unmeasured.
+    pub link: Option<&'a std::sync::Arc<indicatrix_net::messages::adaptive::PeerLink>>,
     /// Radiance or a final picture.
     pub output: Output,
     /// v16: the viewer's reserved tail of a `FinalImageRequest`, if it asked to

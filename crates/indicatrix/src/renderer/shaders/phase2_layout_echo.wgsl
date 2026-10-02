@@ -26,8 +26,8 @@ struct GpuTransportParams {
     studio_use_d65: u32,
     studio_model: u32,
     backdrop: f32,
-    _pad_backdrop_0: u32,
-    _pad_backdrop_1: u32,
+    surface_glare: f32,
+    _pad_surface_glare: u32,
 }
 
 @group(0) @binding(0) var<storage, read> in_params: GpuTransportParams;
@@ -51,8 +51,8 @@ fn echo_transport_params() {
     out_params.studio_use_d65 = in_params.studio_use_d65;
     out_params.studio_model = in_params.studio_model;
     out_params.backdrop = in_params.backdrop;
-    out_params._pad_backdrop_0 = in_params._pad_backdrop_0;
-    out_params._pad_backdrop_1 = in_params._pad_backdrop_1;
+    out_params.surface_glare = in_params.surface_glare;
+    out_params._pad_surface_glare = in_params._pad_surface_glare;
 }
 
 // `renderer::gpu::layout_check` echoes these four small uniform structs

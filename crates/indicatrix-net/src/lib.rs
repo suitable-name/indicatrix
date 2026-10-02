@@ -1,6 +1,8 @@
-//! Wire protocol for `indicatrix-worker`: the read-only design-library sync protocol
-//! every build speaks, and (optionally) offloading `indicatrix` spectral ray-sample
-//! computation to it as a remote render worker.
+//! Wire protocol for `indicatrix-worker`.
+//!
+//! It covers the read-only design-library sync protocol every build speaks, and
+//! (optionally) offloading `indicatrix` spectral ray-sample computation to it as a
+//! remote render worker.
 //!
 //! Types, codec, and framing, plus one small client: [`enroll::claim`] opens a
 //! `TcpStream` to a worker's enrollment listener. Everything else operates on an

@@ -279,8 +279,9 @@ mod tests {
             key(LightingPreset::RingLights.studio(1.0, 0.85, 0.95)),
             key(LightingPreset::RingLights
                 .studio(3.0, 0.85, 0.95)
-                .with_backdrop(0.23)),
-            "exposure and backdrop do not change the metrics"
+                .with_backdrop(0.23)
+                .with_surface_glare(0.0)),
+            "exposure, backdrop and surface glare do not change the metrics"
         );
     }
 

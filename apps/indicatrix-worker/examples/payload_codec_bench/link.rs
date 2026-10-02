@@ -41,6 +41,14 @@ impl Timing {
     pub fn serial_s(self) -> f64 {
         self.transfer + self.compress + self.decompress
     }
+
+    /// The frame time under `rank`.
+    pub fn seconds(self, rank: Rank) -> f64 {
+        match rank {
+            Rank::Pipelined => self.pipelined_s(),
+            Rank::Serial => self.serial_s(),
+        }
+    }
 }
 
 impl Model {
@@ -101,7 +109,7 @@ struct FamilyScore {
 type Acc = BTreeMap<(&'static str, u32), (Vec<f64>, bool)>;
 
 /// Geometric mean of positive values.
-fn geomean(v: &[f64]) -> f64 {
+pub fn geomean(v: &[f64]) -> f64 {
     (v.iter().map(|x| x.ln()).sum::<f64>() / v.len() as f64).exp()
 }
 

@@ -263,10 +263,76 @@ followed by a bounded 10 s wait for `DONE`. A worker that asks for an HDR map
 (`NEED_ASSET`) is answered from the copy the coordinator holds for the job
 (`src/assets/`), so a viewer uploads each map at most once.
 
-Payload encoding is negotiated per connection in the handshake: each side lists what it
-can decode, the server picks its first preference the peer accepts (byte-shuffle +
-zstd, then shuffle + LZ4, then raw; loopback peers get raw), and a payload that would
-not shrink is sent raw. All encodings are lossless.
+The handshake still negotiates a payload encoding per connection (each side lists what
+it can decode, the server picks its first preference the peer accepts, `WELCOME` names
+it), but that is only the connection's default: every frame is encoded for the link
+speed measured while the connection runs, see "Adaptive payload compression" below. All
+encodings are lossless.
+
+### Adaptive payload compression
+
+Which codec is best depends on the link: a slow one pays for a smaller payload with CPU
+time, a fast one sends raw floats. A link can also change speed between two jobs. So
+every sender of `FRAME`, `PREVIEW` and `DISPLAY_FRAME` payloads (a joined worker toward
+its coordinator, the coordinator toward each viewer, the desktop's `CONTRIBUTION`
+upload) keeps **one `PeerLink` per peer connection**
+(`indicatrix_net::messages::adaptive`) and encodes each frame for what that connection
+last measured. The decoders dispatch on the encoding named in each frame header, so
+consecutive frames may differ and nothing changed on the wire.
+
+**Measurement.** Only the blocking socket write of a frame is timed (never compression,
+never a channel wait): the emitter writes straight to the TCP or TLS stream, and
+`PeerLink::send_payload`/`send_display` start the clock after encoding and stop it when the
+write returns. The sample is the wire bytes (payload plus about 64 bytes of header and
+framing) over that duration, folded into an exponentially weighted estimate in Mbit/s
+that falls quickly (weight 0.6 when a sample is below 80 % of the estimate) and rises
+slowly (0.15). A write under 256 KiB says nothing about the link, since the kernel send
+buffer swallows it, so consecutive small writes are summed until they reach 256 KiB and
+the sum becomes one sample (`WriteAggregator`); such a sum may only lower the estimate,
+because each part may have fitted in the buffer. A failed write is never measured.
+
+**Tiers.** The estimate selects a rung of the ladder 50, 100, 300, 1000, 2500 and 10000
+Mbit/s by the 50 % rule: the next higher tier once the estimate is more than halfway to
+it, with a 15 % hysteresis band around each boundary so a link at a boundary does not
+flip tier every frame. The first estimate places the tier directly; a connection with no
+estimate starts on 300 Mbit/s. Every tier switch is logged at `debug` with the peer, the
+estimate and the old and new tier; each connection logs once at `info` whether it is
+adaptive or fixed.
+
+**The matrix.** The encoding for a (payload size class, tier) cell is read from the
+generated table `crates/indicatrix-net/src/messages/encoding_matrix.rs`: an ordered
+preference list per cell (zstd level 3 or 1 on the slow tiers, LZ4 at 1000 and 2500
+Mbit/s, raw at 10000), and PNG or raw RGBA8 for display frames.
+The list is filtered by what the peer announced in its `HELLO` `accept_encodings`; the
+`WELCOME` encoding is not a cap. A payload that does not shrink still goes out raw, as
+its header says. The matrix comes from measurements: regenerate it on the machines in
+question with
+
+```
+cargo run -p indicatrix-worker --release --example payload_codec_bench -- --large --emit-matrix --matrix-out crates/indicatrix-net/src/messages/encoding_matrix.rs
+```
+
+and review the diff. `--simulate` in the same example replays the policy against a
+modelled link without a network.
+
+**Loopback and overrides.** A peer on a loopback address always gets raw payloads and raw
+RGBA8 pictures under `auto`: memory bandwidth beats every codec. `--payload-encoding
+auto|raw|lz4|zstd[:LEVEL]` on `serve` (toward viewers) and `join` (toward the
+coordinator) pins one encoding instead (when the peer accepts it, else raw), on every
+link including loopback, and turns the measurement off. The desktop's `payload_encoding`
+setting does the same for its uploads. A `FINAL_IMAGE` is always a PNG, since it is the
+export's product, but its write is timed like any other frame.
+
+**Seeding.** A process-wide, bounded (64 peers, oldest forgotten first), in-memory
+`BTreeMap` remembers the last estimate per peer: a joined worker keys it by the
+coordinator's address, the coordinator by the viewer's certificate fingerprint (its IP
+address without TLS), the desktop by the coordinator's address. It is stored when a
+connection ends and when its tier switches, and read when the next connection to the same
+peer opens. A stale value only costs the first frames: the estimator corrects it.
+
+**Memory.** The encoder keeps scratch buffers and a compression context (up to roughly
+twice a frame at 4K). They are released when a request ends, after eight raw payloads in
+a row, and whenever the chosen encoding changes.
 
 ### GPU
 

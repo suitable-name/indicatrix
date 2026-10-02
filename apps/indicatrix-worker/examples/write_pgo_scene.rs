@@ -55,6 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         girdle_frosted: false,
         backdrop: BACKDROP_GREY,
         environment: SceneEnvironment::Studio,
+        surface_glare: 1.0,
     };
 
     let file = File::create(&out)?;

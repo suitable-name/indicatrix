@@ -12,9 +12,12 @@ use super::{
     display::{DisplayDenoiser, DisplayUpdate},
 };
 use glam::Vec3;
-use indicatrix_net::messages::{
-    DisplayEncoding, Done, ErrorMsg, FrameHeader, NetError, PreviewConfig, PreviewHeader, Progress,
-    RenderRequest, Stats, StreamEvent, TransferMode, error_codes,
+use indicatrix_net::{
+    messages::{
+        Done, ErrorMsg, FrameHeader, NetError, PreviewConfig, PreviewHeader, Progress,
+        RenderRequest, Stats, StreamEvent, TransferMode, error_codes,
+    },
+    radiance::EncodedPayload,
 };
 use std::{
     io::Write,
@@ -154,16 +157,18 @@ pub(in crate::stream_emit) fn emit_tick<S: Write>(
     if let Some((first_sample, samples)) = range
         && frame_sent_this_tick
     {
-        // Encoded with the connection's negotiated encoding; for `Raw` this is a
-        // reinterpreted view over `emitter`'s own delta buffer, not a fresh per-tick
-        // `Vec<u8>` allocation+copy (see `radiance::as_bytes`).
-        let encoded = emitter.encoded_delta();
-        let header = FrameHeader::for_encoded(request.request_id, first_sample, samples, &encoded);
-        indicatrix_net::messages::write_stream_event(
-            stream,
-            &StreamEvent::Frame(header),
-            Some(encoded.bytes),
-        )?;
+        // Encoded for the connection's measured link; for `Raw` this is a reinterpreted
+        // view over `emitter`'s own delta buffer, not a fresh per-tick `Vec<u8>`
+        // allocation+copy (see `radiance::as_bytes`).
+        emitter.send_delta(|encoded| {
+            let header =
+                FrameHeader::for_encoded(request.request_id, first_sample, samples, encoded);
+            indicatrix_net::messages::write_stream_event(
+                stream,
+                &StreamEvent::Frame(header),
+                Some(encoded.bytes),
+            )
+        })?;
         *emission_count += 1;
     }
 
@@ -260,6 +265,7 @@ pub(super) fn emit_final<S: Write>(
             request.samples,
             total,
             color_space,
+            emitter.link(),
         )?;
         if let Err(message) = written {
             return Ok(StreamOutcome::Failed(ErrorMsg {
@@ -284,33 +290,40 @@ pub(super) fn emit_final<S: Write>(
 
     match request.stream.transfer_mode {
         TransferMode::FinalOnly => {
-            let encoded = match &final_total {
-                Some(total) => emitter.encode_other(total),
-                None => emitter.encoded_running_total(),
-            };
-            let header = FrameHeader::for_encoded(
-                request.request_id,
-                request.first_sample,
-                request.samples,
-                &encoded,
-            );
-            indicatrix_net::messages::write_stream_event(
-                stream,
-                &StreamEvent::Frame(header),
-                Some(encoded.bytes),
-            )?;
-            *emission_count += 1;
-        }
-        TransferMode::LiveProgressive => {
-            if let Some((first_sample, samples)) = range {
-                let encoded = emitter.encoded_delta();
-                let header =
-                    FrameHeader::for_encoded(request.request_id, first_sample, samples, &encoded);
+            let write = |encoded: &EncodedPayload<'_>| {
+                let header = FrameHeader::for_encoded(
+                    request.request_id,
+                    request.first_sample,
+                    request.samples,
+                    encoded,
+                );
                 indicatrix_net::messages::write_stream_event(
                     stream,
                     &StreamEvent::Frame(header),
                     Some(encoded.bytes),
-                )?;
+                )
+            };
+            match &final_total {
+                Some(total) => emitter.send_other(total, write)?,
+                None => emitter.send_running_total(write)?,
+            }
+            *emission_count += 1;
+        }
+        TransferMode::LiveProgressive => {
+            if let Some((first_sample, samples)) = range {
+                emitter.send_delta(|encoded| {
+                    let header = FrameHeader::for_encoded(
+                        request.request_id,
+                        first_sample,
+                        samples,
+                        encoded,
+                    );
+                    indicatrix_net::messages::write_stream_event(
+                        stream,
+                        &StreamEvent::Frame(header),
+                        Some(encoded.bytes),
+                    )
+                })?;
                 *emission_count += 1;
             }
         }
@@ -349,7 +362,6 @@ fn emit_display_tick<S: Write>(
     fresh: bool,
     samples_done: u32,
 ) -> Result<bool, NetError> {
-    let encoding = DisplayEncoding::for_payload_encoding(emitter.encoding());
     let dims = (request.scene.width, request.scene.height);
     match emitter.display_tick(&request.scene, fresh, samples_done) {
         DisplayUpdate::Picture(picture) => super::picture::write_display_rgba(
@@ -358,7 +370,7 @@ fn emit_display_tick<S: Write>(
             dims,
             picture.samples,
             &picture.rgba,
-            encoding,
+            emitter.link(),
         ),
         DisplayUpdate::Plain => super::picture::write_display_frame(
             stream,
@@ -366,7 +378,7 @@ fn emit_display_tick<S: Write>(
             dims,
             samples_done,
             emitter.running_total(),
-            encoding,
+            emitter.link(),
         ),
         DisplayUpdate::Nothing => Ok(false),
     }
@@ -388,7 +400,6 @@ fn emit_final_display<S: Write>(
     let mut denoiser = emitter
         .take_display()
         .unwrap_or_else(|| DisplayDenoiser::spawn(&request.scene));
-    let encoding = DisplayEncoding::for_payload_encoding(emitter.encoding());
     let dims = (request.scene.width, request.scene.height);
     let total = final_total.unwrap_or_else(|| emitter.running_total());
     let denoised = denoiser.finish(
@@ -404,7 +415,7 @@ fn emit_final_display<S: Write>(
             dims,
             request.samples,
             &rgba,
-            encoding,
+            emitter.link(),
         )?,
         None => super::picture::write_display_frame(
             stream,
@@ -412,7 +423,7 @@ fn emit_final_display<S: Write>(
             dims,
             request.samples,
             total,
-            encoding,
+            emitter.link(),
         )?,
     };
     *emission_count += u32::from(written);
@@ -450,7 +461,7 @@ fn write_preview<S: Write>(
     stream: &mut S,
     request: &RenderRequest,
     cfg: PreviewConfig,
-    emitter: &mut EmitterAccum,
+    emitter: &EmitterAccum,
     samples_done: u32,
 ) -> Result<(), NetError> {
     let preview_buffer = downsample_preview(
@@ -462,17 +473,18 @@ fn write_preview<S: Write>(
     );
     // `preview_buffer` above is already a fresh allocation (downsampling can't avoid
     // one); a `Raw` encoder hands its bytes to the writer without a second copy.
-    let encoded = emitter.encode_other(&preview_buffer);
-    let header = PreviewHeader::for_encoded(
-        request.request_id,
-        cfg.width,
-        cfg.height,
-        samples_done,
-        &encoded,
-    );
-    indicatrix_net::messages::write_stream_event(
-        stream,
-        &StreamEvent::Preview(header),
-        Some(encoded.bytes),
-    )
+    emitter.send_other(&preview_buffer, |encoded| {
+        let header = PreviewHeader::for_encoded(
+            request.request_id,
+            cfg.width,
+            cfg.height,
+            samples_done,
+            encoded,
+        );
+        indicatrix_net::messages::write_stream_event(
+            stream,
+            &StreamEvent::Preview(header),
+            Some(encoded.bytes),
+        )
+    })
 }

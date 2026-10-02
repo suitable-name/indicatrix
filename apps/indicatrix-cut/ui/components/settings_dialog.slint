@@ -40,6 +40,11 @@ export component SettingsDialog inherits Rectangle {
     // slider would only be clobbered on the next one, so the slider says so
     // instead of looking like an independent, sticky manual setting.
     property <bool> stone_size_is_design_driven: EditorModel.enabled && ViewportModel.viewport_material_linked;
+    // Surface glare only scales the built-in lighting presets: a loaded HDR map
+    // (`SettingsModel.env_map_loaded`) ignores it, so the slider greys out with a hint
+    // rather than looking like it does something.
+    property <bool> surface_glare_enabled: !SettingsModel.env_map_loaded;
+    property <int> surface_glare_shown: Math.round(SettingsModel.surface_glare_pct / 5.0) * 5;
     property <string> stone_size_tooltip: root.stone_size_is_design_driven
         ? "Girdle width in millimetres for scale-accurate rendering. Currently set from the linked design's own girdle diameter -- turn off \"Linked to design\" to set this manually."
         : "Girdle width in millimetres for scale-accurate rendering.";
@@ -78,6 +83,7 @@ export component SettingsDialog inherits Rectangle {
         SettingsModel.bounce_index = 2;
         SettingsModel.exposure_val = 1.0;
         SettingsModel.backdrop_index = 1;
+        SettingsModel.surface_glare_pct = 100.0;
         SettingsModel.light_yaw_deg = 48.0;
         SettingsModel.light_pitch_deg = 54.0;
         SettingsModel.inclusion_sigma_s = 0.0;
@@ -99,6 +105,7 @@ export component SettingsDialog inherits Rectangle {
         SettingsModel.bounces_changed(12);
         SettingsModel.exposure_changed(1.0);
         SettingsModel.backdrop_changed(1);
+        SettingsModel.surface_glare_changed(100.0);
         ViewportModel.light_pos_changed(48.0, 54.0);
         SettingsModel.inclusion_changed(0.0);
         SettingsModel.c_axis_override_changed(false);
@@ -448,6 +455,59 @@ export component SettingsDialog inherits Rectangle {
                         vertical-alignment: center;
                     }
                 }
+            }
+        }
+
+        // Surface glare: scales the white mirror image of the light on the table (the
+        // cross-polarised look), 0-100 % in steps of 5. Rust snaps and applies it
+        // (`gui::render::material_quality::setup_surface_glare_callback`).
+        VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                alignment: space-between;
+                spacing: 6px;
+                Rectangle {
+                    height: glare_lbl.preferred-height;
+                    Tooltip { text: @markdown("Hides the white mirror image of the light on the table so the inner facets stay visible. 0 % = light that entered the stone only. Applies to the built-in lighting presets, not to HDR maps, and to the path-traced view and exports (the Solid view is unaffected)."); }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        glare_lbl := Text { text: "Surface glare"; font-size: 11px; font-weight: 600; color: Theme.text-muted; }
+                        if !root.surface_glare_enabled: Text {
+                            text: "(not used with an HDR map)";
+                            font-size: 10px;
+                            font-italic: true;
+                            color: Theme.text-muted;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 6px;
+                    if root.surface_glare_shown < 100 && root.surface_glare_enabled: Rectangle {
+                        width: glare_reset_text.preferred-width;
+                        glare_reset_touch := TouchArea {
+                            clicked => {
+                                SettingsModel.surface_glare_pct = 100.0;
+                                SettingsModel.surface_glare_changed(100.0);
+                            }
+                        }
+                        glare_reset_text := Text {
+                            text: "Reset to 100 %";
+                            font-size: 10px;
+                            color: glare_reset_touch.has-hover ? Theme.accent-cyan : Theme.text-muted;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Text { text: root.surface_glare_shown + " %"; font-size: 11px; font-weight: 700; color: Theme.accent-cyan; }
+                }
+            }
+            Slider {
+                minimum: 0.0;
+                maximum: 100.0;
+                step: 5.0;
+                enabled: root.surface_glare_enabled;
+                value <=> SettingsModel.surface_glare_pct;
+                changed(val) => { SettingsModel.surface_glare_changed(Math.round(val / 5.0) * 5.0); }
             }
         }
 

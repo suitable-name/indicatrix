@@ -24,6 +24,27 @@ fn struct_sizes_match_documented_wgsl_layout() {
     assert_eq!(size_of::<GpuWavefrontParams>(), 16);
 }
 
+/// The transport uniform's glare slot sits at offset 72, defaults to the neutral `1.0`
+/// and clamps what a caller sets.
+#[test]
+fn transport_params_surface_glare_slot_defaults_to_one_and_clamps() {
+    assert_eq!(offset_of!(GpuTransportParams, surface_glare), 72);
+    let base = GpuTransportParams::new(1, 1, 0, 1, 0.0, 6500.0, 1.0, 1.0, 0.0, 0.0, [1.0; 3]);
+    assert_eq!(base.surface_glare.to_bits(), 1.0f32.to_bits());
+    assert_eq!(
+        base.with_surface_glare(0.4).surface_glare.to_bits(),
+        0.4f32.to_bits()
+    );
+    assert_eq!(
+        base.with_surface_glare(-1.0).surface_glare.to_bits(),
+        0.0f32.to_bits()
+    );
+    assert_eq!(
+        base.with_surface_glare(9.0).surface_glare.to_bits(),
+        1.0f32.to_bits()
+    );
+}
+
 /// [`offset_of!`] pinned as ordinary `#[test]`s too (see the comment above), for
 /// `GpuAbsorptionBand` and `GpuGemMaterial`: a wrong offset here is exactly the
 /// "looks right, isn't" bug class `renderer::gpu::layout_check` exists to catch

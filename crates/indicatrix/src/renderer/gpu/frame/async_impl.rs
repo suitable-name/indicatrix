@@ -376,7 +376,8 @@ impl<'s, 'a> AsyncCallInputs<'s, 'a> {
         .with_debug_buffers_disabled()
         .with_studio_use_d65(use_d65)
         .with_studio_model(studio_model)
-        .with_backdrop(backdrop);
+        .with_backdrop(backdrop)
+        .with_surface_glare(scene.environment.surface_glare());
         (camera_params, params)
     }
 }
