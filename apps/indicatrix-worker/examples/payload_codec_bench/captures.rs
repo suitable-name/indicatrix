@@ -15,9 +15,7 @@
 //! capture, and synthetic checks cover NaN payloads, signed zeros, infinities and
 //! subnormals plus a crafted decompression bomb per codec.
 //!
-//! ```text
-//! cargo run -p indicatrix-worker --profile probe --example payload_codec_bench -- <dir>
-//! ```
+//! Selected with `--captures <dir>`; see the parent example's help for the synthetic sweep.
 
 use std::{error::Error, fmt::Write as _, path::Path, time::Instant};
 
@@ -437,15 +435,12 @@ fn bomb_checks() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Entry point: `payload_codec_bench <capture-dir>`.
-fn main() -> Result<(), Box<dyn Error>> {
-    let dir = std::env::args()
-        .nth(1)
-        .ok_or("usage: payload_codec_bench <capture-dir>")?;
+/// Runs the capture-directory report for `dir`.
+pub fn run(dir: &str) -> Result<(), Box<dyn Error>> {
     synthetic_round_trip()?;
     bomb_checks()?;
 
-    let mut files: Vec<_> = std::fs::read_dir(&dir)?
+    let mut files: Vec<_> = std::fs::read_dir(dir)?
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "xyz"))

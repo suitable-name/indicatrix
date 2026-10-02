@@ -213,10 +213,10 @@ if ($Cpu -eq 'avx512' -and -not (Get-Avx512Supported)) {
 }
 
 $cpuList = if ($Cpu -in @('all', 'both')) { @('avx512', 'avx2', 'scalar') } else { @($Cpu) }
-if ($cpuList -contains 'avx512' -and -not (Get-Avx512Supported)) {
-    Write-Warning "Dropping avx512 from -Cpu all: this host's native CPU has no AVX-512 " +
-    "support (see Test-Avx512Supported). Building avx2 and scalar only -- the documented " +
-    "default pair. Pass -Cpu avx512 explicitly on AVX-512-capable hardware to opt back in."
+if (-not $Native -and $cpuList -contains 'avx512' -and -not (Get-Avx512Supported)) {
+    Write-Warning ("Dropping avx512 from -Cpu all: this host's native CPU has no AVX-512 " +
+        "support (see Test-Avx512Supported). Building avx2 and scalar only -- the documented " +
+        "default pair. Pass -Cpu avx512 explicitly on AVX-512-capable hardware to opt back in.")
     $cpuList = @($cpuList | Where-Object { $_ -ne 'avx512' })
 }
 # -Native replaces the tier list (it used to append to it).
@@ -637,6 +637,7 @@ else {
         $sharedMerged = Get-SharedProfilePath $pgoProfileDir $Target $name
         $cpuFlag = @('-C', "target-cpu=$TargetCpu")
         $logfile = Join-Path $tdir 'build.log'
+        New-Item -ItemType Directory -Force $tdir | Out-Null
         $null > $logfile # Truncate/create log file, so Test-ProfileWarnings has something to scan
 
         # Same feature string, same package set (indicatrix + whichever of
