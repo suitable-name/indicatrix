@@ -1,13 +1,16 @@
-//! Resolves a [`Design`] from a catalogue entry's full record -- preferring a real
-//! attached schedule (and, when present, its paired native sidecar) over the
-//! angle-table placeholder reconstruction. The bare-`.asc` half
+//! Resolves a [`Design`] from a catalogue entry's full record -- preferring an attached
+//! self-contained `.indicatrix` design file, then a real attached schedule (and, when
+//! present, its paired older sidecar), over the angle-table placeholder
+//! reconstruction. The bare-`.asc` half
 //! (`design_from_asc_text`, the default preform, [`LoadedDesign`]) lives in
 //! `indicatrix_editor::loading`, shared with the web app.
 
 use indicatrix::geometry::stone_metrics::ExternalProportions;
 use indicatrix_cut_core::{
     Design, load_paired,
-    native::{LEGACY_NATIVE_EXTENSION_SUFFIX, NATIVE_EXTENSION_SUFFIX},
+    native::{
+        DesignMetadata, LEGACY_NATIVE_EXTENSION_SUFFIX, NATIVE_EXTENSION_SUFFIX, design_from_str,
+    },
 };
 use indicatrix_editor::loading::{
     LoadedDesign, default_preform_for_schedule, design_from_asc_text,
@@ -15,15 +18,14 @@ use indicatrix_editor::loading::{
 use indicatrix_vault::model::file::AttachedFile;
 use tracing::warn;
 
-/// A sibling native sidecar (current `.indicatrix.toml`, or the legacy
+/// A sibling older sidecar (current `.indicatrix.toml`, or the legacy
 /// `.gemcut.toml`) among `files`, if the catalogue entry has one attached alongside
 /// its `.asc` -- see [`design_from_asc_and_native`]'s own doc comment for why that
 /// combination is worth preferring over the bare `.asc` alone.
 ///
-/// Nothing in this app's importer attaches a second file today (`gui::library::
-/// local::import` collects only `.asc`), so this currently only ever matches when a
-/// FUTURE import (or a remote source) starts doing so -- see this crate's own
-/// handoff notes for that other half.
+/// The importer attaches the sidecar it finds beside a `.asc` (`gui::library::local::
+/// import`), and a remote source may attach one too. A self-contained `.indicatrix`
+/// design file is a different attachment: see [`design_from_design_attachment`].
 fn native_sidecar_attachment(files: &[AttachedFile]) -> Option<&AttachedFile> {
     files.iter().find(|f| {
         let lower = f.name.to_lowercase();
@@ -32,7 +34,7 @@ fn native_sidecar_attachment(files: &[AttachedFile]) -> Option<&AttachedFile> {
 }
 
 /// [`design_from_full_record`]'s preferred path when a catalogue entry carries BOTH
-/// a real `.asc` attachment and a native sidecar paired with it: [`load_paired`]
+/// a real `.asc` attachment and an older sidecar paired with it: [`load_paired`]
 /// restores the sidecar's own preform/material/girdle-diameter unconditionally, and
 /// (when the fingerprint still matches) every tier's authored meet constraint and
 /// detached-facet set too -- all of which a bare `.asc` re-import otherwise
@@ -56,15 +58,76 @@ fn design_from_asc_and_native(
             used_placeholder: false,
             asc_filename: Some(asc_name.to_string()),
             original_asc_text: Some(asc_text.to_string()),
+            metadata: DesignMetadata::default(),
+            attachments: Vec::new(),
         }),
         Err(e) => {
             warn!(
-                "Native sidecar paired with '{asc_name}' on diagram #{entry_id} failed to \
+                "Older sidecar paired with '{asc_name}' on diagram #{entry_id} failed to \
                  load ({e}); falling back to the plain .asc schedule."
             );
             design_from_asc_text(asc_name, asc_text, lw_ratio)
         }
     }
+}
+
+/// The design built from `full`'s self-contained `.indicatrix` attachment, if it has
+/// one that reads. The file carries the whole design, so it wins over any `.asc`,
+/// `.gem` or `.gcs` attached beside it (an import attaches a `.indicatrix` file found
+/// next to its schedule; a catalogue save attaches the saved design beside the `.asc`
+/// it wrote).
+///
+/// The design is recorded under the attached `.asc`'s name when there is one -- with
+/// that text kept, so a later Save can preserve it byte for byte -- else under
+/// `<stem>.asc` of the converted `.gem`/`.gcs` or of the design file itself. `None`
+/// (logged) when the attachment is not UTF-8 or does not parse, so the schedule beside
+/// it still loads.
+fn design_from_design_attachment(
+    full: &indicatrix_vault::model::entry::FullDiagramRecord,
+) -> Option<LoadedDesign> {
+    let names = || full.attached_files.iter().map(|f| f.name.as_str());
+    let attached =
+        &full.attached_files[indicatrix_vault::local::native_design_attachment_position(names())?];
+    let parsed = std::str::from_utf8(&attached.content)
+        .map_err(|e| e.to_string())
+        .and_then(|text| design_from_str(text).map_err(|e| e.to_string()));
+    let loaded = match parsed {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            warn!(
+                "Attached design file '{}' on diagram #{} could not be read ({e}); using the \
+                 schedule beside it.",
+                attached.name, full.entry_id
+            );
+            return None;
+        }
+    };
+    let schedule = indicatrix_vault::local::design_attachment_position(names())
+        .map(|(position, kind)| (&full.attached_files[position], kind));
+    let (asc_filename, original_asc_text) = match schedule {
+        Some((file, indicatrix_vault::local::DesignFileKind::Asc)) => (
+            file.name.clone(),
+            Some(indicatrix_formats::asc::decode_asc_bytes(&file.content).into_owned()),
+        ),
+        Some((file, _)) => (
+            indicatrix_vault::local::converted_asc_file_name(&file.name),
+            None,
+        ),
+        None => (
+            indicatrix_vault::local::converted_asc_file_name(&attached.name),
+            None,
+        ),
+    };
+    Some(LoadedDesign {
+        design: loaded.design,
+        used_placeholder: false,
+        asc_filename: Some(asc_filename),
+        original_asc_text,
+        // Kept so a Save from this design writes the file's own `[meta]` and
+        // attachments back instead of dropping them.
+        metadata: loaded.metadata,
+        attachments: loaded.attachments,
+    })
 }
 
 /// The design built from `full`'s design-file attachment, picked by
@@ -75,18 +138,23 @@ fn design_from_asc_and_native(
 /// masts instead of the angle-table placeholder. Reading runs inside
 /// `gui::library::local::catch_file_panic`, the importer's own per-file guard.
 ///
-/// A `.asc` paired with a native sidecar attachment goes through
+/// A `.asc` paired with an older sidecar attachment goes through
 /// [`design_from_asc_and_native`]; a converted `.gem`/`.gcs` never does (a
 /// sidecar's fingerprint describes a `.asc`).
 ///
 /// `None` when the record has no design-file attachment; `Some(Err)` (a ready
 /// message) when it has one that does not read, convert or parse.
 ///
+/// A self-contained `.indicatrix` attachment comes first ([`design_from_design_attachment`]).
+///
 /// Also the design-file half of `super::catalogue_planes::resolve_catalogue_planes`,
 /// so the editor's Load Selected and every plane consumer read the same file.
 pub(super) fn design_from_attachment(
     full: &indicatrix_vault::model::entry::FullDiagramRecord,
 ) -> Option<Result<LoadedDesign, String>> {
+    if let Some(loaded) = design_from_design_attachment(full) {
+        return Some(Ok(loaded));
+    }
     let (position, kind) = indicatrix_vault::local::design_attachment_position(
         full.attached_files.iter().map(|f| f.name.as_str()),
     )?;
@@ -146,7 +214,7 @@ pub(super) fn design_from_attachment(
 /// export path already does, rather than silently handing the user a schedule whose
 /// masts are all zero.
 ///
-/// When a native sidecar is attached alongside the `.asc` (see
+/// When an older sidecar is attached alongside the `.asc` (see
 /// [`native_sidecar_attachment`]), [`design_from_asc_and_native`] is preferred over
 /// the plain `.asc` path so an imported design does not lose the sidecar-only fields
 /// a re-import would otherwise silently discard.
@@ -183,6 +251,8 @@ pub(in crate::gui::editor) fn design_from_full_record(
         used_placeholder: true,
         asc_filename: None,
         original_asc_text: None,
+        metadata: DesignMetadata::default(),
+        attachments: Vec::new(),
     })
 }
 
@@ -340,6 +410,74 @@ mod tests {
         assert!(!loaded.used_placeholder);
         assert_eq!(loaded.asc_filename.as_deref(), Some("design.asc"));
         assert_eq!(loaded.design.tiers.len(), 1);
+    }
+
+    /// A record whose attachments hold a `.asc` AND a self-contained `.indicatrix` file
+    /// opens from the design file (every tier of it), under the `.asc`'s name.
+    #[test]
+    fn design_from_full_record_prefers_an_attached_indicatrix_file() {
+        use indicatrix_cut_core::{
+            ConstraintTier, PreformSpec, ScheduleMeta, native::DesignExtras,
+        };
+        let design = Design::new(
+            PreformSpec::block(2.0, 1.0, 2.0),
+            ScheduleMeta::standard_round_brilliant(),
+            ConstraintTier::standard_round_brilliant(),
+        );
+        let text =
+            indicatrix_cut_core::native::design_to_string(&design, None, &DesignExtras::default())
+                .expect("serializes");
+        let asc = b"GemCad 5.0\ng 96 0.0\ny 4 y\nI 1.54\na -41.000000 0.64991234 92 n 1 84\n";
+        let mut full = empty_full_record();
+        full.attached_files.push(AttachedFile {
+            name: "round.asc".to_string(),
+            url: String::new(),
+            content: asc.to_vec(),
+        });
+        full.attached_files.push(AttachedFile {
+            name: "round.indicatrix".to_string(),
+            url: String::new(),
+            content: text.into_bytes(),
+        });
+        let loaded = design_from_full_record(&full).unwrap();
+        assert!(!loaded.used_placeholder);
+        assert_eq!(loaded.design.tiers.len(), design.tiers.len());
+        assert_eq!(loaded.asc_filename.as_deref(), Some("round.asc"));
+        assert!(loaded.original_asc_text.is_some());
+
+        // Alone, the design file names the design after itself and has no `.asc` text.
+        full.attached_files.remove(0);
+        let lone = design_from_full_record(&full).unwrap();
+        assert_eq!(lone.asc_filename.as_deref(), Some("round.asc"));
+        assert_eq!(lone.original_asc_text, None);
+        assert_eq!(lone.design.tiers.len(), design.tiers.len());
+    }
+
+    /// An attached `.indicatrix` file that does not parse leaves the `.asc` beside it
+    /// to load, and is not used on its own.
+    #[test]
+    fn an_unreadable_indicatrix_attachment_is_not_used() {
+        let mut full = empty_full_record();
+        full.attached_files.push(AttachedFile {
+            name: "design.asc".to_string(),
+            url: String::new(),
+            content: b"GemCad 5.0\ng 96 0.0\ny 4 y\nI 1.54\na -41.000000 0.64991234 92 n 1 84\n"
+                .to_vec(),
+        });
+        full.attached_files.push(AttachedFile {
+            name: "design.indicatrix".to_string(),
+            url: String::new(),
+            content: b"not a design".to_vec(),
+        });
+        let loaded = design_from_full_record(&full).unwrap();
+        assert_eq!(loaded.design.tiers.len(), 1, "the .asc still loads");
+
+        full.attached_files.remove(0);
+        full.attached_files[0].content = Vec::new();
+        assert!(
+            design_from_design_attachment(&full).is_none(),
+            "an unreadable lone design file is not used"
+        );
     }
 
     #[test]

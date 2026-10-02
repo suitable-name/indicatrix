@@ -86,6 +86,7 @@ pub fn push_design(ui: &AppWindow, app: &WebApp) {
         model.set_has_design(false);
         model.set_design_name(SharedString::new());
         model.set_source_kind(SharedString::new());
+        model.set_design_info(SharedString::new());
         model.set_is_dirty(false);
         model.set_tier_count(0);
         model.set_can_undo(false);
@@ -95,6 +96,7 @@ pub fn push_design(ui: &AppWindow, app: &WebApp) {
     model.set_has_design(true);
     model.set_design_name(design.display_name().into());
     model.set_source_kind(design.source.label().into());
+    model.set_design_info(design.info_text().into());
     model.set_is_dirty(design.session.is_dirty());
     model.set_tier_count(design.session.design.tiers.len() as i32);
     model.set_can_undo(design.session.history.can_undo());

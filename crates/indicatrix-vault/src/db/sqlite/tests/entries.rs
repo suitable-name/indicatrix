@@ -162,7 +162,7 @@ fn update_diagram_entry_url_changes_only_the_url_and_bumps_updated_at() {
     let path = temp_db_path("update_entry_url");
     let db = Database::new(Some(path.to_str().unwrap())).expect("create migrated db");
     let entry = FacetingDiagramEntry {
-        title: "Save Native round trip".to_string(),
+        title: "Save round trip".to_string(),
         url: "local://old_name.asc".to_string(),
         design_id: "keep-me".to_string(),
     };
@@ -174,8 +174,8 @@ fn update_diagram_entry_url_changes_only_the_url_and_bumps_updated_at() {
     let full = db.get_diagram_full(id).unwrap().unwrap();
     assert_eq!(full.url, "local://new_name.asc");
     // Title/design_id are a cutter's own hand-corrections (or, for design_id, synced
-    // from elsewhere) -- a "Save Native As..." file-name change must not touch either.
-    assert_eq!(full.title, "Save Native round trip");
+    // from elsewhere) -- a "Save As..." file-name change must not touch either.
+    assert_eq!(full.title, "Save round trip");
     assert_eq!(full.design_id.as_deref(), Some("keep-me"));
 
     let _ = std::fs::remove_file(&path);
@@ -476,7 +476,7 @@ fn diagram_entry_id_for_url_finds_an_existing_row_and_none_for_an_unknown_one() 
 
 /// `save_diagram_entry` is a url-keyed UPSERT: a DIFFERENT design saved under a taken url
 /// lands on the first design's row and renames it, and `save_diagram_detail` then
-/// replaces that row's angle table. The caller that must not do this (Save Native's
+/// replaces that row's angle table. The caller that must not do this (Save's
 /// catalogue write-back) asks `diagram_entry_for_url` first; this pins both halves.
 #[test]
 fn save_diagram_entry_on_a_colliding_url_returns_the_existing_row_and_renames_it() {

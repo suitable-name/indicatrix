@@ -221,7 +221,7 @@ export component GlobalDialogsOverlay inherits Rectangle {
         z: 350;
     }
 
-    // Unsaved-changes guard for New/Load Selected/Open Native -- see
+    // Unsaved-changes guard for New/Load Selected/Open -- see
     // `EditorModel.unsaved_dialog_*`'s own doc comment.
     // Deliberately last-but-one in this stack: it only
     // appears at startup, when none of the others can be open.
@@ -260,14 +260,14 @@ export component GlobalDialogsOverlay inherits Rectangle {
         }
     }
 
-    // The native-load fingerprint-mismatch choice -- see
+    // The older-sidecar fingerprint-mismatch choice -- see
     // `EditorModel.mismatch_dialog_*`'s own doc comment.
     if EditorModel.mismatch_dialog_open: ConfirmActionDialog {
         width: 100%;
         height: 100%;
         z: 500;
-        heading: "Native Sidecar Out of Sync";
-        message: "The paired .asc file was changed outside the editor since this native file was last saved, so its per-tier meet constraints and detached facets can no longer be trusted to line up by position. Apply them anyway, or continue with the .asc alone?";
+        heading: "Older Sidecar Out of Sync";
+        message: "The paired .asc file was changed outside the editor since this older .indicatrix.toml sidecar was last saved, so its per-tier meet constraints and detached facets can no longer be trusted to line up by position. Apply them anyway, or continue with the .asc alone?";
         primary_label: EditorModel.mismatch_dialog_can_apply ? "Apply Sidecar Anyway" : "";
         secondary_label: "Use .asc Only";
         primary => { EditorModel.mismatch_dialog_apply_anyway(); }
@@ -280,7 +280,7 @@ export component GlobalDialogsOverlay inherits Rectangle {
 
     // Replaces the two blocking `rfd::MessageDialog` Yes/No prompts
     // `gui::editor::native_io` would otherwise show on the UI thread ("not a
-    // closed solid, write anyway?" and "overwrite an unrelated sidecar?") --
+    // closed solid, write anyway?" and similar) --
     // see `EditorModel.write_confirm_*`'s own doc comment. No `secondary_label`
     // set: Cancel alone is the decline.
     if EditorModel.write_confirm_open: ConfirmActionDialog {

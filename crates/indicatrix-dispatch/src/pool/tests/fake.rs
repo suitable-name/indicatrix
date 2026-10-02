@@ -7,7 +7,7 @@ use indicatrix_net::SceneState;
 use std::{
     sync::{
         Arc, Barrier, Mutex, PoisonError,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     thread,
     time::Duration,
@@ -139,6 +139,68 @@ impl FakeLane {
             Failure::Never | Failure::First { .. } | Failure::Panic => None,
         }
         .filter(|&after| after < range.samples)
+    }
+}
+
+/// A lane whose backing resource dies: it traces `healthy_chunks` chunks completely, then
+/// traces only `after` samples of the next one, reports it short, and is
+/// [`WorkerLane::lost`] from then on (every later chunk fails outright).
+pub(super) struct DyingLane {
+    inner: FakeLane,
+    healthy_chunks: u32,
+    after: u32,
+    chunks: AtomicU32,
+    dead: AtomicBool,
+}
+
+impl DyingLane {
+    pub(super) fn new(per_sample: Duration, healthy_chunks: u32, after: u32) -> Self {
+        Self {
+            inner: FakeLane::new("dying", Values::Integer, per_sample, Failure::Never),
+            healthy_chunks,
+            after,
+            chunks: AtomicU32::new(0),
+            dead: AtomicBool::new(false),
+        }
+    }
+
+    /// The sample indices this lane delivered.
+    pub(super) fn traced(&self) -> Vec<u32> {
+        self.inner.traced()
+    }
+
+    /// How many chunks this lane was handed.
+    pub(super) fn chunks(&self) -> u32 {
+        self.chunks.load(Ordering::Relaxed)
+    }
+}
+
+impl WorkerLane for DyingLane {
+    fn name(&self) -> &'static str {
+        "dying"
+    }
+
+    fn render_chunk(
+        &self,
+        scene: &SceneState,
+        range: SampleRange,
+        cancel: &CancelToken,
+    ) -> ChunkResult {
+        let number = self.chunks.fetch_add(1, Ordering::Relaxed);
+        if self.dead.load(Ordering::Relaxed) {
+            return ChunkResult::failed("connection closed".to_owned());
+        }
+        if number < self.healthy_chunks {
+            return self.inner.render_chunk(scene, range, cancel);
+        }
+        let head = SampleRange::new(range.first_sample, self.after.min(range.samples));
+        let traced = self.inner.render_chunk(scene, head, cancel);
+        self.dead.store(true, Ordering::Relaxed);
+        ChunkResult::partial(traced.sum, traced.done, "connection closed".to_owned())
+    }
+
+    fn lost(&self) -> bool {
+        self.dead.load(Ordering::Relaxed)
     }
 }
 

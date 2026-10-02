@@ -120,7 +120,7 @@ fn wire_file_actions(model: &AppModel<'_>, ctx: &Ctx) {
     let c = ctx.clone();
     model.on_save_native_pair(move || io::save::save_native_pair(&c));
     let c = ctx.clone();
-    model.on_save_native_only(move || io::save::save_native_only(&c));
+    model.on_save_design(move || io::save::save_design(&c));
     let c = ctx.clone();
     model.on_download_cutting_sheet(move || io::save::download_cutting_sheet(&c));
     let c = ctx.clone();

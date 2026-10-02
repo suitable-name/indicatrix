@@ -89,6 +89,7 @@
 //! what is left and leave a fast joined worker (an A100 dialed in over `join`) idling in
 //! `Epoch::claim` for the whole of that one chunk.
 
+mod late;
 mod limits;
 mod plan;
 mod producer;

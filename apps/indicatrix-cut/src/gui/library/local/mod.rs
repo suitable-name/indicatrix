@@ -24,7 +24,7 @@ pub use organize::{
     setup_remove_tag_callback, setup_rename_callback, setup_set_shape_callback,
 };
 
-/// Re-exported for `gui::editor::native_io`'s own catalogue write-back: "Save Native"
+/// Re-exported for `gui::editor::native_io`'s own catalogue write-back: "Save"
 /// merges into an existing source row, or measures a brand-new one, using exactly the
 /// same rules a `.asc` re-import already applies -- see each function's own doc
 /// comment. `helpers`/`import` stay private modules; only these specific helpers

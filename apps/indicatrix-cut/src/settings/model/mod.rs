@@ -12,8 +12,10 @@
 //! snapshots), and [`settings_file`] (`SettingsFile`, the full on-disk document).
 
 mod app_settings;
+mod import_preview;
 mod lighting_preset;
 mod local_compute;
+mod recent_files;
 mod remote_endpoint;
 mod settings_file;
 #[cfg(test)]
@@ -23,6 +25,7 @@ mod tests_remote;
 mod worker;
 
 pub use app_settings::clamp_remote_batch_lanes;
+pub use import_preview::ImportPreviewChoice;
 pub use lighting_preset::LightingPreset;
 pub use local_compute::LocalComputeTarget;
 pub use remote_endpoint::{ExportTransfer, LiveTransfer, RemoteEndpoint};

@@ -104,7 +104,7 @@ pub enum FinishSpec {
     PerFacet(Vec<bool>),
 }
 
-/// A custom material as the native file's `[material.custom]` table records it --
+/// A custom material as the design file's `[material.custom]` table records it --
 /// the fields `native::gem_material_from_custom_snapshot` reads.
 ///
 /// A mirror rather than `CustomMaterialSnapshot` itself: that type flattens unknown TOML

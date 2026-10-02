@@ -2,7 +2,7 @@
 
 use super::{local_load::load_diagram_detail, shared::non_empty};
 use crate::{
-    LibraryModel, MainWindow,
+    EditorModel, LibraryModel, MainWindow,
     bridge::{library::source::LibrarySource, render_thread::RenderContext},
     gui::{
         library::{
@@ -119,6 +119,11 @@ pub fn setup_save_metadata_callback(
             match result {
                 Ok(()) => {
                     show_toast(&ui, "Metadata updated.", "success");
+                    // When this is the design open in the editor, its file now lags the
+                    // row: mark it unsaved so the next Save writes the edit.
+                    if crate::gui::editor::native_io::mark_design_row_edited(entry_id) {
+                        ui.global::<EditorModel>().set_is_dirty(true);
+                    }
                     load_diagram_detail(&ui, &db_meta, &render_ctx_meta, entry_id);
                     // Refreshes the visible list/filters the same way
                     // `library::refresh_after_library_change` does for rename/shape --

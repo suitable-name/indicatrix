@@ -38,7 +38,7 @@ If you click Compare to Snapshot before ever taking one, you get a toast:
 **A snapshot is not saved anywhere.** It lives only in memory for the rest
 of this session — closing the design, closing the app, or clicking
 Snapshot Design again (which replaces it) all lose it. It is not written
-to the native sidecar file, and it is not the same thing as Deep Solve's
+to the `.indicatrix` file, and it is not the same thing as Deep Solve's
 comparison against the catalogue's printed proportions (Chapter 8) — a
 snapshot only ever compares the current design against your own earlier
 click of Snapshot Design, never against catalogue data.
@@ -87,7 +87,7 @@ result is then **kept** depends on one thing: does this design already
 have a row in your catalogue?
 
 - **Design already in the catalogue** (you loaded it from there, or have
-  already run Save Native at least once): the curves are written back to
+  already run Save at least once): the curves are written back to
   that catalogue row, and you get a success toast, e.g. "Saved
   tilt-performance curves for this design." A later Tilt Performance
   filter (Chapter 2) can then use them without recomputing.
@@ -164,5 +164,5 @@ thing that can ever refresh a trace.
 ## Next steps
 
 Chapter 6 covers Retarget in full; Chapter 8 covers Deep Solve's own,
-catalogue-proportion-based comparison; Chapter 11 covers Save Native and
+catalogue-proportion-based comparison; Chapter 11 covers Save and
 what putting a design in your catalogue actually means.

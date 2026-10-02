@@ -3,7 +3,7 @@
 //!
 //! Moved from the desktop's `tier_actions::viewport_material`; both editors apply the
 //! result to the design's `printed_proportions`, which feeds Deep Solve's external
-//! verification target on the desktop and rides in a native file's `[source]` table on
+//! verification target on the desktop and rides in a design file's `[source]` table on
 //! both.
 
 use indicatrix::geometry::stone_metrics::ExternalProportions;

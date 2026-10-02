@@ -10,11 +10,13 @@ use slint::{ComponentHandle, SharedString};
 const KIND_BLOCK: i32 = 0;
 const KIND_CYLINDER: i32 = 1;
 const KIND_PEBBLE: i32 = 2;
+/// An imported mesh (convex outline); only [`RoughBase::Hull`] has this kind.
+const KIND_HULL: i32 = 3;
 
 /// The base fields exactly as typed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct BaseFields {
-    /// 0 block, 1 cylinder, 2 pebble.
+    /// 0 block, 1 cylinder, 2 pebble, 3 imported mesh.
     pub(super) kind: i32,
     /// Block and pebble X.
     pub(super) x: String,
@@ -108,6 +110,7 @@ pub(super) const fn kind_of(base: &RoughBase) -> i32 {
         RoughBase::Block { .. } => KIND_BLOCK,
         RoughBase::Cylinder { .. } => KIND_CYLINDER,
         RoughBase::Pebble { .. } => KIND_PEBBLE,
+        RoughBase::Hull { .. } => KIND_HULL,
     }
 }
 
@@ -194,6 +197,10 @@ pub(super) fn pending_base(
     fields: &BaseFields,
     current: &RoughBase,
 ) -> Result<Option<RoughBase>, String> {
+    // An imported mesh's sizes are shown, not edited.
+    if fields.kind == KIND_HULL && matches!(current, RoughBase::Hull { .. }) {
+        return Ok(None);
+    }
     let typed = parse_base(fields)?;
     if typed == *current {
         Ok(None)
@@ -207,7 +214,11 @@ pub(super) fn push_base(window: &RoughPlannerWindow, base: &RoughBase) {
     let model = window.global::<RoughPlanModel>();
     model.set_base_kind(kind_of(base));
     match *base {
-        RoughBase::Block { x_mm, y_mm, z_mm } | RoughBase::Pebble { x_mm, y_mm, z_mm } => {
+        RoughBase::Block { x_mm, y_mm, z_mm }
+        | RoughBase::Pebble { x_mm, y_mm, z_mm }
+        | RoughBase::Hull {
+            x_mm, y_mm, z_mm, ..
+        } => {
             model.set_rough_x(size_text(x_mm));
             model.set_rough_y(size_text(y_mm));
             model.set_rough_z(size_text(z_mm));
@@ -235,7 +246,11 @@ mod tests {
             ..BaseFields::default()
         };
         match *base {
-            RoughBase::Block { x_mm, y_mm, z_mm } | RoughBase::Pebble { x_mm, y_mm, z_mm } => {
+            RoughBase::Block { x_mm, y_mm, z_mm }
+            | RoughBase::Pebble { x_mm, y_mm, z_mm }
+            | RoughBase::Hull {
+                x_mm, y_mm, z_mm, ..
+            } => {
                 fields.x = size_string(x_mm);
                 fields.y = size_string(y_mm);
                 fields.z = size_string(z_mm);

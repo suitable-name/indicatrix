@@ -9,6 +9,7 @@ mod e2e;
 mod fixtures;
 mod hdr;
 mod jobs;
+mod late;
 mod pictures;
 mod registry;
 mod small_pictures;

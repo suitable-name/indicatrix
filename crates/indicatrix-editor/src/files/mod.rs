@@ -3,12 +3,14 @@
 //!
 //! Everything here is a pure function of names, bytes and text:
 //!
-//! - [`InputFileKind::from_file_name`]: what an opened/dropped file is, by its name.
+//! - [`InputFileKind::classify`] / [`InputFileKind::from_file_name`]: what an
+//!   opened/dropped file is, by its content and name or by its name alone.
 //! - [`convert_foreign_design`]: a `.gem`/`.gcs` design converted to `.asc` text,
 //!   the same rule `indicatrix_vault::local::design_file_to_asc_text` applies for
 //!   the desktop (the vault crate links SQLite, so a browser build cannot call it).
-//! - [`paired_asc_index`]: which of several `.asc` files a native sidecar pairs with.
-//! - [`suggested_asc_file_name`], [`native_file_name_for_asc`],
+//! - [`paired_asc_index`]: which of several `.asc` files an older `.indicatrix.toml` sidecar
+//!   pairs with.
+//! - [`suggested_asc_file_name`], [`native_file_name_for_asc`] (the older sidecar's name),
 //!   [`cutting_sheet_file_name`], [`diagram_file_name`]: the desktop's default save
 //!   names (`apps/indicatrix-cut`'s `native_io::picker::suggested_file_name` and its
 //!   export callbacks), so a download is named the way the desktop's save dialog
@@ -21,20 +23,26 @@ use indicatrix_formats::{
     asc::{AscSchedule, to_asc_string},
     gcs::{gcs_to_asc_schedule, parse_gcs_bytes},
     gem::{gem_to_asc_schedule, parse_gem},
-    native::{LEGACY_NATIVE_EXTENSION_SUFFIX, NATIVE_EXTENSION_SUFFIX},
+    native::{
+        LEGACY_NATIVE_EXTENSION_SUFFIX, NATIVE_EXTENSION_SUFFIX,
+        design::{DESIGN_EXTENSION, FileKind, detect_kind},
+    },
 };
 
 #[cfg(test)]
 mod tests;
 
-/// What an opened or dropped file is, judged by its name (case-insensitive).
+/// What an opened or dropped file is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputFileKind {
     /// `.asc` cutting instructions.
     Asc,
-    /// A native `.indicatrix.toml` sidecar (or the legacy `.gemcut.toml`, or any
-    /// other `.toml` -- the desktop's Open dialog offers "All TOML files" too).
-    NativeToml,
+    /// A self-contained `.indicatrix` design file.
+    Design,
+    /// An older overlay sidecar (`.indicatrix.toml`, the `.gemcut.toml` before it, or
+    /// any other `.toml` -- the desktop's Open dialog offers "All TOML files" too),
+    /// read together with its `.asc`.
+    Sidecar,
     /// `GemCAD`'s binary `.gem` save file.
     Gem,
     /// Gem Cut Studio's `.gcs` file.
@@ -44,19 +52,44 @@ pub enum InputFileKind {
 }
 
 impl InputFileKind {
-    /// The kind `file_name` names, or `None` for a file this app does not open.
+    /// The kind `file_name` names (case-insensitive), or `None` for a file this app
+    /// does not open. `.indicatrix` is a [`Self::Design`], any `.toml` a
+    /// [`Self::Sidecar`]; use [`Self::classify`] when the content is at hand, since a
+    /// `.toml` may in fact be a design file.
     #[must_use]
     pub fn from_file_name(file_name: &str) -> Option<Self> {
         let lower = file_name.to_ascii_lowercase();
         let extension = lower.rsplit_once('.').map(|(_, ext)| ext)?;
         match extension {
             "asc" => Some(Self::Asc),
-            "toml" => Some(Self::NativeToml),
+            ext if ext == DESIGN_EXTENSION => Some(Self::Design),
+            "toml" => Some(Self::Sidecar),
             "gem" => Some(Self::Gem),
             "gcs" => Some(Self::Gcs),
             "hdr" => Some(Self::Hdr),
             _ => None,
         }
+    }
+
+    /// The kind of the file called `file_name` holding `bytes`, or `None` for a file
+    /// the app does not open.
+    ///
+    /// `.hdr`, `.asc`, `.gem` and `.gcs` are judged by name. A `.indicatrix` or `.toml`
+    /// file is judged by its header ([`detect_kind`]): a design file is
+    /// [`Self::Design`], an older overlay sidecar [`Self::Sidecar`], whatever the name.
+    /// A file whose header says neither keeps the kind its extension suggests, so the
+    /// loader's own error message names what is wrong with it.
+    #[must_use]
+    pub fn classify(file_name: &str, bytes: &[u8]) -> Option<Self> {
+        let by_name = Self::from_file_name(file_name)?;
+        if !matches!(by_name, Self::Design | Self::Sidecar) {
+            return Some(by_name);
+        }
+        Some(match detect_kind(bytes) {
+            FileKind::Design => Self::Design,
+            FileKind::OverlaySidecar => Self::Sidecar,
+            FileKind::Unknown => by_name,
+        })
     }
 
     /// Whether this kind describes a design (as opposed to an environment map).
@@ -157,7 +190,7 @@ fn flatten_line_breaks(schedule: &mut AscSchedule) {
     }
 }
 
-/// The `.asc` name a native sidecar named `native_file_name` guesses for its pair
+/// The `.asc` name an older sidecar named `native_file_name` guesses for its pair
 /// (`round.indicatrix.toml` -> `round.asc`, legacy `.gemcut.toml` too); `None` when
 /// the name ends in neither suffix.
 #[must_use]
@@ -176,7 +209,7 @@ pub fn asc_name_for_native(native_file_name: &str) -> Option<String> {
         })
 }
 
-/// Which of `asc_names` a native sidecar pairs with, when several files were opened
+/// Which of `asc_names` an older sidecar pairs with, when several files were opened
 /// together.
 ///
 /// The sidecar's own recorded `asc_filename` first (exact, then case-insensitive),
@@ -243,7 +276,7 @@ pub fn suggested_asc_file_name(asc_filename: Option<&str>, headers: &[String]) -
     }
 }
 
-/// The native sidecar name paired with `asc_file_name`: its extension replaced by
+/// The older sidecar name paired with `asc_file_name`: its extension replaced by
 /// `.indicatrix.toml` (`round.asc` -> `round.indicatrix.toml`), or the suffix
 /// appended to a name with no extension.
 #[must_use]

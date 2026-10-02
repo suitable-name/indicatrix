@@ -57,7 +57,7 @@ export component EditorDesignSettings inherits Rectangle {
     // "Apply Printed" pending marker -- same treatment.
     property <bool> printed_pending: false;
     // `form_reset_pulse` (`ui/models/editor.slint`) bumps on New/Load Selected/
-    // Open Native -- a different design underneath these fields, where a leftover
+    // Open -- a different design underneath these fields, where a leftover
     // "pending" flag from the previous design would mislead. Local alias so
     // `changed` can watch a global's property, as `editor_inspector.slint` does.
     property <int> tracked_form_reset_pulse: EditorModel.form_reset_pulse;

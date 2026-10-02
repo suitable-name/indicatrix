@@ -29,19 +29,33 @@ enum AfterFailure {
     Retired,
 }
 
+/// Takes lane `index` out of the epoch when its resource is gone for good and another
+/// lane is left to carry on. Its unfinished chunk is already back on the cursor.
+fn removed(epoch: &Epoch<'_>, index: usize, lane: &dyn WorkerLane) -> bool {
+    if lane.lost() && epoch.roster.leave_unless_last() {
+        epoch.emit(PoolEvent::LaneRemoved { lane: index });
+        return true;
+    }
+    false
+}
+
 /// Runs lane `index` until nothing is left, the run is cancelled, or the lane is
-/// retired. See the parent module doc for the loop.
+/// retired or removed. See the parent module doc for the loop. Returns `true` when the
+/// lane already counted itself out of the roster (removal), `false` otherwise.
 pub(super) fn run_lane(
     epoch: &Epoch<'_>,
     index: usize,
     lane: &dyn WorkerLane,
     rate: &Mutex<RateModel>,
-) {
+) -> bool {
     epoch.emit(PoolEvent::LaneStarted { lane: index });
     let mut failures = 0u32;
     let mut chunks = 0u32;
     let mut samples = 0u32;
     loop {
+        if removed(epoch, index, lane) {
+            return true;
+        }
         let want = epoch.want(rate);
         let Some(claim) = epoch.claim(want) else {
             break;
@@ -76,11 +90,14 @@ pub(super) fn run_lane(
         if epoch.cancel.is_cancelled() {
             break;
         }
+        if removed(epoch, index, lane) {
+            return true;
+        }
         failures += 1;
         match after_failure(epoch, index, range, &traced, failures) {
             AfterFailure::Retry => {}
             AfterFailure::Stop => break,
-            AfterFailure::Retired => return,
+            AfterFailure::Retired => return false,
         }
     }
     epoch.emit(PoolEvent::LaneFinished {
@@ -88,6 +105,7 @@ pub(super) fn run_lane(
         chunks,
         samples,
     });
+    false
 }
 
 /// Traces `range` on `lane`, validates the result and merges its prefix. A panic in

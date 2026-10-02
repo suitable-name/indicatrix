@@ -1,6 +1,7 @@
 //! [`LanePool`] tests with in-process fake lanes (see [`fake`]).
 
 mod fake;
+mod live;
 
 use super::*;
 use fake::{Failure, FakeLane, SizeRecorder, Values, chunk_sum, scene, value};
@@ -385,7 +386,7 @@ fn events_report_start_progress_and_finish() {
         })
         .collect();
     assert_eq!(totals, [7, 14, 21, 28, 30]);
-    assert_eq!(pool.lane_name(0), Some("solo"));
+    assert_eq!(pool.lane_name(0).as_deref(), Some("solo"));
 }
 
 #[test]

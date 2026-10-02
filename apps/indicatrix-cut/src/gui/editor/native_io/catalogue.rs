@@ -1,7 +1,7 @@
-//! This design's catalogue write-back once a native save's files are already on
+//! This design's catalogue write-back once a save's `.indicatrix` file is already on
 //! disk: builds the same [`indicatrix_vault::local::ImportedAsc`] a re-import of
-//! those same two files would, then updates the design's own row (or inserts a new
-//! one) -- see [`write_back_to_catalogue`]'s own doc comment for exactly what gets
+//! the design's `.asc` and its `.indicatrix` file would, then updates the design's
+//! own row (or inserts a new one) -- see [`write_back_to_catalogue`]'s own doc comment for exactly what gets
 //! overwritten versus preserved.
 
 use indicatrix_vault::db::sqlite::Database;
@@ -40,22 +40,23 @@ pub(super) enum CatalogueWriteBack {
 }
 
 /// This design's catalogue write-back -- called by
-/// [`finish_save_native_success`] once [`write_pair_atomically`] has already
-/// succeeded (never before: the files on disk are the design of record, so a
+/// [`finish_save_native_success`] once [`write_file_atomically`] has already
+/// succeeded (never before: the file on disk is the design of record, so a
 /// catalogue-write failure here must never be read as "the save failed").
 ///
-/// Builds the exact same [`indicatrix_vault::local::ImportedAsc`] an Import of these
-/// same two just-written files would build
+/// Builds the exact same [`indicatrix_vault::local::ImportedAsc`] an Import of the
+/// design's `.asc` with its `.indicatrix` file beside it would build
 /// ([`indicatrix_vault::local::import_asc`]) plus the same measured proportions/shape
 /// an import derives ([`crate::gui::library::local::apply_measured_metadata`]) --
 /// this is deliberately the SAME parse-and-measure path, not a second, independently
 /// maintained one, so a design's catalogue row always describes it exactly as
-/// re-importing the same two files would.
+/// re-importing those same files would.
 ///
 /// # What gets overwritten versus preserved
 ///
 /// - `source_entry_id: Some(id)`, `id` still a real row: `angle_settings_table`/
-///   `attached_files` (the `.asc` + native sidecar) and every geometry-derived
+///   `attached_files` (the `.asc`, the `.indicatrix` design file and the attachments and
+///   `[meta]` fields that file carries) and every geometry-derived
 ///   column (`refractive_index`/`index_gear`/`facets_count`/`symmetry_order`/
 ///   `mirror_symmetry`/the measured `lw`/`hw`/`cw`/`pw`/`volume` ratios/`shape`) are
 ///   always replaced with this save's own fresh values. Everything else --
@@ -93,21 +94,21 @@ pub(super) enum CatalogueWriteBack {
 /// # Errors
 ///
 /// A ready-to-toast message. A failure here never rolls back the files
-/// [`write_pair_atomically`] already wrote -- the design is safely on disk either
+/// [`write_file_atomically`] already wrote -- the design is safely on disk either
 /// way; this only affects whether the library list reflects it yet.
 pub(super) fn write_back_to_catalogue(
     db: &Arc<Mutex<Database>>,
     source_entry_id: Option<i64>,
     asc_filename: &str,
     asc_text: &str,
-    native_filename: &str,
-    native_toml: &str,
+    design_filename: &str,
+    design_text: &str,
 ) -> Result<(i64, CatalogueWriteBack), String> {
     // Parse + measure runs inside `catch_file_panic`, exactly like a `.asc` import's
     // own per-file loop (`gui::library::local::import::pipeline::parse_one_import`):
     // `apply_measured_metadata` reaches into `indicatrix`'s geometry code, which this
-    // module cannot guarantee is panic-free on every design. This call runs on Save
-    // Native's own background thread (`native_io::save::spawn_native_save_write`),
+    // module cannot guarantee is panic-free on every design. This call runs on Save's
+    // own background thread (`native_io::save::spawn_native_save_write`),
     // which has no `catch_unwind` of its own and no `BusyGuard`-style Drop-based
     // recovery -- an uncaught panic here would silently kill that thread mid-save,
     // the UI's completion closure would never run, and the cutter would be left
@@ -116,17 +117,23 @@ pub(super) fn write_back_to_catalogue(
     // path in `native_io::save::spawn_native_save_write` reports it like any other
     // catalogue write-back failure -- see this function's own doc comment: the files
     // on disk are safe either way, since this only runs after
-    // `write_pair_atomically` already succeeded.
+    // `write_file_atomically` already succeeded.
     let mut parsed = match crate::gui::library::local::catch_file_panic(
         std::panic::AssertUnwindSafe(|| {
             indicatrix_vault::local::import_asc(
                 asc_filename,
                 asc_text,
-                Some((native_filename, native_toml.as_bytes())),
+                Some((design_filename, design_text.as_bytes())),
             )
-            .map(|mut parsed| {
+            .and_then(|mut parsed| {
+                // The design file just written carries the descriptive metadata and
+                // the attachments (PDF, `.gem`, diagram image, ...): the row gets them
+                // the way a re-import of the file would give them.
+                let file = indicatrix_formats::native::design::parse(design_text)
+                    .map_err(|e| e.to_string())?;
+                indicatrix_vault::local::apply_design_file_meta(&mut parsed, &file)?;
                 crate::gui::library::local::apply_measured_metadata(&mut parsed.detail);
-                parsed
+                Ok(parsed)
             })
         }),
     ) {
@@ -138,7 +145,7 @@ pub(super) fn write_back_to_catalogue(
         }
         Err(panic_msg) => {
             warn!(
-                "Save Native: catalogue write-back panicked while measuring '{asc_filename}': \
+                "Save: catalogue write-back panicked while measuring '{asc_filename}': \
                  {panic_msg}"
             );
             return Err(format!(
@@ -168,7 +175,7 @@ fn invalidate_stale_caches(db: &Database, existing_id: i64) -> bool {
         .delete_preview_images(existing_id)
         .inspect_err(|e| {
             warn!(
-                "Save Native: failed to invalidate stale preview cache for entry \
+                "Save: failed to invalidate stale preview cache for entry \
                  #{existing_id}: {e}"
             );
         })
@@ -177,7 +184,7 @@ fn invalidate_stale_caches(db: &Database, existing_id: i64) -> bool {
         .delete_tilt_curves(existing_id)
         .inspect_err(|e| {
             warn!(
-                "Save Native: failed to invalidate stale tilt-curve cache for entry \
+                "Save: failed to invalidate stale tilt-curve cache for entry \
                  #{existing_id}: {e}"
             );
         })
@@ -186,12 +193,21 @@ fn invalidate_stale_caches(db: &Database, existing_id: i64) -> bool {
         .delete_solid_extents(existing_id)
         .inspect_err(|e| {
             warn!(
-                "Save Native: failed to invalidate stale solid-extents cache for entry \
+                "Save: failed to invalidate stale solid-extents cache for entry \
                  #{existing_id}: {e}"
             );
         })
         .is_err();
     preview_failed || tilt_curves_failed || solid_extents_failed
+}
+
+/// Writes the tags, ignored mark and planner exclusion the saved design file carries
+/// onto `entry_id`'s row (they only ever set, never clear). Logged, not propagated: the
+/// design file and the row itself are already written.
+fn restore_extras(db: &Database, entry_id: i64, extras: &indicatrix_vault::local::ImportedExtras) {
+    if let Err(e) = indicatrix_vault::local::apply_imported_extras(db, entry_id, extras) {
+        warn!("Save: could not restore the tags/marks of entry #{entry_id}: {e}");
+    }
 }
 
 /// The catalogue row that owns `url` when that row is not `own_id`, already shaped as
@@ -234,7 +250,7 @@ fn write_back_locked(
     if let Some(existing_id) = source_entry_id {
         match db.get_diagram_full(existing_id) {
             Ok(Some(existing)) => {
-                // "Save Native As" to a file name another design already owns would
+                // "Save As" to a file name another design already owns would
                 // move this row's url onto it; decline before changing anything.
                 if let Some(collision) =
                     url_owned_by_another(db, &parsed.entry.url, Some(existing_id))?
@@ -246,6 +262,7 @@ fn write_back_locked(
                     .map_err(|e| e.to_string())?;
                 db.save_diagram_detail(&parsed.detail, existing_id)
                     .map_err(|e| e.to_string())?;
+                restore_extras(db, existing_id, &parsed.extras);
                 let stale_cache_invalidation_failed = invalidate_stale_caches(db, existing_id);
                 return Ok((
                     existing_id,
@@ -280,6 +297,7 @@ fn write_back_locked(
             indicatrix_vault::local::LOCAL_SOURCE_ID,
         )
         .map_err(|e| e.to_string())?;
+    restore_extras(db, new_id, &parsed.extras);
     let outcome = if source_entry_id.is_some() {
         CatalogueWriteBack::SourceRowGoneNewRowCreated
     } else {

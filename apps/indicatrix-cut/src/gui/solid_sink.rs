@@ -206,7 +206,10 @@ fn sync_planes_and_check_trace_match(
         let mut ctx = render_ctx
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // A Library selection owns the slot until the editor claims it again with
+        // a load or edit; a trailing solid frame must not flip the viewport back.
         if generation != 0
+            && !matches!(ctx.planes_owner, PlanesOwner::Catalogue { .. })
             && !planes_equal_within(
                 ctx.active_planes.as_slice(),
                 &converted,

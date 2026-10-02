@@ -9,7 +9,7 @@ use indicatrix::{
     geometry::{meet_solver::SolvedTier, stone_metrics::ExternalProportions},
     optics::materials::GemMaterial,
 };
-use indicatrix_cut_core::native::CustomMaterialSnapshot;
+use indicatrix_cut_core::native::{AttachmentBlob, CustomMaterialSnapshot, DesignMetadata};
 use indicatrix_editor::EditorSession;
 use indicatrix_web_core::{
     custom_material::{builtin_name_conflict, builtin_name_message},
@@ -18,6 +18,9 @@ use indicatrix_web_core::{
 };
 use std::time::Duration;
 
+/// The longest value, in characters, the dock's design-info text shows for one field.
+const INFO_VALUE_CHARS: usize = 200;
+
 /// Where the current design came from, for the status strip and the dock.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DesignSource {
@@ -25,10 +28,11 @@ pub enum DesignSource {
     Template(String),
     /// A bare `.asc` file.
     Asc,
-    /// A native `.asc` + `.indicatrix.toml` pair.
-    NativePair,
-    /// A self-contained native `.indicatrix.toml` (no `.asc`).
-    NativeOnly,
+    /// An older `.asc` + `.indicatrix.toml` sidecar pair.
+    OlderPair,
+    /// A self-contained `.indicatrix` design file (or an older self-contained
+    /// `.indicatrix.toml`), no `.asc`.
+    DesignFile,
     /// A `.gem` or `.gcs` design converted to `.asc`; carries `".gem"`/`".gcs"`.
     Converted(&'static str),
     /// Restored from this tab's `sessionStorage` after a reload.
@@ -42,8 +46,8 @@ impl DesignSource {
         match self {
             Self::Template(name) => format!("New design: {name}"),
             Self::Asc => "Opened .asc".to_string(),
-            Self::NativePair => "Opened native pair".to_string(),
-            Self::NativeOnly => "Opened native file".to_string(),
+            Self::OlderPair => "Opened older .asc + sidecar pair".to_string(),
+            Self::DesignFile => "Opened design file".to_string(),
             Self::Converted(ext) => format!("Converted from {ext}"),
             Self::Restored => "Restored from this tab".to_string(),
         }
@@ -57,23 +61,29 @@ pub struct DesignState {
     pub session: EditorSession,
     /// The design's `.asc` name (`round.asc`), `None` for a New design never saved.
     pub asc_filename: Option<String>,
-    /// The opened `.asc`'s exact text, so a native-pair save can keep the `.asc`
-    /// half byte-for-byte when the schedule did not change
+    /// The opened `.asc`'s exact text, so a Save `.asc` + older sidecar can keep the
+    /// `.asc` half byte-for-byte when the schedule did not change
     /// (`indicatrix_cut_core::native::save_paired`'s rule).
     pub original_asc_text: Option<String>,
     /// Where it came from.
     pub source: DesignSource,
-    /// The printed proportions a native file carried in its `[source]` table.
+    /// The printed proportions a design file carried in its `[source]` table.
     pub printed_proportions: Option<ExternalProportions>,
-    /// The custom-material snapshot a native file carried, written back on the next
-    /// native save so the material survives the round trip.
+    /// The custom-material snapshot a design file carried, written back on the next
+    /// save so the material survives the round trip.
     pub custom_material: Option<CustomMaterialSnapshot>,
+    /// The `[meta]` table a design file carried (empty for any other source), written
+    /// back on the next save with a fresh `modified_at`; unknown keys included.
+    pub metadata: DesignMetadata,
+    /// The attachments a design file carried, kept byte for byte and written back on
+    /// the next save.
+    pub attachments: Vec<AttachmentBlob>,
 }
 
 impl DesignState {
     /// A design with no file behind it yet.
     #[must_use]
-    pub const fn new(session: EditorSession, source: DesignSource) -> Self {
+    pub fn new(session: EditorSession, source: DesignSource) -> Self {
         Self {
             session,
             asc_filename: None,
@@ -81,7 +91,42 @@ impl DesignState {
             source,
             printed_proportions: None,
             custom_material: None,
+            metadata: DesignMetadata::default(),
+            attachments: Vec::new(),
         }
+    }
+
+    /// The read-only "Design info" text for the dock: title, designer, source, notes,
+    /// tags and licence, one line each for the fields that are set; empty when none is.
+    #[must_use]
+    pub fn info_text(&self) -> String {
+        let meta = &self.metadata;
+        let source = if meta.source_citation.is_empty() {
+            &meta.source_url
+        } else {
+            &meta.source_citation
+        };
+        let tags = meta.tags.join(", ");
+        [
+            ("Title", meta.title.as_str()),
+            ("Designer", meta.designer.as_str()),
+            ("Source", source.as_str()),
+            ("Notes", meta.notes.as_str()),
+            ("Tags", tags.as_str()),
+            ("License", meta.license.as_str()),
+        ]
+        .iter()
+        .filter(|(_, value)| !value.is_empty())
+        .map(|(label, value)| {
+            if value.chars().count() > INFO_VALUE_CHARS {
+                let head: String = value.chars().take(INFO_VALUE_CHARS).collect();
+                format!("{label}: {head}...")
+            } else {
+                format!("{label}: {value}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
     }
 
     /// The custom-material snapshot a native save should carry: [`Self::custom_material`]
@@ -172,7 +217,7 @@ pub struct WebApp {
     pub design: Option<DesignState>,
     /// The last solve of [`Self::design`].
     pub solve: SolveState,
-    /// Custom materials restored from opened native files, by name; offered after
+    /// Custom materials restored from opened design files, by name; offered after
     /// the built-ins in the material combo and consulted by every save.
     pub custom_materials: Vec<GemMaterial>,
     /// Material, lighting, exposure, light direction, backdrop, bounces, samples,

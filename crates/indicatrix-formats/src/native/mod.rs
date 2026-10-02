@@ -1,6 +1,9 @@
-//! The native design file -- a text sidecar that carries design state a paired
-//! `.asc` cutting-instructions file has no field for, meant to sit next to (never
-//! replace) a real `.asc` export.
+//! The native design files: the self-contained `.indicatrix` file ([`design`]) that
+//! carries a whole design, and the older overlay sidecar (`.indicatrix.toml`, the
+//! `.gemcut.toml` before it) that carries only the design state a paired `.asc`
+//! cutting-instructions file has no field for. New saves write the `.indicatrix`
+//! file; the sidecar format stays readable and is described by everything below
+//! except the last two sections.
 //!
 //! # The gap this closes
 //!
@@ -39,7 +42,7 @@
 //!
 //! # The fingerprint: catching drift between the two files
 //!
-//! `GemCAD` (or a hand edit) can rewrite the paired `.asc` without this native file
+//! `GemCAD` (or a hand edit) can rewrite the paired `.asc` without this sidecar
 //! ever knowing. [`NativeDesignFile::asc_sha256`] is a SHA-256 over the paired `.asc`
 //! file's raw bytes as of this file's last save. [`check_fingerprint`] recomputes
 //! that hash at load time and compares -- a mismatch is reported
@@ -51,7 +54,7 @@
 //! legitimately re-touched `.asc` is expected, not corruption, so a mismatch is a
 //! reported fact, never a hard refusal to load.
 //!
-//! # Extension and layout
+//! # Sidecar extension and layout
 //!
 //! `<name>.indicatrix.toml`, sitting next to its paired `<name>.asc` in the same
 //! directory; the double extension makes both "plain text" and "which app's schema"
@@ -60,6 +63,12 @@
 //! [`LEGACY_NATIVE_EXTENSION_SUFFIX`]. [`NativeDesignFile`] also stores its paired
 //! `.asc`'s bare file name (see [`NativeDesignFile::asc_filename`]'s own doc comment),
 //! so the two files can be moved together without this one going stale.
+//!
+//! # The self-contained design file
+//!
+//! [`design`] holds the single-file `.indicatrix` format that carries a whole
+//! design with no paired `.asc`; new saves use it, and the sidecar format described
+//! above stays readable. [`design::detect_kind`] tells the two apart.
 //!
 //! # Module layout
 //!
@@ -73,6 +82,7 @@
 //! load/save functions that pair a document built here back up with a real `.asc`).
 
 mod custom_material;
+pub mod design;
 mod fingerprint;
 mod path;
 mod schema;

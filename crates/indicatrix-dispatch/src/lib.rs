@@ -37,6 +37,8 @@ mod sample_cursor;
 pub use cancel::CancelToken;
 pub use lane::{ChunkResult, SampleRange, WorkerLane};
 pub use merge::{MergeError, Merger, ParkedBudget};
-pub use pool::{LanePool, MergerMismatch, PoolConfig, PoolEvent, PoolOutcome, PoolStatus};
+pub use pool::{
+    LaneFeed, LanePool, MergerMismatch, PoolConfig, PoolEvent, PoolOutcome, PoolStatus,
+};
 pub use rate::{ChunkPolicy, DEFAULT_MAX_CHUNK_SAMPLES, RateModel, marginal_rate};
 pub use sample_cursor::SampleCursor;

@@ -95,8 +95,10 @@ use std::{
 };
 
 mod fingerprint;
+mod solid;
 
 pub use fingerprint::{CacheKind, cache_fingerprint};
+pub use solid::render_view_solid;
 
 /// Refractive index is conventionally quoted at the sodium D line -- see
 /// `indicatrix_vault::model::material_match`'s module doc comment for why every

@@ -18,6 +18,8 @@ use std::{
 };
 use tracing::warn;
 
+use super::file_extras::DesignFileExtras;
+
 /// The coalescing window every `EditorState`-owned `History` is built with -- see
 /// [`indicatrix_editor::session::ANGLE_NUDGE_COALESCE_WINDOW`], re-exported here at
 /// its old path.
@@ -109,7 +111,7 @@ pub(in crate::gui::editor) struct PendingGearRemap {
     pub(in crate::gui::editor) rounding: RemapRounding,
 }
 
-/// A destructive action (New/Load Selected/Open Native) that was about to replace
+/// A destructive action (New/Load Selected/Open) that was about to replace
 /// [`EditorState`] wholesale while the design still had unsaved edits -- stashed by
 /// that action's own callback the moment it sees [`EditorState::is_dirty`], so the
 /// Save/Discard/Cancel dialog's own resolution (`gui::editor::callbacks::tier_actions::
@@ -122,7 +124,7 @@ pub(in crate::gui::editor) struct PendingGearRemap {
 /// principle change while the confirmation dialog is up, and re-parsing them then
 /// would silently create a different design than the one the user actually asked
 /// for. `LoadSelected`/`OpenNative` carry nothing: both re-read their own inputs
-/// (the library selection, a freshly-shown native-file picker) fresh at resume time,
+/// (the library selection, a freshly-shown file picker) fresh at resume time,
 /// which is exactly what running them again from scratch means.
 pub(in crate::gui) enum PendingUnsavedAction {
     /// Resume by building this spec into a fresh design -- see
@@ -139,7 +141,7 @@ pub(in crate::gui) enum PendingUnsavedAction {
     /// Resume by re-running "Load Selected" against the library's current selection --
     /// see `gui::editor::callbacks::tier_actions::do_load_selected`.
     LoadSelected,
-    /// Resume by re-running "Open Native" (which shows the native-file picker again) --
+    /// Resume by re-running "Open" (which shows the file picker again) --
     /// see `gui::editor::native_io::do_open_native`.
     OpenNative,
 }
@@ -150,7 +152,7 @@ pub(in crate::gui) enum PendingUnsavedAction {
 /// `callbacks::tier_actions::lifecycle::setup_unsaved_guard_dispatch`) right before
 /// each calls `EditorModel.save_native`. Both guards used to check
 /// `EditorState::is_dirty`/`EditorModel.is_dirty` SYNCHRONOUSLY right after that
-/// call returned, as if the save had already finished -- but Save Native is
+/// call returned, as if the save had already finished -- but Save is
 /// asynchronous end to end (the design is resolved and the file written on a
 /// spawned thread, `native_io::save`'s own `write_native_save`), so that check
 /// always read the state from BEFORE the save even started, never its outcome.
@@ -178,7 +180,7 @@ pub(in crate::gui) enum AfterSave {
     /// actually lands, instead of the old synchronous `is_dirty` check that raced
     /// the save's own background write thread.
     CloseWindow,
-    /// The New/Load Selected/Open Native unsaved-changes guard: resume this
+    /// The New/Load Selected/Open unsaved-changes guard: resume this
     /// action once the save actually lands.
     Resume(PendingUnsavedAction),
 }
@@ -213,7 +215,7 @@ pub(in crate::gui) struct EditorState {
     pub(in crate::gui::editor) printed_proportions:
         Option<indicatrix::geometry::stone_metrics::ExternalProportions>,
     /// Bumped ONLY by [`Self::replace_wholesale`] -- i.e. exactly when New / Load
-    /// Selected / Open Native swap in a different design, never by an ordinary
+    /// Selected / Open swap in a different design, never by an ordinary
     /// edit.
     ///
     /// `generation` cannot answer this on its own: it counts edits AND
@@ -240,7 +242,7 @@ pub(in crate::gui) struct EditorState {
     pub(in crate::gui::editor) pending_unsaved_action: Option<PendingUnsavedAction>,
     /// See [`AfterSave`]. `None` whenever no Save is currently running on this
     /// design's behalf of a close/replace guard (the common state) -- an ordinary
-    /// Save Native click (with no guard behind it) never touches this field at all.
+    /// Save click (with no guard behind it) never touches this field at all.
     pub(in crate::gui) after_save: Option<AfterSave>,
     /// The in-flight Deep Solve's handle, so `setup_deep_solve_cancel_callback` can
     /// reach it -- `None` when none has ever run. Whether one is CURRENTLY running is
@@ -273,16 +275,16 @@ pub(in crate::gui) struct EditorState {
     pub(in crate::gui::editor) deep_solve_result_generation: Option<u64>,
     /// The paired `.asc`'s bare file name and exact original text, when this design's
     /// schedule came from a real `.asc` file on disk (a catalogue attachment, or a
-    /// previous native save/open). `None` for a brand-new design or one reconstructed
+    /// previous save/open). `None` for a brand-new design or one reconstructed
     /// from the angle-table placeholder. Fed to [`indicatrix_cut_core::save_paired`]'s
-    /// `original_asc_text` parameter, which lets a native Save leave the `.asc` half
+    /// `original_asc_text` parameter, which lets a Save leave the `.asc` half
     /// byte-for-byte untouched instead of regenerating it.
     pub(in crate::gui::editor) asc_filename: Option<String>,
     pub(in crate::gui::editor) original_asc_text: Option<String>,
     /// The catalogue row this design belongs to, once it has one -- see the
     /// "full round trip" design decision below.
     ///
-    /// Set when Load Selected opens a LOCAL row, and by the first Save Native of a
+    /// Set when Load Selected opens a LOCAL row, and by the first Save of a
     /// design that had none (which inserts a row and records its id). Every later
     /// save updates that same row rather than inserting a second, which is what
     /// stops export-then-reimport from filling the catalogue with near-duplicate
@@ -297,11 +299,14 @@ pub(in crate::gui) struct EditorState {
     pub(in crate::gui::editor) source_entry_id: Option<i64>,
     /// Whether `design`'s masts came from `loading::LoadedDesign`'s angle-table
     /// reconstruction fallback -- no attached `.asc` was found, so every mast is a
-    /// fabricated `0.0`. Lets Save Native and Export stamp
+    /// fabricated `0.0`. Lets Save and Export stamp
     /// `indicatrix_formats::asc::mark_reconstructed`, so a file that looks like a
     /// real cut instruction but is not says so in its own header. `false` for every
     /// other construction path.
     pub(in crate::gui::editor) used_placeholder: bool,
+    /// The `[meta]` table and attachments of the `.indicatrix` file this design came
+    /// from, so a Save writes them back unchanged -- see [`DesignFileExtras`].
+    pub(in crate::gui::editor) file_extras: DesignFileExtras,
     /// See [`PendingGearRemap`]. `None` whenever the gear remap confirmation panel is
     /// closed (the common state).
     pub(in crate::gui::editor) pending_gear_remap: Option<PendingGearRemap>,
@@ -333,7 +338,7 @@ pub(in crate::gui) struct EditorState {
     /// `&EditorState`.
     pub(in crate::gui::editor) material_combo_cache: RefCell<MaterialComboCache>,
     /// Whether this is a REAL design -- created (New Design, any template), loaded
-    /// (Load Selected) or opened (Open Native/Open Recent/the startup restore) --
+    /// (Load Selected) or opened (Open/Open Recent/the startup restore) --
     /// rather than [`Self::fresh`]'s startup placeholder. Mirrored into
     /// `EditorModel.has_design` by `view::push_has_design`, which gates the
     /// empty-state card grid: a real design with zero tiers must stay visible.
@@ -384,6 +389,7 @@ impl EditorState {
             pending_retarget: None,
             source_entry_id: None,
             used_placeholder: false,
+            file_extras: DesignFileExtras::default(),
             last_pushed_scratch: RefCell::new(PushedScratch::default()),
             material_combo_cache: RefCell::new(MaterialComboCache::default()),
             has_design,
@@ -391,7 +397,7 @@ impl EditorState {
     }
 
     /// Replaces `self` wholesale with `replacement` -- a brand-new `New`/`Load
-    /// Selected`/`Open Native` state -- while keeping THIS state's own
+    /// Selected`/`Open` state -- while keeping THIS state's own
     /// `generation` counter alive and bumping it, instead of letting
     /// `replacement` bring its own fresh `Arc::new(AtomicU64::new(0))` (as its
     /// constructor -- [`Self::fresh`]/[`Self::fresh_from_template`], or a hand-built
@@ -442,7 +448,7 @@ impl EditorState {
         // same reason -- see [`Self::design_epoch`]'s own doc comment for what the
         // second counter buys that `generation` alone cannot. Bumping it HERE, in
         // the one method every replacement path goes through, is what makes it
-        // cover New, Load Selected, Open Native and Open plain `.asc` uniformly
+        // cover New, Load Selected, Open and Open plain `.asc` uniformly
         // instead of relying on four call sites each remembering to do it.
         replacement.design_epoch = Arc::clone(&self.design_epoch);
         replacement

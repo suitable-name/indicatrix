@@ -132,7 +132,7 @@ fn spawn_import(
             // the same confirm-step dialog as the missing-previews library scan; see
             // `preview::offer_batch_confirmation`'s doc comment. A no-op when nothing
             // was actually imported.
-            crate::gui::batch::preview::offer_batch_confirmation(&ui, &imported_ids);
+            crate::gui::batch::preview::offer_import_previews(&ui, &imported_ids);
         });
         // `_busy_guard` drops here: on a normal return, right after the completion
         // closure above is enqueued (not necessarily run yet), so the `is_busy` reset

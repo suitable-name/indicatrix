@@ -59,7 +59,7 @@ pub(super) fn last_measured_solve_duration() -> Option<Duration> {
 
 /// Clears the running estimate, drops any pending debounced auto-solve, and
 /// invalidates every still-in-flight background solve -- called whenever
-/// `EditorState` itself is replaced wholesale (New/Load Selected/Open Native, all via
+/// `EditorState` itself is replaced wholesale (New/Load Selected/Open, all via
 /// `super::super::view::refresh_all`), since a different design's solve cost, debounce
 /// timer, and any dispatch still running against the OLD design have nothing to do
 /// with the one that just replaced it.
@@ -68,7 +68,7 @@ pub(super) fn last_measured_solve_duration() -> Option<Duration> {
 ///
 /// A background solve captures its own `generation: Arc<AtomicU64>` snapshot at
 /// dispatch time (see `super::dispatch::dispatch_background_solve`). New/Load
-/// Selected/Open Native all go through `EditorState::replace_wholesale` (see e.g.
+/// Selected/Open all go through `EditorState::replace_wholesale` (see e.g.
 /// `callbacks::tier_actions::apply_loaded_design`) -- which, despite the name,
 /// REUSES the very SAME `Arc<AtomicU64>` across the replacement and bumps it once
 /// (see `EditorState::replace_wholesale`'s own doc comment). So
@@ -77,7 +77,7 @@ pub(super) fn last_measured_solve_duration() -> Option<Duration> {
 /// (potentially multi-second) completion finally arrives -- but bumping
 /// `Runtime::current_seq` here retires it immediately instead: every one of this
 /// function's callers reaches it (via `refresh_all`, called unconditionally at the
-/// top of every New/Load Selected/Open Native path) BEFORE that stale completion's
+/// top of every New/Load Selected/Open path) BEFORE that stale completion's
 /// `upgrade_in_event_loop` closure can run (both run on the UI/event-loop thread, so
 /// ordering is never racy), so `super::dispatch::is_current` now correctly fails
 /// right away -- both the "Solving..." banner/ticker

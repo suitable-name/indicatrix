@@ -20,9 +20,9 @@ edit `SHORTCUTS` instead and paste the regenerated output back in.
 | Shortcut | Action |
 | --- | --- |
 | Ctrl+N | New Design... |
-| Ctrl+O | Open Native... |
-| Ctrl+S | Save Native |
-| Ctrl+Shift+S | Save Native As... |
+| Ctrl+O | Open... |
+| Ctrl+S | Save |
+| Ctrl+Shift+S | Save As... |
 | Ctrl+Z | Undo (Edit tab) |
 | Ctrl+Y (or Ctrl+Shift+Z) | Redo (Edit tab) |
 | Ctrl+D | Duplicate the selected tier (tier list must have keyboard focus -- see "The tier list" below) |

@@ -39,6 +39,23 @@ export component RoughForm inherits VerticalLayout {
             editable: !RoughPlanModel.running;
             picked => { RoughPlanModel.set_base(2); }
         }
+        RoughRadio {
+            label: "Mesh (OBJ)";
+            selected: RoughPlanModel.base_kind == 3;
+            editable: !RoughPlanModel.running;
+            picked => { RoughPlanModel.import_obj(); }
+        }
+    }
+
+    // Imported mesh: the size of its convex outline (read-only; a pick of the radio
+    // imports another file).
+    if RoughPlanModel.base_kind == 3: Text {
+        text: "Convex outline of the mesh, " + RoughPlanModel.rough_x + " x "
+            + RoughPlanModel.rough_y + " x " + RoughPlanModel.rough_z
+            + " mm (OBJ units read as mm; Fit to weight rescales it).";
+        font-size: 10px;
+        color: Theme.text-muted;
+        wrap: word-wrap;
     }
 
     // Block or Pebble dimensions (X, Y, Z in mm)

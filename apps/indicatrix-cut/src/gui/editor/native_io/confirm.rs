@@ -61,21 +61,17 @@ struct PendingWriteConfirm {
     suppress_key: Option<&'static str>,
 }
 
-/// Stable [`AppSettings::suppressed_confirmations`] keys for the two suppressible
-/// write-confirm prompts. The unsaved-changes/fingerprint-mismatch/gear-remap guards
+/// Stable [`AppSettings::suppressed_confirmations`] keys for the suppressible
+/// write-confirm prompt. The unsaved-changes/fingerprint-mismatch/gear-remap guards
 /// use their own separate `ConfirmActionDialog` mounts (`app.slint`) and are
 /// deliberately NOT wired to `show_dont_ask` at all -- a wrong "don't ask again"
-/// there risks real data loss, unlike these two (which only ever affect whether a
+/// there risks real data loss, unlike this one (which only ever affects whether a
 /// header note gets written).
 pub(super) mod confirm_keys {
     /// [`super::super::save::finish_native_save`]/the Export `.asc` path's "this design is not
     /// a closed solid" prompt.
     pub(in crate::gui::editor::native_io) const NOT_CLOSED_SOLID: &str =
         "write_confirm.not_closed_solid";
-    /// [`super::super::save::confirm_overwrite_unrelated_native_file_then`]'s "overwrite a
-    /// native file that belongs to a different design" prompt.
-    pub(in crate::gui::editor::native_io) const OVERWRITE_UNRELATED_NATIVE: &str =
-        "write_confirm.overwrite_unrelated_native";
 }
 
 /// Reads whether the confirm prompt named `key` is currently suppressed, from the

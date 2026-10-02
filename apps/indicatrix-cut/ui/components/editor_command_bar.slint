@@ -4,7 +4,7 @@ import { EditorModel } from "../models/editor.slint";
 import { RetargetModel } from "../models/retarget.slint";
 import { GuideModel } from "../models/guide.slint";
 import { GuideLockTip } from "guide_lock.slint";
-// Mounted by `FileActionsGroup` below, next to Save Native; see that file's own
+// Mounted by `FileActionsGroup` below, next to Save; see that file's own
 // doc comment.
 import { ExportSplitButton } from "export_split_button.slint";
 
@@ -40,8 +40,8 @@ export global UndoRedoLabels {
 // whatever its current step does not ask for (see `GuideAllow`, `models/guide.slint`).
 //
 // New/Load Selected/Undo/Redo travel together (`NewLoadUndoRedoGroup`), as do
-// Solve/Auto-solve/Deep Solve/Optimize/Retarget (`SolveGroup`) and Export/Save
-// Native/Open Native (`FileActionsGroup`) -- each a small `HorizontalLayout`
+// Solve/Auto-solve/Deep Solve/Optimize/Retarget (`SolveGroup`) and Export/Save/Open
+// (`FileActionsGroup`) -- each a small `HorizontalLayout`
 // bundling controls that always appear together, so `EditorCommandBar` itself can
 // arrange them into shared or separate rows (wide vs narrow, see its own doc
 // comment below) without duplicating any button's hover/TouchArea/callback
@@ -71,7 +71,7 @@ component NewLoadUndoRedoGroup inherits HorizontalLayout {
 
     // "New Design..." discards the WHOLE design, unlike the Tier tab's own
     // clear-the-form "New" button below it. The ellipsis follows the
-    // `Retarget...`/`Open Native...` convention for "opens a dialog first" and
+    // `Retarget...`/`Open...` convention for "opens a dialog first" and
     // keeps the label clearly distinct from the inspector's same-named button.
     TouchArea {
         width: new_btn.preferred-width;
@@ -513,7 +513,7 @@ component AnalysisGroup inherits HorizontalLayout {
     }
 }
 
-// Export Edited .asc / Save Native / Open Native -- see `NewLoadUndoRedoGroup`'s
+// Export Edited .asc / Save / Open -- see `NewLoadUndoRedoGroup`'s
 // own doc comment above for why these travel together as one sub-component.
 component FileActionsGroup inherits HorizontalLayout {
     height: 34px;
@@ -528,9 +528,8 @@ component FileActionsGroup inherits HorizontalLayout {
         }
     }
 
-    // The native design-file format. "Save Native" always writes a real
-    // `.asc` alongside its `.indicatrix.toml` sidecar, never the sidecar
-    // alone. "Export Edited .asc" exports the design AS EDITED in this tab,
+    // "Save" writes the self-contained `.indicatrix` design file: the whole design
+    // lives in that one file and nothing is written beside it. "Export Edited .asc" exports the design AS EDITED in this tab,
     // distinct from `detail_header.slint`'s catalogue-original "Export .asc"
     // (see that file's own doc comment); the label names the `.asc` in full to
     // match `app.slint`'s File-menu entry for the identical action and the
@@ -553,13 +552,13 @@ component FileActionsGroup inherits HorizontalLayout {
     TouchArea {
         width: save_native_btn.preferred-width;
         height: save_native_btn.preferred-height;
-        // Unlike "Export Edited .asc" above, Save Native DOES update your
+        // Unlike "Export Edited .asc" above, Save DOES update your
         // library -- it writes or updates this design's own catalogue row
         // (`native_io::write_back_to_catalogue`), not just the files on disk,
         // and the hint must say so.
-        changed has-hover => { if self.has-hover { root.set_hint("Write the native .asc plus its .indicatrix.toml sidecar to disk, and update this design's catalogue entry."); } else { root.clear_hint("Write the native .asc plus its .indicatrix.toml sidecar to disk, and update this design's catalogue entry."); } }
+        changed has-hover => { if self.has-hover { root.set_hint("Save the whole design to its .indicatrix file, and update this design's catalogue entry."); } else { root.clear_hint("Save the whole design to its .indicatrix file, and update this design's catalogue entry."); } }
         save_native_btn := Button {
-            text: "Save Native";
+            text: "Save";
             enabled: GuideModel.allows_file_ops();
             clicked => { EditorModel.save_native(); }
         }
@@ -590,9 +589,9 @@ component FileActionsGroup inherits HorizontalLayout {
     TouchArea {
         width: open_native_btn.preferred-width;
         height: open_native_btn.preferred-height;
-        changed has-hover => { if self.has-hover { root.set_hint("Open a native design file, or a .asc, .gem or .gcs file."); } else { root.clear_hint("Open a native design file, or a .asc, .gem or .gcs file."); } }
+        changed has-hover => { if self.has-hover { root.set_hint("Open a .indicatrix design file, or a .asc, .gem or .gcs file."); } else { root.clear_hint("Open a .indicatrix design file, or a .asc, .gem or .gcs file."); } }
         open_native_btn := Button {
-            text: "Open Native";
+            text: "Open";
             enabled: GuideModel.allows_file_ops();
             clicked => { EditorModel.open_native(); }
         }
@@ -604,7 +603,7 @@ component FileActionsGroup inherits HorizontalLayout {
 // 600-1000px clamp (`app.slint`'s `dock_width` clamp; content is at most 976px):
 // row 1 is always the editing group (New Design.../Load Selected/Undo/Redo) plus
 // Solve and its auto-solve budget. Then, in a wide dock, one row with
-// [Tier | divider | FileActions] (Add/Duplicate/Delete/Move plus the native file
+// [Tier | divider | FileActions] (Add/Duplicate/Delete/Move plus the file
 // actions); in a narrow dock (`narrow_dock`, below 930px) [Tier] and
 // [FileActions] each take their own row. The last row is always [Analysis] (the
 // slower analyses: Deep Solve/Optimize/Retarget/Snapshot/Compare/Tilt Curves),

@@ -43,6 +43,7 @@ const NEEDS_SIZE: &str = "Enter the rough size before adding cuts.";
 pub(super) fn setup_edit_callbacks(host: &Rc<Host>) {
     let model = host.window.global::<RoughPlanModel>();
     model.on_set_base(|kind| on_idle_host(|host| set_base(host, kind)));
+    model.on_import_obj(|| on_idle_host(super::obj_import::start));
     model.on_base_field_committed(|| on_idle_host(base_field_committed));
     model.on_fit_to_weight(|| on_idle_host(super::carat::fit_to_weight));
     model.on_add_cut(|kind| on_idle_host(|host| add_cut(host, kind)));
@@ -193,7 +194,11 @@ fn rebuild(host: &Rc<Host>, rewrite_base: bool, keep_azimuths: bool) {
 fn set_base(host: &Rc<Host>, kind: i32) {
     let fields = BaseFields::read(&host.window);
     let current = parse_base(&fields).unwrap_or_else(|_| host.session.borrow().model.base);
-    let base = switch_base_kind(&current, kind);
+    install_base(host, switch_base_kind(&current, kind));
+}
+
+/// Makes `base` the model's base as one undo step and shows it.
+pub(super) fn install_base(host: &Rc<Host>, base: RoughBase) {
     {
         let mut session = host.session.borrow_mut();
         session.model.base = base;

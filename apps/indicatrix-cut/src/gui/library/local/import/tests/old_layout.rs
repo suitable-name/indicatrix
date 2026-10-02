@@ -257,7 +257,7 @@ fn write_single_sidecar_pair(dir: &std::path::Path) {
 ///    `Database::new`), which runs every migration -- including
 ///    `migrate_blob_columns_last` -- against this genuinely pre-fix data.
 /// 2. Imports a directory holding one plain valid `.asc`, one `.asc` +
-///    `.indicatrix.toml` native sidecar pair, and one empty (unparsable) `.asc`, via
+///    older `.indicatrix.toml` sidecar pair, and one empty (unparsable) `.asc`, via
 ///    the same [`super::run_import_catching_panics`] -> `import_path` entry point the
 ///    manual probes in `perf` use.
 /// 3. Asserts no panic, the exact "2 imported, 1 skipped" summary shape, and that

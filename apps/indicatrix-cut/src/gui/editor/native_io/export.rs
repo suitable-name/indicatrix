@@ -1,7 +1,7 @@
 //! "Export .asc" / "Export Cutting Sheet" / "Export Diagram": writes the edited
 //! schedule (or a rendering of it) to a user-chosen path, file only -- the
 //! catalogue stays read-only on every path in this module. See this group's own
-//! `mod.rs` doc comment for why this is a distinct path from "Save Native".
+//! `mod.rs` doc comment for why this is a distinct path from "Save".
 
 use super::{
     confirm::{StatusDecision, ask_write_confirm, confirm_keys, decide_write_status},
@@ -357,7 +357,7 @@ fn export_edited_schedule(
                 st.generation.load(Ordering::Relaxed),
             )
         };
-        // The same marker Save Native writes, for the plain-export path --
+        // The same marker Save writes, for the plain-export path --
         // a schedule whose masts were fabricated by the angle-table
         // reconstruction must say so in the file itself, not only in the app
         // that wrote it.
@@ -371,7 +371,7 @@ fn export_edited_schedule(
         // solved SOME mast, never that those masts actually close a real solid
         // -- see `decide_write_status`'s own doc comment. This path exports
         // plain `.asc`/`.gcs` text only (`schedule`, already built above), never
-        // a native sidecar.
+        // a design file.
         resolve_solve_at(
             ui,
             Arc::new(design),

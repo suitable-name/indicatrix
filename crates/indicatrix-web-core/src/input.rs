@@ -7,7 +7,7 @@ use crate::hdr::MAX_HDR_FILE_BYTES;
 
 /// The largest design file the page reads, in bytes: 16 MiB.
 ///
-/// A design file (`.asc`, `.indicatrix.toml`, `.gem`, `.gcs`) is a few kilobytes; the
+/// A design file (`.indicatrix`, `.asc`, `.gem`, `.gcs`) is a few kilobytes; the
 /// limit only stops a wrong file (a video, say) from being copied into memory.
 pub const MAX_DESIGN_FILE_BYTES: u64 = 16 * 1024 * 1024;
 

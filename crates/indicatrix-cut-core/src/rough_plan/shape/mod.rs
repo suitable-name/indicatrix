@@ -6,12 +6,15 @@
 
 pub mod base;
 pub mod cuts;
+pub mod hull;
 mod pebble_offsets;
 pub mod sampling;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_geometry;
+#[cfg(test)]
+mod tests_hull;
 #[cfg(test)]
 mod tests_pebble;
 #[cfg(test)]
@@ -24,6 +27,7 @@ use indicatrix::geometry::stone_metrics::measure_solid_with_vertices;
 
 pub use base::RoughBase;
 pub use cuts::{BoxFace, RoughCut};
+pub use hull::{HullError, MAX_HULL_PLANES, import_hull};
 pub use sampling::{half_step_cos, pebble_directions, sphere_directions, unit_circle};
 
 /// The modelled rough: a starting base shape plus an ordered sequence of planar cuts.

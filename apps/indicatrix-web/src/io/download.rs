@@ -3,6 +3,7 @@
 //! click on a detached anchor) and removed at once; the object URL is revoked a
 //! little later, once the browser has started reading it.
 
+use indicatrix_formats::native::design::DESIGN_MIME_TYPE;
 use std::time::Duration;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -11,7 +12,9 @@ const REVOKE_AFTER: Duration = Duration::from_secs(30);
 
 /// MIME type of a `.asc` download.
 pub const MIME_ASC: &str = "text/plain;charset=utf-8";
-/// MIME type of a native `.indicatrix.toml` download.
+/// MIME type of a `.indicatrix` design file download.
+pub const MIME_DESIGN: &str = DESIGN_MIME_TYPE;
+/// MIME type of an older `.indicatrix.toml` sidecar download.
 pub const MIME_TOML: &str = "application/toml;charset=utf-8";
 /// MIME type of the cutting sheet.
 pub const MIME_HTML: &str = "text/html;charset=utf-8";

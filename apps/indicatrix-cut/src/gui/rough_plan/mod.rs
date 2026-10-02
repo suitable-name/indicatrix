@@ -19,6 +19,7 @@ mod host;
 mod inputs;
 mod library_link;
 mod metrics;
+mod obj_import;
 mod run;
 mod saved;
 mod session;

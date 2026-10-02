@@ -171,8 +171,8 @@ fn write_catalogue_derived_corpus(db: &Arc<Mutex<Database>>, dir: &std::path::Pa
     written
 }
 
-/// Writes a couple of real `.asc` + `.indicatrix.toml` sidecar pairs, built the same
-/// way `apps/indicatrix-cut`'s own "New Design" gallery and Save Native do: a solved
+/// Writes a couple of real `.asc` + older `.indicatrix.toml` sidecar pairs (the format
+/// earlier builds saved): a solved
 /// [`indicatrix_cut_core::design::Design`] from one of `indicatrix_cut_core::templates::TEMPLATES`,
 /// written out via `indicatrix_cut_core::native::save_paired`.
 fn write_sidecar_pairs(dir: &std::path::Path) {
@@ -218,7 +218,7 @@ fn write_sidecar_pairs(dir: &std::path::Path) {
 /// original), opens it with [`Database::new`] (running the real
 /// `migrate_blob_columns_last` 12-step rebuild against real pre-migration data),
 /// builds a corpus of catalogue-derived `.asc` files plus every adversarial input
-/// plus a couple of native sidecar pairs plus one garbage sidecar plus one 0-byte
+/// plus a couple of older sidecar pairs plus one garbage sidecar plus one 0-byte
 /// `.asc`, imports the whole directory recursively, verifies every imported row
 /// reads back through every path the library itself uses, then imports the SAME
 /// directory again to exercise the collision/merge path.

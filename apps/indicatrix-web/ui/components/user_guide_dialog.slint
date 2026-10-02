@@ -16,7 +16,7 @@ export global UserGuideModel {
     out property <[GuideSectionText]> sections: [
         {
             heading: "Start a design",
-            body: "File > New Design starts from Empty or one of five built-in templates. File > Open (or dropping files on the page) reads .asc files, a native pair (.asc plus .indicatrix.toml, opened together), a single .indicatrix.toml, and GemCAD .gem / .gcs files. Help > Guided walkthrough builds a stone step by step.",
+            body: "File > New Design starts from Empty or one of five built-in templates. File > Open (or dropping files on the page) reads .indicatrix design files (self-contained; File > Save design writes one), .asc files, an older pair (.asc plus a .indicatrix.toml sidecar, opened together), and GemCAD .gem / .gcs files. Help > Guided walkthrough builds a stone step by step.",
         },
         {
             heading: "Edit in the Design dock",
@@ -36,7 +36,7 @@ export global UserGuideModel {
         },
         {
             heading: "Save and export",
-            body: "Nothing is uploaded. Save .asc, Save native pair and Save native only download files through your browser; Ctrl+S saves the pair. File > Export PNG renders a still at a chosen size (up to 4096 px) and colour space. The cutting sheet (HTML) and the diagram (PNG) download as well. Save the native pair to keep everything, including the design's history and a custom material.",
+            body: "Nothing is uploaded. Save design (.indicatrix) and Save .asc download files through your browser; Ctrl+S saves the design. File > Export PNG renders a still at a chosen size (up to 4096 px) and colour space. The cutting sheet (HTML) and the diagram (PNG) download as well. Save the design to keep everything in one file, including the design's history and a custom material. An older pair (.asc plus .indicatrix.toml sidecar) can still be saved from the File menu.",
         },
         {
             heading: "What the browser remembers",

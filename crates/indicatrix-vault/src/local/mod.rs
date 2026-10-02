@@ -12,10 +12,15 @@ use crate::model::{
 use indicatrix_formats::asc::{self, AscSchedule, AscTier};
 
 mod design_file;
+mod native_design;
 
 pub use design_file::{
     DesignFileKind, DesignFileText, converted_asc_file_name, design_attachment_position,
     design_file_to_asc_text,
+};
+pub use native_design::{
+    apply_design_file_meta, apply_imported_extras, import_native_design, is_native_design_name,
+    native_design_attachment_position,
 };
 
 /// `diagram_entries.source_id` every locally-imported `.asc` design is attributed to.
@@ -35,7 +40,7 @@ pub struct ImportedAsc {
     pub detail: FacetingDiagramDetail,
     /// The catalogue row this file's own text says it was derived from -- recovered
     /// from a [`SOURCE_ENTRY_FOOTNOTE_PREFIX`] footnote line, when the `.asc` was
-    /// written by `gui::editor::native_io`'s Save Native/Export .asc: an
+    /// written by `gui::editor::native_io`'s Save/Export .asc: an
     /// export-then-reimport matches its source row and becomes a version rather than
     /// a second same-titled duplicate. `None` for a `.asc` with no such
     /// footnote -- an original hand-authored file, one scraped from another source, or
@@ -46,6 +51,23 @@ pub struct ImportedAsc {
     /// (never a title/filename match) stops at parsing the id out; it never guesses
     /// one.
     pub derived_from_entry_id: Option<i64>,
+    /// Row state that lives outside the entry and detail rows (tags, the ignored mark,
+    /// the Rough Planner exclusion). Empty for everything but a `.indicatrix` design
+    /// file whose `[meta]` table names some; written with [`apply_imported_extras`]
+    /// once the row exists.
+    pub extras: ImportedExtras,
+}
+
+/// The row state a design file's `[meta]` carries that is stored beside the entry and
+/// detail rows rather than in them -- see [`ImportedAsc::extras`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImportedExtras {
+    /// The design's tags, trimmed, de-duplicated and sorted.
+    pub tags: Vec<String>,
+    /// The owner marked the design ignored.
+    pub ignored: bool,
+    /// The design is excluded from the Rough Planner's candidate set.
+    pub planner_excluded: bool,
 }
 
 /// The footnote-line prefix a `.asc`'s recorded source-catalogue-row marker starts with.
@@ -102,14 +124,16 @@ pub fn parse_source_entry_footnote(footnotes: &[String]) -> Option<i64> {
 /// updates that design in place -- mirroring how a remote source's real page URL
 /// dedupes a re-sync there.
 ///
-/// `native_sidecar`, when the caller found a `<stem>.indicatrix.toml`/`.gemcut.toml`
-/// file sitting beside the `.asc` on disk, is attached as a SECOND [`AttachedFile`]
-/// alongside the `.asc` itself: without it, a design that goes out through Save
-/// Native and back in through Import loses every sidecar-only field (authored meet
-/// constraints, preform, detached facets, material/RI override), since only the
-/// `.asc` would otherwise be stored. `gui::editor::loading::design_from_full_record`
-/// already prefers `indicatrix_cut_core::load_paired` whenever both attachments are
-/// present, so attaching it here is the only piece this crate needs to add.
+/// `native_sidecar`, when the caller found a `<stem>.indicatrix` design file (or an
+/// older `<stem>.indicatrix.toml`/`.gemcut.toml` sidecar) sitting beside the `.asc` on
+/// disk, is attached as a SECOND [`AttachedFile`] alongside the `.asc` itself: without
+/// it, a design that goes through Import loses every field only the design file
+/// carries (authored meet constraints, preform, detached facets, material/RI
+/// override), since only the `.asc` would otherwise be stored.
+/// `gui::editor::loading::design_from_full_record` already prefers the attached design
+/// file (or `indicatrix_cut_core::load_paired` for an older sidecar) whenever both
+/// attachments are present, so attaching it here is the only piece this crate needs
+/// to add.
 ///
 /// # Errors
 ///
@@ -158,19 +182,6 @@ fn build_import(
 ) -> Result<ImportedAsc, String> {
     let schedule = asc::parse_asc(content).map_err(|e| e.to_string())?;
 
-    let title = schedule
-        .headers
-        .first()
-        .map(|h| h.trim().to_string())
-        .filter(|h| !h.is_empty())
-        .unwrap_or_else(|| strip_asc_extension(file_name).to_string());
-
-    let entry = FacetingDiagramEntry {
-        title,
-        url: format!("local://{file_name}"),
-        design_id: String::new(),
-    };
-
     let mut attached_files = vec![AttachedFile {
         name: file_name.to_string(),
         url: String::new(),
@@ -183,7 +194,35 @@ fn build_import(
             content: sidecar_content.to_vec(),
         });
     }
+    Ok(catalogue_rows(
+        file_name,
+        strip_asc_extension(file_name),
+        &schedule,
+        attached_files,
+    ))
+}
 
+/// The entry and detail rows for a design whose cutting data is `schedule` and whose
+/// stored files are `attached_files`: the title is the schedule's first non-blank
+/// header, else `fallback_title`; the url is `local://<file_name>`.
+fn catalogue_rows(
+    file_name: &str,
+    fallback_title: &str,
+    schedule: &AscSchedule,
+    attached_files: Vec<AttachedFile>,
+) -> ImportedAsc {
+    let title = schedule
+        .headers
+        .first()
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .unwrap_or_else(|| fallback_title.to_string());
+
+    let entry = FacetingDiagramEntry {
+        title,
+        url: format!("local://{file_name}"),
+        design_id: String::new(),
+    };
     let detail = FacetingDiagramDetail {
         angle_settings_table: angle_settings_from_tiers(&schedule.tiers),
         attached_files,
@@ -194,13 +233,12 @@ fn build_import(
         mirror_symmetry: Some(schedule.mirror),
         ..FacetingDiagramDetail::default()
     };
-    let derived_from_entry_id = parse_source_entry_footnote(&schedule.footnotes);
-
-    Ok(ImportedAsc {
+    ImportedAsc {
         entry,
         detail,
-        derived_from_entry_id,
-    })
+        derived_from_entry_id: parse_source_entry_footnote(&schedule.footnotes),
+        extras: ImportedExtras::default(),
+    }
 }
 
 fn strip_asc_extension(file_name: &str) -> &str {

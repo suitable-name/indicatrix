@@ -10,7 +10,7 @@ use glam::DVec3;
 use indicatrix::geometry::stone_metrics::measure_solid_with_vertices;
 
 use super::{
-    ShapeError,
+    ShapeError, hull,
     pebble_offsets::{PEBBLE_OFFSETS_COARSE, PEBBLE_OFFSETS_FINE},
     sampling,
 };
@@ -55,6 +55,18 @@ pub enum RoughBase {
         /// Bounding box extent along z in mm.
         z_mm: f64,
     },
+    /// The convex hull of an imported mesh, registered under `id` (see
+    /// [`import_hull`](super::hull::import_hull)); the box is its bounding box.
+    Hull {
+        /// The content id the hull is registered under.
+        id: u64,
+        /// Bounding box extent along x in mm.
+        x_mm: f64,
+        /// Bounding box extent along y in mm.
+        y_mm: f64,
+        /// Bounding box extent along z in mm.
+        z_mm: f64,
+    },
 }
 
 impl RoughBase {
@@ -66,9 +78,11 @@ impl RoughBase {
     /// or [`ShapeError::TooLarge`] if any dimension exceeds 2000 mm.
     pub fn validate(&self) -> Result<(), ShapeError> {
         let (lens, count) = match *self {
-            Self::Block { x_mm, y_mm, z_mm } | Self::Pebble { x_mm, y_mm, z_mm } => {
-                ([x_mm, y_mm, z_mm], 3)
-            }
+            Self::Block { x_mm, y_mm, z_mm }
+            | Self::Pebble { x_mm, y_mm, z_mm }
+            | Self::Hull {
+                x_mm, y_mm, z_mm, ..
+            } => ([x_mm, y_mm, z_mm], 3),
             Self::Cylinder {
                 diameter_mm,
                 length_mm,
@@ -76,6 +90,11 @@ impl RoughBase {
             } => ([diameter_mm, length_mm, 1.0], 2),
         };
 
+        if let Self::Hull { id, .. } = *self
+            && hull::vertices(id).is_none()
+        {
+            return Err(ShapeError::NothingLeft);
+        }
         for &len in &lens[..count] {
             if !len.is_finite() || len <= 0.0 {
                 return Err(ShapeError::NonPositiveSize);
@@ -91,9 +110,11 @@ impl RoughBase {
     #[must_use]
     pub const fn bounding_box_extents(&self) -> [f64; 3] {
         match *self {
-            Self::Block { x_mm, y_mm, z_mm } | Self::Pebble { x_mm, y_mm, z_mm } => {
-                [x_mm, y_mm, z_mm]
-            }
+            Self::Block { x_mm, y_mm, z_mm }
+            | Self::Pebble { x_mm, y_mm, z_mm }
+            | Self::Hull {
+                x_mm, y_mm, z_mm, ..
+            } => [x_mm, y_mm, z_mm],
             Self::Cylinder {
                 diameter_mm,
                 length_mm,
@@ -136,6 +157,7 @@ impl RoughBase {
                 y_mm: y_mm * factor,
                 z_mm: z_mm * factor,
             },
+            Self::Hull { id, .. } => hull::scaled(*self, id, factor),
         }
     }
 
@@ -176,6 +198,7 @@ impl RoughBase {
                 };
                 pebble_halfspaces(x_mm, y_mm, z_mm, frequency)
             }
+            Self::Hull { id, .. } => hull::halfspaces(id).ok_or(ShapeError::NothingLeft),
         }
     }
 
@@ -214,7 +237,18 @@ impl RoughBase {
                 };
                 pebble_vertices(x_mm, y_mm, z_mm, frequency)
             }
+            Self::Hull { id, .. } => hull::vertices(id).ok_or(ShapeError::NothingLeft),
         }
+    }
+
+    /// The corners of an imported hull as `[x, y, z]` triples (what a saved plan stores),
+    /// `None` for any other base.
+    #[must_use]
+    pub fn hull_corners(&self) -> Option<Vec<[f64; 3]>> {
+        let Self::Hull { id, .. } = *self else {
+            return None;
+        };
+        hull::vertices(id).map(|v| v.iter().map(DVec3::to_array).collect())
     }
 }
 

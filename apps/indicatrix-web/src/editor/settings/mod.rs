@@ -254,7 +254,7 @@ fn apply_meta(ctx: &Ctx) {
     }
 }
 
-/// Apply Printed: the five figures a native file carries in its `[source]` table.
+/// Apply Printed: the five figures a design file carries in its `[source]` table.
 fn apply_printed(ctx: &Ctx) {
     let Some(ui) = ctx.ui.upgrade() else {
         return;
@@ -287,7 +287,7 @@ fn apply_printed(ctx: &Ctx) {
     }
     push::seed_printed(&model, ctx.state.borrow().design.as_ref());
     model.set_printed_pending(false);
-    // Not an undoable edit (it never touches the `Design`), but it is saved with a native file.
+    // Not an undoable edit (it never touches the `Design`), but it is saved with the design file.
     schedule_save(ctx);
     refresh(ctx);
     show_message(

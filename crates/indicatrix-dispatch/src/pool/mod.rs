@@ -24,19 +24,31 @@
 //!
 //! A lane that panics inside `render_chunk` is treated as a failed chunk with nothing
 //! traced; the panic does not take the pool down.
+//!
+//! # Lanes joining and leaving a running epoch
+//!
+//! [`LanePool::run_into_fed`] also polls a [`LaneFeed`] on a thread of its own and starts
+//! every lane it returns at once, against the same cursor and merger. A lane whose
+//! resource is gone for good ([`WorkerLane::lost`]) is removed ([`PoolEvent::LaneRemoved`])
+//! as soon as its chunk is settled, its untraced tail already requeued, unless it is the
+//! last lane running: the last one keeps going through the failure schedule, and only an
+//! empty roster with samples left ends the run as [`PoolStatus::LanesExhausted`]. A lane
+//! offered after the last lane has left is dropped unused.
 
 mod epoch;
+mod feed;
 mod lane_loop;
 #[cfg(test)]
 mod tests;
 
 use crate::{CancelToken, ChunkPolicy, Merger, RateModel, SampleCursor, SampleRange, WorkerLane};
 use epoch::Epoch;
+pub use feed::LaneFeed;
 use glam::Vec3;
 use indicatrix_net::SceneState;
 use std::{
     fmt,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex, PoisonError, RwLock},
     thread,
     time::Duration,
 };
@@ -138,6 +150,13 @@ pub enum PoolEvent {
         /// Failed chunks in a row.
         consecutive_failures: u32,
     },
+    /// The lane's resource is gone for good ([`WorkerLane::lost`]) and other lanes carry
+    /// on: it left the epoch without a backoff or retirement. Whatever chunk it had
+    /// in flight is already back on the cursor.
+    LaneRemoved {
+        /// The lane.
+        lane: usize,
+    },
     /// The lane stopped normally: nothing left to claim, or cancelled.
     LaneFinished {
         /// The lane.
@@ -221,7 +240,9 @@ struct LaneSlot {
 /// calibrates each lane once.
 pub struct LanePool {
     config: PoolConfig,
-    lanes: Vec<LaneSlot>,
+    /// Grows while a fed run ([`Self::run_into_fed`]) adds lanes; a lane's position is
+    /// its index.
+    lanes: RwLock<Vec<Arc<LaneSlot>>>,
 }
 
 impl LanePool {
@@ -230,17 +251,30 @@ impl LanePool {
     pub const fn new(config: PoolConfig) -> Self {
         Self {
             config,
-            lanes: Vec::new(),
+            lanes: RwLock::new(Vec::new()),
         }
+    }
+
+    fn lanes_mut(&mut self) -> &mut Vec<Arc<LaneSlot>> {
+        self.lanes.get_mut().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn slot(&self, lane: usize) -> Option<Arc<LaneSlot>> {
+        self.lanes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(lane)
+            .cloned()
     }
 
     /// Registers `lane` starting from `rate`, returning its index.
     pub fn add_lane(&mut self, lane: Arc<dyn WorkerLane>, rate: RateModel) -> usize {
-        self.lanes.push(LaneSlot {
+        let lanes = self.lanes_mut();
+        lanes.push(Arc::new(LaneSlot {
             lane,
             rate: Mutex::new(rate),
-        });
-        self.lanes.len() - 1
+        }));
+        lanes.len() - 1
     }
 
     /// The pool's configuration.
@@ -249,23 +283,25 @@ impl LanePool {
         &self.config
     }
 
-    /// How many lanes are registered.
+    /// How many lanes are registered (those a fed run added included).
     #[must_use]
-    pub const fn lane_count(&self) -> usize {
-        self.lanes.len()
+    pub fn lane_count(&self) -> usize {
+        self.lanes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
     }
 
     /// Lane `lane`'s [`WorkerLane::name`].
     #[must_use]
-    pub fn lane_name(&self, lane: usize) -> Option<&str> {
-        self.lanes.get(lane).map(|slot| slot.lane.name())
+    pub fn lane_name(&self, lane: usize) -> Option<String> {
+        self.slot(lane).map(|slot| slot.lane.name().to_owned())
     }
 
     /// Lane `lane`'s current rate model.
     #[must_use]
     pub fn rate(&self, lane: usize) -> Option<RateModel> {
-        self.lanes
-            .get(lane)
+        self.slot(lane)
             .map(|slot| *slot.rate.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
@@ -280,7 +316,7 @@ impl LanePool {
         events: &(dyn Fn(PoolEvent) + Sync),
     ) -> PoolOutcome {
         let merger = Merger::new(pixel_count(scene), range.first_sample);
-        let status = self.run_unchecked(scene, range, &merger, cancel, events);
+        let status = self.run_unchecked(scene, range, &merger, cancel, events, None);
         let (sum, count) = merger.into_parts();
         PoolOutcome { sum, count, status }
     }
@@ -302,6 +338,27 @@ impl LanePool {
         cancel: &CancelToken,
         events: &(dyn Fn(PoolEvent) + Sync),
     ) -> Result<PoolStatus, MergerMismatch> {
+        self.run_into_fed(scene, range, merger, cancel, events, None)
+    }
+
+    /// Like [`Self::run_into`], and additionally polls `feed` while the run is going:
+    /// every lane it returns joins the epoch at once (see [`LaneFeed`]) and ends with it.
+    /// Lanes added this way are registered in the pool afterwards, so [`Self::rate`] and
+    /// [`Self::lane_name`] answer for them too. Without lanes of its own the run still
+    /// ends as soon as no lane is running, however long `feed` could still deliver.
+    ///
+    /// # Errors
+    ///
+    /// [`MergerMismatch`] as for [`Self::run_into`].
+    pub fn run_into_fed(
+        &self,
+        scene: &SceneState,
+        range: SampleRange,
+        merger: &Merger,
+        cancel: &CancelToken,
+        events: &(dyn Fn(PoolEvent) + Sync),
+        feed: Option<&dyn LaneFeed>,
+    ) -> Result<PoolStatus, MergerMismatch> {
         let expected_pixels = pixel_count(scene);
         let merger_samples = merger.total();
         if merger.pixel_count() != expected_pixels
@@ -316,7 +373,7 @@ impl LanePool {
                 merger_samples,
             });
         }
-        Ok(self.run_unchecked(scene, range, merger, cancel, events))
+        Ok(self.run_unchecked(scene, range, merger, cancel, events, feed))
     }
 
     fn run_unchecked(
@@ -326,7 +383,9 @@ impl LanePool {
         merger: &Merger,
         cancel: &CancelToken,
         events: &(dyn Fn(PoolEvent) + Sync),
+        feed: Option<&dyn LaneFeed>,
     ) -> PoolStatus {
+        let started = self.lane_count();
         let epoch = Epoch {
             scene,
             cursor: SampleCursor::new(range.first_sample, range.end()),
@@ -338,14 +397,18 @@ impl LanePool {
             pixels: merger.pixel_count(),
             sched: epoch::Sched::new(),
             lanes: &self.lanes,
+            roster: epoch::Roster::new(started),
         };
         if !range.is_empty() {
+            let epoch = &epoch;
             thread::scope(|scope| {
-                for (index, slot) in self.lanes.iter().enumerate() {
-                    let epoch = &epoch;
-                    scope.spawn(move || {
-                        lane_loop::run_lane(epoch, index, &*slot.lane, &slot.rate);
-                    });
+                for index in 0..started {
+                    if let Some(slot) = self.slot(index) {
+                        feed::spawn_lane(scope, epoch, index, slot);
+                    }
+                }
+                if let Some(feed) = feed {
+                    scope.spawn(move || feed::feed_lanes(scope, epoch, feed));
                 }
             });
         }

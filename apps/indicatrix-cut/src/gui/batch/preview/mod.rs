@@ -61,11 +61,13 @@
 //! a dispatcher started most recently.
 
 mod engine;
+mod import_choice;
 mod remote_lane;
 mod scan;
 mod wiring;
 
-pub use engine::{RI_MATCH_TOLERANCE, seeded_random_unit, target_ri_for_design};
+pub use engine::{RI_MATCH_TOLERANCE, target_ri_for_design};
+pub use import_choice::offer_import_previews;
 pub use wiring::{offer_batch_confirmation, setup_preview_batch_callbacks};
 
 #[cfg(test)]
@@ -93,6 +95,7 @@ mod tests {
             material_candidates: &[],
             preview_size: 1,
             preview_spp: 1,
+            solid: false,
             gpu_retired: &gpu_retired,
             angle_table_entries: &angle_table_entries,
         };

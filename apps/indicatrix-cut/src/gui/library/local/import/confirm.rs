@@ -47,7 +47,7 @@ pub(super) fn count_pending_collisions(
 }
 
 /// When `collisions` is non-zero, opens the SAME in-window write-confirm dialog
-/// `gui::editor::native_io::ask_write_confirm` already gives Save Native's own
+/// `gui::editor::native_io::ask_write_confirm` already gives Save's own
 /// prompts, naming how many of `total` candidate files would replace an existing
 /// catalogue row, and runs `proceed` once the cutter accepts. Declining runs
 /// nothing at all -- the catalogue stays untouched, exactly like cancelling the

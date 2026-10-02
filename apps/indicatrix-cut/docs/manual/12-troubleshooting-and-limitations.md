@@ -24,8 +24,8 @@ one place.
 | Optimize button is greyed out: "Every tier is currently pinned as a scale reference..." | A freshly loaded catalogue design starts with zero free tiers -- this is expected, not broken. | Adopt at least one tier's real meet constraint, or author one by hand (Chapter 8). |
 | Optimize will not move a particular tier | That tier is either pinned as an Exact scale value (including the girdle, which Optimize never moves), or its SOLVE strategy is still uncertain (Least-squares est. / FAILED / not solved / blocked / no anchor yet). | Adopt the tier if it is pinned and you want it free; otherwise fix the uncertain solve first -- see "Trusting the SOLVE column" (Chapter 8). |
 | Clicking Solve shows an **Abandon** button instead of Cancel, and the wait does not stop right away | The solver has no mid-run checkpoint yet, so Abandon only discards the result on the app's side -- the background worker keeps computing to completion regardless (Chapter 5). | This is expected; the editor is usable again immediately even though the CPU work finishes unseen. |
-| A dialog titled "This design is not a closed solid" appears when saving or exporting | The design does not currently solve to a closed solid, and you are about to write a file anyway. | Click **No** to cancel and fix the design first, or **Yes** to write it with a `NOT A CLOSED SOLID` header stamp so the file itself carries the warning (Chapter 11). |
-| Save Native saves a **draft** even though every block has an anchor tier | The design has more facet planes than the solver can verify (currently more than 400 total planes) -- the masts it would otherwise produce are untrustworthy placeholders, so the app saves a draft instead, the same as a design with no anchor tiers yet (Chapter 11). | Reduce the design's total plane count (fewer indices per tier, or split the design) and save again once it solves within the limit. |
+| A dialog titled "This design is not a closed solid" appears when saving or exporting | The design does not currently solve to a closed solid, and you are about to write a file anyway. | Click **Cancel** and fix the design first, or **Save Anyway** (**Export Anyway**) to write it with a `NOT A CLOSED SOLID` header stamp so the file itself carries the warning (Chapter 11). |
+| Save writes a **draft** even though every block has an anchor tier | The design has more facet planes than the solver can verify (currently more than 400 total planes) -- the masts it would otherwise produce are untrustworthy placeholders, so the app saves a draft instead, the same as a design with no anchor tiers yet (Chapter 11). | Reduce the design's total plane count (fewer indices per tier, or split the design) and save again once it solves within the limit. |
 
 ## Rendering and remote-worker problems
 
@@ -54,15 +54,16 @@ one place.
 
 ## Log file
 
-Every run writes a plain-text log file, `indicatrix-cut.log`, next to the
+An app started with `--log` (for example `indicatrix-cut --log`) writes a
+plain-text log file, `indicatrix-cut.log`, next to the
 app's executable — falling back to the system temp folder if that
 location is not writable (Program Files, a read-only mount). By default
 it logs at `warn` for everything, with this app's own two crates turned
 up to `info`: the geometry/solver library (`indicatrix`) and the app
 itself (`indicatrix_cut`). The same messages also print to stderr when a
 console is attached — a debug build, or the app started from a terminal;
-a normal release-build launch has no console, so only the file gets
-anything in that case.
+a normal release-build launch has no console, so without `--log` those
+messages go nowhere.
 
 To see more detail while reproducing a problem, set the `RUST_LOG`
 environment variable before starting the app — for example
@@ -71,7 +72,8 @@ own crates at debug level, or `RUST_LOG=trace` for the noisiest level
 everywhere. `RUST_LOG`, when set, replaces the default filter above
 entirely rather than adding to it.
 
-If you are filing a bug report, attach `indicatrix-cut.log` (from beside
+If you are filing a bug report, restart with `--log`, reproduce the problem and
+attach `indicatrix-cut.log` (from beside
 the executable, or the temp folder if that is where it landed) — it is
 the single most useful thing to include alongside a description of what
 you were doing. A crash additionally writes `indicatrix-cut-panic.log` in
@@ -81,7 +83,7 @@ a full backtrace; attach that too if it exists.
 ## Known limitations
 
 - **Solid view's windowing-risk hatch does not fully resolve custom materials.**
-  Export Edited .asc, Save Native, and the cutting sheet all correctly resolve
+  Export Edited .asc, Save, and the cutting sheet all correctly resolve
   a custom catalogue material's own RI (Chapter 6), but the Solid
   view's own windowing-risk hatch overlay and one internal solve helper
   do not. For a design whose Material names a custom catalogue material with no RI
@@ -107,7 +109,7 @@ a full backtrace; attach that too if it exists.
 - **The Solid and Live Render viewports show a generic placeholder for a
   brand-new, empty design.** Both read "Solve to preview" / "Select a
   design to preview" rather than a message that names New Design.../Load
-  Selected/Open Native as the next step -- only the tier table itself got
+  Selected/Open as the next step -- only the tier table itself got
   that friendlier empty-state text (Chapter 3).
 - **One well-known gem species is not in the render material list.**
   Sphene (titanite) is deliberately left out of the built-in render

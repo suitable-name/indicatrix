@@ -2,7 +2,7 @@
 //!
 //! Input: [`picker`] (File > Open, multi-select) and [`drop`] (drag-and-drop onto
 //! the canvas) both end in [`open_files`], which sorts the files by kind
-//! (`indicatrix_editor::files::InputFileKind`) and loads them through [`load`]
+//! (`InputFileKind::classify`) and loads them through [`load`]
 //! (designs) or [`hdr`] (environment maps).
 //!
 //! Output: [`save`] builds every File menu download with the desktop's string
@@ -46,8 +46,12 @@ pub fn oversize_message(name: &str, size_bytes: f64) -> Option<String> {
 /// Opens a set of files picked or dropped together:
 ///
 /// - `.hdr` maps are checked against the browser caps and kept for rendering;
-/// - of the designs, a native `.indicatrix.toml` wins (paired with the `.asc` it
-///   names, `indicatrix_editor::files::paired_asc_index`, or opened alone when it
+/// - each file is routed by its content where the name cannot tell
+///   (`InputFileKind::classify`): a `.indicatrix` design file is
+///   self-contained, an older `.indicatrix.toml` / `.gemcut.toml` sidecar is read with
+///   its `.asc`;
+/// - of the designs, a `.indicatrix` file wins, then a sidecar (paired with the `.asc`
+///   it names, `indicatrix_editor::files::paired_asc_index`, or opened alone when it
 ///   is self-contained), then a `.asc`, then a `.gem`/`.gcs`; any further design
 ///   file is named as ignored;
 /// - anything else is named as not supported.
@@ -58,7 +62,7 @@ pub fn open_files(ctx: &Ctx, files: Vec<IncomingFile>) {
     let mut designs: Vec<(InputFileKind, IncomingFile)> = Vec::new();
     let mut unsupported: Vec<String> = Vec::new();
     for file in files {
-        match InputFileKind::from_file_name(&file.name) {
+        match InputFileKind::classify(&file.name, &file.bytes) {
             Some(InputFileKind::Hdr) => open_hdr(ctx, file),
             Some(kind) => designs.push((kind, file)),
             None => unsupported.push(file.name),
@@ -69,7 +73,7 @@ pub fn open_files(ctx: &Ctx, files: Vec<IncomingFile>) {
             ctx,
             MessageKind::Warning,
             &format!(
-                "Not opened (unsupported file type): {}. Open .asc, .indicatrix.toml, .gem, .gcs or .hdr files.",
+                "Not opened (unsupported file type): {}. Open .indicatrix, .asc, .indicatrix.toml, .gem, .gcs or .hdr files.",
                 unsupported.join(", ")
             ),
         );
@@ -127,9 +131,12 @@ fn load_best(
     let position = |kinds: &[InputFileKind], designs: &[(InputFileKind, IncomingFile)]| {
         designs.iter().position(|(kind, _)| kinds.contains(kind))
     };
-    let result = if let Some(native_at) = position(&[InputFileKind::NativeToml], &designs) {
+    let result = if let Some(at) = position(&[InputFileKind::Design], &designs) {
+        let (_, file) = designs.remove(at);
+        open_design_file(app, &file)
+    } else if let Some(native_at) = position(&[InputFileKind::Sidecar], &designs) {
         let (_, native) = designs.remove(native_at);
-        open_native(app, &native, &mut designs)
+        open_sidecar(app, &native, &mut designs)
     } else if let Some(asc_at) = position(&[InputFileKind::Asc], &designs) {
         let (_, asc) = designs.remove(asc_at);
         load::load_asc(&asc.name, &asc.bytes).map(|opened| (opened, asc.name))
@@ -143,21 +150,33 @@ fn load_best(
     (result, ignored)
 }
 
-/// A native file: with its paired `.asc` when one was opened alongside it
-/// (removed from `others`), else on its own.
-fn open_native(
+/// A self-contained `.indicatrix` design file.
+fn open_design_file(app: &mut WebApp, file: &IncomingFile) -> Result<(Opened, String), String> {
+    let text = std::str::from_utf8(&file.bytes)
+        .map_err(|_| format!("\"{}\" is not a text (UTF-8) design file.", file.name))?;
+    load::load_design_file(app, &file.name, text).map(|opened| (opened, file.name.clone()))
+}
+
+/// An older overlay sidecar: with its paired `.asc` when one was opened alongside it
+/// (removed from `others`), else on its own (when it is self-contained).
+fn open_sidecar(
     app: &mut WebApp,
     native: &IncomingFile,
     others: &mut Vec<(InputFileKind, IncomingFile)>,
 ) -> Result<(Opened, String), String> {
     let text = String::from_utf8(native.bytes.clone()).map_err(|_| {
         format!(
-            "\"{}\" is not a text (UTF-8) native design file.",
+            "\"{}\" is not a text (UTF-8) .indicatrix.toml sidecar.",
             native.name
         )
     })?;
     let recorded = indicatrix_cut_core::native::parse_toml_string(&text)
-        .map_err(|e| format!("\"{}\" is not a valid native design file: {e}", native.name))?
+        .map_err(|e| {
+            format!(
+                "\"{}\" is not a valid .indicatrix.toml sidecar: {e}",
+                native.name
+            )
+        })?
         .asc_filename;
     let asc_positions: Vec<usize> = others
         .iter()

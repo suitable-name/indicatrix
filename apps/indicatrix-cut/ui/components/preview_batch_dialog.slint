@@ -1,5 +1,5 @@
 import { Theme } from "../theme.slint";
-import { Button, ScrollView } from "std-widgets.slint";
+import { Button, CheckBox, ScrollView } from "std-widgets.slint";
 import { BatchModel } from "../models/batch.slint";
 
 // Batch design-preview generation (Task: rendered design previews, batch generation
@@ -45,9 +45,12 @@ export component PreviewBatchDialog inherits Rectangle {
     in property <bool> done: BatchModel.preview_done;
     in property <string> summary: BatchModel.preview_summary;
     in property <bool> offer_regenerate: BatchModel.preview_offer_regenerate;
+    in property <bool> from_import: BatchModel.preview_offer_from_import;
 
     callback generate_confirmed();
     generate_confirmed => { BatchModel.preview_generate_confirmed(); }
+    callback generate_solid_confirmed();
+    generate_solid_confirmed => { BatchModel.preview_generate_solid_confirmed(); }
     callback dismiss_offer();
     dismiss_offer => { BatchModel.preview_dismiss_offer(); }
     callback cancel();
@@ -152,16 +155,31 @@ export component PreviewBatchDialog inherits Rectangle {
                             }
                         }
 
+                        if root.from_import: Text {
+                            text: "Quick draws a fast solid picture of each design in moments; the fully rendered ones can follow later, in one batch or one by one from a design's menu.";
+                            font-size: 11px;
+                            color: Theme.text-muted;
+                            wrap: word-wrap;
+                        }
+                        if root.from_import: CheckBox {
+                            text: "Remember my choice";
+                            checked <=> BatchModel.preview_remember_choice;
+                        }
+
                         HorizontalLayout {
                             spacing: 8px;
                             alignment: end;
 
                             Button {
-                                text: "Not now";
+                                text: root.from_import ? "Skip" : "Not now";
                                 clicked => { root.dismiss_offer(); }
                             }
+                            if root.from_import: Button {
+                                text: "Quick (solid)";
+                                clicked => { root.generate_solid_confirmed(); }
+                            }
                             Button {
-                                text: "Generate";
+                                text: root.from_import ? "Full render" : "Generate";
                                 primary: true;
                                 clicked => { root.generate_confirmed(); }
                             }

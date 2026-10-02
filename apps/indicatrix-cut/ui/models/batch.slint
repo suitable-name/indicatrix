@@ -20,11 +20,18 @@ export global BatchModel {
     // The confirm step offers to REGENERATE designs that may already have previews
     // (Library menu, filter panel) rather than to fill in missing ones.
     in property <bool> preview_offer_regenerate: false;
+    // The confirm step was opened by an import: it then also offers fast solid previews
+    // and a "remember my choice" box. `preview_import_choice` mirrors
+    // `AppSettings::import_preview_choice` (0 ask, 1 full, 2 solid, 3 skip).
+    in property <bool> preview_offer_from_import: false;
+    in-out property <bool> preview_remember_choice: false;
+    in-out property <int> preview_import_choice: 0;
 
     callback preview_cancel();
     callback preview_close();
     callback preview_dismiss_offer();
     callback preview_generate_confirmed();
+    callback preview_generate_solid_confirmed();
 
     in-out property <bool> tilt_visible: false;
     in property <bool> tilt_confirming: false;

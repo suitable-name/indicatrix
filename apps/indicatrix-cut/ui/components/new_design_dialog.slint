@@ -96,7 +96,7 @@ export component NewDesignDialog inherits Rectangle {
     // Every other key must `accept`, not `reject`: `reject` would let it bubble
     // past this dialog to `ui/app.slint`'s `global_shortcuts` FocusScope -- so
     // Ctrl+S while this dialog is open (freshly opened, before any field has
-    // stolen focus) would fire Save Native on the design underneath it. `accept`
+    // stolen focus) would fire Save on the design underneath it. `accept`
     // for everything else swallows the key here instead, exactly like a native
     // modal would.
     key_scope := FocusScope {

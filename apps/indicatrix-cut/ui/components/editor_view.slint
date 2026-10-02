@@ -45,7 +45,7 @@ export component EditorView inherits Rectangle {
     // something OTHER than this file's own `tier_table`/`inspector` wiring moves the
     // selection: the Solid/Diagram viewport's click and "Duplicate" (both set
     // `EditorModel.selected_tier_index` straight from Rust), and New/Load Selected/
-    // Open Native/Remove Tier/an out-of-range Undo/Redo (which instead bump
+    // Open/Remove Tier/an out-of-range Undo/Redo (which instead bump
     // `form_reset_pulse` -- see that property's own doc comment -- whenever the
     // right reaction is "blank the form," not "seed it from a real row"; an
     // edit that leaves the selected tier selected bumps `form_reset_pulse`'s sibling

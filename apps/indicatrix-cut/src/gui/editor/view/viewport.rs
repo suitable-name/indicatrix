@@ -522,7 +522,7 @@ pub(in crate::gui::editor) fn push_solved_preview(
 /// [`auto_solve::dispatch_background_solve`].
 ///
 /// `wholesale`: `true` only for a caller that just
-/// replaced `EditorState` wholesale (New/Load Selected/Open Native) -- see
+/// replaced `EditorState` wholesale (New/Load Selected/Open) -- see
 /// [`auto_solve::reset_for_new_design`]'s own doc comment for why exactly those
 /// three (and only those three) need the reset it performs. Every OTHER caller
 /// (the explicit "Solve" button, Adopt/Adopt All/Adopt Selected/Pin to
@@ -606,6 +606,38 @@ pub(in crate::gui::editor) fn refresh_all_now(
             wholesale,
         );
     });
+}
+
+/// Gives the shared viewport back to the editor's design when the Edit sub-tab is
+/// entered while a Library selection owns it (see
+/// [`RenderContext::may_claim_active_planes`]). Does nothing when the editor already
+/// owns the slot or holds no real design, so switching tabs without browsing costs
+/// nothing. Otherwise it is the same refresh a "Solve" click performs, which also
+/// restores the editor's material and panel.
+pub(in crate::gui::editor) fn reclaim_viewport_for_editor(
+    ui: &MainWindow,
+    render_ctx: &Arc<Mutex<crate::bridge::render_thread::RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
+    solid_last_solved: &SolidLastSolved,
+    state: &EditorState,
+) {
+    let catalogue_owns = matches!(
+        render_ctx
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .planes_owner,
+        PlanesOwner::Catalogue { .. }
+    );
+    if catalogue_owns && state.has_design {
+        refresh_all(
+            ui,
+            render_ctx,
+            preview_state,
+            solid_last_solved,
+            state,
+            false,
+        );
+    }
 }
 
 /// Mirrors [`EditorState::has_design`] into `EditorModel.has_design` -- the one

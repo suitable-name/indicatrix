@@ -102,7 +102,7 @@ export global RoughPlanModel {
     in-out property <bool> excluded_open: false;    // the "Excluded designs" list under the candidate choice is open (UI-only)
 
     // rough base & live model
-    in-out property <int> base_kind: 0;            // 0 block, 1 cylinder, 2 pebble
+    in-out property <int> base_kind: 0;            // 0 block, 1 cylinder, 2 pebble, 3 imported mesh
     in-out property <string> cyl_diameter: "";
     in-out property <string> cyl_length: "";
     in-out property <int> cyl_axis: 1;             // 0 x, 1 y, 2 z
@@ -166,6 +166,7 @@ export global RoughPlanModel {
     callback select_design(int);                    // entry_id -> Rust calls the LibraryModel select path
 
     callback set_base(int);
+    callback import_obj();                          // pick an OBJ file; its convex outline becomes the rough
     callback base_field_committed();               // any base/material/weight field committed
     callback fit_to_weight();                       // Fit to weight: scales the model to the typed carat
     callback add_cut(int);                         // kind

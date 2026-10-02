@@ -10,6 +10,7 @@ use crate::{
     bridge::preview_render::{self, CacheKind, PreviewJob, PreviewView},
     gui::batch::{
         batch_queue::WorkQueue,
+        material_choice::ensure_balanced_material,
         remote_dispatch::{DispatcherGroup, RemoteStatus},
     },
     settings::WorkerSettings,
@@ -53,8 +54,8 @@ pub(super) const PREVIEW_MAX_BOUNCES: u32 = DEFAULT_MAX_BOUNCES;
 /// measured: most named gem-species RI bands in `GemMaterial::all_materials()` are
 /// separated by well over this (e.g. Quartz ~1.55 vs. Beryl ~1.58), while a handful of
 /// distinct colour varieties of the SAME species intentionally share (near-)identical
-/// RI and are meant to tie (see `pick_ri_preset`'s own doc comment on ties resolving by
-/// random draw) -- `0.02` sits comfortably inside a single species' natural RI spread
+/// RI and are meant to tie (resolved by `gui::batch::material_choice`'s balanced
+/// measure, not by chance) -- `0.02` sits comfortably inside a single species' natural RI spread
 /// without being wide enough to blur two visually and physically distinct species
 /// together.
 ///
@@ -103,40 +104,6 @@ pub fn target_ri_for_design(full: &indicatrix_vault::model::entry::FullDiagramRe
 /// still in flight remotely.
 const LOCAL_IDLE_POLL: Duration = Duration::from_millis(15);
 
-/// A tiny non-cryptographic splitmix64-based generator producing values in `[0.0,
-/// 1.0)`, seeded from `entry_id` and the current time -- this crate has no `rand`
-/// dependency (nothing else in this workspace needs one; `indicatrix`'s own sampling is a
-/// deterministic hash of pixel/sample indices, not a general-purpose RNG), and
-/// `indicatrix_vault::model::material_match::pick_ri_preset`'s `random_unit` contract
-/// (see that function's own doc comment) only ever needs ONE low-stakes draw per design
-/// in that design's ENTIRE lifetime, to break a tie between visually-similar material
-/// presets -- nowhere near a use that would justify adding a real RNG crate dependency
-/// for. Mixing in wall-clock time (not just `entry_id`) keeps two designs processed in
-/// the same batch, or the same design re-processed after a future reset, from drawing
-/// identically every time.
-///
-/// `pub` (see [`RI_MATCH_TOLERANCE`]'s own note on why plain `pub` over `pub(crate)`
-/// here): `gui::batch::tilt` reuses this directly for its own
-/// `Database::ensure_preview_material` calls -- see that constant's own doc comment
-/// for why both batches must resolve a design's material the same way.
-pub fn seeded_random_unit(entry_id: i64) -> impl FnMut() -> f64 {
-    let time_bits = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos() as u64);
-    let mut state = (entry_id as u64) ^ time_bits;
-    move || {
-        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^= z >> 31;
-        // Top 53 bits -> [0.0, 1.0), matching an `f64` mantissa's full precision --
-        // the same "shift then scale" idiom most splitmix64-derived float generators
-        // use.
-        (z >> 11) as f64 * (1.0 / (1u64 << 53) as f64)
-    }
-}
-
 /// Everything shared, read-only, across every design a batch processes AND safe to
 /// share by plain reference into both the local and remote lanes -- deliberately holds
 /// no `GpuBackend`: only the local lane ever touches a GPU adapter, and keeping it OUT
@@ -152,6 +119,10 @@ pub(super) struct BatchContext<'a> {
         &'a [indicatrix_vault::model::material_match::RiPresetCandidate],
     pub(super) preview_size: u32,
     pub(super) preview_spp: u32,
+    /// Draw the fast solid stand-in pictures instead of the traced ones: no material is
+    /// chosen, no GPU or remote lane is used, and the pictures are stored under a
+    /// fingerprint that still counts the design as missing its traced preview.
+    pub(super) solid: bool,
     /// Set once a caught local-render panic names a wgpu/mapped-buffer
     /// failure (see [`catch_local_render`]) and never cleared for the rest of this
     /// batch -- every local lane shares ONE `GpuBackend` (see this struct's own doc
@@ -224,16 +195,26 @@ pub(super) fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<Re
     };
     let planes = record_planes(ctx, &full)?;
 
+    if ctx.solid {
+        return Some(ResolvedDesign {
+            title: full.title,
+            planes,
+            // Never shown: the solid picture is flat-shaded. The traced preview picks
+            // the design's real material when it is rendered.
+            material: GemMaterial::by_name("Diamond")?,
+            revision: RecordRevision::Stamp(updated_at),
+        });
+    }
     let target_ri = target_ri_for_design(&full);
     let material_name = {
         let guard = ctx.db.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut rng = seeded_random_unit(entry_id);
-        guard.ensure_preview_material(
+        ensure_balanced_material(
+            &guard,
             entry_id,
             target_ri,
             ctx.material_candidates,
             RI_MATCH_TOLERANCE,
-            &mut rng,
+            &planes,
         )
     };
     let Ok(Some(material_name)) = material_name else {
@@ -303,6 +284,11 @@ fn render_item_local(
     resolved: &ResolvedDesign,
     view: PreviewView,
 ) -> Option<Vec<u8>> {
+    if ctx.solid {
+        return catch_local_render(view, ctx.gpu_retired, || {
+            preview_render::render_view_solid(&resolved.planes, ctx.preview_size, view)
+        });
+    }
     if ctx.gpu_retired.load(Ordering::Relaxed) {
         return None;
     }
@@ -474,14 +460,18 @@ fn save_finished_design(shared: &LaneShared<'_>, entry_id: i64, done: &FinishedV
         }
     };
     let material = guard.get_preview_material(entry_id).ok().flatten();
-    let fingerprint = preview_render::cache_fingerprint(
+    let kind = if shared.ctx.solid {
+        CacheKind::SolidDraft {
+            size: shared.ctx.preview_size,
+        }
+    } else {
         CacheKind::Preview {
             size: shared.ctx.preview_size,
             spp: shared.ctx.preview_spp,
             max_bounces: PREVIEW_MAX_BOUNCES,
-        },
-        material.as_deref(),
-    );
+        }
+    };
+    let fingerprint = preview_render::cache_fingerprint(kind, material.as_deref());
     let stored = guard.save_preview_images(
         entry_id,
         done.front.as_deref(),

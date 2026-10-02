@@ -16,6 +16,13 @@ pub enum CacheKind {
         /// Bounce cap of the render.
         max_bounces: u32,
     },
+    /// The fast solid-renderer stand-in picture (`super::render_view_solid`): `size` x
+    /// `size` pixels, no samples. Never equal to a [`Self::Preview`] fingerprint, so a
+    /// design that only has this picture still counts as missing its traced preview.
+    SolidDraft {
+        /// Square render dimension in pixels.
+        size: u32,
+    },
     /// The tilt-performance curves (`Database::save_tilt_curves`): a fixed sweep with
     /// no image size or sample budget of its own.
     TiltCurves,
@@ -52,6 +59,7 @@ pub fn cache_fingerprint(kind: CacheKind, material_name: Option<&str>) -> String
              lighting={};light={light};material={material}",
             PREVIEW_LIGHTING_PRESET.label()
         ),
+        CacheKind::SolidDraft { size } => format!("solid-draft;size={size}"),
         CacheKind::TiltCurves => format!("tilt;tracer={tracer};light={light};material={material}"),
     }
 }

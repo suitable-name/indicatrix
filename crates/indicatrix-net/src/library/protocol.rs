@@ -138,7 +138,7 @@ pub enum LibraryResponse {
     /// Reply to [`LibraryRequest::FetchDesignSource`]: `entry_id`'s real, attached
     /// `.asc` file, decoded as UTF-8 (lossily, same as the client's own local load path
     /// -- see `gui::editor::loading::design_from_full_record`). `file_name` is that
-    /// attachment's own bare file name (for `save_paired`-style "Save Native"
+    /// attachment's own bare file name (for `save_paired`-style "Save"
     /// round-tripping later), `asc_text` its exact original text. Subject to the same
     /// per-message [`crate::framing::MAX_FRAME_LEN`] wire cap every other reply
     /// (including [`Self::Attachment`]) already carries -- no separate bespoke size

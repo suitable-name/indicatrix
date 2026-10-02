@@ -41,6 +41,9 @@ pub fn default_plan_name(model: &RoughModel, material_name: &str, unix_secs: i64
             length_mm,
             ..
         } => format!("Cylinder \u{d8}{diameter_mm:.0}x{length_mm:.0} mm {material_name} {date}"),
+        RoughBase::Hull {
+            x_mm, y_mm, z_mm, ..
+        } => format!("Mesh {x_mm:.0}x{y_mm:.0}x{z_mm:.0} mm {material_name} {date}"),
     }
 }
 

@@ -15,6 +15,7 @@ pub mod dto;
 #[cfg(test)]
 mod fixtures;
 pub mod format;
+mod hull_base;
 mod list;
 pub mod naming;
 mod open;

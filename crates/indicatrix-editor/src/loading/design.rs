@@ -2,9 +2,12 @@
 //! that bounds it.
 //!
 //! The desktop's catalogue-record path (a vault record, possibly
-//! with a native sidecar attached) stays with the desktop and calls into this.
+//! with a design file or older sidecar attached) stays with the desktop and calls into this.
 
-use indicatrix_cut_core::{Design, PreformSpec};
+use indicatrix_cut_core::{
+    Design, PreformSpec,
+    native::{AttachmentBlob, DesignMetadata},
+};
 
 /// A preform sized to bound a design that may already fully specify its own closed shape
 /// (a real `.asc` file's tiers, or a placeholder reconstruction).
@@ -39,9 +42,15 @@ pub struct LoadedDesign {
     /// The real `.asc`'s own bare file name, `None` on the placeholder path.
     pub asc_filename: Option<String>,
     /// The real `.asc`'s exact original text, `None` on the placeholder path; fed to
-    /// `indicatrix_cut_core::save_paired` so a native save can leave the `.asc`
+    /// `indicatrix_cut_core::save_paired` so a save can leave the `.asc`
     /// half byte-for-byte untouched.
     pub original_asc_text: Option<String>,
+    /// The `[meta]` table of a `.indicatrix` file the design came from; all fields
+    /// unset when the source carried none (a bare `.asc` never does).
+    pub metadata: DesignMetadata,
+    /// The attachments of a `.indicatrix` file the design came from, bytes decoded and
+    /// verified, in file order; empty for a bare `.asc`.
+    pub attachments: Vec<AttachmentBlob>,
 }
 
 /// Builds a [`LoadedDesign`] from a real `.asc` file's own text, always along the
@@ -63,6 +72,8 @@ pub fn design_from_asc_text(
         used_placeholder: false,
         asc_filename: Some(file_name.to_string()),
         original_asc_text: Some(text.to_string()),
+        metadata: DesignMetadata::default(),
+        attachments: Vec::new(),
     })
 }
 
@@ -78,6 +89,8 @@ mod tests {
         assert_eq!(loaded.asc_filename.as_deref(), Some("design.asc"));
         assert_eq!(loaded.original_asc_text.as_deref(), Some(text));
         assert_eq!(loaded.design.tiers.len(), 1);
+        assert!(loaded.metadata.is_empty());
+        assert_eq!(loaded.attachments.len(), 0);
     }
 
     #[test]

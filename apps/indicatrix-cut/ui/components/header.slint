@@ -182,7 +182,10 @@ export component HeaderToolbar inherits Rectangle {
                     padding-left: 8px;
                     padding-right: 8px;
                     spacing: 6px;
-                    alignment: center;
+                    // Stretch (not `center`): a centred layout gives the field its
+                    // preferred width, which is the placeholder's while empty and
+                    // only the typed text's afterwards.
+                    alignment: stretch;
 
                     Image {
                         source: @image-url("../icons/search.svg");
@@ -193,6 +196,7 @@ export component HeaderToolbar inherits Rectangle {
 
                     search_input := LineEdit {
                         min-width: 0px;
+                        horizontal-stretch: 1;
                         text <=> LibraryModel.search_text;
                         placeholder-text: "Search diagram, designer, notes... (Ctrl+F)";
                         edited => { LibraryModel.search_changed(self.text); }

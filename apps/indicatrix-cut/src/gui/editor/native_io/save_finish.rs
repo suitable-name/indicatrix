@@ -3,9 +3,9 @@
 //! catalogue write-back's own result.
 
 use super::{
-    CURRENT_NATIVE_PATH,
-    autosave::{autosave_path, record_recent_native_file},
+    autosave::{delete_autosaves_for, record_recent_native_file},
     catalogue::CatalogueWriteBack,
+    remember_design_location,
 };
 use crate::{
     EditorModel, MainWindow,
@@ -46,7 +46,7 @@ pub(super) fn record_last_saved_path(ui: &MainWindow, path: &Path) {
 /// itself failed (see [`write_back_to_catalogue`]'s own doc comment), so it is
 /// reported on its own rather than folded into a single combined error.
 pub(super) struct WriteNativeOutcome {
-    pub(super) dest_path: PathBuf,
+    /// The `.indicatrix` file that was written.
     pub(super) native_path: PathBuf,
     pub(super) asc_filename: String,
     pub(super) paired: indicatrix_cut_core::native::PairedSave,
@@ -64,7 +64,7 @@ pub(super) struct WriteNativeOutcome {
 /// background thread reports in -- split out purely to keep that function under
 /// clippy's line-count lint. Drops any in-progress autosave (now strictly older
 /// than what's actually on disk), records `native_path` as the most recent Open
-/// Recent entry and this state's own file (see [`CURRENT_NATIVE_PATH`]'s doc
+/// Recent entry and this state's own file (see [`remember_design_location`]'s doc
 /// comment), updates `EditorState`'s own saved-generation bookkeeping, and toasts
 /// the outcome -- a draft note when
 /// [`indicatrix_cut_core::native::PairedSave::draft_reason`] is `Some`, an ordinary
@@ -77,7 +77,6 @@ pub(super) fn finish_save_native_success(
     source: &Arc<Mutex<LibrarySource>>,
 ) {
     let WriteNativeOutcome {
-        dest_path,
         native_path,
         asc_filename,
         paired,
@@ -87,16 +86,18 @@ pub(super) fn finish_save_native_success(
     // The real save just landed -- any in-progress autosave is now strictly
     // older than what's on disk, so drop it rather than leaving a stale
     // recovery file behind (it never outlives the real save it stood in for).
-    let _ = std::fs::remove_file(autosave_path(Some(asc_filename.as_str())));
+    delete_autosaves_for(Some(asc_filename.as_str()));
     record_recent_native_file(ui, &native_path.display().to_string());
-    CURRENT_NATIVE_PATH.with(|cell| *cell.borrow_mut() = Some(native_path.clone()));
+    remember_design_location(Some(native_path.clone()), None);
     // Names the window title (`MainWindow.loaded_design_name`) after the file
     // that was just saved.
-    ui.set_loaded_design_name(asc_filename.clone().into());
-    // The `.asc` half, not the `.indicatrix.toml`: both land in the same folder
-    // (so the reveal is identical either way) and the `.asc` is the one a cutter
-    // hands to a machine or another program.
-    record_last_saved_path(ui, &dest_path);
+    let file_label = native_path.file_name().map_or_else(
+        || asc_filename.clone(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    ui.set_loaded_design_name(file_label.into());
+    record_last_saved_path(ui, &native_path);
+    let schedule_name = asc_filename.clone();
 
     {
         let mut st = state.borrow_mut();
@@ -137,29 +138,14 @@ pub(super) fn finish_save_native_success(
             &format!(
                 "Saved '{}' as a draft ({reason}). Add a scale-reference tier to \
                  finish it.",
-                dest_path.display()
+                native_path.display()
             ),
             "warning",
         );
     } else {
-        // The real condition (see
-        // `crates/indicatrix-cut-core/src/native/save.rs`'s semantic-equality
-        // gate) is that every meet note got resynthesized, which is what the
-        // manual (docs/manual/11-saving-and-file-formats.md:57-61) documents --
-        // the toast says so explicitly so it does not disagree with the manual on
-        // how alarming this is.
-        let asc_note = if paired.asc_preserved {
-            "unchanged .asc preserved"
-        } else {
-            ".asc regenerated (meet notes rewritten)"
-        };
         show_toast(
             ui,
-            &format!(
-                "Saved '{}' and '{}' ({asc_note}).",
-                dest_path.display(),
-                native_path.display()
-            ),
+            &format!("Saved '{}'.", native_path.display()),
             "success",
         );
     }
@@ -171,7 +157,7 @@ pub(super) fn finish_save_native_success(
     // the event loop") -- this only reports `catalogue`'s own outcome. Never runs
     // after "Export .asc" (`setup_export_asc_callback`), which keeps its own
     // documented "file only, no database write of any kind" rule.
-    report_catalogue_write_back(ui, state, db, source, &dest_path, catalogue);
+    report_catalogue_write_back(ui, state, db, source, Path::new(&schedule_name), catalogue);
 
     // the save this guard's own Save resolution triggered just actually
     // landed -- see `AfterSave`'s own doc comment. Runs last, after this
@@ -183,8 +169,8 @@ pub(super) fn finish_save_native_success(
 
 /// Reports [`write_back_to_catalogue`]'s result on the UI thread: adopts the written
 /// row as the design's `source_entry_id`, refreshes the library list, and toasts the
-/// outcomes the cutter should not miss. `dest_path` names the saved `.asc` for the
-/// collision wording.
+/// outcomes the cutter should not miss. `dest_path` names the design's `.asc` entry in
+/// the catalogue, for the collision wording.
 fn report_catalogue_write_back(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -229,7 +215,7 @@ fn report_catalogue_write_back(
                     );
                 }
                 // The design itself saved fine (this whole function only runs after
-                // `write_pair_atomically` already succeeded) -- only the library's
+                // `write_file_atomically` already succeeded) -- only the library's
                 // cached previews/tilt curves for this row could not be cleared, so
                 // the cutter needs to know not to trust them at a glance rather than
                 // this failing silently into `tracing::warn!` alone.

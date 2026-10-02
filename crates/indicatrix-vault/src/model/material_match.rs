@@ -34,7 +34,8 @@ pub struct RiPresetCandidate {
 /// Picks which of `candidates` best matches `target_ri`, within `tolerance`:
 ///
 /// - Every candidate within `tolerance` of `target_ri` is a match. Exactly one -> that one.
-/// - Two or more -> picked uniformly at random via `random_unit`. Stateless: the
+/// - Two or more -> picked uniformly at random via `random_unit` (see
+///   [`pick_ri_preset_by`] to break the tie by merit instead). Stateless: the
 ///   "rolled once per design forever" guarantee is the caller's
 ///   ([`crate::db::sqlite::Database::ensure_preview_material`]) persistence logic.
 /// - No match -> the candidate with smallest `|refractive_index - target_ri|`. A tie in
@@ -51,46 +52,61 @@ pub fn pick_ri_preset<'a>(
     tolerance: f64,
     random_unit: &mut dyn FnMut() -> f64,
 ) -> Option<&'a RiPresetCandidate> {
-    if candidates.is_empty() {
-        return None;
-    }
+    pick_ri_preset_by(target_ri, candidates, tolerance, &mut |shortlist| {
+        uniform_index(shortlist.len(), random_unit)
+    })
+}
 
-    let within_tolerance: Vec<&RiPresetCandidate> = candidates
-        .iter()
-        .filter(|c| (c.refractive_index - target_ri).abs() <= tolerance)
-        .collect();
-    match within_tolerance.len() {
-        0 => {}
-        1 => return Some(within_tolerance[0]),
-        _ => return Some(pick_uniformly(&within_tolerance, random_unit)),
-    }
-
-    // No candidate within tolerance: fall back to nearest by absolute difference.
-    // fold, not Iterator::min, since f64 is only PartialOrd.
-    let closest_diff = candidates
-        .iter()
-        .map(|c| (c.refractive_index - target_ri).abs())
-        .fold(f64::INFINITY, f64::min);
-    // Exact equality is intentional: both sides derive from the same target_ri, so a
-    // tie means bit-identical values, not rounding needing an epsilon.
-    let nearest: Vec<&RiPresetCandidate> = candidates
-        .iter()
-        .filter(|c| (c.refractive_index - target_ri).abs() == closest_diff)
-        .collect();
-    // Skip random_unit when nearest is unambiguous, since the draw is persisted
-    // forever and an unnecessary one would still perturb the caller's RNG stream.
-    match nearest.len() {
-        1 => Some(nearest[0]),
-        _ => Some(pick_uniformly(&nearest, random_unit)),
+/// [`pick_ri_preset`] with the tie-break left to the caller.
+///
+/// `choose` receives the shortlist (see [`ri_shortlist`]) and returns the index of the
+/// candidate to take (clamped into range). It is not called for an empty or single-entry
+/// shortlist.
+#[must_use]
+pub fn pick_ri_preset_by<'a>(
+    target_ri: f64,
+    candidates: &'a [RiPresetCandidate],
+    tolerance: f64,
+    choose: &mut dyn FnMut(&[&'a RiPresetCandidate]) -> usize,
+) -> Option<&'a RiPresetCandidate> {
+    let shortlist = ri_shortlist(target_ri, candidates, tolerance);
+    match shortlist.len() {
+        0 => None,
+        1 => Some(shortlist[0]),
+        n => Some(shortlist[choose(&shortlist).min(n - 1)]),
     }
 }
 
-/// Picks one of `items` uniformly at random using one `random_unit()` draw. `items`
-/// must be non-empty (both call sites only reach this with at least one candidate).
-fn pick_uniformly<'a>(
-    items: &[&'a RiPresetCandidate],
-    random_unit: &mut dyn FnMut() -> f64,
-) -> &'a RiPresetCandidate {
+/// The candidates that fit `target_ri`: every one within `tolerance`, or, when none is,
+/// those with the smallest `|refractive_index - target_ri|`. Empty only for no candidates.
+#[must_use]
+pub fn ri_shortlist(
+    target_ri: f64,
+    candidates: &[RiPresetCandidate],
+    tolerance: f64,
+) -> Vec<&RiPresetCandidate> {
+    let within: Vec<&RiPresetCandidate> = candidates
+        .iter()
+        .filter(|c| (c.refractive_index - target_ri).abs() <= tolerance)
+        .collect();
+    if !within.is_empty() {
+        return within;
+    }
+    // fold, not Iterator::min, since f64 is only PartialOrd.
+    let closest = candidates
+        .iter()
+        .map(|c| (c.refractive_index - target_ri).abs())
+        .fold(f64::INFINITY, f64::min);
+    // Exact equality is intentional: both sides derive from the same target_ri.
+    candidates
+        .iter()
+        .filter(|c| (c.refractive_index - target_ri).abs() == closest)
+        .collect()
+}
+
+/// An index in `0..len` from one `random_unit()` draw; `len` must be at least 1.
+#[must_use]
+pub fn uniform_index(len: usize, random_unit: &mut dyn FnMut() -> f64) -> usize {
     let r = random_unit();
     // 0.999_999_999 not 1.0 so an (incorrect) exact 1.0 input still lands on the last
     // element, not one past it.
@@ -99,8 +115,7 @@ fn pick_uniformly<'a>(
     } else {
         0.0
     };
-    let idx = ((r * items.len() as f64) as usize).min(items.len() - 1);
-    items[idx]
+    ((r * len as f64) as usize).min(len - 1)
 }
 
 #[cfg(test)]
@@ -171,6 +186,27 @@ mod tests {
         let mut rng_high = fixed(0.999);
         let picked_high = pick_ri_preset(1.50, &candidates, 0.001, &mut rng_high).unwrap();
         assert_eq!(picked_high.name, "High");
+    }
+
+    #[test]
+    fn a_chooser_breaks_the_tie_by_merit_and_is_skipped_for_a_single_match() {
+        let candidates = [
+            candidate("A", 1.540),
+            candidate("B", 1.541),
+            candidate("C", 1.80),
+        ];
+        let picked = pick_ri_preset_by(1.541, &candidates, 0.01, &mut |s| {
+            s.iter().position(|c| c.name == "B").unwrap()
+        })
+        .unwrap();
+        assert_eq!(picked.name, "B");
+        let mut panics = |_: &[&RiPresetCandidate]| -> usize { panic!("single match") };
+        assert_eq!(
+            pick_ri_preset_by(1.80, &candidates, 0.01, &mut panics)
+                .unwrap()
+                .name,
+            "C"
+        );
     }
 
     #[test]

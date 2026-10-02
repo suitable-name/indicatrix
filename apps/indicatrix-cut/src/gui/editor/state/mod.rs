@@ -18,6 +18,7 @@
 //! [`yield_report`] (the cut-order row adapter).
 
 mod core;
+mod file_extras;
 mod history;
 mod material;
 mod row_format;
@@ -31,6 +32,7 @@ pub(super) use core::{
     should_open_anchor_explainer,
 };
 pub(in crate::gui) use core::{AfterSave, EditorState, PendingUnsavedAction};
+pub(super) use file_extras::DesignFileExtras;
 // The nudge coalescing key: the desktop's production nudge goes through
 // `EditorState::nudge_angles`, so only the tests (and the identity pins) name it.
 pub(super) use history::coalesce_timestamp;

@@ -149,8 +149,8 @@ pub(super) fn do_new_design_create(
     clear_analysis_results(ui);
     // a material-suggestion banner (or an accepted/dismissed one's
     // leftover text) describes the design "New" just replaced -- see
-    // `native_io::open_commit::finish_state_replace`'s matching fix for Open
-    // Native. `tier_actions::apply_loaded_design`'s own Load Selected path
+    // `native_io::open_commit::finish_state_replace`'s matching fix for Open.
+    // `tier_actions::apply_loaded_design`'s own Load Selected path
     // sets/clears this from the newly loaded design's schedule RI; "New" has
     // no schedule RI of its own to suggest against, so it simply clears it.
     ui.global::<EditorModel>()

@@ -114,15 +114,15 @@ also selects it as the current render material).
 database -- this is the copy every material picker across the app actually
 reads from, and it is what makes the material available the next time you
 open the app or select a different design. Separately, if a design's own
-Material is set to a custom material, saving that design with **Save
-Native** also writes a small snapshot of that material's numbers
+Material is set to a custom material, saving that design with **Save**
+also writes a small snapshot of that material's numbers
 (`CustomMaterialSnapshot`: RI, dispersion, birefringence, specific gravity
 if set, crystal system, and optical character) into the design's own
-`.indicatrix.toml` sidecar file. This snapshot exists purely so the design
+`.indicatrix` file. This snapshot exists purely so the design
 still opens with its real optics if it is ever loaded on a machine whose
 catalogue database has no row for that material name -- without it, a design
 would silently reload as plain Diamond. You never edit this snapshot directly;
-it is written and read automatically alongside Save Native and Open Native
+it is written and read automatically alongside Save and Open
 (Chapter 11).
 
 ## RI Override vs. Material
@@ -143,8 +143,8 @@ Above the tier list, the Edit tab's Design Settings panel shows:
   legacy recorded value. Critical Angle is `arcsin(1 / effective RI)` in
   degrees.
 
-**Export agrees with the on-screen figure.** Export Edited .asc, Save
-Native, and the cutting-sheet export all resolve the design's Material the
+**Export agrees with the on-screen figure.** Export Edited .asc, Save,
+and the cutting-sheet export all resolve the design's Material the
 same catalogue-aware way the Effective RI chip does -- so a custom
 material's own refractive index reaches the exported `I` line and matches
 what you see on screen, with no separate "which RI did the export actually
@@ -181,8 +181,8 @@ tolerance, so you can see what else was close before trusting the nearest
 one. Clicking **Set material** writes the shown name into the design's
 Material as an ordinary, undoable edit (Ctrl+Z reverts it like any other
 change) -- once a name is set, the guess badge disappears everywhere at
-once (there is nothing left to guess), and the name reaches Save
-Native's sidecar and Export Edited .asc the normal way. If nothing built in
+once (there is nothing left to guess), and the name reaches the saved
+`.indicatrix` file and Export Edited .asc the normal way. If nothing built in
 is within tolerance, no badge is shown at all -- the app never forces a
 guess onto a material it cannot place.
 
@@ -234,7 +234,7 @@ rather than snapping it back.
 | Consumer | RI source |
 |---|---|
 | Design Settings' Effective RI / Critical Angle chips | Catalogue-aware (built-in, custom, or override) |
-| Export Edited .asc / Save Native / cutting sheet | Catalogue-aware (see above) |
+| Export Edited .asc / Save / cutting sheet | Catalogue-aware (see above) |
 | Tier list's MARGIN badges | Catalogue-aware |
 | Optimize | Catalogue-aware |
 | Tilt curve | Catalogue-aware |
@@ -343,9 +343,9 @@ value (the legacy `.asc` `I` line as last imported, before any material
 selection or override) and the EFFECTIVE value (override, else a resolved
 material's own n_D, else the authored value as a last resort —
 `Design::effective_refractive_index`). Every scoring, rendering and export
-path uses the effective value. The native `.indicatrix.toml` sidecar keeps
-the authored value separate, so it survives a Save Native / reopen round trip
-on its own, independent of any paired `.asc` file (see Chapter 11).
+path uses the effective value. The `.indicatrix` design file keeps
+the authored value separate, so it survives a Save / reopen round trip
+on its own, with no `.asc` beside it (see Chapter 11).
 
 ## Next steps
 

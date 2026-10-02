@@ -57,6 +57,7 @@ selected_material = "Diamond"
 denoise_enabled = true
 contribute_to_final_picture = true
 remote_batch_lanes = 4
+import_preview_choice = "ask"
 
 [settings.remote]
 export_transfer = "FullData"
@@ -164,6 +165,11 @@ the coordinator folds in before tone-mapping. Only takes effect when the export'
 "Compute" choice is `Both`; a scene mismatch or an HDR map the local tracer can't
 resolve identically silently falls back to a remote-only picture instead of
 refusing the export.
+
+`import_preview_choice` (default `"ask"`, top-level; `"full"`, `"solid"` or `"skip"`) is
+the remembered answer to the question asked after an import about generating catalogue
+previews, stored by the question's "Remember my choice" box. Set it back to `"ask"` to be
+asked again.
 
 `remote_batch_lanes` (default `4`, top-level, limited to 1..=32 on load and on set) is
 the remote worker dialog's "Remote lanes for batches" spin box: how many pictures

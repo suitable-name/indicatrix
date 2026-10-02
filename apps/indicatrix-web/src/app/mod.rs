@@ -21,6 +21,7 @@ pub mod persist;
 pub mod push;
 pub mod settings;
 pub mod solve;
+pub mod stamp;
 pub mod state;
 pub mod unload;
 

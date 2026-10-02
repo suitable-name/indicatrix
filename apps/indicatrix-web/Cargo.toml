@@ -4,7 +4,7 @@ version = { workspace = true }
 edition = { workspace = true }
 rust-version = { workspace = true }
 authors = { workspace = true }
-description = "Browser build of indicatrix: open a faceting design (.asc, native pair, .gem, .gcs), edit it, and save it back -- no design library, no remote worker, no database."
+description = "Browser build of indicatrix: open a faceting design (.indicatrix, .asc, .gem, .gcs), edit it, and save it back -- no design library, no remote worker, no database."
 license = { workspace = true }
 repository = { workspace = true }
 homepage = { workspace = true }
@@ -33,7 +33,7 @@ console_error_panic_hook = "0.1.7"
 # the WebGPU (`gpu`) path is gone -- Chrome's GPU process dies compiling the
 # megakernel, so rendering runs on CPU Web Workers.
 indicatrix = { workspace = true, features = ["hdr"] }
-# `Design`, the native `.indicatrix.toml` load/save string APIs, `History`.
+# `Design`, the `.indicatrix` design file load/save string APIs (and the older sidecar's), `History`.
 indicatrix-cut-core = { workspace = true }
 # The shared editor session, loaders, templates, cutting sheet and file naming.
 indicatrix-editor = { workspace = true }
@@ -73,6 +73,7 @@ web-sys = { version = "0.3.106", default-features = false, features = [
     "Blob",
     "BlobPropertyBag",
     "console",
+    "Crypto",
     "DataTransfer",
     "Document",
     "DragEvent",

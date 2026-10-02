@@ -47,8 +47,9 @@ pub(in crate::gui::editor) use solve_results::{
     deep_solve_tier_rows, facet_count_from_solved, format_deep_solve_report, optimize_change_rows,
 };
 pub(in crate::gui::editor) use viewport::{
-    ReplanSource, push_has_design, refresh_all, refresh_all_now, scaled_viewport_size,
-    submit_preview_replan, submit_preview_replan_chained, submit_preview_replan_for,
+    ReplanSource, push_has_design, reclaim_viewport_for_editor, refresh_all, refresh_all_now,
+    scaled_viewport_size, submit_preview_replan, submit_preview_replan_chained,
+    submit_preview_replan_for,
 };
 // `push_solved_preview` is the one push function `editor::apply_matching_preview_frame`
 // (this group's other public entry point) also needs -- `push_stale_content` stays

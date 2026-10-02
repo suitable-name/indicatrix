@@ -5,7 +5,7 @@
 //! doc comment (`src/lib.rs`) for "the pieces" this exercises. `indicatrix`'s own
 //! `pgo_train` example trains the geometry/solver/renderer crate directly; this one
 //! trains the editor-core layer built on top of it: [`Design`] construction,
-//! [`Design::solve`], `.asc` export, the native `.indicatrix.toml` save/load round
+//! [`Design::solve`], `.asc` export, the `.indicatrix` design file save/load round
 //! trip, [`resolve_after_edit`], and [`optimize_design`]'s search loop.
 //!
 //! For each built-in template in [`templates::TEMPLATES`] (five small designs, all
@@ -15,7 +15,8 @@
 //! -- see `indicatrix_cut_core::optimize`'s own measured cost table for why this one
 //! design dominates this whole file's runtime): `Design::solve` ->
 //! `to_asc_schedule_from_solved` -> `indicatrix_formats::asc::to_asc_string` ->
-//! `native::save_paired` -> `native::load_paired` -> `resolve_after_edit` for one
+//! `native::save_paired` (the catalogue's `.asc`) -> `native::design_to_string` ->
+//! `native::design_from_str` -> `resolve_after_edit` for one
 //! `Edit::MoveTier` -> `optimize_design` with a tiny evaluation budget.
 //!
 //! Every `Design::solve` call on CrackOtto-Step costs over a second on its own (no
@@ -36,7 +37,8 @@ use indicatrix::{
     optics::materials::GemMaterial,
 };
 use indicatrix_cut_core::{
-    Design, Edit, OptimizeConfig, PreformSpec, SearchHooks, free_tier_indices, load_paired,
+    Design, Edit, OptimizeConfig, PreformSpec, SearchHooks, free_tier_indices,
+    native::{DesignExtras, design_from_str, design_to_string},
     optimize_design, resolve_after_edit, save_paired, templates,
 };
 use std::time::Instant;
@@ -131,19 +133,22 @@ fn train_one_design(
 
     let saved = save_paired(design, format!("{name}.asc"), original_asc, None, None)
         .unwrap_or_else(|e| panic!("{name}: save_paired failed: {e}"));
-    *checksum = (saved.native_toml.len() as f64).mul_add(1e-3, *checksum);
+    *checksum = (saved.asc_text.len() as f64).mul_add(1e-3, *checksum);
 
-    let loaded = load_paired(&saved.asc_text, &saved.native_toml, false)
-        .unwrap_or_else(|e| panic!("{name}: load_paired failed: {e}"));
+    let design_text = design_to_string(design, None, &DesignExtras::default())
+        .unwrap_or_else(|e| panic!("{name}: design_to_string failed: {e}"));
+    *checksum = (design_text.len() as f64).mul_add(1e-3, *checksum);
+
+    let loaded = design_from_str(&design_text)
+        .unwrap_or_else(|e| panic!("{name}: design_from_str failed: {e}"));
     let mut reloaded = loaded.design;
     *checksum += reloaded.tiers.len() as f64;
 
     // `resolve_after_edit` for one `Edit::MoveTier` -- swap the last two tiers (a
     // real, index-renumbering move whenever there are at least two tiers). `solved`
     // (from the very first `design.solve()` above) is a valid `previous` baseline
-    // for `reloaded` too: `save_paired`/`load_paired` round-trip every tier's
-    // angle/indices/constraint losslessly (a clean `TierOverlay::Applied` reload,
-    // the common case for an untouched design), so `reloaded` solves identically to
+    // for `reloaded` too: the design file round-trips every tier's
+    // angle/indices/constraint losslessly, so `reloaded` solves identically to
     // `design` -- reusing it here avoids yet another full solve on a design as
     // heavy as CrackOtto-Step.
     if reloaded.tiers.len() >= 2 {

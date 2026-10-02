@@ -85,6 +85,19 @@ Live Compute includes it, and keeps several pictures in flight on the remote
 at the same time — how many is **Remote lanes for batches** in the Remote
 Coordinator panel (Chapter 10).
 
+After an import you are asked whether to generate previews for the new designs:
+**Full render** traces them as above, **Quick (solid)** draws a flat-shaded solid
+picture of each in moments on the CPU, and **Skip** generates nothing. Tick
+**Remember my choice** to stop being asked (the `import_preview_choice` setting). A
+solid picture counts as a stand-in: the designs that only have one are offered again for
+full rendering at the next start, from the library menu's regenerate entries, or one at a
+time from a design's context menu.
+
+When several materials fit a design's refractive index, the one its previews and tilt
+curves use is the one that serves the stone best on windowing, extinction and
+brilliance weighted equally, measured table-up and at two tilts, so a low windowing figure
+that comes with heavy extinction does not win. It is chosen once per design and kept.
+
 Once selected, the detail header above the tabs shows the title, designer,
 and a row of spec chips (Shape, Gear, Facets, L/W, H/W, C/W, P/W, Vol/W³,
 R.I.) — each chip only appears when that value is known. Local designs get

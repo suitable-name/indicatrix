@@ -566,11 +566,11 @@ export component SolidViewportView inherits Rectangle {
             // A brand-new, zero-tier design has nothing TO solve, so this names
             // the actual next step rather than telling a first-time cutter to
             // press "Solve to preview" on a button that cannot yet do anything
-            // (New/Load Selected/Open Native all live in the catalogue panel
+            // (New/Load Selected/Open all live in the catalogue panel
             // and the command bar, neither of which this viewport can reach
             // directly, hence naming them rather than linking them).
             text: EditorModel.tiers.length == 0
-                ? "Nothing to show yet -- start with New, Load Selected from the catalogue, or Open Native."
+                ? "Nothing to show yet -- start with New, Load Selected from the catalogue, or Open."
                 : ((SolidPreviewModel.view_mode == 0 || SolidPreviewModel.view_mode == 3) ? "Solve to preview" : "Nothing rendered yet");
             font-size: 13px;
             color: Theme.text-muted;

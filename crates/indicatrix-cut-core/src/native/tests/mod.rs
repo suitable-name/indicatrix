@@ -7,6 +7,8 @@
 mod fixtures;
 
 mod custom_material;
+mod design_file;
+mod design_file_meta;
 mod field_round_trips;
 mod fingerprint_mismatch;
 mod history_and_notes;

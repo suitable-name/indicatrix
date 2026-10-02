@@ -219,10 +219,11 @@ file against. The parsed tiers become `angle_settings` rows, and the raw file
 bytes are stored as received (`import_asc_bytes` keeps the file's raw bytes, not a re-encoded
 UTF-8 copy) as an `attached_files` entry, so the original can be re-exported exactly later.
 Rows imported by earlier versions hold the already-decoded UTF-8 text instead; readers
-decode either form with `decode_asc_bytes`. `native_sidecar`, when the caller found a paired
-`.indicatrix.toml`/`.gemcut.toml` file beside the `.asc` on disk, is attached as a
-second `attached_files` entry, so a design round-tripped through Save Native and back
-through Import doesn't lose sidecar-only fields. `derived_from_entry_id` recovers the
+decode either form with `decode_asc_bytes`. `native_sidecar`, when the caller found a
+`.indicatrix` design file (or an older `.indicatrix.toml`/`.gemcut.toml` sidecar)
+beside the `.asc` on disk, is attached as a second `attached_files` entry, so a
+design round-tripped through Save and back through Import doesn't lose the fields
+only the design file carries. `derived_from_entry_id` recovers the
 catalogue row id an exported `.asc` recorded itself as derived from (an
 `Indicatrix-Source-Entry-Id:` footnote written by `gui::editor::native_io`), so an
 export-then-reimport can be linked back to its source row instead of landing as an
@@ -307,7 +308,7 @@ alone (undocumented until now), without touching `diagram_details` or committing
 `save_diagram_entry`'s upsert-and-report-id shape — for a caller (e.g. a mirror sync)
 that only needs to know whether a row already exists. `Database::diagram_entry_for_url`
 returns the owner's `(id, title)` instead, for a caller that declines to write over a
-row it does not own and wants to name it (Save Native's catalogue write-back does). `Database::get_preview_material
+row it does not own and wants to name it (Save's catalogue write-back does). `Database::get_preview_material
 (entry_id)` (also undocumented until now) is the plain read half of the preview-material
 pair: it returns `entry_id`'s persisted `preview_material`, if any, without running
 `ensure_preview_material`'s RNG/candidate-selection logic — for a caller (e.g. a batch
@@ -365,7 +366,7 @@ in place.
 saved `diagram_entries.id`. Calling the two separately risked leaving a new entry
 row with no matching detail row if the process died in between (observed on the
 real catalogue); `save_design` is the atomic replacement for that pattern, and the
-desktop app's three catalogue writers (Save Native's write-back, the mirror sync and
+desktop app's three catalogue writers (Save's write-back, the mirror sync and
 the `.asc` import) all use it.
 
 `save_diagram_entry` is a `url`-keyed upsert: a different design saved under a taken

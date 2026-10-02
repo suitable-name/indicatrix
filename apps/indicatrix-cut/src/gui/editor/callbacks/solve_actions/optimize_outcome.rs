@@ -65,7 +65,7 @@ pub(super) fn handle_optimize_outcome(
     // `optimize_running` gates the Optimize button, so a handler that returns
     // without touching either leaves the panel stuck mid-run.
     ui.global::<EditorModel>().set_optimize_running(false);
-    // New / Load Selected / Open Native swapped the design out from under this run:
+    // New / Load Selected / Open swapped the design out from under this run:
     // the result describes a different stone, `clear_analysis_results` has already
     // blanked the panel on purpose, and `EditorState::pending_optimize` is a fresh
     // `Arc` the replacement installed -- so there is nothing here worth showing, and

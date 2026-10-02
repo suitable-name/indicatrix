@@ -293,7 +293,7 @@ pub fn gem_material_from_custom_snapshot(
 /// the result.
 ///
 /// `printed_proportions`, when `Some`, is mirrored into the sidecar's own `[source]`
-/// table so a later Open Native can restore it -- see [`NativeDesignFile::
+/// table so a later Open can restore it -- see [`NativeDesignFile::
 /// with_source`] for why an all-`None` [`ExternalProportions`] still writes no table
 /// at all. `extras` carries the optional custom-material snapshot and history trail
 /// -- see [`SaveExtras`]'s own doc comment.
@@ -344,7 +344,7 @@ pub fn to_native_file(
 /// The `unknown`-table key [`stash_schedule_meta`]/[`unstash_schedule_meta`] use --
 /// namespaced (not a bare `"meta"`) so it can never collide with a real top-level
 /// field a future `indicatrix-formats` schema version adds.
-const SELF_CONTAINED_META_KEY: &str = "indicatrix_cut_core_self_contained_meta";
+pub(super) const SELF_CONTAINED_META_KEY: &str = "indicatrix_cut_core_self_contained_meta";
 
 /// Packs `meta` into a nested table under [`SELF_CONTAINED_META_KEY`] in `unknown`
 /// -- the extension point [`indicatrix_formats::native::NativeDesignFile::unknown`]'s

@@ -45,8 +45,8 @@ exporting a design of your own.
     final picture transfer, how many pictures a catalogue batch keeps in
     flight on it, HDR scenes, and troubleshooting a connection gone quiet.
 11. [Saving and File Formats](11-saving-and-file-formats.md) — `.asc`
-    versus this app's native `.indicatrix.toml` format, and where your files
-    go.
+    versus this app's own `.indicatrix` design file (and the older
+    `.indicatrix.toml` sidecars that still open), and where your files go.
 12. [Troubleshooting and Limitations](12-troubleshooting-and-limitations.md)
     — a consolidated symptom/cause/fix table, where to find the app's log
     file and how to raise its verbosity, and every current limitation in

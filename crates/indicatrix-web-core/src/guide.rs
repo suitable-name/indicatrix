@@ -92,8 +92,8 @@ pub const WEB_WORDING: &[(&str, &str)] = &[
         "Switch to the Render tab to see the stone rendered in Diamond.",
     ),
     (
-        "Save it with Save Native, or keep editing.",
-        "Save it with File > Save native pair (Ctrl+S), or keep editing.",
+        "Save it with Save (Ctrl+S), or keep editing.",
+        "Save it with File > Save design (Ctrl+S), or keep editing.",
     ),
     (
         "Continue with Chapter 8 of the manual: Deep Solve, Optimize, Adopt and Apply.",
@@ -146,7 +146,7 @@ mod tests {
                 let text = web_wording(line);
                 for desktop_only in [
                     "Live Render",
-                    "Save Native",
+                    "Save (Ctrl+S)",
                     "Chapter 8",
                     "command bar (or File",
                     "Yield Material",

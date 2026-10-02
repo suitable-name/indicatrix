@@ -1,9 +1,9 @@
 //! The Design settings dialog's compact custom-material editor: the typed fields turned
-//! into a [`GemMaterial`] and the [`CustomMaterialSnapshot`] a native file carries for it.
+//! into a [`GemMaterial`] and the [`CustomMaterialSnapshot`] a design file carries for it.
 //!
 //! The desktop keeps custom materials in its database; the browser has none, so a custom
 //! material lives in the page's catalogue (the render and material combos offer it) and in
-//! the design's own native file (`[material.custom]`), which is how it survives a reload of
+//! the design's own `.indicatrix` file (`[material.custom]`), which is how it survives a reload of
 //! the tab and a save. The fields are the ones that decide the optics -- refractive index,
 //! dispersion (the F-C spread), birefringence, an optional specific gravity for the carat
 //! estimate and a body colour -- and the crystal system and optical character are derived
@@ -45,7 +45,7 @@ pub struct CustomMaterialForm<'a> {
 pub struct BuiltCustomMaterial {
     /// The material for the catalogue.
     pub material: GemMaterial,
-    /// What a native file stores for it.
+    /// What a design file stores for it.
     pub snapshot: CustomMaterialSnapshot,
 }
 

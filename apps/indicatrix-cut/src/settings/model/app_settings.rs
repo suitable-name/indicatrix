@@ -330,6 +330,10 @@ pub struct AppSettings {
         deserialize_with = "deserialize_remote_batch_lanes"
     )]
     pub remote_batch_lanes: u32,
+    /// The remembered answer to the question asked after an import about generating
+    /// catalogue previews (`ask` shows the question every time).
+    #[serde(default)]
+    pub import_preview_choice: super::ImportPreviewChoice,
     /// HDR environment maps: path to the last-loaded Radiance `.hdr` file, or empty
     /// for "no map loaded, use the studio rig" (same empty-string-means-off
     /// convention as `selected_material`/`lighting_rig`). `gui::mod::apply_loaded_settings`
@@ -407,8 +411,9 @@ pub struct AppSettings {
     #[serde(default)]
     pub editor_layout_touched: bool,
     /// The Edit sub-tab's "Open Recent" list: up to
-    /// [`MAX_RECENT_NATIVE_FILES`] native `.indicatrix.toml` paths, most-recently-used
-    /// first. Native paths only (never the paired
+    /// [`MAX_RECENT_NATIVE_FILES`] design-file paths, most-recently-used first --
+    /// `.indicatrix` design files, plus older `.indicatrix.toml`/`.gemcut.toml`
+    /// sidecars that are still openable. Design-file paths only (never a bare
     /// `.asc`, and never a row in the read-only catalogue database, which this list
     /// deliberately has nothing to do with) -- see [`Self::record_recent_native_file`].
     #[serde(default)]
@@ -423,7 +428,7 @@ pub struct AppSettings {
     /// keys and `gui::editor::state`'s anchor-explainer key. A key present here means
     /// that SPECIFIC prompt is silenced;
     /// nothing else is affected, so suppressing "not a closed solid" never
-    /// silences "overwrite an unrelated sidecar" or vice versa.
+    /// silences any other prompt or vice versa.
     #[serde(default)]
     pub suppressed_confirmations: BTreeSet<String>,
 }
@@ -517,6 +522,7 @@ impl Default for AppSettings {
             local_compute_target: DEFAULT_LOCAL_COMPUTE_TARGET,
             contribute_to_final_picture: DEFAULT_CONTRIBUTE_TO_FINAL_PICTURE,
             remote_batch_lanes: DEFAULT_REMOTE_BATCH_LANES,
+            import_preview_choice: super::ImportPreviewChoice::Ask,
             env_map_path: String::new(),
             preview_size: DEFAULT_PREVIEW_SIZE,
             preview_spp: DEFAULT_PREVIEW_SPP,
@@ -563,10 +569,15 @@ impl AppSettings {
     /// Records `path` as the most-recently-used native design file: moves it to the
     /// front if already present (never duplicated), inserts it at the front
     /// otherwise, and truncates back to [`MAX_RECENT_NATIVE_FILES`] entries. Called on
-    /// every successful Save Native/Open Native -- see this field's own doc comment.
+    /// every successful Save/Open -- see this field's own doc comment.
+    ///
+    /// Both file kinds are accepted. Recording a `.indicatrix` design file drops the
+    /// older `.indicatrix.toml`/`.gemcut.toml` entry of the same folder and name, so
+    /// the list prefers the new extension once a design has been saved in it.
     pub fn record_recent_native_file(&mut self, path: String) {
-        self.recent_native_files
-            .retain(|existing| existing != &path);
+        self.recent_native_files.retain(|existing| {
+            existing != &path && !super::recent_files::is_superseded_sidecar(existing, &path)
+        });
         self.recent_native_files.insert(0, path);
         self.recent_native_files.truncate(MAX_RECENT_NATIVE_FILES);
     }
@@ -616,6 +627,26 @@ mod tests {
                 "b.indicatrix.toml".to_string()
             ]
         );
+    }
+
+    #[test]
+    fn recording_a_design_file_replaces_the_older_sidecar_entry_of_the_same_design() {
+        let mut settings = AppSettings::default();
+        settings.record_recent_native_file("d/round.indicatrix.toml".to_string());
+        settings.record_recent_native_file("d/other.gemcut.toml".to_string());
+        settings.record_recent_native_file("d/round.indicatrix".to_string());
+        assert_eq!(
+            settings.recent_native_files,
+            vec![
+                "d/round.indicatrix".to_string(),
+                "d/other.gemcut.toml".to_string()
+            ],
+            "both kinds are accepted; the older entry of the saved design is gone"
+        );
+        // Opening an older sidecar again afterwards is still recorded.
+        settings.record_recent_native_file("d/legacy.indicatrix.toml".to_string());
+        assert_eq!(settings.recent_native_files[0], "d/legacy.indicatrix.toml");
+        assert_eq!(settings.recent_native_files.len(), 3);
     }
 
     #[test]

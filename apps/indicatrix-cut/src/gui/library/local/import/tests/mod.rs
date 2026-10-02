@@ -3,6 +3,7 @@
 //! groups live in the submodules.
 
 mod collisions;
+mod design_files;
 mod foreign_formats;
 mod measure;
 mod old_layout;
@@ -122,13 +123,13 @@ fn import_path_recurses_into_subfolders_only_when_requested() {
     let _ = std::fs::remove_file(&deep_db_path);
 }
 
-/// A `.asc` saved by Save Native has a `<stem>.indicatrix.toml`
+/// A `.asc` saved by an earlier build has a `<stem>.indicatrix.toml`
 /// sidecar sitting right beside it on disk. Importing that pair must attach the
 /// sidecar as a second file on the saved row, not just the bare `.asc`, so
 /// `gui::editor::loading::design_from_full_record`'s existing `load_paired`
 /// preference actually has a sidecar to find on Load Selected.
 #[test]
-fn import_path_attaches_a_sibling_native_sidecar_found_beside_the_asc() {
+fn import_path_attaches_a_sibling_older_sidecar_found_beside_the_asc() {
     let dir = temp_dir_for_test("sidecar");
     std::fs::write(dir.join("paired.asc"), VALID_ASC).expect("write paired.asc");
     std::fs::write(dir.join("paired.indicatrix.toml"), "format_version = 1\n")
@@ -162,7 +163,7 @@ fn import_path_attaches_a_sibling_native_sidecar_found_beside_the_asc() {
     assert_eq!(
         paired_files,
         Some(2),
-        "the .asc plus its native sidecar must both be attached"
+        "the .asc plus its older sidecar must both be attached"
     );
     assert_eq!(
         lonely_files,

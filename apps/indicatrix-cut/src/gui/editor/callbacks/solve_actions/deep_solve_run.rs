@@ -277,7 +277,7 @@ fn begin_deep_solve_run(
             if run_epoch_done.load(AtomicOrdering::Relaxed) != this_run {
                 return;
             }
-            // The design was REPLACED (New / Load Selected / Open Native)
+            // The design was REPLACED (New / Load Selected / Open)
             // while this run was still in flight: checked here, before
             // touching EITHER the busy flag or the result panel, because by
             // the time this abandoned run's completion arrives the cutter may
@@ -366,7 +366,7 @@ fn apply_deep_solve_outcome(
         design_snapshot,
         state,
     } = *ctx;
-    // The design-replaced case (New / Load Selected / Open Native swapped in a
+    // The design-replaced case (New / Load Selected / Open swapped in a
     // different stone while this run was still in flight) is already filtered
     // out by this function's one caller, in `setup_deep_solve_callback`'s own
     // completion closure -- see that closure's own comment for why it

@@ -81,7 +81,7 @@ pub struct SavedPlanDto {
 /// Serialized rough geometry and material info.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RoughDto {
-    /// Base shape: "block", "cylinder", or "pebble".
+    /// Base shape: "block", "cylinder", "pebble" or "hull".
     pub base: String,
     /// Extent along X in mm (block, pebble).
     #[serde(default)]
@@ -101,6 +101,9 @@ pub struct RoughDto {
     /// Cylinder axis: "x", "y", or "z".
     #[serde(default)]
     pub axis: Option<String>,
+    /// Corners in mm of an imported mesh's convex outline (hull).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hull: Vec<[f64; 3]>,
     /// Material name (e.g. "Quartz").
     pub material: String,
     /// Material specific gravity.

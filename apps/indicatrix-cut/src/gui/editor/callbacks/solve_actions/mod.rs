@@ -80,7 +80,7 @@ thread_local! {
 /// describes the current schedule exactly, so it must not be applied; but after an
 /// ordinary edit it is still a verdict about THIS design a few edits ago, worth
 /// showing with a caveat given the run cost minutes. [`Self::design_replaced`] is
-/// strictly stronger: New / Load Selected / Open Native swapped in a different
+/// strictly stronger: New / Load Selected / Open swapped in a different
 /// stone, so the result describes nothing on screen and the panel is deliberately
 /// blank -- there the handler has to stay quiet. Collapsing the two into one
 /// `stale` flag forces a choice between throwing away a useful report and painting
@@ -124,7 +124,7 @@ impl RunProvenance {
 /// Called from two places, for the same reason -- a verdict must never outlive the
 /// design it describes:
 ///
-/// - right after New / Load Selected / Open Native / Open plain `.asc` replace the
+/// - right after New / Load Selected / Open / Open plain `.asc` replace the
 ///   live [`EditorState`] wholesale
 ///   (`tier_actions::do_new_design_create`, `tier_actions::apply_loaded_design`, and
 ///   `native_io::finish_state_replace` for both native paths), and
@@ -155,7 +155,7 @@ pub(in crate::gui::editor) fn clear_analysis_results(ui: &MainWindow) {
         }
     }
     // a Deep Solve/Optimize run abandoned by a New/Load Selected/Open
-    // Native replacement is cancelled by `EditorState::replace_wholesale`
+    // replacement is cancelled by `EditorState::replace_wholesale`
     // (real, checkpoint-based cancellation -- see that method's own doc
     // comment) right before every one of this function's own call sites, but
     // that method has no `MainWindow` handle to reset the busy flags with.

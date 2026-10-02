@@ -47,7 +47,7 @@ pub struct SolidPreviewState {
     pub(super) tier_cutoff: Mutex<Option<usize>>,
     /// bumped by `gui::editor::auto_solve::scheduling::
     /// reset_for_new_design` on every wholesale design replacement (New/Load
-    /// Selected/Open Native) via [`Self::bump_generation_floor`] -- lets the
+    /// Selected/Open) via [`Self::bump_generation_floor`] -- lets the
     /// PLAN worker (`super::plan_worker::spawn_plan_worker`) tell a `PlanJob`
     /// queued or in flight for the design being REPLACED apart from one for
     /// the design that replaced it, even though `self.plan_gate`

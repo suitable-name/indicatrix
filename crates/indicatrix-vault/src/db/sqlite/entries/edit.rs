@@ -193,11 +193,11 @@ impl Database {
     }
 
     /// Updates `entry_id`'s own `url` directly, by id, and bumps `updated_at` -- for a
-    /// caller (Save Native's catalogue write-back) that already knows exactly which
+    /// caller (Save's catalogue write-back) that already knows exactly which
     /// row to update and must not risk [`Self::save_diagram_entry`]'s
     /// url-keyed upsert silently creating a SECOND row when the design's file name (and
     /// so its synthetic `local://` url) changed since this row was created -- e.g. "Save
-    /// Native As..." to a new file name for a design that already has a catalogue row.
+    /// As..." to a new file name for a design that already has a catalogue row.
     /// `title`/`design_id`/`source_id`/`created_at` are all left untouched: title in
     /// particular is a field a cutter hand-corrects (`rename_diagram_entry`), same
     /// precedent as [`Self::update_diagram_metadata`]'s own doc comment, never silently
@@ -310,6 +310,27 @@ impl Database {
             return Err(anyhow::anyhow!("No diagram entry with id {entry_id}."));
         }
         Ok(())
+    }
+
+    /// Whether `entry_id` is marked ignored (see [`Self::set_diagram_ignored`]); `false`
+    /// for an `entry_id` that names no row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `SELECT` fails.
+    pub fn is_diagram_ignored(&self, entry_id: i64) -> Result<bool> {
+        let ignored: Option<bool> = self
+            .conn
+            .query_row(
+                "SELECT ignored FROM diagram_entries WHERE id = ?1",
+                params![entry_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context(format!(
+                "Failed to read the ignored flag of diagram entry {entry_id}"
+            ))?;
+        Ok(ignored.unwrap_or(false))
     }
 
     /// Permanently deletes a diagram entry and everything attached to it (detail,

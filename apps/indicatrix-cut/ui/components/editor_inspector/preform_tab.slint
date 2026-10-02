@@ -10,7 +10,7 @@ import { MaterialGuessBadge } from "../material_guess.slint";
 // the two "has this section been typed/changed since Apply" dirty flags are
 // local UI state, and those still live on `EditorInspector` itself (mirrored
 // here two-way) since `EditorInspector`'s own `form_reset_pulse` watcher
-// clears them on New/Load Selected/Open Native.
+// clears them on New/Load Selected/Open.
 //
 // Every input and both Apply buttons follow `unlocked` (bound by `EditorInspector`
 // to `GuideModel.allows_preform_tab()`) while the worked-example guide runs.

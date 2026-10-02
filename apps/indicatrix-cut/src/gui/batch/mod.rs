@@ -13,6 +13,7 @@
 //! were already, individually, well over this codebase's ~700-line split threshold.
 
 pub mod batch_queue;
+pub mod material_choice;
 pub mod preview;
 pub mod preview_cache;
 pub mod regenerate_all;

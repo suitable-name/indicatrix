@@ -3,7 +3,8 @@
 //!
 //! # How a joined lane holds its connection
 //!
-//! A job checks its workers out of the [`Registry`] once, when it starts, and each
+//! A job checks its workers out of the [`Registry`] when it starts (and later for every
+//! worker that becomes available while it runs), and each
 //! [`JoinedWorkerLane`] keeps its connection across chunks while they succeed back to
 //! back. Holding per job rather than re-checking out per chunk means a lane never loses
 //! its worker to another job between two chunks, and a connection's stream is always
@@ -34,10 +35,17 @@
 //! under a new id -- so no idle connection is ever held through a pause. When the job
 //! ends the lanes are dropped and every connection still held is checked back in.
 //!
-//! Workers that join while a job runs do not get lanes in it (a `LanePool`'s lanes are
-//! fixed per run); they serve the next job. (A lane that lost its connection may still
-//! pick one of them up as its replacement, exactly as it picks up a worker that
-//! reconnected -- subject to the job's [`LaneNeed`].)
+//! Lanes come and go while a job runs. A worker that registers (or becomes idle) while a
+//! fan-out job is running is given a lane in it within one scheduler tick: the job's
+//! `late::LateLanes` feed checks the idle eligible workers out (the same [`LaneNeed`] and
+//! worker-count rules as at job start, and the same memory budget per lane) and the pool
+//! starts a lane for each against the shared sample cursor. A lane whose connection broke
+//! (a chunk or a heartbeat found it dead, [`WorkerLane::lost`]) is removed from the pool as
+//! soon as its unfinished range is back on the cursor, as long as another lane remains; a
+//! worker that reconnects under a new id is simply a new worker and gets a new lane the
+//! same way. The one lane left in a pool is never removed: it keeps retrying (and may pick
+//! up a replacement connection, subject to the job's [`LaneNeed`]) until the pool's failure
+//! schedule retires it.
 //!
 //! # Chunk sizing across lanes of very different speed
 //!
@@ -149,8 +157,14 @@ impl JobLanes {
         }
     }
 
+    /// What a worker must accept to take part in this job.
+    #[must_use]
+    pub(in crate::coordinator) const fn need(&self) -> LaneNeed {
+        self.need
+    }
+
     /// Whether `info`'s worker can take a chunk of this job now.
-    fn accepts(&self, info: &WorkerInfo) -> bool {
+    pub(in crate::coordinator) fn accepts(&self, info: &WorkerInfo) -> bool {
         self.need.accepts(info) && !self.lock_excluded().contains(&info.worker_id)
     }
 
@@ -182,6 +196,9 @@ pub(in crate::coordinator) fn next_worker_request_id() -> u32 {
 struct Held {
     handle: Mutex<Option<WorkerHandle>>,
     last_traffic: Mutex<Instant>,
+    /// The lane's connection broke (a chunk or a heartbeat found it dead) and no
+    /// replacement has been checked out since: see [`WorkerLane::lost`].
+    gone: AtomicBool,
 }
 
 /// How long a checked-out connection may go without traffic before a lane pings it
@@ -222,6 +239,7 @@ impl JoinedWorkerLane {
         let held = Arc::new(Held {
             handle: Mutex::new(Some(handle)),
             last_traffic: Mutex::new(Instant::now()),
+            gone: AtomicBool::new(false),
         });
         let heartbeat_stop = Arc::new(AtomicBool::new(false));
         let heartbeat = {
@@ -330,8 +348,10 @@ impl WorkerLane for JoinedWorkerLane {
             .take()
             .or_else(|| Registry::checkout(&self.registry, |w| self.job.accepts(w)));
         let Some(mut handle) = handle else {
+            self.held.gone.store(true, Ordering::Relaxed);
             return ChunkResult::failed("no idle joined worker to take the chunk".to_string());
         };
+        self.held.gone.store(false, Ordering::Relaxed);
         let (result, broken) = self.run_on(&mut handle, scene, range, cancel);
         *self
             .held
@@ -339,7 +359,10 @@ impl WorkerLane for JoinedWorkerLane {
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Instant::now();
         match broken {
-            Some(why) => handle.discard(&why),
+            Some(why) => {
+                self.held.gone.store(true, Ordering::Relaxed);
+                handle.discard(&why);
+            }
             // A clean chunk keeps the connection for the next one; a refused one goes
             // back to the registry before the pool's backoff pause.
             None if result.error.is_none() => *slot = Some(handle),
@@ -347,6 +370,13 @@ impl WorkerLane for JoinedWorkerLane {
         }
         drop(slot);
         result
+    }
+
+    /// The connection broke, or no worker was left to carry on with: the pool removes
+    /// the lane while others remain, and a worker that registers again (under a new id)
+    /// is then given a lane of its own.
+    fn lost(&self) -> bool {
+        self.held.gone.load(Ordering::Relaxed)
     }
 }
 
@@ -430,8 +460,9 @@ fn try_heartbeat_once(held: &Held) {
                 handle.info().worker_id
             );
             handle.discard(&why);
+            held.gone.store(true, Ordering::Relaxed);
             // `held.handle` stays `None`; `render_chunk`'s own checkout picks a
-            // replacement on its next call.
+            // replacement on its next call, unless the pool removes the lane first.
         }
     }
 }

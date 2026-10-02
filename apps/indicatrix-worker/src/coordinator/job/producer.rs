@@ -5,6 +5,7 @@
 
 use super::{
     Coordinator, LaneKey, RateBook,
+    late::{LaneTable, LateLanes},
     limits::{
         Admission, JobParkedBudget, Reservation, contribution_bytes, hdr_bytes, job_bytes,
         job_estimate_bytes, lane_bytes,
@@ -19,8 +20,8 @@ use crate::{
 };
 use glam::Vec3;
 use indicatrix_dispatch::{
-    CancelToken, ChunkResult, LanePool, Merger, PoolEvent, PoolStatus, RateModel, SampleRange,
-    WorkerLane,
+    CancelToken, ChunkResult, LaneFeed, LanePool, Merger, PoolEvent, PoolStatus, RateModel,
+    SampleRange, WorkerLane,
 };
 use indicatrix_net::{
     SceneState,
@@ -41,7 +42,7 @@ const LANE_RECHECK: Duration = Duration::from_millis(50);
 
 /// The rate a never-measured lane starts from (reporting only; its first chunk is the
 /// policy's calibration chunk regardless).
-const INITIAL_RATE_GUESS: f64 = 10.0;
+pub(super) const INITIAL_RATE_GUESS: f64 = 10.0;
 
 /// Everything one job's producer thread owns.
 pub struct Job {
@@ -73,7 +74,7 @@ pub struct Job {
 /// One [`SinkLane`]'s most recently traced, length-valid chunk (`first_sample, done,
 /// sum`), held back from the emitter until [`run_pool`]'s `events` closure confirms the
 /// pool's [`Merger`] actually merged it.
-type PendingChunk = (u32, u32, Vec<Vec3>);
+pub(super) type PendingChunk = (u32, u32, Vec<Vec3>);
 
 /// Forwards every finished chunk of the wrapped lane to the emitter once [`run_pool`]'s
 /// `events` closure confirms the pool's [`Merger`] merged it -- never on the strength of
@@ -81,20 +82,24 @@ type PendingChunk = (u32, u32, Vec<Vec3>);
 /// refused by the merger (an overlap after a requeue, or the parked-bytes budget);
 /// forwarding it to the viewer first would show a `FRAME` delta for samples the
 /// authoritative total never actually counted.
-struct SinkLane {
-    inner: Arc<dyn WorkerLane>,
-    pixels: usize,
+pub(super) struct SinkLane {
+    pub(super) inner: Arc<dyn WorkerLane>,
+    pub(super) pixels: usize,
     /// This lane's most recent length-valid chunk, awaiting the matching
     /// `PoolEvent::ChunkMerged`. One slot is enough: a lane's next `render_chunk` never
     /// starts before its previous chunk has been merged or discarded (`lane_loop::run_lane`
     /// claims, traces, merges/settles, and only then claims again), so nothing here is
     /// ever overwritten unconfirmed.
-    pending: Arc<Mutex<Option<PendingChunk>>>,
+    pub(super) pending: Arc<Mutex<Option<PendingChunk>>>,
 }
 
 impl WorkerLane for SinkLane {
     fn name(&self) -> &str {
         self.inner.name()
+    }
+
+    fn lost(&self) -> bool {
+        self.inner.lost()
     }
 
     fn render_chunk(
@@ -138,7 +143,8 @@ pub fn run(job: &Job, sink: ProducerSink) {
         drop(admission);
         return sink.finish(ProducerOutcome::Failed(error));
     };
-    let lanes = acquire_lanes(job, &sink);
+    let shared = job_lanes(job);
+    let lanes = acquire_lanes(job, &sink, &shared);
     if lanes.is_empty() {
         drop(admission);
         let outcome = if sink.is_cancelled() {
@@ -160,7 +166,7 @@ pub fn run(job: &Job, sink: ProducerSink) {
         Ordering::Relaxed,
     );
     let sink = Arc::new(sink);
-    let (status, merger) = run_pool(job, lanes, &sink, job.range);
+    let (status, merger) = run_pool(job, lanes, &shared, &sink, job.range);
     // The pool and its lanes are gone: release their frames before a reclaim checks out
     // (and charges) lanes of its own.
     drop(lane_frames);
@@ -331,7 +337,8 @@ fn reclaim(
     admission: Admission<'_>,
     reserved: SampleRange,
 ) {
-    let lanes = acquire_lanes(job, &sink);
+    let shared = job_lanes(job);
+    let lanes = acquire_lanes(job, &sink, &shared);
     if lanes.is_empty() {
         drop(admission);
         let outcome = if sink.is_cancelled() {
@@ -351,7 +358,7 @@ fn reclaim(
         }
     };
     let sink = Arc::new(sink);
-    let (status, extra) = run_pool(job, lanes, &sink, reserved);
+    let (status, extra) = run_pool(job, lanes, &shared, &sink, reserved);
     drop(lane_frames);
     let Ok(sink) = Arc::try_unwrap(sink) else {
         drop(admission);
@@ -398,33 +405,16 @@ fn lost(why: &str) -> ErrorMsg {
 /// returned [`Merger`] is freshly anchored at `range.first_sample`.
 fn run_pool(
     job: &Job,
-    lanes: Vec<(LaneKey, Arc<dyn WorkerLane>)>,
+    lanes: LaneSet,
+    shared: &Arc<JobLanes>,
     sink: &Arc<ProducerSink>,
     range: SampleRange,
 ) -> (PoolStatus, Merger) {
     let pixels = job.scene.width as usize * job.scene.height as usize;
     let image_pixels = job.scene.width * job.scene.height;
-    let mut pool = LanePool::new(job.plan.pool);
-    let mut pendings: Vec<Arc<Mutex<Option<PendingChunk>>>> = Vec::new();
-    let keys: Vec<LaneKey> = {
-        let book = job.rates.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut seeded = BTreeSet::new();
-        lanes
-            .into_iter()
-            .map(|(key, inner)| {
-                let rate = lane_rate(&book, &key, image_pixels, &mut seeded);
-                let pending = Arc::new(Mutex::new(None));
-                let lane = SinkLane {
-                    inner,
-                    pixels,
-                    pending: Arc::clone(&pending),
-                };
-                pool.add_lane(Arc::new(lane), rate);
-                pendings.push(pending);
-                key
-            })
-            .collect()
-    };
+    let table = LaneTable::default();
+    let (pool, joined) = seed_pool(job, lanes, &table);
+    let feed = LateLanes::for_job(job, shared, &table, joined);
     let merger = Merger::new(pixels, range.first_sample)
         .with_parked_budget(Arc::new(JobParkedBudget(Arc::clone(&job.coordinator))));
     let token = CancelToken::new();
@@ -435,7 +425,7 @@ fn run_pool(
         if let PoolEvent::ChunkMerged {
             lane, range, done, ..
         } = &event
-            && let Some(slot) = pendings.get(*lane)
+            && let Some(slot) = table.pending(*lane)
             && let Some((first_sample, pending_done, sum)) =
                 slot.lock().unwrap_or_else(PoisonError::into_inner).take()
             && first_sample == range.first_sample
@@ -455,13 +445,15 @@ fn run_pool(
                 thread::sleep(Duration::from_millis(20));
             }
         });
-        let status = pool.run_into(&job.scene, range, &merger, &token, &events);
+        let late = feed.as_ref().map(|feed| feed as &dyn LaneFeed);
+        let status = pool.run_into_fed(&job.scene, range, &merger, &token, &events, late);
         running.store(false, Ordering::Relaxed);
         status
     });
+    drop(feed);
     {
         let mut book = job.rates.lock().unwrap_or_else(PoisonError::into_inner);
-        for (index, key) in keys.into_iter().enumerate() {
+        for (index, key) in table.keys() {
             if let Some(rate) = pool.rate(index).and_then(|r| r.estimate()) {
                 book.set(key, image_pixels, rate);
             }
@@ -473,6 +465,34 @@ fn run_pool(
         missing: range.samples,
     });
     (status, merger)
+}
+
+/// A pool holding `lanes` (rates from the viewer's book, each wrapped in a [`SinkLane`])
+/// with every lane's key and held-back chunk slot registered in `table` under its pool
+/// index, plus the joined-worker lanes among them (the late-lane feed counts those).
+fn seed_pool(job: &Job, lanes: LaneSet, table: &LaneTable) -> (LanePool, Vec<Arc<dyn WorkerLane>>) {
+    let pixels = job.scene.width as usize * job.scene.height as usize;
+    let image_pixels = job.scene.width * job.scene.height;
+    let mut pool = LanePool::new(job.plan.pool);
+    let mut joined = Vec::new();
+    let book = job.rates.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut seeded = BTreeSet::new();
+    for (key, inner) in lanes {
+        let rate = lane_rate(&book, &key, image_pixels, &mut seeded);
+        let pending = Arc::new(Mutex::new(None));
+        if matches!(key, LaneKey::Worker(_)) {
+            joined.push(Arc::clone(&inner));
+        }
+        let lane = SinkLane {
+            inner,
+            pixels,
+            pending: Arc::clone(&pending),
+        };
+        let index = pool.add_lane(Arc::new(lane), rate);
+        table.register(index, key, pending);
+    }
+    drop(book);
+    (pool, joined)
 }
 
 /// The rate model a pool lane keyed `key` starts from: calibrated from the book's rate for
@@ -554,21 +574,31 @@ pub(super) fn whole_image_lane(
     Some(own)
 }
 
-/// The job's lanes: the own lane (if planned) and the planned joined workers, checked
-/// out now. A whole-image job takes exactly one ([`whole_image_lane`]). A job without an
-/// own lane waits (cancellably) up to the configured `lane_wait` for at least one idle
-/// eligible worker.
-fn acquire_lanes(job: &Job, sink: &ProducerSink) -> LaneSet {
-    let config = job.coordinator.job_config();
-    let deadline = Instant::now() + config.lane_wait;
+/// The state every joined lane of `job` shares: what a worker must accept, the held HDR
+/// map and the workers that refused it.
+fn job_lanes(job: &Job) -> Arc<JobLanes> {
     let need = LaneNeed {
         pixels: job.scene.width * job.scene.height,
         hdr: job.scene.hdr().is_some(),
     };
-    let shared = Arc::new(JobLanes::new(need, job.asset.clone(), config.lane));
+    Arc::new(JobLanes::new(
+        need,
+        job.asset.clone(),
+        job.coordinator.job_config().lane,
+    ))
+}
+
+/// The job's lanes: the own lane (if planned) and the planned joined workers, checked
+/// out now. A whole-image job takes exactly one ([`whole_image_lane`]). A job without an
+/// own lane waits (cancellably) up to the configured `lane_wait` for at least one idle
+/// eligible worker.
+fn acquire_lanes(job: &Job, sink: &ProducerSink, shared: &Arc<JobLanes>) -> LaneSet {
+    let config = job.coordinator.job_config();
+    let deadline = Instant::now() + config.lane_wait;
+    let need = shared.need();
     let mut lanes: LaneSet = Vec::new();
     if job.plan.whole_image {
-        if let Some(lane) = whole_image_lane(&job.coordinator, &job.rates, &shared, need) {
+        if let Some(lane) = whole_image_lane(&job.coordinator, &job.rates, shared, need) {
             return vec![lane];
         }
     } else if job.plan.own {
@@ -593,7 +623,7 @@ fn acquire_lanes(job: &Job, sink: &ProducerSink) -> LaneSet {
         };
         for handle in handles {
             let key = LaneKey::for_worker(handle.info());
-            let lane = JoinedWorkerLane::new(handle, Arc::clone(registry), Arc::clone(&shared));
+            let lane = JoinedWorkerLane::new(handle, Arc::clone(registry), Arc::clone(shared));
             lanes.push((key, Arc::new(lane)));
         }
         if !lanes.is_empty() || sink.is_cancelled() || Instant::now() >= deadline {
@@ -613,16 +643,33 @@ pub(super) fn checkout_fastest(
     n: u32,
     pin: Option<&InteractivePin>,
 ) -> Vec<crate::coordinator::WorkerHandle> {
+    checkout_ranked(registry, rates, need.pixels, |w| need.accepts(w), n, pin)
+}
+
+/// [`checkout_fastest`] for any eligibility test: up to `n` idle workers `accepts` passes,
+/// ranked for an image of `pixels` pixels. Does nothing (and does not touch the pin) while
+/// no worker is idle.
+pub(super) fn checkout_ranked(
+    registry: &Arc<Registry>,
+    rates: &Mutex<RateBook>,
+    pixels: u32,
+    accepts: impl Fn(&WorkerInfo) -> bool,
+    n: u32,
+    pin: Option<&InteractivePin>,
+) -> Vec<crate::coordinator::WorkerHandle> {
     let mut idle: Vec<WorkerInfo> = registry
         .workers()
         .into_iter()
-        .filter(|(w, idle)| *idle && need.accepts(w))
+        .filter(|(w, idle)| *idle && accepts(w))
         .map(|(w, _)| w)
         .collect();
+    if idle.is_empty() {
+        return Vec::new();
+    }
     rank_fastest(
         &mut idle,
         &rates.lock().unwrap_or_else(PoisonError::into_inner),
-        need.pixels,
+        pixels,
     );
     if let Some(pin) = pin {
         pin.apply(&mut idle);

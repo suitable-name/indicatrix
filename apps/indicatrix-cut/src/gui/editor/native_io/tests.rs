@@ -1,5 +1,7 @@
 //! Tests for native save/export round-tripping, the degenerate-marker header,
 //! plain-English load-outcome text, cached-solve reuse, and autosave's write round trip.
+//! The `.indicatrix` design file's own tests (names, autosave naming, atomic write)
+//! are in [`super::design_tests`].
 
 use super::{
     export::{ScheduleFormat, file_name_for_format, schedule_file_text},
@@ -21,9 +23,9 @@ use indicatrix_cut_core::{
 /// persistence only through the editor's own "New Design"/design-settings forms,
 /// not through a dedicated round-trip test. `gear`/`symmetry`/
 /// `mirror` round-trip through the paired `.asc`'s own header (already
-/// exercised, indirectly, by every existing "Open Native" test in
+/// exercised, indirectly, by every existing "Open" test in
 /// `indicatrix_cut_core::native`); `material`/`refractive_index_override` round-trip
-/// through the native sidecar's `[material]` table (already
+/// through the design file's `[material]` table (already
 /// unit-tested in `indicatrix_cut_core::native` directly) -- this test's own
 /// value is confirming the ONE combination this app actually writes (a
 /// design with all four set together, via the same `save_paired`/
@@ -155,7 +157,7 @@ fn a_draft_overlay_on_a_clean_match_names_the_placeholder_masts() {
 // --- Group 1, cached-solve reuse ---
 
 use super::{
-    atomic_write::{WriteGate, temp_sibling, write_pair_atomically, write_synced},
+    atomic_write::{WriteGate, temp_sibling, write_synced},
     autosave::write_autosave,
     confirm::{StatusDecision, decide_write_status},
     open_commit::ReplaceGuard,
@@ -302,35 +304,6 @@ fn two_writers_staging_one_target_keep_their_own_contents() {
 }
 
 #[test]
-fn write_pair_atomically_replaces_both_files_and_leaves_no_staging_files() {
-    let dir = native_io_temp_dir("write_pair");
-    let asc = dir.join("pair.asc");
-    let native = dir.join("pair.indicatrix.toml");
-
-    write_pair_atomically(&asc, &native, "asc one", "toml one").expect("first write");
-    write_pair_atomically(&asc, &native, "asc two", "toml two").expect("second write");
-
-    assert_eq!(std::fs::read_to_string(&asc).expect("read"), "asc two");
-    assert_eq!(std::fs::read_to_string(&native).expect("read"), "toml two");
-    // The second write backed up what the first left.
-    assert_eq!(
-        std::fs::read_to_string(dir.join("pair.asc.bak")).expect("read backup"),
-        "asc one"
-    );
-    assert_eq!(
-        dir_entry_names(&dir),
-        [
-            "pair.asc",
-            "pair.asc.bak",
-            "pair.indicatrix.toml",
-            "pair.indicatrix.toml.bak"
-        ]
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
 fn write_gate_parks_a_second_save_until_the_first_reports_in() {
     let now = Instant::now();
     let mut gate = WriteGate::new();
@@ -468,13 +441,13 @@ fn the_replace_guard_asks_only_when_edits_landed_after_the_decision() {
 // --- Catalogue write-back's panic guard (see `catalogue::write_back_to_catalogue`'s
 // own doc comment: `local::import_asc` + `apply_measured_metadata` now runs inside
 // `catch_file_panic`, exactly like a `.asc` import's per-file loop, instead of
-// panicking straight through Save Native's background thread with no toast and no
+// panicking straight through Save's background thread with no toast and no
 // completion callback ever firing) ---
 
 /// The ordinary (non-panicking) path through the now-panic-guarded parse-and-measure
-/// step: a real solved design, written out via `save_paired` the same way Save Native
+/// step: a real solved design, written out via `save_paired` the same way Save
 /// itself does, must still land as a brand-new catalogue row with its angle settings
-/// and both attachments (the `.asc` plus its native sidecar) intact -- proving the
+/// and both attachments (the `.asc` plus its design file) intact -- proving the
 /// `catch_file_panic` wrapper added around this step changed nothing about the
 /// ordinary success path. The panic arm itself is not forced here, for the same
 /// reason `catch_file_panic`'s own unit test in `gui::library::local::import::tests`
@@ -530,14 +503,14 @@ fn write_back_to_catalogue_still_creates_a_new_row_through_its_panic_guard() {
     assert_eq!(
         full.attached_files.len(),
         2,
-        "both the .asc and its native sidecar must be attached"
+        "both the .asc and its design file must be attached"
     );
     drop(conn);
 
     let _ = std::fs::remove_file(&db_path);
 }
 
-/// Save Native must not overwrite a catalogue design that already owns the
+/// Save must not overwrite a catalogue design that already owns the
 /// `local://<file>` url: the write-back declines, reports the owner and leaves its
 /// title and attachments untouched.
 #[test]

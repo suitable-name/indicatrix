@@ -41,7 +41,7 @@
        CAD-preview mesh extraction; GPU only under the `gpu` tier and only if an
        adapter exists)
     2b. build and run `indicatrix-cut-core`'s OWN `pgo_train` example (Design::solve,
-       .asc export, native save/load, resolve_after_edit, optimize_design) -- in a
+       .asc export, design-file save/load, resolve_after_edit, optimize_design) -- in a
        SEPARATE, isolated `cargo build` invocation, never combined with step 1's `-p
        indicatrix ... --example pgo_train`: both crates ship an
        example named `pgo_train`, and Cargo's example-binary "pretty path" uplift

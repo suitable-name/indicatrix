@@ -6,7 +6,7 @@
 
 use super::Database;
 use crate::model::{
-    material_match::{RiPresetCandidate, pick_ri_preset},
+    material_match::{RiPresetCandidate, pick_ri_preset_by, uniform_index},
     preview::PreviewImages,
 };
 use anyhow::{Context, Result};
@@ -45,11 +45,32 @@ impl Database {
         tolerance: f64,
         random_unit: &mut dyn FnMut() -> f64,
     ) -> Result<Option<String>> {
+        self.ensure_preview_material_by(entry_id, target_ri, candidates, tolerance, &mut |s| {
+            uniform_index(s.len(), random_unit)
+        })
+    }
+
+    /// [`Self::ensure_preview_material`] with the tie between equally fitting candidates
+    /// broken by `choose` (index into the shortlist it is given) instead of a random
+    /// draw. Same "rolled once, reused forever" persistence; `choose` is not called when
+    /// a material is already stored or the shortlist has at most one entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `SELECT`/`INSERT ... ON CONFLICT` fails.
+    pub fn ensure_preview_material_by(
+        &self,
+        entry_id: i64,
+        target_ri: f64,
+        candidates: &[RiPresetCandidate],
+        tolerance: f64,
+        choose: &mut dyn FnMut(&[&RiPresetCandidate]) -> usize,
+    ) -> Result<Option<String>> {
         if let Some(existing) = self.get_preview_material(entry_id)? {
             return Ok(Some(existing));
         }
 
-        let Some(picked) = pick_ri_preset(target_ri, candidates, tolerance, random_unit) else {
+        let Some(picked) = pick_ri_preset_by(target_ri, candidates, tolerance, choose) else {
             return Ok(None);
         };
 

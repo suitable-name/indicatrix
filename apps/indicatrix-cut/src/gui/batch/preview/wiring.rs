@@ -6,6 +6,7 @@ use super::{
     engine::{
         BatchContext, DesignAccum, LaneShared, LiveProgress, Tally, build_items, run_batch_lanes,
     },
+    import_choice::{remember_choice, show_saved_choice},
     scan::spawn_missing_preview_scan,
 };
 use crate::{
@@ -16,7 +17,7 @@ use crate::{
         preview_cache::PreviewThumbnailCache,
         remote_lanes_setting::setup_remote_batch_lanes,
     },
-    settings::{LiveComputeTarget, SettingsPersister, WorkerSettings},
+    settings::{ImportPreviewChoice, LiveComputeTarget, SettingsPersister, WorkerSettings},
 };
 use indicatrix::renderer::gpu_backend::GpuBackend;
 use indicatrix_vault::db::sqlite::Database;
@@ -31,6 +32,15 @@ use std::{
     },
     thread,
 };
+
+/// Which kind of picture a batch makes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PreviewMode {
+    /// The traced previews, on every engine the Live Compute setting allows.
+    Full,
+    /// Fast solid stand-ins drawn on the CPU; the traced previews can follow later.
+    Solid,
+}
 
 /// Handle returned by [`spawn_preview_batch`]. Cancelling is cooperative -- see this
 /// group's `mod.rs` doc comment's "Cancellation leaves completed work in place"
@@ -69,6 +79,8 @@ pub struct PreviewBatchSettings {
     /// (`AppSettings::remote_batch_lanes`); read through
     /// [`remote_lane_count`], which limits it to `1..=32`.
     pub remote_batch_lanes: u32,
+    /// Which kind of picture the batch makes.
+    pub mode: PreviewMode,
     /// The library card thumbnail cache; invalidated per design once its previews are
     /// saved, so the card shows the new images immediately.
     pub thumbnail_cache: PreviewThumbnailCache,
@@ -97,11 +109,12 @@ impl Drop for BusyGuard {
 }
 
 /// Writes the finished batch's summary line into the dialog and marks it done.
-fn push_summary(ui_weak: &Weak<MainWindow>, outcome: PreviewBatchOutcome) {
+fn push_summary(ui_weak: &Weak<MainWindow>, outcome: PreviewBatchOutcome, solid: bool) {
     let _ = ui_weak.upgrade_in_event_loop(move |ui| {
         ui.global::<BatchModel>().set_preview_summary(
             format!(
-                "Generated previews for {} design(s){}{}{}.",
+                "Generated {}previews for {} design(s){}{}{}.",
+                if solid { "solid " } else { "" },
                 outcome.generated,
                 if outcome.failed > 0 {
                     format!(", {} failed", outcome.failed)
@@ -152,7 +165,13 @@ pub fn spawn_preview_batch(
         // Acquired ONCE for the whole batch, not per item -- adapter acquisition and
         // megakernel compilation are far too slow to repeat, same reasoning as
         // `export_thread::run_export`'s own single `GpuBackend::acquire` call.
-        let gpu = GpuBackend::acquire();
+        let solid = settings.mode == PreviewMode::Solid;
+        // The solid pictures are drawn on the CPU, so no adapter is acquired for them.
+        let gpu = if solid {
+            GpuBackend::disabled()
+        } else {
+            GpuBackend::acquire()
+        };
         // Shared by every local lane (via `BatchContext::gpu_retired`) so a
         // caught wgpu-fatal panic in any ONE of them retires `gpu` for the rest of the
         // batch, not just the lane it happened on -- see `engine::catch_local_render`'s
@@ -160,7 +179,9 @@ pub fn spawn_preview_batch(
         let gpu_retired = AtomicBool::new(false);
         // The one remote endpoint -- see this group's `mod.rs` doc
         // comment's "Local + remote" section.
-        let remote_worker = settings.worker;
+        // Solid pictures are cheap enough that shipping scenes to a remote would cost
+        // more than drawing them, so that mode never uses it.
+        let remote_worker = if solid { None } else { settings.worker };
         let thumbnail_cache = settings.thumbnail_cache;
         let angle_table_entries = Mutex::new(BTreeSet::new());
         let ctx = BatchContext {
@@ -168,6 +189,7 @@ pub fn spawn_preview_batch(
             material_candidates: &material_candidates,
             preview_size: settings.preview_size,
             preview_spp: settings.preview_spp,
+            solid,
             gpu_retired: &gpu_retired,
             angle_table_entries: &angle_table_entries,
         };
@@ -179,7 +201,12 @@ pub fn spawn_preview_batch(
 
         // See `gui::batch::batch_queue::LanePlan`'s own doc comment for exactly what
         // each `LiveComputeTarget` variant runs.
-        let plan = LanePlan::for_target(settings.live_compute_target, remote_worker.is_some());
+        let target = if solid {
+            LiveComputeTarget::LocalOnly
+        } else {
+            settings.live_compute_target
+        };
+        let plan = LanePlan::for_target(target, remote_worker.is_some());
         // Pre-set `true` when no remote lane will ever run at all, so the local lane's
         // own stop condition (`gui::batch::batch_queue`'s doc comment) is satisfied the
         // first time it finds nothing left to claim, with no spurious poll wait.
@@ -244,7 +271,7 @@ pub fn spawn_preview_batch(
         // re-trigger) could otherwise still land its summary/done on top of the new
         // batch's own freshly reset dialog state. See `start_batch`'s own doc comment.
         if current_batch_id.load(Ordering::SeqCst) == batch_id {
-            push_summary(&ui_weak, outcome);
+            push_summary(&ui_weak, outcome, solid);
         }
         // `_busy_guard` drops here, clearing `export_active` and
         // `preview_batch_running` unconditionally -- see this group's `mod.rs` doc
@@ -290,6 +317,7 @@ fn start_batch(
     settings_store: &Arc<SettingsPersister>,
     slots: &BatchSlots,
     entry_ids: Vec<i64>,
+    mode: PreviewMode,
 ) {
     let BatchSlots {
         handle_slot,
@@ -336,6 +364,7 @@ fn start_batch(
             preview_size: snapshot.settings.preview_size,
             preview_spp: snapshot.settings.preview_spp,
             remote_batch_lanes: snapshot.settings.remote_batch_lanes,
+            mode,
             thumbnail_cache: thumbnail_cache.clone(),
         },
         entry_ids,
@@ -343,6 +372,41 @@ fn start_batch(
         Arc::clone(current_batch_id),
     );
     *handle_slot.borrow_mut() = Some(handle);
+}
+
+/// What the confirm step's answers need to start a batch.
+struct ConfirmEnv {
+    db: Arc<Mutex<Database>>,
+    render_ctx: Arc<Mutex<RenderContext>>,
+    settings_store: Arc<SettingsPersister>,
+    slots: BatchSlots,
+}
+
+/// Starts the batch the confirm step offered, in `mode`. When an import opened the
+/// question and its "remember my choice" box is ticked, the answer is stored first.
+fn confirm_offer(ui: &MainWindow, env: &ConfirmEnv, mode: PreviewMode) {
+    let model = ui.global::<BatchModel>();
+    if model.get_preview_offer_from_import() && model.get_preview_remember_choice() {
+        let choice = match mode {
+            PreviewMode::Full => ImportPreviewChoice::Full,
+            PreviewMode::Solid => ImportPreviewChoice::Solid,
+        };
+        remember_choice(ui, &env.settings_store, choice);
+    }
+    let ids: Vec<i64> = model
+        .get_preview_offer_ids()
+        .iter()
+        .map(i64::from)
+        .collect();
+    start_batch(
+        ui,
+        &env.db,
+        &env.render_ctx,
+        &env.settings_store,
+        &env.slots,
+        ids,
+        mode,
+    );
 }
 
 /// Opens the confirm step (`preview_batch_dialog.slint`'s "N designs -- Generate?"
@@ -361,6 +425,12 @@ fn start_batch(
 ///
 /// A no-op for an empty `ids` -- nothing to offer.
 pub fn offer_batch_confirmation(ui: &MainWindow, ids: &[i64]) {
+    open_offer(ui, ids, false);
+}
+
+/// [`offer_batch_confirmation`], also naming whether an import opened it -- which adds
+/// the quick solid option and the remember box to the question.
+pub(super) fn open_offer(ui: &MainWindow, ids: &[i64], from_import: bool) {
     if ids.is_empty() {
         return;
     }
@@ -371,6 +441,9 @@ pub fn offer_batch_confirmation(ui: &MainWindow, ids: &[i64]) {
         .set_preview_offer_count(ids.len() as i32);
     ui.global::<BatchModel>()
         .set_preview_offer_regenerate(false);
+    ui.global::<BatchModel>()
+        .set_preview_offer_from_import(from_import);
+    ui.global::<BatchModel>().set_preview_remember_choice(false);
     ui.global::<BatchModel>().set_preview_confirming(true);
     ui.global::<BatchModel>().set_preview_visible(true);
 }
@@ -443,43 +516,46 @@ pub fn setup_preview_batch_callbacks(
         }
     });
 
+    let settings_store_dismiss = Arc::clone(settings_store);
     let ui_weak_dismiss = ui.as_weak();
     ui.global::<BatchModel>().on_preview_dismiss_offer(move || {
         if let Some(ui) = ui_weak_dismiss.upgrade() {
-            ui.global::<BatchModel>().set_preview_visible(false);
-            ui.global::<BatchModel>().set_preview_confirming(false);
+            let model = ui.global::<BatchModel>();
+            if model.get_preview_offer_from_import() && model.get_preview_remember_choice() {
+                remember_choice(&ui, &settings_store_dismiss, ImportPreviewChoice::Skip);
+            }
+            model.set_preview_visible(false);
+            model.set_preview_confirming(false);
             crate::gui::batch::regenerate_all::preview_dialog_closed(&ui);
         }
     });
 
-    let db_confirm = Arc::clone(db);
-    let render_ctx_confirm = Arc::clone(render_ctx);
-    let settings_store_confirm = Arc::clone(settings_store);
-    let slots_confirm = BatchSlots {
-        handle_slot: Rc::clone(&handle),
-        current_batch_id: Arc::clone(&current_batch_id),
-        thumbnail_cache: thumbnail_cache.clone(),
-    };
-    let ui_weak_confirm = ui.as_weak();
+    // The confirm step's two answers share everything but the mode they start.
+    let env = Rc::new(ConfirmEnv {
+        db: Arc::clone(db),
+        render_ctx: Arc::clone(render_ctx),
+        settings_store: Arc::clone(settings_store),
+        slots: BatchSlots {
+            handle_slot: Rc::clone(&handle),
+            current_batch_id: Arc::clone(&current_batch_id),
+            thumbnail_cache: thumbnail_cache.clone(),
+        },
+    });
+    let (env_full, ui_weak_full) = (Rc::clone(&env), ui.as_weak());
     ui.global::<BatchModel>()
         .on_preview_generate_confirmed(move || {
-            if let Some(ui) = ui_weak_confirm.upgrade() {
-                let ids: Vec<i64> = ui
-                    .global::<BatchModel>()
-                    .get_preview_offer_ids()
-                    .iter()
-                    .map(i64::from)
-                    .collect();
-                start_batch(
-                    &ui,
-                    &db_confirm,
-                    &render_ctx_confirm,
-                    &settings_store_confirm,
-                    &slots_confirm,
-                    ids,
-                );
+            if let Some(ui) = ui_weak_full.upgrade() {
+                confirm_offer(&ui, &env_full, PreviewMode::Full);
             }
         });
+    let (env_solid, ui_weak_solid) = (env, ui.as_weak());
+    ui.global::<BatchModel>()
+        .on_preview_generate_solid_confirmed(move || {
+            if let Some(ui) = ui_weak_solid.upgrade() {
+                confirm_offer(&ui, &env_solid, PreviewMode::Solid);
+            }
+        });
+    show_saved_choice(ui, settings_store);
 
     let db_entry = Arc::clone(db);
     let render_ctx_entry = Arc::clone(render_ctx);
@@ -500,6 +576,7 @@ pub fn setup_preview_batch_callbacks(
                     &settings_store_entry,
                     &slots_entry,
                     vec![i64::from(id)],
+                    PreviewMode::Full,
                 );
             }
         });

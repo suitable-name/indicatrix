@@ -248,7 +248,7 @@ pub const STEPS: &[Step] = &[
         intro: "A girdle, pavilion, crown and table that solve to a closed stone: the full worked example.",
         actions: &[
             "Switch to Live Render to see the stone rendered in Diamond.",
-            "Save it with Save Native, or keep editing.",
+            "Save it with Save (Ctrl+S), or keep editing.",
             "Continue with Chapter 8 of the manual: Deep Solve, Optimize, Adopt and Apply.",
         ],
         check: "",

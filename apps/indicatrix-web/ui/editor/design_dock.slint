@@ -150,6 +150,22 @@ export component DesignDock inherits Rectangle {
                 color: Theme.text-secondary;
                 overflow: elide;
             }
+            // The opened file's descriptive metadata, read-only; hidden when the design has
+            // none or the dock is short.
+            if !root.short && AppModel.design-info != "": Rectangle {
+                clip: true;
+                max-height: 70px;
+                preferred-height: min(70px, info-text.preferred-height);
+                info-text := Text {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    text: AppModel.design-info;
+                    font-size: 10px;
+                    color: Theme.text-muted;
+                    wrap: word-wrap;
+                }
+            }
         }
 
         if !root.collapsed && AppModel.has-design: CommandBar {}

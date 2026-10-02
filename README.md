@@ -144,7 +144,7 @@ table and its `PGO_SCALE`/`PGO_TRAIN_SKIP_GPU` environment knobs.
 
 Both scripts additionally train `indicatrix-cut-core`'s OWN `pgo_train` example -- the
 editor-core layer built on top of `indicatrix`: `Design::solve`, `.asc` export, the
-native `.indicatrix.toml` save/load round trip, `resolve_after_edit`, and
+`.indicatrix` design file save/load round trip, `resolve_after_edit`, and
 `optimize_design`'s coordinate-search loop, run against every built-in template plus
 the same CrackOtto-Step fixture. Always built and run in its OWN, separate `cargo
 build` invocation rather than folded into the SAME `-p indicatrix ... --example

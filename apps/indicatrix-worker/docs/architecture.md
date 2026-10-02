@@ -219,6 +219,24 @@ fastest (`0`: none besides the own lane; with no own lane, the single fastest wo
 — ranked by rate measured on this viewer connection, unmeasured GPUs first — with
 `--pin-interactive-worker`'s worker moved to the front while it is available.
 
+Lanes also come and go while a job runs. Every fan-out job (everything above except the
+whole-picture route) watches the registry: a worker that registers, or becomes idle, while
+the job is running is checked out and given a lane within one scheduler tick (the registry's
+change notification wakes the watcher at once; a connection that merely became idle again is
+seen within 50 ms), under the same rules as at job start -- `max_pixels`, `hdr`, the
+`--interactive-workers` cap for a live view, and `width × height × 36` bytes per lane against
+`--max-job-memory-mib` (a lane that does not fit is not added). The late lane claims from the
+job's one sample cursor, requeued ranges first, and its first chunk is half-sized when its
+worker's rate is known, so it does not stampede. Joining mid-run cannot change which
+samples make up the picture, only which lane traces which chunk: the merge folds chunks in
+chunk-start order whichever lane finished them. A lane whose worker's connection broke (a
+chunk, or the lane's own heartbeat, found it dead) is removed from the pool as soon as its
+unfinished range is back on the cursor, without a backoff, provided another lane (the own
+lane included) remains; the last lane keeps the ordinary retry schedule, and a job whose
+lanes are all gone ends with `ALL_WORKERS_LOST` as before. A worker that reconnects after a
+crash is a new worker with a new id and gets a new lane the same way. A finished job takes no
+more workers, and a request that was routed to the own lane alone (`Direct`) never grows lanes.
+
 Limits (`job/limits.rs`): every job reserves `width × height × 48` bytes (four
 full-resolution `Vec3` buffers) against `--max-job-memory-mib` and is refused past it;
 export-type jobs wait in a per-viewer FIFO so one viewer certificate has one such job

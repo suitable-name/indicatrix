@@ -12,7 +12,8 @@
 // ignored elsewhere.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-/// Installs a `tracing` subscriber writing to stderr AND a log file. Without one, every
+/// Installs a `tracing` subscriber writing to stderr and, when the app was started with
+/// `--log`, also a log file. Without one, every
 /// `tracing::warn!`/`error!`/`debug!` call anywhere in this crate or `indicatrix` --
 /// including the GPU backend's own "device lost"/"uncaptured wgpu error" diagnostics --
 /// goes nowhere, and `RUST_LOG` has no effect whatsoever: a background-thread failure
@@ -25,7 +26,7 @@
 /// per-frame log line anywhere on the hot path (none of this crate's `tracing` calls
 /// are per-frame; the busiest is per accumulation-turn, already rare).
 ///
-/// The file candidates mirror `install_panic_logger`'s exactly: next to the executable
+/// Without `--log` no log file is created or touched. The file candidates mirror `install_panic_logger`'s exactly: next to the executable
 /// first (findable from a shortcut or an unzipped folder), falling back to the temp
 /// directory when that location is not writable. Missing/unwritable log locations are
 /// not fatal: `try_init` (not `init`) and a missing file both just mean stderr-only (or,
@@ -42,13 +43,20 @@ fn install_tracing_subscriber() {
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join(file_name)));
     let candidates = [beside_exe, Some(std::env::temp_dir().join(file_name))];
-    let log_file = candidates.into_iter().flatten().find_map(|path| {
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)
-            .ok()
-    });
+    // Only a run started with `--log` writes the log file; the panic log below is
+    // separate and exists only after a crash.
+    let log_file = std::env::args()
+        .any(|arg| arg == "--log")
+        .then(|| {
+            candidates.into_iter().flatten().find_map(|path| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .ok()
+            })
+        })
+        .flatten();
 
     let stderr_layer = fmt::layer().with_writer(std::io::stderr).with_target(true);
     // `with_ansi(false)`: colour escape codes have no business in a plain-text log
@@ -122,5 +130,12 @@ fn install_panic_logger() {
 fn main() -> anyhow::Result<()> {
     install_tracing_subscriber();
     install_panic_logger();
+    // `indicatrix-cut <file>` (what an OS "open with" or double-click association
+    // runs) opens that file once the window is up; flags such as `--log` are skipped.
+    if let Some(path) =
+        indicatrix_cut::gui::startup_file::path_from_args(std::env::args_os().skip(1))
+    {
+        indicatrix_cut::gui::startup_file::request_open_at_startup(path);
+    }
     indicatrix_cut::gui::main()
 }

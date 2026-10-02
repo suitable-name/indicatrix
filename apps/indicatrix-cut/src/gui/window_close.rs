@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex};
 /// "Save" invokes `EditorModel.save_native` and only actually closes once that save
 /// really lands -- via the [`crate::gui::editor::native_io::AfterSave::CloseWindow`]
 /// listener registered below, not a synchronous `is_dirty` check run right after
-/// `invoke_save_native` returns: Save Native is asynchronous end to end (the
+/// `invoke_save_native` returns: Save is asynchronous end to end (the
 /// design is resolved and the file written on a spawned thread), so that check used
 /// to read the state from BEFORE the save even started, closing the window out from
 /// under whatever the save was still writing, or leaving it open with no message when

@@ -1,30 +1,38 @@
 //! File-based import/export for the Edit tab: exporting the edited schedule as a
-//! plain `.asc` ([`export::setup_export_asc_callback`]), and the paired native
-//! `.indicatrix.toml` save/open ([`save::setup_save_native_callback`]/
-//! [`open_native::setup_open_native_callback`]; legacy `.gemcut.toml` sidecars still
-//! open). See this group's own `mod.rs` doc comment.
+//! plain `.asc` ([`export::setup_export_asc_callback`]), and the self-contained
+//! `.indicatrix` design file save/open ([`save::setup_save_native_callback`]/
+//! [`open_native::setup_open_native_callback`]). The older paired
+//! `.indicatrix.toml`/`.gemcut.toml` sidecars still open, and the next Save writes the
+//! new file beside them.
 //!
 //! # Module split
 //!
 //! Three groups of shared infrastructure every write/export/autosave/open path
 //! below uses: [`solve`] (Group 1: a matching cached solve, else a background
 //! solve, never inline -- `resolve_solve_at` for the generation-tagged write
-//! paths with a typed failure, `resolve_solved_then` for the plain one), [`confirm`] (Group 2: the shared in-window write-confirm
-//! dialog, no blocking native message dialogs), and [`picker`] (Group 3: file
+//! paths with a typed failure, `resolve_solved_then` for the plain one), [`confirm`] (Group 2: the shared
+//! in-window write-confirm dialog, no blocking OS message dialogs), and [`picker`] (Group 3: file
 //! pickers off the UI thread). [`save_helpers`]/[`catalogue`] hold the save-side
-//! helpers (custom-material snapshot, degenerate-marker header, catalogue
-//! write-back). Then one module per write path: [`export`] ("Export .asc"/"Export
+//! helpers (custom-material snapshot, degenerate-marker header, design-file text,
+//! catalogue write-back) and [`design_paths`] the `.indicatrix` file-name rules. Then
+//! one module per write path: [`export`] ("Export .asc"/"Export
 //! Cutting Sheet"/"Export Diagram"), [`save`]/[`save_finish`]/[`atomic_write`]
-//! ("Save Native"'s dialog wiring, its UI-thread success tail, and the
+//! ("Save"'s dialog wiring, its UI-thread success tail, and the
 //! stage-then-rename disk write), [`autosave`] (Group 4: the two-minute recovery
-//! snapshot), and [`open_native`]/[`open_picker`]/[`open_commit`] ("Open Native"'s
+//! snapshot), and [`open_native`]/[`open_picker`]/[`open_commit`] ("Open"'s
 //! entry points, its file-reading/parsing, and committing a loaded design into
-//! `EditorState`). Tests live in their own [`tests`] module.
+//! `EditorState`). Tests live in their own [`tests`] and [`design_tests`] modules.
 
 mod atomic_write;
 mod autosave;
 mod catalogue;
 mod confirm;
+mod design_meta;
+#[cfg(test)]
+mod design_meta_tests;
+mod design_paths;
+#[cfg(test)]
+mod design_tests;
 mod export;
 mod open_commit;
 mod open_native;
@@ -52,16 +60,12 @@ use std::{cell::RefCell, path::PathBuf, rc::Rc};
 pub(in crate::gui) use crate::gui::editor::state::AfterSave;
 
 thread_local! {
-    /// The native `.indicatrix.toml` path this `EditorState` was last loaded from or
-    /// saved to, if any -- `native_path` in [`save::setup_save_native_callback`]
-    /// is DERIVED from whatever `.asc` name the cutter just picked
-    /// ([`indicatrix_cut_core::native_path_for_asc`]), never itself chosen through the
-    /// native save dialog, so the OS's own "this file already exists" prompt (which
-    /// covers only the `.asc` half) never sees it. Comparing against this lets a Save
-    /// tell "the same design's own sidecar, safe to overwrite" (already covered by
-    /// [`atomic_write::write_pair_atomically`]'s own `.bak` backup) apart from "some
-    /// unrelated design's sidecar that happens to share this `.asc` name," which gets
-    /// an explicit native OS confirm instead. A plain `RefCell`, not part of
+    /// The `.indicatrix` design file this `EditorState` was last loaded from or saved
+    /// to, if any: where a quick Save writes ([`save::setup_save_native_callback`]),
+    /// with [`atomic_write::write_file_atomically`]'s `.bak` backup covering the
+    /// replaced copy. `None` for a design that came from anywhere else (a catalogue
+    /// row, a bare `.asc`, an older paired sidecar, a recovered autosave), whose first
+    /// Save therefore asks for a file name. A plain `RefCell`, not part of
     /// `EditorState` itself: it names a location on disk, not design data, so it must
     /// not be reset by [`crate::gui::editor::state::EditorState::replace_wholesale`]
     /// the way every other field on that struct is -- see that method's own doc
@@ -69,6 +73,13 @@ thread_local! {
     /// open_commit all read or write it), so it lives here rather than in any one
     /// submodule.
     static CURRENT_NATIVE_PATH: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
+
+    /// The folder the Save dialog opens in for a design that has no design file of
+    /// its own yet: the folder an older paired file was opened from, so the new
+    /// `.indicatrix` lands beside it. `None` falls back to the `./exports`
+    /// convention. Cleared by every save and by the open paths that have no folder
+    /// to offer.
+    static SUGGESTED_SAVE_DIR: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
 
     /// The live `EditorState`, stashed the one time [`save::setup_save_native_callback`]
     /// runs (there is only ever one `EditorState` for the app's lifetime) so
@@ -82,7 +93,7 @@ thread_local! {
     static LIVE_EDITOR_STATE: RefCell<Option<Rc<RefCell<EditorState>>>> = const { RefCell::new(None) };
 
     /// Listeners [`notify_save_completed`] calls, in registration order, every time
-    /// a native save just finished successfully -- see [`on_save_completed`]'s own
+    /// a save just finished successfully -- see [`on_save_completed`]'s own
     /// doc comment.
     static SAVE_COMPLETED_LISTENERS: RefCell<Vec<SaveCompletedListener>> =
         RefCell::new(Vec::new());
@@ -113,11 +124,37 @@ pub(in crate::gui) fn request_save_then_close() {
     });
 }
 
-/// Registers a listener [`notify_save_completed`] calls every time a native save
+/// A library metadata edit rewrote the row `entry_id`. When that row is the open
+/// design's own, the design file's `[meta]` table is now behind the row, so the design
+/// is marked as having unsaved changes: its next Save writes the edit into the file
+/// (see `design_meta`). Returns `true` when it marked the open design, so the caller
+/// can refresh the dirty indicator. A silent no-op for any other row.
+///
+/// Uses the generation bookkeeping without touching the generation itself: a metadata
+/// edit changes no geometry, so it must not make a Deep Solve or Optimize result stale.
+pub(in crate::gui) fn mark_design_row_edited(entry_id: i64) -> bool {
+    LIVE_EDITOR_STATE.with(|cell| {
+        let cell = cell.borrow();
+        let Some(state) = cell.as_ref() else {
+            return false;
+        };
+        let Ok(mut st) = state.try_borrow_mut() else {
+            return false;
+        };
+        if !st.has_design || st.source_entry_id != Some(entry_id) {
+            return false;
+        }
+        let behind = st.current_generation().wrapping_sub(1);
+        st.saved_generation = behind;
+        true
+    })
+}
+
+/// Registers a listener [`notify_save_completed`] calls every time a save
 /// just finished successfully (draft or real alike -- both actually wrote a file).
 ///
 /// Exists for [`AfterSave`]: the window-close guard and the New/Load
-/// Selected/Open Native unsaved-changes guard each need to run something once an
+/// Selected/Open unsaved-changes guard each need to run something once an
 /// otherwise-asynchronous Save actually lands, but neither owns the other's own
 /// render/preview/settings handles, and threading every caller's own parameters
 /// through the whole write path (`save::setup_save_native_callback` ->
@@ -147,6 +184,17 @@ pub(super) fn notify_save_completed(ui: &MainWindow, state: &Rc<RefCell<EditorSt
             listener(ui, state);
         }
     });
+}
+
+/// Records where a Save should go next: `design_path` is the `.indicatrix` file the
+/// design now lives in (`None` when it has none), and `suggested_dir` the folder the
+/// Save dialog should open in when there is no such file yet.
+pub(super) fn remember_design_location(
+    design_path: Option<PathBuf>,
+    suggested_dir: Option<PathBuf>,
+) {
+    CURRENT_NATIVE_PATH.with(|cell| *cell.borrow_mut() = design_path);
+    SUGGESTED_SAVE_DIR.with(|cell| *cell.borrow_mut() = suggested_dir);
 }
 
 // Every symbol below is re-exported at exactly the visibility the pre-split

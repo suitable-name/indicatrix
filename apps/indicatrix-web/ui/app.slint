@@ -94,14 +94,14 @@ export component AppWindow inherits Window {
                 activated => { AppModel.save-asc(); }
             }
             MenuItem {
-                title: "Save native pair (.asc + .indicatrix.toml) (Ctrl+S)";
+                title: "Save design (.indicatrix) (Ctrl+S)";
                 enabled: AppModel.has-design && GuideModel.allows-file-ops();
-                activated => { AppModel.save-native-pair(); }
+                activated => { AppModel.save-design(); }
             }
             MenuItem {
-                title: "Save native only (.indicatrix.toml)";
+                title: "Save .asc + older sidecar (.indicatrix.toml)";
                 enabled: AppModel.has-design && GuideModel.allows-file-ops();
-                activated => { AppModel.save-native-only(); }
+                activated => { AppModel.save-native-pair(); }
             }
             MenuItem {
                 title: "Download cutting sheet (HTML)";
@@ -202,7 +202,7 @@ export component AppWindow inherits Window {
                 if GuideModel.allows-file-ops() { AppModel.open-file(); }
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && !event.modifiers.shift && event.text == "s" {
-                if AppModel.has-design && GuideModel.allows-file-ops() { AppModel.save-native-pair(); }
+                if AppModel.has-design && GuideModel.allows-file-ops() { AppModel.save-design(); }
                 return accept;
             } else if (event.modifiers.control || event.modifiers.meta) && event.modifiers.shift && event.text == "S" {
                 if AppModel.has-design && GuideModel.allows-file-ops() { AppModel.save-asc(); }

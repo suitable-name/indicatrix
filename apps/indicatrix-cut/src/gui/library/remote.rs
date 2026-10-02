@@ -434,7 +434,7 @@ fn on_mirror_done(ui: &MainWindow, outcome: &MirrorOutcome) {
 pub struct RemoteDesignSource {
     /// The attachment's own bare file name (e.g. `"round-brilliant.asc"`) -- feeds
     /// `EditorState::asc_filename` exactly like the local load path's own
-    /// `LoadedDesign::asc_filename`, for `save_paired`-style "Save Native"
+    /// `LoadedDesign::asc_filename`, for `save_paired`-style "Save"
     /// round-tripping later.
     pub file_name: String,
     /// The attachment's exact original text -- feeds both

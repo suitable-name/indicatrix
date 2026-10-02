@@ -23,8 +23,12 @@ export global AppModel {
     in property <bool> has-design: false;
     // "round.asc", or "Untitled design" for a New design that was never saved.
     in property <string> design-name: "";
-    // Where the design came from: "Opened .asc", "Native pair", "Template: ...".
+    // Where the design came from: "Opened .asc", "Opened design file", "Template: ...".
     in property <string> source-kind: "";
+    // Read-only descriptive text from an opened design file's metadata (title, designer,
+    // source, notes, tags, license), one line per field that is set; empty for a design
+    // without any.
+    in property <string> design-info: "";
     in property <bool> is-dirty: false;
     in property <int> tier-count: 0;
     in property <bool> can-undo: false;
@@ -70,7 +74,7 @@ export global AppModel {
     callback open-file();
     callback save-asc();
     callback save-native-pair();
-    callback save-native-only();
+    callback save-design();
     callback download-cutting-sheet();
     callback download-diagram();
     // Opens the PNG export dialog (`src/render/export.rs`).

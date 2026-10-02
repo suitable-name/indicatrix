@@ -131,4 +131,13 @@ pub trait WorkerLane: Send + Sync {
         range: SampleRange,
         cancel: &CancelToken,
     ) -> ChunkResult;
+
+    /// Whether this lane's backing resource is gone for good (a joined worker's
+    /// connection closed): the pool then removes the lane from a running epoch instead
+    /// of retrying it through its backoff schedule, provided another lane remains. A lane
+    /// that is the pool's last keeps going through the ordinary failure path, so a lane
+    /// that can replace its resource on its own still gets the chance. Defaults to `false`.
+    fn lost(&self) -> bool {
+        false
+    }
 }

@@ -4,10 +4,13 @@
 //! path such as `layouts[1].stones[0].axes[2]`; it never panics. Writing is the plain
 //! inverse and cannot fail.
 
-use super::dto::{
-    BarDto, CutDto, MAX_DESIGNS, MAX_LOSS_MM, MAX_MIN_WIDTH_MM, MAX_SAW_ITEMS,
-    MAX_STONES_PER_LAYOUT, RoughDto, SavedDesignDto, SavedLayoutDto, SettingsDto, SlabDto,
-    StoneDto,
+use super::{
+    dto::{
+        BarDto, CutDto, MAX_DESIGNS, MAX_LOSS_MM, MAX_MIN_WIDTH_MM, MAX_SAW_ITEMS,
+        MAX_STONES_PER_LAYOUT, RoughDto, SavedDesignDto, SavedLayoutDto, SettingsDto, SlabDto,
+        StoneDto,
+    },
+    hull_base::{base_from_hull, write_hull},
 };
 use glam::DVec3;
 use indicatrix_cut_core::rough_plan::{
@@ -211,9 +214,10 @@ fn base_from_dto(dto: &RoughDto) -> Result<RoughBase, String> {
                 axis: parse_axis(axis, "rough.axis")?,
             }
         }
+        "hull" => base_from_hull(dto)?,
         other => {
             return Err(format!(
-                "rough.base names an unknown shape '{other}' (expected block, cylinder or pebble)"
+                "rough.base names an unknown shape '{other}' (expected block, cylinder, pebble or hull)"
             ));
         }
     };
@@ -753,11 +757,15 @@ pub fn rough_to_dto(
         diameter_mm: None,
         length_mm: None,
         axis: None,
+        hull: Vec::new(),
         material: material_name.to_string(),
         specific_gravity,
         weighed_ct,
         cuts: model.cuts.iter().map(CutDto::from).collect(),
     };
+    if write_hull(&mut dto, &model.base) {
+        return dto;
+    }
     match model.base {
         RoughBase::Block { x_mm, y_mm, z_mm } => {
             dto.base = "block".to_string();
@@ -777,6 +785,7 @@ pub fn rough_to_dto(
             dto.length_mm = Some(length_mm);
             dto.axis = Some(axis_name(axis).to_string());
         }
+        RoughBase::Hull { .. } => {}
     }
     dto
 }

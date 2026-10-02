@@ -20,7 +20,7 @@ fn builtin_is_the_default_owner_and_anything_may_claim_over_it() {
 }
 
 #[test]
-fn a_catalogue_claim_never_overwrites_an_editor_owner() {
+fn a_catalogue_claim_may_overwrite_an_editor_owner() {
     let mut ctx = RenderContext::default();
     assert!(ctx.claim_active_planes(
         Arc::new(Vec::new()),
@@ -28,10 +28,14 @@ fn a_catalogue_claim_never_overwrites_an_editor_owner() {
         PlanesOwner::Editor { generation: 3 },
     ));
     assert!(
-        !ctx.may_claim_active_planes(PlanesOwner::Catalogue { entry_id: 42 }),
-        "a catalogue click must not silently steal the slot from the editor"
+        ctx.claim_active_planes(
+            Arc::new(Vec::new()),
+            None,
+            PlanesOwner::Catalogue { entry_id: 42 },
+        ),
+        "an explicit Library selection must always be able to show its row"
     );
-    assert_eq!(ctx.planes_owner, PlanesOwner::Editor { generation: 3 });
+    assert_eq!(ctx.planes_owner, PlanesOwner::Catalogue { entry_id: 42 });
 }
 
 #[test]

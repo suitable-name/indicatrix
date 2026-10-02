@@ -11,7 +11,7 @@
 //!
 //! - **Discard** runs it.
 //! - **Cancel** (also Escape, the close button and a click on the backdrop) drops it.
-//! - **Save** downloads the design as a native pair, exactly like File > Save native pair
+//! - **Save** downloads the design as a `.indicatrix` file, exactly like File > Save design
 //!   (the save may first have to solve the design, so it is asynchronous), and runs the
 //!   continuation once the save has marked the design saved
 //!   ([`design_saved`], called by `crate::io::save`). A save that fails leaves the design
@@ -81,8 +81,8 @@ pub fn confirm_discard(ctx: &Ctx, on_ok: impl FnOnce() + 'static) {
     model.set_heading("Unsaved changes".into());
     model.set_message(
         format!(
-            "\"{name}\" has unsaved changes. Save them (downloads the .asc and \
-             .indicatrix.toml), discard them, or cancel?"
+            "\"{name}\" has unsaved changes. Save them (downloads a .indicatrix file), \
+             discard them, or cancel?"
         )
         .into(),
     );
@@ -153,7 +153,7 @@ fn save_then_proceed(ctx: &Ctx) {
             AFTER_SAVE.with(|cell| cell.borrow_mut().take());
         });
     });
-    io::save::save_native_pair(ctx);
+    io::save::save_design(ctx);
 }
 
 /// The dialog's Discard button.

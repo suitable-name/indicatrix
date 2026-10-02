@@ -8,11 +8,11 @@ fn kinds_are_read_from_the_extension_case_insensitively() {
     );
     assert_eq!(
         InputFileKind::from_file_name("round.indicatrix.toml"),
-        Some(InputFileKind::NativeToml)
+        Some(InputFileKind::Sidecar)
     );
     assert_eq!(
         InputFileKind::from_file_name("old.gemcut.toml"),
-        Some(InputFileKind::NativeToml)
+        Some(InputFileKind::Sidecar)
     );
     assert_eq!(
         InputFileKind::from_file_name("x.Gem"),
@@ -26,10 +26,93 @@ fn kinds_are_read_from_the_extension_case_insensitively() {
         InputFileKind::from_file_name("sky.HDR"),
         Some(InputFileKind::Hdr)
     );
+    assert_eq!(
+        InputFileKind::from_file_name("round.INDICATRIX"),
+        Some(InputFileKind::Design)
+    );
     assert_eq!(InputFileKind::from_file_name("notes.pdf"), None);
     assert_eq!(InputFileKind::from_file_name("no_extension"), None);
     assert!(!InputFileKind::Hdr.is_design());
     assert!(InputFileKind::Gcs.is_design());
+    assert!(InputFileKind::Design.is_design());
+    assert!(InputFileKind::Sidecar.is_design());
+}
+
+const DESIGN_HEADER: &str = "format = \"indicatrix-design\"\nversion = 1\n";
+const SIDECAR_HEADER: &str = "format_version = 1\nasc_filename = \"round.asc\"\n";
+
+#[test]
+fn names_alone_decide_the_binary_and_text_kinds() {
+    let kind = |name: &str| InputFileKind::classify(name, b"");
+    assert_eq!(kind("sky.HDR"), Some(InputFileKind::Hdr));
+    assert_eq!(kind("round.asc"), Some(InputFileKind::Asc));
+    assert_eq!(kind("round.gem"), Some(InputFileKind::Gem));
+    assert_eq!(kind("round.GCS"), Some(InputFileKind::Gcs));
+    assert_eq!(kind("notes.txt"), None);
+    assert_eq!(kind("noextension"), None);
+}
+
+#[test]
+fn a_design_file_is_routed_by_its_content_whatever_it_is_called() {
+    let bytes = DESIGN_HEADER.as_bytes();
+    for name in [
+        "round.indicatrix",
+        "ROUND.INDICATRIX",
+        "round.indicatrix.toml",
+        "round.toml",
+    ] {
+        assert_eq!(
+            InputFileKind::classify(name, bytes),
+            Some(InputFileKind::Design),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn an_old_sidecar_keeps_the_paired_flow_under_every_name() {
+    let bytes = SIDECAR_HEADER.as_bytes();
+    for name in [
+        "round.indicatrix.toml",
+        "round.gemcut.toml",
+        "round.toml",
+        // Saved under the new extension by mistake: the content still wins.
+        "round.indicatrix",
+    ] {
+        assert_eq!(
+            InputFileKind::classify(name, bytes),
+            Some(InputFileKind::Sidecar),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn an_unrecognised_header_falls_back_to_the_extension() {
+    let kind = InputFileKind::classify;
+    assert_eq!(
+        kind("a.indicatrix", b"x = 1\n"),
+        Some(InputFileKind::Design)
+    );
+    assert_eq!(kind("a.toml", b"x = 1\n"), Some(InputFileKind::Sidecar));
+    assert_eq!(
+        kind("a.indicatrix", &[0xff, 0xfe, 0x00]),
+        Some(InputFileKind::Design)
+    );
+    assert_eq!(
+        kind("a.toml", &[0xff, 0xfe, 0x00]),
+        Some(InputFileKind::Sidecar)
+    );
+}
+
+#[test]
+fn a_byte_order_mark_does_not_hide_the_header() {
+    let mut bytes = vec![0xef, 0xbb, 0xbf];
+    bytes.extend_from_slice(DESIGN_HEADER.as_bytes());
+    assert_eq!(
+        InputFileKind::classify("a.toml", &bytes),
+        Some(InputFileKind::Design)
+    );
 }
 
 #[test]

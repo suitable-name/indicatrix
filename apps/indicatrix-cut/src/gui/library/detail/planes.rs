@@ -4,10 +4,7 @@
 use crate::{
     AngleItem, MainWindow, TiltModel, ViewportModel,
     bridge::render_thread::{PlanesOwner, RenderContext},
-    gui::{
-        editor::material_lookup::{MATERIAL_MATCH_TOLERANCE, material_for_refractive_index},
-        show_toast,
-    },
+    gui::editor::material_lookup::{MATERIAL_MATCH_TOLERANCE, material_for_refractive_index},
 };
 use indicatrix::{
     geometry::{
@@ -118,9 +115,8 @@ pub(super) fn apply_reconstructed_planes(
     );
 
     let mut ctx = RenderContext::lock(render_ctx);
-    // A catalogue click must not steal the viewport out from
-    // under a design being edited. `claim_active_planes` refuses when the editor
-    // owns the planes; say so rather than appearing to work and changing nothing.
+    // An explicit Library selection takes the viewport, also from a design loaded in
+    // the editor: the editor's next load or edit claims it back.
     let claimed = ctx.claim_active_planes(
         std::sync::Arc::new(planes),
         Some((gear_teeth, gear_reference_angle)),
@@ -150,12 +146,6 @@ pub(super) fn apply_reconstructed_planes(
         }
     }
     if !claimed {
-        show_toast(
-            ui,
-            "The 3D view is showing the design you are editing -- it was left alone. \
-             Switch to the Library tab's own view to preview this row.",
-            "info",
-        );
         return;
     }
 

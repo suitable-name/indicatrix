@@ -1,8 +1,14 @@
 //! Commits a loaded native/`.asc` design into `EditorState`, wholesale, and pushes
-//! the result into the panel/viewport -- the shared tail every "Open Native" path
-//! (a real pair, a self-contained native file, or a bare `.asc`) funnels through.
+//! the result into the panel/viewport -- the shared tail every "Open" path
+//! (a `.indicatrix` design file, an older pair, an older self-contained sidecar, or a
+//! bare `.asc`) funnels through.
 
-use super::{CURRENT_NATIVE_PATH, autosave::record_recent_native_file, open_picker::ConvertedPick};
+use super::{
+    autosave::record_recent_native_file,
+    design_paths::{is_autosave_design_path, schedule_name_for_design_path},
+    open_picker::ConvertedPick,
+    remember_design_location,
+};
 use crate::{
     EditorModel, MainWindow,
     bridge::render_thread::RenderContext,
@@ -10,16 +16,23 @@ use crate::{
         editor::{
             callbacks::clear_analysis_results,
             loading::LoadedDesign,
-            state::{EditorState, MaterialComboCache, PendingUnsavedAction, PushedScratch},
+            state::{
+                DesignFileExtras, EditorState, MaterialComboCache, PendingUnsavedAction,
+                PushedScratch,
+            },
             view::{push_has_design, refresh_all},
         },
         show_toast,
         solid_preview::preview_state::SolidPreviewState,
     },
 };
+use indicatrix::optics::materials::GemMaterial;
 use indicatrix_cut_core::{
     FingerprintCheck, History, LoadPairedResult, TierOverlay,
-    native::{LoadNativeOnlyResult, gem_material_from_custom_snapshot},
+    native::{
+        CustomMaterialSnapshot, LoadNativeOnlyResult, LoadedDesign as DesignFileLoaded,
+        MaterialResolution, gem_material_from_custom_snapshot,
+    },
 };
 use indicatrix_editor::EditorSession;
 use slint::ComponentHandle;
@@ -107,7 +120,144 @@ pub(super) struct SelfContainedLoad<'a> {
     pub(super) asc_filename: &'a str,
 }
 
-/// The self-contained-native-file
+/// A custom material the opened file carried a snapshot for is registered in this
+/// session's custom-material list (replacing a same-named entry), so the design does
+/// not silently render as Diamond. Returns the note for the open toast, if any, and
+/// whether the material is still unresolved (named, but neither built in nor
+/// restorable).
+fn restore_custom_material(
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    snapshot: Option<&CustomMaterialSnapshot>,
+    material_name: Option<&str>,
+    resolution: MaterialResolution,
+) -> (Option<String>, bool) {
+    if let (Some(snapshot), Some(name)) = (snapshot, material_name) {
+        let gem: GemMaterial = gem_material_from_custom_snapshot(name, snapshot);
+        let mut ctx = render_ctx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let materials = Arc::make_mut(&mut ctx.custom_materials);
+        if let Some(pos) = materials
+            .iter()
+            .position(|m| m.name.eq_ignore_ascii_case(name))
+        {
+            materials[pos] = gem;
+        } else {
+            materials.push(gem);
+        }
+        drop(ctx);
+        return (
+            Some(format!(
+                " '{name}' was restored from this file's own saved material data."
+            )),
+            false,
+        );
+    }
+    // A material name this build can't resolve AND has no snapshot to restore from
+    // still silently becomes Diamond once `MaterialSelection::resolve` runs -- see
+    // `MaterialResolution`'s own doc comment. Surfaced rather than swallowed, so at
+    // least the open toast says so.
+    let unresolved = matches!(resolution, MaterialResolution::Unresolved);
+    (unresolved.then(|| format!(" {resolution}")), unresolved)
+}
+
+/// [`open_design_file`]'s own load result -- bundled (rather than two more
+/// parameters) purely to keep that function under clippy's argument-count lint.
+pub(super) struct DesignFileLoad {
+    pub(super) native_path: PathBuf,
+    pub(super) loaded: DesignFileLoaded,
+}
+
+/// A `.indicatrix` design file: the file's own tiers WERE the design, so there is no
+/// paired `.asc`, fingerprint or tier-overlay question to ask. Restores a custom
+/// material snapshot like [`commit_loaded_native`] does, and records the file as this
+/// design's save location -- unless it is a recovery snapshot, which is never a
+/// location to save back to (the next Save asks for a name, suggesting the design's
+/// own).
+///
+/// The design is recorded under `<stem>.asc` ([`schedule_name_for_design_path`]): the
+/// name the editor keys its window title, catalogue write-back and "Export .asc"
+/// default on, though no `.asc` exists.
+pub(super) fn open_design_file(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
+    solid_last_solved: &crate::gui::editor::view::SolidLastSolved,
+    load: DesignFileLoad,
+) {
+    let DesignFileLoad {
+        native_path,
+        loaded,
+    } = load;
+    let native_path_display = native_path.display().to_string();
+    let recovered = is_autosave_design_path(&native_path);
+    if recovered {
+        remember_design_location(None, None);
+    } else {
+        record_recent_native_file(ui, &native_path_display);
+        remember_design_location(Some(native_path.clone()), None);
+    }
+    let (material_note, material_unresolved) = restore_custom_material(
+        render_ctx,
+        loaded.restorable_custom_material.as_ref(),
+        loaded.design.material.name.as_deref(),
+        loaded.material_resolution,
+    );
+    let draft_note = loaded
+        .draft
+        .then_some(" It was saved as an unsolved draft; add a scale-reference tier to finish it.");
+    let printed_proportions = loaded.printed_proportions;
+    state.borrow_mut().replace_wholesale(EditorState {
+        deep_solve_result_generation: None,
+        session: EditorSession::with_history(loaded.design, History::new()),
+        printed_proportions,
+        design_epoch: Arc::new(AtomicU64::new(0)),
+        pending_unsaved_action: None,
+        after_save: None,
+        deep_solve: None,
+        optimize: None,
+        pending_optimize: Arc::new(Mutex::new(None)),
+        asc_filename: Some(schedule_name_for_design_path(&native_path)),
+        original_asc_text: None,
+        pending_gear_remap: None,
+        pending_retarget: None,
+        last_pushed_scratch: RefCell::new(PushedScratch::default()),
+        material_combo_cache: RefCell::new(MaterialComboCache::default()),
+        source_entry_id: None,
+        used_placeholder: false,
+        // The design file's own `[meta]` and attachments, kept for the next Save.
+        file_extras: DesignFileExtras::new(loaded.metadata, loaded.attachments),
+        has_design: true,
+    });
+    finish_state_replace(ui, render_ctx, preview_state, solid_last_solved, state);
+    if let Some(name) = native_path.file_name() {
+        ui.set_loaded_design_name(name.to_string_lossy().into_owned().into());
+    }
+    let lead = if recovered {
+        format!(
+            "Recovered '{native_path_display}' from an autosave snapshot. Save writes it to a \
+             new .indicatrix file."
+        )
+    } else {
+        format!("Loaded '{native_path_display}'.")
+    };
+    show_toast(
+        ui,
+        &format!(
+            "{lead}{}{}",
+            material_note.unwrap_or_default(),
+            draft_note.unwrap_or_default()
+        ),
+        if material_unresolved || loaded.draft {
+            "warning"
+        } else {
+            "success"
+        },
+    );
+}
+
+/// The older self-contained `.indicatrix.toml` (recovery snapshot)
 /// path -- [`read_native_pair_then`] only ever hands this a [`LoadNativeOnlyResult`]
 /// once it has already confirmed no paired `.asc` was findable AND
 /// [`load_native_only`] actually accepted the file, so there is no fingerprint/
@@ -131,45 +281,16 @@ pub(super) fn open_native_self_contained(
     } = load;
     let native_path_display = native_path.display().to_string();
     record_recent_native_file(ui, &native_path_display);
-    // Same reasoning as `commit_loaded_native` -- this design's own
-    // sidecar just landed here, so a later Save Native re-writing this exact path
-    // needs no overwrite confirmation.
-    CURRENT_NATIVE_PATH.with(|cell| *cell.borrow_mut() = Some(native_path.to_path_buf()));
+    // An older recovery snapshot is never a location to save back to: the next Save
+    // asks for a `.indicatrix` file name.
+    remember_design_location(None, None);
 
-    let (material_note, material_still_unresolved) = if let (Some(snapshot), Some(name)) = (
+    let (material_note, material_still_unresolved) = restore_custom_material(
+        render_ctx,
         loaded.restorable_custom_material.as_ref(),
         loaded.design.material.name.as_deref(),
-    ) {
-        let gem = gem_material_from_custom_snapshot(name, snapshot);
-        let mut ctx = render_ctx
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let materials = Arc::make_mut(&mut ctx.custom_materials);
-        if let Some(pos) = materials
-            .iter()
-            .position(|m| m.name.eq_ignore_ascii_case(name))
-        {
-            materials[pos] = gem;
-        } else {
-            materials.push(gem);
-        }
-        drop(ctx);
-        (
-            Some(format!(
-                " '{name}' was restored from this file's own saved material data."
-            )),
-            false,
-        )
-    } else {
-        let unresolved = matches!(
-            loaded.material_resolution,
-            indicatrix_cut_core::native::MaterialResolution::Unresolved
-        );
-        (
-            unresolved.then(|| format!(" {}", loaded.material_resolution)),
-            unresolved,
-        )
-    };
+        loaded.material_resolution,
+    );
     let newer_version_note = loaded.written_by_newer_version.then(|| {
         " This file was written by a newer version of Indicatrix Cut; some settings \
           may not have been understood and could be lost on your next save."
@@ -199,6 +320,7 @@ pub(super) fn open_native_self_contained(
         material_combo_cache: RefCell::new(MaterialComboCache::default()),
         source_entry_id: None,
         used_placeholder: false,
+        file_extras: DesignFileExtras::default(),
         has_design: true,
     });
     finish_state_replace(ui, render_ctx, preview_state, solid_last_solved, state);
@@ -206,7 +328,7 @@ pub(super) fn open_native_self_contained(
         ui,
         &format!(
             "Recovered '{native_path_display}' -- no paired .asc file was found, so this design \
-             was rebuilt directly from the native file's own saved data.{}{}",
+             was rebuilt directly from the file's own saved data.{}{}",
             material_note.unwrap_or_default(),
             newer_version_note.unwrap_or_default()
         ),
@@ -217,7 +339,7 @@ pub(super) fn open_native_self_contained(
 /// The bare-`.asc`-with-no-sidecar path -- builds the design exactly the
 /// way `gui::editor::loading::design_from_asc_text` already does for a catalogue
 /// attachment (no meet-intent overlay, no fingerprint, no draft flag: there is no
-/// native file at all), then replaces `state` wholesale via [`finish_state_replace`],
+/// design file at all), then replaces `state` wholesale via [`finish_state_replace`],
 /// the same tail [`commit_loaded_native`] runs for the paired case.
 pub(super) fn open_plain_asc(
     ui: &MainWindow,
@@ -245,7 +367,7 @@ pub(super) fn open_plain_asc(
             show_toast(
                 ui,
                 &format!(
-                    "Loaded '{}' (plain .asc, no native sidecar found -- authored meet \
+                    "Loaded '{}' (plain .asc, no .indicatrix design file found -- authored meet \
                      constraints and detached facets are not available).",
                     asc_path.display()
                 ),
@@ -263,7 +385,7 @@ pub(super) fn open_plain_asc(
 /// with no sidecar.
 ///
 /// The design is recorded under `<stem>.asc` (never the source file's own name),
-/// so Save offers a new `.asc`/native pair and can never overwrite the `.gem`/
+/// so Save offers a new `.indicatrix` design file and can never overwrite the `.gem`/
 /// `.gcs`; the window title still names the file actually opened. Reader and
 /// converter warnings go into the toast, which then stays up as a warning.
 pub(super) fn open_converted_design(
@@ -302,7 +424,8 @@ pub(super) fn open_converted_design(
                 ui,
                 &format!(
                     "Loaded '{}' as .asc cutting instructions. Save writes a new \
-                     '{asc_file_name}' and native pair; the original file is never changed.{notes}",
+                     .indicatrix design file named after '{asc_file_name}'; the original file is \
+                     never changed.{notes}",
                     source_path.display()
                 ),
                 if warnings.is_empty() {
@@ -319,7 +442,7 @@ pub(super) fn open_converted_design(
 /// Replaces `state` wholesale with a design loaded from a bare `.asc` (or a
 /// `.gem`/`.gcs` converted to one) and runs [`finish_state_replace`] -- the shared
 /// body of [`open_plain_asc`] and [`open_converted_design`]. There is no native
-/// sidecar, so [`CURRENT_NATIVE_PATH`] is cleared.
+/// design file, so the remembered save location is cleared.
 fn commit_plain_design(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -328,11 +451,11 @@ fn commit_plain_design(
     solid_last_solved: &crate::gui::editor::view::SolidLastSolved,
     loaded: LoadedDesign,
 ) {
-    // A bare `.asc` has no native sidecar at all -- see `CURRENT_NATIVE_PATH`'s
-    // own doc comment. Cleared rather than left at whatever the PREVIOUS
-    // design's own save/open set it to, so a later Save Native here is never
-    // mistaken for "re-saving that unrelated design's own file."
-    CURRENT_NATIVE_PATH.with(|cell| *cell.borrow_mut() = None);
+    // A bare `.asc` has no design file at all -- see `CURRENT_NATIVE_PATH`'s own doc
+    // comment. Cleared rather than left at whatever the PREVIOUS design's own
+    // save/open set it to, so a later Save here is never mistaken for "re-saving
+    // that unrelated design's own file."
+    remember_design_location(None, None);
     // `replace_wholesale`, not a plain `*state.borrow_mut() = ...`: carries
     // this state's own `generation` `Arc` across the replacement (and bumps
     // it) instead of handing back a brand-new one, so a background Deep
@@ -356,16 +479,17 @@ fn commit_plain_design(
         pending_retarget: None,
         last_pushed_scratch: RefCell::new(PushedScratch::default()),
         material_combo_cache: RefCell::new(MaterialComboCache::default()),
-        // Open Native (this path and the paired-load
+        // Open (this path and the paired-load
         // one below) has no catalogue row of its own -- it loaded from a
         // file the cutter picked directly, not from a library selection --
-        // so there is nothing here for a later Save Native to write back
+        // so there is nothing here for a later Save to write back
         // to. `gui::editor::callbacks::tier_actions::setup_load_selected_callback`'s
         // local branch is the one place this is ever `Some`.
         source_entry_id: None,
         // A native/plain-`.asc` open carries a real recorded
         // schedule, never the angle-table reconstruction fallback.
         used_placeholder: false,
+        file_extras: DesignFileExtras::default(),
         has_design: true,
     });
     finish_state_replace(ui, render_ctx, preview_state, solid_last_solved, state);
@@ -392,7 +516,7 @@ fn finish_state_replace(
     // a material-suggestion banner (`tier_actions::apply_loaded_design`'s
     // own Load Selected path sets/clears this from the newly loaded design's
     // own RI) also describes whatever design was open before this replace --
-    // Open Native/Open Recent/the startup restore had no reset of their own at
+    // Open/Open Recent/the startup restore had no reset of their own at
     // all, leaving a stale accept/dismiss banner from a previous design.
     ui.global::<EditorModel>()
         .set_material_suggestion_name("".into());
@@ -406,7 +530,7 @@ fn finish_state_replace(
     // (bare "Indicatrix Cut") only in the defensive case where `asc_filename` was
     // somehow never set, which neither caller actually does.
     ui.set_loaded_design_name(st.asc_filename.clone().unwrap_or_default().into());
-    // Every open path (Open Native, Open Recent, the startup restore) installs a
+    // Every open path (Open, Open Recent, the startup restore) installs a
     // real design -- the empty-state card grid must give way to it.
     push_has_design(ui, &st);
     drop(st);
@@ -427,7 +551,7 @@ fn finish_state_replace(
 /// argument-count lint, the same reasoning `tier_actions::LoadedDesignOutcome` uses.
 pub(super) struct LoadedNativeOutcome {
     pub(super) loaded: LoadPairedResult,
-    /// What the toast calls the file -- the picked native file's own display path.
+    /// What the toast calls the file -- the picked file's own display path.
     pub(super) native_path_display: String,
     pub(super) asc_filename: String,
     pub(super) asc_text: String,
@@ -462,10 +586,15 @@ pub(super) fn commit_loaded_native(
         is_mismatch,
     } = outcome;
     record_recent_native_file(ui, &native_path_display);
-    // This design's OWN sidecar just landed here -- see
-    // `CURRENT_NATIVE_PATH`'s own doc comment for why a later Save Native re-writing
-    // this exact path needs no overwrite confirmation.
-    CURRENT_NATIVE_PATH.with(|cell| *cell.borrow_mut() = Some(PathBuf::from(&native_path_display)));
+    // An older pair has no design file yet: the next Save asks for a `.indicatrix`
+    // name (suggesting the design's own) in the folder this pair lives in, and leaves
+    // the older files untouched.
+    remember_design_location(
+        None,
+        Path::new(&native_path_display)
+            .parent()
+            .map(Path::to_path_buf),
+    );
     // A plain sentence, not
     // `FingerprintCheck`/`TierOverlay`'s own technical `Display` text (e.g.
     // "per-tier meet-intent overlay skipped (fingerprint mismatch)") -- see
@@ -483,46 +612,12 @@ pub(super) fn commit_loaded_native(
     // is good news, not a mismatch, so it must not push this toast into the
     // persistent "warning" class below the way a genuinely unresolved material
     // does.
-    let (material_note, material_still_unresolved) = if let (Some(snapshot), Some(name)) = (
+    let (material_note, material_still_unresolved) = restore_custom_material(
+        render_ctx,
         loaded.restorable_custom_material.as_ref(),
         loaded.design.material.name.as_deref(),
-    ) {
-        let gem = gem_material_from_custom_snapshot(name, snapshot);
-        let mut ctx = render_ctx
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let materials = Arc::make_mut(&mut ctx.custom_materials);
-        if let Some(pos) = materials
-            .iter()
-            .position(|m| m.name.eq_ignore_ascii_case(name))
-        {
-            materials[pos] = gem;
-        } else {
-            materials.push(gem);
-        }
-        drop(ctx);
-        (
-            Some(format!(
-                " '{name}' was restored from this file's own saved material data."
-            )),
-            false,
-        )
-    } else {
-        // A material name this build can't resolve AND has no snapshot to
-        // restore from (a sidecar with no saved material snapshot, or a
-        // material that was never actually custom) still silently becomes
-        // Diamond once `MaterialSelection::resolve` runs -- see
-        // `MaterialResolution`'s own doc comment. Surfaced here rather than
-        // swallowed, so at least the open toast says so.
-        let unresolved = matches!(
-            loaded.material_resolution,
-            indicatrix_cut_core::native::MaterialResolution::Unresolved
-        );
-        (
-            unresolved.then(|| format!(" {}", loaded.material_resolution)),
-            unresolved,
-        )
-    };
+        loaded.material_resolution,
+    );
     // `format_version` was written but never checked -- a sidecar from a
     // newer build could carry fields this one silently drops into `unknown` and
     // re-serializes on the next save (quietly degrading it further each round trip).
@@ -542,9 +637,9 @@ pub(super) fn commit_loaded_native(
     // auto-solve dispatched against the design being replaced still observes the
     // change instead of comparing against a counter nobody increments anymore.
     // Restored from the sidecar's own `[source]` table (written by an
-    // earlier Save Native -- see `EditorState::printed_proportions`'s own doc
+    // earlier Save -- see `EditorState::printed_proportions`'s own doc
     // comment) rather than hard-coded `None`, so Deep Solve still has printed figures
-    // to verify against after a Save Native/Open Native round trip, not only on this
+    // to verify against after a Save/Open round trip, not only on this
     // design's very first "Load Selected" from the catalogue. Still `None` for a
     // sidecar saved before printed proportions were recorded there, or one for a
     // design never loaded from a catalogue row at all.
@@ -565,7 +660,7 @@ pub(super) fn commit_loaded_native(
         pending_retarget: None,
         last_pushed_scratch: RefCell::new(PushedScratch::default()),
         material_combo_cache: RefCell::new(MaterialComboCache::default()),
-        // Same reasoning as the plain-`.asc` Open Native path
+        // Same reasoning as the plain-`.asc` Open path
         // above -- the native sidecar's own `[source]` table (`printed_proportions`,
         // just above) carries a catalogue row's PRINTED proportions, but not which
         // row it was loaded from, so there is nothing here to write back to either.
@@ -573,13 +668,15 @@ pub(super) fn commit_loaded_native(
         // A native/plain-`.asc` open carries a real recorded
         // schedule, never the angle-table reconstruction fallback.
         used_placeholder: false,
+        file_extras: DesignFileExtras::default(),
         has_design: true,
     });
     finish_state_replace(ui, render_ctx, preview_state, solid_last_solved, state);
     show_toast(
         ui,
         &format!(
-            "Loaded '{native_path_display}'. {outcome_note}{}{}",
+            "Loaded '{native_path_display}'. {outcome_note}{}{} Saving writes a new \
+             .indicatrix file and leaves these older files untouched.",
             material_note.unwrap_or_default(),
             newer_version_note.unwrap_or_default()
         ),

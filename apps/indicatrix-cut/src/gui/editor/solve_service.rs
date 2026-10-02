@@ -31,7 +31,7 @@
 //!    all), which left any per-request bookkeeping keyed by
 //!    [`SolveResult::generation`] permanently stranded whenever two requests
 //!    landed close together on the SAME `SolveService` (`native_io::solve`'s
-//!    shared one, the case that actually hits this: a Save Native immediately
+//!    shared one, the case that actually hits this: a Save immediately
 //!    followed by an Export) -- no file, no toast, no error, forever. See
 //!    [`SolveResult::superseded`]'s own doc comment for what a caller must do
 //!    with one.
@@ -193,7 +193,7 @@ pub struct SolveResult {
     /// [`Self::generation`] (`native_io::solve::PENDING_SOLVES`, the motivating
     /// case) gets a chance to clean itself up and tell its own caller what
     /// happened, instead of leaking that entry and leaving whoever was waiting
-    /// on it (a Save Native, say) with no file and no toast forever. Previously
+    /// on it (a Save, say) with no file and no toast forever. Previously
     /// this case was silently `continue`d past with no delivery at all -- exactly
     /// the "never leave a continuation stranded" bug the superseded-result delivery guards against.
     pub superseded: bool,

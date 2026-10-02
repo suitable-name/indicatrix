@@ -10,7 +10,8 @@ use crate::{
     },
     gui::batch::{
         batch_queue::WorkQueue,
-        preview::{RI_MATCH_TOLERANCE, seeded_random_unit, target_ri_for_design},
+        material_choice::ensure_balanced_material,
+        preview::{RI_MATCH_TOLERANCE, target_ri_for_design},
         remote_dispatch::{DispatcherGroup, RemoteStatus},
     },
     settings::WorkerSettings,
@@ -162,13 +163,13 @@ fn resolve_design(ctx: &BatchContext<'_>, entry_id: i64) -> Option<ResolvedDesig
     let target_ri = target_ri_for_design(&full);
     let material_name = {
         let guard = ctx.db.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut rng = seeded_random_unit(entry_id);
-        guard.ensure_preview_material(
+        ensure_balanced_material(
+            &guard,
             entry_id,
             target_ri,
             ctx.material_candidates,
             RI_MATCH_TOLERANCE,
-            &mut rng,
+            &planes,
         )
     };
     let Ok(Some(material_name)) = material_name else {

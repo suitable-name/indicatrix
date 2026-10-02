@@ -42,8 +42,8 @@ pub enum NativeFormatError {
 impl fmt::Display for NativeFormatError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Serialize(e) => write!(f, "cannot serialize native design file: {e}"),
-            Self::Parse(e) => write!(f, "native design file is not valid: {e}"),
+            Self::Serialize(e) => write!(f, "cannot serialize the .indicatrix.toml sidecar: {e}"),
+            Self::Parse(e) => write!(f, "the .indicatrix.toml sidecar is not valid: {e}"),
         }
     }
 }
@@ -250,7 +250,7 @@ impl MaterialTable {
 /// The `[source]` table: the printed/measured proportions a catalogue row supplied
 /// when this design was loaded, if any.
 ///
-/// Without it, Open Native would reset `printed_proportions`, disabling Deep
+/// Without it, Open would reset `printed_proportions`, disabling Deep
 /// Solve for catalogue designs. Every field mirrors one
 /// `indicatrix::geometry::stone_metrics::ExternalProportions` figure one-to-one;
 /// building/reading the actual type is `indicatrix-cut-core`'s job (this crate has no

@@ -130,14 +130,17 @@ export component MainWindow inherits Window {
     callback active_tab_changed(int);
     in-out property <int> render_view_tab: 0;
     callback render_view_tab_changed(int);
+    // Fired when the Edit sub-tab becomes the shown one, so the editor can take the
+    // shared 3D viewport back from a Library selection.
+    callback edit_view_entered();
 
     callback open_user_manual();
 
-    // File > Open Recent: up to ten native paths, persisted in the settings
+    // File > Open Recent: up to ten design-file paths, persisted in the settings
     // store -- populated once at startup from `AppSettings.recent_native_files`
     // (`gui::startup_settings::apply_loaded_ui_mirrors`) and kept live afterward by
     // `gui::editor::native_io::record_recent_native_file` on every successful Save
-    // Native/Open Native (never written back to from Slint itself).
+    // or Open of a design file (never written back to from Slint itself).
     // `open_recent_native_file` fires with the clicked entry's own path text.
     in property <[string]> recent_native_files: [];
     callback open_recent_native_file(string);
@@ -210,7 +213,10 @@ export component MainWindow inherits Window {
     // already narrower than 1200px needs the same collapse `changed width` alone
     // would miss (nothing there changes width itself).
     changed width => { root.sync_library_auto_collapse(); }
-    changed render_view_tab => { root.sync_library_auto_collapse(); }
+    changed render_view_tab => {
+        root.sync_library_auto_collapse();
+        if root.render_view_tab == 1 { root.edit_view_entered(); }
+    }
     changed active_tab => { root.sync_library_auto_collapse(); }
 
     // --- MENU BAR ---
@@ -234,7 +240,7 @@ export component MainWindow inherits Window {
                 activated => { EditorModel.new_dialog_open = true; }
             }
             MenuItem {
-                title: "Open Native... (Ctrl+O)";
+                title: "Open... (Ctrl+O)";
                 enabled: EditorModel.enabled && GuideModel.allows_file_ops();
                 activated => { EditorModel.open_native(); }
             }
@@ -247,12 +253,12 @@ export component MainWindow inherits Window {
                 }
             }
             MenuItem {
-                title: "Save Native (Ctrl+S)";
+                title: "Save (Ctrl+S)";
                 enabled: EditorModel.enabled && GuideModel.allows_file_ops();
                 activated => { EditorModel.save_native(); }
             }
             MenuItem {
-                title: "Save Native As... (Ctrl+Shift+S)";
+                title: "Save As... (Ctrl+Shift+S)";
                 enabled: EditorModel.enabled && GuideModel.allows_file_ops();
                 activated => { EditorModel.save_native_as(); }
             }
@@ -272,7 +278,7 @@ export component MainWindow inherits Window {
             // "Export Cutting Sheet (HTML)..."/"Export Diagram (PNG)..." live on
             // the command bar's own "Export..." split button
             // (`ui/components/export_split_button.slint`, mounted in
-            // `editor_command_bar.slint` next to Save Native), not on this File
+            // `editor_command_bar.slint` next to Save), not on this File
             // menu -- same `EditorModel.export_cutting_sheet()`/`export_diagram()`
             // callbacks, just one menu instead of two to know to open.
         }

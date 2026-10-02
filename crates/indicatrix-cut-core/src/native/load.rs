@@ -121,7 +121,7 @@ pub enum LoadPairedError {
 impl fmt::Display for LoadPairedError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Native(e) => write!(f, "native file is not valid: {e}"),
+            Self::Native(e) => write!(f, "sidecar is not valid: {e}"),
             Self::Asc(e) => write!(f, "paired .asc file is not valid: {e}"),
             Self::DraftTierMissingGeometry { index } => write!(
                 f,
@@ -197,7 +197,7 @@ pub struct LoadPairedResult {
     /// before that table existed, or one for a design that was never associated with
     /// a catalogue row at all. A caller restores this into its own equivalent of
     /// `EditorState::printed_proportions` so Deep Solve has something to verify
-    /// against after a Save Native/Open Native round trip, not just on the design's
+    /// against after a Save/Open round trip, not just on the design's
     /// very first "Load Selected" from the catalogue.
     pub printed_proportions: Option<ExternalProportions>,
     /// `true` iff the sidecar's own `format_version` is newer than this build's
@@ -393,7 +393,7 @@ pub fn load_paired(
 /// fallback, which would report a name like "My Blue Sapphire" as `Known` (and
 /// silently write Sapphire's own RI to a re-exported `.asc`'s `I` line) just
 /// because it CONTAINS a built-in name.
-fn material_resolution_of(name: Option<&str>) -> MaterialResolution {
+pub(super) fn material_resolution_of(name: Option<&str>) -> MaterialResolution {
     match name {
         None => MaterialResolution::NoneSelected,
         Some(name) if crate::material::built_in_material_by_exact_name(name).is_some() => {
@@ -408,7 +408,7 @@ fn material_resolution_of(name: Option<&str>) -> MaterialResolution {
 /// `saved.note` read in [`load_paired`] itself. Takes a reference (not ownership)
 /// since the caller ([`load_paired`]) still needs to move `native_tiers` itself into
 /// [`draft_tiers_from_native`] afterward.
-fn tier_notes_from_native(native_tiers: &[TierTable]) -> BTreeMap<usize, String> {
+pub(super) fn tier_notes_from_native(native_tiers: &[TierTable]) -> BTreeMap<usize, String> {
     native_tiers
         .iter()
         .enumerate()
@@ -420,7 +420,7 @@ fn tier_notes_from_native(native_tiers: &[TierTable]) -> BTreeMap<usize, String>
 /// keyed by array position -- the draft counterpart to the non-draft branch's
 /// per-index `saved.cheater_offset_deg` read in [`load_paired`] itself. Exactly
 /// [`tier_notes_from_native`]'s own shape, one field over.
-fn cheater_offsets_from_native(native_tiers: &[TierTable]) -> BTreeMap<usize, f64> {
+pub(super) fn cheater_offsets_from_native(native_tiers: &[TierTable]) -> BTreeMap<usize, f64> {
     native_tiers
         .iter()
         .enumerate()
@@ -434,12 +434,14 @@ fn cheater_offsets_from_native(native_tiers: &[TierTable]) -> BTreeMap<usize, f6
 /// [`cheater_offsets_from_native`], so a caller extracts this BEFORE
 /// `native_tiers` itself is consumed to build the tier list -- see
 /// [`apply_tier_ids_and_targets`], which this feeds.
-fn raw_tier_ids_from_native(native_tiers: &[TierTable]) -> Vec<Option<u64>> {
+pub(super) fn raw_tier_ids_from_native(native_tiers: &[TierTable]) -> Vec<Option<u64>> {
     native_tiers.iter().map(|t| t.tier_id).collect()
 }
 
 /// [`raw_tier_ids_from_native`]'s counterpart for [`TierTable::target`].
-fn raw_tier_targets_from_native(native_tiers: &[TierTable]) -> Vec<Option<NativeTierTarget>> {
+pub(super) fn raw_tier_targets_from_native(
+    native_tiers: &[TierTable],
+) -> Vec<Option<NativeTierTarget>> {
     native_tiers.iter().map(|t| t.target).collect()
 }
 
@@ -482,7 +484,7 @@ fn raw_tier_targets_from_native(native_tiers: &[TierTable]) -> Vec<Option<Native
 /// `raw_ids`/`raw_targets`/`design.tiers` must all be the same length, in the
 /// same order -- the same "tier counts agree" precondition every other
 /// position-keyed overlay field in this module already requires.
-fn apply_tier_ids_and_targets(
+pub(super) fn apply_tier_ids_and_targets(
     design: &mut Design,
     raw_ids: Vec<Option<u64>>,
     raw_targets: Vec<Option<NativeTierTarget>>,
@@ -546,7 +548,7 @@ fn draft_tiers_from_native(
 /// [`load_native_only`] self-contained save -- see that function's own doc comment)
 /// tier list is the SOLE source for. Factored out so the two callers can only ever
 /// differ in which error they wrap this in, never in what counts as "missing."
-fn tier_from_table_with_full_geometry(saved: TierTable) -> Option<ConstraintTier> {
+pub(super) fn tier_from_table_with_full_geometry(saved: TierTable) -> Option<ConstraintTier> {
     Some(ConstraintTier {
         angle_deg: saved.angle_deg?,
         name: saved.name,
@@ -582,7 +584,7 @@ pub enum LoadNativeOnlyError {
 impl fmt::Display for LoadNativeOnlyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Native(e) => write!(f, "native file is not valid: {e}"),
+            Self::Native(e) => write!(f, "sidecar is not valid: {e}"),
             Self::NotSelfContained => write!(
                 f,
                 "this native file has no paired .asc data of its own -- it can only be \

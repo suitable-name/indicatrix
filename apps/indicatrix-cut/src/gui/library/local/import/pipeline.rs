@@ -1,11 +1,12 @@
 //! The core parse-measure-save pipeline: turns one candidate `.asc` (plus its
-//! optional native sidecar), or one `.gem`/`.gcs` design converted to `.asc`, into
-//! a saved catalogue row, and drives that over an entire batch of candidates.
+//! optional `.indicatrix` design file or older sidecar), one `.gem`/`.gcs` design
+//! converted to `.asc`, or one stand-alone `.indicatrix` design file, into a saved
+//! catalogue row, and drives that over an entire batch of candidates.
 
 use super::{
     foreign::{ForeignFormat, convert_foreign_design, converted_asc_file_name},
     measure::{apply_measured_metadata, merge_reimport_metadata},
-    scan::{collect_import_candidates, find_native_sidecar},
+    scan::{collect_import_candidates, find_design_file_beside, find_native_sidecar},
 };
 use indicatrix_vault::{db::sqlite::Database, local, model::file::AttachedFile};
 use std::{
@@ -26,7 +27,7 @@ use tracing::warn;
 ///
 /// Public (not `pub(super)`) because `gui::editor::native_io::catalogue::write_back_to_catalogue`
 /// reuses it around the identical `local::import_asc` + `apply_measured_metadata` step
-/// on Save Native's own background thread -- see that function's own doc comment for
+/// on Save's own background thread -- see that function's own doc comment for
 /// why: it deliberately runs the SAME parse-and-measure path this module's per-file
 /// loop does, and until this reuse, only THIS caller (not that one) turned a panic
 /// there into an error instead of silently killing the save thread mid-write with no
@@ -79,6 +80,9 @@ pub(super) struct ImportOutcome {
 /// the new geometry rather than describing the old one. `file_name` is used only for
 /// the cache-invalidation warning logs.
 ///
+/// A design file's tags, ignored mark and Rough Planner exclusion are written with
+/// `local::apply_imported_extras` right after the row, fresh or replaced.
+///
 /// On a fresh (non-collision) row, stamps
 /// `diagram_entries.derived_from_entry_id` from `parsed`'s own recovered
 /// [`local::ImportedAsc::derived_from_entry_id`] -- but only once the recorded id is
@@ -108,6 +112,7 @@ fn save_imported_design(
         entry,
         mut detail,
         derived_from_entry_id,
+        extras,
     } = parsed;
     let (id, is_collision) = {
         let db = db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -121,6 +126,11 @@ fn save_imported_design(
             merge_reimport_metadata(&mut detail, &existing);
         }
         let id = db.save_design(&entry, &detail, local::LOCAL_SOURCE_ID)?;
+        // Tags, the ignored mark and the planner exclusion a design file carries. Only
+        // sets: a re-import never clears what the existing row already has.
+        if let Err(e) = local::apply_imported_extras(&db, id, &extras) {
+            warn!("Import: could not restore the tags/marks of '{file_name}' on entry #{id}: {e}");
+        }
         if is_collision {
             invalidate_stale_caches(&db, id, file_name);
         } else if let Some(source_id) = derived_from_entry_id {
@@ -185,7 +195,7 @@ fn record_provenance(db: &Database, id: i64, source_id: i64, file_name: &str) {
     }
 }
 
-/// Parses one `.asc` (plus its native sidecar, when one sits beside it) and fills in
+/// Parses one `.asc` (plus its design file or older sidecar, when one sits beside it) and fills in
 /// the measured proportions -- [`import_path`]'s per-file parse step.
 ///
 /// Runs outside the database lock and inside [`catch_file_panic`]: a single
@@ -244,8 +254,9 @@ const WARNINGS_PER_FILE: usize = 3;
 /// Converts one `.gem`/`.gcs` design to `.asc` cutting instructions
 /// ([`convert_foreign_design`], inside [`catch_file_panic`]) and hands the text to
 /// [`parse_guarded`] -- the SAME `local::import_asc` + `apply_measured_metadata`
-/// step a `.asc` file takes. No native sidecar is looked for: a sidecar's
-/// fingerprint describes a `.asc`, never a `.gem`/`.gcs`.
+/// step a `.asc` file takes. No older sidecar is looked for: a sidecar's
+/// fingerprint describes a `.asc`, never a `.gem`/`.gcs`. A `<stem>.indicatrix` design
+/// file beside it is attached after the original file, and is what the editor opens.
 ///
 /// `local::import_asc` names its one attachment after `file_name`, but its bytes
 /// are the generated `.asc` text, so that attachment is renamed to
@@ -264,6 +275,7 @@ fn parse_foreign_import(
     file_name: &str,
     format: ForeignFormat,
     bytes: &[u8],
+    design_file: Option<(String, Vec<u8>)>,
 ) -> Result<(local::ImportedAsc, Vec<String>), String> {
     let converted = match catch_file_panic(std::panic::AssertUnwindSafe(|| {
         convert_foreign_design(format, bytes)
@@ -287,6 +299,13 @@ fn parse_foreign_import(
         url: String::new(),
         content: bytes.to_vec(),
     });
+    if let Some((name, content)) = design_file {
+        parsed.detail.attached_files.push(AttachedFile {
+            name,
+            url: String::new(),
+            content,
+        });
+    }
     if format == ForeignFormat::Gem {
         parsed.detail.gem_file = Some(file_name.to_string());
     }
@@ -314,8 +333,9 @@ fn warning_line(file_name: &str, warnings: &[String]) -> String {
 }
 
 /// Reads and parses one candidate: a `.gem`/`.gcs` through
-/// [`parse_foreign_import`], anything else as `.asc` text (plus its native
-/// sidecar) through [`parse_one_import`]. Split out of [`import_path`] purely to
+/// [`parse_foreign_import`], a stand-alone `.indicatrix` design file through
+/// [`local::import_native_design`], anything else as `.asc` text (plus its design
+/// file) through [`parse_one_import`]. Split out of [`import_path`] purely to
 /// keep that function under clippy's `too_many_lines` limit.
 ///
 /// # Errors
@@ -327,19 +347,24 @@ fn read_and_parse_candidate(
 ) -> Result<(local::ImportedAsc, Vec<String>), String> {
     let bytes = std::fs::read(file_path).map_err(|e| format!("{file_name} (read error: {e})"))?;
     if let Some(format) = ForeignFormat::from_path(file_path) {
-        return parse_foreign_import(file_name, format, &bytes);
+        let design_file = find_design_file_beside(file_path);
+        return parse_foreign_import(file_name, format, &bytes, design_file);
+    }
+    if local::is_native_design_name(file_name) {
+        return parse_guarded(file_name, || local::import_native_design(file_name, &bytes))
+            .map(|parsed| (parsed, Vec::new()));
     }
     // The raw bytes go to the vault, which decodes them for parsing (Windows-1252 and
     // byte-order marks included) and stores the file exactly as received.
-    // A design saved through Save Native writes a `.asc` PLUS
-    // a native sidecar carrying everything the bare `.asc` can't (authored meet
-    // constraints, preform, detached facets, material/RI override -- see
-    // `indicatrix_formats::native`'s module doc comment). Importing only the
+    // A design saved by this app is a self-contained `.indicatrix` file (an older one
+    // is a `.asc` PLUS an older sidecar), carrying everything the bare `.asc` can't
+    // (authored meet constraints, preform, detached facets, material/RI override --
+    // see `indicatrix_formats::native`'s module doc comment). Importing only the
     // `.asc` would silently discard all of that. `find_native_sidecar` looks beside
     // the `.asc` itself, independent of what `collect_import_candidates`
     // collected, and `local::import_asc_bytes` attaches it as a second file when found;
-    // `gui::editor::loading::design_from_full_record` already prefers
-    // `indicatrix_cut_core::load_paired` whenever both attachments are present.
+    // `gui::editor::loading::design_from_full_record` prefers the `.indicatrix` file,
+    // and `indicatrix_cut_core::load_paired` when only a sidecar is attached.
     let sidecar = find_native_sidecar(file_path);
     parse_one_import(file_name, &bytes, sidecar.as_ref()).map(|parsed| (parsed, Vec::new()))
 }

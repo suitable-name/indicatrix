@@ -6,7 +6,7 @@ export global EditorModel {
     // placeholder (`EditorState::fresh`) before anything is created, loaded or
     // restored. Pushed from Rust (`gui::editor::view::push_has_design`, mirroring
     // `EditorState::has_design`) on every install path: New Design/templates,
-    // Load Selected, Open Native/Open Recent/the startup restore. Gates the
+    // Load Selected, Open/Open Recent/the startup restore. Gates the
     // empty-state card grid (`components/app/viewport_overlay.slint`): a design
     // with zero tiers is still a design and must stay visible.
     in property <bool> has_design: false;
@@ -240,8 +240,9 @@ export global EditorModel {
     callback export_cutting_sheet();
     // 2D diagram alone as PNG, sharing the cut sheet's rendering path.
     callback export_diagram();
-    // Explicit "Save As" action; distinct from `save_native` which writes
-    // directly to the design's known file when one exists.
+    // Explicit "Save As" action; distinct from `save_native` (the File > Save
+    // action, writing the `.indicatrix` design file) which writes directly to the
+    // design's known file when one exists. `open_native` is File > Open.
     callback save_native_as();
     callback save_native();
     callback open_native();
@@ -322,7 +323,7 @@ export global EditorModel {
     callback recompute_dirty();
     changed tiers => { recompute_dirty(); }
 
-    // The Save/Discard/Cancel dialog New/Load Selected/Open Native show in front of
+    // The Save/Discard/Cancel dialog New/Load Selected/Open show in front of
     // their own destructive replace-the-design step whenever `is_dirty` is true --
     // see `gui::editor::callbacks::tier_actions::setup_unsaved_guard_dispatch` for
     // the Rust side, and `gui::editor::state::PendingUnsavedAction` for what "Save"/
@@ -333,11 +334,11 @@ export global EditorModel {
     callback unsaved_dialog_discard();
     callback unsaved_dialog_cancel();
 
-    // "Open Native" found a paired `.asc` whose fingerprint no longer matches the
-    // native sidecar (it was touched outside the editor since the last save) --
-    // rather than silently keeping or silently dropping the sidecar's authored meet
-    // constraints, this blocks on an explicit choice. `mismatch_dialog_can_apply` is
-    // `false` when the native file's own tier count no longer even agrees with the
+    // Opening an older `.indicatrix.toml` sidecar found a paired `.asc` whose
+    // fingerprint no longer matches it (the `.asc` was touched outside the editor
+    // since the last save) -- rather than silently keeping or silently dropping the
+    // sidecar's authored meet constraints, this blocks on an explicit choice.
+    // `mismatch_dialog_can_apply` is `false` when the sidecar's own tier count no longer even agrees with the
     // freshly imported `.asc` (see `indicatrix_cut_core::native::TierOverlay::
     // SkippedTierCountMismatch`'s own doc comment) -- re-applying a per-index overlay
     // in that case can't mean anything, so "Apply Anyway" is not offered at all.
@@ -508,7 +509,7 @@ export global EditorModel {
     in-out property <string> design_gear_reference_angle: "0.0";
     callback apply_design_meta(string, string, string, string);
 
-    // Where the last Save Native / Export .asc wrote. `last_saved_path` is the
+    // Where the last Save / Export .asc wrote. `last_saved_path` is the
     // full path (for the reveal below); `last_saved_label` is the bare file name
     // (for the status strip). Both empty until the first write of the session.
     in property <string> last_saved_path: "";

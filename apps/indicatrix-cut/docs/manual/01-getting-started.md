@@ -29,8 +29,8 @@ carries the same "Indicatrix Cut" name next to a small gem icon.
 ## The main window
 
 A **menu bar** (File / Edit / Help) runs above everything else. File
-mirrors the editor's New / Open Native / Save Native / Export Edited .asc,
-plus an **Open Recent** submenu of native files you have saved or opened
+mirrors the editor's New / Open / Save / Save As / Export Edited .asc,
+plus an **Open Recent** submenu of design files you have saved or opened
 (Chapters 3 and 11; greyed out on a build without the editor — see the
 Limitation note below); Edit mirrors Undo/Redo, each says what it
 will actually do once there is something to act on; and Help → User Manual
@@ -87,7 +87,7 @@ no tiers yet shows its preform with a small "no tiers yet" hint and a
   from the New Design dialog, then the girdle, pavilion, crown and table tier
   by tier. (For the finished stone in one click, pick the dialog's "Standard
   Round Brilliant" template instead.)
-- **Open Recent** shows your four most-recently-used native files -- the top
+- **Open Recent** shows your four most-recently-used design files -- the top
   of the list File > Open Recent keeps, which holds up to ten.
 - **Import a Folder** points you at the Import button in the top toolbar
   (see "Bringing your own designs in" below); it is not a second Import

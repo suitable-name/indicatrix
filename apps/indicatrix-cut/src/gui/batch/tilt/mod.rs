@@ -10,8 +10,8 @@
 //! components (`tilt_batch_dialog.slint` mirrors `preview_batch_dialog.slint` rather
 //! than generalizing it). Both batches do share the concurrent local/remote dispatch
 //! mechanism -- see `gui::batch::batch_queue` -- and this module calls into
-//! `gui::batch::preview`'s `RI_MATCH_TOLERANCE`/`target_ri_for_design`/
-//! `seeded_random_unit` rather than re-deriving them.
+//! `gui::batch::preview`'s `RI_MATCH_TOLERANCE`/`target_ri_for_design`
+//! and `gui::batch::material_choice` rather than re-deriving them.
 //!
 //! `evaluate_full_axis_profile_at_azimuth` measures ~340ms/axis x4 = ~1.36s/design
 //! single-threaded, roughly 72 minutes for the real ~3,187-design catalogue on one

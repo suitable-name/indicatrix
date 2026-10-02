@@ -66,6 +66,11 @@ pub(super) fn setup_solve_cancel_callback(ui: &MainWindow) {
 /// because a previous run did not shut down cleanly, and it holds work that was
 /// never saved at all. An ordinary recent file can always be reopened later from
 /// File > Open Recent; the autosave is deleted by the next successful save.
+///
+/// A design named on the command line (`indicatrix-cut <file>`, what an OS double-click
+/// association runs) outranks both: the cutter asked for that file, so it opens at
+/// once and no offer is made. A leftover autosave stays on disk and is offered at the
+/// next start.
 pub(super) fn setup_startup_restore(
     ui: &MainWindow,
     state: &Rc<RefCell<EditorState>>,
@@ -73,6 +78,17 @@ pub(super) fn setup_startup_restore(
     preview_state: &Arc<SolidPreviewState>,
     solid_last_solved: &view::SolidLastSolved,
 ) {
+    if let Some(path) = crate::gui::startup_file::take_requested_open() {
+        open_requested_design(
+            ui,
+            state,
+            render_ctx,
+            preview_state,
+            solid_last_solved,
+            path,
+        );
+        return;
+    }
     let model = ui.global::<crate::EditorModel>();
     let autosave = native_io::find_leftover_autosave();
     let offer = autosave.clone().or_else(|| {
@@ -143,6 +159,37 @@ pub(super) fn setup_startup_restore(
                 .set_startup_restore_path(String::new().into());
             native_io::delete_leftover_autosave(std::path::Path::new(path.as_str()));
         });
+}
+
+/// Opens the design named on the command line. Deferred to the first turns of the
+/// event loop: the editor is still being wired up when this is called, and opening
+/// pushes the design into panels and the viewport that are not all connected yet.
+fn open_requested_design(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
+    solid_last_solved: &view::SolidLastSolved,
+    path: std::path::PathBuf,
+) {
+    let ui_weak = ui.as_weak();
+    let state = Rc::clone(state);
+    let render_ctx = Arc::clone(render_ctx);
+    let preview_state = Arc::clone(preview_state);
+    let solid_last_solved = Arc::clone(solid_last_solved);
+    slint::Timer::single_shot(std::time::Duration::from_millis(150), move || {
+        let Some(ui) = ui_weak.upgrade() else {
+            return;
+        };
+        native_io::open_recent_native_path(
+            &ui,
+            &state,
+            &render_ctx,
+            &preview_state,
+            &solid_last_solved,
+            path,
+        );
+    });
 }
 
 /// Redraws the preview when the tier-cutoff slider moves, and when the Diagram's

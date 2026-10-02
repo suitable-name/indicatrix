@@ -9,7 +9,7 @@
 //! Undo/redo is business logic, not view logic: it has to be correct independent of
 //! whatever widget toolkit drives it, and testable without a window (see [`edit`]'s
 //! module doc comment). Two dependencies only -- [`indicatrix`] for geometry and
-//! [`indicatrix-formats`] for `.asc` read/write and the native `.indicatrix.toml` sidecar's own
+//! [`indicatrix-formats`] for `.asc` read/write and the `.indicatrix` design file's own
 //! on-disk format -- so `apps/indicatrix-cut` can wire a UI on top of it without this
 //! crate ever needing to know Slint, wgpu, or SQLite exist.
 //!
@@ -42,9 +42,9 @@
 //! - [`yield_metrics`]: the real-unit binding ([`yield_metrics::mm_per_unit`]) and
 //!   the figures built on it -- exact volumetric yield, an estimated carat weight,
 //!   and the design-bigger-than-its-rough check.
-//! - [`native`]: pairs a real `.asc` export with (never replacing it) the native
-//!   `.indicatrix.toml` sidecar (legacy `.gemcut.toml` files still load), carrying
-//!   design state `.asc` has no field for at all. The on-disk document itself --
+//! - [`native`]: converts a [`Design`] to and from the self-contained `.indicatrix`
+//!   design file (design state `.asc` has no field for at all), and still reads the
+//!   older `.indicatrix.toml` sidecar (legacy `.gemcut.toml` too) paired with a `.asc`. The on-disk document itself --
 //!   schema, TOML encode/decode, path rules, fingerprint -- lives in
 //!   `indicatrix_formats::native`; this module owns only the conversions to and from
 //!   [`Design`] and the `load_paired`/`save_paired` pairing built on top of them.
@@ -94,7 +94,8 @@ pub mod manufacturability;
 /// [`material::MaterialSelection`] and the built-in refractive-index/specific-
 /// gravity lookup tables a design resolves its optics against.
 pub mod material;
-/// Pairs a real `.asc` export with the native `.indicatrix.toml` sidecar.
+/// The `.indicatrix` design file's conversions, plus the older `.asc` + `.indicatrix.toml`
+/// sidecar pairing, which stays readable.
 ///
 /// See this module's own doc comment for the split with
 /// `indicatrix_formats::native`.

@@ -25,8 +25,8 @@
 //! - [`manipulate`]: mouse-driven direct manipulation -- the pick-frame projection, the
 //!   angle/depth/index drag handles of the selected facet, the Slice tool's plane
 //!   snapping, the tiers a drag drags along, and the hint and toast wording.
-//! - [`files`]: file kinds by name, `.gem`/`.gcs` conversion to `.asc` text, native
-//!   pairing among several opened files, and the desktop's default save names.
+//! - [`files`]: file kinds by name and content, `.gem`/`.gcs` conversion to `.asc` text,
+//!   older-sidecar pairing among several opened files, and the desktop's default save names.
 //! - [`tier_save`]: which `Edit` a parsed tier form becomes (insert after the selection,
 //!   modify in place, the depth / girdle-thickness / table-width target batch).
 //! - [`printed_proportions`]: the design settings' five printed figures (Vol/W^3, L/W,

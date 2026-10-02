@@ -29,7 +29,7 @@ rows shows an explanation of whatever button you are currently hovering:
   Solve and Optimize grey out when there is nothing for them to do, and
   hovering a greyed-out button shows the specific reason right on the
   button rather than somewhere else you would have to go looking.
-- **Row 2, right** — Export Edited .asc, Save Native, and Open Native. The
+- **Row 2, right** — Export Edited .asc, Save, and Open. The
   File menu's version of the first uses the identical label; both trigger
   the same export. See Chapter 11 for what each of the three actually
   writes.

@@ -126,7 +126,7 @@ impl Database {
     /// public, separately-committing methods -- existing callers that intentionally
     /// save an entry without a detail yet (or vice versa) keep working unchanged; this
     /// is for a caller that has both in hand at once and wants the atomicity. The
-    /// catalogue's three writers (Save Native's write-back, the mirror sync and the
+    /// catalogue's three writers (Save's write-back, the mirror sync and the
     /// `.asc` import) all go through it.
     ///
     /// Returns the entry's id (new or existing, same meaning as

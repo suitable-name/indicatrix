@@ -312,13 +312,13 @@ impl RenderContext {
     /// the arbitration rule, factored out so every writer
     /// applies the same policy instead of five copies of an `if` chain.
     ///
-    /// An `Editor` owner always wins over anything else: the cutter is actively
-    /// working on a design, and a catalogue glance/delete must never silently
-    /// replace what they are editing. Two `Editor` claims arbitrate by
-    /// generation, so a background auto-solve that was already stale when it
-    /// finished can't clobber a newer edit's planes. Anything else (a fresh
-    /// catalogue selection over `Builtin`/another `Catalogue` row, or the very
-    /// first claim from `Builtin`) is allowed.
+    /// Two `Editor` claims arbitrate by generation, so a background auto-solve that
+    /// was already stale when it finished can't clobber a newer edit's planes.
+    /// Every other claim is allowed, a catalogue selection over an `Editor` owner
+    /// included: picking a row in the Library is an explicit request to look at that
+    /// design, and the editor loads a design only on its own button click and takes
+    /// the slot back with its next load or edit. Refusing the click used to leave the
+    /// whole Library unable to preview anything for the rest of the session.
     #[must_use]
     pub const fn may_claim_active_planes(&self, new_owner: PlanesOwner) -> bool {
         match (self.planes_owner, new_owner) {
@@ -328,7 +328,6 @@ impl RenderContext {
                 },
                 PlanesOwner::Editor { generation: new },
             ) => new >= current,
-            (PlanesOwner::Editor { .. }, _) => false,
             _ => true,
         }
     }
@@ -336,7 +335,7 @@ impl RenderContext {
     /// The single intended write path for `active_planes`/`design_gear`/
     /// `planes_owner` together. Returns `false` (and leaves
     /// every field untouched) when [`Self::may_claim_active_planes`] refuses the
-    /// claim, so a caller can decide whether to surface that as a toast/prompt.
+    /// claim, so a caller can tell a stale write from an accepted one.
     ///
     /// Does NOT set `dirty` -- callers already do that themselves alongside
     /// whatever else a plane-set change requires (a `Reproject`/`Replan` request,

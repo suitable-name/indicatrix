@@ -8,9 +8,10 @@
 //!
 //! - [`asc`]: `GemCAD`'s `.asc` cutting-instructions text format. Read and write support,
 //!   verified against a real-world corpus of 5,759 files.
-//! - [`native`]: `apps/indicatrix-cut`'s own `.indicatrix.toml` sidecar (legacy
-//!   `.gemcut.toml` files still load) -- the on-disk schema, TOML encode/decode,
-//!   sidecar path rules, and paired-`.asc` fingerprint for a text file that carries
+//! - [`native`]: `apps/indicatrix-cut`'s own self-contained `.indicatrix` design file
+//!   ([`native::design`]) and the older `.indicatrix.toml` overlay sidecar it replaced
+//!   (legacy `.gemcut.toml` files still load) -- the on-disk schemas, TOML
+//!   encode/decode, path rules, and paired-`.asc` fingerprint for text files that carry
 //!   design state `.asc` itself has no field for. Converting to and from the actual
 //!   in-memory editor design is `indicatrix-cut-core`'s job, not this module's -- see
 //!   its own module doc comment for the split.
@@ -43,8 +44,9 @@ pub mod gcs;
 ///
 /// See the module's own doc comment for the layout and what is still open.
 pub mod gem;
-/// `apps/indicatrix-cut`'s own `.indicatrix.toml` sidecar format.
+/// `apps/indicatrix-cut`'s own `.indicatrix` design file format and the older
+/// `.indicatrix.toml` sidecar.
 ///
-/// Schema, TOML encode/decode, sidecar path rules, and paired-`.asc` fingerprint --
+/// Schemas, TOML encode/decode, path rules, and the sidecar's paired-`.asc` fingerprint --
 /// see the module's own doc comment for the format choice and its conventions.
 pub mod native;

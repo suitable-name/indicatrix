@@ -2,10 +2,11 @@ target
 .cargo
 **/*.swp
 *.sqlite
+*.sqlite-*
 *.sqlite.bak
 *.exe
 /bin
 certs
 exports
-indicatrix.log
+indicatrix*.log
 dist

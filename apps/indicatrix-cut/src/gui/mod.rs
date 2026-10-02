@@ -51,6 +51,9 @@ mod solid_sink;
 // same index<->value mapping later), so this module re-exports them flatly below
 // rather than requiring every caller to spell out `gui::startup_settings::`.
 mod startup_settings;
+// A design file named on the command line (an OS double-click association starts the
+// program with it as the argument) -- see the module's own doc comment.
+pub mod startup_file;
 mod tilt;
 // Fits the main window to its monitor on first show -- see the module doc for why the
 // .slint preferred size alone is not enough on Full HD displays.

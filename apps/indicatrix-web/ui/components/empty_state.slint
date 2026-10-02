@@ -91,7 +91,7 @@ export component EmptyState inherits Rectangle {
             }
             Card {
                 title: "Open file...";
-                body: ".asc, native pair (.asc + .indicatrix.toml), .indicatrix.toml, .gem, .gcs";
+                body: ".indicatrix, .asc, older pair (.asc + .indicatrix.toml), .gem, .gcs";
                 enabled: GuideModel.allows-file-ops();
                 clicked => { AppModel.open-file(); }
             }
@@ -123,7 +123,7 @@ export component EmptyState inherits Rectangle {
         }
 
         Text {
-            text: "You can also drop files onto this window. Several files can be opened together, e.g. an .asc with its .indicatrix.toml.";
+            text: "You can also drop files onto this window. Several files can be opened together, e.g. an .asc with an older .indicatrix.toml sidecar.";
             font-size: 10px;
             color: Theme.text-muted;
             horizontal-alignment: center;

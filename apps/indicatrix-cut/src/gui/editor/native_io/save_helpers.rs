@@ -1,7 +1,7 @@
 //! Shared save/export helpers: a design's custom-catalogue material snapshot, the
 //! "not a closed solid" header marker, the cached-solve-reusing paired-save entry
 //! point, the source-catalogue-row footnote stamp, and a design's own
-//! [`CustomMaterialSnapshot`] for a native sidecar.
+//! [`CustomMaterialSnapshot`] for a `.indicatrix` design file, and that file's text.
 
 use crate::bridge::render_thread::RenderContext;
 use indicatrix::{
@@ -11,8 +11,8 @@ use indicatrix::{
 use indicatrix_cut_core::{
     Design, built_in_refractive_index,
     native::{
-        CustomMaterialSnapshot, PairedSave, SaveError, SaveExtras, save_paired_extended,
-        save_paired_extended_from_solved,
+        CustomMaterialSnapshot, DesignExtras, PairedSave, SaveError, SaveExtras, design_to_file,
+        save_paired_extended, save_paired_extended_from_solved,
     },
 };
 use indicatrix_vault::db::sqlite::Database;
@@ -129,7 +129,7 @@ pub(super) fn save_paired_reusing_solve(
 /// `.asc` is written, so provenance comes from a recorded id, never a
 /// title/filename guess. Removes any previous stamp first (idempotent, same
 /// reasoning as [`degenerate_marker_header`]) so a design that changes source row
-/// (Save Native creating its very first row) or loses one (the row was deleted) never
+/// (Save creating its very first row) or loses one (the row was deleted) never
 /// carries two stamps, or a stale one, across a later save. `gui::library::local::
 /// import::save_imported_design` is the reader: a `.asc` re-imported later recovers
 /// `source_entry_id` from exactly this line via
@@ -137,9 +137,9 @@ pub(super) fn save_paired_reusing_solve(
 /// `diagram_entries.derived_from_entry_id`, turning what would otherwise be a second
 /// same-titled row into a recorded version of the original.
 ///
-/// Called from both "Export .asc" and "Save Native": a bare Export with no native
+/// Called from both "Export .asc" and "Save": a bare Export with no design
 /// sidecar at all still needs to survive an export-then-reimport round trip, so the
-/// plain `.asc` itself has to carry this, not only the native sidecar (which already
+/// plain `.asc` itself has to carry this, not only the design file (which already
 /// records everything else about this design, but is never attached to a plain
 /// Export).
 pub(super) fn stamp_source_entry_footnote(
@@ -152,7 +152,7 @@ pub(super) fn stamp_source_entry_footnote(
     }
 }
 
-/// Builds `design`'s [`CustomMaterialSnapshot`] for a native save, so a design saved
+/// Builds `design`'s [`CustomMaterialSnapshot`] for a save, so a design saved
 /// under a custom material does not silently reload as Diamond -- without this,
 /// nothing would attach that material's own numbers to the sidecar. `None` when
 /// `design.material.name` is unset, or names one of the
@@ -196,4 +196,24 @@ pub(super) fn custom_material_snapshot_for_save(
         )
         .with_body_colour(Some(row.absorption_rgb)),
     )
+}
+
+/// The text of `design`'s self-contained `.indicatrix` file: every tier in full plus
+/// the custom-material snapshot, history trail, `[meta]` table and attachments
+/// `extras` carries, and the printed proportions of the catalogue row the design came
+/// from. `draft` records that the design did not solve when it was saved.
+///
+/// # Errors
+///
+/// A ready-to-toast message: a `[meta]` value or an attachment the file format refuses
+/// (a bad or repeated name, a total over the size limit). Without metadata and
+/// attachments the serializer cannot fail for the fields written here.
+pub(super) fn design_file_text(
+    design: &Design,
+    printed_proportions: Option<&ExternalProportions>,
+    extras: &DesignExtras<'_>,
+    draft: bool,
+) -> Result<String, String> {
+    let file = design_to_file(design, printed_proportions, extras).with_draft(draft);
+    indicatrix_formats::native::design::to_string(&file).map_err(|e| e.to_string())
 }

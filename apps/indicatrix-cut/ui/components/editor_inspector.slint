@@ -278,7 +278,7 @@ export component EditorInspector inherits Rectangle {
     changed tracked_compare_discard => {
         root.optimize_preview_checked = false;
     }
-    // Bumps on New/Load Selected/Open Native. The alias-plus-changed idiom
+    // Bumps on New/Load Selected/Open. The alias-plus-changed idiom
     // ensures the flag is relevant for the current design, not stale.
     property <int> tracked_form_reset_pulse: EditorModel.form_reset_pulse;
     changed tracked_form_reset_pulse => {
@@ -316,7 +316,7 @@ export component EditorInspector inherits Rectangle {
     // Blanks the form back to "Add Tier" defaults -- the "New" button's own body
     // below, and `EditorView`'s `form_reset_pulse` watcher (see that property's own
     // doc comment in `ui/models/editor.slint`) for a selection reset that originates
-    // outside this component (New Design/Load Selected/Open Native, or removing the
+    // outside this component (New Design/Load Selected/Open, or removing the
     // currently selected tier). Deliberately unguarded (unlike `load_tier_into_form`/
     // `request_new` above) -- every one of those callers is already a deliberate,
     // confirmed, design-changing action of its own, not an incidental row click.
@@ -340,7 +340,7 @@ export component EditorInspector inherits Rectangle {
     // nudge, pin, adopt, facet edit, gear remap, retarget/optimize apply, symmetry
     // change, or an in-range Undo/Redo (an out-of-range one instead clears the
     // selection and reaches `clear_form` through `form_reset_pulse`, same as
-    // New/Load Selected/Open Native). `EditorView`'s `tracked_form_reseed_pulse`
+    // New/Load Selected/Open).`EditorView`'s `tracked_form_reseed_pulse`
     // watcher calls this -- see `EditorModel.form_reseed_pulse`'s own doc comment
     // (`ui/models/editor.slint`) for the Rust side.
     //

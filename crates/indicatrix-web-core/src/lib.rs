@@ -22,23 +22,29 @@
 //!   [`settings::scene_spec`], which turns them into a [`scene::SceneSpec`] with the
 //!   desktop's conversions.
 //! - [`custom_material`]: the Design settings dialog's custom-material fields turned into
-//!   a `GemMaterial` and the snapshot a native file stores for it.
+//!   a `GemMaterial` and the snapshot a design file stores for it.
+//! - [`design_meta`]: the `.indicatrix` file's descriptive `[meta]` table as the page
+//!   keeps and stamps it (ISO-8601 UTC time, UUID v4 from caller-supplied bytes).
 //! - [`guide`]: the guided walkthrough's tab-session state (open, step, collapsed,
 //!   where the floating panel was dragged to).
 //! - [`hdr`]: the browser's HDR limits and the render-worker count rule for a map.
 //! - [`input`]: the size limits checked on a picked or dropped file before it is read.
+//! - [`open_route`]: what the Open picker offers and the design file's name (which loader
+//!   a file goes to is `indicatrix_editor::files::InputFileKind::classify`).
 //! - [`worker`]: [`worker::WorkerHandler`], the whole message-handling state machine a
 //!   Worker runs; the `indicatrix-web-compute` crate only moves bytes in and out of it.
 //! - [`host`] (wasm32 only): the page-side pool, [`host::WorkerPool`] with its
 //!   [`host::RenderPool`] and [`host::SolveClient`].
 
 pub mod custom_material;
+pub mod design_meta;
 pub mod display;
 pub mod guide;
 pub mod hdr;
 #[cfg(target_arch = "wasm32")]
 pub mod host;
 pub mod input;
+pub mod open_route;
 pub mod protocol;
 pub mod render;
 pub mod scene;

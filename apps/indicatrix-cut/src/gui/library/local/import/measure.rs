@@ -77,7 +77,12 @@ pub fn apply_measured_metadata(detail: &mut FacetingDiagramDetail) {
 
     // Classified from the SAME planes, so the girdle outline is measured rather than
     // inferred from the schedule's fold count.
-    detail.shape = classify_shape(&planes, m.length_axis / w);
+    // A shape the file itself names (a design file's `[meta]`) outranks the girdle
+    // classification, which only labels a design that arrives with no shape.
+    detail.shape = detail
+        .shape
+        .take()
+        .or_else(|| classify_shape(&planes, m.length_axis / w));
 }
 
 /// `Database::save_diagram_detail` fully REPLACES a design's

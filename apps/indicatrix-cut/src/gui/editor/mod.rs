@@ -169,12 +169,41 @@ use crate::{
 use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_vault::db::sqlite::Database;
 use setup::{setup_solve_cancel_callback, setup_startup_restore, setup_tier_cutoff_callback};
+use slint::ComponentHandle;
 use state::EditorState;
 use std::{
     cell::RefCell,
     rc::Rc,
     sync::{Arc, Mutex},
 };
+
+/// Hands the viewport back to the editor's design when the Edit sub-tab is entered
+/// after a Library selection took it -- see [`view::reclaim_viewport_for_editor`].
+fn setup_edit_view_entered_callback(
+    ui: &MainWindow,
+    state: &Rc<RefCell<EditorState>>,
+    render_ctx: &Arc<Mutex<RenderContext>>,
+    preview_state: &Arc<SolidPreviewState>,
+    solid_last_solved: &SolidLastSolved,
+) {
+    let ui_weak = ui.as_weak();
+    let state = Rc::clone(state);
+    let render_ctx = Arc::clone(render_ctx);
+    let preview_state = Arc::clone(preview_state);
+    let solid_last_solved = Arc::clone(solid_last_solved);
+    ui.on_edit_view_entered(move || {
+        let Some(ui) = ui_weak.upgrade() else {
+            return;
+        };
+        view::reclaim_viewport_for_editor(
+            &ui,
+            &render_ctx,
+            &preview_state,
+            &solid_last_solved,
+            &state.borrow(),
+        );
+    });
+}
 
 /// Wires up every editor callback (Tier form, Deep Solve/Optimize, Retarget, undo/
 /// redo, native I/O, and the rest of [`callbacks`]) against `ui` and a freshly
@@ -224,6 +253,7 @@ pub fn setup_editor_callbacks(
         source,
     );
     callbacks::setup_solve_callback(ui, &state, render_ctx, preview_state, solid_last_solved);
+    setup_edit_view_entered_callback(ui, &state, render_ctx, preview_state, solid_last_solved);
     callbacks::setup_undo_callback(ui, &state, render_ctx, preview_state, solid_last_solved);
     callbacks::setup_redo_callback(ui, &state, render_ctx, preview_state, solid_last_solved);
     callbacks::setup_apply_preform_callback(

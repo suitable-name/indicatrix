@@ -22,8 +22,8 @@ export global ShortcutsModel {
     in-out property <bool> open: false;
 
     out property <[ShortcutItem]> items: [
-        { group: "Anywhere", keys: "Ctrl+O", action: "Open a design file (.asc, native pair, .indicatrix.toml, .gem, .gcs)" },
-        { group: "Anywhere", keys: "Ctrl+S", action: "Save the native pair (.asc + .indicatrix.toml) as downloads" },
+        { group: "Anywhere", keys: "Ctrl+O", action: "Open a design file (.indicatrix, .asc, older .asc + .indicatrix.toml pair, .gem, .gcs)" },
+        { group: "Anywhere", keys: "Ctrl+S", action: "Save the design as a .indicatrix download" },
         { group: "Anywhere", keys: "Ctrl+Shift+S", action: "Save the .asc only" },
         { group: "Anywhere", keys: "Alt+N", action: "New Design... (the desktop's Ctrl+N would open a new browser window)" },
         { group: "Anywhere", keys: "Ctrl+Z", action: "Undo (left to a text field while one has focus)" },

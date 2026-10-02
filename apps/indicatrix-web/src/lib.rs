@@ -1,5 +1,5 @@
-//! Browser build of `indicatrix`: open a faceting design (`.asc`, a native
-//! `.asc` + `.indicatrix.toml` pair, a native-only `.indicatrix.toml`, `.gem`,
+//! Browser build of `indicatrix`: open a faceting design (a self-contained
+//! `.indicatrix` file, `.asc`, an older `.asc` + `.indicatrix.toml` pair, `.gem`,
 //! `.gcs`), keep it in the shared `indicatrix_editor::EditorSession`, and save it
 //! back as a browser download. See `README.md` for what works today and what the
 //! later phases add.

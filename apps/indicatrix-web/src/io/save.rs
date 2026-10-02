@@ -4,29 +4,31 @@
 //! | Action | Built with | File name |
 //! |---|---|---|
 //! | Save `.asc` | `Design::to_asc_schedule_from_solved_with` + `indicatrix_formats::asc::to_asc_string` (CRLF, `GemCAD`'s convention) | the design's `.asc` name |
-//! | Save native pair | `indicatrix_cut_core::native::save_paired_extended(_from_solved)` | `<name>.asc` + `<name>.indicatrix.toml` |
-//! | Save native only | `indicatrix_cut_core::native::save_native_only_toml` | `<name>.indicatrix.toml` |
+//! | Save design | `indicatrix_cut_core::native::design_to_file` + `indicatrix_formats::native::design::to_string`; writes the opened file's `[meta]` table (stamped) and attachments back | `<name>.indicatrix` |
+//! | Save `.asc` + older sidecar | `indicatrix_cut_core::native::save_paired_extended(_from_solved)`; the older sidecar format has no metadata or attachments | `<name>.asc` + `<name>.indicatrix.toml` |
 //! | Cutting sheet | `indicatrix_editor::cut_sheet::cutting_sheet_document` | `<name>_cutting_sheet.html` |
 //! | Diagram | `indicatrix_editor::cut_sheet::diagram_export_png` | `<name>_diagram.png` |
 //!
 //! Names follow the desktop (`indicatrix_editor::files`). A design that solves but
 //! does not close is written with the desktop's "NOT A CLOSED SOLID" header (what
 //! its "Export Anyway" confirmation writes) and a warning; one that does not solve
-//! is saved as a native draft (the desktop's "Save Anyway") and refused for plain
+//! is saved as a draft design file (the desktop's "Save Anyway") and refused for plain
 //! `.asc`, cutting sheet and diagram, exactly as the desktop refuses them.
 
-use super::download::{MIME_ASC, MIME_HTML, MIME_PNG, MIME_TOML, download_bytes};
+use super::download::{MIME_ASC, MIME_DESIGN, MIME_HTML, MIME_PNG, MIME_TOML, download_bytes};
 use crate::app::{
     Ctx,
     persist::schedule_save,
     push::{MessageKind, push_design, show_message},
     solve::with_solved,
+    stamp::stamped_metadata,
 };
 use indicatrix::geometry::meet_solver::SolvedTier;
 use indicatrix_cut_core::{
     Design,
     native::{
-        SaveExtras, save_native_only_toml, save_paired_extended, save_paired_extended_from_solved,
+        DesignExtras, SaveExtras, design_to_file, save_paired_extended,
+        save_paired_extended_from_solved,
     },
 };
 use indicatrix_editor::{
@@ -37,6 +39,8 @@ use indicatrix_editor::{
     },
     view_model::solid_status::status_text_and_is_problem_from_solved,
 };
+use indicatrix_formats::native::design as design_file;
+use indicatrix_web_core::open_route::design_file_name_for_asc;
 
 /// Downloads, reporting success or failure through [`show_message`].
 fn deliver(ctx: &Ctx, file_name: &str, mime: &str, bytes: &[u8]) -> bool {
@@ -56,7 +60,7 @@ fn closure_problem(design: &Design, solved: &[SolvedTier]) -> Option<String> {
     problem.then_some(text)
 }
 
-/// Marks the design saved under `asc_name` after a native save.
+/// Marks the design saved under `asc_name` after a save.
 fn mark_saved(ctx: &Ctx, asc_name: String, asc_text: Option<String>) {
     {
         let mut app = ctx.state.borrow_mut();
@@ -128,9 +132,10 @@ pub fn save_asc(ctx: &Ctx) {
     });
 }
 
-/// File > Save native pair: the `.asc` and its `.indicatrix.toml`, as the
-/// desktop's Save Native writes them (the `.asc` half byte-identical to the opened
-/// file when the schedule did not change).
+/// File > Save `.asc` + older sidecar: the `.asc` and its older `.indicatrix.toml`
+/// overlay, for use with a tool that still reads that pair (the `.asc` half
+/// byte-identical to the opened file when the schedule did not change). The desktop
+/// no longer writes this pair.
 pub fn save_native_pair(ctx: &Ctx) {
     with_solved(ctx, |ctx, solved| {
         let built = {
@@ -215,42 +220,78 @@ pub fn save_native_pair(ctx: &Ctx) {
     });
 }
 
-/// File > Save native only: one self-contained `.indicatrix.toml` (no `.asc`),
-/// the format "Open" accepts on its own. Needs no solve.
-pub fn save_native_only(ctx: &Ctx) {
-    let built = {
-        let app = ctx.state.borrow();
-        let Some(state) = &app.design else {
-            return;
+/// File > Save design: one self-contained `.indicatrix` file (no `.asc`), the format
+/// "Open" reads on its own. A design that does not solve is saved as a draft, as the
+/// older pair save does.
+pub fn save_design(ctx: &Ctx) {
+    with_solved(ctx, |ctx, solved| {
+        let built = {
+            let app = ctx.state.borrow();
+            let Some(state) = &app.design else {
+                return;
+            };
+            let design = &state.session.design;
+            let problem = match &solved {
+                Ok(solved) => closure_problem(design, solved),
+                Err(missing) => Some(missing.clone()),
+            };
+            let draft = solved.is_err() && !design.tiers.is_empty();
+            let history = state.session.history.description_log().to_vec();
+            // The descriptive table and the attachments the file was opened with go
+            // back as they were; only the stamp (modified time, a missing id) changes.
+            let metadata = stamped_metadata(state);
+            let file = design_to_file(
+                design,
+                state.printed_proportions.as_ref(),
+                &DesignExtras {
+                    custom_material: state.custom_snapshot(),
+                    history_entries: &history,
+                    metadata: Some(&metadata),
+                    attachments: &state.attachments,
+                },
+            )
+            .with_draft(draft);
+            design_file::to_string(&file)
+                .map(|text| (text, state.save_asc_name(), problem, draft, metadata))
         };
-        let asc_name = state.save_asc_name();
-        let history = state.session.history.description_log().to_vec();
-        save_native_only_toml(
-            &state.session.design,
-            asc_name.clone(),
-            state.printed_proportions.as_ref(),
-            &SaveExtras {
-                custom_material: state.custom_snapshot(),
-                history_entries: &history,
-                custom_catalogue: &app.custom_materials,
-            },
-        )
-        .map(|toml| (toml, asc_name))
-    };
-    match built {
-        Ok((toml, asc_name)) => {
-            let native_name = native_file_name_for_asc(&asc_name);
-            if deliver(ctx, &native_name, MIME_TOML, toml.as_bytes()) {
-                show_message(
-                    ctx,
-                    MessageKind::Success,
-                    &format!("Downloaded {native_name}."),
-                );
-                mark_saved(ctx, asc_name, None);
+        let (text, asc_name, problem, draft, metadata) = match built {
+            Ok(built) => built,
+            Err(e) => {
+                // Includes an attachment that is over the size cap or has a bad name.
+                show_message(ctx, MessageKind::Error, &format!("Cannot save: {e}"));
+                return;
+            }
+        };
+        let file_name = design_file_name_for_asc(&asc_name);
+        if !deliver(ctx, &file_name, MIME_DESIGN, text.as_bytes()) {
+            return;
+        }
+        {
+            // The stamped table is now the design's: the next save keeps its id.
+            let mut app = ctx.state.borrow_mut();
+            if let Some(state) = app.design.as_mut() {
+                state.metadata = metadata;
             }
         }
-        Err(e) => show_message(ctx, MessageKind::Error, &format!("Cannot save: {e}")),
-    }
+        match problem {
+            Some(message) if draft => show_message(
+                ctx,
+                MessageKind::Warning,
+                &format!("Downloaded {file_name}, saved as a draft: {message}"),
+            ),
+            Some(message) => show_message(
+                ctx,
+                MessageKind::Warning,
+                &format!("Downloaded {file_name}. The solid does not close: {message}"),
+            ),
+            None => show_message(
+                ctx,
+                MessageKind::Success,
+                &format!("Downloaded {file_name}."),
+            ),
+        }
+        mark_saved(ctx, asc_name, None);
+    });
 }
 
 /// File > Download cutting sheet: the printable HTML sheet with its embedded

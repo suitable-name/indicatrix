@@ -10,7 +10,7 @@ use super::{LaneSlot, PoolConfig, PoolEvent};
 use crate::{CancelToken, Merger, RateModel, SampleCursor, SampleRange};
 use indicatrix_net::SceneState;
 use std::{
-    sync::{Condvar, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError, RwLock},
     time::{Duration, Instant},
 };
 
@@ -45,6 +45,69 @@ impl Sched {
             .wait_timeout(guard, timeout)
             .unwrap_or_else(PoisonError::into_inner)
             .0
+    }
+}
+
+/// How many lane threads of a run are still going, and whether the roster is closed to
+/// newcomers. The roster closes the moment the last lane leaves, so a lane fed in after
+/// the run has finished is refused (and dropped) instead of starting.
+pub(super) struct Roster {
+    state: Mutex<RosterState>,
+}
+
+struct RosterState {
+    active: usize,
+    closed: bool,
+}
+
+impl Roster {
+    /// A roster with `active` lanes about to start (closed already when there are none).
+    pub(super) const fn new(active: usize) -> Self {
+        Self {
+            state: Mutex::new(RosterState {
+                active,
+                closed: active == 0,
+            }),
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, RosterState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether every lane has left.
+    pub(super) fn is_closed(&self) -> bool {
+        self.lock().closed
+    }
+
+    /// Counts one more lane in; `false` when the run has already ended.
+    pub(super) fn try_join(&self) -> bool {
+        let mut state = self.lock();
+        if state.closed {
+            return false;
+        }
+        state.active += 1;
+        true
+    }
+
+    /// A lane thread finished: counts it out and closes the roster with the last one.
+    pub(super) fn leave(&self) {
+        let mut state = self.lock();
+        state.active = state.active.saturating_sub(1);
+        if state.active == 0 {
+            state.closed = true;
+        }
+    }
+
+    /// Counts the calling lane out unless it is the only one left (`true`: it left).
+    /// Check and decrement are one step, so two lanes removed together can never empty
+    /// the pool between them.
+    pub(super) fn leave_unless_last(&self) -> bool {
+        let mut state = self.lock();
+        let leave = state.active > 1;
+        state.active -= usize::from(leave);
+        drop(state);
+        leave
     }
 }
 
@@ -90,11 +153,29 @@ pub(super) struct Epoch<'a> {
     pub(super) pixels: usize,
     pub(super) sched: Sched,
     /// Every registered lane's rate model (this one included), for [`Self::want`]'s
-    /// share-of-what-is-left computation.
-    pub(super) lanes: &'a [LaneSlot],
+    /// share-of-what-is-left computation. Grows when lanes join a running epoch; a
+    /// lane's position is its event index and never changes.
+    pub(super) lanes: &'a RwLock<Vec<Arc<LaneSlot>>>,
+    /// Which lane threads are still going.
+    pub(super) roster: Roster,
 }
 
 impl Epoch<'_> {
+    /// How many lanes are registered so far.
+    pub(super) fn lane_count(&self) -> usize {
+        self.lanes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .len()
+    }
+
+    /// Registers a lane that joins the running epoch and returns its index.
+    pub(super) fn push_lane(&self, slot: Arc<LaneSlot>) -> usize {
+        let mut lanes = self.lanes.write().unwrap_or_else(PoisonError::into_inner);
+        lanes.push(slot);
+        lanes.len() - 1
+    }
+
     /// Delivers `event` to the run's observer.
     pub(super) fn emit(&self, event: PoolEvent) {
         (self.events)(event);
@@ -129,6 +210,8 @@ impl Epoch<'_> {
     /// handful of lanes one job has.
     fn sum_rates(&self) -> f64 {
         self.lanes
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .map(|slot| {
                 slot.rate

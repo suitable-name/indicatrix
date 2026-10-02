@@ -1,6 +1,7 @@
-//! The native `.indicatrix.toml` sidecar format (legacy `.gemcut.toml` files still
-//! load), paired with (never replacing) a real `.asc` export, carrying design state
-//! `.asc` has no field for at all.
+//! The conversions behind the `.indicatrix` design file (see "The self-contained
+//! design file" below), and the older `.indicatrix.toml` sidecar format (legacy
+//! `.gemcut.toml` files still load), paired with (never replacing) a real `.asc`
+//! export, carrying design state `.asc` has no field for at all.
 //!
 //! The on-disk document shape itself -- the schema, TOML encode/decode, sidecar path
 //! rules, and the paired-`.asc` fingerprint -- lives in [`indicatrix_formats::native`], a
@@ -15,12 +16,19 @@
 //! directions built on top of them: [`load`]'s [`load_paired`] and [`save`]'s
 //! [`save_paired`].
 //!
+//! # The self-contained design file
+//!
+//! [`design_to_file`]/[`design_from_file`] convert a design to and
+//! from the single-file `.indicatrix` format ([`indicatrix_formats::native::design`]),
+//! which needs no paired `.asc`; [`migrate_sidecar_to_file`] upgrades an already-loaded
+//! paired design. New saves use it; [`load_paired`] still opens the older pair.
+//!
 //! # Preserving the original `.asc` text
 //!
 //! [`indicatrix_formats::asc::to_asc_string`] is round-trip-stable but not byte-identical to
 //! hand-authored `GemCAD` output. Saving a design that came from a catalogue `.asc`
-//! and was never actually edited should not reformat that file just because this
-//! native format now exists: [`save_paired`] takes the caller's already-loaded
+//! and was never actually edited should not reformat that file just because a
+//! design file or sidecar sits beside it: [`save_paired`] takes the caller's already-loaded
 //! original `.asc` text and preserves it byte for byte whenever the design's current
 //! [`crate::design::Design::to_asc_schedule`] output is semantically equal to what
 //! that text itself parses to, WITH ONE FIELD MASKED: `refractive_index` is compared
@@ -39,12 +47,17 @@
 //! for the actual comparison.
 
 mod convert;
+mod design_file;
 mod load;
 mod save;
 #[cfg(test)]
 mod tests;
 
 pub use convert::{SaveExtras, gem_material_from_custom_snapshot, to_native_file};
+pub use design_file::{
+    DESIGN_HISTORY_LIMIT, DesignExtras, DesignLoadError, LoadedDesign, design_from_file,
+    design_from_str, design_to_file, design_to_string, migrate_sidecar_to_file,
+};
 pub use load::{
     LoadNativeOnlyError, LoadNativeOnlyResult, LoadPairedError, LoadPairedResult,
     MaterialResolution, TierOverlay, load_native_only, load_paired,
@@ -56,11 +69,13 @@ pub use save::{
 
 /// Kept under its historic name -- `apps/indicatrix-cut` calls this as
 /// `indicatrix_cut_core::native::parse_toml_string`.
-pub use indicatrix_formats::native::from_toml_str as parse_toml_string;
+pub use indicatrix_formats::native::design::{
+    AttachmentBlob, AttachmentRole, DesignFile, DesignFileError, DesignMetadata, FileKind,
+};
 pub use indicatrix_formats::native::{
     CustomMaterialSnapshot, FORMAT_VERSION, FingerprintCheck, HistoryTable,
     LEGACY_NATIVE_EXTENSION_SUFFIX, MaterialTable, NATIVE_EXTENSION_SUFFIX, NativeDesignFile,
     NativeFormatError, NativeMeetConstraint, NativePreformShape, PreformTable, SourceTable,
-    TierTable, asc_path_for_native, check_fingerprint, native_path_for_asc, sha256_hex,
-    to_toml_string,
+    TierTable, asc_path_for_native, check_fingerprint, from_toml_str as parse_toml_string,
+    native_path_for_asc, sha256_hex, to_toml_string,
 };

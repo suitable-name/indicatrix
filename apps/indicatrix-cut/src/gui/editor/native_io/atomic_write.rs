@@ -1,7 +1,6 @@
-//! Writes an `.asc`/native TOML pair to disk as one atomic-as-possible operation:
-//! stage both files under same-directory temp names (unique per writer, flushed to
-//! stable storage), back up whatever already sits at each destination, then rename
-//! both temp files into place.
+//! Writes a design file to disk as one atomic-as-possible operation: stage it under a
+//! same-directory temp name (unique per writer, flushed to stable storage), back up
+//! whatever already sits at the destination, then rename the temp file into place.
 
 use std::{
     io::Write,
@@ -67,87 +66,50 @@ impl<T> WriteGate<T> {
     }
 }
 
-/// Writes `asc_text`/`native_toml` to `dest_path`/`native_path` as one
-/// atomic-as-possible pair: a read-only folder, a full disk, or an
-/// antivirus lock must never leave a plausible-looking `.asc` on disk with its
-/// authored constraints nowhere to be found (this module's own stated rule, see
-/// [`setup_save_native_callback`]'s doc comment).
+/// Writes `text` to `path` as one atomic-as-possible operation: a read-only folder, a
+/// full disk or an antivirus lock must never leave a truncated design file behind.
 ///
-/// Both files are staged under same-directory temp sibling names first ([`temp_sibling`]
+/// The text is staged under a same-directory temp sibling name first ([`temp_sibling`]
 /// -- always the same filesystem as the real target, so the rename that follows is a
 /// cheap, effectively-atomic same-volume operation, never one that could silently
 /// fall back to copy+delete across volumes; unique per call, so concurrent writers
-/// to one target cannot clobber each other's staging file). Each staged file is
-/// flushed to stable storage ([`write_synced`]) before any rename, so a power loss
-/// after the rename cannot leave a zero-length file under the real name. Before
-/// either temp file is renamed into
-/// place, any file ALREADY at that destination is copied to a `.bak` sibling first
-/// ([`backup_existing`]): a bad save (or this very save, if the design
-/// regressed since the last one) must never overwrite the only copy of a design that
-/// was already on disk. Only once both backups (when needed) and both writes have
-/// already succeeded are the real renames attempted. The one residual failure window
-/// -- the second rename failing after the first already landed -- is reported as
-/// exactly that (`.asc` on disk, sidecar not yet written) rather than silently
-/// claimed as a full success.
+/// to one target cannot clobber each other's staging file) and flushed to stable
+/// storage ([`write_synced`]) before the rename, so a power loss after the rename
+/// cannot leave a zero-length file under the real name. Before the temp file is
+/// renamed into place, a file ALREADY at `path` is copied to a `.bak` sibling
+/// ([`backup_existing`]): a bad save (or this very save, if the design regressed
+/// since the last one) must never overwrite the only copy of a design that was
+/// already on disk.
 ///
 /// # Errors
 ///
-/// A ready-to-toast message naming exactly what's on disk afterward.
-pub(super) fn write_pair_atomically(
-    dest_path: &Path,
-    native_path: &Path,
-    asc_text: &str,
-    native_toml: &str,
-) -> Result<(), String> {
-    let tmp_asc = temp_sibling(dest_path);
-    let tmp_native = temp_sibling(native_path);
-
-    if let Err(e) = write_synced(&tmp_asc, asc_text) {
-        let _ = std::fs::remove_file(&tmp_asc);
+/// A ready-to-toast message naming exactly what is on disk afterward (always: nothing
+/// was saved).
+pub(super) fn write_file_atomically(path: &Path, text: &str) -> Result<(), String> {
+    let staged = temp_sibling(path);
+    if let Err(e) = write_synced(&staged, text) {
+        let _ = std::fs::remove_file(&staged);
         return Err(format!(
             "Failed to write {}: {e}. Nothing was saved.",
-            dest_path.display()
+            path.display()
         ));
     }
-    if let Err(e) = write_synced(&tmp_native, native_toml) {
-        let _ = std::fs::remove_file(&tmp_asc);
-        let _ = std::fs::remove_file(&tmp_native);
-        return Err(format!(
-            "Failed to write {}: {e}. Nothing was saved.",
-            native_path.display()
-        ));
-    }
-    if let Err(message) = backup_existing(dest_path) {
-        let _ = std::fs::remove_file(&tmp_asc);
-        let _ = std::fs::remove_file(&tmp_native);
+    if let Err(message) = backup_existing(path) {
+        let _ = std::fs::remove_file(&staged);
         return Err(message);
     }
-    if let Err(message) = backup_existing(native_path) {
-        let _ = std::fs::remove_file(&tmp_asc);
-        let _ = std::fs::remove_file(&tmp_native);
-        return Err(message);
-    }
-    if let Err(e) = std::fs::rename(&tmp_asc, dest_path) {
-        let _ = std::fs::remove_file(&tmp_asc);
-        let _ = std::fs::remove_file(&tmp_native);
+    if let Err(e) = std::fs::rename(&staged, path) {
+        let _ = std::fs::remove_file(&staged);
         return Err(format!(
             "Failed to finalize {}: {e}. Nothing was saved.",
-            dest_path.display()
-        ));
-    }
-    if let Err(e) = std::fs::rename(&tmp_native, native_path) {
-        return Err(format!(
-            "Saved '{}' but failed to finalize its native sidecar {}: {e}. The .asc is on \
-             disk without its native sidecar -- re-save once the problem is fixed.",
-            dest_path.display(),
-            native_path.display()
+            path.display()
         ));
     }
     Ok(())
 }
 
 /// A same-directory temp sibling of `path`, used to stage a write before the final
-/// atomic-as-possible rename -- see [`write_pair_atomically`]. Always a sibling
+/// atomic-as-possible rename -- see [`write_file_atomically`]. Always a sibling
 /// (never `std::env::temp_dir()`), so the rename that follows never crosses
 /// filesystems.
 ///
@@ -185,8 +147,7 @@ pub(super) fn write_synced(path: &Path, contents: &str) -> std::io::Result<()> {
     file.sync_all()
 }
 
-/// `path`'s `.bak` sibling -- e.g. `design.asc` -> `design.asc.bak`, `design.
-/// indicatrix.toml` -> `design.indicatrix.toml.bak`. One generation of backup only:
+/// `path`'s `.bak` sibling -- e.g. `design.indicatrix` -> `design.indicatrix.bak`. One generation of backup only:
 /// a second save in a row overwrites the `.bak` from the first, matching "keep the
 /// PREVIOUS version" rather than an ever-growing history.
 fn backup_sibling(path: &Path) -> PathBuf {
@@ -202,11 +163,11 @@ fn backup_sibling(path: &Path) -> PathBuf {
 }
 
 /// Never overwrites the only copy: copies `path` to its [`backup_sibling`]
-/// before [`write_pair_atomically`] renames a freshly staged temp file over it. A
+/// before [`write_file_atomically`] renames a freshly staged temp file over it. A
 /// no-op (`Ok(())`) when `path` doesn't exist yet -- a design's first save has
 /// nothing to back up. Copies rather than renames `path` itself: `path` is left
 /// completely untouched by this step either way, so a failed backup aborts the whole
-/// save (see [`write_pair_atomically`]) without having disturbed the file that was
+/// save (see [`write_file_atomically`]) without having disturbed the file that was
 /// already there.
 ///
 /// # Errors

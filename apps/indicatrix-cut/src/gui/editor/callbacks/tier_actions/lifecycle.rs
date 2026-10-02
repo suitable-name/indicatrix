@@ -1,5 +1,5 @@
 //! The design-lifecycle callbacks: Solve, New Design, Load Selected, and the
-//! Save/Discard/Cancel unsaved-changes guard they share with Open Native.
+//! Save/Discard/Cancel unsaved-changes guard they share with Open.
 
 use std::{
     cell::RefCell,
@@ -24,8 +24,8 @@ use crate::{
             native_io::{self, AfterSave, do_open_native},
             stall_guard::stall_guard,
             state::{
-                ANGLE_NUDGE_COALESCE_WINDOW, EditorState, MaterialComboCache, PendingUnsavedAction,
-                PushedScratch,
+                ANGLE_NUDGE_COALESCE_WINDOW, DesignFileExtras, EditorState, MaterialComboCache,
+                PendingUnsavedAction, PushedScratch,
             },
             view::{SolidLastSolved, push_has_design, refresh_all_now},
         },
@@ -161,6 +161,9 @@ fn apply_loaded_design(
         // same `loaded`/`outcome`, but keeping the "used for something else"
         // fields together here (rather than scattered) is easier to audit.
         used_placeholder: loaded.used_placeholder,
+        // The design file's `[meta]` and attachments (empty for a bare `.asc`), kept so
+        // the next Save writes them back unchanged.
+        file_extras: DesignFileExtras::new(loaded.metadata, loaded.attachments),
         source_entry_id,
         // See `EditorState::fresh`'s matching comment on the coalescing window.
         session: EditorSession::with_history(
@@ -219,7 +222,7 @@ fn apply_loaded_design(
     // A loaded design is a real design: the empty-state card grid gives way to it.
     push_has_design(ui, &state.borrow());
     // The window title names whichever design is open -- `native_io` sets this on
-    // every Save/Open Native, and this is the matching Load Selected path.
+    // every Save/Open, and this is the matching Load Selected path.
     ui.set_loaded_design_name(loaded_asc_filename.unwrap_or_default().into());
     if loaded.used_placeholder {
         show_toast(
@@ -486,7 +489,7 @@ fn do_load_selected(
 }
 
 /// The render/preview plumbing [`run_pending_unsaved_action`]'s three resumable
-/// actions (New/Load Selected/Open Native) all need alongside `ui`/`state` --
+/// actions (New/Load Selected/Open) all need alongside `ui`/`state` --
 /// bundled purely to keep that function's own argument count under clippy's
 /// `too_many_arguments` lint; each field is unpacked back to its own `do_*`
 /// parameter at the call, so no callee's signature changes.
@@ -555,19 +558,19 @@ fn run_pending_unsaved_action(
 }
 
 /// The Save/Discard/Cancel unsaved-changes guard's three resolution callbacks --
-/// shared by New/Load Selected/Open Native (see [`PendingUnsavedAction`]), since only
+/// shared by New/Load Selected/Open (see [`PendingUnsavedAction`]), since only
 /// one of them can ever be pending at a time and Slint only keeps the LAST handler
 /// registered for a given callback. Registered once, from
 /// [`setup_load_selected_callback`] -- the one owned function with every one of
 /// `db`/`source` (needed to resume Load Selected) alongside the render/preview
-/// plumbing New and Open Native also need, so it is the natural single home for this
+/// plumbing New and Open also need, so it is the natural single home for this
 /// rather than splitting it across the files that own each individual action.
 ///
 /// "Save" invokes `EditorModel.save_native` (whatever handler is registered for it --
 /// `native_io::setup_save_native_callback`, wired up independently of this function)
 /// and only resumes the pending action once that save actually lands -- via the
 /// [`AfterSave::Resume`] listener registered below, not a synchronous `is_dirty`
-/// check run right after `invoke_save_native` returns: Save Native is
+/// check run right after `invoke_save_native` returns: Save is
 /// asynchronous end to end, so that check used to read the state from BEFORE the
 /// save even started, silently dropping the pending action instead of ever resuming
 /// it. A cancelled or failed save (already toasted by `save_native` itself, and

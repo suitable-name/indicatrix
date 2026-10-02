@@ -345,7 +345,7 @@ A few things to know about the stored measurements:
 - If you cancel while measuring, the designs already measured stay stored, and
   the next run continues from there.
 - A design is measured again automatically when its geometry changes: when you
-  re-import a design over an existing one, save a native file over its catalogue
+  re-import a design over an existing one, save a design over its catalogue
   entry, or when a mirrored library updates it. If the app itself later changes
   how designs are measured, every stored measurement is treated as missing and
   re-measured once.
@@ -787,7 +787,7 @@ The planner can only use designs it can measure as a closed solid.
   planner does not use them.
 - **Designs whose facets do not close on their own.** A schedule that relies on
   its preform to close the stone would measure as the preform's blank instead of
-  the stone, so it is left out. A native design that deliberately uses its preform
+  the stone, so it is left out. A design that deliberately uses its preform
   as part of the stone is skipped for the same reason.
 
 The planner does not name the skipped designs; the bottom of the results column

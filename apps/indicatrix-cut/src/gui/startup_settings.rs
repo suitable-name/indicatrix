@@ -321,7 +321,7 @@ fn apply_loaded_ui_mirrors(
     // File > Open Recent (`MainWindow.recent_native_files`, `ui/app.slint`) -- a
     // root-component property, not an `EditorModel` one. `gui::editor::native_io`'s
     // `record_recent_native_file` keeps this same property live afterward on every
-    // Save/Open Native, recording each entry through the `SettingsPersister` whose
+    // Save/Open, recording each entry through the `SettingsPersister` whose
     // snapshot was seeded from this same loaded `s`, so the list on screen and the
     // list that gets written on exit never diverge; this seeds it once at startup,
     // before that module's own callbacks are even wired up.

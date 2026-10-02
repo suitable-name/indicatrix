@@ -63,17 +63,17 @@ pub const SHORTCUTS: &[Shortcut] = &[
     },
     Shortcut {
         keys: "Ctrl+O",
-        action: "Open Native...",
+        action: "Open...",
         context: Context::Global,
     },
     Shortcut {
         keys: "Ctrl+S",
-        action: "Save Native",
+        action: "Save",
         context: Context::Global,
     },
     Shortcut {
         keys: "Ctrl+Shift+S",
-        action: "Save Native As...",
+        action: "Save As...",
         context: Context::Global,
     },
     Shortcut {
