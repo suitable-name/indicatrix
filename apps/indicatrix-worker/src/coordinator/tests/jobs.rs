@@ -2,7 +2,7 @@
 //! `join` workers (or fake ones that die), and a test viewer.
 
 use super::{
-    fixtures::{bundle, coordinator_args, pki_with_server, start, wait_for},
+    fixtures::{bundle, coordinator_args, fan_out_config, pki_with_server, start, wait_for},
     support::{close, collect, render, scene, send, spawn_dying_worker, spawn_worker, viewer},
 };
 use crate::{
@@ -141,7 +141,7 @@ fn losing_every_worker_ends_the_stream_with_all_workers_lost() {
         .unwrap()
         .set_job_config(JobConfig {
             batch: fast_failures,
-            ..JobConfig::default()
+            ..fan_out_config()
         });
     let registry = Arc::clone(handle.registry.as_ref().unwrap());
     let worker_addr = handle.worker_addr.unwrap();
@@ -246,8 +246,8 @@ fn a_viewer_cancel_mid_job_answers_done_cancelled_and_returns_the_workers() {
     assert!(close(&transcript.sum, &trace_samples(&small, 0, 6, 2)));
 }
 
-/// `Interactive` on a `--render` coordinator runs on its own lane only (default): a joined
-/// worker never sees the request.
+/// `Interactive` on a `--render` coordinator started with `--interactive-workers 0` runs
+/// on its own lane only: a joined worker never sees the request.
 #[test]
 fn an_interactive_request_with_render_uses_only_the_own_lane() {
     let pki = pki_with_server("jobs-interactive");

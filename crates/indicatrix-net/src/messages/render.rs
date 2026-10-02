@@ -37,10 +37,11 @@ pub enum TransferMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RequestIntent {
     /// The live viewport: latency matters more than throughput. A coordinator serves it
-    /// from its own lane (plus at most `--interactive-workers` workers) in short chunks.
+    /// from its own lane plus up to `--interactive-workers` joined workers (by default
+    /// every idle one) in short chunks.
     Interactive,
     /// An export, tilt video or batch: throughput matters. A coordinator fans it out
-    /// over every joined worker.
+    /// over every joined worker; a small picture goes whole to the fastest one.
     Batch,
 }
 

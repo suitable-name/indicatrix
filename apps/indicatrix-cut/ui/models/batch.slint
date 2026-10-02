@@ -8,8 +8,13 @@ export global BatchModel {
     in property <int> preview_design_total: 0;
     in property <int> preview_local_active: 0;
     in property <int> preview_local_lane_total: 0;
+    // The title of the picture a remote dispatcher started most recently (or a pause
+    // notice while the remote is being waited out). `preview_remote_active` is whether
+    // any remote dispatcher is running, and `preview_remote_in_flight` how many pictures
+    // are on the remote right now -- up to `AppSettings::remote_batch_lanes`.
     in property <string> preview_remote_title: "";
     in property <bool> preview_remote_active: false;
+    in property <int> preview_remote_in_flight: 0;
     in property <bool> preview_done: false;
     in property <string> preview_summary: "";
     // The confirm step offers to REGENERATE designs that may already have previews
@@ -30,8 +35,10 @@ export global BatchModel {
     in property <int> tilt_design_total: 0;
     in property <int> tilt_local_active: 0;
     in property <int> tilt_local_lane_total: 0;
+    // Same three remote fields as the preview batch's, counting designs.
     in property <string> tilt_remote_title: "";
     in property <bool> tilt_remote_active: false;
+    in property <int> tilt_remote_in_flight: 0;
     in property <bool> tilt_done: false;
     in property <string> tilt_summary: "";
     // Same as `preview_offer_regenerate`, for the tilt confirm step.

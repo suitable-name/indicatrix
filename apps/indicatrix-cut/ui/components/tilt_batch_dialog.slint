@@ -15,11 +15,11 @@ import { BatchModel } from "../models/batch.slint";
 // mid-design at once, no single title/axis-index pair can describe "the" local lane's
 // progress any more, so `local_active`/`local_lane_total`
 // report a plain busy-count instead (see `gui::batch::tilt`'s module doc comment's
-// "Progress with N local lanes (plus remote) in flight" section). `remote_title`/
-// `remote_active` describe the REMOTE lane's own in-flight design -- remote stays a
-// single dispatcher, with no numeric sub-progress since a
-// remote dispatch is one blocking request covering all 4 axes at once, with nothing
-// observable in between (same module's own doc comment).
+// "Progress with N local lanes (plus remote) in flight" section). `remote_active`/
+// `remote_in_flight`/`remote_title` describe the REMOTE side: `remote_batch_lanes`
+// dispatchers each keep one design (all 4 axes, one blocking request) in flight, so
+// the row shows how many designs are on the remote right now and the design a
+// dispatcher started most recently (same module's own doc comment).
 export component TiltBatchDialog inherits Rectangle {
     in property <bool> confirming: BatchModel.tilt_confirming;
     in property <int> offer_count: BatchModel.tilt_offer_count;
@@ -30,6 +30,7 @@ export component TiltBatchDialog inherits Rectangle {
     in property <int> local_lane_total: BatchModel.tilt_local_lane_total;
     in property <string> remote_title: BatchModel.tilt_remote_title;
     in property <bool> remote_active: BatchModel.tilt_remote_active;
+    in property <int> remote_in_flight: BatchModel.tilt_remote_in_flight;
     in property <bool> done: BatchModel.tilt_done;
     in property <string> summary: BatchModel.tilt_summary;
     // The Edit tab's single-design sweep (see `BatchModel.tilt_single`): one bar that
@@ -202,13 +203,17 @@ export component TiltBatchDialog inherits Rectangle {
                                 overflow: elide;
                             }
 
-                            // The remote lane's own in-flight design -- only shown at
-                            // all while that lane is actually running (`LocalOnly`
+                            // The remote dispatchers' in-flight count and the design one
+                            // of them started most recently -- only shown at
+                            // all while remote dispatchers are running (`LocalOnly`
                             // never sets `remote_active`, and `RemoteOnly` shows only
                             // this row, no "Local:" row above, since no local lane
                             // runs in that mode).
                             if root.remote_active: Text {
-                                text: "Remote: " + (root.remote_title == "" ? "Starting..." : root.remote_title);
+                                text: "Remote: " + (root.remote_in_flight > 0
+                                ? root.remote_in_flight + " on remote"
+                                    + (root.remote_title == "" ? "" : " -- " + root.remote_title)
+                                : (root.remote_title == "" ? "Starting..." : root.remote_title));
                                 font-size: 12px;
                                 color: Theme.text-secondary;
                                 overflow: elide;

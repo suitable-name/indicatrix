@@ -64,6 +64,22 @@ pub const DEFAULT_LOCAL_COMPUTE_TARGET: LocalComputeTarget = LocalComputeTarget:
 /// own guards (compute target, matching scene, HDR) already keep it from ever changing
 /// what a picture looks like, only how fast it arrives.
 pub const DEFAULT_CONTRIBUTE_TO_FINAL_PICTURE: bool = true;
+/// How many pictures a catalogue preview or tilt batch keeps in flight on the remote at
+/// once, for new settings. `4` keeps a coordinator with a couple of joined workers busy
+/// without queueing far more pictures than it can start.
+pub const DEFAULT_REMOTE_BATCH_LANES: u32 = 4;
+/// The fewest remote batch lanes: one picture in flight at a time.
+pub const MIN_REMOTE_BATCH_LANES: u32 = 1;
+/// The most remote batch lanes. A coordinator caps its concurrent connections (64 by
+/// default), and every lane holds one for as long as its picture renders.
+pub const MAX_REMOTE_BATCH_LANES: u32 = 32;
+
+/// `lanes` limited to `1..=32` ([`MIN_REMOTE_BATCH_LANES`] to [`MAX_REMOTE_BATCH_LANES`])
+/// -- the one rule a loaded, edited or hand-written lane count passes through.
+#[must_use]
+pub fn clamp_remote_batch_lanes(lanes: u32) -> u32 {
+    lanes.clamp(MIN_REMOTE_BATCH_LANES, MAX_REMOTE_BATCH_LANES)
+}
 /// Default light yaw deg for new settings.
 pub const DEFAULT_LIGHT_YAW_DEG: f32 = 48.0;
 /// Default light pitch deg for new settings.
@@ -304,6 +320,16 @@ pub struct AppSettings {
     /// `worker::final_picture::contribution_allowed` for when it actually applies.
     #[serde(default = "default_contribute_to_final_picture")]
     pub contribute_to_final_picture: bool,
+    /// How many pictures a catalogue preview or tilt batch keeps in flight on the remote
+    /// at once -- one remote dispatcher per lane, each rendering a whole picture. A
+    /// coordinator with several workers wants more than one; see
+    /// [`DEFAULT_REMOTE_BATCH_LANES`]. Limited to `1..=32` when loaded and when set (see
+    /// [`clamp_remote_batch_lanes`]); a file without the key loads the default.
+    #[serde(
+        default = "default_remote_batch_lanes",
+        deserialize_with = "deserialize_remote_batch_lanes"
+    )]
+    pub remote_batch_lanes: u32,
     /// HDR environment maps: path to the last-loaded Radiance `.hdr` file, or empty
     /// for "no map loaded, use the studio rig" (same empty-string-means-off
     /// convention as `selected_material`/`lighting_rig`). `gui::mod::apply_loaded_settings`
@@ -421,6 +447,25 @@ const fn default_contribute_to_final_picture() -> bool {
     DEFAULT_CONTRIBUTE_TO_FINAL_PICTURE
 }
 
+const fn default_remote_batch_lanes() -> u32 {
+    DEFAULT_REMOTE_BATCH_LANES
+}
+
+/// Reads [`AppSettings::remote_batch_lanes`] as a signed integer and limits it, so a
+/// hand-edited value outside `1..=32` (a negative one included) loads as the nearest
+/// valid count instead of failing the whole settings file.
+fn deserialize_remote_batch_lanes<'de, D>(deserializer: D) -> Result<u32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = i64::deserialize(deserializer)?;
+    let limited = raw.clamp(
+        i64::from(MIN_REMOTE_BATCH_LANES),
+        i64::from(MAX_REMOTE_BATCH_LANES),
+    );
+    Ok(u32::try_from(limited).unwrap_or(DEFAULT_REMOTE_BATCH_LANES))
+}
+
 const fn default_editor_auto_solve_budget_ms() -> u32 {
     DEFAULT_EDITOR_AUTO_SOLVE_BUDGET_MS
 }
@@ -471,6 +516,7 @@ impl Default for AppSettings {
             live_compute_target: DEFAULT_LIVE_COMPUTE_TARGET,
             local_compute_target: DEFAULT_LOCAL_COMPUTE_TARGET,
             contribute_to_final_picture: DEFAULT_CONTRIBUTE_TO_FINAL_PICTURE,
+            remote_batch_lanes: DEFAULT_REMOTE_BATCH_LANES,
             env_map_path: String::new(),
             preview_size: DEFAULT_PREVIEW_SIZE,
             preview_spp: DEFAULT_PREVIEW_SPP,
@@ -506,6 +552,12 @@ impl AppSettings {
     /// after parsing; idempotent (a second call finds the legacy list empty).
     pub fn migrate_legacy_remote_workers(&mut self) -> Option<LegacyWorkerMigration> {
         migrate_legacy_workers(&mut self.legacy_remote_workers, &mut self.remote)
+    }
+
+    /// Sets [`Self::remote_batch_lanes`], limited to `1..=32` -- the only way the
+    /// running app changes it.
+    pub fn set_remote_batch_lanes(&mut self, lanes: u32) {
+        self.remote_batch_lanes = clamp_remote_batch_lanes(lanes);
     }
 
     /// Records `path` as the most-recently-used native design file: moves it to the

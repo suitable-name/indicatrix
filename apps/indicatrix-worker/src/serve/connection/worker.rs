@@ -11,6 +11,7 @@ use crate::{
     cli::ComputeMode,
     coordinator::{Coordinator, Registry, ViewerSession, viewer_render_capability},
     render_core,
+    serve::library::LibraryHandle,
     stream_emit::{self, TimeoutRead, TimeoutWrite, is_stream_timeout},
     validate,
 };
@@ -24,7 +25,6 @@ use indicatrix_net::{
         TiltCurvesResponse, Welcome, negotiate,
     },
 };
-use indicatrix_vault::db::sqlite::Database;
 use std::{
     io::{Read, Write},
     sync::Arc,
@@ -36,8 +36,9 @@ pub struct ViewerContext<'a> {
     pub threads: usize,
     /// The process's shared GPU backend ([`GpuBackend::disabled`] without an own lane).
     pub gpu: &'a Arc<GpuBackend>,
-    /// This connection's read-only library database.
-    pub db: &'a Database,
+    /// This connection's read-only library, opened by its first library request (never
+    /// by a render, tilt, final-image, ping or asset message).
+    pub db: &'a LibraryHandle,
     /// `--only-gpu`/`--only-cpu`/hybrid for the own lane.
     pub compute_mode: ComputeMode,
     /// This server's payload-encoding preference for the connection (v14).
@@ -71,7 +72,7 @@ pub struct ViewerContext<'a> {
 pub fn handle_connection<S: Read + Write + TimeoutRead + TimeoutWrite>(
     stream: S,
     threads: usize,
-    db: &Database,
+    db: &LibraryHandle,
 ) -> Result<(), NetError> {
     // `ComputeMode` is moot here: the disabled backend below declines every dispatch
     // regardless, so calibration is never attempted.
@@ -99,7 +100,7 @@ pub fn handle_connection_with_gpu<S: Read + Write + TimeoutRead + TimeoutWrite>(
     stream: S,
     threads: usize,
     gpu: &Arc<GpuBackend>,
-    db: &Database,
+    db: &LibraryHandle,
     compute_mode: ComputeMode,
     encodings: &[PayloadEncoding],
 ) -> Result<(), NetError> {
@@ -301,7 +302,7 @@ fn pair_as_library_only_if_unknown_build<S: Read + Write + TimeoutRead>(
     stream: &mut S,
     local_hello: &Hello,
     remote_hello: &Hello,
-    db: &Database,
+    db: &LibraryHandle,
 ) -> Option<Result<(), NetError>> {
     if remote_hello.protocol_version != local_hello.protocol_version
         || remote_hello.build_hash != handshake::UNKNOWN_BUILD_HASH
@@ -349,7 +350,7 @@ fn no_render_capacity(what: &str, request_id: u32) -> ErrorMsg {
 /// reason.
 fn serve_library_only_connection<S: Read + Write + TimeoutRead>(
     stream: &mut S,
-    db: &Database,
+    db: &LibraryHandle,
 ) -> Result<(), NetError> {
     loop {
         let _ = stream.set_read_timeout(Some(IDLE_READ_TIMEOUT));

@@ -49,7 +49,7 @@ pub struct RenderArgs {
 }
 
 /// Arguments of `indicatrix-worker serve`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ServeArgs {
     /// Listen address (`host:port`).
     pub bind: String,
@@ -116,10 +116,11 @@ pub struct ServeArgs {
     /// handshake and allowlist check succeed (for `--insecure-no-tls`, once its
     /// `--max-connections` slot is decided); a connection over the cap is closed at once.
     pub max_preauth_per_ip: usize,
-    /// `--interactive-workers <n>` (advanced, default 0): how many
-    /// of the fastest idle joined workers an `Interactive` (live-view) request may take
-    /// besides the own lane. `0` keeps the live view on the own lane alone; a coordinator
-    /// without `--render` then uses the single fastest worker.
+    /// `--interactive-workers <n|all>` (advanced, default
+    /// [`super::ALL_INTERACTIVE_WORKERS`], i.e. `all`): how many of the fastest idle
+    /// joined workers an `Interactive` (live-view) request takes besides the own lane;
+    /// `all` is every idle eligible worker. `0` keeps the live view on the own lane
+    /// alone; a coordinator without `--render` then uses the single fastest worker.
     pub interactive_workers: u32,
     /// `--pin-interactive-worker <label>` (advanced): the joined worker (by its
     /// certificate label, the `<label>` of `worker:<label>`) that `Interactive` requests
@@ -132,6 +133,17 @@ pub struct ServeArgs {
     /// map and viewer contribution bytes); a job that would exceed it even with a single
     /// lane is refused.
     pub max_job_memory_mib: u32,
+    /// `--whole-image-secs <secs>` (default [`super::DEFAULT_WHOLE_IMAGE_SECS`]): a
+    /// `Batch` request whose estimated render time on the fastest eligible joined worker
+    /// is below this goes to one lane as a whole picture instead of being split.
+    pub whole_image_secs: f64,
+    /// `--whole-image-pixel-samples <n>` (default
+    /// [`super::DEFAULT_WHOLE_IMAGE_PIXEL_SAMPLES`]): the same decision, by `width x height
+    /// x samples`, while no joined worker has a measured rate yet.
+    pub whole_image_pixel_samples: u64,
+    /// `--jobs-per-viewer <n>` (default [`super::DEFAULT_JOBS_PER_VIEWER`], at least 1):
+    /// the most whole-image jobs one viewer certificate has running at once.
+    pub jobs_per_viewer: u32,
 }
 
 /// Arguments of `cert init`.
@@ -219,7 +231,7 @@ pub struct CertClaimArgs {
 }
 
 /// A parsed command line.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Command {
     /// Render a scene to an image file.
     Render(RenderArgs),

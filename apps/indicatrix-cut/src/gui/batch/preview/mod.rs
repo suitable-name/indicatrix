@@ -27,9 +27,9 @@
 //!
 //! `settings::model::LiveComputeTarget` (the same choice behind the viewport's "Live
 //! Compute" pill) is read fresh each time a batch starts and governs lane count:
-//! `RemoteOnly` runs one remote dispatcher; `LocalOnly` runs
-//! [`batch_queue::local_lane_count`] local lanes; `Both` runs both, pulling from one
-//! shared [`batch_queue::WorkQueue`] (see that module's doc comment for the queue
+//! `RemoteOnly` runs [`batch_queue::remote_lane_count`] remote dispatchers; `LocalOnly`
+//! runs [`batch_queue::local_lane_count`] local lanes; `Both` runs both, pulling from
+//! one shared [`batch_queue::WorkQueue`] (see that module's doc comment for the queue
 //! design). The unit handed out is one [`engine::PreviewItem`] -- a single view (front
 //! or top) of one design, not both bundled -- since `PreviewImages` already allows the
 //! two views to succeed/fail independently, unlike the tilt batch's per-design item
@@ -37,6 +37,13 @@
 //! (tallied `failed` instead, so a remote-only user is never silently served a local
 //! render); `Both` requeues a remote failure for guaranteed local processing instead
 //! (see `batch_queue`'s doc comment for why that's local-only, never back to remote).
+//!
+//! The remote side runs `AppSettings::remote_batch_lanes` dispatchers at once, each
+//! keeping one whole picture in flight on the remote -- one dispatcher waiting on one
+//! round trip left a remote that renders a small picture in a fraction of it idle most of
+//! the time. They all claim from the one queue (`claim_shared` is safe under any number
+//! of claimants), each keeps its own failure backoff, and the batch's "remote lane done"
+//! flag is raised when the LAST one ends (`gui::batch::remote_dispatch`).
 //!
 //! [`engine::resolve_design`] resolves per ITEM, not once per design behind a shared
 //! cache: since a design's two views may be claimed by different lanes, there is no
@@ -48,9 +55,10 @@
 //! current index, since local and remote lanes may each be mid-item on different
 //! designs simultaneously. With N local lanes running concurrently, no single "current
 //! title" can describe them, so `preview_batch_local_active` reports how many of
-//! `preview_batch_local_lane_total` currently have an item claimed. The remote lane
-//! stays singular (zero or one dispatcher), so `preview_batch_remote_title` remains a
-//! meaningful current-item title.
+//! `preview_batch_local_lane_total` currently have an item claimed. The remote side is
+//! several dispatchers too, so it reports how many items are on the remote
+//! (`preview_batch_remote_in_flight`) and keeps `preview_batch_remote_title` as the item
+//! a dispatcher started most recently.
 
 mod engine;
 mod remote_lane;

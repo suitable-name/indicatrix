@@ -15,7 +15,7 @@
 //! longer than a steady-state one, which is why [`FIRST_EVENT_TIMEOUT`] grants it a
 //! longer deadline.
 
-use super::super::{capability::RemoteCapability, rate::remote_marginal_rate};
+use super::super::{capability::RemoteCapability, rate::remote_request_rate};
 use crate::bridge::remote::remote_render::{self, RemoteRenderRequest, RemoteUpdate};
 use indicatrix_net::{SceneState, client::Accumulator};
 use std::{
@@ -96,6 +96,48 @@ pub(in crate::bridge::export_thread) const fn liveness_deadline(
 /// therefore the whole export -- waiting for a confirmation that never arrives.
 pub(in crate::bridge::export_thread) const CANCEL_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The first and the latest report of real progress one dispatch has produced: the two
+/// points a plain worker's rendering rate is measured between (see
+/// [`remote_request_rate`]).
+#[derive(Debug, Default)]
+pub(super) struct ProgressSpan {
+    /// When the first report with `samples_done > 0` arrived, and what it said.
+    first: Option<(Instant, u32)>,
+    /// When the latest report that ADVANCED `samples_done` arrived, and what it said.
+    last: Option<(Instant, u32)>,
+}
+
+impl ProgressSpan {
+    /// Records a `Frame`/`Progress` report of `samples_done` that arrived at `at`. A
+    /// report that does not raise `samples_done` above the latest one recorded (a repeat,
+    /// or a heartbeat with nothing new) changes nothing.
+    pub(super) fn note(&mut self, at: Instant, samples_done: u32) {
+        let latest = self.last.map_or(0, |(_, samples)| samples);
+        if samples_done <= latest {
+            return;
+        }
+        if self.first.is_none() {
+            self.first = Some((at, samples_done));
+        }
+        self.last = Some((at, samples_done));
+    }
+
+    /// The samples gained and the time elapsed between the first and the latest
+    /// recorded report; `None` until two reports with different `samples_done` have
+    /// been seen.
+    pub(super) fn advance(&self) -> Option<(u32, Duration)> {
+        let (first_at, first_samples) = self.first?;
+        let (last_at, last_samples) = self.last?;
+        if last_samples <= first_samples {
+            return None;
+        }
+        Some((
+            last_samples - first_samples,
+            last_at.saturating_duration_since(first_at),
+        ))
+    }
+}
+
 /// Runs one `RenderRequest` against `capability.worker`, covering `[first_sample,
 /// first_sample + samples)` at `width x height`, blocking until it finishes, fails, or
 /// `cancel` is observed -- in which case [`remote_render::RemoteRenderHandle::cancel`]
@@ -116,10 +158,14 @@ pub(in crate::bridge::export_thread) const CANCEL_WAIT_TIMEOUT: Duration = Durat
 /// how this ended; `error` is `Some` only when the request failed outright, never
 /// merely because it was cancelled or ran short.
 ///
-/// `rate_samples_per_sec` is remote's measured STEADY-STATE throughput for this
-/// dispatch (see `super::super::rate::remote_marginal_rate`). `None` when there isn't
-/// enough signal to trust one: no update ever reported progress, or the span collapsed
-/// to nothing.
+/// `rate_samples_per_sec` is remote's measured throughput for this dispatch, taken at
+/// its `DONE` (see `super::super::rate::remote_request_rate`): against a coordinator
+/// (`RemoteCapability::coordinator`) `samples_done` over the WHOLE request, from just
+/// before it is sent to `DONE`, with every fixed cost in it; against a plain worker the
+/// span between its first and its last progress report, or the whole request when it
+/// reported progress only once. Never the window from the first progress report to
+/// `DONE`, which contains the tail transfer but not the first chunk's work. `None` when
+/// the dispatch ended without a `DONE` or traced nothing.
 #[expect(
     clippy::too_many_arguments,
     reason = "every argument is a distinct piece of one RenderRequest's own identity \
@@ -139,6 +185,9 @@ pub(in crate::bridge::export_thread) fn run_remote_batch(
     cancel: &AtomicBool,
 ) -> (u32, bool, Option<String>, Option<f64>) {
     let (tx, rx) = mpsc::channel::<RemoteUpdate>();
+    // The instant the request is sent -- the start of the whole-request span its rate
+    // is measured over (connection, handshake and upload included).
+    let request_sent_at = Instant::now();
     let handle = remote_render::spawn_remote_render(
         RemoteRenderRequest {
             worker: capability.worker.clone(),
@@ -158,10 +207,9 @@ pub(in crate::bridge::export_thread) fn run_remote_batch(
         },
     );
 
-    // The Instant/samples_done pair at the FIRST update that reported real progress --
-    // the starting point `remote_marginal_rate` measures from, excluding connection
-    // setup/handshake/upload since none of that repeats on a real dispatch.
-    let mut first_progress: Option<(Instant, u32)> = None;
+    // The first and the latest update that advanced `samples_done` -- what a plain
+    // worker's rate is measured between (`remote_request_rate`).
+    let mut span = ProgressSpan::default();
     let mut cancel_sent = false;
     // `Some` from the moment `cancel()` is sent -- once set, an idle poll is judged
     // against `CANCEL_WAIT_TIMEOUT` instead of `LIVENESS_TIMEOUT`.
@@ -182,7 +230,8 @@ pub(in crate::bridge::export_thread) fn run_remote_batch(
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(update) => {
-                last_update = Instant::now();
+                let received_at = Instant::now();
+                last_update = received_at;
                 first_update_seen = true;
                 match update {
                     RemoteUpdate::Done { cancelled, .. } => {
@@ -190,12 +239,12 @@ pub(in crate::bridge::export_thread) fn run_remote_batch(
                             .lock()
                             .unwrap_or_else(PoisonError::into_inner)
                             .samples_done();
-                        let rate = first_progress.and_then(|(first_instant, first_samples)| {
-                            remote_marginal_rate(
-                                samples_done.saturating_sub(first_samples),
-                                Instant::now().saturating_duration_since(first_instant),
-                            )
-                        });
+                        let rate = remote_request_rate(
+                            capability.coordinator,
+                            samples_done,
+                            received_at.saturating_duration_since(request_sent_at),
+                            span.advance(),
+                        );
                         return (samples_done, cancelled, None, rate);
                     }
                     RemoteUpdate::Failed { message, .. }
@@ -204,10 +253,8 @@ pub(in crate::bridge::export_thread) fn run_remote_batch(
                         return (acc.samples_done(), false, Some(message), None);
                     }
                     RemoteUpdate::Frame { samples_done, .. }
-                    | RemoteUpdate::Progress { samples_done, .. }
-                        if first_progress.is_none() && samples_done > 0 =>
-                    {
-                        first_progress = Some((Instant::now(), samples_done));
+                    | RemoteUpdate::Progress { samples_done, .. } => {
+                        span.note(received_at, samples_done);
                     }
                     // Nothing terminal (Connected, Preview, a capability change, or a
                     // picture event, which never answers a RENDER) -- the accumulator

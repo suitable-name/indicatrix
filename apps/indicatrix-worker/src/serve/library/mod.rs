@@ -3,12 +3,17 @@
 //! Backed by a `indicatrix_vault::db::sqlite::Database` -- the shared handler both a
 //! library-only build and a `worker` build call for `ClientMessage::Library`.
 //!
-//! [`handle_request`] is the one entry point: given one `LibraryRequest` and the
-//! `Database` opened at startup, it returns exactly one `LibraryResponse`
-//! (request/response, never streamed). It never panics on a database error or an
-//! unknown id: a query failure becomes `LibraryResponse::Error` (logged in full
-//! server-side, reported to the peer only as a generic message), and a
-//! `FetchDesign`/`FetchAttachment` for an unmatched id becomes `LibraryResponse::NotFound`.
+//! [`handle_request`] is the one entry point: given one `LibraryRequest` and an open
+//! `Database`, it returns exactly one `LibraryResponse` (request/response, never
+//! streamed). It never panics on a database error or an unknown id: a query failure
+//! becomes `LibraryResponse::Error` (logged in full server-side, reported to the peer
+//! only as a generic message), and a `FetchDesign`/`FetchAttachment` for an unmatched id
+//! becomes `LibraryResponse::NotFound`.
+//!
+//! A connection reaches it through its [`LibraryHandle`], which opens the connection's
+//! own read-only `Database` on the first library request (so a connection that never
+//! asks the library never opens it, and one whose database cannot be opened gets
+//! `LibraryResponse::Error` for that request only).
 //!
 //! # Versioning: a content hash and a revision token, computed here
 //!
@@ -30,6 +35,7 @@
 //!
 //! # Module layout
 //!
+//! - [`handle`]: [`LibraryHandle`], one connection's lazily opened database.
 //! - [`handlers`]: one function per [`LibraryRequest`] variant, plus the shared
 //!   [`handlers::db_error`] helper and the two `<- ERROR` codes this module owns.
 //! - [`convert`]: wire conversions in both directions between `indicatrix_net::library`
@@ -41,6 +47,7 @@ use indicatrix_net::library::{LibraryRequest, LibraryResponse};
 use indicatrix_vault::db::sqlite::Database;
 
 mod convert;
+mod handle;
 mod handlers;
 #[cfg(test)]
 mod tests;
@@ -48,6 +55,7 @@ mod version_hash;
 
 use version_hash::Revision;
 
+pub use handle::LibraryHandle;
 pub use handlers::{LIBRARY_ERROR_CODE, LIBRARY_VALIDATION_ERROR_CODE};
 
 /// Handles one [`LibraryRequest`] against `db`, producing exactly one [`LibraryResponse`].

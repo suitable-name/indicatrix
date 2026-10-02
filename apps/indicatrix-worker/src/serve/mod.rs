@@ -219,7 +219,8 @@ fn start_inner(
     let bind_addr = checked_addr(&args.bind, "--bind", args.allow_remote)?;
     let transport = tls::build_transport(args, bind_addr)?;
     let db_path = socket::resolve_library_db_path(args);
-    // Fail fast on a bad `--db` before binding a socket; each connection opens its own.
+    // Fail fast on a bad `--db` before binding a socket; each connection opens its own on
+    // its first library request.
     drop(socket::open_library_database(&db_path)?);
     let limiter = ConnectionLimiter::new(args.max_connections);
     let handshake_limiter = ConnectionLimiter::new(
@@ -389,6 +390,11 @@ fn start_worker_side(
         u64::from(args.max_job_memory_mib) * 1024 * 1024,
     )
     .with_interactive_pin(args.pin_interactive_worker.clone())
+    .with_small_pictures(
+        args.whole_image_secs,
+        args.whole_image_pixel_samples,
+        args.jobs_per_viewer,
+    )
     .with_assets(assets.clone());
     if let Some(pin) = coordinator.interactive_pin() {
         tracing::info!(

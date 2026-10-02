@@ -3,8 +3,11 @@
 mod fake;
 
 use super::*;
-use fake::{Failure, FakeLane, Values, chunk_sum, scene, value};
-use std::{sync::Mutex, time::Instant};
+use fake::{Failure, FakeLane, SizeRecorder, Values, chunk_sum, scene, value};
+use std::{
+    sync::{Barrier, Mutex},
+    time::Instant,
+};
 
 const MS: Duration = Duration::from_millis(1);
 
@@ -482,6 +485,77 @@ fn two_lanes_at_a_ten_to_one_rate_finish_a_small_tail_close_together() {
         fast_samples.len(),
         slow_samples.len()
     );
+}
+
+/// One second of a 100 samples/s lane is a 100-sample chunk, so a calibrated lane over
+/// 1000 samples gets ten of them while a staggered one starts with half a chunk, then
+/// runs full chunks, and only the run's tail (what is left, 50) is short again.
+#[test]
+fn a_staggered_lanes_first_chunk_is_half_the_size_and_the_second_is_full() {
+    let policy = ChunkPolicy {
+        target: Duration::from_secs(1),
+        min_samples: 1,
+        max_samples: 100_000,
+        calibration_samples: 1,
+    };
+    let sizes_of = |model: RateModel| {
+        let lane = Arc::new(SizeRecorder::new(100.0));
+        let mut pool = LanePool::new(config(policy));
+        pool.add_lane(Arc::clone(&lane) as Arc<dyn WorkerLane>, model);
+        let range = SampleRange::new(0, 1000);
+        let outcome = pool.run(&scene(1, 1), range, &CancelToken::new(), &|_| {});
+        assert_eq!(outcome.status, PoolStatus::Complete);
+        lane.sizes()
+    };
+    assert_eq!(sizes_of(RateModel::calibrated(100.0)), vec![100; 10]);
+    let staggered = sizes_of(RateModel::staggered(100.0));
+    assert_eq!(staggered.iter().sum::<u32>(), 1000);
+    assert_eq!(staggered[0], 50);
+    assert_eq!(staggered[1], 100);
+    assert_eq!(staggered[2], 100);
+    // The scale is spent: the pool's copy of the model no longer holds one.
+    let mut pool = LanePool::new(config(policy));
+    pool.add_lane(
+        Arc::new(SizeRecorder::new(100.0)) as Arc<dyn WorkerLane>,
+        RateModel::staggered(100.0),
+    );
+    pool.run(
+        &scene(1, 1),
+        SampleRange::new(0, 400),
+        &CancelToken::new(),
+        &|_| {},
+    );
+    assert_eq!(pool.rate(0).unwrap().take_first_chunk_scale(), None);
+}
+
+/// Two lanes of equal speed, one plain and one staggered, both holding their first chunk
+/// until the other has claimed one: the plain lane's first chunk is its full 100 samples
+/// (its half of the 1000 left would be 500) and the staggered lane's is half of that.
+#[test]
+fn a_staggered_lane_starts_half_a_chunk_behind_its_plain_twin() {
+    let policy = ChunkPolicy {
+        target: Duration::from_secs(1),
+        min_samples: 1,
+        max_samples: 100_000,
+        calibration_samples: 1,
+    };
+    let gate = Arc::new(Barrier::new(2));
+    let plain = Arc::new(SizeRecorder::new(100.0).meeting_at(Arc::clone(&gate)));
+    let staggered = Arc::new(SizeRecorder::new(100.0).meeting_at(gate));
+    let mut pool = LanePool::new(config(policy));
+    pool.add_lane(
+        Arc::clone(&plain) as Arc<dyn WorkerLane>,
+        RateModel::calibrated(100.0),
+    );
+    pool.add_lane(
+        Arc::clone(&staggered) as Arc<dyn WorkerLane>,
+        RateModel::staggered(100.0),
+    );
+    let range = SampleRange::new(0, 1000);
+    let outcome = pool.run(&scene(1, 1), range, &CancelToken::new(), &|_| {});
+    assert_eq!(outcome.status, PoolStatus::Complete);
+    assert_eq!(plain.sizes().first(), Some(&100));
+    assert_eq!(staggered.sizes().first(), Some(&50));
 }
 
 #[test]

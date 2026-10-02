@@ -5,8 +5,8 @@
 
 use super::{
     fixtures::{
-        bundle, coordinator_args, cpu_worker_setup_with_cache, pki_with_server, start, tls_client,
-        wait_for,
+        bundle, coordinator_args, cpu_worker_setup_with_cache, fan_out_config, pki_with_server,
+        start, tls_client, wait_for,
     },
     support::{ViewerStream, render, scene, send, spawn_dying_worker, viewer},
 };
@@ -123,7 +123,7 @@ fn coordinator(label: &str) -> (ServeHandle, Arc<Registry>, std::path::PathBuf) 
                 policy: ChunkPolicy::fixed(4),
                 ..JobConfig::default().batch
             },
-            ..JobConfig::default()
+            ..fan_out_config()
         });
     let registry = Arc::clone(handle.registry.as_ref().unwrap());
     (handle, registry, pki)

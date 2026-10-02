@@ -1,8 +1,10 @@
 //! The two catalogue-wide background batches -- generating cached preview thumbnails
 //! ([`preview`]) and computing tilt-performance curves ([`tilt`]) -- plus what they
-//! share: a local/remote work-distribution queue ([`batch_queue`]), the decoded
-//! preview-thumbnail cache the design list reads from ([`preview_cache`]), and the
-//! one geometry step both engines take for a record ([`record_planes_for_batch`]).
+//! share: a local/remote work-distribution queue ([`batch_queue`]), the bookkeeping for
+//! the several remote dispatchers each batch runs at once ([`remote_dispatch`], sized by
+//! the setting [`remote_lanes_setting`] edits), the decoded preview-thumbnail cache the
+//! design list reads from ([`preview_cache`]), and the one geometry step both engines
+//! take for a record ([`record_planes_for_batch`]).
 //!
 //! Was 4 flat top-level `gui` files (`preview_batch.rs`, `tilt_batch.rs`,
 //! `batch_queue.rs`, `preview_cache.rs`); grouped here since the two batches are
@@ -15,6 +17,8 @@ pub mod preview;
 pub mod preview_cache;
 pub mod regenerate_all;
 pub mod remote_backoff;
+pub mod remote_dispatch;
+pub mod remote_lanes_setting;
 #[cfg(test)]
 mod test_records;
 pub mod tilt;

@@ -1,11 +1,14 @@
 //! Which lanes a viewer request gets, decided from
 //! the request and a snapshot of the registry before anything is streamed.
 
-use super::{Coordinator, RateBook};
+use super::{Coordinator, JobConfig, RateBook};
 use crate::coordinator::{LaneNeed, WorkerInfo};
 use indicatrix_dispatch::PoolConfig;
 use indicatrix_net::messages::{Backend, ErrorMsg, RequestIntent, TransferMode, error_codes};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    PoisonError,
+    atomic::{AtomicBool, Ordering},
+};
 
 /// Which joined workers a job takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,8 +17,9 @@ pub enum WorkerPick {
     None,
     /// Every idle eligible worker (`Batch`).
     All,
-    /// At most this many idle eligible workers, fastest first -- the pinned worker
-    /// ([`InteractivePin`]) first when it is one of them (`Interactive` only).
+    /// At most this many idle eligible workers, fastest first (`u32::MAX`: every one).
+    /// For an `Interactive` request the pinned worker ([`InteractivePin`]) comes first
+    /// when it is one of them; a whole-image job takes one and ignores the pin.
     Fastest(u32),
 }
 
@@ -28,6 +32,11 @@ pub struct JobPlan {
     pub workers: WorkerPick,
     /// Whether the job waits its turn in the viewer's FIFO (one active job per viewer).
     pub fifo: bool,
+    /// The whole picture is one lane's work (a single chunk once the lane's rate is
+    /// known): the fastest idle joined worker, or the own lane when none is idle (`own`
+    /// is `false` all the same: it is only that fallback). The job takes one of its
+    /// viewer's whole-image slots, not the FIFO, so several of them run at once.
+    pub whole_image: bool,
     /// Chunk sizing and failure handling.
     pub pool: PoolConfig,
 }
@@ -52,6 +61,9 @@ pub struct Ask {
     pub transfer_mode: TransferMode,
     /// `width * height`.
     pub pixels: u32,
+    /// The samples the server renders: the request's `samples` (a `FinalImageRequest`'s
+    /// `server_samples`, without the share the viewer renders itself).
+    pub samples: u32,
     /// The scene is lit by an HDR map: only joined workers advertising `hdr`
     /// take part.
     pub hdr: bool,
@@ -78,11 +90,15 @@ impl Ask {
 
 /// Plans `ask` on `coordinator` (see [`Route`]).
 ///
-/// - `Batch`: the own lane (if any) plus every idle worker whose `max_pixels` accepts the
-///   image (and, for an HDR scene, that advertises `hdr`).
+/// - A small `Batch` request (see [`is_whole_image`]) is **whole-image**: one picture on
+///   one lane, the fastest eligible joined worker (the own lane only while none is
+///   idle), outside the viewer's FIFO.
+/// - Any other `Batch` request: the own lane (if any) plus every idle worker whose
+///   `max_pixels` accepts the image (and, for an HDR scene, that advertises `hdr`).
 /// - `Interactive`: the own lane plus at most `--interactive-workers` workers (default
-///   0: the own lane alone); with no own lane and 0 workers configured, the single
-///   fastest worker, so a render-less coordinator still serves the live view.
+///   `all`, i.e. every idle eligible one; `0`: the own lane alone); with no own lane and
+///   `0` configured, the single fastest worker, so a render-less coordinator still serves
+///   the live view.
 /// - A request only the own lane would serve goes [`Route::Direct`].
 ///
 /// # Errors
@@ -99,9 +115,23 @@ pub fn plan(coordinator: &Coordinator, ask: Ask) -> Result<Route, ErrorMsg> {
         .map(|r| r.workers())
         .unwrap_or_default();
     let need = ask.need();
-    let eligible = workers.iter().filter(|(w, _)| need.accepts(w)).count();
-    if !own && eligible == 0 {
+    let eligible: Vec<&WorkerInfo> = workers
+        .iter()
+        .map(|(w, _)| w)
+        .filter(|w| need.accepts(w))
+        .collect();
+    if !own && eligible.is_empty() {
         return Err(refusal(&workers, need));
+    }
+    let config = coordinator.job_config();
+    if ask.intent == RequestIntent::Batch && is_whole_image(coordinator, &config, ask, &eligible) {
+        return Ok(Route::Job(JobPlan {
+            own: false,
+            workers: WorkerPick::Fastest(1),
+            fifo: false,
+            whole_image: true,
+            pool: config.batch,
+        }));
     }
     let wanted = if ask.intent == RequestIntent::Interactive {
         match coordinator.interactive_workers {
@@ -112,7 +142,7 @@ pub fn plan(coordinator: &Coordinator, ask: Ask) -> Result<Route, ErrorMsg> {
     } else {
         WorkerPick::All
     };
-    let workers = if eligible == 0 {
+    let workers = if eligible.is_empty() {
         WorkerPick::None
     } else {
         wanted
@@ -120,17 +150,51 @@ pub fn plan(coordinator: &Coordinator, ask: Ask) -> Result<Route, ErrorMsg> {
     if own && workers == WorkerPick::None {
         return Ok(Route::Direct);
     }
-    let config = coordinator.job_config();
     Ok(Route::Job(JobPlan {
         own,
         workers,
         fifo: ask.is_throughput(),
+        whole_image: false,
         pool: if ask.is_throughput() {
             config.batch
         } else {
             config.interactive
         },
     }))
+}
+
+/// Whether a `Batch` request is one picture's work for one lane: it needs at least one
+/// eligible joined worker (`eligible`) and
+///
+/// - when the rate book has a measured rate for any of them (the largest counts), its
+///   estimated render time `samples * pixels / rate` on the fastest one is below
+///   [`JobConfig::whole_image_secs`];
+/// - while none has been measured, `pixels * samples` is at most
+///   [`JobConfig::whole_image_pixel_samples`].
+fn is_whole_image(
+    coordinator: &Coordinator,
+    config: &JobConfig,
+    ask: Ask,
+    eligible: &[&WorkerInfo],
+) -> bool {
+    if eligible.is_empty() {
+        return false;
+    }
+    let fastest = {
+        let book = coordinator
+            .rates()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        eligible
+            .iter()
+            .filter_map(|w| book.worker(w, ask.pixels))
+            .filter(|rate| rate.is_finite() && *rate > 0.0)
+            .max_by(f64::total_cmp)
+    };
+    fastest.map_or_else(
+        || u64::from(ask.pixels) * u64::from(ask.samples) <= config.whole_image_pixel_samples,
+        |rate| f64::from(ask.samples) / rate < config.whole_image_secs,
+    )
 }
 
 /// The refusal for a request no lane can take.
@@ -206,8 +270,9 @@ pub fn rank_fastest(candidates: &mut [WorkerInfo], rates: &RateBook, pixels: u32
 /// certificate label (`WorkerInfo::label`) an `Interactive` request that takes workers
 /// uses first.
 ///
-/// Applies only where [`plan`] picks [`WorkerPick::Fastest`] -- a coordinator without
-/// `--render`, or `--interactive-workers N > 0`. When no idle eligible connection of the
+/// Applies only where [`plan`] picks [`WorkerPick::Fastest`] for an `Interactive` request
+/// -- a coordinator without `--render`, or `--interactive-workers` above 0 (including
+/// the default, `all`). When no idle eligible connection of the
 /// pinned worker exists, the pick falls back to the fastest-by-rate order
 /// ([`rank_fastest`]) and says so in the log -- once per change, not per request, since a
 /// live view sends several requests a second.

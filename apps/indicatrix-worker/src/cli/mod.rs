@@ -29,6 +29,22 @@ pub const DEFAULT_MAX_PREAUTH_PER_IP: usize = 8;
 /// (see [`ServeArgs::max_job_memory_mib`]).
 pub const DEFAULT_MAX_JOB_MEMORY_MIB: u32 = 2048;
 
+/// `serve --interactive-workers all` (and `serve`'s default): every idle eligible joined
+/// worker takes part in a live-view request. Carried as the largest `u32` in
+/// [`ServeArgs::interactive_workers`].
+pub const ALL_INTERACTIVE_WORKERS: u32 = u32::MAX;
+
+/// `serve --whole-image-secs`'s default: a `Batch` request estimated to render in under 2 s
+/// on the fastest eligible joined worker is one picture on one lane.
+pub const DEFAULT_WHOLE_IMAGE_SECS: f64 = 2.0;
+
+/// `serve --whole-image-pixel-samples`'s default: 64 Mi pixel-samples (`width x height x
+/// samples`), the size rule while no joined worker has a measured rate.
+pub const DEFAULT_WHOLE_IMAGE_PIXEL_SAMPLES: u64 = 64 * 1024 * 1024;
+
+/// `serve --jobs-per-viewer`'s default: eight whole-image jobs per viewer certificate at once.
+pub const DEFAULT_JOBS_PER_VIEWER: u32 = 8;
+
 /// How far above `--bind`'s port the worker port sits by default (7878 -> 7880, leaving
 /// 7879 to the viewer enrollment listener). Its enrollment listener sits one further up
 /// (7881).
@@ -142,7 +158,8 @@ USAGE:
                          --ca <ca.pem> --cert <server.pem> --key <server.key> [--allowlist <path>] [--trust-any-client-cert]
                          [--enroll-bind <host:port>] [--no-enroll]
                          [--worker-bind <host:port>] [--worker-enroll-bind <host:port>] [--worker-allowlist <path>] [--no-workers]
-                         [--interactive-workers <n>] [--pin-interactive-worker <label>] [--max-job-memory-mib <n>]
+                         [--interactive-workers <n|all>] [--pin-interactive-worker <label>] [--max-job-memory-mib <n>]
+                         [--whole-image-secs <secs>] [--whole-image-pixel-samples <n>] [--jobs-per-viewer <n>]
     indicatrix-worker serve  [--bind <host:port>] [--render] [--threads <n>] [--only-gpu | --only-cpu] [--db <path>] [--max-connections <n>] --insecure-no-tls
 
     RELEASE NOTE: `serve` no longer renders by default. A single-worker setup that
@@ -224,21 +241,35 @@ USAGE:
                                --max-connections alone. Over-cap connections are closed
                                at once and logged. At least 1.
 
-    RENDERING OVER JOINED WORKERS (worker builds): an export-type request (Batch) is
-    split into chunks over every idle joined worker whose pixel cap accepts it plus the
-    own lane; a live-view request (Interactive) runs on the own lane alone. Without
-    --render a live-view request takes the single fastest idle worker instead.
+    RENDERING OVER JOINED WORKERS (worker builds): a large export-type request (Batch)
+    is split into chunks over every idle joined worker whose pixel cap accepts it plus
+    the own lane; a small one (see --whole-image-secs) is one picture on the fastest idle
+    joined worker. A live-view request (Interactive) runs on the own lane and every idle
+    joined worker; without --render it takes the fastest idle worker alone.
 
-    --interactive-workers <n> ADVANCED. Also give each live-view request up to n of the
-                               fastest idle joined workers (default 0: the own lane only,
-                               the lowest-latency path).
+    --interactive-workers <n|all>
+                              ADVANCED. Give each live-view request up to n of the
+                               fastest idle joined workers besides the own lane (default
+                               all: every idle one). 0 keeps the live view on the own
+                               lane alone, the lowest-latency path for a slow link.
     --pin-interactive-worker <label>
                               ADVANCED. When a live-view request takes joined workers
-                               (no --render, or --interactive-workers > 0), use the worker
-                               whose certificate label is <label> (the --name its worker
-                               certificate was issued with; `worker:<label>` also works)
-                               first, while it is connected, idle and accepts the image.
-                               Otherwise the fastest-idle-worker rule applies (logged).
+                               (no --render, or --interactive-workers above 0), use the
+                               worker whose certificate label is <label> (the --name its
+                               worker certificate was issued with; `worker:<label>` also
+                               works) first, while it is connected, idle and accepts the
+                               image. Otherwise the fastest-idle-worker rule applies
+                               (logged).
+    --whole-image-secs <secs> A Batch request estimated to render in less than this on
+                               the fastest eligible joined worker (default 2) is rendered
+                               whole on one lane: the fastest idle joined worker, the
+                               own lane only while none is idle.
+    --whole-image-pixel-samples <n>
+                              The same rule by size while no joined worker has a
+                               measured rate yet: width x height x samples at most n
+                               (default 67108864).
+    --jobs-per-viewer <n>     Most whole-image jobs one viewer certificate has running
+                               at once (default 8). At least 1.
     --max-job-memory-mib <n>  Cap on the buffers of all in-flight multi-lane jobs
                                (default 2048). Each job is charged width x height x 48
                                bytes, plus width x height x 36 bytes for every lane

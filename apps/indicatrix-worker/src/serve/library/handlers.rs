@@ -266,6 +266,14 @@ pub(super) fn filter_options(db: &Database) -> LibraryResponse {
 /// the peer never sees the underlying database error text.
 pub(super) fn db_error(op: &str, e: &anyhow::Error) -> LibraryResponse {
     tracing::warn!("library request failed ({op}): {e:#}");
+    server_error()
+}
+
+/// The generic [`LibraryResponse::Error`] for a request this server could not serve:
+/// it names no cause, so a caller that already logged the real reason (here
+/// [`db_error`], and [`super::LibraryHandle`] for a database that would not open) can
+/// reply with it as is.
+pub(super) fn server_error() -> LibraryResponse {
     LibraryResponse::Error(ErrorMsg {
         code: LIBRARY_ERROR_CODE,
         message: "internal error serving the design library".to_string(),

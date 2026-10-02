@@ -1,11 +1,12 @@
 //! Coordinator job limits: a global memory budget for
-//! in-flight jobs ([`MemoryBudget`]) and one active job per viewer certificate, first in
-//! first out ([`ViewerQueues`]).
+//! in-flight jobs ([`MemoryBudget`]) and the per-viewer limits ([`ViewerQueues`]): one
+//! active throughput job per viewer certificate, first in first out, and up to a cap of
+//! whole-image jobs at once.
 
 use super::Coordinator;
 use indicatrix_dispatch::ParkedBudget;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     fmt,
     sync::{Arc, Condvar, Mutex, PoisonError},
     time::Duration,
@@ -172,12 +173,17 @@ impl Drop for Reservation<'_> {
     }
 }
 
-/// Per-viewer FIFO queues: at most one active job per viewer (certificate), the rest
-/// waiting in arrival order (a fair queue across viewers is backlog).
+/// Per-viewer limits: FIFO queues with at most one active throughput job per viewer
+/// (certificate), the rest waiting in arrival order (a fair queue across viewers is
+/// backlog), and a counted slot per running whole-image job, which do not queue behind
+/// each other up to the cap.
 #[derive(Default)]
 pub struct ViewerQueues {
     queues: Mutex<(u64, Queues)>,
     changed: Condvar,
+    /// Whole-image jobs running per viewer; a viewer with none has no entry.
+    slots: Mutex<BTreeMap<Arc<str>, u32>>,
+    slot_freed: Condvar,
 }
 
 /// Each viewer's waiting and active tickets, front = active.
@@ -188,6 +194,41 @@ pub struct Turn<'a> {
     queues: &'a ViewerQueues,
     viewer: Arc<str>,
     ticket: u64,
+}
+
+/// One of a viewer's whole-image job slots, given back when this is dropped.
+pub struct SlotGuard<'a> {
+    queues: &'a ViewerQueues,
+    viewer: Arc<str>,
+}
+
+/// What a running job holds in its viewer's limits until it ends: its FIFO [`Turn`], one
+/// of the viewer's whole-image [`SlotGuard`]s, or nothing (live-view jobs). Everything it
+/// holds is released when it is dropped.
+#[derive(Default)]
+pub struct Admission<'a> {
+    _turn: Option<Turn<'a>>,
+    _slot: Option<SlotGuard<'a>>,
+}
+
+impl<'a> Admission<'a> {
+    /// A job running in its viewer's FIFO turn.
+    #[must_use]
+    pub const fn turn(turn: Turn<'a>) -> Self {
+        Self {
+            _turn: Some(turn),
+            _slot: None,
+        }
+    }
+
+    /// A job running in one of its viewer's whole-image slots.
+    #[must_use]
+    pub const fn slot(slot: SlotGuard<'a>) -> Self {
+        Self {
+            _turn: None,
+            _slot: Some(slot),
+        }
+    }
 }
 
 impl ViewerQueues {
@@ -227,6 +268,37 @@ impl ViewerQueues {
         }
     }
 
+    /// Takes one of `viewer`'s whole-image slots, blocking until fewer than `cap` (at least
+    /// one) of its whole-image jobs are running, or returns `None` as soon as `cancelled()`
+    /// says so. Slots are not FIFO-ordered: whichever waiter re-checks first takes a freed
+    /// one.
+    pub fn wait_slot(
+        &self,
+        viewer: &Arc<str>,
+        cap: u32,
+        cancelled: impl Fn() -> bool,
+    ) -> Option<SlotGuard<'_>> {
+        let cap = cap.max(1);
+        let mut slots = self.slots.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            if slots.get(viewer).copied().unwrap_or(0) < cap {
+                *slots.entry(Arc::clone(viewer)).or_insert(0) += 1;
+                return Some(SlotGuard {
+                    queues: self,
+                    viewer: Arc::clone(viewer),
+                });
+            }
+            if cancelled() {
+                return None;
+            }
+            slots = self
+                .slot_freed
+                .wait_timeout(slots, Self::RECHECK)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0;
+        }
+    }
+
     /// Jobs queued or active for `viewer`.
     #[cfg(test)]
     #[must_use]
@@ -237,6 +309,18 @@ impl ViewerQueues {
             .1
             .get(viewer)
             .map_or(0, VecDeque::len)
+    }
+
+    /// Whole-image slots `viewer` holds.
+    #[cfg(test)]
+    #[must_use]
+    pub fn slots_held(&self, viewer: &str) -> u32 {
+        self.slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(viewer)
+            .copied()
+            .unwrap_or(0)
     }
 
     fn remove(queues: &mut Queues, viewer: &Arc<str>, ticket: u64) {
@@ -259,6 +343,24 @@ impl Drop for Turn<'_> {
         ViewerQueues::remove(&mut guard.1, &self.viewer, self.ticket);
         drop(guard);
         self.queues.changed.notify_all();
+    }
+}
+
+impl Drop for SlotGuard<'_> {
+    fn drop(&mut self) {
+        let mut slots = self
+            .queues
+            .slots
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(running) = slots.get_mut(&self.viewer) {
+            *running = running.saturating_sub(1);
+            if *running == 0 {
+                slots.remove(&self.viewer);
+            }
+        }
+        drop(slots);
+        self.queues.slot_freed.notify_all();
     }
 }
 
@@ -398,5 +500,96 @@ mod tests {
         let _first = queues.wait_turn(&viewer, || false).unwrap();
         assert!(queues.wait_turn(&viewer, || true).is_none());
         assert_eq!(queues.queued("laptop"), 1);
+    }
+
+    /// `cap` whole-image jobs of one viewer run at once; the next one blocks until one of
+    /// them drops its slot, and another viewer's count is its own.
+    #[test]
+    fn wait_slot_admits_cap_jobs_and_blocks_the_next_until_one_drops() {
+        let queues = Arc::new(ViewerQueues::default());
+        let viewer: Arc<str> = Arc::from("laptop");
+        let other: Arc<str> = Arc::from("desktop");
+        let first = queues.wait_slot(&viewer, 2, || false).unwrap();
+        let second = queues.wait_slot(&viewer, 2, || false).unwrap();
+        assert_eq!(queues.slots_held("laptop"), 2);
+        drop(queues.wait_slot(&other, 1, || false).unwrap());
+        assert_eq!(
+            queues.slots_held("desktop"),
+            0,
+            "a dropped slot is given back"
+        );
+
+        let started = Arc::new(AtomicBool::new(false));
+        // As in the FIFO test: the waiter reports each pass of its wait loop, so the
+        // assertion below runs only after it has provably waited several passes.
+        let (pass_tx, pass_rx) = std::sync::mpsc::channel();
+        let waiter = {
+            let (queues, viewer, started) = (
+                Arc::clone(&queues),
+                Arc::clone(&viewer),
+                Arc::clone(&started),
+            );
+            std::thread::spawn(move || {
+                let _slot = queues
+                    .wait_slot(&viewer, 2, || {
+                        let _ = pass_tx.send(());
+                        false
+                    })
+                    .unwrap();
+                started.store(true, Ordering::SeqCst);
+            })
+        };
+        for pass in 1..=3 {
+            pass_rx
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap_or_else(|_| {
+                    panic!("the third job never reached wait pass {pass} of its viewer's slots")
+                });
+        }
+        assert!(!started.load(Ordering::SeqCst), "the third job must wait");
+        assert_eq!(queues.slots_held("laptop"), 2);
+        drop(first);
+        waiter.join().unwrap();
+        assert!(started.load(Ordering::SeqCst));
+        assert_eq!(queues.slots_held("laptop"), 1, "only `second` is left");
+        drop(second);
+        assert_eq!(queues.slots_held("laptop"), 0);
+    }
+
+    /// A cancelled waiter gives up without taking a slot; a cap of 0 still admits one job.
+    #[test]
+    fn a_cancelled_slot_waiter_takes_nothing_and_a_zero_cap_means_one() {
+        let queues = ViewerQueues::default();
+        let viewer: Arc<str> = Arc::from("laptop");
+        let first = queues.wait_slot(&viewer, 0, || false).unwrap();
+        assert!(queues.wait_slot(&viewer, 0, || true).is_none());
+        assert_eq!(queues.slots_held("laptop"), 1);
+        drop(first);
+        assert_eq!(queues.slots_held("laptop"), 0);
+    }
+
+    /// Dropping an `Admission` gives back whatever it held, and the two kinds do not
+    /// count against each other.
+    #[test]
+    fn an_admission_releases_its_turn_or_slot_when_dropped() {
+        let queues = ViewerQueues::default();
+        let viewer: Arc<str> = Arc::from("laptop");
+        let turn = Admission::turn(queues.wait_turn(&viewer, || false).unwrap());
+        let slot = Admission::slot(queues.wait_slot(&viewer, 1, || false).unwrap());
+        assert_eq!(
+            (queues.queued("laptop"), queues.slots_held("laptop")),
+            (1, 1)
+        );
+        drop(slot);
+        assert_eq!(
+            (queues.queued("laptop"), queues.slots_held("laptop")),
+            (1, 0)
+        );
+        drop(turn);
+        assert_eq!(
+            (queues.queued("laptop"), queues.slots_held("laptop")),
+            (0, 0)
+        );
+        drop(Admission::default());
     }
 }

@@ -86,7 +86,8 @@ indicatrix-worker serve  [--bind <host:port>] [--allow-remote] [--db <path>] [--
                      --ca <ca.pem> --cert <server.pem> --key <server.key> [--allowlist <path>] [--trust-any-client-cert]
                      [--enroll-bind <host:port>] [--no-enroll]
                      [--worker-bind <host:port>] [--worker-enroll-bind <host:port>] [--worker-allowlist <path>] [--no-workers]
-                     [--interactive-workers <n>] [--pin-interactive-worker <label>] [--max-job-memory-mib <n>]
+                     [--interactive-workers <n|all>] [--pin-interactive-worker <label>] [--max-job-memory-mib <n>]
+                     [--whole-image-secs <secs>] [--whole-image-pixel-samples <n>] [--jobs-per-viewer <n>]
 indicatrix-worker serve  [--bind <host:port>] [--render] [--threads <n>] [--only-gpu | --only-cpu] [--db <path>] [--max-connections <n>] --insecure-no-tls
 indicatrix-worker join   <coordinator-host:port> [--cert-dir <dir>] [--slots <k>] [--threads <n>] [--only-gpu | --only-cpu]
                          [--token <GW1-...> [--enroll-addr <host:port>]]
@@ -174,12 +175,15 @@ stays closed under `--insecure-no-tls` or `--no-workers`).
   whose pixel limit accepts the image, plus the own lane with `--render`. Chunk sums
   are merged in a fixed order, so the result does not depend on which lane finished
   first. Each viewer certificate has one such job active at a time; further ones wait
-  their turn.
-- A **live-view** request runs on the own lane alone by default — the lowest-latency
-  path. Without `--render` it takes the single fastest idle worker instead.
-  `--interactive-workers <n>` lets a live-view request also take up to `n` of the
-  fastest idle workers, and `--pin-interactive-worker <label>` prefers one specific
-  worker (both advanced; see the table below).
+  their turn. A small one is not split at all, see **Small pictures** below.
+- A **live-view** request runs on the own lane and every idle joined worker that
+  accepts the image, so the live view uses all the hardware by default. Without
+  `--render` it runs on the joined workers alone.
+  `--interactive-workers <n>` caps that at the `n` fastest idle workers (`0` keeps the
+  live view on the own lane alone, the lowest-latency path over a slow link; without
+  `--render` it then takes the single fastest idle worker), and
+  `--pin-interactive-worker <label>` prefers one specific worker (both advanced; see
+  the table below).
 - A lost worker's unfinished chunk goes back to the pool and is retried on another
   lane; a job whose lanes are all gone ends with `ALL_WORKERS_LOST`. With no lane at
   all (no `--render`, no joined worker), a render request is refused with
@@ -195,6 +199,21 @@ stays closed under `--insecure-no-tls` or `--no-workers`).
   decode it: byte shuffle + zstd by default, LZ4 as the alternative, raw for a
   loopback peer or when compression would not shrink the payload. The two sides
   negotiate it in the handshake; nothing needs configuring.
+
+**Small pictures** (`worker` builds). Splitting a picture that takes a fast GPU a
+fraction of a second only makes the job wait for the slowest lane, so a small `Batch`
+request is rendered whole on **one** lane: the fastest idle joined worker that accepts
+the image, and the own lane only while no worker is idle. "Small" is an estimate: the
+render time on the fastest eligible worker from the rates the coordinator has measured
+(`--whole-image-secs`, default 2 s), or, before any rate is known, `width × height ×
+samples` of at most `--whole-image-pixel-samples` (default 67108864). The request's log
+line says `whole_image=true` and how many `lanes` it ran on.
+
+Whole-picture jobs do not queue behind each other in the viewer's one-job-at-a-time
+turn: one viewer certificate runs up to `--jobs-per-viewer` of them at once (default 8),
+each on its own worker connection, so a desktop batch that keeps several pictures in
+flight keeps several workers busy. They still count against `--max-job-memory-mib`.
+`--whole-image-secs 0 --whole-image-pixel-samples 0` turns the routing off.
 
 Requires **mutual TLS by default** — both sides must present a certificate
 signed by the same private CA (see [Workflow A](#workflow-a--manual-bundle-copy-verified-end-to-end)
@@ -224,8 +243,11 @@ one regardless of what was advertised.
 | `--max-connections <n>` | 64 | Authenticated connections handled at once, counted separately for viewers and joined workers. A connection past the cap gets a definitive error reply rather than hanging. At least 1. |
 | `--max-preauth-per-ip <n>` | 8 | Most viewer-port connections one source IP address may have open that have not finished authenticating. A connection counts only until its TLS handshake and allowlist check succeed, and from then on only against `--max-connections`; an over-cap connection is closed at once and logged (`refusing -- this address already has … connection(s) that have not finished authenticating`). A wider global cap of 4 × `--max-connections` on such connections also applies. Raise it for many viewers behind one NAT address. At least 1. |
 | `--max-job-memory-mib <n>` | 2048 | Cap on the buffers of all in-flight multi-lane jobs (jobs spread over joined workers). Each job is charged `width × height × 48` bytes (a 4K job is about 380 MiB), plus `width × height × 36` bytes for every lane (each joined worker and the coordinator's own lane hold three more frame buffers while a chunk runs), plus its HDR map and any viewer contribution. A job whose lanes do not all fit runs on as many as do; one past the cap even with a single lane is refused, not queued, and the viewer treats that like any other failed remote request. A maximum-size 8K job needs about 2700 MiB with one lane, so raise the cap for 8K exports. `worker` builds only. |
-| `--interactive-workers <n>` | 0 | **Advanced.** Let each live-view request also take up to `n` of the fastest idle joined workers. The default keeps the live view on the own lane alone (or, without `--render`, on the single fastest idle worker) — the lowest-latency path. `worker` builds only. |
-| `--pin-interactive-worker <label>` | none | **Advanced.** When a live-view request takes joined workers (no `--render`, or `--interactive-workers` above 0), use the worker whose certificate label is `<label>` first — the `--name` its worker certificate was issued with; `worker:<label>` also works — while it is connected, idle and accepts the image size. Otherwise the fastest-idle-worker rule applies, and the log says so once per change. `worker` builds only. |
+| `--whole-image-secs <secs>` | 2 | A `Batch` request estimated to render in less than this on the fastest eligible joined worker is rendered whole on one lane (the fastest idle worker, the own lane only while none is idle) instead of being split. `0` never qualifies. `worker` builds only. |
+| `--whole-image-pixel-samples <n>` | 67108864 | The same decision by size while no eligible worker has a measured rate yet: `width × height × samples` of at most `n`. `0` never qualifies. `worker` builds only. |
+| `--jobs-per-viewer <n>` | 8 | Most whole-image jobs one viewer certificate has running at once; the next waits for a free slot. At least 1. Other jobs of the viewer still run one at a time. `worker` builds only. |
+| `--interactive-workers <n\|all>` | `all` | **Advanced.** How many of the fastest idle joined workers a live-view request takes besides the own lane: `all` is every idle one that accepts the image. `0` keeps the live view on the own lane alone (or, without `--render`, on the single fastest idle worker) — the lowest-latency path over a slow link. `worker` builds only. |
+| `--pin-interactive-worker <label>` | none | **Advanced.** When a live-view request takes joined workers (the default, unless `--interactive-workers 0` is combined with `--render`), use the worker whose certificate label is `<label>` first — the `--name` its worker certificate was issued with; `worker:<label>` also works — while it is connected, idle and accepts the image size. Otherwise the fastest-idle-worker rule applies, and the log says so once per change. `worker` builds only. |
 | `--allow-remote` | off | Required to bind any non-loopback address, TLS or not — exposing this worker beyond localhost must be an explicit, visible choice. |
 | `--ca <path>` | — | CA certificate that issued both `--cert` and every trusted client certificate. Required unless `--insecure-no-tls`. |
 | `--cert <path>` | — | This coordinator's own certificate (from `cert issue-server`), used on the viewer and the worker port. |
@@ -592,7 +614,7 @@ files:
 |---|---|---|
 | `cli/` | all | argument parsing for every subcommand (`render`, `serve`, `join`, `cert`), per-topic `-h`/`--help` resolution, error messages for missing/malformed flags |
 | `serve/` | all (render paths: `worker`) | the `HELLO`/`WELCOME` handshake (including a build-hash mismatch and role refusal), request validation keeping the connection open, real loopback round trips, `FinalOnly` still emitting `PROGRESS`, `CANCEL` mid-stream, stale `request_id` identifiability, the pipelined-`RenderRequest`-as-implicit-cancel path, the `TILT_CURVES` family, the v14 message set, HDR assets over the request loop, mutual TLS with real throwaway certificates, the connection limiter, and the library request/response dispatch |
-| `coordinator/` | `worker` | the joined-worker registry and advertisement, and end-to-end runs of a real coordinator on ephemeral loopback ports with real TLS, `join`, enrollment tokens and liveness: job splitting, per-viewer queues and the memory cap, pinned interactive workers, final pictures and display frames, HDR maps forwarded to joined workers |
+| `coordinator/` | `worker` | the joined-worker registry and advertisement, and end-to-end runs of a real coordinator on ephemeral loopback ports with real TLS, `join`, enrollment tokens and liveness: job splitting, whole-picture routing and concurrent small jobs, per-viewer queues and the memory cap, pinned interactive workers, final pictures and display frames, HDR maps forwarded to joined workers |
 | `assets/` | `worker` | the bounded on-disk cache (hash naming, verification, eviction, atomic writes), the HDR routing policy, and the resolve order |
 | `join/` | `worker` | reconnect backoff and the default enrollment address |
 | `validate/` | `worker` | every limit in the table above, both accepted and rejected |

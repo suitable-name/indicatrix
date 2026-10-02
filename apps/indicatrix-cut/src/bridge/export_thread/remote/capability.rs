@@ -3,7 +3,7 @@
 //! ([`exceeds_pixel_cap`]). See this group's own `mod.rs` doc comment.
 
 use crate::{bridge::remote::remote_render, settings::WorkerSettings};
-use indicatrix_net::messages::RenderCapability;
+use indicatrix_net::messages::{Backend, RenderCapability};
 
 /// Below this many REMAINING samples, dispatching to a remote worker at all (handshake
 /// plus a calibration round trip) costs more than it could ever save -- same reasoning
@@ -52,6 +52,24 @@ pub struct RemoteCapability {
     /// The remote's `RenderCapability::hdr` (protocol v14): whether it renders scenes lit
     /// by an HDR map -- `bridge::remote::remote_can_render`'s per-capability input.
     pub hdr: bool,
+    /// Whether the remote's `RenderCapability::backend` is [`Backend::Coordinator`]
+    /// rather than one plain worker. A coordinator splits every request over its own
+    /// lane and its joined workers and cuts it into its own shorter chunks, so the
+    /// export sizes its requests by `rate::COORDINATOR_CHUNK_TARGET_SECS` and measures
+    /// a request's rate over the whole request, not from its first progress report.
+    pub coordinator: bool,
+}
+
+impl RemoteCapability {
+    /// The capability a worker's advertised `render` half describes, for `worker`.
+    const fn from_render(worker: WorkerSettings, render: &RenderCapability) -> Self {
+        Self {
+            worker,
+            max_pixels: render.max_pixels,
+            hdr: render.hdr,
+            coordinator: matches!(render.backend, Backend::Coordinator { .. }),
+        }
+    }
 }
 
 /// Whether an export at `width x height` exceeds `capability`'s advertised
@@ -80,16 +98,11 @@ pub fn probe_remote(
         return Err(RemoteUnavailable::NoWorkerConfigured);
     };
     match remote_render::connect_and_handshake(&worker) {
-        Ok((_stream, welcome)) => match welcome.render {
-            Some(RenderCapability {
-                max_pixels, hdr, ..
-            }) => Ok(RemoteCapability {
-                worker,
-                max_pixels,
-                hdr,
+        Ok((_stream, welcome)) => welcome
+            .render
+            .map_or(Err(RemoteUnavailable::LibraryOnly), |render| {
+                Ok(RemoteCapability::from_render(worker, &render))
             }),
-            None => Err(RemoteUnavailable::LibraryOnly),
-        },
         Err(e) => Err(RemoteUnavailable::Unreachable(e.to_string())),
     }
 }
@@ -122,6 +135,44 @@ mod tests {
             worker: WorkerSettings::default(),
             max_pixels,
             hdr: false,
+            coordinator: false,
+        }
+    }
+
+    fn render_capability(backend: Backend) -> RenderCapability {
+        RenderCapability {
+            backend,
+            max_pixels: 1_000_000,
+            min_cadence_ms: 100,
+            hdr: true,
+        }
+    }
+
+    #[test]
+    fn from_render_marks_only_a_coordinator_backend_as_a_coordinator() {
+        let coordinator = RemoteCapability::from_render(
+            WorkerSettings::default(),
+            &render_capability(Backend::Coordinator {
+                workers: 1,
+                threads: 8,
+                gpus: 2,
+            }),
+        );
+        assert!(coordinator.coordinator);
+        assert_eq!(coordinator.max_pixels, 1_000_000);
+        assert!(coordinator.hdr);
+
+        for backend in [
+            Backend::Cpu { threads: 8 },
+            Backend::Gpu {
+                adapter: "RTX A6000".to_string(),
+            },
+        ] {
+            let plain = RemoteCapability::from_render(
+                WorkerSettings::default(),
+                &render_capability(backend),
+            );
+            assert!(!plain.coordinator);
         }
     }
 

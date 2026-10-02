@@ -1,4 +1,4 @@
-//! A shared work queue that lets a LOCAL worker and a REMOTE dispatcher process the
+//! A shared work queue that lets LOCAL lanes and several REMOTE dispatchers process the
 //! same catalogue-wide batch (`gui::batch::preview`, `gui::batch::tilt`) CONCURRENTLY,
 //! each claiming the next unclaimed item as soon as it is free -- the mechanism behind
 //! `settings::model::LiveComputeTarget::Both`.
@@ -8,7 +8,9 @@
 //! nothing smaller to divide. [`WorkQueue::claim_shared`] needs no throughput
 //! measurement to balance the lanes -- whichever finishes its current claim first
 //! simply claims the next, so a faster host naturally does more work and a slower one
-//! never blocks the other.
+//! never blocks the other. Several remote dispatchers claim from it at once (see
+//! [`remote_lane_count`]) so a remote that renders a picture faster than one request's
+//! round trip is never left waiting on a single claim.
 //!
 //! A remote failure is requeued for LOCAL only, via [`WorkQueue::return_to_local`],
 //! never back to the shared pool: an item failing for a persistent reason (e.g. a
@@ -17,12 +19,15 @@
 //! that hasn't already shown it can't do it.
 //!
 //! The local lane must not exit just because [`WorkQueue::claim_local`] finds both
-//! piles momentarily empty -- the remote lane could still be mid-item and about to
+//! piles momentarily empty -- a remote dispatcher could still be mid-item and about to
 //! push a fresh failure. Each batch module pairs this queue with an `AtomicBool`
-//! ("remote lane done") set only after the remote lane's claim loop has permanently
-//! ended; the local loop stops only once both piles are empty AND that flag is set.
+//! ("remote lane done") set only after the claim loop of the LAST remote dispatcher has
+//! permanently ended (`gui::batch::remote_dispatch::DispatcherGroup`); the local loop
+//! stops only once both piles are empty AND that flag is set. It reads the flag BEFORE
+//! it claims, and stops only on an empty claim that followed a flag already raised, so a
+//! requeue landing between the claim and the read can never be stranded.
 
-use crate::settings::LiveComputeTarget;
+use crate::settings::{LiveComputeTarget, model::clamp_remote_batch_lanes};
 use std::{
     collections::VecDeque,
     sync::{Mutex, PoisonError},
@@ -38,6 +43,16 @@ pub fn local_lane_count() -> usize {
         .map_or(1, std::num::NonZeroUsize::get)
         .saturating_sub(1)
         .max(1)
+}
+
+/// How many REMOTE dispatchers a batch runs at once: the `remote_batch_lanes` setting
+/// (`AppSettings::remote_batch_lanes`), limited to `1..=32`. Each dispatcher keeps one
+/// whole picture (or design) in flight on the remote, so this is how many are on the
+/// remote at a time. Unlike [`local_lane_count`] it has nothing to do with this
+/// machine's cores: the work happens elsewhere, and a dispatcher only waits.
+#[must_use]
+pub fn remote_lane_count(setting: u32) -> usize {
+    clamp_remote_batch_lanes(setting) as usize
 }
 
 /// See this module's doc comment. `T` is a small, `Send`-able description of one unit
@@ -306,5 +321,15 @@ mod tests {
         assert!(n >= 1);
         let available = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
         assert!(n <= available.saturating_sub(1).max(1));
+    }
+
+    #[test]
+    fn remote_lane_count_follows_the_setting_within_one_to_thirty_two() {
+        assert_eq!(remote_lane_count(4), 4, "the default");
+        assert_eq!(remote_lane_count(1), 1);
+        assert_eq!(remote_lane_count(32), 32);
+        assert_eq!(remote_lane_count(0), 1, "never zero dispatchers");
+        assert_eq!(remote_lane_count(33), 32);
+        assert_eq!(remote_lane_count(u32::MAX), 32);
     }
 }

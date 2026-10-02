@@ -1,8 +1,9 @@
 //! The coordinator's `serve` flags.
 
 use crate::cli::{
-    Command, ComputeMode, DEFAULT_BIND, DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_JOB_MEMORY_MIB,
-    DEFAULT_MAX_PREAUTH_PER_IP, ServeArgs, parse,
+    ALL_INTERACTIVE_WORKERS, Command, ComputeMode, DEFAULT_BIND, DEFAULT_JOBS_PER_VIEWER,
+    DEFAULT_MAX_CONNECTIONS, DEFAULT_MAX_JOB_MEMORY_MIB, DEFAULT_MAX_PREAUTH_PER_IP,
+    DEFAULT_WHOLE_IMAGE_PIXEL_SAMPLES, DEFAULT_WHOLE_IMAGE_SECS, ServeArgs, parse,
 };
 use std::path::PathBuf;
 
@@ -28,9 +29,82 @@ fn default_serve_args() -> ServeArgs {
         db: None,
         max_connections: DEFAULT_MAX_CONNECTIONS,
         max_preauth_per_ip: DEFAULT_MAX_PREAUTH_PER_IP,
-        interactive_workers: 0,
+        interactive_workers: ALL_INTERACTIVE_WORKERS,
         pin_interactive_worker: None,
         max_job_memory_mib: DEFAULT_MAX_JOB_MEMORY_MIB,
+        whole_image_secs: DEFAULT_WHOLE_IMAGE_SECS,
+        whole_image_pixel_samples: DEFAULT_WHOLE_IMAGE_PIXEL_SAMPLES,
+        jobs_per_viewer: DEFAULT_JOBS_PER_VIEWER,
+    }
+}
+
+/// The live view uses every idle joined worker unless told otherwise; `all`, a count and
+/// `0` (the own lane alone) all parse, anything else is refused.
+#[test]
+fn serve_interactive_workers_defaults_to_all_and_parses_all_a_count_and_zero() {
+    let workers = |args: &[&str]| {
+        let mut argv = vec!["serve".to_string()];
+        argv.extend(args.iter().map(ToString::to_string));
+        match parse(&argv) {
+            Ok(Command::Serve(serve)) => Ok(serve.interactive_workers),
+            Ok(other) => panic!("expected Serve, got {other:?}"),
+            Err(error) => Err(error),
+        }
+    };
+    assert_eq!(workers(&[]), Ok(ALL_INTERACTIVE_WORKERS));
+    assert_eq!(
+        workers(&["--interactive-workers", "all"]),
+        Ok(ALL_INTERACTIVE_WORKERS)
+    );
+    assert_eq!(workers(&["--interactive-workers", "3"]), Ok(3));
+    assert_eq!(workers(&["--interactive-workers", "0"]), Ok(0));
+    for bad in ["many", "-1", "ALL", ""] {
+        let error = workers(&["--interactive-workers", bad]).unwrap_err();
+        assert!(error.contains("--interactive-workers"), "{bad:?}: {error}");
+    }
+}
+
+/// The small-picture flags: defaults, values, and the refusals.
+#[test]
+fn parses_the_small_picture_flags() {
+    let argv = [
+        "serve",
+        "--whole-image-secs",
+        "0.5",
+        "--whole-image-pixel-samples",
+        "1000000",
+        "--jobs-per-viewer",
+        "3",
+    ]
+    .map(String::from);
+    assert_eq!(
+        parse(&argv).unwrap(),
+        Command::Serve(Box::new(ServeArgs {
+            whole_image_secs: 0.5,
+            whole_image_pixel_samples: 1_000_000,
+            jobs_per_viewer: 3,
+            ..default_serve_args()
+        }))
+    );
+    let Command::Serve(bare) = parse(&["serve".to_string()]).unwrap() else {
+        panic!("expected Serve")
+    };
+    assert!((bare.whole_image_secs - 2.0).abs() < f64::EPSILON);
+    assert_eq!(bare.whole_image_pixel_samples, 64 * 1024 * 1024);
+    assert_eq!(bare.jobs_per_viewer, 8);
+
+    for (flag, bad) in [
+        ("--whole-image-secs", "-1"),
+        ("--whole-image-secs", "NaN"),
+        ("--whole-image-secs", "inf"),
+        ("--whole-image-secs", "soon"),
+        ("--whole-image-pixel-samples", "-5"),
+        ("--whole-image-pixel-samples", "1.5"),
+        ("--jobs-per-viewer", "0"),
+        ("--jobs-per-viewer", "many"),
+    ] {
+        let error = parse(&["serve", flag, bad].map(String::from)).unwrap_err();
+        assert!(error.contains(flag), "{flag} {bad}: {error}");
     }
 }
 

@@ -7,7 +7,8 @@
 use super::{
     ConnectionLimiter, ConnectionSlot,
     connection::{self, report_connection_result},
-    socket::{apply_handshake_timeout, open_connection_database, tune_accepted_socket},
+    library::LibraryHandle,
+    socket::{apply_handshake_timeout, tune_accepted_socket},
     tls::{Transport, accept_tls},
 };
 use indicatrix_net::messages::PeerRole;
@@ -108,7 +109,8 @@ pub struct ViewerListener {
     /// The per-source-address cap on connections that have not finished authenticating
     /// (`--max-preauth-per-ip`).
     pub pre_auth_addresses: PreAuthAddresses,
-    /// The library database every connection opens its own read-only handle from.
+    /// The library database every connection opens its own read-only handle from, when
+    /// it serves its first library request (see [`LibraryHandle`]).
     pub db_path: PathBuf,
     /// `--max-connections`, for the refusal message.
     pub max_connections: usize,
@@ -308,9 +310,11 @@ fn spawn_connection_handler(
     }
 }
 
-/// Opens the connection's database and runs the viewer handler inside `catch_unwind`
-/// (`worker` builds: the render-capable handler with the coordinator's `WELCOME`
-/// advertisement).
+/// Runs the viewer handler inside `catch_unwind` (`worker` builds: the render-capable
+/// handler with the coordinator's `WELCOME` advertisement).
+///
+/// The library database is not opened here: the connection's [`LibraryHandle`] opens it
+/// when (and only if) the peer sends a library request.
 #[cfg(feature = "worker")]
 fn serve_accepted<S>(
     stream: S,
@@ -320,14 +324,12 @@ fn serve_accepted<S>(
 ) where
     S: Read + Write + crate::stream_emit::TimeoutRead + crate::stream_emit::TimeoutWrite,
 {
-    let Some(db) = open_connection_database(&shared.db_path, peer) else {
-        return;
-    };
+    let library = LibraryHandle::lazy(shared.db_path.clone(), peer);
     let render = &shared.render;
     let ctx = connection::ViewerContext {
         threads: render.threads,
         gpu: &render.gpu,
-        db: &db,
+        db: &library,
         compute_mode: render.compute_mode,
         encodings: super::socket::payload_preference_for(peer),
         own_lane: render.own_lane,
@@ -350,11 +352,9 @@ fn serve_accepted<S: Read + Write + connection::ClearHandshakeTimeout>(
     (cert_role, _certificate): PeerAuth,
     shared: &ViewerListener,
 ) {
-    let Some(db) = open_connection_database(&shared.db_path, peer) else {
-        return;
-    };
+    let library = LibraryHandle::lazy(shared.db_path.clone(), peer);
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        connection::handle_connection(stream, &db, cert_role)
+        connection::handle_connection(stream, &library, cert_role)
     }));
     report_connection_result(peer, result);
 }

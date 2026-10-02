@@ -1,6 +1,6 @@
-//! The preview batch's REMOTE lane and its failure policy -- split from `engine.rs`
-//! (which keeps the per-item local render and the shared bookkeeping) so each file
-//! stays readable.
+//! The preview batch's REMOTE dispatchers and their failure policy -- split from
+//! `engine.rs` (which keeps the per-item local render and the shared bookkeeping) so
+//! each file stays readable.
 //!
 //! Before this policy existed, a remote that failed an item cost the lane nothing: it
 //! returned the item to the local pile and claimed the next one at once, with no log
@@ -10,11 +10,16 @@
 //! back off (1, 2, 4, 8 s), and the fifth in a row parks the lane for two minutes with
 //! one toast -- see [`crate::gui::batch::remote_backoff`] for the schedule. The wait
 //! happens BEFORE an item is claimed, so a failing remote never holds work hostage.
+//!
+//! `AppSettings::remote_batch_lanes` dispatchers run this loop at once over the one
+//! shared queue (`gui::batch::remote_dispatch`), each keeping one whole picture in
+//! flight. Each has its own [`LaneHealth`], so the schedule above counts one
+//! dispatcher's consecutive failures; the toast is shared and shows once per batch.
 
 use super::engine::{
     BatchContext, LaneShared, PREVIEW_MAX_BOUNCES, PreviewItem, RecordRevision, ResolvedDesign,
     finish_item, finish_item_at_revision, panic_message, push_progress, resolve_design,
-    set_remote_status,
+    update_remote,
 };
 use crate::{
     MainWindow,
@@ -22,7 +27,10 @@ use crate::{
         preview_render::{self, PreviewJob, PreviewView},
         preview_wait::RemoteShortfall,
     },
-    gui::batch::remote_backoff::{REMOTE_WAIT_SLICE, RemoteBackoff, wait_unless},
+    gui::batch::{
+        remote_backoff::{REMOTE_WAIT_SLICE, RemoteBackoff, wait_unless},
+        remote_dispatch::{DispatcherGroup, RemoteStatus},
+    },
     settings::WorkerSettings,
 };
 use slint::Weak;
@@ -48,13 +56,13 @@ enum Attempt {
     NotAttempted,
 }
 
-/// How the remote has been doing this batch.
+/// How the remote has been doing for ONE dispatcher this batch. The sit-out toast is not
+/// part of it: it is once per batch, not once per sit-out or per dispatcher, so a
+/// permanently dead remote does not re-toast every two minutes -- see
+/// [`LaneShared::sit_out_toasted`].
 #[derive(Default)]
 struct LaneHealth {
     backoff: RemoteBackoff,
-    /// Whether the sit-out toast has already been shown -- once per batch, not once per
-    /// sit-out, so a permanently dead remote does not re-toast every two minutes.
-    toasted: bool,
 }
 
 /// Runs `f` (one REMOTE view's render) under `catch_unwind`, so a panic tracing this one
@@ -104,7 +112,7 @@ fn wait_out_failures(shared: &LaneShared<'_>, ui_weak: &Weak<MainWindow>, backof
         "Remote paused after {} failure(s) -- retrying in {delay:.0?}",
         backoff.consecutive_failures()
     );
-    set_remote_status(shared.progress, true, &title);
+    update_remote(shared.progress, |remote| remote.note(&title));
     push_progress(
         ui_weak,
         shared.design_total,
@@ -143,10 +151,12 @@ fn note_success(health: &mut LaneHealth) {
 }
 
 /// Logs a remote failure and advances the backoff; shows the sit-out toast the first
-/// time the lane starts sitting the remote out. A user Cancel is not a failure of the
-/// remote and is ignored. `RemoteOnly` (`fallback_to_local == false`) has no local lane
-/// to hand work to, so it keeps its per-item failures but neither pauses nor toasts.
+/// time any dispatcher of the batch starts sitting the remote out. A user Cancel is not
+/// a failure of the remote and is ignored. `RemoteOnly` (`fallback_to_local == false`)
+/// has no local lane to hand work to, so it keeps its per-item failures but neither
+/// pauses nor toasts.
 fn note_failure(
+    shared: &LaneShared<'_>,
     health: &mut LaneHealth,
     ui_weak: &Weak<MainWindow>,
     item: PreviewItem,
@@ -165,8 +175,10 @@ fn note_failure(
         ?retry_in,
         "preview remote lane: item failed; requeued locally"
     );
-    if fallback_to_local && health.backoff.sitting_out() && !health.toasted {
-        health.toasted = true;
+    if fallback_to_local
+        && health.backoff.sitting_out()
+        && !shared.sit_out_toasted.swap(true, Ordering::Relaxed)
+    {
         let _ = ui_weak.upgrade_in_event_loop(|ui| {
             crate::gui::show_toast(&ui, SIT_OUT_TOAST, "warning");
         });
@@ -193,10 +205,67 @@ fn dispose_unrendered(
     }
 }
 
-/// Runs the REMOTE lane: claims fresh items via `WorkQueue::claim_shared` only (never
-/// a local-retried one -- that pile is reserved for the local lane, see
-/// `gui::batch::batch_queue`'s doc comment) until the shared pool is empty, then
-/// signals `remote_lane_done` so the local lane knows no further requeues are coming.
+/// Sends one claimed item to the remote and settles it: a rendered picture is stored,
+/// anything else goes to the local lane's retry pile (`fallback_to_local`) or is counted
+/// failed for good. The item counts as in flight on the remote for exactly the wait.
+fn serve_item(
+    shared: &LaneShared<'_>,
+    ui_weak: &Weak<MainWindow>,
+    worker: Option<&WorkerSettings>,
+    fallback_to_local: bool,
+    health: &mut LaneHealth,
+    item: PreviewItem,
+) {
+    let resolved = resolve_design(shared.ctx, item.entry_id);
+    let title = resolved
+        .as_ref()
+        .map_or_else(|| format!("Design #{}", item.entry_id), |r| r.title.clone());
+    update_remote(shared.progress, |remote| remote.item_started(&title));
+    push_progress(
+        ui_weak,
+        shared.design_total,
+        shared.local_lane_total,
+        shared.progress,
+    );
+
+    let attempt = attempt_remote(shared, worker, resolved.as_ref(), item.view);
+    update_remote(shared.progress, RemoteStatus::item_ended);
+    push_progress(
+        ui_weak,
+        shared.design_total,
+        shared.local_lane_total,
+        shared.progress,
+    );
+
+    match attempt {
+        Attempt::Rendered(bytes) => {
+            note_success(health);
+            let revision = resolved
+                .as_ref()
+                .map_or(RecordRevision::Unknown, |r| r.revision);
+            finish_item_at_revision(
+                shared,
+                ui_weak,
+                item.entry_id,
+                item.view,
+                Some(bytes),
+                revision,
+            );
+        }
+        Attempt::Failed(shortfall) => {
+            note_failure(shared, health, ui_weak, item, &shortfall, fallback_to_local);
+            dispose_unrendered(shared, ui_weak, item, fallback_to_local);
+        }
+        Attempt::NotAttempted => dispose_unrendered(shared, ui_weak, item, fallback_to_local),
+    }
+}
+
+/// Runs ONE remote dispatcher: claims fresh items via `WorkQueue::claim_shared` only
+/// (never a local-retried one -- that pile is reserved for the local lane, see
+/// `gui::batch::batch_queue`'s doc comment) until the shared pool is empty. The batch
+/// runs `shared.remote_lane_total` of these at once; when the LAST one ends,
+/// `dispatchers` raises `remote_lane_done` so the local lane knows no further requeues
+/// are coming.
 ///
 /// `worker` is `None` only for `RemoteOnly` with no worker configured -- treated as an
 /// immediate shortfall (no attempt possible) rather than a connection failure, so this
@@ -212,8 +281,21 @@ pub(super) fn run_remote_lane(
     ui_weak: &Weak<MainWindow>,
     worker: Option<&WorkerSettings>,
     fallback_to_local: bool,
-    remote_lane_done: &AtomicBool,
+    dispatchers: &DispatcherGroup<'_>,
 ) {
+    // Declared first, so it drops LAST: after every `return_to_local` call below (all
+    // inside the loop) and after the final progress push -- see
+    // `gui::batch::batch_queue`'s doc comment for why the local lane's own stop
+    // condition depends on that ordering.
+    let _counted_out_on_drop = dispatchers.guard();
+    update_remote(shared.progress, RemoteStatus::dispatcher_started);
+    push_progress(
+        ui_weak,
+        shared.design_total,
+        shared.local_lane_total,
+        shared.progress,
+    );
+
     let mut health = LaneHealth::default();
     loop {
         if fallback_to_local {
@@ -225,50 +307,21 @@ pub(super) fn run_remote_lane(
         let Some(item) = shared.queue.claim_shared() else {
             break;
         };
-
-        let resolved = resolve_design(shared.ctx, item.entry_id);
-        let title = resolved
-            .as_ref()
-            .map_or_else(|| format!("Design #{}", item.entry_id), |r| r.title.clone());
-        set_remote_status(shared.progress, true, &title);
-        push_progress(
+        serve_item(
+            shared,
             ui_weak,
-            shared.design_total,
-            shared.local_lane_total,
-            shared.progress,
+            worker,
+            fallback_to_local,
+            &mut health,
+            item,
         );
-
-        match attempt_remote(shared, worker, resolved.as_ref(), item.view) {
-            Attempt::Rendered(bytes) => {
-                note_success(&mut health);
-                let revision = resolved
-                    .as_ref()
-                    .map_or(RecordRevision::Unknown, |r| r.revision);
-                finish_item_at_revision(
-                    shared,
-                    ui_weak,
-                    item.entry_id,
-                    item.view,
-                    Some(bytes),
-                    revision,
-                );
-            }
-            Attempt::Failed(shortfall) => {
-                note_failure(&mut health, ui_weak, item, &shortfall, fallback_to_local);
-                dispose_unrendered(shared, ui_weak, item, fallback_to_local);
-            }
-            Attempt::NotAttempted => dispose_unrendered(shared, ui_weak, item, fallback_to_local),
-        }
     }
-    set_remote_status(shared.progress, false, "");
+
+    update_remote(shared.progress, RemoteStatus::dispatcher_ended);
     push_progress(
         ui_weak,
         shared.design_total,
         shared.local_lane_total,
         shared.progress,
     );
-    // Ordered AFTER every possible `return_to_local` call above (all inside the loop
-    // this follows) -- see `gui::batch::batch_queue`'s doc comment for why the local
-    // lane's own stop condition depends on that ordering.
-    remote_lane_done.store(true, Ordering::Release);
 }

@@ -207,18 +207,23 @@ A viewer's request is planned before anything is streamed (`job/plan.rs`):
   is left and leave a fast joined worker idling for the whole of one chunk near
   the end of a run.
 
-Which workers a job takes: an export-type request (`Batch` intent with
-`FinalOnly` transfer, and every `FINAL_IMAGE_REQUEST`) takes every idle worker whose
-`max_pixels` accepts the image (and, for an HDR scene, that advertises `hdr`). A
-live-view request takes none by default, the single fastest idle worker when there is
-no own lane, or up to `--interactive-workers` of the fastest — ranked by rate measured
-on this viewer connection, unmeasured GPUs first — with `--pin-interactive-worker`'s
-worker moved to the front while it is available.
+Which workers a job takes: a small `Batch` request (its estimated render time on the
+fastest eligible worker is under `--whole-image-secs`, or, while no rate is measured,
+`width × height × samples` is at most `--whole-image-pixel-samples`) is one picture on
+one lane, the fastest idle eligible worker (the own lane only while none is idle). Any
+other export-type request (`Batch` intent with `FinalOnly` transfer, and every
+`FINAL_IMAGE_REQUEST`) takes every idle worker whose `max_pixels` accepts the image
+(and, for an HDR scene, that advertises `hdr`). A live-view request takes the own lane
+plus every idle eligible worker by default, or up to `--interactive-workers` of the
+fastest (`0`: none besides the own lane; with no own lane, the single fastest worker)
+— ranked by rate measured on this viewer connection, unmeasured GPUs first — with
+`--pin-interactive-worker`'s worker moved to the front while it is available.
 
 Limits (`job/limits.rs`): every job reserves `width × height × 48` bytes (four
 full-resolution `Vec3` buffers) against `--max-job-memory-mib` and is refused past it;
 export-type jobs wait in a per-viewer FIFO so one viewer certificate has one such job
-running at a time. Live-view and direct requests are exempt.
+running at a time; whole-picture jobs instead count against `--jobs-per-viewer`
+(default 8). Live-view and direct requests are exempt.
 
 What the viewer receives: `FRAME`s carry the sum of every chunk merged since the last
 emit — a *set* of samples inside the request range, so clients check containment,

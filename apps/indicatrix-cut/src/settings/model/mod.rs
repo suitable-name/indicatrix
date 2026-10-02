@@ -17,9 +17,12 @@ mod local_compute;
 mod remote_endpoint;
 mod settings_file;
 #[cfg(test)]
+mod tests_batch_lanes;
+#[cfg(test)]
 mod tests_remote;
 mod worker;
 
+pub use app_settings::clamp_remote_batch_lanes;
 pub use lighting_preset::LightingPreset;
 pub use local_compute::LocalComputeTarget;
 pub use remote_endpoint::{ExportTransfer, LiveTransfer, RemoteEndpoint};

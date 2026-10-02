@@ -15,8 +15,20 @@
 //!    changes are followed without one noisy chunk swinging the next chunk's size.
 //!
 //! A measurement is the lane's own reported marginal rate when it has one (a remote
-//! worker's steady-state rate, excluding connection setup and upload), otherwise
-//! `done / wall time` of the whole chunk ([`marginal_rate`]).
+//! worker's rendering rate: the samples between its first and its last progress report
+//! that advanced the count, over the time between those two reports, so connection
+//! setup, the final frame's encode and upload and the merge are all excluded; a chunk
+//! too short to have two such reports reports its whole first-progress-to-done rate
+//! instead), otherwise `done / wall time` of the whole chunk ([`marginal_rate`]).
+//!
+//! # Staggered lanes
+//!
+//! Two lanes backed by the same worker would otherwise start together with equal
+//! chunks, finish together and upload their frames together, leaving the worker's GPU
+//! idle during the shared upload. A model built with [`RateModel::staggered`] carries a
+//! one-shot scale ([`RateModel::take_first_chunk_scale`]) that the pool applies to the
+//! lane's first calibrated chunk only, so that lane starts half a chunk out of phase:
+//! one lane renders while the other uploads, for the rest of the run.
 
 use std::time::Duration;
 
@@ -26,6 +38,10 @@ mod tests;
 /// Weight of a new measurement in the moving average: 0.3 new, 0.7 old, the same
 /// blend the hybrid CPU/GPU split uses.
 pub const DEFAULT_SMOOTHING: f64 = 0.3;
+
+/// The first-chunk factor of a [`RateModel::staggered`] lane: half a chunk, so two lanes
+/// of one worker end up half a chunk apart.
+const STAGGER_SCALE: f64 = 0.5;
 
 /// The worker's hidden per-request cap: a chunk sent to a worker must never be larger,
 /// or the worker rejects the whole request.
@@ -106,15 +122,28 @@ impl ChunkPolicy {
     /// non-finite or non-positive rate. Never `0`.
     #[must_use]
     pub fn samples_for_rate(&self, rate: f64) -> u32 {
+        self.clamp_samples(rate * self.target.as_secs_f64())
+    }
+
+    /// `samples` multiplied by `scale`, rounded and clamped to `[min_samples,
+    /// max_samples]` exactly like [`Self::samples_for_rate`]; `min_samples` for a
+    /// non-finite product. Never `0`.
+    #[must_use]
+    pub(crate) fn scaled_samples(&self, samples: u32, scale: f64) -> u32 {
+        self.clamp_samples(f64::from(samples) * scale)
+    }
+
+    /// `wanted` rounded to a whole chunk size inside `(min, max)` (see [`Self::bounds`]);
+    /// `min` for a non-finite or too-small value, `max` for a too-large one.
+    fn clamp_samples(&self, wanted: f64) -> u32 {
         let (min, max) = self.bounds();
-        let target = rate * self.target.as_secs_f64();
-        if !target.is_finite() || target < f64::from(min) {
+        if !wanted.is_finite() || wanted < f64::from(min) {
             return min;
         }
-        if target >= f64::from(max) {
+        if wanted >= f64::from(max) {
             return max;
         }
-        (target.round() as u32).clamp(min, max)
+        (wanted.round() as u32).clamp(min, max)
     }
 
     /// `(min, max)` with both at least `1` and `min <= max`.
@@ -183,6 +212,10 @@ pub struct RateModel {
     smoothing: f64,
     /// Measurements folded in so far.
     observations: u32,
+    /// A one-shot factor for the lane's first calibrated chunk (see the module doc's
+    /// "Staggered lanes"); `None` once taken, and for every model not built by
+    /// [`Self::staggered`].
+    first_chunk_scale: Option<f64>,
 }
 
 impl RateModel {
@@ -196,6 +229,7 @@ impl RateModel {
             estimate: None,
             smoothing: DEFAULT_SMOOTHING,
             observations: 0,
+            first_chunk_scale: None,
         }
     }
 
@@ -209,6 +243,27 @@ impl RateModel {
             model.estimate = Some(rate);
         }
         model
+    }
+
+    /// [`Self::calibrated`] at `rate`, whose first chunk is only half the size its rate
+    /// asks for ([`Self::take_first_chunk_scale`] yields `Some(0.5)` once), so this lane
+    /// runs half a chunk out of phase with another lane of the same worker that starts
+    /// from [`Self::calibrated`]. An unusable `rate` yields an uncalibrated model with no
+    /// scale: there is no calibrated first chunk to halve.
+    #[must_use]
+    pub fn staggered(rate: f64) -> Self {
+        let mut model = Self::calibrated(rate);
+        if model.is_calibrated() {
+            model.first_chunk_scale = Some(STAGGER_SCALE);
+        }
+        model
+    }
+
+    /// Returns the factor to apply to this lane's first calibrated chunk and clears it,
+    /// so every later call yields `None`. Always `None` for a model not built by
+    /// [`Self::staggered`].
+    pub const fn take_first_chunk_scale(&mut self) -> Option<f64> {
+        self.first_chunk_scale.take()
     }
 
     /// Replaces the moving-average weight of a new measurement; clamped to

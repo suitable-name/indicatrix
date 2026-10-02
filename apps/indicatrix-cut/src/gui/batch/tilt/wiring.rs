@@ -9,7 +9,7 @@ use super::{
 use crate::{
     BatchModel, LibraryModel, MainWindow,
     bridge::{preview_render, render_thread::RenderContext},
-    gui::batch::batch_queue::{LanePlan, WorkQueue, local_lane_count},
+    gui::batch::batch_queue::{LanePlan, WorkQueue, local_lane_count, remote_lane_count},
     settings::{LiveComputeTarget, SettingsPersister, WorkerSettings},
 };
 use indicatrix_vault::db::sqlite::Database;
@@ -56,6 +56,57 @@ pub struct TiltBatchSettings {
     /// The remote endpoint's connection (`AppSettings::remote`), if one is configured.
     pub worker: Option<WorkerSettings>,
     pub live_compute_target: LiveComputeTarget,
+    /// How many designs the batch keeps in flight on the remote at once
+    /// (`AppSettings::remote_batch_lanes`); read through [`remote_lane_count`], which
+    /// limits it to `1..=32`.
+    pub remote_batch_lanes: u32,
+}
+
+/// Releases a batch's claim on the render context and clears the dialog's "running" flag
+/// when dropped, whatever ended the batch -- see this group's `mod.rs` doc comment.
+struct BusyGuard {
+    render_ctx: Arc<Mutex<RenderContext>>,
+    ui_weak: Weak<MainWindow>,
+}
+
+impl Drop for BusyGuard {
+    fn drop(&mut self) {
+        // A COUNT, not a bool: the batch preview, the batch tilt sweep and a
+        // hi-res export queue can each be in flight at once, so
+        // this decrements its own claim rather than unconditionally clearing
+        // every job's -- see `RenderContext::export_active_count`'s doc
+        // comment.
+        RenderContext::lock(&self.render_ctx).export_active_count -= 1;
+        let ui_weak = self.ui_weak.clone();
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            ui.global::<BatchModel>().set_tilt_batch_running(false);
+        });
+    }
+}
+
+/// Writes the finished batch's summary line into the dialog and marks it done.
+fn push_summary(ui_weak: &Weak<MainWindow>, outcome: TiltBatchOutcome) {
+    let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+        ui.global::<BatchModel>().set_tilt_summary(
+            format!(
+                "Computed tilt curves for {} design(s){}{}{}.",
+                outcome.computed,
+                if outcome.failed > 0 {
+                    format!(", {} failed", outcome.failed)
+                } else {
+                    String::new()
+                },
+                super::super::angle_table_summary(outcome.angle_table),
+                if outcome.cancelled {
+                    " (cancelled)"
+                } else {
+                    ""
+                }
+            )
+            .into(),
+        );
+        ui.global::<BatchModel>().set_tilt_done(true);
+    });
 }
 
 /// Starts a tilt-profile batch over the requested library designs on a background thread and returns a handle that can cancel it.
@@ -75,30 +126,12 @@ pub fn spawn_tilt_batch(
     let TiltBatchSettings {
         worker: remote_worker,
         live_compute_target,
+        remote_batch_lanes,
     } = settings;
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_thread = Arc::clone(&cancel);
 
     thread::spawn(move || {
-        struct BusyGuard {
-            render_ctx: Arc<Mutex<RenderContext>>,
-            ui_weak: Weak<MainWindow>,
-        }
-        impl Drop for BusyGuard {
-            fn drop(&mut self) {
-                // A COUNT, not a bool: the batch preview, the batch tilt sweep and a
-                // hi-res export queue can each be in flight at once, so
-                // this decrements its own claim rather than unconditionally clearing
-                // every job's -- see `RenderContext::export_active_count`'s doc
-                // comment.
-                RenderContext::lock(&self.render_ctx).export_active_count -= 1;
-                let ui_weak = self.ui_weak.clone();
-                let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                    ui.global::<BatchModel>().set_tilt_batch_running(false);
-                });
-            }
-        }
-
         RenderContext::lock(&render_ctx).export_active_count += 1;
         let _busy_guard = BusyGuard {
             render_ctx: Arc::clone(&render_ctx),
@@ -137,6 +170,14 @@ pub fn spawn_tilt_batch(
         } else {
             0
         };
+        // One remote dispatcher per design kept in flight on the remote -- see
+        // `batch_queue::remote_lane_count`. `RemoteOnly` and `Both` both use all of
+        // them; `LocalOnly` runs none.
+        let remote_lane_total = if plan.run_remote {
+            remote_lane_count(remote_batch_lanes) as u32
+        } else {
+            0
+        };
 
         let shared = LaneShared {
             ctx: &ctx,
@@ -146,6 +187,7 @@ pub fn spawn_tilt_batch(
             cancel: &cancel_thread,
             design_total,
             local_lane_total,
+            remote_lane_total,
         };
 
         // Every lane borrows `shared`/`queue`/`tally`/`progress`/`remote_lane_done` by
@@ -175,27 +217,7 @@ pub fn spawn_tilt_batch(
         // re-trigger) could otherwise still land its summary/done on top of the new
         // batch's own freshly reset dialog state. See `start_batch`'s own doc comment.
         if current_batch_id.load(Ordering::SeqCst) == batch_id {
-            let _ = ui_weak.upgrade_in_event_loop(move |ui| {
-                ui.global::<BatchModel>().set_tilt_summary(
-                    format!(
-                        "Computed tilt curves for {} design(s){}{}{}.",
-                        outcome.computed,
-                        if outcome.failed > 0 {
-                            format!(", {} failed", outcome.failed)
-                        } else {
-                            String::new()
-                        },
-                        super::super::angle_table_summary(outcome.angle_table),
-                        if outcome.cancelled {
-                            " (cancelled)"
-                        } else {
-                            ""
-                        }
-                    )
-                    .into(),
-                );
-                ui.global::<BatchModel>().set_tilt_done(true);
-            });
+            push_summary(&ui_weak, outcome);
         }
         // `_busy_guard` drops here, clearing `export_active` and `tilt_batch_running`
         // unconditionally -- see this group's `mod.rs` doc comment.
@@ -259,6 +281,7 @@ fn start_batch(
     ui.global::<BatchModel>()
         .set_tilt_remote_title(String::new().into());
     ui.global::<BatchModel>().set_tilt_remote_active(false);
+    ui.global::<BatchModel>().set_tilt_remote_in_flight(0);
     ui.global::<BatchModel>()
         .set_tilt_summary(String::new().into());
 
@@ -270,6 +293,7 @@ fn start_batch(
         TiltBatchSettings {
             worker: snapshot.settings.remote_worker(),
             live_compute_target: snapshot.settings.live_compute_target,
+            remote_batch_lanes: snapshot.settings.remote_batch_lanes,
         },
         entry_ids,
         batch_id,

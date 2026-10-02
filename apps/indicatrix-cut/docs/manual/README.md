@@ -42,8 +42,8 @@ exporting a design of your own.
    work.
 10. [Remote Worker Setup](10-remote-worker-setup.md) — certificates,
     setting up the remote coordinator, testing the connection, full data vs.
-    final picture transfer, HDR scenes, and troubleshooting a connection
-    gone quiet.
+    final picture transfer, how many pictures a catalogue batch keeps in
+    flight on it, HDR scenes, and troubleshooting a connection gone quiet.
 11. [Saving and File Formats](11-saving-and-file-formats.md) — `.asc`
     versus this app's native `.indicatrix.toml` format, and where your files
     go.

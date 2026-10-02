@@ -280,7 +280,11 @@ pub(super) struct Reply {
     /// from its start); a frame set that is not a prefix is only usable once complete, and
     /// then only if its frames tile the request exactly (see [`frames_tile`]).
     pub(super) prefix: bool,
-    /// The worker's steady-state rate (first to last progress report), if measurable.
+    /// The worker's rendering rate, if measurable: the samples between its first and its
+    /// last progress report that advanced the count, over the time between those two
+    /// reports (see [`rate_from_progress`]). That span ends before the final `FRAME`'s
+    /// encode, upload and decode, so it measures tracing alone. A chunk with fewer than
+    /// two advancing reports falls back to the first report to `DONE`.
     pub(super) rate: Option<f64>,
     /// Why the request ended short (worker error, protocol problem), if it did.
     pub(super) error: Option<String>,
@@ -442,6 +446,7 @@ fn read_reply<F: FnMut() -> bool>(
     let worker_id = exchange.worker_id;
     let mut decoder = PayloadDecoder::new();
     let mut first_progress: Option<(Instant, u32)> = None;
+    let mut last_progress: Option<(Instant, u32)> = None;
     loop {
         let (event, payload) = match indicatrix_net::messages::read_stream_event(reader) {
             Ok(read) => read,
@@ -461,8 +466,15 @@ fn read_reply<F: FnMut() -> bool>(
             }
             StreamEvent::Progress(p) => {
                 reader.note_progress(p.samples_done);
+                let now = Instant::now();
                 if first_progress.is_none() && p.samples_done > 0 {
-                    first_progress = Some((Instant::now(), p.samples_done));
+                    first_progress = Some((now, p.samples_done));
+                }
+                // Only a genuine advance moves the end of the measured span: a heartbeat
+                // repeating the same count, or the quiet while the frame uploads, must not.
+                if p.samples_done > 0 && last_progress.is_none_or(|(_, done)| p.samples_done > done)
+                {
+                    last_progress = Some((now, p.samples_done));
                 }
             }
             StreamEvent::Done(done) => {
@@ -473,7 +485,14 @@ fn read_reply<F: FnMut() -> bool>(
                         reply.dropped_pixels
                     );
                 }
-                return finish_done(reply, request, worker_id, done.cancelled, first_progress);
+                return finish_done(
+                    reply,
+                    request,
+                    worker_id,
+                    done.cancelled,
+                    first_progress,
+                    last_progress,
+                );
             }
             StreamEvent::Error(e) => {
                 reply.error = Some(format!(
@@ -570,6 +589,32 @@ fn frames_tile(spans: &mut [(u32, u32)], first: u32, samples: u32) -> bool {
     next == u64::from(first) + u64::from(samples)
 }
 
+/// The worker's rendering rate for a chunk of `samples`, from its first and its last
+/// `Progress` report that advanced the sample count (each as the instant it arrived and the
+/// `samples_done` it carried).
+///
+/// With two distinct advances the rate is the samples between them over the time between
+/// them, so the quiet while the final `FRAME` is encoded, uploaded and decoded (it follows
+/// the last advance and precedes `DONE`) is not counted as rendering. A chunk too short
+/// for two advances falls back to the samples after the first report over the time since
+/// it, which does include that tail. `None` when no report arrived or nothing can be
+/// measured.
+fn rate_from_progress(
+    first: Option<(Instant, u32)>,
+    last: Option<(Instant, u32)>,
+    samples: u32,
+) -> Option<f64> {
+    let (first_at, first_done) = first?;
+    last.filter(|&(_, done)| done > first_done)
+        .and_then(|(last_at, last_done)| {
+            marginal_rate(
+                last_done - first_done,
+                last_at.saturating_duration_since(first_at),
+            )
+        })
+        .or_else(|| marginal_rate(samples.saturating_sub(first_done), first_at.elapsed()))
+}
+
 /// The reply once the worker's `DONE` arrived.
 ///
 /// A complete-count reply whose frames do not tile the chunk exactly is not merged: it is
@@ -580,6 +625,7 @@ fn finish_done(
     worker_id: u32,
     cancelled: bool,
     first_progress: Option<(Instant, u32)>,
+    last_progress: Option<(Instant, u32)>,
 ) -> Reply {
     let samples = request.samples;
     if reply.done == samples && !frames_tile(&mut reply.spans, request.first_sample, samples) {
@@ -592,8 +638,7 @@ fn finish_done(
         return reply;
     }
     if reply.done == samples {
-        reply.rate = first_progress
-            .and_then(|(at, first)| marginal_rate(samples.saturating_sub(first), at.elapsed()));
+        reply.rate = rate_from_progress(first_progress, last_progress, samples);
         // A chunk that still finished fully overrides any earlier soft warning (e.g. a
         // since-resolved `NeedAsset` miss) -- `reply.broken` is never set on this path,
         // so there is nothing here that a genuinely broken connection needs preserved.
@@ -698,5 +743,43 @@ mod tests {
         // A second call, still long past PROGRESS_STALL, must not re-trigger the stall
         // failure now that a cancel is in flight -- it defers to `cancel_wait` (3600 s).
         assert!(reader.on_idle().is_ok());
+    }
+
+    /// Progress 10 at `t0`, 50 at `t0 + 2 s`, then a slow `FRAME` upload until `DONE` at
+    /// `t0 + 10 s`: the worker rendered 40 samples in 2 s. The `DONE` instant is not an
+    /// input at all, where the first-progress-to-`DONE` window would give 40 / 10 s.
+    #[test]
+    fn rate_from_progress_ends_at_the_last_advance_not_at_done() {
+        let t0 = Instant::now();
+        let first = Some((t0, 10));
+        let last = Some((t0 + Duration::from_secs(2), 50));
+        let rate = rate_from_progress(first, last, 50).expect("two advances are measurable");
+        assert!((rate - 20.0).abs() < 1e-9, "{rate}");
+        let through_done = marginal_rate(40, Duration::from_secs(10));
+        assert_eq!(through_done, Some(4.0), "the rate this replaces");
+    }
+
+    /// A chunk with one advancing report (or none past the first) has no span to
+    /// measure, so it falls back to the samples after the first report over the time
+    /// since it.
+    #[test]
+    fn rate_from_progress_falls_back_to_the_whole_window_without_two_advances() {
+        let started = Instant::now()
+            .checked_sub(Duration::from_secs(4))
+            .expect("the process has been running for at least 4 s");
+        let first = Some((started, 10));
+        for last in [None, first, Some((started + Duration::from_secs(1), 10))] {
+            let rate = rate_from_progress(first, last, 50).expect("40 samples in 4 s or more");
+            assert!(rate > 0.0 && rate <= 10.0, "{rate}");
+            assert!(rate > 5.0, "the test's own clock ran far over: {rate}");
+        }
+    }
+
+    /// No progress report at all: nothing to measure.
+    #[test]
+    fn rate_from_progress_is_none_without_any_progress() {
+        let last = Some((Instant::now(), 50));
+        assert_eq!(rate_from_progress(None, None, 50), None);
+        assert_eq!(rate_from_progress(None, last, 50), None);
     }
 }

@@ -2,7 +2,7 @@
 //! `Read + Write` test doubles (`DuplexHalf`/`BackpressureDuplex`), and the
 //! `StreamConfig`/`StreamEvent` helpers every topic file in this folder uses.
 
-use crate::stream_emit::TimeoutRead;
+use crate::{serve::library::LibraryHandle, stream_emit::TimeoutRead};
 use indicatrix::{
     geometry::cuts::StandardGemCuts,
     optics::{materials::GemMaterial, raytracer::LightingPreset},
@@ -11,19 +11,34 @@ use indicatrix_net::{SceneState, messages::StreamEvent};
 use indicatrix_vault::db::sqlite::Database;
 use std::io::{Cursor, Read, Write};
 
-/// A fresh, empty, throwaway temp database, just to satisfy `handle_connection`'s
-/// signature -- none of these tests exercise the library protocol itself. Tests never
-/// touch `facet_diagrams.sqlite`, only their own throwaway temp files.
-pub(super) fn test_db() -> Database {
-    let path = std::env::temp_dir().join(format!(
+/// A unique path for a throwaway temp database, named after the process id and a
+/// nanosecond timestamp so parallel tests never collide. Tests never touch
+/// `facet_diagrams.sqlite`, only their own throwaway temp files.
+fn unique_db_path() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
         "indicatrix-worker-serve-test-{}-{}.sqlite",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
-    ));
-    Database::new(Some(path.to_str().unwrap())).unwrap()
+    ))
+}
+
+/// Creates a fresh, empty, throwaway temp database file and returns its path (the
+/// handle used to create it is already dropped, so a connection can open it itself).
+pub(super) fn test_db_file() -> std::path::PathBuf {
+    let path = unique_db_path();
+    drop(Database::new(Some(path.to_str().unwrap())).unwrap());
+    path
+}
+
+/// A [`LibraryHandle`] around a fresh, empty, throwaway temp database, just to satisfy
+/// `handle_connection`'s signature -- none of these tests but `lazy_library`'s exercise
+/// the library protocol itself.
+pub(super) fn test_db() -> LibraryHandle {
+    let path = unique_db_path();
+    LibraryHandle::open(Database::new(Some(path.to_str().unwrap())).unwrap())
 }
 
 /// A unique, freshly created temp directory named after `label`, the process id and a

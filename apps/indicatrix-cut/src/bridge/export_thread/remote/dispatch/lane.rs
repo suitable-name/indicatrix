@@ -4,7 +4,7 @@
 use super::{
     super::{
         capability::RemoteCapability,
-        rate::{remote_chunk_samples, shortfall},
+        rate::{remote_request_samples, shortfall},
     },
     progress::RemoteProgress,
     run_batch::run_remote_batch,
@@ -84,11 +84,12 @@ pub(in crate::bridge::export_thread) struct RemoteLaneOutcome {
 }
 
 /// Runs the REMOTE lane for the whole concurrent phase: repeatedly sizes a chunk from
-/// the current best rate estimate (see [`remote_chunk_samples`]), claims it from
-/// `cursor`, dispatches it via [`run_remote_batch`], merges whatever prefix completed
-/// into `progress`, and loops -- until `cursor` has nothing left to claim, the export
-/// is cancelled, remote fails too many times in a row (`Both` only), or (`RemoteOnly`
-/// only) a single failed chunk makes the whole export unrecoverable.
+/// the current best rate estimate and the peer's kind (see [`remote_request_samples`]:
+/// about 22 seconds of work for a plain worker, up to 90 for a coordinator), claims it
+/// from `cursor`, dispatches it via [`run_remote_batch`], merges whatever prefix
+/// completed into `progress`, and loops -- until `cursor` has nothing left to claim, the
+/// export is cancelled, remote fails too many times in a row (`Both` only), or
+/// (`RemoteOnly` only) a single failed chunk makes the whole export unrecoverable.
 ///
 /// # Why every chunk gets its OWN fresh `Accumulator`
 ///
@@ -204,7 +205,9 @@ fn run_remote_lane_claim_loop(
             };
         }
 
-        let Some((start, count)) = cursor.claim(remote_chunk_samples(rate)) else {
+        let Some((start, count)) =
+            cursor.claim(remote_request_samples(rate, capability.coordinator))
+        else {
             // Nothing left in the shared pool -- a normal, successful end to this
             // lane's work (this only ever inspects the shared pool, never the
             // local-only retry pile, which is `claim_local`'s alone).

@@ -1,6 +1,6 @@
 //! Per-socket plumbing shared by every listener (viewer, worker, enrollment) and by
 //! `join`'s outbound connections: TCP tuning, the pre-protocol handshake deadline, the
-//! per-connection read-only library database, and the payload-encoding preference.
+//! read-only library database opener, and the payload-encoding preference.
 
 use std::{
     io::{Read, Write},
@@ -128,9 +128,11 @@ impl Write for DeadlineSocket<'_> {
 /// fails fast with a clear error if the database doesn't already exist rather than
 /// silently creating an empty one.
 ///
-/// Called once per connection (see [`resolve_library_db_path`]), not opened once and
-/// shared: `rusqlite::Connection` is `Send` but not `Sync`, and SQLite's concurrency
-/// model is many independent reader connections.
+/// Called once at start-up to validate the path, and then by each connection's
+/// [`super::library::LibraryHandle`] on its first library request (see
+/// [`resolve_library_db_path`]), not opened once and shared: `rusqlite::Connection` is
+/// `Send` but not `Sync`, and SQLite's concurrency model is many independent reader
+/// connections.
 ///
 /// # Errors
 ///
@@ -149,7 +151,8 @@ pub(super) fn open_library_database(path: &std::path::Path) -> Result<Database, 
 }
 
 /// Resolves `--db` (or the default `facet_diagrams.sqlite`) to the path every
-/// connection thread opens its own [`open_library_database`] handle from.
+/// connection opens its own [`open_library_database`] handle from, when it first serves
+/// a library request.
 ///
 /// [`super::run`] hands out a path, not an already-open [`Database`]: `rusqlite::Connection`
 /// isn't `Sync`, so it can't be shared via `Arc` the way `GpuBackend` is below. [`super::run`]
@@ -257,22 +260,6 @@ pub fn payload_preference_for(
         &indicatrix_net::messages::LOOPBACK_SERVER_PREFERENCE
     } else {
         &indicatrix_net::messages::DEFAULT_SERVER_PREFERENCE
-    }
-}
-
-/// Opens this connection's own read-only [`Database`] handle from `path` (see
-/// [`resolve_library_db_path`]). `None` (after logging why) if it can't be opened, so a
-/// transient failure drops just this one connection rather than the accept loop.
-pub(super) fn open_connection_database(
-    path: &std::path::Path,
-    peer: Option<SocketAddr>,
-) -> Option<Database> {
-    match open_library_database(path) {
-        Ok(db) => Some(db),
-        Err(e) => {
-            tracing::warn!("connection {peer:?}: {e}");
-            None
-        }
     }
 }
 

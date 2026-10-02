@@ -8,7 +8,10 @@ use super::remote_lane::run_remote_lane;
 use crate::{
     BatchModel, MainWindow,
     bridge::preview_render::{self, CacheKind, PreviewJob, PreviewView},
-    gui::batch::batch_queue::WorkQueue,
+    gui::batch::{
+        batch_queue::WorkQueue,
+        remote_dispatch::{DispatcherGroup, RemoteStatus},
+    },
     settings::WorkerSettings,
 };
 use indicatrix::{
@@ -337,11 +340,10 @@ pub(super) struct LiveProgress {
     /// parameter, fixed for the whole batch so it isn't duplicated into this
     /// per-update struct).
     local_active: u32,
-    remote_title: String,
-    /// Whether the remote lane is running at all this batch -- distinct from
-    /// `remote_title` being empty, which also happens briefly between two remote
-    /// items while the lane is very much still active.
-    remote_active: bool,
+    /// The remote dispatchers' side: how many run, how many items are on the remote,
+    /// and the most recently started item's title. Changed only through
+    /// [`update_remote`].
+    remote: RemoteStatus,
 }
 
 /// Pushes a snapshot of `progress` to the UI thread. Called by every lane after any
@@ -370,16 +372,26 @@ pub(super) fn push_progress(
         ui.global::<BatchModel>()
             .set_preview_local_lane_total(local_lane_total as i32);
         ui.global::<BatchModel>()
-            .set_preview_remote_title(snapshot.remote_title.into());
+            .set_preview_remote_title(snapshot.remote.title().into());
         ui.global::<BatchModel>()
-            .set_preview_remote_active(snapshot.remote_active);
+            .set_preview_remote_active(snapshot.remote.is_active());
+        ui.global::<BatchModel>()
+            .set_preview_remote_in_flight(snapshot.remote.in_flight() as i32);
     });
 }
 
-pub(super) fn set_remote_status(progress: &Mutex<LiveProgress>, active: bool, title: &str) {
-    let mut p = progress.lock().unwrap_or_else(PoisonError::into_inner);
-    p.remote_active = active;
-    p.remote_title = title.to_string();
+/// Applies `change` to the shared remote status -- every remote dispatcher goes through
+/// here, so no two of them can interleave a half-finished update.
+pub(super) fn update_remote(
+    progress: &Mutex<LiveProgress>,
+    change: impl FnOnce(&mut RemoteStatus),
+) {
+    change(
+        &mut progress
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remote,
+    );
 }
 
 fn increment_completed(progress: &Mutex<LiveProgress>) {
@@ -417,6 +429,13 @@ pub(super) struct LaneShared<'a> {
     /// read fresh by each lane) purely so every `push_progress` call site has it without
     /// needing its own separate parameter.
     pub(super) local_lane_total: u32,
+    /// How many remote dispatchers this batch spawns -- see
+    /// `batch_queue::remote_lane_count`. `0` when no remote lane runs (`LocalOnly`).
+    pub(super) remote_lane_total: u32,
+    /// Set by the first remote dispatcher to start sitting a failing remote out, so the
+    /// "remote lane paused" toast shows once per batch however many dispatchers (each
+    /// with its own failure count) reach their own sit-out.
+    pub(super) sit_out_toasted: AtomicBool,
     /// The library card thumbnail cache, invalidated per design in [`finish_item`] once
     /// its previews are saved.
     pub(super) thumbnail_cache: &'a crate::gui::batch::preview_cache::PreviewThumbnailCache,
@@ -572,8 +591,13 @@ pub(super) fn run_local_lane(
         if shared.cancel.load(Ordering::Relaxed) {
             break;
         }
+        // Read BEFORE the claim: a remote dispatcher raises the flag only after its last
+        // requeue, so a claim that follows an observed `true` sees every requeue and an
+        // empty answer is final. Read after the claim, a requeue landing between the two
+        // would be stranded.
+        let remote_finished = remote_lane_done.load(Ordering::Acquire);
         let Some(item) = shared.queue.claim_local() else {
-            if remote_lane_done.load(Ordering::Acquire) {
+            if remote_finished {
                 break;
             }
             thread::sleep(LOCAL_IDLE_POLL);
@@ -632,6 +656,9 @@ pub(super) fn build_items(entry_ids: &[i64]) -> Vec<PreviewItem> {
 /// a cheap copy of it, with no further indirection needed the way `spawn_preview_batch`
 /// itself would have needed had it kept this block inline (see `gui::batch::tilt`'s
 /// identical helper for the full reasoning).
+///
+/// `shared.remote_lane_total` remote dispatchers run at once, all claiming from the same
+/// queue; `remote_lane_done` is raised when the last of them ends.
 pub(super) fn run_batch_lanes(
     shared: &LaneShared<'_>,
     gpu: &GpuBackend,
@@ -641,18 +668,24 @@ pub(super) fn run_batch_lanes(
     ui_weak: &Weak<MainWindow>,
     remote_lane_done: &AtomicBool,
 ) {
+    // Built before the scope: the scoped dispatchers borrow it for the scope's whole
+    // lifetime.
+    let dispatchers = DispatcherGroup::new(shared.remote_lane_total as usize, remote_lane_done);
+    let dispatchers = &dispatchers;
     std::thread::scope(|scope| {
         if plan.run_remote {
-            let remote_ui_weak = ui_weak.clone();
-            scope.spawn(move || {
-                run_remote_lane(
-                    shared,
-                    &remote_ui_weak,
-                    remote_worker,
-                    plan.fallback_to_local,
-                    remote_lane_done,
-                );
-            });
+            for _ in 0..shared.remote_lane_total {
+                let remote_ui_weak = ui_weak.clone();
+                scope.spawn(move || {
+                    run_remote_lane(
+                        shared,
+                        &remote_ui_weak,
+                        remote_worker,
+                        plan.fallback_to_local,
+                        dispatchers,
+                    );
+                });
+            }
         }
         if plan.run_local {
             // N independently-claiming local lanes, all sharing the one `gpu` acquired

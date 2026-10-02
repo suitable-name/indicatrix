@@ -9,6 +9,7 @@ use crate::{
     assets::{self, AssetCache, Fetched, HdrRoute, HeldAsset},
     cli::ComputeMode,
     coordinator::{self, CapabilityWatch, ViewerSession},
+    serve::library::LibraryHandle,
     stream_emit::{self, StreamOutcome, TimeoutRead, TimeoutWrite, is_stream_timeout},
     validate,
 };
@@ -20,7 +21,6 @@ use indicatrix_net::{
         StreamEvent, TiltCurvesRequest, TransferMode, error_codes,
     },
 };
-use indicatrix_vault::db::sqlite::Database;
 use std::{
     io::{Read, Write},
     sync::Arc,
@@ -43,9 +43,10 @@ pub struct RequestContext<'a> {
     /// The process's shared GPU backend (disabled when this machine renders on the CPU
     /// only, or has no own lane at all).
     pub gpu: &'a Arc<GpuBackend>,
-    /// The library database, or `None` on a `join`ed worker's connection (the
-    /// coordinator serves the library).
-    pub db: Option<&'a Database>,
+    /// The connection's library, opened by its first library request (never by any other
+    /// kind of request), or `None` on a `join`ed worker's connection (the coordinator
+    /// serves the library).
+    pub db: Option<&'a LibraryHandle>,
     /// `--only-gpu`/`--only-cpu`/hybrid for the own lane.
     pub compute_mode: ComputeMode,
     /// The encoding negotiated in `WELCOME` for every `FRAME`/`PREVIEW` on this connection.
@@ -429,7 +430,7 @@ enum NextRequest {
 /// logged reason.
 fn read_next_message<S: Read + Write + TimeoutRead>(
     stream: &mut S,
-    db: Option<&Database>,
+    db: Option<&LibraryHandle>,
     mut watch: Option<&mut CapabilityWatch>,
 ) -> Result<Option<NextRequest>, NetError> {
     loop {

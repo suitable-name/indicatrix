@@ -4,12 +4,25 @@
 //! # Routes
 //!
 //! [`plan::plan`] decides per request. A request only the own lane would serve (every
-//! `Interactive` request of a `serve --render` coordinator by default) is streamed
-//! **directly**, exactly like a plain worker. Anything else is a **job**: a
-//! `indicatrix_dispatch::LanePool` over `[first_sample, first_sample + samples)` with one
-//! lane per checked-out joined worker plus the own lane, run on a producer thread
-//! ([`producer`]) while this connection's thread emits through the same
-//! `crate::stream_emit` emitter a plain worker uses.
+//! `Interactive` request of a `serve --render --interactive-workers 0` coordinator, and
+//! any request no joined worker could take) is streamed **directly**, exactly like a plain
+//! worker. Anything else is a **job**: a `indicatrix_dispatch::LanePool` over
+//! `[first_sample, first_sample + samples)` with one lane per checked-out joined worker
+//! plus the own lane, run on a producer thread ([`producer`]) while this connection's
+//! thread emits through the same `crate::stream_emit` emitter a plain worker uses.
+//!
+//! # Small pictures
+//!
+//! A `Batch` request that is little work -- its estimated render time on the fastest
+//! eligible joined worker is under [`JobConfig::whole_image_secs`] (from the rate book),
+//! or, with no rate measured yet, its `pixels * samples` is at most
+//! [`JobConfig::whole_image_pixel_samples`] -- is a **whole-image** job: one lane renders
+//! the whole picture (one chunk once that lane's rate is known), the fastest idle joined
+//! worker (the own lane only while none is idle), because splitting a picture that takes
+//! milliseconds only waits for the slowest lane. Such jobs do not queue in the viewer's FIFO: one viewer runs up to
+//! [`JobConfig::jobs_per_viewer`] of them at once (a GUI batch keeps several pictures in
+//! flight on separate connections), each on its own worker connection, bounded by the
+//! memory budget. The request's log line says `whole_image` and the lanes it ran on.
 //!
 //! # What the viewer receives from a job
 //!
@@ -43,10 +56,11 @@
 //! job whose lanes do not all fit runs on as many as do and is refused only when not
 //! even one fits (a maximum-size 8K job needs about 2.6 GiB with one lane, so it needs
 //! a raised `--max-job-memory-mib`). Throughput jobs
-//! (`Batch` + `FinalOnly`, and every `FinalImageRequest`) wait in their viewer's FIFO:
-//! one active job per viewer certificate. Interactive requests are exempt (they are
-//! superseded by the next one within a second, and take no workers by default); so are
-//! direct own-lane requests, which behave exactly like a plain worker's.
+//! (`Batch` + `FinalOnly`, and every `FinalImageRequest`) that are not whole-image wait in
+//! their viewer's FIFO: one active job per viewer certificate; whole-image jobs count
+//! against [`JobConfig::jobs_per_viewer`] instead. Interactive requests are exempt (they
+//! are superseded by the next one within a second); so are direct own-lane requests, which
+//! behave exactly like a plain worker's.
 //!
 //! # HDR scenes
 //!
@@ -101,7 +115,10 @@ use indicatrix_net::messages::{
 use std::{
     collections::BTreeMap,
     io::{Read, Write},
-    sync::{Arc, Mutex, PoisonError},
+    sync::{
+        Arc, Mutex, PoisonError,
+        atomic::{AtomicU32, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -116,7 +133,7 @@ pub struct OwnLaneSetup {
 }
 
 /// Scheduling knobs of coordinator jobs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct JobConfig {
     /// Throughput jobs: `ChunkPolicy::EXPORT` sizing with a coordinator failure schedule
     /// (see [`Self::default`]).
@@ -134,6 +151,18 @@ pub struct JobConfig {
     /// as an upload is actually in flight, so this only needs to absorb the viewer's
     /// own rate-estimate error, not the whole render.
     pub contribution_wait: Duration,
+    /// A `Batch` request whose estimated render time on the fastest eligible joined worker
+    /// is below this many seconds is rendered whole, as one chunk on one lane (see the
+    /// module doc comment). `0` never holds. Default
+    /// [`crate::cli::DEFAULT_WHOLE_IMAGE_SECS`].
+    pub whole_image_secs: f64,
+    /// The same decision while no eligible joined worker has a measured rate: whole when
+    /// `width * height * samples` is at most this. Default
+    /// [`crate::cli::DEFAULT_WHOLE_IMAGE_PIXEL_SAMPLES`].
+    pub whole_image_pixel_samples: u64,
+    /// The most whole-image jobs one viewer has running at once (at least 1). Default
+    /// [`crate::cli::DEFAULT_JOBS_PER_VIEWER`].
+    pub jobs_per_viewer: u32,
 }
 
 impl Default for JobConfig {
@@ -155,6 +184,9 @@ impl Default for JobConfig {
             lane_wait: Duration::from_secs(30),
             lane: LaneTimeouts::default(),
             contribution_wait: stream_emit::DEFAULT_CONTRIBUTION_WAIT,
+            whole_image_secs: crate::cli::DEFAULT_WHOLE_IMAGE_SECS,
+            whole_image_pixel_samples: crate::cli::DEFAULT_WHOLE_IMAGE_PIXEL_SAMPLES,
+            jobs_per_viewer: crate::cli::DEFAULT_JOBS_PER_VIEWER,
         }
     }
 }
@@ -257,7 +289,8 @@ pub struct Coordinator {
 impl Coordinator {
     /// A coordinator over `registry` (the worker port's, if open) and `own` (with
     /// `--render`), taking at most `interactive_workers` workers per `Interactive`
-    /// request and holding at most `max_job_bytes` in in-flight jobs.
+    /// request (`0`: none besides the own lane, `u32::MAX`: every idle eligible one) and
+    /// holding at most `max_job_bytes` in in-flight jobs.
     #[must_use]
     pub fn new(
         registry: Option<Arc<Registry>>,
@@ -284,6 +317,25 @@ impl Coordinator {
     #[must_use]
     pub fn with_assets(mut self, assets: Option<Arc<AssetCache>>) -> Self {
         self.assets = assets;
+        self
+    }
+
+    /// Sets the small-picture knobs of the job config (`serve --whole-image-secs`,
+    /// `--whole-image-pixel-samples`, `--jobs-per-viewer`; see [`JobConfig`]): a
+    /// `jobs_per_viewer` of 0 becomes 1.
+    #[must_use]
+    pub fn with_small_pictures(
+        self,
+        whole_image_secs: f64,
+        whole_image_pixel_samples: u64,
+        jobs_per_viewer: u32,
+    ) -> Self {
+        self.set_job_config(JobConfig {
+            whole_image_secs,
+            whole_image_pixel_samples,
+            jobs_per_viewer: jobs_per_viewer.max(1),
+            ..self.job_config()
+        });
         self
     }
 
@@ -427,6 +479,7 @@ pub fn serve_render<S: Read + Write + TimeoutRead + TimeoutWrite>(
         intent: request.intent,
         transfer_mode: request.stream.transfer_mode,
         pixels: request.scene.width * request.scene.height,
+        samples: request.samples,
         hdr: request.scene.hdr().is_some(),
     };
     stream_request(
@@ -520,6 +573,7 @@ pub fn serve_final_image<S: Read + Write + TimeoutRead + TimeoutWrite>(
         intent: RequestIntent::Batch,
         transfer_mode: TransferMode::FinalOnly,
         pixels: request.scene.width * request.scene.height,
+        samples: request.server_samples(),
         hdr: request.scene.hdr().is_some(),
     };
     let output = Output::FinalImage(request.color_space.into());
@@ -602,6 +656,7 @@ fn stream_request<S: Read + Write + TimeoutRead + TimeoutWrite>(
             own: true,
             workers: WorkerPick::None,
             fifo: true,
+            whole_image: false,
             pool: coordinator.job_config().batch,
         });
     }
@@ -616,6 +671,7 @@ fn stream_request<S: Read + Write + TimeoutRead + TimeoutWrite>(
         contribution: slot.map(Arc::as_ref),
         stall_timeout: direct.then_some(stream_emit::PRODUCER_STALL_TIMEOUT),
     };
+    let lanes_run = Arc::new(AtomicU32::new(0));
     let (outcome, next) = match (route, coordinator.own.as_ref()) {
         (Route::Direct, Some(own)) => stream_emit::run_stream_with(
             stream,
@@ -624,9 +680,9 @@ fn stream_request<S: Read + Write + TimeoutRead + TimeoutWrite>(
         )?,
         (Route::Job(plan), _) => {
             // The memory-budget reservation itself happens inside `producer::run`,
-            // AFTER it waits its turn in the viewer's FIFO -- a job queued behind
-            // another one of the same viewer must not hold budget while it hasn't
-            // even started.
+            // AFTER it waits its turn in the viewer's FIFO (or for a whole-image slot)
+            // -- a job queued behind another one of the same viewer must not hold
+            // budget while it hasn't even started.
             //
             // `range` is the SERVER's own share: `request.samples` (the whole range,
             // used unchanged as the emitter's tone-map/progress divisor) minus however
@@ -643,6 +699,7 @@ fn stream_request<S: Read + Write + TimeoutRead + TimeoutWrite>(
                 // `spec.contribution` (built above) borrows through `slot` for the
                 // emitter's whole run; the job gets its own clone of the same `Arc`.
                 contribution: slot.cloned(),
+                lanes_run: Arc::clone(&lanes_run),
             };
             stream_emit::run_stream_with(stream, &spec, move |sink| producer::run(&job, sink))?
         }
@@ -662,7 +719,8 @@ fn stream_request<S: Read + Write + TimeoutRead + TimeoutWrite>(
             return Ok(None);
         }
     };
-    served::log(request, ask, direct, started.elapsed(), &outcome);
+    let how = served::Served::new(route, lanes_run.load(Ordering::Relaxed));
+    served::log(request, ask, how, started.elapsed(), &outcome);
     report(stream, outcome)?;
     Ok(next)
 }

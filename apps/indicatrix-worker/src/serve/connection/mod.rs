@@ -11,10 +11,10 @@
 //! - [`requests`] (`worker` builds): the post-`WELCOME` request loop -- independent of
 //!   who dialled, so `serve`'s accept path and `join`'s dial path share it.
 
+use super::library::LibraryHandle;
 use indicatrix_net::messages::{ClientMessage, ErrorMsg, NetError, error_codes};
 #[cfg(not(feature = "worker"))]
 use indicatrix_net::messages::{PROTOCOL_VERSION, PayloadEncoding, PeerRole, Welcome};
-use indicatrix_vault::db::sqlite::Database;
 #[cfg(feature = "worker")]
 use std::io::Write;
 #[cfg(not(feature = "worker"))]
@@ -107,13 +107,15 @@ pub fn refuse_for_capacity<S: Write>(
     );
 }
 
-/// Dispatches `ClientMessage::Library` to [`super::library::handle_request`] and writes
+/// Dispatches `ClientMessage::Library` to [`LibraryHandle::handle`] and writes
 /// its reply directly (plain request/response, never a `StreamEvent` stream). A
 /// `Cancel` with nothing currently streaming is logged and ignored. Shared by both
 /// build modes.
 ///
 /// `db` is `None` on a `join`ed worker's connection: a render worker serves no library
-/// (the coordinator does), so a `Library` request gets a `LibraryResponse::Error`.
+/// (the coordinator does), so a `Library` request gets a `LibraryResponse::Error`. Any
+/// other connection passes its [`LibraryHandle`], which opens the database here, on the
+/// connection's first `Library` request.
 ///
 /// # Errors
 ///
@@ -141,7 +143,7 @@ pub fn refuse_for_capacity<S: Write>(
 pub fn handle_non_render_message<S: Write>(
     stream: &mut S,
     msg: &ClientMessage,
-    db: Option<&Database>,
+    db: Option<&LibraryHandle>,
 ) -> Result<(), NetError> {
     match msg {
         ClientMessage::Cancel(c) => {
@@ -164,7 +166,7 @@ pub fn handle_non_render_message<S: Write>(
                         request_id: None,
                     })
                 },
-                |db| super::library::handle_request(req, db),
+                |library| library.handle(req),
             );
             indicatrix_net::messages::write_message(stream, &response)
         }
@@ -225,7 +227,7 @@ fn is_idle_timeout(e: &std::io::Error) -> bool {
 #[cfg(not(feature = "worker"))]
 fn serve_until_render_request_or_eof<S: Read + Write>(
     stream: &mut S,
-    db: &Database,
+    db: &LibraryHandle,
 ) -> Result<Option<std::convert::Infallible>, NetError> {
     loop {
         let msg: ClientMessage = match indicatrix_net::messages::read_control_message(stream) {
@@ -300,7 +302,7 @@ impl ClearHandshakeTimeout for rustls::StreamOwned<rustls::ServerConnection, std
 #[cfg(not(feature = "worker"))]
 pub fn handle_connection<S: Read + Write + ClearHandshakeTimeout>(
     mut stream: S,
-    db: &Database,
+    db: &LibraryHandle,
     cert_role: Option<PeerRole>,
 ) -> Result<(), NetError> {
     let check = super::handshake::read_and_check_hello(&mut stream, PeerRole::Viewer, cert_role)?;

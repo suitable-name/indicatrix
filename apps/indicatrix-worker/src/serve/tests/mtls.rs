@@ -370,6 +370,9 @@ fn insecure_no_tls_with_a_non_loopback_bind_is_refused() {
         interactive_workers: 0,
         pin_interactive_worker: None,
         max_job_memory_mib: crate::cli::DEFAULT_MAX_JOB_MEMORY_MIB,
+        whole_image_secs: crate::cli::DEFAULT_WHOLE_IMAGE_SECS,
+        whole_image_pixel_samples: crate::cli::DEFAULT_WHOLE_IMAGE_PIXEL_SAMPLES,
+        jobs_per_viewer: crate::cli::DEFAULT_JOBS_PER_VIEWER,
     };
     let bind_addr: SocketAddr = args.bind.parse().unwrap();
     let err = build_transport(&args, bind_addr).unwrap_err();
@@ -404,6 +407,9 @@ fn insecure_no_tls_with_a_loopback_bind_is_accepted() {
         interactive_workers: 0,
         pin_interactive_worker: None,
         max_job_memory_mib: crate::cli::DEFAULT_MAX_JOB_MEMORY_MIB,
+        whole_image_secs: crate::cli::DEFAULT_WHOLE_IMAGE_SECS,
+        whole_image_pixel_samples: crate::cli::DEFAULT_WHOLE_IMAGE_PIXEL_SAMPLES,
+        jobs_per_viewer: crate::cli::DEFAULT_JOBS_PER_VIEWER,
     };
     let bind_addr: SocketAddr = args.bind.parse().unwrap();
     assert!(matches!(

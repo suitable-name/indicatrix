@@ -9,6 +9,11 @@ export global RemoteWorkerModel {
     in property <WorkerItem> endpoint;
     out property <bool> live_remote_available: root.configured;
     in-out property <bool> denoise_enabled: true;
+    // How many pictures a catalogue preview or tilt batch keeps in flight on the remote
+    // at once (`AppSettings::remote_batch_lanes`, 1..=32). The dialog's spin box edits it
+    // in place; `remote_batch_lanes_changed` hands the new count to Rust to limit and
+    // persist.
+    in-out property <int> remote_batch_lanes: 4;
     in property <bool> testing_connection: false;
     in property <string> test_connection_result: "";
     in property <bool> test_connection_is_error: false;
@@ -42,6 +47,7 @@ export global RemoteWorkerModel {
 
     callback pick_cert_dir(string);
     callback denoise_toggled(bool);
+    callback remote_batch_lanes_changed(int);
     // Address and certificate folder of the (possibly unsaved) form.
     callback test_worker_connection(string, string);
     callback save_remote(WorkerItem);

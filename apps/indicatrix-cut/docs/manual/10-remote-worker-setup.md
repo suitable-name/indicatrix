@@ -6,8 +6,9 @@ This chapter covers connecting the app to its one remote: a **coordinator**
 (`indicatrix-worker serve`, a server that other machines — "workers" — join,
 and that renders on its own hardware too when started with `--render`). You
 will get certificates, set up the remote, test the connection, choose how
-results travel home (full data or final picture), browse its design library,
-and troubleshoot a connection that has gone quiet.
+results travel home (full data or final picture), choose how many pictures a
+catalogue batch keeps in flight on it, browse its design library, and
+troubleshoot a connection that has gone quiet.
 
 The coordinator's operator sets it up with the worker software's own README
 (`apps/indicatrix-worker/README.md`: "Setting up a coordinator with joined
@@ -189,6 +190,28 @@ an error explaining there is nothing to load rather than silently loading
 a placeholder. Mirroring to local first is still worthwhile if you want an
 offline copy or plan to edit the same design repeatedly without a network
 round trip each time.
+
+## Catalogue batches on the remote
+
+The catalogue's batch tools — **Generate Previews** (one design, a filtered
+set or the whole library) and **Compute Tilt Curves** (Chapters 2 and 14) —
+send their work to the remote too, whenever Live Compute is **Remote only** or
+**Local + Remote**. A preview is one small picture per view and a tilt sweep
+is one request per design, and a remote renders one of them in a fraction of
+the time the request needs to travel there and back. So the app does not send
+one and wait for the answer before the next: it keeps **several pictures in
+flight on the remote at once**, each rendered whole by one of the
+coordinator's machines, and writes each as it arrives.
+
+How many is the **Remote lanes for batches** setting in the Remote
+Coordinator panel (1 to 32, default 4). It is saved the moment you change it
+and read when a batch starts, so a batch already running keeps the count it
+began with. A coordinator with several joined workers wants more lanes than
+one with a single machine; beyond roughly one lane per worker slot a higher
+number only queues pictures on the coordinator. If the remote fails pictures
+repeatedly, each lane backs off on its own (and with **Local + Remote** your
+own computer renders the pictures the remote could not, exactly as before).
+With **Local only**, no lane is used.
 
 ## Denoise and sample budget
 

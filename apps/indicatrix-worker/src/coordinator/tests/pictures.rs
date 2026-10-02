@@ -2,7 +2,7 @@
 //! coordinator on loopback with a joined CPU worker.
 
 use super::{
-    fixtures::{bundle, coordinator_args, pki_with_server, start, wait_for},
+    fixtures::{bundle, coordinator_args, fan_out_config, pki_with_server, start, wait_for},
     support::{collect, render, scene, send, spawn_worker, viewer},
 };
 use crate::{
@@ -182,7 +182,7 @@ fn a_missing_contribution_is_reclaimed_and_reported_in_done_stats() {
         .unwrap()
         .set_job_config(JobConfig {
             contribution_wait: Duration::from_millis(200),
-            ..JobConfig::default()
+            ..fan_out_config()
         });
     let registry = Arc::clone(handle.registry.as_ref().unwrap());
     spawn_worker(handle.worker_addr.unwrap(), &worker_bundle);

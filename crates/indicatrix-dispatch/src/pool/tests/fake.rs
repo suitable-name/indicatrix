@@ -6,7 +6,7 @@ use glam::Vec3;
 use indicatrix_net::SceneState;
 use std::{
     sync::{
-        Mutex, PoisonError,
+        Arc, Barrier, Mutex, PoisonError,
         atomic::{AtomicU32, Ordering},
     },
     thread,
@@ -139,6 +139,65 @@ impl FakeLane {
             Failure::Never | Failure::First { .. } | Failure::Panic => None,
         }
         .filter(|&after| after < range.samples)
+    }
+}
+
+/// A lane that traces instantly (an all-zero sum), reports a fixed `rate` and records the
+/// length of every chunk it is handed, so a test sees exactly how the pool sized them.
+pub(super) struct SizeRecorder {
+    /// The rate every chunk reports, in samples per second.
+    rate: f64,
+    sizes: Mutex<Vec<u32>>,
+    /// Waited at inside the first chunk, so that every lane sharing the barrier has
+    /// claimed its first chunk before any of them finishes one.
+    rendezvous: Option<Arc<Barrier>>,
+}
+
+impl SizeRecorder {
+    pub(super) const fn new(rate: f64) -> Self {
+        Self {
+            rate,
+            sizes: Mutex::new(Vec::new()),
+            rendezvous: None,
+        }
+    }
+
+    /// Makes the first chunk wait at `gate` until every other holder of it arrives.
+    pub(super) fn meeting_at(mut self, gate: Arc<Barrier>) -> Self {
+        self.rendezvous = Some(gate);
+        self
+    }
+
+    /// The length of every chunk handed to this lane, in the order it received them.
+    pub(super) fn sizes(&self) -> Vec<u32> {
+        self.sizes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
+impl WorkerLane for SizeRecorder {
+    fn name(&self) -> &'static str {
+        "size recorder"
+    }
+
+    fn render_chunk(
+        &self,
+        scene: &SceneState,
+        range: SampleRange,
+        _cancel: &CancelToken,
+    ) -> ChunkResult {
+        let first = {
+            let mut sizes = self.sizes.lock().unwrap_or_else(PoisonError::into_inner);
+            sizes.push(range.samples);
+            sizes.len() == 1
+        };
+        if let Some(gate) = self.rendezvous.as_ref().filter(|_| first) {
+            gate.wait();
+        }
+        let pixels = scene.width as usize * scene.height as usize;
+        ChunkResult::complete(vec![Vec3::ZERO; pixels], range.samples, Some(self.rate))
     }
 }
 

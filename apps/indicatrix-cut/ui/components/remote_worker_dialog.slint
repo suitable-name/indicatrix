@@ -197,6 +197,33 @@ export component RemoteWorkerDialog inherits PopupWindow {
             }
         }
 
+        // Remote lanes for batches -- how many pictures a catalogue preview or tilt batch
+        // keeps in flight on the remote at once (`AppSettings::remote_batch_lanes`). One
+        // app-wide choice like the denoise toggle above, not part of the endpoint form:
+        // it is saved the moment the spin box changes. The explanation has a stated
+        // two-line height because a wrapped `Text`'s preferred height is one line.
+        VerticalLayout {
+            spacing: 2px;
+            HorizontalLayout {
+                alignment: space-between;
+                Text { text: "Remote lanes for batches"; font-size: 11px; color: Theme.text-secondary; vertical-alignment: center; }
+                SpinBox {
+                    minimum: 1;
+                    maximum: 32;
+                    step-size: 1;
+                    value <=> RemoteWorkerModel.remote_batch_lanes;
+                    edited(lanes) => { RemoteWorkerModel.remote_batch_lanes_changed(lanes); }
+                }
+            }
+            Text {
+                text: "Pictures a preview or tilt batch keeps in flight on the remote at once; a coordinator with several workers wants more.";
+                font-size: 9px;
+                color: Theme.text-muted;
+                wrap: word-wrap;
+                height: 24px;
+            }
+        }
+
         // The configured endpoint.
         if RemoteWorkerModel.configured && !root.editing: Rectangle {
             background: Theme.surface-sunken;

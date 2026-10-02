@@ -63,9 +63,10 @@ pub struct ChunkResult {
     /// How many samples of the assigned range were traced: the valid prefix.
     pub done: u32,
     /// The lane's own steady-state throughput measurement for this chunk, in
-    /// samples per second, excluding one-time costs such as connection setup and scene
-    /// upload (for a remote lane: the marginal rate between the first and last
-    /// progress report). `None` lets the pool fall back to `done / wall time`.
+    /// samples per second, excluding one-time costs such as connection setup, scene
+    /// upload and the final frame's encode and upload (for a remote lane: the marginal
+    /// rate between its first and its last progress report that advanced the count).
+    /// `None` lets the pool fall back to `done / wall time`.
     pub rate: Option<f64>,
     /// Why the chunk ended short, when it did. `None` together with `done` short of
     /// the range is reported as "ended early".

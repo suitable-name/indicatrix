@@ -38,21 +38,29 @@
 //! `TILT_CURVES` is a single blocking request/response (unlike `RENDER`'s progressive
 //! `StreamEvent` stream), so a remote dispatch checks `cancel` once before sending and
 //! then blocks for the whole round trip; `tilt_batch_remote_title` can only ever show
-//! which design is in flight, never a sub-progress fraction.
+//! which design a dispatcher started most recently, never a sub-progress fraction.
 //!
 //! Progress is reported as a COMPLETED COUNT (`tilt_batch_design_index`), not a current
 //! index, since local and remote lanes may each be mid-design simultaneously. With N
 //! local lanes, no single title/axis-index can describe them, so
 //! `tilt_batch_local_active` reports how many of `tilt_batch_local_lane_total` currently
-//! have a design claimed. The remote lane stays singular, so `tilt_batch_remote_title`
-//! remains meaningful.
+//! have a design claimed. The remote side is several dispatchers too (see below), so it
+//! reports how many designs are on the remote (`tilt_batch_remote_in_flight`) and keeps
+//! `tilt_batch_remote_title` as the design started most recently.
+//!
+//! The remote side runs `AppSettings::remote_batch_lanes` dispatchers at once
+//! (`batch_queue::remote_lane_count`), all claiming from the same queue, so a remote
+//! that sweeps a design faster than a request's round trip is never left waiting on one
+//! claim. A design stays all-or-nothing on the remote too: one dispatcher sends the
+//! whole design in one request, so there is nothing to split between dispatchers.
 //!
 //! Split into [`scan`] (manually-triggered missing-curves scan), [`engine`] (per-design
-//! resolve/compute/dispatch and the local/remote lane runners), and [`wiring`] (public
-//! `spawn_tilt_batch`/`setup_tilt_batch_callbacks` UI glue) -- the same three-way seam
-//! `gui::batch::preview` uses.
+//! resolve/compute/dispatch and the local lane runner), [`remote_lane`] (the remote
+//! dispatcher loop) and [`wiring`] (public `spawn_tilt_batch`/
+//! `setup_tilt_batch_callbacks` UI glue) -- the same seams `gui::batch::preview` uses.
 
 mod engine;
+mod remote_lane;
 mod scan;
 mod wiring;
 

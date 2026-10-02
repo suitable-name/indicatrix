@@ -103,6 +103,54 @@ fn calibrated_rejects_an_unusable_rate() {
 }
 
 #[test]
+fn a_staggered_model_is_calibrated_and_hands_out_half_a_chunk_exactly_once() {
+    let mut model = RateModel::staggered(250.0);
+    assert!(model.is_calibrated());
+    assert_eq!(model.rate(), 250.0);
+    assert_eq!(model.take_first_chunk_scale(), Some(0.5));
+    assert_eq!(model.take_first_chunk_scale(), None);
+    // Taking the scale changes nothing else about the model.
+    assert_eq!(model.rate(), 250.0);
+    assert_eq!(model.chunk_samples(&ChunkPolicy::EXPORT), 5500);
+}
+
+#[test]
+fn only_a_staggered_model_carries_a_first_chunk_scale() {
+    assert_eq!(RateModel::new(100.0).take_first_chunk_scale(), None);
+    assert_eq!(RateModel::calibrated(100.0).take_first_chunk_scale(), None);
+    // No usable rate, no calibrated first chunk to halve: a plain uncalibrated model.
+    for rate in [0.0, -5.0, f64::NAN, f64::INFINITY] {
+        let mut model = RateModel::staggered(rate);
+        assert!(!model.is_calibrated(), "{rate}");
+        assert_eq!(model.take_first_chunk_scale(), None, "{rate}");
+    }
+}
+
+#[test]
+fn observing_a_chunk_keeps_a_staggered_models_scale_until_it_is_taken() {
+    let mut model = RateModel::staggered(100.0);
+    model.observe(200, Duration::from_secs(1), None);
+    assert_eq!(model.take_first_chunk_scale(), Some(0.5));
+}
+
+#[test]
+fn scaled_samples_rounds_and_clamps_like_a_rate_sized_chunk() {
+    let export = ChunkPolicy::EXPORT;
+    assert_eq!(export.scaled_samples(22_000, 0.5), 11_000);
+    // Below the 32-sample floor: the floor.
+    assert_eq!(export.scaled_samples(40, 0.5), 32);
+    assert_eq!(export.scaled_samples(1, 0.5), 32);
+    // Above the ceiling: the ceiling.
+    assert_eq!(
+        export.scaled_samples(DEFAULT_MAX_CHUNK_SAMPLES, 4.0),
+        DEFAULT_MAX_CHUNK_SAMPLES
+    );
+    assert_eq!(export.scaled_samples(100, f64::NAN), 32);
+    assert_eq!(ChunkPolicy::INTERACTIVE.scaled_samples(1500, 0.5), 750);
+    assert_eq!(ChunkPolicy::fixed(7).scaled_samples(7, 0.5), 7);
+}
+
+#[test]
 fn later_measurements_blend_with_the_default_weight() {
     let mut model = RateModel::calibrated(100.0);
     model.observe(200, Duration::from_secs(1), None);

@@ -79,6 +79,12 @@ Previews and tilt curves are rendered from the design's own design file (its
 `.asc`, else `.gem`, else `.gcs` attachment) when the record has one, and from
 the angle table only when it has none or the file cannot be read.
 
+A batch of previews or tilt curves (several designs at once, from the library
+menu or the filter panel) also renders on a configured remote coordinator when
+Live Compute includes it, and keeps several pictures in flight on the remote
+at the same time — how many is **Remote lanes for batches** in the Remote
+Coordinator panel (Chapter 10).
+
 Once selected, the detail header above the tabs shows the title, designer,
 and a row of spec chips (Shape, Gear, Facets, L/W, H/W, C/W, P/W, Vol/W³,
 R.I.) — each chip only appears when that value is known. Local designs get

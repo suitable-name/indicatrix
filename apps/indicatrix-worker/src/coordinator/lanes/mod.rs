@@ -54,9 +54,18 @@
 //! coordinator-wide across every viewer connection -- not rebuilt per connection -- so
 //! a joined worker's calibration
 //! survives a GUI export's successive one-shot connections and, keyed by its
-//! certificate label, its own reconnects too. A viewer that wants joined workers
-//! included in its live view passes `--interactive-workers 1` (or higher) to `serve`;
-//! the default `0` serves `Interactive` requests from the own lane alone.
+//! certificate label, its own reconnects too. A live-view (`Interactive`) request
+//! takes every idle joined worker besides the own lane by default
+//! (`serve --interactive-workers all`); `--interactive-workers 0` serves it from the
+//! own lane alone and `--interactive-workers <n>` caps it at the `n` fastest.
+//!
+//! A joined lane reports the rate of its tracing alone: the samples between the worker's
+//! first and its last `PROGRESS` that advanced the count, over the time between those
+//! two reports. The `FinalOnly` `FRAME` that follows the last advance (encode, upload,
+//! decode) and the `DONE` after it are not part of the span, so a worker's rate does not
+//! sink with the size of the picture it uploads and the proportional share it is given
+//! stays in line with what it traces. A chunk too short for two advancing reports reports
+//! first-report-to-`DONE` instead (see `chunk::rate_from_progress`).
 //!
 //! # HDR jobs
 //!

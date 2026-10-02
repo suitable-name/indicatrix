@@ -27,10 +27,10 @@ import { BatchModel } from "../models/batch.slint";
 // mid-item at once, no single title/image-index pair can describe "the" local lane's
 // progress any more, so `local_active`/`local_lane_total` report a plain busy-count
 // instead (see `gui::batch::preview`'s module doc comment's "Progress with N local lanes
-// (plus remote) in flight" section). `remote_title`/`remote_active` describe the REMOTE
-// lane's own in-flight item -- remote stays a single dispatcher, with no numeric
-// sub-index since a single preview render is one blocking request with nothing
-// observable in between (same module's own doc comment).
+// (plus remote) in flight" section). `remote_active`/`remote_in_flight`/`remote_title`
+// describe the REMOTE side: `remote_batch_lanes` dispatchers each keep one item in
+// flight, so the row shows how many items are on the remote right now and the item a
+// dispatcher started most recently (same module's own doc comment).
 export component PreviewBatchDialog inherits Rectangle {
     in property <bool> confirming: BatchModel.preview_confirming;
     in property <int> offer_count: BatchModel.preview_offer_count;
@@ -41,6 +41,7 @@ export component PreviewBatchDialog inherits Rectangle {
     in property <int> local_lane_total: BatchModel.preview_local_lane_total;
     in property <string> remote_title: BatchModel.preview_remote_title;
     in property <bool> remote_active: BatchModel.preview_remote_active;
+    in property <int> remote_in_flight: BatchModel.preview_remote_in_flight;
     in property <bool> done: BatchModel.preview_done;
     in property <string> summary: BatchModel.preview_summary;
     in property <bool> offer_regenerate: BatchModel.preview_offer_regenerate;
@@ -193,13 +194,17 @@ export component PreviewBatchDialog inherits Rectangle {
                                 overflow: elide;
                             }
 
-                            // The remote lane's own in-flight item -- only shown at
-                            // all while that lane is actually running (`LocalOnly`
+                            // The remote dispatchers' in-flight count and the item one
+                            // of them started most recently -- only shown at
+                            // all while remote dispatchers are running (`LocalOnly`
                             // never sets `remote_active`, and `RemoteOnly` shows only
                             // this row, no "Local:" row above, since no local lane
                             // runs in that mode).
                             if root.remote_active: Text {
-                                text: "Remote: " + (root.remote_title == "" ? "Starting..." : root.remote_title);
+                                text: "Remote: " + (root.remote_in_flight > 0
+                                ? root.remote_in_flight + " on remote"
+                                    + (root.remote_title == "" ? "" : " -- " + root.remote_title)
+                                : (root.remote_title == "" ? "Starting..." : root.remote_title));
                                 font-size: 12px;
                                 color: Theme.text-secondary;
                                 overflow: elide;

@@ -56,6 +56,7 @@ camera_distance = 2.4
 selected_material = "Diamond"
 denoise_enabled = true
 contribute_to_final_picture = true
+remote_batch_lanes = 4
 
 [settings.remote]
 export_transfer = "FullData"
@@ -163,6 +164,15 @@ the coordinator folds in before tone-mapping. Only takes effect when the export'
 "Compute" choice is `Both`; a scene mismatch or an HDR map the local tracer can't
 resolve identically silently falls back to a remote-only picture instead of
 refusing the export.
+
+`remote_batch_lanes` (default `4`, top-level, limited to 1..=32 on load and on set) is
+the remote worker dialog's "Remote lanes for batches" spin box: how many pictures
+(preview batch) or designs (tilt batch) a catalogue batch keeps in flight on the remote
+at once, one remote dispatcher per lane. Read when a batch starts. Against a
+coordinator, keep it at or below the coordinator's `--jobs-per-viewer` (default 8):
+requests beyond that wait in its per-viewer queue without progress, and one that waits
+there longer than 60 s is given up by the desktop (rendered locally under
+"Compute: Both", counted as failed under "Remote only").
 
 **Migration.** A file written before the single-endpoint model carries a
 `[[settings.remote_workers]]` list. It still loads: the FIRST entry becomes `remote` (it was the only one any

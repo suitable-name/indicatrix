@@ -401,9 +401,12 @@ fn default_serve_args() -> ServeArgs {
         db: None,
         max_connections: super::DEFAULT_MAX_CONNECTIONS,
         max_preauth_per_ip: super::DEFAULT_MAX_PREAUTH_PER_IP,
-        interactive_workers: 0,
+        interactive_workers: super::ALL_INTERACTIVE_WORKERS,
         pin_interactive_worker: None,
         max_job_memory_mib: super::DEFAULT_MAX_JOB_MEMORY_MIB,
+        whole_image_secs: super::DEFAULT_WHOLE_IMAGE_SECS,
+        whole_image_pixel_samples: super::DEFAULT_WHOLE_IMAGE_PIXEL_SAMPLES,
+        jobs_per_viewer: super::DEFAULT_JOBS_PER_VIEWER,
     }
 }
 
@@ -492,14 +495,54 @@ fn parse_serve_flag(
             }
             out.max_preauth_per_ip = max as usize;
         }
-        "--interactive-workers" => out.interactive_workers = parse_u32(flag, &value(&mut i)?)?,
+        "--interactive-workers" => {
+            out.interactive_workers = parse_interactive_workers(&value(&mut i)?)?;
+        }
         "--pin-interactive-worker" => {
             out.pin_interactive_worker = Some(parse_worker_label(&value(&mut i)?)?);
         }
         "--max-job-memory-mib" => out.max_job_memory_mib = parse_u32(flag, &value(&mut i)?)?,
+        "--whole-image-secs" => out.whole_image_secs = parse_whole_image_secs(&value(&mut i)?)?,
+        "--whole-image-pixel-samples" => {
+            let raw = value(&mut i)?;
+            out.whole_image_pixel_samples = raw
+                .parse::<u64>()
+                .map_err(|_| format!("{flag} expects a non-negative integer, got {raw:?}"))?;
+        }
+        "--jobs-per-viewer" => {
+            let jobs = parse_u32(flag, &value(&mut i)?)?;
+            if jobs == 0 {
+                return Err(
+                    "--jobs-per-viewer must be positive (0 would run no whole-image job at all)"
+                        .to_string(),
+                );
+            }
+            out.jobs_per_viewer = jobs;
+        }
         other => return Err(format!("unknown flag {other:?} for \"serve\" (see --help)")),
     }
     Ok(i)
+}
+
+/// `--interactive-workers`'s value: `all` ([`super::ALL_INTERACTIVE_WORKERS`]) or a count.
+fn parse_interactive_workers(raw: &str) -> Result<u32, String> {
+    if raw == "all" {
+        return Ok(super::ALL_INTERACTIVE_WORKERS);
+    }
+    raw.parse::<u32>().map_err(|_| {
+        format!("--interactive-workers expects \"all\" or a non-negative integer, got {raw:?}")
+    })
+}
+
+/// `--whole-image-secs`'s value: a finite, non-negative number of seconds. `0` is never
+/// satisfied, so with `--whole-image-pixel-samples 0` as well no request is rendered whole.
+fn parse_whole_image_secs(raw: &str) -> Result<f64, String> {
+    match raw.parse::<f64>() {
+        Ok(secs) if secs.is_finite() && secs >= 0.0 => Ok(secs),
+        _ => Err(format!(
+            "--whole-image-secs expects a non-negative number of seconds, got {raw:?}"
+        )),
+    }
 }
 
 /// `--pin-interactive-worker`'s value: a worker certificate label, given bare (`gpu-box`)

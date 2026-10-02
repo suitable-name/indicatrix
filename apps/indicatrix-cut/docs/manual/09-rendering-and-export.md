@@ -69,6 +69,18 @@ itself is the remote's own default ("Export transfer (default)" in the
 Remote Coordinator form); see Chapter 10, "Transfer: full data or final
 picture". The tilt video's export section has the same row.
 
+With **Full data**, the export does not hand the remote its whole share in one
+go. It cuts the samples into requests and sizes each from the speed the
+remote has shown so far: about 22 seconds of work per request for a single
+worker, and up to about 90 seconds for a coordinator, which splits every
+request across its own renderer and its joined workers and keeps them all
+busy (one request never carries more than 65,536 samples, so a very fast
+remote simply gets full-size requests back to back). The first request is a
+short timing probe. For a coordinator the speed is measured over the whole
+request, connection, upload and result transfer included, so the probe reads
+low and the sizes settle on what the link and the remote really deliver
+within a few requests.
+
 ### Max Ray Bounces
 
 A separate rung ladder (4/8/12/24/64/128) just for this export — it starts

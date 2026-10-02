@@ -11,6 +11,7 @@ use crate::{
     gui::batch::{
         batch_queue::WorkQueue,
         preview::{RI_MATCH_TOLERANCE, seeded_random_unit, target_ri_for_design},
+        remote_dispatch::{DispatcherGroup, RemoteStatus},
     },
     settings::WorkerSettings,
 };
@@ -48,6 +49,7 @@ use tracing::warn;
 
 mod save;
 
+use super::remote_lane::run_remote_lane;
 use save::save_curves;
 pub use save::save_tilt_curves_for_entry;
 
@@ -382,7 +384,7 @@ fn process_local_entry(ctx: &BatchContext<'_>, entry_id: i64, cancel: &AtomicBoo
 /// with no worker configured at all -- treated as an immediate shortfall (no attempt
 /// possible) rather than a connection failure, so this never touches the network in
 /// that case.
-fn process_remote_entry(
+pub(super) fn process_remote_entry(
     ctx: &BatchContext<'_>,
     worker: Option<&WorkerSettings>,
     entry_id: i64,
@@ -410,7 +412,7 @@ fn process_remote_entry(
     )
 }
 
-fn panic_message(payload: &(dyn Any + Send)) -> String {
+pub(super) fn panic_message(payload: &(dyn Any + Send)) -> String {
     payload
         .downcast_ref::<&str>()
         .map(|s| (*s).to_string())
@@ -441,11 +443,10 @@ pub(super) struct LiveProgress {
     /// parameter, fixed for the whole batch so it isn't duplicated into this
     /// per-update struct).
     local_active: u32,
-    remote_title: String,
-    /// Whether the remote lane is running at all this batch -- distinct from
-    /// `remote_title` being empty, which also happens briefly between two remote
-    /// designs while the lane is very much still active.
-    remote_active: bool,
+    /// The remote dispatchers' side: how many run, how many designs are on the remote,
+    /// and the most recently started design's title. Changed only through
+    /// [`update_remote`].
+    remote: RemoteStatus,
 }
 
 /// Pushes a snapshot of `progress` to the UI thread. Called by every lane after any
@@ -453,7 +454,7 @@ pub(super) struct LiveProgress {
 /// count `super::spawn_tilt_batch` decided via `batch_queue::local_lane_count`), so it
 /// travels as a plain parameter here rather than living inside the per-update
 /// [`LiveProgress`] -- the same reason `design_total` already does.
-fn push_progress(
+pub(super) fn push_progress(
     ui_weak: &Weak<crate::MainWindow>,
     design_total: u32,
     local_lane_total: u32,
@@ -474,19 +475,29 @@ fn push_progress(
         ui.global::<BatchModel>()
             .set_tilt_local_lane_total(local_lane_total as i32);
         ui.global::<BatchModel>()
-            .set_tilt_remote_title(snapshot.remote_title.into());
+            .set_tilt_remote_title(snapshot.remote.title().into());
         ui.global::<BatchModel>()
-            .set_tilt_remote_active(snapshot.remote_active);
+            .set_tilt_remote_active(snapshot.remote.is_active());
+        ui.global::<BatchModel>()
+            .set_tilt_remote_in_flight(snapshot.remote.in_flight() as i32);
     });
 }
 
-fn set_remote_status(progress: &Mutex<LiveProgress>, active: bool, title: &str) {
-    let mut p = progress.lock().unwrap_or_else(PoisonError::into_inner);
-    p.remote_active = active;
-    p.remote_title = title.to_string();
+/// Applies `change` to the shared remote status -- every remote dispatcher goes through
+/// here, so no two of them can interleave a half-finished update.
+pub(super) fn update_remote(
+    progress: &Mutex<LiveProgress>,
+    change: impl FnOnce(&mut RemoteStatus),
+) {
+    change(
+        &mut progress
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remote,
+    );
 }
 
-fn increment_completed(progress: &Mutex<LiveProgress>) {
+pub(super) fn increment_completed(progress: &Mutex<LiveProgress>) {
     progress
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
@@ -521,6 +532,9 @@ pub(super) struct LaneShared<'a> {
     /// read fresh by each lane) purely so every `push_progress` call site has it without
     /// needing its own separate parameter.
     pub(super) local_lane_total: u32,
+    /// How many remote dispatchers this batch spawns -- see
+    /// `batch_queue::remote_lane_count`. `0` when no remote lane runs (`LocalOnly`).
+    pub(super) remote_lane_total: u32,
 }
 
 /// Runs one LOCAL lane out of `shared.local_lane_total`: claims designs via
@@ -541,8 +555,13 @@ pub(super) fn run_local_lane(
         if shared.cancel.load(Ordering::Relaxed) {
             break;
         }
+        // Read BEFORE the claim: a remote dispatcher raises the flag only after its last
+        // requeue, so a claim that follows an observed `true` sees every requeue and an
+        // empty answer is final. Read after the claim, a requeue landing between the two
+        // would be stranded.
+        let remote_finished = remote_lane_done.load(Ordering::Acquire);
         let Some(entry_id) = shared.queue.claim_local() else {
-            if remote_lane_done.load(Ordering::Acquire) {
+            if remote_finished {
                 break;
             }
             thread::sleep(LOCAL_IDLE_POLL);
@@ -586,88 +605,6 @@ pub(super) fn run_local_lane(
             shared.progress,
         );
     }
-}
-
-/// Runs the REMOTE lane: claims fresh designs via `WorkQueue::claim_shared` only (never
-/// a local-retried one -- that pile is reserved for the local lane, see
-/// `gui::batch::batch_queue`'s doc comment) until the shared pool is empty, then
-/// signals `remote_lane_done` so the local lane knows no further requeues are coming.
-///
-/// `worker` is `None` only for `RemoteOnly` with no worker configured (see
-/// [`process_remote_entry`]'s own doc comment); `fallback_to_local` is `true` only for
-/// `LiveComputeTarget::Both` -- for `RemoteOnly` every failure is final and tallied
-/// `failed` directly: a remote failure is reported as failed and never silently
-/// re-rendered locally.
-pub(super) fn run_remote_lane(
-    shared: &LaneShared<'_>,
-    ui_weak: &Weak<crate::MainWindow>,
-    worker: Option<&WorkerSettings>,
-    fallback_to_local: bool,
-    remote_lane_done: &AtomicBool,
-) {
-    loop {
-        if shared.cancel.load(Ordering::Relaxed) {
-            break;
-        }
-        let Some(entry_id) = shared.queue.claim_shared() else {
-            break;
-        };
-
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            process_remote_entry(shared.ctx, worker, entry_id, shared.cancel, |title| {
-                set_remote_status(shared.progress, true, title);
-                push_progress(
-                    ui_weak,
-                    shared.design_total,
-                    shared.local_lane_total,
-                    shared.progress,
-                );
-            })
-        }));
-
-        let saved = match result {
-            Ok(saved) => saved,
-            Err(payload) => {
-                warn!(
-                    "Remote tilt-curve dispatch panicked for entry {entry_id}: {}",
-                    panic_message(&*payload)
-                );
-                false
-            }
-        };
-
-        if saved {
-            shared.tally.computed.fetch_add(1, Ordering::Relaxed);
-            increment_completed(shared.progress);
-        } else if fallback_to_local {
-            // Not accounted for yet -- the local lane will attempt this exact design
-            // next, and IT is the one that finally tallies/completes it. See
-            // `gui::batch::batch_queue`'s module doc comment for why this never goes
-            // back to the shared pool.
-            shared.queue.return_to_local(entry_id);
-        } else {
-            // `RemoteOnly`: no local fallback exists, so this failure is final.
-            shared.tally.failed.fetch_add(1, Ordering::Relaxed);
-            increment_completed(shared.progress);
-        }
-        push_progress(
-            ui_weak,
-            shared.design_total,
-            shared.local_lane_total,
-            shared.progress,
-        );
-    }
-    set_remote_status(shared.progress, false, "");
-    push_progress(
-        ui_weak,
-        shared.design_total,
-        shared.local_lane_total,
-        shared.progress,
-    );
-    // Ordered AFTER every possible `return_to_local` call above (all inside the loop
-    // this follows) -- see `gui::batch::batch_queue`'s doc comment for why the local
-    // lane's own stop condition depends on that ordering.
-    remote_lane_done.store(true, Ordering::Release);
 }
 
 /// The single-design entry point: computes tilt curves directly from already-resolved
@@ -731,6 +668,9 @@ pub fn tilt_curves_for_planes(
 /// a cheap copy of it, with no further indirection needed the way `spawn_tilt_batch`
 /// itself would have needed had it kept this block inline (see that function's own
 /// comment on why, for the ONE local variable it still owns directly: `shared`).
+///
+/// `shared.remote_lane_total` remote dispatchers run at once, all claiming from the same
+/// queue; `remote_lane_done` is raised when the last of them ends.
 pub(super) fn run_batch_lanes(
     shared: &LaneShared<'_>,
     plan: super::super::batch_queue::LanePlan,
@@ -739,18 +679,24 @@ pub(super) fn run_batch_lanes(
     ui_weak: &Weak<crate::MainWindow>,
     remote_lane_done: &AtomicBool,
 ) {
+    // Built before the scope: the scoped dispatchers borrow it for the scope's whole
+    // lifetime.
+    let dispatchers = DispatcherGroup::new(shared.remote_lane_total as usize, remote_lane_done);
+    let dispatchers = &dispatchers;
     std::thread::scope(|scope| {
         if plan.run_remote {
-            let remote_ui_weak = ui_weak.clone();
-            scope.spawn(move || {
-                run_remote_lane(
-                    shared,
-                    &remote_ui_weak,
-                    remote_worker,
-                    plan.fallback_to_local,
-                    remote_lane_done,
-                );
-            });
+            for _ in 0..shared.remote_lane_total {
+                let remote_ui_weak = ui_weak.clone();
+                scope.spawn(move || {
+                    run_remote_lane(
+                        shared,
+                        &remote_ui_weak,
+                        remote_worker,
+                        plan.fallback_to_local,
+                        dispatchers,
+                    );
+                });
+            }
         }
         if plan.run_local {
             // N independently-claiming local lanes -- see this group's `mod.rs` doc

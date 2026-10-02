@@ -9,8 +9,9 @@
 //! Nothing here hands out sample ranges itself: every chunk comes from
 //! `SampleCursor::claim`, the single shared atomic claim point local and remote both
 //! draw from. This module only decides how much to claim next
-//! ([`rate::remote_chunk_samples`]) and runs each claimed chunk to completion or
-//! failure ([`dispatch::run_remote_batch`]).
+//! ([`rate::remote_request_samples`]: a target duration for the peer's kind, held to
+//! what one request may carry) and runs each claimed chunk to completion or failure
+//! ([`dispatch::run_remote_batch`]).
 //!
 //! # Partial completion, not failure
 //!

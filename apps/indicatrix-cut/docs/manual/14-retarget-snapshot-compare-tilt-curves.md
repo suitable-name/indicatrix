@@ -105,6 +105,15 @@ In short: compute tilt curves on a design you intend to keep only after
 you have saved it into your catalogue at least once (Chapter 11), or plan
 to recompute them once you have.
 
+The catalogue-wide batch is different from the single-design button: it does
+not show a result, it computes and saves the sweep of every design you chose.
+With a remote coordinator configured and Live Compute including it, the batch
+sends several designs to the remote at once (one request per design, so a
+design's four axes are never split) — **Remote lanes for batches**, Chapter
+10 — while your own computer works through the rest. A design the remote could
+not sweep is computed on your own computer under **Local + Remote**, and
+counted as failed under **Remote only**.
+
 ## Exporting a tilt performance video
 
 The Tilt Performance dialog's **Export tilt video** section renders one

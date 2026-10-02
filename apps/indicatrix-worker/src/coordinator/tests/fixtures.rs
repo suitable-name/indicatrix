@@ -5,6 +5,7 @@
 
 use crate::{
     cli::{ComputeMode, ServeArgs},
+    coordinator::JobConfig,
     join::WorkerSetup,
     serve::{self, ServeHandle},
 };
@@ -89,6 +90,21 @@ pub fn coordinator_args(pki: &Path) -> ServeArgs {
         interactive_workers: 0,
         pin_interactive_worker: None,
         max_job_memory_mib: crate::cli::DEFAULT_MAX_JOB_MEMORY_MIB,
+        whole_image_secs: crate::cli::DEFAULT_WHOLE_IMAGE_SECS,
+        whole_image_pixel_samples: crate::cli::DEFAULT_WHOLE_IMAGE_PIXEL_SAMPLES,
+        jobs_per_viewer: crate::cli::DEFAULT_JOBS_PER_VIEWER,
+    }
+}
+
+/// The job config of a test coordinator that splits every request over all its lanes:
+/// no request is little enough to render whole (see `JobConfig::whole_image_secs`), so a
+/// test of the fan-out sees the fan-out. The whole-image tests set
+/// [`JobConfig::default`] instead.
+pub fn fan_out_config() -> JobConfig {
+    JobConfig {
+        whole_image_secs: 0.0,
+        whole_image_pixel_samples: 0,
+        ..JobConfig::default()
     }
 }
 
@@ -103,9 +119,14 @@ pub const FAST_LIVENESS: LivenessConfig = LivenessConfig {
     tick: Duration::from_millis(20),
 };
 
-/// Starts a coordinator with `args` and `liveness`.
+/// Starts a coordinator with `args` and `liveness`, splitting every request over all its
+/// lanes ([`fan_out_config`]).
 pub fn start(args: &ServeArgs, liveness: LivenessConfig) -> ServeHandle {
-    serve::start_with_liveness(args, liveness).unwrap()
+    let handle = serve::start_with_liveness(args, liveness).unwrap();
+    if let Some(coordinator) = &handle.coordinator {
+        coordinator.set_job_config(fan_out_config());
+    }
+    handle
 }
 
 /// A mutual-TLS client to `addr` presenting the bundle in `bundle_dir`.

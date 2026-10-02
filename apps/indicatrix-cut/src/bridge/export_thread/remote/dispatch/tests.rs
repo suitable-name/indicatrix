@@ -1,12 +1,16 @@
-//! Unit tests for the export-side liveness deadlines, the retry backoff, and
-//! `scene_state_from_snapshot`'s pose/bounce-cap handling.
+//! Unit tests for the export-side liveness deadlines, the retry backoff, the progress
+//! span a request's rate is measured from, and `scene_state_from_snapshot`'s
+//! pose/bounce-cap handling.
 
 use super::{
+    super::rate::remote_request_rate,
     lane::{
         MAX_CONSECUTIVE_REMOTE_FAILURES, REMOTE_RETRY_BACKOFF_INITIAL, REMOTE_RETRY_BACKOFF_MAX,
         pause_remote_lane, remote_retry_backoff,
     },
-    run_batch::{FIRST_EVENT_TIMEOUT, LIVENESS_TIMEOUT, liveness_deadline, transfer_allowance},
+    run_batch::{
+        FIRST_EVENT_TIMEOUT, LIVENESS_TIMEOUT, ProgressSpan, liveness_deadline, transfer_allowance,
+    },
     scene_state::scene_state_from_snapshot,
 };
 use crate::bridge::export_thread::{sample_cursor::SampleCursor, scene_snapshot::SceneSnapshot};
@@ -127,6 +131,68 @@ fn liveness_deadline_budgets_a_whole_frame_transfer_on_a_slow_link() {
     assert!(at_4k >= LIVENESS_TIMEOUT + Duration::from_secs(20));
     assert!(at_4k > at_1080p);
     assert_eq!(transfer_allowance(0), Duration::ZERO);
+}
+
+// `ProgressSpan` + `remote_request_rate`: what `run_remote_batch` reports at `DONE`.
+
+#[test]
+fn progress_span_has_no_advance_before_two_distinct_reports() {
+    let t0 = Instant::now();
+    let mut span = ProgressSpan::default();
+    assert_eq!(span.advance(), None);
+    span.note(t0, 0); // nothing traced yet: not a report of progress
+    assert_eq!(span.advance(), None);
+    span.note(t0 + Duration::from_secs(1), 100);
+    assert_eq!(span.advance(), None, "one report is a point, not a span");
+    span.note(t0 + Duration::from_secs(2), 100); // a repeat advances nothing
+    assert_eq!(span.advance(), None);
+}
+
+#[test]
+fn progress_span_measures_from_the_first_to_the_latest_advancing_report() {
+    let t0 = Instant::now();
+    let mut span = ProgressSpan::default();
+    span.note(t0 + Duration::from_secs(1), 100);
+    span.note(t0 + Duration::from_secs(3), 300);
+    span.note(t0 + Duration::from_secs(4), 300); // a heartbeat: the span must not stretch to it
+    span.note(t0 + Duration::from_secs(5), 500);
+    span.note(t0 + Duration::from_secs(6), 400); // never moves backwards
+    assert_eq!(span.advance(), Some((400, Duration::from_secs(4))));
+}
+
+/// A coordinator (or a worker) whose only progress report lands at 20 s of a 25 s
+/// request: no span to measure, so the rate is the whole request's, not the window from
+/// that report to `DONE` (which would read 1000 / 5 s = 200/s).
+#[test]
+fn a_single_coarse_progress_jump_yields_the_whole_request_rate() {
+    let t0 = Instant::now();
+    let mut span = ProgressSpan::default();
+    span.note(t0 + Duration::from_secs(20), 1000);
+    let whole = Some(40.0);
+    for coordinator in [false, true] {
+        assert_eq!(
+            remote_request_rate(coordinator, 1000, Duration::from_secs(25), span.advance()),
+            whole
+        );
+    }
+}
+
+#[test]
+fn a_worker_with_two_progress_reports_is_measured_between_them_not_to_done() {
+    let t0 = Instant::now();
+    let mut span = ProgressSpan::default();
+    span.note(t0 + Duration::from_secs(2), 100);
+    span.note(t0 + Duration::from_secs(12), 1100);
+    // 1000 samples in 10 s of rendering; DONE came 13 s later, after a slow upload.
+    assert_eq!(
+        remote_request_rate(false, 1100, Duration::from_secs(25), span.advance()),
+        Some(100.0)
+    );
+    // A coordinator is measured over the whole request whatever its progress did.
+    assert_eq!(
+        remote_request_rate(true, 1100, Duration::from_secs(25), span.advance()),
+        Some(44.0)
+    );
 }
 
 #[test]

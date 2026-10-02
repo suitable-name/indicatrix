@@ -104,18 +104,25 @@ impl Epoch<'_> {
     /// calibration chunk while uncalibrated, otherwise a tail-aware, share-aware size
     /// (see [`crate::ChunkPolicy::tail_aware_samples`]) from this lane's current rate,
     /// the run's outstanding sample count, and every lane's summed rate.
+    ///
+    /// A [`RateModel::staggered`] lane's first calibrated size is scaled by its one-shot
+    /// factor ([`RateModel::take_first_chunk_scale`], clamped to the policy's bounds), so
+    /// it starts out of phase with the other lanes of its worker; every later size is
+    /// the plain one.
     pub(super) fn want(&self, rate: &Mutex<RateModel>) -> u32 {
-        let current = {
-            let model = rate.lock().unwrap_or_else(PoisonError::into_inner);
+        let (current, scale) = {
+            let mut model = rate.lock().unwrap_or_else(PoisonError::into_inner);
             if !model.is_calibrated() {
                 return self.config.policy.first_chunk_samples();
             }
-            model.rate()
+            (model.rate(), model.take_first_chunk_scale())
         };
         let remaining = self.target.saturating_sub(self.merger.total());
-        self.config
+        let size = self
+            .config
             .policy
-            .tail_aware_samples(current, remaining, self.sum_rates())
+            .tail_aware_samples(current, remaining, self.sum_rates());
+        scale.map_or(size, |scale| self.config.policy.scaled_samples(size, scale))
     }
 
     /// Sum of every lane's current rate (guess or calibrated estimate) -- cheap for the
